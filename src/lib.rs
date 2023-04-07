@@ -9,41 +9,40 @@ use ndarray_linalg::conjugate;
 use rayon::prelude::*;
 use std::io::Write;
 use std::fs::File;
-///这个cate 是用来对TB模型进行各种计算的, 目前的功能有:
-///1: 计算能带
-///2: 扩胞, 并计算表面态
-///3: 计算一阶反常霍尔电导以及自旋霍尔电导 
+/// This cate is used to perform various calculations on the TB model, currently including:
 ///
-///速度算符的计算公式为
-///$$
-///v=\bra{u_{n\bm k}}\partial_{\bm k} H_{\bm k}\ket{u_{m\bm k}}
-///$$
+/// 1: Calculate the band structure
+///
+/// 2: Expand the cell and calculate the surface state
+///
+/// 3: Calculate the first-order anomalous Hall conductivity and spin Hall conductivity
+///
 #[allow(non_snake_case)]
 pub struct Model{
-    ///模型的实空间维度
-    pub dim_r:usize,                    
-    ///模型的轨道数目
-    pub norb:usize,                     
-    ///模型的态的数目, 如果开启自旋, nsta=norb$\times$2
-    pub nsta:usize,                     
-    ///模型的原子数目, 后面的 atom 和 atom_list 是用来存储原子位置, 以及 每一个原子对应的轨道数目
-    pub natom:usize,                    
-    ///模型是否开启自旋, 若开启, spin=true
-    pub spin:bool,                      
-    ///模型的晶格矢量, 为一个 dim_r$\times$dim_r大小的矩阵, axis0方向存储着1$\times$dim_r的晶格矢量
-    pub lat:Array2::<f64>,              
-    ///模型的轨道位置, 我们统一使用分数坐标
-    pub orb:Array2::<f64>,              
-    ///模型的原子位置, 也是分数坐标.
-    pub atom:Array2::<f64>,             
-    ///模型的原子中的轨道数目, 和原子位置的顺序一致.
-    pub atom_list:Vec<usize>,           
-    ///模型的哈密顿量, $\bra{m0}\hat H\ket{nR}$, 为一个 n_R$\times$nsta$\times$ nsta 的三维复数张量, 第一个nsta*nsta的矩阵对应的是原胞内的hopping,即 <m0|H|n0>, 后面对应的是 hamR中的hopping.
-    pub ham:Array3::<Complex<f64>>,     
-    ///模型的原胞间haopping的距离, 即 $\bra{m0}\hat H\ket{nR}$ 中的 R
-    pub hamR:Array2::<isize>,           
-    ///模型的位置矩阵, 即 $\bra{m0}\hat{\bm r}\ket{nR}$.
-    pub rmatrix:Array4::<Complex<f64>>, 
+/// The real space dimension of the model.
+pub dim_r:usize,
+/// The number of orbitals in the model.
+pub norb:usize,
+/// The number of states in the model. If spin is enabled, nsta=norb$\times$2
+pub nsta:usize,
+/// The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
+pub natom:usize,
+/// Whether the model has spin enabled. If enabled, spin=true
+pub spin:bool,
+/// The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
+pub lat:Array2::<f64>,
+/// The position of the orbitals in the model. We use fractional coordinates uniformly.
+pub orb:Array2::<f64>,
+/// The position of the atoms in the model, also in fractional coordinates.
+pub atom:Array2::<f64>,
+/// The number of orbitals in the atoms, in the same order as the atom positions.
+pub atom_list:Vec<usize>,
+/// The Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
+pub ham:Array3::<Complex<f64>>,
+/// The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
+pub hamR:Array2::<isize>,
+/// The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
+pub rmatrix:Array4::<Complex<f64>>,
 }
 #[allow(non_snake_case)]
 pub fn find_R(hamR:&Array2::<isize>,R:&Array1::<isize>)->bool{
@@ -345,6 +344,7 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
 impl Model{
 
     pub fn tb_model(dim_r:usize,norb:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,natom:Option<usize>,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
+        /*
         //!这个函数是用来初始化一个 Model, 需要输入的变量意义为
         //!
         //!模型维度 dim_r,
@@ -364,6 +364,26 @@ impl Model{
         //!每个原子的轨道数目, atom_list, 可以选择 None.
         //!
         //! 注意, 如果原子部分存在 None, 那么最好统一都是None.
+        */
+        //! This function is used to initialize a Model. The variables that need to be input are as follows:
+        //!
+        //! - dim_r: the dimension of the model
+        //!
+        //! - norb: the number of orbitals
+        //!
+        //! - lat: the lattice constant
+        //!
+        //! - orb: the orbital coordinates
+        //!
+        //! - spin: whether to consider spin
+        //!
+        //! - natom: the number of atoms, which can be None
+        //!
+        //! - atom: the atomic coordinates, which can be None
+        //!
+        //! - atom_list: the number of orbitals for each atom, which can be None.
+        //!
+        //! Note that if any of the atomic variables are None, it is better to make them all None.
         let mut nsta:usize=norb;
         if spin{
             nsta*=2;
@@ -431,6 +451,7 @@ impl Model{
     }
     #[allow(non_snake_case)]
     pub fn set_hop(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:Array1::<isize>,pauli:isize){
+        /*
         //! 这个是用来给模型添加 hopping 的, "set" 表示可以用来覆盖之前的hopping
         //!
         //! tmp: hopping 的参数
@@ -442,6 +463,18 @@ impl Model{
         //! pauli:可以取0,1,2,3, 分别表示 $\sg_0$, $\sg_x$, $\sg_y$, $\sg_z$.
         //!
         //! 总地来说, 这个函数是让 $\bra{i\bm 0}\hat H\ket{j\bm R}=$tmp
+        */
+        //! This function is used to add hopping to the model. The "set" indicates that it can be used to override previous hopping.
+        //!
+        //! - tmp: the parameters for hopping
+        //!
+        //! - ind_i and ind_j: the orbital indices in the Hamiltonian, representing hopping from i to j
+        //!
+        //! - R: the position of the target unit cell for hopping
+        //!
+        //! - pauli: can take the values of 0, 1, 2, or 3, representing $\sigma_0$, $\sigma_x$, $\sigma_y$, $\sigma_z$.
+        //!
+        //! In general, this function is used to set $\bra{i\bm 0}\hat H\ket{j\bm R}=$tmp.
 
         if pauli != 0 && self.spin==false{
             println!("Wrong, if spin is Ture and pauli is not zero, the pauli is not use")
@@ -676,7 +709,7 @@ impl Model{
         //!这个是做傅里叶变换, 将实空间的哈密顿量变换到倒空间的哈密顿量
         //!
         //!具体来说, 就是
-        //!$$H_{mn,\bm k}=\bra{m\bm k}\hat H\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat H\ket{n\bm R}e^{-i(\bm R-\tau_i+\tau_j)\cdot\bm k}$$
+        //!$$H_{mn,\bm k}=\bra{m\bm k}\hat H\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat H\ket{n\bm R}e^{-i(\bm R-\bm\tau_i+\bm \tau_j)\cdot\bm k}$$
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length must equal to the dimension of model.")
         }
@@ -707,7 +740,7 @@ impl Model{
     pub fn gen_r(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
         //!和 gen_ham 类似, 将 $\hat{\bm r}$ 进行傅里叶变换
         //!
-        //!$$\hat {\bm r}_{\bm k}=\bra{m\bm k}\hat{\bm r}\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat{\bm r}\ket{n\bm R}e^{-i(\bm R-\tau_i+\tau_j)\cdot\bm k}$$
+        //!$$\bm r_{mn,\bm k}=\bra{m\bm k}\hat{\bm r}\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat{\bm r}\ket{n\bm R}e^{-i(\bm R-\bm\tau_i+\bm \tau_j)\cdot\bm k}$$
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length must equal to the dimension of model.")
         }
@@ -896,11 +929,24 @@ impl Model{
         let vectors=Array3::from_shape_vec((nk, self.nsta,self.nsta), evec.into_iter().flatten().collect()).unwrap();
         (band,vectors)
     }
+    /*
     ///这个函数是用来将model的某个方向进行截断的
+    ///
     ///num:截出多少个原胞
+    ///
     ///dir:方向
+    ///
     ///返回一个model, 其中 dir 和输入的model是一致的, 但是轨道数目和原子数目都会扩大num倍, 沿着dir方向没有胞间hopping.
+    */
+    
     pub fn cut_piece(&self,num:usize,dir:usize)->Model{
+        //! This function is used to truncate a certain direction of a model.
+        //!
+        //! Parameters:
+        //! - num: number of unit cells to truncate.
+        //! - dir: the direction to be truncated.
+        //!
+        //! Returns a new model with the same direction as the input model, but with the number of orbitals and atoms increased by a factor of "num". There is no inter-cell hopping along the "dir" direction.
         if num<1{
             panic!("Wrong, the num={} is less than 1",num);
         }
@@ -1101,9 +1147,9 @@ impl Model{
         model
     }
 
-    ///这个函数是用来对模型做变换的, 变换前后模型的基矢 L'=UL.
-    ///uncheck
     pub fn make_supercell(&self,U:&Array2::<f64>)->Model{
+        //这个函数是用来对模型做变换的, 变换前后模型的基矢 $L'=UL$.
+        //!This function is used to transform the model, where the new basis after transformation is given by $L' = UL$.
         if self.dim_r!=U.len_of(Axis(0)){
             panic!("Wrong, the imput U's dimension must equal to self.dim_r")
         }
@@ -1658,7 +1704,7 @@ impl Model{
         let conductivity:f64=omega.sum()*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
         conductivity
     }
-    ///用来计算多个 $mu$ 值的, 这个函数是先求出 $\Omega_n$, 然后再分别用不同的费米能级来求和, 这样速度更快, 因为避免了重复求解 $\Omega_n$, 但是相对来说更耗内存, 而且不能做到自适应积分算法.
+    ///用来计算多个 $\mu$ 值的, 这个函数是先求出 $\Omega_n$, 然后再分别用不同的费米能级来求和, 这样速度更快, 因为避免了重复求解 $\Omega_n$, 但是相对来说更耗内存, 而且不能做到自适应积分算法.
     pub fn Hall_conductivity_mu(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:Array1::<f64>,spin:usize,eta:f64)->Array1::<f64>{
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
@@ -1785,6 +1831,8 @@ impl Model{
         
     }
     pub fn berry_curvature_dipole(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->Array1::<f64>{
+        //这个是在 onek的基础上进行并行计算得到一系列k点的berry curvature dipole
+        //!This function performs parallel computation based on the onek function to obtain a series of Berry curvature dipoles at different k-points.
         if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r || dir_3.len() != self.dim_r{
             panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r,dir_1.len(),dir_2.len())
         }
@@ -1797,14 +1845,20 @@ impl Model{
         omega
     }
     pub fn Nonlinear_Hall_conductivity_Extrinsic(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
+        //这个是用 berry curvature dipole 对整个布里渊去做积分得到非线性霍尔电导, 是extrinsic 的 
+        //!This function calculates the extrinsic nonlinear Hall conductivity by integrating the Berry curvature dipole over the entire Brillouin zone. The Berry curvature dipole is first computed at a series of k-points using parallel computation based on the onek function.
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let omega=self.berry_curvature_dipole(&kvec,&dir_1,&dir_2,&dir_3,T,og,mu,spin,eta);
         let nonlinear_conductivity:f64=omega.sum()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
         nonlinear_conductivity
     }
+    
     /*
     pub fn Nonlinear_Hall_conductivity_intrinsic(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
+        //!这个是来自 PRL 112, 166601 (2014) 这篇论文, 使用的公式为
+        //!$$
+
     }
     */
 
