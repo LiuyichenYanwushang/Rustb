@@ -390,7 +390,7 @@ impl Model{
         }
         let mut new_natom:usize=0;
         let mut new_atom_list:Vec<usize>=vec![1];
-        let mut new_atom:Array2::<f64>=arr2(&[[0.0]]);
+        let mut new_atom=Array2::<f64>::zeros((0,dim_r));
         if lat.len_of(Axis(1)) != dim_r{
             panic!("Wrong, the lat's second dimension's length must equal to dim_r") 
         }
@@ -407,9 +407,19 @@ impl Model{
             }else if atom_list !=None || atom != None{
                 panic!("Wrong, the atom and atom_list is not all None, please correspondence them");
             }else if atom_list==None && atom==None{
-                new_natom=norb.clone();
-                new_atom=orb.clone();
-                new_atom_list=vec![1;new_natom.try_into().unwrap()];
+                //通过判断轨道是不是离得太近而判定是否属于一个原子,
+                //这种方法只适用于wannier90不开最局域化
+                new_atom.push_row(orb.row(0));
+                for i in 0..norb{
+                    if (orb.row(i).to_owned()-new_atom.row(new_atom.nrows()-1).to_owned()).norm_l2()>1e-2{
+                        new_atom.push_row(orb.row(i));
+                        new_atom_list.push(1);
+                        new_natom+=1;
+                    }else{
+                        let last=new_atom_list.pop().unwrap();
+                        new_atom_list.push(last+1);
+                    }
+                }
             } else{
                 new_natom=norb.clone();
             };
@@ -647,7 +657,7 @@ impl Model{
         let R=Array1::<isize>::zeros(self.dim_r);
         self.set_hop(Complex::new(tmp,0.0),ind,ind,R,pauli)
     }
-    pub fn del_hop(&mut self,ind_i:usize,ind_j:usize,R:Array1::<isize>,pauli:usize) {
+    pub fn del_hop(&mut self,ind_i:usize,ind_j:usize,R:Array1::<isize>,pauli:isize) {
         //! 删除 $\bra{i\bm 0}\hat H\ket{j\bm R}$
         if R.len()!=self.dim_r{
             panic!("Wrong, the R length should equal to dim_r")
@@ -655,10 +665,10 @@ impl Model{
         if ind_i>=self.norb ||ind_j>=self.norb{
             panic!("Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",self.norb,ind_i,ind_j)
         }
-        self.set_hop(Complex(0.0),ind_i,ind_j,&R,pauli);
+        self.set_hop(Complex::new(0.0,0.0),ind_i,ind_j,R,pauli);
     }
-    #[allow(non_snake_case)]
 
+    #[allow(non_snake_case)]
     pub fn k_path(&self,path:&Array2::<f64>,nk:usize)->(Array2::<f64>,Array1::<f64>,Array1::<f64>){
         //!根据高对称点来生成高对称路径, 画能带图
         if self.dim_r==0{
