@@ -46,6 +46,7 @@ pub rmatrix:Array4::<Complex<f64>>,
 }
 #[allow(non_snake_case)]
 pub fn find_R(hamR:&Array2::<isize>,R:&Array1::<isize>)->bool{
+    //!用来寻找 R 在hamR 中是否存在
     let n_R:usize=hamR.len_of(Axis(0));
     let dim_R:usize=hamR.len_of(Axis(1));
     for i in 0..(n_R){
@@ -61,6 +62,7 @@ pub fn find_R(hamR:&Array2::<isize>,R:&Array1::<isize>)->bool{
 }
 #[allow(non_snake_case)]
 pub fn index_R(hamR:&Array2::<isize>,R:&Array1::<isize>)->usize{
+    //!如果 R 在 hamR 中存在, 返回 R 在hamR 中的位置
     let n_R:usize=hamR.len_of(Axis(0));
     let dim_R:usize=hamR.len_of(Axis(1));
     for i in 0..n_R{
@@ -155,6 +157,7 @@ pub fn gen_krange(k_mesh:&Array1::<usize>)->Array3::<f64>{
 }
 #[allow(non_snake_case)]
 pub fn comm(A:&Array2::<Complex<f64>>,B:&Array2::<Complex<f64>>)->Array2::<Complex<f64>>{
+    //! 做 $[A,B]$ 对易操作
     let A0=A.clone();
     let B0=B.clone();
     let C=A0.dot(&B0);
@@ -163,10 +166,36 @@ pub fn comm(A:&Array2::<Complex<f64>>,B:&Array2::<Complex<f64>>)->Array2::<Compl
 }
 #[allow(non_snake_case)]
 pub fn anti_comm(A:&Array2::<Complex<f64>>,B:&Array2::<Complex<f64>>)->Array2::<Complex<f64>>{
+    //! 做 $\\\{A,B\\\}$ 反对易操作
     let A0=A.clone();
     let B0=B.clone();
     let C=A0.dot(&B0)+B0.dot(&A0);
     C
+}
+//pub fn draw_heatmap(data: Array2<f64>,name:&str,xlabel:Vec<&str>,xnode:Vec<usize>,ylabel:Vec<&str>,ynode:Vec<usize>) {
+pub fn draw_heatmap(data: Array2<f64>,name:&str) {
+    //!这个函数是用来画热图的, 给定一个二维矩阵, 会输出一个像素图片
+    use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT};
+    let mut fg = Figure::new();
+    let (width, height) = (data.shape()[1], data.shape()[0]);
+    let mut heatmap_data = vec![];
+
+    for i in 0..height {
+        for j in 0..width {
+            heatmap_data.push(data[(i, j)]);
+        }
+    }
+    let axes = fg.axes2d();
+    axes.set_title("Heatmap", &[]);
+    axes.set_cb_label("Values", &[]);
+    axes.set_palette(HOT);
+    axes.image(heatmap_data.iter(), width, height,None, &[]);
+    let size=data.shape();
+    let axes=axes.set_x_range(Fix(0.0), Fix((size[0]-1) as f64));
+    let axes=axes.set_y_range(Fix(0.0), Fix((size[1]-1) as f64));
+    let axes=axes.set_aspect_ratio(Fix(1.0));
+    fg.set_terminal("pdfcairo",name);
+    fg.show().expect("Unable to draw heatmap");
 }
 
 pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::<f64>,re_err:f64,ab_err:f64)->f64{
@@ -343,7 +372,7 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
 #[allow(non_snake_case)]
 impl Model{
 
-    pub fn tb_model(dim_r:usize,norb:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,natom:Option<usize>,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
+    pub fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
         /*
         //!这个函数是用来初始化一个 Model, 需要输入的变量意义为
         //!
@@ -369,21 +398,18 @@ impl Model{
         //!
         //! - dim_r: the dimension of the model
         //!
-        //! - norb: the number of orbitals
-        //!
         //! - lat: the lattice constant
         //!
         //! - orb: the orbital coordinates
         //!
         //! - spin: whether to consider spin
         //!
-        //! - natom: the number of atoms, which can be None
-        //!
         //! - atom: the atomic coordinates, which can be None
         //!
         //! - atom_list: the number of orbitals for each atom, which can be None.
         //!
         //! Note that if any of the atomic variables are None, it is better to make them all None.
+        let norb:usize=orb.len_of(Axis(0));
         let mut nsta:usize=norb;
         if spin{
             nsta*=2;
@@ -397,39 +423,26 @@ impl Model{
         if lat.len_of(Axis(0))<lat.len_of(Axis(1)) {
             panic!("Wrong, the lat's second dimension's length must less than first dimension's length") 
         }
-        if natom==None{
-           if atom !=None && atom_list !=None{
-                let use_natom:usize=atom.as_ref().unwrap().len_of(Axis(0)).try_into().unwrap();
-                if use_natom != atom_list.as_ref().unwrap().len().try_into().unwrap(){
-                    panic!("Wrong, the length of atom_list is not equal to the natom");
+        let mut natom:usize=0;
+        if atom !=None && atom_list !=None{
+            new_atom=atom.unwrap();
+            natom=new_atom.len_of(Axis(0));
+            new_atom_list=atom_list.unwrap();
+        }else if atom_list !=None || atom != None{
+            panic!("Wrong, the atom and atom_list is not all None, please correspondence them");
+        }else if atom_list==None && atom==None{
+            //通过判断轨道是不是离得太近而判定是否属于一个原子,
+            //这种方法只适用于wannier90不开最局域化
+            new_atom.push_row(orb.row(0));
+            for i in 0..norb{
+                if (orb.row(i).to_owned()-new_atom.row(new_atom.nrows()-1).to_owned()).norm_l2()>1e-2{
+                    new_atom.push_row(orb.row(i));
+                    new_atom_list.push(1);
+                    natom+=1;
+                }else{
+                    let last=new_atom_list.pop().unwrap();
+                    new_atom_list.push(last+1);
                 }
-                new_natom=use_natom;
-            }else if atom_list !=None || atom != None{
-                panic!("Wrong, the atom and atom_list is not all None, please correspondence them");
-            }else if atom_list==None && atom==None{
-                //通过判断轨道是不是离得太近而判定是否属于一个原子,
-                //这种方法只适用于wannier90不开最局域化
-                new_atom.push_row(orb.row(0));
-                for i in 0..norb{
-                    if (orb.row(i).to_owned()-new_atom.row(new_atom.nrows()-1).to_owned()).norm_l2()>1e-2{
-                        new_atom.push_row(orb.row(i));
-                        new_atom_list.push(1);
-                        new_natom+=1;
-                    }else{
-                        let last=new_atom_list.pop().unwrap();
-                        new_atom_list.push(last+1);
-                    }
-                }
-            } else{
-                new_natom=norb.clone();
-            };
-        }else{
-            new_natom=natom.unwrap();
-            if atom_list==None || atom==None{
-                panic!("Wrong, the atom and atom_list is None but natom is not none")
-            }else{
-                new_atom=atom.unwrap();
-                new_atom_list=atom_list.unwrap();
             }
         }
         let ham=Array3::<Complex<f64>>::zeros((1,nsta,nsta));
@@ -447,7 +460,7 @@ impl Model{
             dim_r,
             norb,
             nsta,
-            natom:new_natom,
+            natom,
             spin,
             lat,
             orb,
@@ -460,7 +473,7 @@ impl Model{
         model
     }
     #[allow(non_snake_case)]
-    pub fn set_hop(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:Array1::<isize>,pauli:isize){
+    pub fn set_hop(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:&Array1::<isize>,pauli:isize){
         /*
         //! 这个是用来给模型添加 hopping 的, "set" 表示可以用来覆盖之前的hopping
         //!
@@ -565,7 +578,7 @@ impl Model{
     }
 
     #[allow(non_snake_case)]
-    pub fn add_hop(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:Array1::<isize>,pauli:isize){
+    pub fn add_hop(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:&Array1::<isize>,pauli:isize){
         //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp 
         if pauli != 0 && self.spin==false{
             println!("Wrong, if spin is Ture and pauli is not zero, the pauli is not use")
@@ -655,7 +668,7 @@ impl Model{
     pub fn set_onsite_one(&mut self, tmp:f64,ind:usize,pauli:isize){
         //!对  $\bra{i\bm 0}\hat H\ket{i\bm 0}$ 进行设置
         let R=Array1::<isize>::zeros(self.dim_r);
-        self.set_hop(Complex::new(tmp,0.0),ind,ind,R,pauli)
+        self.set_hop(Complex::new(tmp,0.0),ind,ind,&R,pauli)
     }
     pub fn del_hop(&mut self,ind_i:usize,ind_j:usize,R:Array1::<isize>,pauli:isize) {
         //! 删除 $\bra{i\bm 0}\hat H\ket{j\bm R}$
@@ -665,7 +678,7 @@ impl Model{
         if ind_i>=self.norb ||ind_j>=self.norb{
             panic!("Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",self.norb,ind_i,ind_j)
         }
-        self.set_hop(Complex::new(0.0,0.0),ind_i,ind_j,R,pauli);
+        self.set_hop(Complex::new(0.0,0.0),ind_i,ind_j,&R,pauli);
     }
 
     #[allow(non_snake_case)]
@@ -785,7 +798,8 @@ impl Model{
             return rk
         }
     }
-    ///这个函数是用来生成速度算符的, 即 $\bra{u_{m\bm k}}\p_\ap H_{\bm k}\ket{u_{n\bm k}}$
+    ///这个函数是用来生成速度算符的, 即 $\bra{m\bm k}\p_\ap H_{\bm k}\ket{n\bm k},$
+    ///这里的基函数是布洛赫波函数
     #[allow(non_snake_case)]
     pub fn gen_v(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
         if kvec.len() !=self.dim_r{
@@ -858,7 +872,6 @@ impl Model{
         }
         v
     }
-
     #[allow(non_snake_case)]
     pub fn solve_band_onek(&self,kvec:&Array1::<f64>)->Array1::<f64>{
         if kvec.len() !=self.dim_r{
@@ -939,7 +952,7 @@ impl Model{
         let vectors=Array3::from_shape_vec((nk, self.nsta,self.nsta), evec.into_iter().flatten().collect()).unwrap();
         (band,vectors)
     }
-    /*
+
     ///这个函数是用来将model的某个方向进行截断的
     ///
     ///num:截出多少个原胞
@@ -947,8 +960,6 @@ impl Model{
     ///dir:方向
     ///
     ///返回一个model, 其中 dir 和输入的model是一致的, 但是轨道数目和原子数目都会扩大num倍, 沿着dir方向没有胞间hopping.
-    */
-    
     pub fn cut_piece(&self,num:usize,dir:usize)->Model{
         //! This function is used to truncate a certain direction of a model.
         //!
@@ -1156,6 +1167,7 @@ impl Model{
         };
         model
     }
+
 
     pub fn make_supercell(&self,U:&Array2::<f64>)->Model{
         //这个函数是用来对模型做变换的, 变换前后模型的基矢 $L'=UL$.
@@ -1749,17 +1761,23 @@ impl Model{
         }
         conductivity
     }
-    ///这个方法用的是对费米分布的修正, 因为高阶的dipole 修正导致的非线性霍尔电导为 $$\sg_{\ap\bt\gm}=\int\dd\bm k\sum_n\p_\gm\ve_{n\bm k}\Og_{nn,\ap\bt}\lt\.\pdv{f}{E}\rt\rvert_{E=\ve_{n\bm k}}.$$ 所以我们这里输出的是 
-    ///$$\\mathcal D_{\ap\bt\gm}=\sum_n\p_\gm\ve_{n\bm k}\Og_{nn,\ap\bt}\lt\.\pdv{f}{E}\rt\rvert_{E=\ve_{n\bm k}}.$$ 这里需要注意的一点是, 一般来说对于 $\p_\ap\ve_{\bm k}$, 需要用差分法来求解, 我这里提供了一个算法. 
+    ///这个方法用的是对费米分布的修正, 因为高阶的dipole 修正导致的非线性霍尔电导为 $$\sg_{\ap\bt\gm}=\int\dd\bm k\sum_n\p_\gm\ve_{n\bm k}\Og_{nn,\ap\bt}\lt\.\pdv{f_{\bm k}}{\ve}\rt\rvert_{E=\ve_{n\bm k}}.$$ 所以我们这里输出的是 
+    ///$$\\mathcal D_{\ap\bt\gm}=\sum_n\p_\gm\ve_{n\bm k}\Og_{nn,\ap\bt}\lt\.\pdv{f_{\bm k}}{\ve}\rt\rvert_{E=\ve_{n\bm k}}.$$ 这里需要注意的一点是, 一般来说对于 $\p_\ap\ve_{\bm k}$, 需要用差分法来求解, 我这里提供了一个算法. 
     ///$$ \ve_{\bm k}=U^\dag H_{\bm k} U\Rightarrow \pdv{\ve_{\bm k}}{\bm k}=U^\dag\pdv{H_{\bm k}}{\bm k}U+\pdv{U^\dag}{\bm k} H_{\bm k}U+U^\dag H_{\bm k}\pdv{U}{\bm k}$$
     ///因为 $U^\dag U=1\Rightarrow \p_{\bm k}U^\dag U=-U^\dag\p_{\bm k}U$, $\p_{\bm k}H_{\bm k}=v_{\bm k}$我们有
-    ///$$\pdv{\ve_{\bm k}}{\bm k}=U^\dag v_{\bm k}U+\lt[\ve_{\bm k},U^\dag\p_{\bm k}U\rt]$$
-    ///而这里面唯一比较难求的项是 $D_{\bm k}=U^\dag\p_{\bm k}U$. 按照 vanderbilt 2008 年的论文中的公式, 用微扰论有 $$D_{mn,\bm k}=\left\\{\\begin{aligned}\f{v_{mn,\bm k}}{\ve_n-\ve_m} \quad &\text{if}\\ m\\ \not= n\\\ 0 \quad \quad &\text{if}\\ m\\ = n\\end{aligned}\right\.$$
+    ///$$\pdv{\ve_{\bm k}}{\bm k}=v_{\bm k}+\lt[\ve_{\bm k},U^\dag\p_{\bm k}U\rt]$$
+    ///而这里面唯一比较难求的项是 $D_{\bm k}=U^\dag\p_{\bm k}U$. 按照 vanderbilt 2008 年的论文中的公式, 用微扰论有 
+    ///$$D_{mn,\bm k}=\left\\{\\begin{aligned}\f{v_{mn,\bm k}}{\ve_n-\ve_m} \quad &\text{if}\\ m\\ =\not n\\\ 0 \quad \quad &\text{if}\\ m\\ = n\\end{aligned}\right\.$$
+    ///我们观察到第二项对对角部分没有贡献, 所以我们可以直接设置为
+    ///$$\pdv{\ve_{\bm k}}{\bm k}=\text{diag}\lt(v_{\bm k}\rt)$$
+    ///
     ///需要特别注意的是, 最好不要将温度设置为0, 因为这样只有能量完全等于费米能级的时候才会有贡献, 我这里设置的是能量和费米能级小于 $10^{-3}$ 的时候有贡献.
+    ///还有一种选择, 就是当温度为0的时候, 虽然是表面积分, 但是可以将其化为体积分, 用的是高斯公式
     pub fn berry_curvature_dipole_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
         //我们首先求解 omega_n 和 U^\dag j
         let li:Complex<f64>=1.0*Complex::i();
         let (band,evec)=self.solve_onek(&k_vec);
+        let evec_conj:Array2::<Complex<f64>>=evec.clone().map(|x| x.conj()).to_owned();
         let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
         let mut J:Array3::<Complex<f64>>=v.clone();
         if self.spin {
@@ -1790,22 +1808,32 @@ impl Model{
                 v.slice_mut(s![i,..,..]).assign(&(v0*dir_2[[i]]));
             }
         };
+        //开始计算速度的偏导项
+        /*
         let mut D=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是求解本征值倒数的对易项
         let mut v0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是速度项
         for r in 0..self.dim_r{
+            let v1=v.slice(s![r,..,..]).to_owned();
+            let v1=evec_conj.clone().dot(&(v0.dot(&evec.clone().reversed_axes())));//变换到本征态为基函数
             for i in 0..self.nsta{
                 for j in 0..self.nsta{
                     if i != j{
-                        D[[i,j]]=v[[r,i,j]]*dir_3[[r]]/(band[[j]]-band[[i]]);
+                        D[[i,j]]=v1[[i,j]]*dir_3[[r]]/(band[[j]]-band[[i]]);
                     }
                 }
             }
-            let vs=v.slice(s![r,..,..]).to_owned()*dir_3[[r]];
+            let vs=v1*dir_3[[r]];
             v0=v0+vs;
         }
-        let evec_conj:Array2::<Complex<f64>>=evec.clone().map(|x| x.conj()).to_owned();
-        let ve=Array2::<Complex<f64>>::from_diag(&band.map(|x| Complex::new(*x,0.0)));//将能带变成对角形式
-        let partial_ve:Array1::<f64>=(evec_conj.clone().dot(&(v0.dot(&evec.clone().reversed_axes())))+comm(&ve,&D)).diag().map(|x| x.re);//关于速度的偏导项
+        let ve=Array2::<Complex<f64>>::from_diag(&band.map(|x| Complex::new(*x,0.0)));//将能带变成对角矩阵形式
+        let partial_ve:Array1::<f64>=(v0+comm(&ve,&D)).diag().map(|x| x.re);//关于速度的偏导项
+        */
+        let mut v0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是速度项, 对应的dir_3 的速度
+        for r in 0..self.dim_r{
+            v0=v0+v.slice(s![r,..,..]).to_owned()*dir_3[[r]];
+        }
+        let partial_ve:Array1::<f64>=v0.diag().map(|x| x.re);
+        //开始计算贝利曲率
         let J:Array2::<Complex<f64>>=J.sum_axis(Axis(0));
         let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
         let A1=J.dot(&evec.clone().reversed_axes());
@@ -1823,6 +1851,7 @@ impl Model{
             }
         }
         let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
+        //开始计算费米分布的函数
         let mut partial_f=Array1::<f64>::zeros(self.nsta);
         if T==0.0{
             println!("you set temperature is zero, this may cause wrong, because no bands lie on the fermi_energy");
@@ -1838,7 +1867,6 @@ impl Model{
         }
         let omega=(partial_f*omega_n*partial_ve).sum();
         omega //最后得到的 D
-        
     }
     pub fn berry_curvature_dipole(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->Array1::<f64>{
         //这个是在 onek的基础上进行并行计算得到一系列k点的berry curvature dipole
@@ -1863,20 +1891,235 @@ impl Model{
         let nonlinear_conductivity:f64=omega.sum()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
         nonlinear_conductivity
     }
-    
-    /*
+
+    pub fn berry_connection_dipole_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
+        //!这个是根据 Nonlinear_Hall_conductivity_intrinsic 的注释, 当不存在自旋的时候提供
+        //!$$v_\ap G_{\bt\gm}-v_\bt G_{\ap\gm}$$
+        //!其中 $$ G_{ij}=2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3} $$
+        //!如果存在自旋, 即spin不等于0, 则还存在 $\p_{h_i} G_{jk}$ 项, 具体请看下面的非线性霍尔部分
+        //!我们这里暂时不考虑磁场, 只考虑电场
+        //我们先求解G_{ij}
+        let mut v:Array3::<Complex<f64>>=self.gen_v(&k_vec);//这是速度算符
+        let (band,evec)=self.solve_onek(&k_vec);
+        let evec_conj=evec.clone().map(|x| x.conj());
+        for i in 0..self.dim_r{
+            let v_1=v.slice(s![i,..,..]).to_owned();
+            let v_1=evec_conj.clone().dot(&(v_1.dot(&evec.clone().reversed_axes())));//变换到本征态基函数
+            v.slice_mut(s![i,..,..]).assign(&v_1);//将 v 变换到以本征态为基底
+        }
+        let mut v_1=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        let mut v_2=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        let mut v_3=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        for i in 0..self.dim_r{
+            v_1=v_1.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_1[[i]],0.0);
+            v_2=v_2.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_2[[i]],0.0);
+            v_3=v_2.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_3[[i]],0.0);
+        }
+        let mut U0=Array2::<f64>::zeros((self.nsta,self.nsta));
+        for i in 0..self.nsta{
+            for j in 0..self.nsta{
+                if band[[i]]==band[[j]]{
+                    U0[[i,j]]=0.0;
+                }else{
+                    U0[[i,j]]=1.0/(band[[i]]-band[[j]]);
+                }
+            }
+        }
+
+        //开始计算能带的导数, 详细的公式请看 berry_curvature_dipole_onek 的公式
+        //开始计算速度的偏导项, 这里偏导来自实空间
+        let mut partial_ve=Array2::<f64>::zeros((self.dim_r,self.nsta));
+        for r in 0..self.dim_r{
+            let v0=v.slice(s![r,..,..]).to_owned();
+            partial_ve.slice_mut(s![r,..]).assign(&v0.diag().map(|x| x.re));//速度算符的对角项
+        }
+
+        //开始计算费米分布的偏导以及费米分布
+        let mut f=Array1::<f64>::zeros(self.nsta);//费米分布
+        let mut partial_f=Array1::<f64>::zeros(self.nsta); //费米分布的偏导
+        if T==0.0{
+            println!("you set temperature is zero, this may cause wrong, because no bands lie on the fermi_energy");
+            for i in 0..self.nsta{
+                if (band[[i]]-mu).abs()<1e-3{
+                    partial_f[[i]]=1.0;
+                }
+                if band[[i]]< mu{
+                    f[[i]]=1.0;
+                }
+            }
+        }else{
+            let beta=1.0/(T*8.617e-5);
+            let a:Array1::<f64>=((band.clone()-mu)*beta).map(|x| x.exp());
+            partial_f=(a.clone()/(1.0+a.clone())).map(|x| x.powi(2))*beta;
+            f=a.clone()/(1.0+a.clone());
+        }
+        //开始最后的计算
+        if self.spin{
+            let mut S:Array2::<Complex<f64>>=Array2::eye(self.nsta);
+            let li=Complex::<f64>::new(0.0,1.0);
+            let pauli:Array2::<Complex<f64>>= match spin{
+                0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
+                1=> arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0,
+                2=> arr2(&[[0.0+0.0*li,0.0-1.0*li],[0.0+1.0*li,0.0+0.0*li]])/2.0,
+                3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
+                _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
+            };
+            let X=kron(&pauli,&Array2::eye(self.norb));
+            let mut S=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));
+            for i in 0..self.dim_r{
+                let v0=v.slice(s![i,..,..]).to_owned();
+                S.slice_mut(s![i,..,..]).assign(&(anti_comm(&X,&v0)/2.0));
+            }
+            let S_1=anti_comm(&X,&v_1)/2.0;
+            let S_2=anti_comm(&X,&v_2)/2.0;
+            let S_3=anti_comm(&X,&v_3)/2.0;
+            let G_23:Array1::<f64>={//用来计算  beta gamma 的 G 
+                let A=v_2.clone()*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
+                let G=A.dot(&v_3);
+                G.diag().map(|x| x.re)
+            };
+            let G_13_h:Array1::<f64>={//用来计算 alpha gamma 的 G 
+                let A=S_1.clone()*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
+                let G=A.dot(&v_3);
+                G.diag().map(|x| x.re)
+            };
+            //开始计算partial_s
+            let partial_s_1=S_1.clone().diag().map(|x| x.re);
+            let partial_s_2=S_2.clone().diag().map(|x| x.re);
+            let partial_s_3=S_3.clone().diag().map(|x| x.re);
+            let mut partial_s=Array2::<f64>::zeros((self.dim_r,self.nsta));
+            for r in 0..self.dim_r{
+                let s0=S.slice(s![r,..,..]).to_owned();
+                partial_s.slice_mut(s![r,..]).assign(&s0.diag().map(|x| x.re));//\p_i s算符的对角项
+            }
+            //开始计算partial G
+            let  partial_G:Array1::<f64>={
+                let mut A=Array1::<Complex<f64>>::zeros(self.nsta);//第一项
+                for i in 0..self.nsta{
+                    for j in 0..self.nsta{
+                        if band[[i]]!=band[[j]]{
+                            A[[i]]+=3.0*(partial_s_1[[i]]-partial_s_1[[j]])*v_2[[i,j]]*v_3[[j,i]]/(band[[i]]-band[[j]]).powi(4);
+                        }
+                    }
+                }
+                let mut B=Array1::<Complex<f64>>::zeros(self.nsta);//第一项
+                for n in 0..self.nsta{
+                    for n1 in 0..self.nsta{
+                        for n2 in 0..self.nsta{
+                            if band[[n1]] != band[[n]] && band[[n1]] != band[[n]]{
+                                B[[n]]+=S_1[[n,n2]]*(v_2[[n2,n1]]*v_3[[n1,n]]+v_3[[n2,n1]]*v_2[[n1,n]])/((band[[n]]-band[[n1]]).powi(3)*(band[[n]]-band[[n2]]))
+                            }
+                        }
+                    }
+                }
+                let mut C=Array1::<Complex<f64>>::zeros(self.nsta);//第一项
+                for n in 0..self.nsta{
+                    for n1 in 0..self.nsta{
+                        for n2 in 0..self.nsta{
+                            if band[[n1]] != band[[n]] && band[[n1]] != band[[n]]{
+                                C[[n]]+=S_1[[n1,n2]]*(v_2[[n2,n]]*v_3[[n,n1]]+v_3[[n2,n]]*v_2[[n,n1]])/((band[[n]]-band[[n1]]).powi(3)*(band[[n1]]-band[[n2]]))
+                            }
+                        }
+                    }
+                }
+                2.0*(A-B-C).map(|x| x.re)
+            };
+            //计算结束
+            //开始最后的输出
+            return -(f*partial_G+partial_f*(partial_s_1*G_23+partial_s_2*G_13_h)).sum()/2.0
+        }else{
+            //开始计算 G_{ij}
+            let G_23:Array1::<f64>={//用来计算  beta gamma 的 G 
+                let A=v_2*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
+                let G=A.dot(&v_3);
+                G.diag().map(|x| x.re)
+            };
+            let G_13:Array1::<f64>={//用来计算 alpha gamma 的 G 
+                let A=v_1*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
+                let G=A.dot(&v_3);
+                G.diag().map(|x| x.re)
+            };
+            let mut pE_1=Array1::<f64>::zeros(self.nsta);//partial_alpha
+            let mut pE_2=Array1::<f64>::zeros(self.nsta);//partial_beta
+            for i in 0..self.dim_r{
+                pE_1=pE_1+partial_ve.slice(s![i,..]).to_owned()*dir_1[[i]];
+                pE_2=pE_2+partial_ve.slice(s![i,..]).to_owned()*dir_2[[i]];
+            }
+            return ((pE_1*G_23+pE_2*G_13)*partial_f).sum()
+        }
+    }
+    pub fn berry_connection_dipole(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->Array1<f64>{
+        //! 这个是基于 onek 的, 进行关于 k 点并行求解
+        if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r || dir_3.len() != self.dim_r{
+            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r,dir_1.len(),dir_2.len())
+        }
+        let nk=k_vec.len_of(Axis(0));
+        let omega:Vec<f64>=k_vec.axis_iter(Axis(0)).into_par_iter().map(|x| {
+            let omega_one=self.berry_connection_dipole_onek(&x.to_owned(),&dir_1,&dir_2,&dir_3,T,og,mu,spin,eta); 
+            omega_one
+            }).collect();
+        let omega=arr1(&omega);
+        omega
+    }
+
     pub fn Nonlinear_Hall_conductivity_intrinsic(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
-        //!这个是来自 PRL 112, 166601 (2014) 这篇论文, 使用的公式为
+        //! The Intrinsic Nonlinear Hall Conductivity arises from the correction of the Berry connection by the electric and magnetic fields [PRL 112, 166601 (2014)]. The formula employed is:
+        //!$$\tilde\bm\Og_{\bm k}=\nb_{\bm k}\times\lt(\bm A_{\bm k}+\bm A_{\bm k}^\prime\rt)$$
+        //!and the $\bm A_{i,\bm k}^\prime=F_{ij}B_j+G_{ij}E_j$, where
+        //!$$ 
+        //!\\begin{aligned}
+        //!F_{ij}&=\text{Im}\sum_{m=\not n}\f{v_{i,nm}\og_{j,mn}}{\lt(\ve_{n}-\ve_m\rt)^2}\\\\
+        //!G_{ij}&=2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3}\\\\
+        //!\og_{\ap,mn}&=-i\ep_{\ap\bt\gm}\sum_{l=\not n}\f{\lt(v_{\bt,ml}+\p_\bt \ve_{\bm k}\dt_{ml}\rt)v_{\gm,ln}}{\ve_l-\ve_n}
+        //!\\end{aligned}
         //!$$
+        //!最后我们有
+        //!$$
+        //!\bm j^\prime=\bm E\times\int\f{\dd\bm k}{(2\pi)^3}\lt[\p_{\bm k}\ve_{\bm k}\times\bm A^\prime+\bm\Og\lt(\bm B\cdot\bm m\rt)\rt]\pdv{f_{\bm k}}{\ve}
+        //!$$
+        //!对其对电场和磁场进行偏导, 有
+        //!$$
+        //!\\begin{aligned}
+        //!\f{\p^2 j_{\ap}^\prime}{\p E_\bt\p E_\gm}&=\int\f{\dd\bm k}{(2\pi)^3}\lt(\p_\ap\ve_{\bm k} G_{\bt\gm}-\p_\bt\ve_{\bm k} G_{\ap\gm}\rt)\pdv{f_{\bm k}}{\ve}\\\\
+        //!\f{\p^2 j_{\ap}^\prime}{\p E_\bt\p B_\gm}&=\int\f{\dd\bm k}{(2\pi)^3}\lt(\p_\ap\ve_{\bm k} F_{\bt\gm}-\p_\bt\ve_{\bm k} F_{\ap\gm}+\ep_{\ap\bt\ell}\Og_{\ell} m_\gm\rt)\pdv{f_{\bm k}}{\ve}
+        //!\\end{aligned}
+        //!$$
+        //!由于存在 $\pdv{f_{\bm k}}{\ve}$, 不建议将温度 T=0
+        //!
+        //!可以考虑当 T=0 时候, 利用高斯公式, 将费米面内的部分进行积分, 得到精确解. 但是我现在还没办法很好的求解费米面, 所以暂时不考虑这个算法.而且对于二位体系, 公式还不一样, 还得分步讨论, 后面有时间再考虑这个程序.
+        //!
+        //!对于自旋霍尔效应, 按照文章 [PRL 112, 166601 (2014)], 非线性自旋霍尔电导为
+        //!$$\sg_{\ap\bt\gm}^i=-\f{1}{2}\int\dd\bm k \lt[f_{\bm k}\pdv{G_{\bt\gm}}{h_\ap}+\pdv{f_{\bm k}}{\ve}\lt(\p_{\ap}s_{\bm k}^i G_{\bt\gm}-\p_\bt\ve_{\bm k}G_{\ap\gm}^h\rt)\rt]$$
+        //!其中
+        //!$$\f{\p G_{\bt\gm,n}}{\p h_\ap}=2\text{Re}\sum_{n^\pr =\not n}\f{3\lt(s^i_{\ap,n}-s^i_{\ap,n_1}\rt)v_{\bt,nn_1} v_{\gm,n^\pr n}}{\lt(\ve_n-\ve_{n^\pr}\rt)^4}-2\text{Re}\sum_{n_1=\not n}\sum_{n_2=\not n}\lt[\f{s^i_{\ap,nn_2} v_{\bt,n_2n_1} v_{\gm,n_1 n}}{\lt(\ve_n-\ve_{n_1}\rt)^3(\ve_n-\ve_{n_2})}+(\bt \leftrightarrow \gm)\rt]-2\text{Re}\sum_{n_1=\not n}\sum_{n_2=\not n_1}\lt[\f{s^i_{\ap,n_1n_2} v_{\bt,n_2n} v_{\gm,n n_1}}{\lt(\ve_n-\ve_{n_1}\rt)^3(\ve_{n_1}-\ve_{n_2})}+(\bt \leftrightarrow \gm)\rt]$$
+        //!以及
+        //!$$
+        //!\lt\\\{\\begin{aligned}
+        //!G_{\ap\bt}&=2\text{Re}\sum_{m=\not n}\f{v_{\ap,nm}v_{\bt,mn}}{\lt(\ve_n-\ve_m\rt)^3}\\\\
+        //!G_{\ap\bt}^h&=2\text{Re}\sum_{m=\not n}\f{s^i_{\ap,nm}v_{\bt,mn}}{\lt(\ve_n-\ve_m\rt)^3}\\\\
+        //!\\end{aligned}\rt\.
+        //!$$
+        //!
+        //!这里 $s^i_{\ap,mn}$ 的具体形式, 原文中没有明确给出, 但是我根据霍尔效应的类比, 我猜是
+        //!$\\\{\hat s^i,v_\ap\\\}$
+        //!
+        //!至于 $\p_\ap s_{\bm k}^i=\text{diag}(s_{\ap,mn}^i)$
+        let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
+        let nk:usize=kvec.len_of(Axis(0));
+        let omega=self.berry_connection_dipole(&kvec,&dir_1,&dir_2,&dir_3,T,og,mu,spin,eta);
+        let nonlinear_conductivity:f64=omega.sum()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
+        nonlinear_conductivity
 
     }
-    */
-
     ///这个函数是用来快速画能带图的, 用python画图, 因为Rust画图不太方便.
     #[allow(non_snake_case)]
     pub fn show_band(&self,path:&Array2::<f64>,label:&Vec<&str>,nk:usize,name:&str)-> std::io::Result<()>{
         use std::fs::create_dir_all;
         use std::path::Path;
+        use gnuplot::{Figure, Caption, Color};
+        use gnuplot::{AxesCommon};
+        use gnuplot::AutoOption::*;
+        use gnuplot::Tick::*;
         if path.len_of(Axis(0))!=label.len(){
             panic!("Error, the path's length {} and label's length {} must be equal!",path.len_of(Axis(0)),label.len())
         }
@@ -1923,6 +2166,29 @@ impl Model{
         let py_name=Path::new(&py_name);
         let mut file=File::create(py_name).expect("Unable to create print.py");
         writeln!(file,"import numpy as np\nimport matplotlib.pyplot as plt\ndata=np.loadtxt('BAND.dat')\nk_nodes=[]\nlabel=[]\nf=open('KLABELS')\nfor i in f.readlines():\n    k_nodes.append(float(i.split()[0]))\n    label.append(i.split()[1])\nfig,ax=plt.subplots()\nax.plot(data[:,0],data[:,1:],c='b')\nfor x in k_nodes:\n    ax.axvline(x,c='k')\nax.set_xticks(k_nodes)\nax.set_xticklabels(label)\nax.set_xlim([0,k_nodes[-1]])\nfig.savefig('band.pdf')");
+        //开始绘制pdf图片
+        let mut fg = Figure::new();
+        let x:Vec<f64>=k_dist.to_vec();
+        let axes=fg.axes2d();
+        for i in 0..self.nsta{
+            let y:Vec<f64>=eval.slice(s![..,i]).to_owned().to_vec();
+            axes.lines(&x, &y, &[Color("black")]);
+        }
+        let axes=axes.set_x_range(Fix(0.0), Fix(k_node[[k_node.len()-1]]));
+        let label=label.clone();
+        let mut show_ticks=Vec::new();
+        for i in 0..k_node.len(){
+            let A=k_node[[i]];
+            let B=label[i];
+            show_ticks.push(Major(A,Fix(B)));
+        }
+        axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+        
+        let k_node=k_node.to_vec();
+        let mut pdf_name=name.clone();
+        pdf_name.push_str("/plot.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show();
         Ok(())
     }
     #[allow(non_snake_case)]
@@ -2007,11 +2273,12 @@ impl Model{
         let mut lat=Array2::<f64>::zeros((3,3)); //晶格轨道坐标初始化
         let mut spin:bool=false; //体系自旋初始化
         let mut natom:usize=0; //原子位置初始化
-        let mut atom=Array2::<f64>::zeros((1,3)); //原子位置坐标初始化
+        let mut atom=Array2::<f64>::zeros((0,3)); //原子位置坐标初始化
         let mut proj_name:Vec<&str>=Vec::new();
         let mut proj_list:Vec<usize>=Vec::new();
         let mut atom_list:Vec<usize>=Vec::new();
         let mut atom_name:Vec<&str>=Vec::new();
+        let mut atom_pos=Array2::<f64>::zeros((0,3));
         loop{
             let a=read_iter.next();
             if a==None{
@@ -2070,7 +2337,13 @@ impl Model{
                             break
                         }else{       
                             let prj:Vec<&str>=string.split_whitespace().collect();
-                            atom_name.push(prj[0])
+                            atom_name.push(prj[0]);
+                            let a1=prj[1].parse::<f64>().unwrap();
+                            let a2=prj[2].parse::<f64>().unwrap();
+                            let a3=prj[3].parse::<f64>().unwrap();
+                            let a=array![a1,a2,a3];
+                            atom_pos.push_row(a.view());
+
                         }
                     }
                 }
@@ -2079,7 +2352,11 @@ impl Model{
         for name in atom_name.iter(){
             for (j,j_name) in proj_name.iter().enumerate(){
                 if j_name==name{
-                    atom_list.push(proj_list[j])
+                    atom_list.push(proj_list[j]);
+                    println!("{}",j_name);
+                    println!("{}",atom_pos.row(j));
+                    atom.push_row(atom_pos.row(j));
+                    natom+=1;
                 }
             }
         }
@@ -2105,12 +2382,14 @@ impl Model{
             orb[[i,1]]=a[2].parse::<f64>().unwrap();
             orb[[i,2]]=a[3].parse::<f64>().unwrap();
         }
+        /*
         for i in 0..natom{
             let a:Vec<&str>=reads[i+2+nsta].trim().split_whitespace().collect();
             atom[[i,0]]=a[1].parse::<f64>().unwrap();
             atom[[i,1]]=a[2].parse::<f64>().unwrap();
             atom[[i,2]]=a[3].parse::<f64>().unwrap();
         }
+        */
         orb=orb.dot(&lat.inv().unwrap());
         atom=atom.dot(&lat.inv().unwrap());
         //开始尝试读取 _r.dat 文件
@@ -2210,28 +2489,28 @@ mod tests {
     fn Haldan_model(){
         let li:Complex<f64>=1.0*Complex::i();
         let t=-1.0+0.0*li;
-        let t2=-1.0+0.0*li;
+        let t2=-0.1+0.0*li;
         let delta=0.7;
         let dim_r:usize=2;
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,norb,lat,orb,false,None,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
         model.set_onsite(arr1(&[-delta,delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
-            model.add_hop(t,0,1,R,0);
+            model.add_hop(t,0,1,&R,0);
         }
         let R0:Array2::<isize>=arr2(&[[1,0],[-1,1],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
-            model.add_hop(t2*li,0,0,R,0);
+            model.add_hop(t2*li,0,0,&R,0);
         }
         let R0:Array2::<isize>=arr2(&[[-1,0],[1,-1],[0,1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
-            model.add_hop(t2*li,1,1,R,0);
+            model.add_hop(t2*li,1,1,&R,0);
         }
         let nk:usize=1001;
         let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
@@ -2241,7 +2520,7 @@ mod tests {
         let label=vec!["G","K","M","K'","G"];
         model.show_band(&path,&label,nk,"tests/Haldan");
         /////开始计算体系的霍尔电导率//////
-        let nk:usize=101;
+        let nk:usize=11;
         let T:f64=0.0;
         let eta:f64=0.001;
         let og:f64=0.0;
@@ -2264,8 +2543,36 @@ mod tests {
         let conductivity=model.Hall_conductivity_adapted(&kmesh,&dir_1,&dir_2,T,og,mu,spin,eta,0.01,0.01);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
-        println!("{}",conductivity/(2.0*PI));
+        println!("霍尔电导率{}",conductivity/(2.0*PI));
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
+        //测试一下速度算符的对角项是否等于能带本征值的导数
+        let kvec=array![1.0/3.0,1.0/3.0];
+        let dk=1e-7;
+        let (band,evec)=model.solve_onek(&kvec);
+        let mut kvec0=kvec.clone();
+        kvec0[[1]]+=dk;
+        let (band0,evec0)=model.solve_onek(&kvec0);
+        println!("{}",(band0-band)/dk);
+        let evec_conj=evec.clone().map(|x| x.conj());
+        let v=model.gen_v(&kvec);
+        for i in 0..model.dim_r{
+            let vs=v.slice(s![i,..,..]).to_owned(); 
+            let vs=evec_conj.dot(&(vs.dot(&evec.clone().reversed_axes())));
+            println!("{}",vs.diag());
+        }
+        let mut v0=Array3::<Complex<f64>>::zeros((model.dim_r,model.nsta,model.nsta));
+        let lat_inv=model.lat.inv().unwrap();
+        for i in 0..model.dim_r{
+            for j in 0..model.dim_r{
+                let a=v0.slice(s![i,..,..]).to_owned();
+                let b=a+v.slice(s!(j,..,..)).to_owned()*lat_inv[[j,i]];
+                v0.slice_mut(s![i,..,..]).assign(&b);//将位置矩阵变成相对坐标形式
+            }
+            let vd=v0.slice(s![i,..,..]).to_owned();
+            let vd=evec_conj.dot(&(vd.dot(&evec.clone().reversed_axes())));
+            let vd=vd.diag().map(|x| x.re);
+            println!("{}",vd*2.0*PI);
+        }
     }
     #[test]
     fn graphene(){
@@ -2278,20 +2585,20 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
         let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,norb,lat,orb,false,None,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
         model.set_onsite(arr1(&[delta,-delta]),0);
-        model.add_hop(t1,0,1,array![0,0],0);
-        model.add_hop(t1,0,1,array![-1,0],0);
-        model.add_hop(t1,0,1,array![0,-1],0);
-        model.add_hop(t2,0,0,array![1,0],0);
-        model.add_hop(t2,1,1,array![1,0],0);
-        model.add_hop(t2,0,0,array![0,1],0);
-        model.add_hop(t2,1,1,array![0,1],0);
-        model.add_hop(t2,0,0,array![1,-1],0);
-        model.add_hop(t2,1,1,array![1,-1],0);
-        model.add_hop(t3,0,1,array![1,-1],0);
-        model.add_hop(t3,0,1,array![-1,1],0);
-        model.add_hop(t3,0,1,array![-1,-1],0);
+        model.add_hop(t1,0,1,&array![0,0],0);
+        model.add_hop(t1,0,1,&array![-1,0],0);
+        model.add_hop(t1,0,1,&array![0,-1],0);
+        model.add_hop(t2,0,0,&array![1,0],0);
+        model.add_hop(t2,1,1,&array![1,0],0);
+        model.add_hop(t2,0,0,&array![0,1],0);
+        model.add_hop(t2,1,1,&array![0,1],0);
+        model.add_hop(t2,0,0,&array![1,-1],0);
+        model.add_hop(t2,1,1,&array![1,-1],0);
+        model.add_hop(t3,0,1,&array![1,-1],0);
+        model.add_hop(t3,0,1,&array![-1,1],0);
+        model.add_hop(t3,0,1,&array![-1,-1],0);
         let nk:usize=1001;
         let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[0.0,0.0]];
         let path=arr2(&path);
@@ -2325,7 +2632,7 @@ mod tests {
         let (eval,evec)=super_model.solve_all_parallel(&k_vec);
         //let label=vec!["G","X","M","Y","G"];
         let label=vec!["G","M","G"];
-        zig_model.show_band(&path,&label,nk,"tests/graphene");
+        zig_model.show_band(&path,&label,nk,"tests/graphene_zig");
     }
 
     #[test]
@@ -2339,22 +2646,22 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,norb,lat,orb,true,None,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
         model.set_onsite(arr1(&[delta,-delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
-            model.set_hop(t,0,1,R,0);
+            model.set_hop(t,0,1,&R,0);
         }
         let R0:Array2::<isize>=arr2(&[[1,0],[-1,1],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
-            model.set_hop(soc*li,0,0,R,3);
+            model.set_hop(soc*li,0,0,&R,3);
         }
         let R0:Array2::<isize>=arr2(&[[-1,0],[1,-1],[0,1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
-            model.set_hop(soc*li,1,1,R,3);
+            model.set_hop(soc*li,1,1,&R,3);
         }
         let nk:usize=1001;
         let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
