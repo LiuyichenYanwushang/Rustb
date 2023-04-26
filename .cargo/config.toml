@@ -2,4 +2,4 @@
 rustdocflags = [ "--html-in-header", "./katex/docs-header.html" ]
 
 [alias]
-mydoc=["doc","--open","--no-deps"]
+mydoc=["doc","--open","--no-deps","--document-private-items","--examples"]

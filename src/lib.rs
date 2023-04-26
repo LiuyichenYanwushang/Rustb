@@ -9,6 +9,8 @@ use ndarray_linalg::conjugate;
 use rayon::prelude::*;
 use std::io::Write;
 use std::fs::File;
+use std::ops::AddAssign;
+use std::ops::MulAssign;
 /// This cate is used to perform various calculations on the TB model, currently including:
 ///
 /// 1: Calculate the band structure
@@ -866,8 +868,8 @@ impl Model{
                 let mut UU=Array2::from_diag(&UU); //将其化为矩阵
                 let A=rk.slice(s![i,..,..]).to_owned()-UU;
                 let A=comm(&hamk,&A)*Complex::i();
-                let vv=v.slice(s![i,..,..]).to_owned().clone();
-                v.slice_mut(s![i,..,..]).assign(&(vv+A));
+                //let vv=v.slice(s![i,..,..]).to_owned().clone();
+                v.slice_mut(s![i,..,..]).add_assign(&A);
             }
         }
         v
@@ -971,22 +973,27 @@ impl Model{
         if num<1{
             panic!("Wrong, the num={} is less than 1",num);
         }
+        if dir> self.dim_r{
+            panic!("Wrong, the dir is larger than dim_r");
+        }
         let mut new_orb=Array2::<f64>::zeros((self.norb*num,self.dim_r));//定义一个新的轨道
         let mut new_atom=Array2::<f64>::zeros((self.natom*num,self.dim_r));//定义一个新的原子
         let new_norb=self.norb*num;
         let new_nsta=self.nsta*num;
-        let new_natom=self.nsta*num;
+        let new_natom=self.natom*num;
         let mut new_atom_list:Vec<usize>=Vec::new();
         let mut new_lat=self.lat.clone();
         new_lat.row_mut(dir).assign(&(self.lat.row(dir).to_owned()*(num as f64)));
         for i in 0..num{
             for n in 0..self.norb{
                 let mut use_orb=self.orb.row(n).to_owned();
+                use_orb[[dir]]+=i as f64;
                 use_orb[[dir]]=use_orb[[dir]]/(num as f64);
                 new_orb.row_mut(i*self.norb+n).assign(&use_orb);
             }
             for n in 0..self.natom{
                 let mut use_atom=self.atom.row(n).to_owned();
+                use_atom[[dir]]+=i as f64;
                 use_atom[[dir]]*=1.0/(num as f64);
                 new_atom.row_mut(i*self.natom+n).assign(&use_atom);
                 new_atom_list.push(self.atom_list[n]);
@@ -1130,17 +1137,17 @@ impl Model{
                     }
                     if R_exist{
                         let index=index_R(&new_hamR,&ind_R);
-                        let addham=new_ham.slice(s![index,..,..]).to_owned();
-                        new_ham.slice_mut(s![index,..,..]).assign(&(addham+use_ham));
-                        let addr=new_rmatrix.slice(s![index,..,..,..]).to_owned();
-                        new_rmatrix.slice_mut(s![index,..,..,..]).assign(&(addr+use_rmatrix));
+                        //let addham=new_ham.slice(s![index,..,..]).to_owned();
+                        new_ham.slice_mut(s![index,..,..]).add_assign(&use_ham);
+                        //let addr=new_rmatrix.slice(s![index,..,..,..]).to_owned();
+                        new_rmatrix.slice_mut(s![index,..,..,..]).add_assign(&use_rmatrix);
                     }else if negative_R_exist{
                         let index=index_R(&new_hamR,&negative_R);
-                        let addham=new_ham.slice(s![index,..,..]).to_owned();
-                        new_ham.slice_mut(s![index,..,..]).assign(&(addham+use_ham.t().map(|x| x.conj())));
-                        let mut addr=new_rmatrix.slice(s![index,..,..,..]).to_owned();
+                        //let addham=new_ham.slice(s![index,..,..]).to_owned();
+                        new_ham.slice_mut(s![index,..,..]).add_assign(&use_ham.t().map(|x| x.conj()));
+                        //let mut addr=new_rmatrix.slice(s![index,..,..,..]).to_owned();
                         use_rmatrix.swap_axes(1,2);
-                        new_rmatrix.slice_mut(s![index,..,..,..]).assign(&(addr+use_rmatrix.map(|x| x.conj())));
+                        new_rmatrix.slice_mut(s![index,..,..,..]).add_assign(&use_rmatrix.map(|x| x.conj()));
                     }else{
                         new_ham.push(Axis(0),use_ham.view());
                         new_hamR.push(Axis(0),ind_R.view());
@@ -1166,6 +1173,360 @@ impl Model{
             rmatrix:new_rmatrix,
         };
         model
+    }
+
+    pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
+        //! 这个是用来且角态或者切棱态的
+
+        match self.dim_r{
+            3 => {
+                let dir =if dir == None{
+                    println!("Wrong!, the dir is None, but model's dimension is 3, here we use defult 0,1 direction");
+                    let dir=vec![0,1];
+                    dir
+                }else{
+                    dir.unwrap()
+                };
+                let (old_model,use_orb_item,use_atom_item)=match shape{
+                    3 =>{
+                        let model_1=self.cut_piece(num+1,dir[0]);
+                        let model_2=model_1.cut_piece(num+1,dir[1]);
+                        let mut use_atom_item=Vec::<usize>::new();
+                        let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
+                        let mut a:usize=0;
+                        for i in 0..model_2.natom{
+                            let atom_position=model_2.atom.row(i).to_owned();
+                            if atom_position[[dir[0]]]+atom_position[[dir[1]]] > (num as f64)/(num as f64+1.0) {
+                                a+=model_2.atom_list[i];
+                            }else{
+                                use_atom_item.push(i);
+                                for i in 0..model_2.atom_list[i]{
+                                    use_orb_item.push(a);
+                                    a+=1;
+                                }
+                            }
+                        }
+                        (model_2,use_orb_item,use_atom_item)
+                    },
+                    4 => {
+                        let model_1=self.cut_piece(num+1,dir[0]);
+                        let model_2=model_1.cut_piece(num+1,dir[1]);
+                        let mut use_atom_item:Vec<usize>=Vec::new();
+                        let mut use_orb_item:Vec<usize>=Vec::new();//这个是确定要保留哪些轨道
+                        let mut a:usize=0;
+                        for i in 0..model_2.natom{
+                            let atom_position=model_2.atom.row(i).to_owned();
+                            if atom_position[[dir[1]]]> (num as f64)/(num as f64+1.0) 
+                                || atom_position[[dir[1]]]> (num as f64)/(num as f64+1.0)  {
+                                a+=model_2.atom_list[i];
+                            }else{
+                                use_atom_item.push(i);
+                                for i in 0..model_2.atom_list[i]{
+                                    use_orb_item.push(a);
+                                    a+=1;
+                                }
+                            }
+                        }
+                        (model_2,use_orb_item,use_atom_item)
+                    },
+                    6 => {
+                        let model_1=self.cut_piece(2*num,dir[0]);
+                        let model_2=model_1.cut_piece(2*num,dir[1]);
+                        let mut use_atom_item=Vec::<usize>::new();
+                        let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
+                        let mut a:usize=0;
+                        for i in 0..model_2.natom{
+                            let atom_position=model_2.atom.row(i).to_owned();
+                            if (atom_position[[1]]-atom_position[[dir[0]]] + 0.5 < 0.0) || (atom_position[[dir[0]]]-atom_position[[1]] + 0.5 < 0.0) {
+                                a+=model_2.atom_list[i];
+                            }else{
+                                use_atom_item.push(i);
+                                for i in 0..model_2.atom_list[i]{
+                                    use_orb_item.push(a);
+                                    a+=1;
+                                }
+                            }
+                        }
+                        (model_2,use_orb_item,use_atom_item)
+                    },
+                    8 => {
+                        let model_1=self.cut_piece(2*num,dir[0]);
+                        let model_2=model_1.cut_piece(2*num,dir[1]);
+                        let mut use_atom_item=Vec::<usize>::new();
+                        let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
+                        let mut a:usize=0;
+                        for i in 0..model_2.natom{
+                            let atom_position=model_2.atom.row(i).to_owned();
+                            if (atom_position[[dir[1]]]-atom_position[[dir[0]]] + 0.5 < 0.0) || 
+                                (atom_position[[dir[0]]]-atom_position[[dir[1]]] + 0.5 < 0.0) ||
+                                    (atom_position[[dir[1]]]+atom_position[[dir[0]]] < 0.5) || 
+                                    (atom_position[[dir[1]]]-atom_position[[dir[0]]] > 0.5) {
+                                a+=model_2.atom_list[i];
+                            }else{
+                                use_atom_item.push(i);
+                                for i in 0..model_2.atom_list[i]{
+                                    use_orb_item.push(a);
+                                    a+=1;
+                                }
+                            }
+                        }
+                        (model_2,use_orb_item,use_atom_item)
+                    },
+                    _=>{
+                        panic!("Wrong, the shape only can be 3,4, 6,8");
+                        todo!();
+                    }
+                };
+                let natom=use_atom_item.len();
+                let norb=use_orb_item.len();
+                let mut new_atom=Array2::<f64>::zeros((natom,self.dim_r));
+                let mut new_atom_list=Vec::<usize>::new();
+                let mut new_orb=Array2::<f64>::zeros((norb,self.dim_r));
+                for (i,use_i) in use_atom_item.iter().enumerate(){
+                    new_atom.row_mut(i).assign(&old_model.atom.row(*use_i));
+                    new_atom_list.push(old_model.atom_list[*use_i]);
+                    new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
+                }
+                let mut new_model=Model::tb_model(3,old_model.lat,new_orb,self.spin,Some(new_atom),Some(new_atom_list));
+                let n_R=new_model.hamR.len_of(Axis(0));
+                let mut new_ham=Array2::<Complex<f64>>::zeros((n_R,new_model.nsta,new_model.nsta));
+                let mut new_hamR=Array2::<isize>::zeros((0,self.dim_r));
+                let norb=new_model.norb;
+
+                if self.spin{
+                    let norb2=old_model.norb;
+                    for (r,R) in old_model.hamR.rows().enumerate(){
+                        new_hamR.push_row(R);
+                        for (i,use_i) in use_orb_item.iter().enumerate(){
+                            for (j,use_j) in use_orb_item.iter().enumerate(){
+                                new_ham[[r,i,j]]=old_model.ham[[r,use_i,use_j]];
+                                new_ham[[r,i+norb,j+norb]]=old_model.ham[[r,use_i+norb2,use_j+norb2]];
+                                new_ham[[r,i+norb,j]]=old_model.ham[[r,use_i+norb2,use_j]];
+                                new_ham[[r,i,j+norb]]=old_model.ham[[r,use_i,use_j+norb2]];
+                            }
+                        }
+                    }
+                }else{
+                    for (r,R) in old_model.hamR.rows().enumerate(){
+                        new_hamR.push_row(R);
+                        for (i,use_i) in use_orb_item.iter().enumerate(){
+                            for (j,use_j) in use_orb_item.iter().enumerate(){
+                                new_ham[[r,i,j]]=old_model.ham[[r,use_i,use_j]];
+                            }
+                        }
+                    }
+                }
+                new_model.ham=new_ham;
+                new_model.hamR=new_hamR;
+                if self.rmatrix.len_of(Axis(0))==1{
+                    for r in self.dim_r{
+                        let mut use_rmatrix=Array2::<Complex<f64>>::zeros((norb,norb));
+                        for i in 0..norb{
+                            use_rmatrix[[i,i]]=new_model.orb[[r,i]];
+                        }
+                        new_model.rmatrix.slice_mut(s![0,r,..,..]).assign(&use_rmatrix);
+                    }
+                }else{
+                    let mut new_rmatrix=Array4::<Complex<f64>>::zeros((n_R,self.dim_r,new_model.nsta,new_model.nsta));
+                    if old_model.spin{
+                        let norb2=old_model.norb;
+                        for r in 0..n_R{
+                            for dim in 0..self.dim_r{
+                                for (i,use_i) in use_orb_item.iter().enumerate(){
+                                    for (j,use_j) in use_orb_item.iter().enumerate(){
+                                        new_rmatrix[[r,dim,i,j]]=old_model.rmatrix[[r,dim,use_i,use_j]];
+                                        new_rmatrix[[r,dim,i+norb,j+norb]]=old_model.rmatrix[[r,dim,use_i+norb2,use_j+norb2]];
+                                        new_rmatrix[[r,dim,i+norb,j]]=old_model.rmatrix[[r,dim,use_i+norb2,use_j]];
+                                        new_rmatrix[[r,dim,i,j+norb]]=old_model.rmatrix[[r,dim,use_i,use_j+norb2]];
+                                    }
+                                }
+                            }
+                        }
+                    }else{
+                        for r in 0..n_R{
+                            for dim in 0..self.dim_r{
+                                for (i,use_i) in use_orb_item.iter().enumerate(){
+                                    for (j,use_j) in use_orb_item.iter().enumerate(){
+                                        new_rmatrix[[r,dim,i,j]]=old_model.rmatrix[[r,dim,use_i,use_j]];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    new_model.rmatrix=new_rmatrix;
+                }
+                return new_model;
+            }
+            2=>{
+                if dir != None{
+                    println!("Wrong!, the dimension of model is 2, but the dir is not None, you should give None!, here we use 0,1 direction");
+                }
+                let (old_model,use_orb_item,use_atom_item)=match shape{
+                    3 =>{
+                        let model_1=self.cut_piece(num+1,0);
+                        let model_2=model_1.cut_piece(num+1,1);
+                        let mut use_atom_item:Vec<usize>=Vec::new();
+                        let mut use_orb_item:Vec<usize>=Vec::new();//这个是确定要保留哪些轨道
+                        let mut a:usize=0;
+                        for i in 0..model_2.natom{
+                            let atom_position=model_2.atom.row(i).to_owned();
+                            if atom_position[[0]]+atom_position[[1]] > (num as f64)/(num as f64+1.0) {
+                                a+=model_2.atom_list[i];
+                            }else{
+                                use_atom_item.push(i);
+                                for i in 0..model_2.atom_list[i]{
+                                    use_orb_item.push(a);
+                                    a+=1;
+                                }
+                            }
+                        }
+                        (model_2,use_orb_item,use_atom_item)
+                    },
+                    4 => {
+                        let model_1=self.cut_piece(num+1,0);
+                        let model_2=model_1.cut_piece(num+1,1);
+                        let mut use_atom_item=Vec::<usize>::new();
+                        let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
+                        let mut a:usize=0;
+                        for i in 0..model_2.natom{
+                            let atom_position=model_2.atom.row(i).to_owned();
+                            if atom_position[[1]]> (num as f64)/(num as f64+1.0) 
+                                || atom_position[[1]]> (num as f64)/(num as f64+1.0)  {
+                                a+=model_2.atom_list[i];
+                            }else{
+                                use_atom_item.push(i);
+                                for i in 0..model_2.atom_list[i]{
+                                    use_orb_item.push(a);
+                                    a+=1;
+                                }
+                            }
+                        }
+                        (model_2,use_orb_item,use_atom_item)
+                    },
+                    6 => {
+                        let model_1=self.cut_piece(2*num,0);
+                        let model_2=model_1.cut_piece(2*num,1);
+                        let mut use_atom_item=Vec::<usize>::new();
+                        let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
+                        let mut a:usize=0;
+                        for i in 0..model_2.natom{
+                            let atom_position=model_2.atom.row(i).to_owned();
+                            if (atom_position[[0]] > 0.5 && atom_position[[1]]-atom_position[[0]] + 0.5 < 0.0) || (atom_position[[1]] > 0.5 && atom_position[[0]]-atom_position[[1]] + 0.5 < 0.0) {
+                                a+=model_2.atom_list[i];
+                            }else{
+                                use_atom_item.push(i);
+                                for i in 0..model_2.atom_list[i]{
+                                    use_orb_item.push(a);
+                                    a+=1;
+                                }
+                            }
+                        }
+                        (model_2,use_orb_item,use_atom_item)
+                    },
+                    8 => {
+                        let model_1=self.cut_piece(2*num,0);
+                        let model_2=model_1.cut_piece(2*num,1);
+                        let mut use_atom_item=vec::<usize>::new();
+                        let mut use_orb_item=vec::<usize>::new();//这个是确定要保留哪些轨道
+                        let mut a:usize=0;
+                        for i in 0..model_2.natom{
+                            let atom_position=model_2.atom.row(i).to_owned();
+                            if (atom_position[[1]]-atom_position[[0]] + 0.5 < 0.0) || 
+                                (atom_position[[0]]-atom_position[[1]] + 0.5 < 0.0) ||
+                                    (atom_position[[1]]+atom_position[[0]] < 0.5) || 
+                                    (atom_position[[1]]-atom_position[[0]] > 0.5) {
+                                a+=model_2.atom_list[i];
+                            }else{
+                                use_atom_item.push(i);
+                                for i in 0..model_2.atom_list[i]{
+                                    use_orb_item.push(a);
+                                    a+=1;
+                                }
+                            }
+                        }
+                        (model_2,use_orb_item,use_atom_item)
+                    },
+                    _=>{
+                        panic!("Wrong, the shape only can be 3,4, 6,8");
+                        todo!();
+                    }
+                };
+                let natom=use_atom_item.len();
+                let norb=use_orb_item.len();
+                let mut new_atom=Array2::<f64>::zeros((natom,self.dim_r));
+                let mut new_atom_list=Vec::<usize>::new();
+                let mut new_orb=Array2::<f64>::zeros((norb,self.dim_r));
+                for (i,use_i) in use_atom_item.iter().enumerate(){
+                    new_atom.row_mut(i).assign(&old_model.atom.row(*use_i));
+                    new_atom_list.push(old_model.atom_list[*use_i]);
+                    new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
+                }
+                let mut new_model=Model::tb_model(3,old_model.lat,new_orb,self.spin,Some(new_atom),Some(new_atom_list));
+                let n_R=new_model.hamR.len_of(Axis(0));
+                let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta,new_model.nsta));
+                let mut new_hamR=Array2::<isize>::zeros((0,self.dim_r));
+                let norb=new_model.norb;
+
+                if self.spin{
+                    let norb2=old_model.norb;
+                    for (i,use_i) in use_orb_item.iter().enumerate(){
+                        for (j,use_j) in use_orb_item.iter().enumerate(){
+                            new_ham[[0,i,j]]=old_model.ham[[0,use_i,use_j]];
+                            new_ham[[0,i+norb,j+norb]]=old_model.ham[[0,use_i+norb2,use_j+norb2]];
+                            new_ham[[0,i+norb,j]]=old_model.ham[[0,use_i+norb2,use_j]];
+                            new_ham[[0,i,j+norb]]=old_model.ham[[0,use_i,use_j+norb2]];
+                        }
+                    }
+                }else{
+                    for (i,use_i) in use_orb_item.iter().enumerate(){
+                        for (j,use_j) in use_orb_item.iter().enumerate(){
+                            new_ham[[0,i,j]]=old_model.ham[[0,use_i,use_j]];
+                        }
+                    }
+                }
+                new_model.ham=new_ham;
+                new_model.hamR=new_hamR;
+                if self.rmatrix.len_of(Axis(0))==1{
+                    for r in 0..self.dim_r{
+                        let mut use_rmatrix=Array2::<Complex<f64>>::zeros((norb,norb));
+                        for i in 0..norb{
+                            use_rmatrix[[i,i]]=Complex::new(new_model.orb[[r,i]],0.0);
+                        }
+                        new_model.rmatrix.slice_mut(s![0,r,..,..]).assign(&use_rmatrix);
+                    }
+                }else{
+                    let mut new_rmatrix=Array4::<Complex<f64>>::zeros((n_R,self.dim_r,new_model.nsta,new_model.nsta));
+                    if old_model.spin{
+                        let norb2=old_model.norb;
+                        for dim in 0..self.dim_r{
+                            for (i,use_i) in use_orb_item.iter().enumerate(){
+                                for (j,use_j) in use_orb_item.iter().enumerate(){
+                                    new_rmatrix[[0,dim,i,j]]=old_model.rmatrix[[0,dim,use_i,use_j]];
+                                    new_rmatrix[[0,dim,i+norb,j+norb]]=old_model.rmatrix[[0,dim,use_i+norb2,use_j+norb2]];
+                                    new_rmatrix[[0,dim,i+norb,j]]=old_model.rmatrix[[0,dim,use_i+norb2,use_j]];
+                                    new_rmatrix[[0,dim,i,j+norb]]=old_model.rmatrix[[0,dim,use_i,use_j+norb2]];
+                                }
+                            }
+                        }
+                    }else{
+                        for dim in 0..self.dim_r{
+                            for (i,use_i) in use_orb_item.iter().enumerate(){
+                                for (j,use_j) in use_orb_item.iter().enumerate(){
+                                    new_rmatrix[[0,dim,i,j]]=old_model.rmatrix[[0,dim,use_i,use_j]];
+                                }
+                            }
+                        }
+                    }
+                    new_model.rmatrix=new_rmatrix;
+                }
+                return new_model;
+            },
+            _=>{
+                panic!("Wrong, only dim_r=2,3 can using this function!");
+                todo!();
+            }
+        }
+
     }
 
 
@@ -1194,9 +1555,8 @@ impl Model{
 
         //开始构建新的轨道位置和原子位置
         let mut use_orb=self.orb.dot(&U_inv);
-        let mut use_atom=self.atom.dot(&U_inv);
+        let use_atom=self.atom.dot(&U_inv);
         let mut orb_list:Vec<usize>=Vec::new();
-        //let mut orb_list_R=Array2::<isize>::zeros((0,self.dim_r));
         let mut new_orb=Array2::<f64>::zeros((0,self.dim_r));
         let mut new_atom=Array2::<f64>::zeros((0,self.dim_r));
         let mut new_atom_list:Vec<usize>=Vec::new();//新的模型的 atom_list
@@ -1212,7 +1572,10 @@ impl Model{
                     for j in -U_det..U_det{
                         for k in -U_det..U_det{
                             for n in 0..self.natom{
-                                let mut atoms=use_atom.row(n).to_owned()+(i as f64)*U_inv.row(0).to_owned()+(j as f64)*U_inv.row(1).to_owned()+(k as f64)*U_inv.row(2).to_owned(); //原子的位置在新的坐标系下的坐标
+                                let mut atoms=use_atom.row(n).to_owned()
+                                    +(i as f64)*U_inv.row(0).to_owned()
+                                    +(j as f64)*U_inv.row(1).to_owned()
+                                    +(k as f64)*U_inv.row(2).to_owned(); //原子的位置在新的坐标系下的坐标
                                 if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
                                     new_atom.push_row(atoms.view()); 
                                     new_atom_list.push(self.atom_list[n]);
@@ -1233,7 +1596,9 @@ impl Model{
                 for i in -U_det..U_det{
                     for j in -U_det..U_det{
                         for n in 0..self.natom{
-                            let mut atoms=use_atom.row(n).to_owned()+(i as f64)*U_inv.row(0).to_owned()+(j as f64)*U_inv.row(1).to_owned(); //原子的位置在新的坐标系下的坐标
+                            let mut atoms=use_atom.row(n).to_owned()
+                                +(i as f64)*U_inv.row(0).to_owned()
+                                +(j as f64)*U_inv.row(1).to_owned(); //原子的位置在新的坐标系下的坐标
                             if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
                                 new_atom.push_row(atoms.view()); 
                                 new_atom_list.push(self.atom_list[n]);
@@ -1545,6 +1910,8 @@ impl Model{
         };
         model
     }
+    pub fn shift_to_zero(&mut self){
+    }
     #[allow(non_snake_case)]
     pub fn dos(&self,k_mesh:&Array1::<usize>,E_min:f64,E_max:f64,E_n:usize,sigma:f64)->(Array1::<f64>,Array1::<f64>){
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
@@ -1589,18 +1956,15 @@ impl Model{
                 let j=J.slice(s![i,..,..]).to_owned();
                 let j=anti_comm(&X,&j)/2.0; //这里做反对易
                 J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
-                let v0=v.slice(s![i,..,..]).to_owned();
-                v.slice_mut(s![i,..,..]).assign(&(v0*dir_2[[i]]));
+                v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
             }
         }else{ 
             if spin !=0{
                 println!("Warning, the model haven't got spin, so the spin input will be ignord");
             }
             for i in 0..self.dim_r{
-                let j=J.slice(s![i,..,..]).to_owned();
-                J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
-                let v0=v.slice(s![i,..,..]).to_owned();
-                v.slice_mut(s![i,..,..]).assign(&(v0*dir_2[[i]]));
+                J.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_1[[i]],0.0));
+                v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
             }
         };
 
@@ -1645,18 +2009,15 @@ impl Model{
                 let j=J.slice(s![i,..,..]).to_owned();
                 let j=anti_comm(&X,&j)/2.0; //这里做反对易
                 J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
-                let v0=v.slice(s![i,..,..]).to_owned();
-                v.slice_mut(s![i,..,..]).assign(&(v0*dir_2[[i]]));
+                v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
             }
         }else{ 
             if spin !=0{
                 println!("Warning, the model haven't got spin, so the spin input will be ignord");
             }
             for i in 0..self.dim_r{
-                let j=J.slice(s![i,..,..]).to_owned();
-                J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
-                let v0=v.slice(s![i,..,..]).to_owned();
-                v.slice_mut(s![i,..,..]).assign(&(v0*dir_2[[i]]));
+                J.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_1[[i]],0.0));
+                v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
             }
         };
 
@@ -1794,18 +2155,15 @@ impl Model{
                 let j=J.slice(s![i,..,..]).to_owned();
                 let j=anti_comm(&X,&j)/2.0; //这里做反对易
                 J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
-                let v0=v.slice(s![i,..,..]).to_owned();
-                v.slice_mut(s![i,..,..]).assign(&(v0*dir_2[[i]]));
+                v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
             }
         }else{ 
             if spin !=0{
                 println!("Warning, the model haven't got spin, so the spin input will be ignord");
             }
             for i in 0..self.dim_r{
-                let j=J.slice(s![i,..,..]).to_owned();
-                J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
-                let v0=v.slice(s![i,..,..]).to_owned();
-                v.slice_mut(s![i,..,..]).assign(&(v0*dir_2[[i]]));
+                J.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_1[[i]],0.0));
+                v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
             }
         };
         //开始计算速度的偏导项
@@ -2191,6 +2549,10 @@ impl Model{
         fg.show();
         Ok(())
     }
+    /*
+    pub fn versulize(&self,dir_1:usize,dir_2:usize,filename:&str,eigenval:Option<Array1<f64>>){
+    }
+    */
     #[allow(non_snake_case)]
     pub fn from_hr(path:&str,file_name:&str,zero_energy:f64)->Model{
         use std::io::BufReader;
@@ -2349,13 +2711,11 @@ impl Model{
                 }
             }
         }
-        for name in atom_name.iter(){
+        for (i,name) in atom_name.iter().enumerate(){
             for (j,j_name) in proj_name.iter().enumerate(){
                 if j_name==name{
                     atom_list.push(proj_list[j]);
-                    println!("{}",j_name);
-                    println!("{}",atom_pos.row(j));
-                    atom.push_row(atom_pos.row(j));
+                    atom.push_row(atom_pos.row(i));
                     natom+=1;
                 }
             }
@@ -2375,7 +2735,6 @@ impl Model{
         //let nsta=reads[0].trim().parse::<usize>().unwrap()-natom;
         let norb=if spin{nsta/2}else{nsta};
         let mut orb=Array2::<f64>::zeros((norb,3));
-        let mut atom=Array2::<f64>::zeros((natom,3));
         for i in 0..norb{
             let a:Vec<&str>=reads[i+2].trim().split_whitespace().collect();
             orb[[i,0]]=a[1].parse::<f64>().unwrap();
@@ -2564,9 +2923,7 @@ mod tests {
         let lat_inv=model.lat.inv().unwrap();
         for i in 0..model.dim_r{
             for j in 0..model.dim_r{
-                let a=v0.slice(s![i,..,..]).to_owned();
-                let b=a+v.slice(s!(j,..,..)).to_owned()*lat_inv[[j,i]];
-                v0.slice_mut(s![i,..,..]).assign(&b);//将位置矩阵变成相对坐标形式
+                v0.slice_mut(s![i,..,..]).add_assign(&(v.slice(s!(j,..,..)).to_owned()*lat_inv[[j,i]]));//将位置矩阵变成相对坐标形式
             }
             let vd=v0.slice(s![i,..,..]).to_owned();
             let vd=evec_conj.dot(&(vd.dot(&evec.clone().reversed_axes())));
@@ -2641,7 +2998,10 @@ mod tests {
         let delta=0.7;
         let t=-1.0+0.0*li;
         let rashba=0.0+0.0*li;
-        let soc=-1.0+0.0*li;
+        let alter=0.0;
+        //let soc=-1.0+0.0*li;
+        let soc=0.24+0.0*li;
+        let rashba=0.0+0.0*li;
         let dim_r:usize=2;
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
@@ -2663,6 +3023,9 @@ mod tests {
             let R=R.to_owned();
             model.set_hop(soc*li,1,1,&R,3);
         }
+        //加上altermagnetic 项
+        //加入的项为 $S_y \sg_y$
+
         let nk:usize=1001;
         let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
         let path=arr2(&path);
@@ -2698,5 +3061,15 @@ mod tests {
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}",conductivity/(2.0*PI));
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
+    }
+
+    fn altermagnetic_8c(){
+
+        let M=1.0;
+        let tx=0.5;
+        let t1=0.1;
+        let alter=0.2;
+        let lat=arr2(&[[1.0,0.0],[0.0,1.0]]);
+        let orb=arr2(&[[0.0,0.0],[0.5,0.5]]);
     }
 }

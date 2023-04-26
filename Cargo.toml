@@ -11,5 +11,14 @@ codegen-units = 1
 [dependencies]
 ndarray={ version="*", features = ["rayon","blas","matrixmultiply-threading"] }
 num-complex="*"
-ndarray-linalg={version="*",features=["intel-mkl"]}
+ndarray-linalg={version="*",features=["intel-mkl-static"]}
 rayon="*"
+gnuplot="*"
+
+[[example]]
+name="bismuthene"
+path="examples/bismuthene.rs"
+
+
+[build]
+rustflags = ["-Ctarget-feature=+avx2,+fma"]
