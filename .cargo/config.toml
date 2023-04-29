@@ -1,5 +1,5 @@
 [build]
-rustdocflags = [ "--html-in-header", "./katex/docs-header.html" ]
+rustdocflags = [ "--html-in-header", "./docs-header.html" ]
 
 [alias]
-mydoc=["doc","--open","--no-deps","--document-private-items","--examples"]
+mydoc=["doc","--open","--no-deps"]

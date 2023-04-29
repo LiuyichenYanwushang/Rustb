@@ -370,6 +370,11 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
     }
 }
 
+/*
+pub fn adapt_Fermi_kpath(kmesh{
+}
+*/
+
 
 #[allow(non_snake_case)]
 impl Model{
@@ -529,13 +534,13 @@ impl Model{
             }else{
                 self.ham[[index,ind_i,ind_j]]=tmp;
             }
-            if index==0 && ind_i != ind_j{
+            if negative_R_exist && ind_i != ind_j{
                 if self.spin{
                     match pauli{
                         0=>{self.ham[[0,ind_j,ind_i]]=tmp.conj(); self.ham[[0,ind_j+self.norb,ind_i+self.norb]]=tmp.conj();},
-                        1=>{self.ham[[0,ind_j,ind_i+self.norb]]=tmp.conj(); self.ham[[0,ind_j+self.norb,ind_i]]=tmp.conj();},
-                        2=>{self.ham[[0,ind_j,ind_i+self.norb]]=tmp.conj()*Complex::<f64>::i(); self.ham[[0,ind_j+self.norb,ind_i]]=-tmp.conj()*Complex::<f64>::i();},
-                        3=>{self.ham[[0,ind_i,ind_j]]=tmp.conj(); self.ham[[0,ind_i+self.norb,ind_j+self.norb]]=-tmp.conj();},
+                        1=>{self.ham[[0,ind_j+self.norb,ind_i]]=tmp.conj(); self.ham[[0,ind_j,ind_i+self.norb]]=tmp.conj();},
+                        2=>{self.ham[[0,ind_j+self.norb,ind_i]]=tmp.conj()*Complex::<f64>::i(); self.ham[[0,ind_j,ind_i+self.norb]]=-tmp.conj()*Complex::<f64>::i();},
+                        3=>{self.ham[[0,ind_j,ind_i]]=tmp.conj(); self.ham[[0,ind_j+self.norb,ind_i+self.norb]]=-tmp.conj();},
                         _ => todo!()
                     }
                 }else{
@@ -554,8 +559,8 @@ impl Model{
                 match pauli{
                     0=>{self.ham[[index,ind_j,ind_i]]=tmp; self.ham[[index,ind_j+self.norb,ind_i+self.norb]]=tmp.conj();},
                     1=>{self.ham[[index,ind_j,ind_i+self.norb]]=tmp.conj(); self.ham[[index,ind_j+self.norb,ind_i]]=tmp.conj();},
-                    2=>{self.ham[[index,ind_j,ind_i+self.norb]]=tmp.conj()*Complex::<f64>::i(); self.ham[[index,ind_j+self.norb,ind_i]]=-tmp.conj()*Complex::<f64>::i();},
-                    3=>{self.ham[[index,ind_i,ind_j]]=tmp.conj(); self.ham[[index,ind_i+self.norb,ind_j+self.norb]]=-tmp.conj();},
+                    2=>{self.ham[[index,ind_j+self.norb,ind_i]]=tmp.conj()*Complex::<f64>::i(); self.ham[[index,ind_j,ind_i+self.norb]]=-tmp.conj()*Complex::<f64>::i();},
+                    3=>{self.ham[[index,ind_j,ind_i]]=tmp.conj(); self.ham[[index,ind_j+self.norb,ind_i+self.norb]]=-tmp.conj();},
                     _ => todo!()
                 }
             }else{
@@ -607,13 +612,13 @@ impl Model{
             }else{
                 self.ham[[index,ind_i,ind_j]]+=tmp;
             }
-            if index==0 && ind_i !=ind_j{
+            if negative_R_exist && ind_i !=ind_j{
                 if self.spin{
                     match pauli{
                         0=>{self.ham[[0,ind_j,ind_i]]+=tmp.conj(); self.ham[[0,ind_j+self.norb,ind_i+self.norb]]+=tmp.conj();},
                         1=>{self.ham[[0,ind_j,ind_i+self.norb]]+=tmp.conj(); self.ham[[0,ind_j+self.norb,ind_i]]+=tmp.conj();},
-                        2=>{self.ham[[0,ind_j,ind_i+self.norb]]+=tmp.conj()*Complex::<f64>::i(); self.ham[[0,ind_j+self.norb,ind_i]]-=tmp.conj()*Complex::<f64>::i();},
-                        3=>{self.ham[[0,ind_i,ind_j]]+=tmp.conj(); self.ham[[0,ind_i+self.norb,ind_j+self.norb]]-=tmp.conj();},
+                        2=>{self.ham[[0,ind_j+self.norb,ind_i]]+=tmp.conj()*Complex::<f64>::i(); self.ham[[0,ind_j,ind_i+self.norb]]-=tmp.conj()*Complex::<f64>::i();},
+                        3=>{self.ham[[0,ind_j,ind_i]]+=tmp.conj(); self.ham[[0,ind_j+self.norb,ind_i+self.norb]]-=tmp.conj();},
                         _ => todo!()
                     }
                 }else{
@@ -625,15 +630,12 @@ impl Model{
             }
         }else if negative_R_exist {
             let index=index_R(&self.hamR,&negative_R);
-            if self.ham[[index,ind_j,ind_i]]!=Complex::new(0.0,0.0){
-                println!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_j,ind_i]])
-            }
             if self.spin{
                 match pauli{
                     0=>{self.ham[[index,ind_j,ind_i]]+=tmp; self.ham[[index,ind_j+self.norb,ind_i+self.norb]]+=tmp.conj();},
                     1=>{self.ham[[index,ind_j,ind_i+self.norb]]+=tmp.conj(); self.ham[[index,ind_j+self.norb,ind_i]]+=tmp.conj();},
-                    2=>{self.ham[[index,ind_j,ind_i+self.norb]]+=tmp.conj()*Complex::<f64>::i(); self.ham[[index,ind_j+self.norb,ind_i]]-=tmp.conj()*Complex::<f64>::i();},
-                    3=>{self.ham[[index,ind_i,ind_j]]+=tmp.conj(); self.ham[[index,ind_i+self.norb,ind_j+self.norb]]-=tmp.conj();},
+                    2=>{self.ham[[index,ind_j+self.norb,ind_i]]+=tmp.conj()*Complex::<f64>::i(); self.ham[[index,ind_j,ind_i+self.norb]]-=tmp.conj()*Complex::<f64>::i();},
+                    3=>{self.ham[[index,ind_j,ind_i]]+=tmp.conj(); self.ham[[index,ind_j+self.norb,ind_i+self.norb]]-=tmp.conj();},
                     _ => todo!()
                 }
             }else{
@@ -1289,29 +1291,29 @@ impl Model{
                 }
                 let mut new_model=Model::tb_model(3,old_model.lat,new_orb,self.spin,Some(new_atom),Some(new_atom_list));
                 let n_R=new_model.hamR.len_of(Axis(0));
-                let mut new_ham=Array2::<Complex<f64>>::zeros((n_R,new_model.nsta,new_model.nsta));
+                let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta,new_model.nsta));
                 let mut new_hamR=Array2::<isize>::zeros((0,self.dim_r));
                 let norb=new_model.norb;
 
                 if self.spin{
                     let norb2=old_model.norb;
-                    for (r,R) in old_model.hamR.rows().enumerate(){
+                    for (r,R) in old_model.hamR.axis_iter(Axis(0)).enumerate(){
                         new_hamR.push_row(R);
                         for (i,use_i) in use_orb_item.iter().enumerate(){
                             for (j,use_j) in use_orb_item.iter().enumerate(){
-                                new_ham[[r,i,j]]=old_model.ham[[r,use_i,use_j]];
-                                new_ham[[r,i+norb,j+norb]]=old_model.ham[[r,use_i+norb2,use_j+norb2]];
-                                new_ham[[r,i+norb,j]]=old_model.ham[[r,use_i+norb2,use_j]];
-                                new_ham[[r,i,j+norb]]=old_model.ham[[r,use_i,use_j+norb2]];
+                                new_ham[[r,i,j]]=old_model.ham[[r,*use_i,*use_j]];
+                                new_ham[[r,i+norb,j+norb]]=old_model.ham[[r,*use_i+norb2,*use_j+norb2]];
+                                new_ham[[r,i+norb,j]]=old_model.ham[[r,*use_i+norb2,*use_j]];
+                                new_ham[[r,i,j+norb]]=old_model.ham[[r,*use_i,*use_j+norb2]];
                             }
                         }
                     }
                 }else{
-                    for (r,R) in old_model.hamR.rows().enumerate(){
+                    for (r,R) in old_model.hamR.axis_iter(Axis(0)).enumerate(){
                         new_hamR.push_row(R);
                         for (i,use_i) in use_orb_item.iter().enumerate(){
                             for (j,use_j) in use_orb_item.iter().enumerate(){
-                                new_ham[[r,i,j]]=old_model.ham[[r,use_i,use_j]];
+                                new_ham[[r,i,j]]=old_model.ham[[r,*use_i,*use_j]];
                             }
                         }
                     }
@@ -1319,10 +1321,10 @@ impl Model{
                 new_model.ham=new_ham;
                 new_model.hamR=new_hamR;
                 if self.rmatrix.len_of(Axis(0))==1{
-                    for r in self.dim_r{
+                    for r in 0..self.dim_r{
                         let mut use_rmatrix=Array2::<Complex<f64>>::zeros((norb,norb));
                         for i in 0..norb{
-                            use_rmatrix[[i,i]]=new_model.orb[[r,i]];
+                            use_rmatrix[[i,i]]=Complex::new(new_model.orb[[r,i]],0.0);
                         }
                         new_model.rmatrix.slice_mut(s![0,r,..,..]).assign(&use_rmatrix);
                     }
@@ -1334,10 +1336,10 @@ impl Model{
                             for dim in 0..self.dim_r{
                                 for (i,use_i) in use_orb_item.iter().enumerate(){
                                     for (j,use_j) in use_orb_item.iter().enumerate(){
-                                        new_rmatrix[[r,dim,i,j]]=old_model.rmatrix[[r,dim,use_i,use_j]];
-                                        new_rmatrix[[r,dim,i+norb,j+norb]]=old_model.rmatrix[[r,dim,use_i+norb2,use_j+norb2]];
-                                        new_rmatrix[[r,dim,i+norb,j]]=old_model.rmatrix[[r,dim,use_i+norb2,use_j]];
-                                        new_rmatrix[[r,dim,i,j+norb]]=old_model.rmatrix[[r,dim,use_i,use_j+norb2]];
+                                        new_rmatrix[[r,dim,i,j]]=old_model.rmatrix[[r,dim,*use_i,*use_j]];
+                                        new_rmatrix[[r,dim,i+norb,j+norb]]=old_model.rmatrix[[r,dim,*use_i+norb2,*use_j+norb2]];
+                                        new_rmatrix[[r,dim,i+norb,j]]=old_model.rmatrix[[r,dim,*use_i+norb2,*use_j]];
+                                        new_rmatrix[[r,dim,i,j+norb]]=old_model.rmatrix[[r,dim,*use_i,*use_j+norb2]];
                                     }
                                 }
                             }
@@ -1347,7 +1349,7 @@ impl Model{
                             for dim in 0..self.dim_r{
                                 for (i,use_i) in use_orb_item.iter().enumerate(){
                                     for (j,use_j) in use_orb_item.iter().enumerate(){
-                                        new_rmatrix[[r,dim,i,j]]=old_model.rmatrix[[r,dim,use_i,use_j]];
+                                        new_rmatrix[[r,dim,i,j]]=old_model.rmatrix[[r,dim,*use_i,*use_j]];
                                     }
                                 }
                             }
@@ -1426,8 +1428,8 @@ impl Model{
                     8 => {
                         let model_1=self.cut_piece(2*num,0);
                         let model_2=model_1.cut_piece(2*num,1);
-                        let mut use_atom_item=vec::<usize>::new();
-                        let mut use_orb_item=vec::<usize>::new();//这个是确定要保留哪些轨道
+                        let mut use_atom_item=Vec::<usize>::new();
+                        let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
                         let mut a:usize=0;
                         for i in 0..model_2.natom{
                             let atom_position=model_2.atom.row(i).to_owned();
@@ -1471,16 +1473,16 @@ impl Model{
                     let norb2=old_model.norb;
                     for (i,use_i) in use_orb_item.iter().enumerate(){
                         for (j,use_j) in use_orb_item.iter().enumerate(){
-                            new_ham[[0,i,j]]=old_model.ham[[0,use_i,use_j]];
-                            new_ham[[0,i+norb,j+norb]]=old_model.ham[[0,use_i+norb2,use_j+norb2]];
-                            new_ham[[0,i+norb,j]]=old_model.ham[[0,use_i+norb2,use_j]];
-                            new_ham[[0,i,j+norb]]=old_model.ham[[0,use_i,use_j+norb2]];
+                            new_ham[[0,i,j]]=old_model.ham[[0,*use_i,*use_j]];
+                            new_ham[[0,i+norb,j+norb]]=old_model.ham[[0,*use_i+norb2,*use_j+norb2]];
+                            new_ham[[0,i+norb,j]]=old_model.ham[[0,*use_i+norb2,*use_j]];
+                            new_ham[[0,i,j+norb]]=old_model.ham[[0,*use_i,*use_j+norb2]];
                         }
                     }
                 }else{
                     for (i,use_i) in use_orb_item.iter().enumerate(){
                         for (j,use_j) in use_orb_item.iter().enumerate(){
-                            new_ham[[0,i,j]]=old_model.ham[[0,use_i,use_j]];
+                            new_ham[[0,i,j]]=old_model.ham[[0,*use_i,*use_j]];
                         }
                     }
                 }
@@ -1501,10 +1503,10 @@ impl Model{
                         for dim in 0..self.dim_r{
                             for (i,use_i) in use_orb_item.iter().enumerate(){
                                 for (j,use_j) in use_orb_item.iter().enumerate(){
-                                    new_rmatrix[[0,dim,i,j]]=old_model.rmatrix[[0,dim,use_i,use_j]];
-                                    new_rmatrix[[0,dim,i+norb,j+norb]]=old_model.rmatrix[[0,dim,use_i+norb2,use_j+norb2]];
-                                    new_rmatrix[[0,dim,i+norb,j]]=old_model.rmatrix[[0,dim,use_i+norb2,use_j]];
-                                    new_rmatrix[[0,dim,i,j+norb]]=old_model.rmatrix[[0,dim,use_i,use_j+norb2]];
+                                    new_rmatrix[[0,dim,i,j]]=old_model.rmatrix[[0,dim,*use_i,*use_j]];
+                                    new_rmatrix[[0,dim,i+norb,j+norb]]=old_model.rmatrix[[0,dim,*use_i+norb2,*use_j+norb2]];
+                                    new_rmatrix[[0,dim,i+norb,j]]=old_model.rmatrix[[0,dim,*use_i+norb2,*use_j]];
+                                    new_rmatrix[[0,dim,i,j+norb]]=old_model.rmatrix[[0,dim,*use_i,*use_j+norb2]];
                                 }
                             }
                         }
@@ -1512,7 +1514,7 @@ impl Model{
                         for dim in 0..self.dim_r{
                             for (i,use_i) in use_orb_item.iter().enumerate(){
                                 for (j,use_j) in use_orb_item.iter().enumerate(){
-                                    new_rmatrix[[0,dim,i,j]]=old_model.rmatrix[[0,dim,use_i,use_j]];
+                                    new_rmatrix[[0,dim,i,j]]=old_model.rmatrix[[0,dim,*use_i,*use_j]];
                                 }
                             }
                         }
@@ -2122,6 +2124,7 @@ impl Model{
         }
         conductivity
     }
+
     ///这个方法用的是对费米分布的修正, 因为高阶的dipole 修正导致的非线性霍尔电导为 $$\sg_{\ap\bt\gm}=\int\dd\bm k\sum_n\p_\gm\ve_{n\bm k}\Og_{nn,\ap\bt}\lt\.\pdv{f_{\bm k}}{\ve}\rt\rvert_{E=\ve_{n\bm k}}.$$ 所以我们这里输出的是 
     ///$$\\mathcal D_{\ap\bt\gm}=\sum_n\p_\gm\ve_{n\bm k}\Og_{nn,\ap\bt}\lt\.\pdv{f_{\bm k}}{\ve}\rt\rvert_{E=\ve_{n\bm k}}.$$ 这里需要注意的一点是, 一般来说对于 $\p_\ap\ve_{\bm k}$, 需要用差分法来求解, 我这里提供了一个算法. 
     ///$$ \ve_{\bm k}=U^\dag H_{\bm k} U\Rightarrow \pdv{\ve_{\bm k}}{\bm k}=U^\dag\pdv{H_{\bm k}}{\bm k}U+\pdv{U^\dag}{\bm k} H_{\bm k}U+U^\dag H_{\bm k}\pdv{U}{\bm k}$$
@@ -2134,6 +2137,7 @@ impl Model{
     ///
     ///需要特别注意的是, 最好不要将温度设置为0, 因为这样只有能量完全等于费米能级的时候才会有贡献, 我这里设置的是能量和费米能级小于 $10^{-3}$ 的时候有贡献.
     ///还有一种选择, 就是当温度为0的时候, 虽然是表面积分, 但是可以将其化为体积分, 用的是高斯公式
+
     pub fn berry_curvature_dipole_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
         //我们首先求解 omega_n 和 U^\dag j
         let li:Complex<f64>=1.0*Complex::i();
@@ -2166,26 +2170,6 @@ impl Model{
                 v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
             }
         };
-        //开始计算速度的偏导项
-        /*
-        let mut D=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是求解本征值倒数的对易项
-        let mut v0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是速度项
-        for r in 0..self.dim_r{
-            let v1=v.slice(s![r,..,..]).to_owned();
-            let v1=evec_conj.clone().dot(&(v0.dot(&evec.clone().reversed_axes())));//变换到本征态为基函数
-            for i in 0..self.nsta{
-                for j in 0..self.nsta{
-                    if i != j{
-                        D[[i,j]]=v1[[i,j]]*dir_3[[r]]/(band[[j]]-band[[i]]);
-                    }
-                }
-            }
-            let vs=v1*dir_3[[r]];
-            v0=v0+vs;
-        }
-        let ve=Array2::<Complex<f64>>::from_diag(&band.map(|x| Complex::new(*x,0.0)));//将能带变成对角矩阵形式
-        let partial_ve:Array1::<f64>=(v0+comm(&ve,&D)).diag().map(|x| x.re);//关于速度的偏导项
-        */
         let mut v0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是速度项, 对应的dir_3 的速度
         for r in 0..self.dim_r{
             v0=v0+v.slice(s![r,..,..]).to_owned()*dir_3[[r]];
@@ -2212,7 +2196,6 @@ impl Model{
         //开始计算费米分布的函数
         let mut partial_f=Array1::<f64>::zeros(self.nsta);
         if T==0.0{
-            println!("you set temperature is zero, this may cause wrong, because no bands lie on the fermi_energy");
             for i in 0..self.nsta{
                 if (band[[i]]-mu).abs()<1e-3{
                     partial_f[[i]]=1.0;
@@ -2221,9 +2204,10 @@ impl Model{
         }else{
             let beta=1.0/(T*8.617e-5);
             let a:Array1::<f64>=((band-mu)*beta).map(|x| x.exp());
-            partial_f=(a.clone()/(1.0+a)).map(|x| x.powi(2))*beta;
+            let f=1.0/(1.0+a.clone());
+            partial_f=-beta*f.clone()*(1.0-f.clone());
         }
-        let omega=(partial_f*omega_n*partial_ve).sum();
+        let omega=(-partial_f*omega_n*partial_ve).sum();
         omega //最后得到的 D
     }
     pub fn berry_curvature_dipole(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->Array1::<f64>{
@@ -2256,15 +2240,15 @@ impl Model{
         //!其中 $$ G_{ij}=2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3} $$
         //!如果存在自旋, 即spin不等于0, 则还存在 $\p_{h_i} G_{jk}$ 项, 具体请看下面的非线性霍尔部分
         //!我们这里暂时不考虑磁场, 只考虑电场
-        //我们先求解G_{ij}
         let mut v:Array3::<Complex<f64>>=self.gen_v(&k_vec);//这是速度算符
-        let (band,evec)=self.solve_onek(&k_vec);
-        let evec_conj=evec.clone().map(|x| x.conj());
+        let (band,evec)=self.solve_onek(&k_vec);//能带和本征值
+        let evec_conj=evec.clone().map(|x| x.conj());//本征值的复共轭
         for i in 0..self.dim_r{
             let v_1=v.slice(s![i,..,..]).to_owned();
             let v_1=evec_conj.clone().dot(&(v_1.dot(&evec.clone().reversed_axes())));//变换到本征态基函数
             v.slice_mut(s![i,..,..]).assign(&v_1);//将 v 变换到以本征态为基底
         }
+        //现在速度算符已经是以本征态为基函数
         let mut v_1=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         let mut v_2=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         let mut v_3=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
@@ -2273,6 +2257,7 @@ impl Model{
             v_2=v_2.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_2[[i]],0.0);
             v_3=v_2.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_3[[i]],0.0);
         }
+        //三个方向的速度算符都得到了
         let mut U0=Array2::<f64>::zeros((self.nsta,self.nsta));
         for i in 0..self.nsta{
             for j in 0..self.nsta{
@@ -2283,10 +2268,15 @@ impl Model{
                 }
             }
         }
+        //这样U0[[i,j]]=1/(E_i-E_j), 这样就可以省略判断
 
         //开始计算能带的导数, 详细的公式请看 berry_curvature_dipole_onek 的公式
+        //其实就是速度算符的对角项
         //开始计算速度的偏导项, 这里偏导来自实空间
         let mut partial_ve=Array2::<f64>::zeros((self.dim_r,self.nsta));
+        let partial_ve_1=v_1.diag().map(|x| x.re);
+        let partial_ve_2=v_2.diag().map(|x| x.re);
+        let partial_ve_3=v_3.diag().map(|x| x.re);
         for r in 0..self.dim_r{
             let v0=v.slice(s![r,..,..]).to_owned();
             partial_ve.slice_mut(s![r,..]).assign(&v0.diag().map(|x| x.re));//速度算符的对角项
@@ -2296,7 +2286,6 @@ impl Model{
         let mut f=Array1::<f64>::zeros(self.nsta);//费米分布
         let mut partial_f=Array1::<f64>::zeros(self.nsta); //费米分布的偏导
         if T==0.0{
-            println!("you set temperature is zero, this may cause wrong, because no bands lie on the fermi_energy");
             for i in 0..self.nsta{
                 if (band[[i]]-mu).abs()<1e-3{
                     partial_f[[i]]=1.0;
@@ -2308,15 +2297,15 @@ impl Model{
         }else{
             let beta=1.0/(T*8.617e-5);
             let a:Array1::<f64>=((band.clone()-mu)*beta).map(|x| x.exp());
-            partial_f=(a.clone()/(1.0+a.clone())).map(|x| x.powi(2))*beta;
-            f=a.clone()/(1.0+a.clone());
+            f=1.0/(1.0+a.clone());
+            partial_f=-beta*f.clone()*(1.0-f.clone());
         }
         //开始最后的计算
         if self.spin{
             let mut S:Array2::<Complex<f64>>=Array2::eye(self.nsta);
             let li=Complex::<f64>::new(0.0,1.0);
             let pauli:Array2::<Complex<f64>>= match spin{
-                0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
+                0=> Array2::<Complex<f64>>::eye(2),
                 1=> arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0,
                 2=> arr2(&[[0.0+0.0*li,0.0-1.0*li],[0.0+1.0*li,0.0+0.0*li]])/2.0,
                 3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
@@ -2334,12 +2323,12 @@ impl Model{
             let G_23:Array1::<f64>={//用来计算  beta gamma 的 G 
                 let A=v_2.clone()*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
                 let G=A.dot(&v_3);
-                G.diag().map(|x| x.re)
+                G.diag().map(|x| 2.0*x.re)
             };
             let G_13_h:Array1::<f64>={//用来计算 alpha gamma 的 G 
                 let A=S_1.clone()*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
                 let G=A.dot(&v_3);
-                G.diag().map(|x| x.re)
+                G.diag().map(|x| 2.0*x.re)
             };
             //开始计算partial_s
             let partial_s_1=S_1.clone().diag().map(|x| x.re);
@@ -2351,32 +2340,26 @@ impl Model{
                 partial_s.slice_mut(s![r,..]).assign(&s0.diag().map(|x| x.re));//\p_i s算符的对角项
             }
             //开始计算partial G
-            let  partial_G:Array1::<f64>={
+            let partial_G:Array1::<f64>={
                 let mut A=Array1::<Complex<f64>>::zeros(self.nsta);//第一项
                 for i in 0..self.nsta{
                     for j in 0..self.nsta{
-                        if band[[i]]!=band[[j]]{
-                            A[[i]]+=3.0*(partial_s_1[[i]]-partial_s_1[[j]])*v_2[[i,j]]*v_3[[j,i]]/(band[[i]]-band[[j]]).powi(4);
-                        }
+                        A[[i]]+=3.0*(partial_s_1[[i]]-partial_s_1[[j]])*v_2[[i,j]]*v_3[[j,i]]*U0[[i,j]].powi(4);
                     }
                 }
-                let mut B=Array1::<Complex<f64>>::zeros(self.nsta);//第一项
+                let mut B=Array1::<Complex<f64>>::zeros(self.nsta);//第二项
                 for n in 0..self.nsta{
                     for n1 in 0..self.nsta{
                         for n2 in 0..self.nsta{
-                            if band[[n1]] != band[[n]] && band[[n1]] != band[[n]]{
-                                B[[n]]+=S_1[[n,n2]]*(v_2[[n2,n1]]*v_3[[n1,n]]+v_3[[n2,n1]]*v_2[[n1,n]])/((band[[n]]-band[[n1]]).powi(3)*(band[[n]]-band[[n2]]))
-                            }
+                            B[[n]]+=S_1[[n,n2]]*(v_2[[n2,n1]]*v_3[[n1,n]]+v_3[[n2,n1]]*v_2[[n1,n]])*U0[[n,n1]].powi(3)*U0[[n,n2]];
                         }
                     }
                 }
-                let mut C=Array1::<Complex<f64>>::zeros(self.nsta);//第一项
+                let mut C=Array1::<Complex<f64>>::zeros(self.nsta);//第三项
                 for n in 0..self.nsta{
                     for n1 in 0..self.nsta{
                         for n2 in 0..self.nsta{
-                            if band[[n1]] != band[[n]] && band[[n1]] != band[[n]]{
-                                C[[n]]+=S_1[[n1,n2]]*(v_2[[n2,n]]*v_3[[n,n1]]+v_3[[n2,n]]*v_2[[n,n1]])/((band[[n]]-band[[n1]]).powi(3)*(band[[n1]]-band[[n2]]))
-                            }
+                            C[[n]]+=S_1[[n1,n2]]*(v_2[[n2,n]]*v_3[[n,n1]]+v_3[[n2,n]]*v_2[[n,n1]])*U0[[n,n1]].powi(3)*U0[[n1,n2]];
                         }
                     }
                 }
@@ -2384,26 +2367,20 @@ impl Model{
             };
             //计算结束
             //开始最后的输出
-            return -(f*partial_G+partial_f*(partial_s_1*G_23+partial_s_2*G_13_h)).sum()/2.0
+            return -(f*partial_G+partial_f*(partial_s_1*G_23+partial_ve_2*G_13_h)).sum()/2.0
         }else{
             //开始计算 G_{ij}
             let G_23:Array1::<f64>={//用来计算  beta gamma 的 G 
                 let A=v_2*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
                 let G=A.dot(&v_3);
-                G.diag().map(|x| x.re)
+                G.diag().map(|x| 2.0*x.re)
             };
             let G_13:Array1::<f64>={//用来计算 alpha gamma 的 G 
                 let A=v_1*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
                 let G=A.dot(&v_3);
-                G.diag().map(|x| x.re)
+                G.diag().map(|x| 2.0*x.re)
             };
-            let mut pE_1=Array1::<f64>::zeros(self.nsta);//partial_alpha
-            let mut pE_2=Array1::<f64>::zeros(self.nsta);//partial_beta
-            for i in 0..self.dim_r{
-                pE_1=pE_1+partial_ve.slice(s![i,..]).to_owned()*dir_1[[i]];
-                pE_2=pE_2+partial_ve.slice(s![i,..]).to_owned()*dir_2[[i]];
-            }
-            return ((pE_1*G_23+pE_2*G_13)*partial_f).sum()
+            return ((partial_ve_1*G_23+partial_ve_2*G_13)*partial_f).sum()
         }
     }
     pub fn berry_connection_dipole(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->Array1<f64>{
@@ -2444,7 +2421,7 @@ impl Model{
         //!$$
         //!由于存在 $\pdv{f_{\bm k}}{\ve}$, 不建议将温度 T=0
         //!
-        //!可以考虑当 T=0 时候, 利用高斯公式, 将费米面内的部分进行积分, 得到精确解. 但是我现在还没办法很好的求解费米面, 所以暂时不考虑这个算法.而且对于二位体系, 公式还不一样, 还得分步讨论, 后面有时间再考虑这个程序.
+        //!可以考虑当 T=0 时候, 利用高斯公式, 将费米面内的部分进行积分, 得到精确解. 但是我现在还没办法很好的求解费米面, 所以暂时不考虑这个算法.而且对于二维体系, 公式还不一样, 还得分步讨论, 后面有时间再考虑这个程序.
         //!
         //!对于自旋霍尔效应, 按照文章 [PRL 112, 166601 (2014)], 非线性自旋霍尔电导为
         //!$$\sg_{\ap\bt\gm}^i=-\f{1}{2}\int\dd\bm k \lt[f_{\bm k}\pdv{G_{\bt\gm}}{h_\ap}+\pdv{f_{\bm k}}{\ve}\lt(\p_{\ap}s_{\bm k}^i G_{\bt\gm}-\p_\bt\ve_{\bm k}G_{\ap\gm}^h\rt)\rt]$$
@@ -2461,7 +2438,10 @@ impl Model{
         //!这里 $s^i_{\ap,mn}$ 的具体形式, 原文中没有明确给出, 但是我根据霍尔效应的类比, 我猜是
         //!$\\\{\hat s^i,v_\ap\\\}$
         //!
-        //!至于 $\p_\ap s_{\bm k}^i=\text{diag}(s_{\ap,mn}^i)$
+        //!G_{\ap\bt}&=2\text{Re}\sum_{m=\not n}\f{v_{\ap,nm}v_{\bt,mn}}{\lt(\ve_n-\ve_m\rt)^3}\\\\
+        //!G_{\ap\bt}^h&=2\text{Re}\sum_{m=\not n}\f{s^i_{\ap,nm}v_{\bt,mn}}{\lt(\ve_n-\ve_m\rt)^3}\\\\   //!至于 $\p_\ap s_{\bm k}^i=\text{diag}(s_{\ap,mn}^i)$
+
+
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let omega=self.berry_connection_dipole(&kvec,&dir_1,&dir_2,&dir_3,T,og,mu,spin,eta);
@@ -2998,10 +2978,9 @@ mod tests {
         let delta=0.7;
         let t=-1.0+0.0*li;
         let rashba=0.0+0.0*li;
-        let alter=0.0;
+        let alter=0.2+0.0*li;
         //let soc=-1.0+0.0*li;
         let soc=0.24+0.0*li;
-        let rashba=0.0+0.0*li;
         let dim_r:usize=2;
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
@@ -3017,22 +2996,41 @@ mod tests {
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
             model.set_hop(soc*li,0,0,&R,3);
-        }
-        let R0:Array2::<isize>=arr2(&[[-1,0],[1,-1],[0,1]]);
-        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
-            let R=R.to_owned();
-            model.set_hop(soc*li,1,1,&R,3);
+            model.set_hop(-soc*li,1,1,&R,3);
         }
         //加上altermagnetic 项
         //加入的项为 $S_y \sg_y$
-
+        //let R0:Array2::<isize>=arr2(&[[1,-1],[-1,1],[-1,-1]]);
+        let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(alter*li,0,1,&R,3);
+        }
+        /*
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(alter,0,0,&R,1);
+            model.add_hop(-alter,1,1,&R,1);
+        }
+        */
+        println!("{}",model.ham);
+        println!("{}",model.hamR);
+        println!("{}",model.gen_ham(&arr1(&[0.0,0.0])));
         let nk:usize=1001;
-        let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
+        let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0],[1.0,0.]];
         let path=arr2(&path);
         let (k_vec,k_dist,k_node)=model.k_path(&path,nk);
         let (eval,evec)=model.solve_all_parallel(&k_vec);
-        let label=vec!["G","K","M","K'","G"];
+        let label=vec!["G","K","M","K'","G","G_1"];
         model.show_band(&path,&label,nk,"tests/kane");
+        //开始计算超胞
+
+        let super_model=model.cut_piece(50,0);
+        let path=[[0.0,0.0],[0.0,0.5],[0.0,1.0]];
+        let path=arr2(&path);
+        let label=vec!["G","M","G"];
+        super_model.show_band(&path,&label,nk,"tests/kane_super");
+
         /////开始计算体系的霍尔电导率//////
         let nk:usize=41;
         let T:f64=0.0;
@@ -3045,14 +3043,12 @@ mod tests {
         let spin:usize=3;
         let kmesh=arr1(&[nk,nk]);
         let (eval,evec)=model.solve_onek(&arr1(&[0.3,0.5]));
-
         let start = Instant::now();   // 开始计时
         let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,T,og,mu,spin,eta);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}",conductivity/(2.0*PI));
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
-
         let nk:usize=31;
         let kmesh=arr1(&[nk,nk]);
         let start = Instant::now();   // 开始计时
