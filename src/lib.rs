@@ -177,7 +177,6 @@ pub fn anti_comm(A:&Array2::<Complex<f64>>,B:&Array2::<Complex<f64>>)->Array2::<
     let C=A0.dot(&B0)+B0.dot(&A0);
     C
 }
-//pub fn draw_heatmap(data: Array2<f64>,name:&str,xlabel:Vec<&str>,xnode:Vec<usize>,ylabel:Vec<&str>,ynode:Vec<usize>) {
 pub fn draw_heatmap(data: Array2<f64>,name:&str) {
     //!这个函数是用来画热图的, 给定一个二维矩阵, 会输出一个像素图片
     use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT};
@@ -441,10 +440,9 @@ macro_rules! add_hamiltonian {
     }};
 }
 
-
 /*
 macro_rules! Fermi_tetrahedron_integrate {
-    ($kmesh,$band,$omega,$mu,$nsta)=>{
+    ($kmesh:expr,$kvec:expr,$band:expr,$omega:expr,$mu:expr,$nsta:expr)=>{
         let dir=$kmesh.len_of(Axis(0));
         let (value,surface)=match dir{
             1 =>{
@@ -459,46 +457,96 @@ macro_rules! Fermi_tetrahedron_integrate {
 
             }
             3 =>{
-                let nx=$kmesh[[0]];
-                let ny=$kmesh[[1]];
-                let nz=$kmesh[[2]];
+                let nx=$kmesh[[0]];//x方向的点的数目
+                let ny=$kmesh[[1]];//y方向的点的数目
+                let nz=$kmesh[[2]];//z方向的点的数目
                 let occ:Array1<usize>=$band.clone().map(|x| if *x<$mu {1} else {0}).sum_axis(Axis(1));
-                let occ:Array3<usize>=occ.into_shape((nx,ny,nz)).unwrap();
+                let occ:Array4<usize>=occ.into_shape((nx,ny,nz,nsta)).unwrap();
+                let occ:Array3<usize>=occ.sum_axis(Axis(3));
                 let bands:Array4<f64>=$band.clone().into_shape((nx,ny,nz,$nsta)).unwrap();
+                let kpoints:Array4<f64>=$kvec.clone().into_shape((nx,ny,nz,dir)).unwrap();
                 let mut points=A
+                let mut line_origin:Vec::<Vec<usize>>::new();
+                line_origin.push(vec![0,1]);
+                line_origin.push(vec![1,3]);
+                line_origin.push(vec![0,3]);
+                line_origin.push(vec![1,2]);
+                line_origin.push(vec![2,3]);
+                line_origin.push(vec![0,4]);
+                line_origin.push(vec![1,5]);
+                line_origin.push(vec![2,6]);
+                line_origin.push(vec![3,7]);
+                line_origin.push(vec![1,4]);
+                line_origin.push(vec![3,4]);
+                line_origin.push(vec![1,6]);
+                line_origin.push(vec![3,6]);
+                line_origin.push(vec![4,5]);
+                line_origin.push(vec![5,6]);
+                line_origin.push(vec![4,6]);
+                line_origin.push(vec![4,7]);
+                line_origin.push(vec![6,7]);
                 for i in 1..nx{
                     for j in 1..ny{
                         for k in 1..nz{
-                            let mut line=Vec::<usize>::new();
-                            line.push(bands[[i,j,k]]-bands[[i-1,j,k]]);
-                            line.push(bands[[i,j,k]]-bands[[i,j-1,k]]);
-                            line.push(bands[[i,j,k]]-bands[[i,j,k-1]]);
-                            line.push(bands[[i-1,j,k]]-bands[[i-1,j-1,k]]);
-                            line.push(bands[[i-1,j,k]]-bands[[i-1,j,k-1]]);
-                            line.push(bands[[i,j-1,k]]-bands[[i-1,j-1,k]]);
-                            line.push(bands[[i,j-1,k]]-bands[[i,j-1,k-1]]);
-                            line.push(bands[[i-1,j-1,k]]-bands[[i-1,j-1,k-1]]);
-                            line.push(bands[[i,j,k-1]]-bands[[i-1,j,k-1]]);
-                            line.push(bands[[i,j,k-1]]-bands[[i,j-1,k-1]]);
-                            line.push(bands[[i-1,j,k-1]]-bands[[i-1,j-1,k-1]]);
-                            line.push(bands[[i,j-1,k-1]]-bands[[i-1,j-1,k-1]]);
-                            line.push(bands[[i,j,k]]-bands[[i-1,j-1,k]]);
-                            line.push(bands[[i-1,j-1,k]]-bands[[i-1,j,k-1]]);
-                            line.push(bands[[i-1,j-1,k]]-bands[[i,j-1,k-1]]);
-                            line.push(bands[[i,j,k]]-bands[[i-1,j,k-1]]);
-                            line.push(bands[[i,j,k]]-bands[[i,j-1,k-1]]);
-                            line.push(bands[[i,j,k-1]]-bands[[i-1,j-1,k-1]]);
+                            let mut n=Vec::<usize>::new();
+                            n.push(occ[[i-1,j-1,k-1]]);
+                            n.push(occ[[i,j-1,k-1]]);
+                            n.push(occ[[i,j,k-1]]);
+                            n.push(occ[[i-1,j,k-1]]);
+                            n.push(occ[[i-1,j-1,k]]);
+                            n.push(occ[[i,j-1,k]]);
+                            n.push(occ[[i,j,k]]);
+                            n.push(occ[[i-1,j,k]]);
+                            let mut origen=Vec::<Vec<usize>::new();
+                            origen.push(vec![i-1,j-1,k-1]);
+                            origen.push(vec![i,j-1,k-1]);
+                            origen.push(vec![i,j,k-1]);
+                            origen.push(vec![i-1,j,k-1]);
+                            origen.push(vec![i-1,j-1,k]);
+                            origen.push(vec![i,j-1,k]);
+                            origen.push(vec![i,j,k]);
+                            origen.push(vec![i-1,j,k]);
+                            //接下来我们讨论各个截线上是否存在费米面通过
+                            let mut area=Vec::<Vec<usize>>::new()
+                            area.push(vec![0,1,2,5,9,10]);//五个四面体, 每个四面体有6个棱
+                            area.push(vec![1,3,4,7,11,12]);
+                            area.push(vec![6,9,11,13,14,15]);
+                            area.push(vec![8,10,12,15,16,17];
+                            area.push(vec![1,9,10,11,12,15];
+                            let mut point_origin=Vec::<Array1<f64>>::new();
+                            let mut data=Vec::<f64>::new()
+                            for (line in line_origin.iter(){//开始判断各个线上是否存在费米面交点
+                                if n[line[0]] > n[line[1]]{
+                                    let band0=band[origin[line[0]][0],origin[line[0]][1],origin[line[0]][2],n[line[0]]];
+                                    let band1=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2],n[line[0]]];
+                                    let ratio=($mu-band0)/(band1-band0);
+                                    let k1=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2]];
+                                    let k2=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2]];
+                                    point_origin.push(k1*ratio+(1.0-ratio)*k2);
+                                    data.push(band0*ratio+(1.0-ratio)*band1);
+                                    
+                                }else if n[line[0]] < n[line[1]]{
+                                    let band0=band[origin[line[0]][0],origin[line[0]][1],origin[line[0]][2],n[line[1]]];
+                                    let band1=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2],n[line[1]]];
+                                    let ratio=($mu-band0)/(band1-band0);
+                                    let k1=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2]];
+                                    let k2=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2]];
+                                    point_origin.push(k1*ratio+(1.0-ratio)*k2);
+                                    data.push(band0*ratio+(1.0-ratio)*band1);
+                                }
+
+                            }
+        
                         }
                     }
                 }
             }
+            _ =>{todo!()}
         };
     };
 
 }
-
 */
-
 impl Model{
 
     pub fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
@@ -543,7 +591,6 @@ impl Model{
         if spin{
             nsta*=2;
         }
-        let mut new_natom:usize=0;
         let mut new_atom_list:Vec<usize>=vec![1];
         let mut new_atom=Array2::<f64>::zeros((0,dim_r));
         if lat.len_of(Axis(1)) != dim_r{
@@ -563,7 +610,8 @@ impl Model{
             //通过判断轨道是不是离得太近而判定是否属于一个原子,
             //这种方法只适用于wannier90不开最局域化
             new_atom.push_row(orb.row(0));
-            for i in 0..norb{
+            natom+=1;
+            for i in 1..norb{
                 if (orb.row(i).to_owned()-new_atom.row(new_atom.nrows()-1).to_owned()).norm_l2()>1e-2{
                     new_atom.push_row(orb.row(i));
                     new_atom_list.push(1);
@@ -1607,11 +1655,11 @@ impl Model{
         //开始构建新的轨道位置和原子位置
         let mut use_orb=self.orb.dot(&U_inv);
         let use_atom=self.atom.dot(&U_inv);
+        let mut use_atom_list:Vec<usize>=Vec::new();
         let mut orb_list:Vec<usize>=Vec::new();
         let mut new_orb=Array2::<f64>::zeros((0,self.dim_r));
         let mut new_atom=Array2::<f64>::zeros((0,self.dim_r));
         let mut new_atom_list:Vec<usize>=Vec::new();//新的模型的 atom_list
-        let mut use_atom_list:Vec<usize>=Vec::new();
         let mut a=0;
         for i in 0..self.natom{
             use_atom_list.push(a);
@@ -2460,6 +2508,8 @@ impl Model{
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let omega=self.berry_curvature(&kvec,&dir_1,&dir_2,T,og,mu,spin,eta);
+        let min=omega.iter().fold(f64::NAN, |a, &b| a.min(b));
+        println!("berry_curvature_min={}",min);
         let conductivity:f64=omega.sum()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
         conductivity
     }
@@ -2524,14 +2574,69 @@ impl Model{
         //!我们观察到第二项对对角部分没有贡献, 所以我们可以直接设置为
         //!$$\pdv{\ve_{\bm k}}{\bm k}=\text{diag}\lt(v_{\bm k}\rt)$$
         //我们首先求解 omega_n 和 U^\dag j
+
+        let li:Complex<f64>=1.0*Complex::i();
+        let (band,evec)=self.solve_onek(&k_vec);
         let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
+        let mut J:Array3::<Complex<f64>>=v.clone();
         let mut v0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是速度项, 对应的dir_3 的速度
         for r in 0..self.dim_r{
             v0=v0+v.slice(s![r,..,..]).to_owned()*dir_3[[r]];
         }
-        let partial_ve:Array1::<f64>=v0.diag().map(|x| x.re);
+        if self.spin {
+            let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta);
+            let pauli:Array2::<Complex<f64>>= match spin{
+                0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
+                1=> arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0,
+                2=> arr2(&[[0.0+0.0*li,0.0-1.0*li],[0.0+1.0*li,0.0+0.0*li]])/2.0,
+                3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
+                _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
+            };
+            X=kron(&pauli,&Array2::eye(self.norb));
+            for i in 0..self.dim_r{
+                let j=J.slice(s![i,..,..]).to_owned();
+                let j=anti_comm(&X,&j)/2.0; //这里做反对易
+                J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
+                v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
+            }
+        }else{ 
+            if spin !=0{
+                println!("Warning, the model haven't got spin, so the spin input will be ignord");
+            }
+            for i in 0..self.dim_r{
+                J.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_1[[i]],0.0));
+                v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
+            }
+        };
 
-        let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
+        let J:Array2::<Complex<f64>>=J.sum_axis(Axis(0));
+        let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
+        let evec_conj:Array2::<Complex<f64>>=evec.clone().map(|x| x.conj()).to_owned();
+        let v0=v0.dot(&evec.clone().reversed_axes());
+        let v0=evec_conj.clone().dot(&v0);
+        let partial_ve=v0.diag().map(|x| x.re);
+        let A1=J.dot(&evec.clone().reversed_axes());
+        let A1=evec_conj.clone().dot(&A1);
+        let A2=v.dot(&evec.reversed_axes());
+        let A2=evec_conj.dot(&A2);
+        let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        for i in 0..self.nsta{
+            for j in 0..self.nsta{
+                if i != j{
+                    U0[[i,j]]=1.0/((band[[i]]-band[[j]]).powi(2)-(og+li*eta).powi(2));
+                }else{
+                    U0[[i,j]]=Complex::new(0.0,0.0);
+                }
+            }
+        }
+        //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
+        let mut omega_n=Array1::<f64>::zeros(self.nsta);
+        let A1=A1*U0;
+        for i in 0..self.nsta{
+            omega_n[[i]]=-2.0*A1.slice(s![i,..]).dot(&A2.slice(s![..,i])).im;
+        }
+        
+        //let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
         let omega_n:Array1::<f64>=omega_n*partial_ve;
         (omega_n,band) //最后得到的 D
     }
@@ -2577,17 +2682,10 @@ impl Model{
         if T !=0.0{
             let beta=1.0/T/(8.617e-5);
             let use_iter=band.iter().zip(omega.iter()).par_bridge();
-            /*
-            for (energy,omega0) in use_iter{
-                let f=1.0/((beta*(mu.clone()-*energy)).mapv(f64::exp)+1.0);
-                conductivity=conductivity.clone()+f.clone()*(1.0-f)*beta**omega0
-            }
-            */
             conductivity=use_iter.fold(|| conductivity.clone(),|acc,(energy,omega0)|{
                 let f=1.0/(beta*(mu-*energy)).mapv(|x| x.exp()+1.0);
                 acc+&f*(1.0-&f)*beta**omega0
             }).reduce(|| conductivity.clone(), |acc, x| acc + x);
-            
             conductivity=conductivity.clone()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
         }else{
             //采用四面体积分法, 或者对于二维体系, 采用三角形积分法
@@ -2646,7 +2744,7 @@ impl Model{
         }
 
         //开始最后的计算
-        if self.spin{
+        if self.spin{//如果考虑自旋, 我们就计算 \partial_h G_{ij}
             let mut S:Array2::<Complex<f64>>=Array2::eye(self.nsta);
             let li=Complex::<f64>::new(0.0,1.0);
             let pauli:Array2::<Complex<f64>>= match spin{
@@ -2847,10 +2945,6 @@ impl Model{
     }
 }
 
-
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2935,30 +3029,6 @@ mod tests {
         let kvec=array![1.0/2.0,1.0/2.0];
         let (band,evec)=model.solve_onek(&kvec);
         let evec_conj=evec.clone().map(|x| x.conj());
-        /*
-        let dk=1e-7;
-        let mut kvec0=kvec.clone();
-        kvec0[[1]]+=dk;
-        let (band0,evec0)=model.solve_onek(&kvec0);
-        println!("数值求导的结果{}",(band0-band)/dk);
-        let v=model.gen_v(&kvec);
-        for i in 0..model.dim_r{
-            let vs=v.slice(s![i,..,..]).to_owned(); 
-            let vs=evec_conj.dot(&(vs.dot(&evec.clone().reversed_axes())));
-            println!("速度算符的结果{}",vs.diag());
-        }
-        let mut v0=Array3::<Complex<f64>>::zeros((model.dim_r,model.nsta,model.nsta));
-        let lat_inv=model.lat.inv().unwrap();
-        for i in 0..model.dim_r{
-            for j in 0..model.dim_r{
-                v0.slice_mut(s![i,..,..]).add_assign(&(v.slice(s!(j,..,..)).to_owned()*lat_inv[[j,i]]));//将位置矩阵变成相对坐标形式
-            }
-            let vd=v0.slice(s![i,..,..]).to_owned();
-            let vd=evec_conj.dot(&(vd.dot(&evec.clone().reversed_axes())));
-            let vd=vd.diag().map(|x| x.re);
-            println!("速度算符变换到分数坐标的结果{}",vd*2.0*PI);
-        }
-        */
         let (omega_n,band)=model.berry_curvature_n_onek(&kvec,&dir_1,&dir_2,og,0,1e-5);
         let mut partial_ve=Array1::<f64>::zeros(model.nsta);
         let v=model.gen_v(&kvec);
@@ -3148,16 +3218,22 @@ mod tests {
         pdf_name.push_str("/nonlinear_ex.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
+        
+
+
+
+        
     }
 
     #[test]
     fn kane_mele(){
         let li:Complex<f64>=1.0*Complex::i();
-        let delta=0.7;
-        let t=-1.0+0.0*li;
+        let delta=0.0;
+        let t=-0.85+0.0*li;
         let alter=0.2+0.0*li;
         //let soc=-1.0+0.0*li;
-        let soc=0.24+0.0*li;
+        let soc=0.015+0.0*li;
+        let rashba=-0.02+0.0*li;
         let dim_r:usize=2;
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
@@ -3173,8 +3249,39 @@ mod tests {
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
             model.set_hop(soc*li,0,0,&R,3);
-            model.set_hop(-soc*li,1,1,&R,3);
         }
+        let R0:Array2::<isize>=arr2(&[[-1,0],[1,-1],[0,1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.set_hop(soc*li,1,1,&R,3);
+        }
+        //加入rashba项
+        /*
+        let R0:Array2::<isize>=arr2(&[[0,0],[0,-1],[-1,0]]);
+        for  (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            let r0=(R.map(|x| *x as f64)+model.orb.row(1)-model.orb.row(0)).dot(&model.lat);
+            model.add_hop(rashba*li*r0[[1]],0,1,&R,1);
+            model.add_hop(rashba*li*r0[[0]],0,1,&R,2);
+        }
+        */
+        let R0:Array2::<isize>=arr2(&[[1,0],[-1,1],[0,-1]]);
+        for  (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            let r0=R.map(|x| *x as f64).dot(&model.lat);
+            model.add_hop(rashba*li*r0[[1]],0,0,&R,1);
+            model.add_hop(rashba*li*r0[[0]],0,0,&R,2);
+        }
+        
+        let R0:Array2::<isize>=arr2(&[[-1,0],[1,-1],[0,1]]);
+        for  (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            let r0=R.map(|x| *x as f64).dot(&model.lat);
+            model.add_hop(-rashba*li*r0[[1]],1,1,&R,1);
+            model.add_hop(-rashba*li*r0[[0]],1,1,&R,2);
+        }
+        println!("{}",model.ham);
+        println!("{}",model.hamR);
         /*
         //加上altermagnetic 项
         //加入的项为 $S_y \sg_y$
@@ -3197,11 +3304,11 @@ mod tests {
         println!("{}",model.gen_ham(&arr1(&[0.0,0.0])));
         */
         let nk:usize=1001;
-        let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0],[1.0,0.]];
+        let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
         let path=arr2(&path);
         let (k_vec,k_dist,k_node)=model.k_path(&path,nk);
         let (eval,evec)=model.solve_all_parallel(&k_vec);
-        let label=vec!["G","K","M","K'","G","G_1"];
+        let label=vec!["G","K","M","K'","G"];
         model.show_band(&path,&label,nk,"tests/kane");
         //开始计算超胞
 
@@ -3212,7 +3319,7 @@ mod tests {
         super_model.show_band(&path,&label,nk,"tests/kane_super");
 
         /////开始计算体系的霍尔电导率//////
-        let nk:usize=41;
+        let nk:usize=101;
         let T:f64=0.0;
         let eta:f64=0.001;
         let og:f64=0.0;
@@ -3237,6 +3344,85 @@ mod tests {
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}",conductivity/(2.0*PI));
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
+
+
+
+ 
+
+        //开始算非线性霍尔电导
+        let dir_1=arr1(&[1.0,0.0]);
+        let dir_2=arr1(&[1.0,0.0]);
+        let dir_3=arr1(&[1.0,0.0]);
+        let nk:usize=2000;
+        let kmesh=arr1(&[nk,nk]);
+        let E_min=-0.2;
+        let E_max=0.2;
+        let E_n=1000;
+        let og=0.0;
+        let mu=Array1::linspace(E_min,E_max,E_n);
+        let T=10.0;
+        let sigma:Array1<f64>=model.Nonlinear_Hall_conductivity_Extrinsic(&kmesh,&dir_1,&dir_2,&dir_3,&mu,T,og,1,1e-5);
+        //开始绘制非线性电导
+        let mut fg = Figure::new();
+        let x:Vec<f64>=mu.to_vec();
+        let axes=fg.axes2d();
+        let y:Vec<f64>=sigma.to_vec();
+        axes.lines(&x, &y, &[Color("black")]);
+        let mut show_ticks=Vec::<String>::new();
+        let mut pdf_name=String::new();
+        pdf_name.push_str("tests/kane");
+        pdf_name.push_str("/nonlinear_ex.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show();
+
+        let (E0,dos)=model.dos(&kmesh,E_min,E_max,E_n,1e-2);
+        //开始绘制dos
+        let mut fg = Figure::new();
+        let x:Vec<f64>=E0.to_vec();
+        let axes=fg.axes2d();
+        let y:Vec<f64>=dos.to_vec();
+        axes.lines(&x, &y, &[Color("black")]);
+        let mut show_ticks=Vec::<String>::new();
+        let mut pdf_name=String::new();
+        pdf_name.push_str("tests/kane");
+        pdf_name.push_str("/dos.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show();
+        //绘制非线性霍尔电导的平面图
+        
+        //画一下贝利曲率的分布
+        let dir_1=arr1(&[1.0,0.0]);
+        let dir_2=arr1(&[1.0,0.0]);
+        let dir_3=arr1(&[1.0,0.0]);
+        let T=1000.0;
+        let nk:usize=1000;
+        let kmesh=arr1(&[nk,nk]);
+        let kvec=gen_kmesh(&kmesh);
+        let kvec=kvec*2.0-0.1;
+        let kvec=model.lat.dot(&(kvec.reversed_axes()));
+        let kvec=kvec.reversed_axes();
+        let (berry_curv,band)=model.berry_curvature_dipole_n(&kvec,&dir_1,&dir_2,&dir_3,0.0,1,1e-3);
+        ///////////////////////////////////////////
+        let beta=1.0/T/(8.617e-5);
+        let f:Array2::<f64>=band.clone().map(|x| 1.0/((beta*x).exp()+1.0));
+        let f=beta*&f*(1.0-&f);
+        println!("{:?}",berry_curv.shape());
+        let berry_curv=(berry_curv.clone()*f).sum_axis(Axis(1));
+        let data=berry_curv.into_shape((nk,nk)).unwrap();
+        draw_heatmap(data,"nonlinear.pdf");
+
+       //画一下贝利曲率的分布
+        let nk:usize=1000;
+        let kmesh=arr1(&[nk,nk]);
+        let kvec=gen_kmesh(&kmesh);
+        //let kvec=kvec-0.5;
+        let kvec=kvec*2.0;
+        let kvec=model.lat.dot(&(kvec.reversed_axes()));
+        let kvec=kvec.reversed_axes();
+        let berry_curv=model.berry_curvature(&kvec,&dir_1,&dir_2,T,0.0,0.0,1,1e-3);
+        let data=berry_curv.into_shape((nk,nk)).unwrap();
+        draw_heatmap((-data).map(|x| (x+1.0).log(10.0)),"heat_map.pdf");
+
     }
 
     #[test]
