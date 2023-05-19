@@ -53,7 +53,7 @@ fn main(){
             }
         }
     }
-    let hop0=arr2(&[[1,-1,0],[0,-1,0],[-1,0,0]]);//次近邻
+    let hop0=arr2(&[[-1,-1,0],[0,-1,0],[-1,0,0]]);//次近邻
     for (r,R) in hop0.axis_iter(Axis(0)).enumerate(){
         for i in 0..2{
             for j in 0..2{
@@ -69,14 +69,14 @@ fn main(){
                 let mut vec_2=-theta[[j]]*theta.clone();
                 vec_1[[i]]+=1.0;
                 vec_2[[j]]+=1.0;
-                let tmp=-vec_1.dot(&vec_2)*V_pi ;
+                let tmp=-vec_1.dot(&vec_2)*V_pi_2 ;
                 model.add_hop(tmp,i,j,&R,0);
 
                 let mut vec_1=-theta[[i]]*theta.clone();
                 let mut vec_2=-theta[[j]]*theta;
                 vec_1[[i]]+=1.0;
                 vec_2[[j]]+=1.0;
-                let tmp=-vec_1.dot(&vec_2)*V_pi ;
+                let tmp=-vec_1.dot(&vec_2)*V_pi_2 ;
                 model.add_hop(tmp,i,j,&(-R),0);
             }
         }
@@ -86,8 +86,8 @@ fn main(){
     //let H_soc:Array2::<Complex<f64>>=arr2(&[[0.0*li,li/4.0,0.0*li,0.0*li],[-li/4.0,0.0*li,0.0*li,0.0*li],[0.0*li,0.0*li,0.0*li,-li/4.0],[0.0*li,0.0*li,li/4.0,0.0*li]]);
     model.ham.slice_mut(s![0,..,..]).add_assign(&H_soc.map(|x| lambda*x));
 
-    let path=array![[0.0,0.0,0.0],[2.0/3.0,1.0/3.0,0.0],[0.5,0.5,0.0],[1.0/3.0,2.0/3.0,0.0],[0.0,0.0,0.0]];
-    let label=vec!["G","K","M","K'","G"];
+    let path=array![[0.0,0.0,0.0],[0.5,0.0,0.0],[1.0/3.0,1.0/3.0,0.0],[0.0,0.0,0.0]];
+    let label=vec!["G","M","K","G"];
     let nk=301;
     model.show_band(&path,&label,nk,"examples/bismuthene");
 }
