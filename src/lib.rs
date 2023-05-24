@@ -548,7 +548,103 @@ macro_rules! Fermi_tetrahedron_integrate {
 }
 */
 impl Model{
-
+    //!#Example
+    //!
+    //!```
+    //!use gnuplot::{Color,Figure, AxesCommon, AutoOption::Fix,HOT};
+    //!use gnuplot::Major;
+    //!use ndarray::*;
+    //!use ndarray::prelude::*;
+    //!use num_complex::Complex;
+    //!use Rustb::*;
+    //!
+    //!fn graphene(){
+    //!    let li:Complex<f64>=1.0*Complex::i();
+    //!    let t1=1.0+0.0*li;
+    //!    let t2=0.1+0.0*li;
+    //!    let t3=0.0+0.0*li;
+    //!    let delta=0.0;
+    //!    let dim_r:usize=2;
+    //!    let norb:usize=2;
+    //!    let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
+    //!    let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
+    //!    let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+    //!    model.set_onsite(arr1(&[delta,-delta]),0);
+    //!    model.add_hop(t1,0,1,&array![0,0],0);
+    //!    model.add_hop(t1,0,1,&array![-1,0],0);
+    //!    model.add_hop(t1,0,1,&array![0,-1],0);
+    //!    model.add_hop(t2,0,0,&array![1,0],0);
+    //!    model.add_hop(t2,1,1,&array![1,0],0);
+    //!    model.add_hop(t2,0,0,&array![0,1],0);
+    //!    model.add_hop(t2,1,1,&array![0,1],0);
+    //!    model.add_hop(t2,0,0,&array![1,-1],0);
+    //!    model.add_hop(t2,1,1,&array![1,-1],0);
+    //!    model.add_hop(t3,0,1,&array![1,-1],0);
+    //!    model.add_hop(t3,0,1,&array![-1,1],0);
+    //!    model.add_hop(t3,0,1,&array![-1,-1],0);
+    //!    let nk:usize=1001;
+    //!    let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[0.0,0.0]];
+    //!    let path=arr2(&path);
+    //!    let (k_vec,k_dist,k_node)=model.k_path(&path,nk);
+    //!    let (eval,evec)=model.solve_all_parallel(&k_vec);
+    //!    let label=vec!["G","K","M","G"];
+    //!
+    //!    let (k_vec,k_dist,k_node)=model.k_path(&path,nk); //generate the k vector 
+    //!    let eval=model.solve_band_all_parallel(&k_vec);  //calculate the bands
+    //!    let mut fg = Figure::new();
+    //!    let x:Vec<f64>=k_dist.to_vec();
+    //!    let axes=fg.axes2d();
+    //!    for i in 0..model.nsta{
+    //!        let y:Vec<f64>=eval.slice(s![..,i]).to_owned().to_vec();
+    //!        axes.lines(&x, &y, &[Color("black")]);
+    //!    }
+    //!    let axes=axes.set_x_range(Fix(0.0), Fix(k_node[[k_node.len()-1]]));
+    //!    let label=label.clone();
+    //!    let mut show_ticks=Vec::new();
+    //!    for i in 0..k_node.len(){
+    //!        let A=k_node[[i]];
+    //!        let B=label[i];
+    //!        show_ticks.push(Major(A,Fix(B)));
+    //!    }
+    //!    axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+    //!    let k_node=k_node.to_vec();
+    //!    let mut jpg_name=String::new();
+    //!    jpg_name.push_str("band.jpg");
+    //!    fg.set_terminal("jpeg", &jpg_name);
+    //!    fg.show();
+    //!
+    //!    //start to draw the band structure
+    //!    //Starting to calculate the edge state, first is the zigzag state
+    //!    let nk:usize=501;
+    //!    let U=arr2(&[[1.0,1.0],[-1.0,1.0]]);
+    //!    let super_model=model.make_supercell(&U);
+    //!    let zig_model=super_model.cut_piece(100,0);
+    //!    let path=[[0.0,0.0],[0.0,0.5],[0.0,1.0]];
+    //!    let path=arr2(&path);
+    //!    let (k_vec,k_dist,k_node)=super_model.k_path(&path,nk);
+    //!    let (eval,evec)=super_model.solve_all_parallel(&k_vec);
+    //!    let label=vec!["G","M","G"];
+    //!    zig_model.show_band(&path,&label,nk,"graphene_zig");
+    //!    //Starting to calculate the DOS of graphene
+    //!    let nk:usize=101;
+    //!    let kmesh=arr1(&[nk,nk]);
+    //!    let E_min=-3.0;
+    //!    let E_max=3.0;
+    //!    let E_n=1000;
+    //!    let (E0,dos)=model.dos(&kmesh,E_min,E_max,E_n,1e-2);
+    //!    //start to show DOS
+    //!    let mut fg = Figure::new();
+    //!    let x:Vec<f64>=E0.to_vec();
+    //!    let axes=fg.axes2d();
+    //!    let y:Vec<f64>=dos.to_vec();
+    //!    axes.lines(&x, &y, &[Color("black")]);
+    //!    let mut show_ticks=Vec::<String>::new();
+    //!    let mut pdf_name=String::new();
+    //!    pdf_name.push_str("dos.jpg");
+    //!    fg.set_terminal("pdfcairo", &pdf_name);
+    //!    fg.show();
+    //!}
+    //!```
     pub fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
         /*
         //!这个函数是用来初始化一个 Model, 需要输入的变量意义为
@@ -1627,6 +1723,7 @@ impl Model{
         }
 
     }
+
 
 
     pub fn make_supercell(&self,U:&Array2::<f64>)->Model{
@@ -2710,38 +2807,33 @@ impl Model{
             v.slice_mut(s![i,..,..]).assign(&v_1);//将 v 变换到以本征态为基底
         }
         //现在速度算符已经是以本征态为基函数
-        let mut v_1=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        let mut v_1=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//三个方向的速度算符
         let mut v_2=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         let mut v_3=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         for i in 0..self.dim_r{
             v_1=v_1.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_1[[i]],0.0);
             v_2=v_2.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_2[[i]],0.0);
-            v_3=v_2.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_3[[i]],0.0);
+            v_3=v_3.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_3[[i]],0.0);
         }
         //三个方向的速度算符都得到了
         let mut U0=Array2::<f64>::zeros((self.nsta,self.nsta));
         for i in 0..self.nsta{
             for j in 0..self.nsta{
-                if band[[i]]==band[[j]]{
+                if (band[[i]]-band[[j]]).abs() < 1e-5{
                     U0[[i,j]]=0.0;
                 }else{
                     U0[[i,j]]=1.0/(band[[i]]-band[[j]]);
                 }
             }
         }
-        //这样U0[[i,j]]=1/(E_i-E_j), 这样就可以省略判断
+        //这样U0[[i,j]]=1/(E_i-E_j), 这样就可以省略判断, 减少计算量
 
         //开始计算能带的导数, 详细的公式请看 berry_curvature_dipole_onek 的公式
         //其实就是速度算符的对角项
         //开始计算速度的偏导项, 这里偏导来自实空间
-        let mut partial_ve=Array2::<f64>::zeros((self.dim_r,self.nsta));
         let partial_ve_1=v_1.diag().map(|x| x.re);
         let partial_ve_2=v_2.diag().map(|x| x.re);
         let partial_ve_3=v_3.diag().map(|x| x.re);
-        for r in 0..self.dim_r{
-            let v0=v.slice(s![r,..,..]).to_owned();
-            partial_ve.slice_mut(s![r,..]).assign(&v0.diag().map(|x| x.re));//速度算符的对角项
-        }
 
         //开始最后的计算
         if self.spin{//如果考虑自旋, 我们就计算 \partial_h G_{ij}
@@ -2813,6 +2905,17 @@ impl Model{
             return ((partial_s_1*G_23+partial_ve_2*G_13_h),band,Some(partial_G))
         }else{
             //开始计算 G_{ij}
+            //G_{ij}=2Re\sum_{m\neq n} v_{i,nm}v_{j,mn}/(E_n-E_m)^3
+            /*
+            println!("U0={}",U0.map(|x| x.powi(3)));
+            println!("v1={}",v_1);
+            println!("v2={}",v_2);
+            println!("v3={}",v_3);
+            println!("ve_1={}",partial_ve_1);
+            println!("ve_2={}",partial_ve_2);
+            println!("evec={}",evec);
+            println!("band={}",band);
+            */
             let G_23:Array1::<f64>={//用来计算  beta gamma 的 G 
                 let A=v_2*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
                 let mut G=Array1::<f64>::zeros(self.nsta);
@@ -2829,6 +2932,7 @@ impl Model{
                 }
                 G
             };
+            //println!("G_12={}",G_13);
             return (partial_ve_1*G_23+partial_ve_2*G_13,band,None)
         }
     }
@@ -2906,7 +3010,6 @@ impl Model{
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let (omega,band,mut partial_G):(Array2<f64>,Array2<f64>,Option<Array2<f64>>)=self.berry_connection_dipole(&kvec,&dir_1,&dir_2,&dir_3,spin);
-        let omega0:Array2<f64>=omega.clone();
         let omega=omega.into_raw_vec();
         let omega=Array1::from(omega);
         let band0=band.clone();
@@ -2918,7 +3021,7 @@ impl Model{
             let beta=1.0/T/8.617e-5;
             let use_iter=band.iter().zip(omega.iter()).par_bridge();
             conductivity=use_iter.fold(|| Array1::<f64>::zeros(n_e),|acc,(energy,omega0)|{
-                let f=1.0/(beta*(mu-*energy)).mapv(|x| x.exp()+1.0);
+                let f=1.0/((beta*(mu-*energy)).mapv(|x| x.exp()+1.0));
                 acc+&f*(1.0-&f)*beta**omega0
             }).reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
             if self.spin{
@@ -2939,7 +3042,7 @@ impl Model{
             //采用四面体积分法, 或者对于二维体系, 采用三角形积分法
             //积分的思路是, 通过将一个六面体变成5个四面体, 然后用线性插值的方法, 得到费米面,
             //以及费米面上的数, 最后, 通过积分算出来结果
-            panic!("the code can not support for f=0");
+            panic!("the code can not support for T=0");
         }
         return conductivity
     }
@@ -3353,7 +3456,7 @@ mod tests {
         let dir_1=arr1(&[1.0,0.0]);
         let dir_2=arr1(&[1.0,0.0]);
         let dir_3=arr1(&[1.0,0.0]);
-        let nk:usize=2000;
+        let nk:usize=200;
         let kmesh=arr1(&[nk,nk]);
         let E_min=-0.2;
         let E_max=0.2;
@@ -3468,7 +3571,7 @@ mod tests {
         let dir_1=arr1(&[1.0,0.0,0.0]);
         let dir_2=arr1(&[0.0,1.0,0.0]);
         let dir_3=arr1(&[0.0,0.0,1.0]);
-        let nk:usize=210;
+        let nk:usize=100;
         let kmesh=arr1(&[nk,nk,nk]);
         let E_min=-3.0;
         let E_max=3.0;
