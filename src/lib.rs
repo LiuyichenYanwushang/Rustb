@@ -15,37 +15,37 @@ use std::ops::AddAssign;
 use std::ops::MulAssign;
 /// This cate is used to perform various calculations on the TB model, currently including:
 ///
-/// 1: Calculate the band structure
+/// - Calculate the band structure
 ///
-/// 2: Expand the cell and calculate the surface state
+/// - Expand the cell and calculate the surface state
 ///
-/// 3: Calculate the first-order anomalous Hall conductivity and spin Hall conductivity
+/// - Calculate the first-order anomalous Hall conductivity and spin Hall conductivity
 ///
 #[allow(non_snake_case)]
 pub struct Model{
-/// The real space dimension of the model.
+/// - The real space dimension of the model.
 pub dim_r:usize,
-/// The number of orbitals in the model.
+/// - The number of orbitals in the model.
 pub norb:usize,
-/// The number of states in the model. If spin is enabled, nsta=norb$\times$2
+/// - The number of states in the model. If spin is enabled, nsta=norb$\times$2
 pub nsta:usize,
-/// The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
+/// - The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
 pub natom:usize,
-/// Whether the model has spin enabled. If enabled, spin=true
+/// - Whether the model has spin enabled. If enabled, spin=true
 pub spin:bool,
-/// The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
+/// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
 pub lat:Array2::<f64>,
-/// The position of the orbitals in the model. We use fractional coordinates uniformly.
+/// - The position of the orbitals in the model. We use fractional coordinates uniformly.
 pub orb:Array2::<f64>,
-/// The position of the atoms in the model, also in fractional coordinates.
+/// - The position of the atoms in the model, also in fractional coordinates.
 pub atom:Array2::<f64>,
-/// The number of orbitals in the atoms, in the same order as the atom positions.
+/// - The number of orbitals in the atoms, in the same order as the atom positions.
 pub atom_list:Vec<usize>,
-/// The Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
+/// - The Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
 pub ham:Array3::<Complex<f64>>,
-/// The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
+/// - The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
 pub hamR:Array2::<isize>,
-/// The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
+/// - The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
 pub rmatrix:Array4::<Complex<f64>>,
 }
 #[allow(non_snake_case)]
@@ -179,7 +179,7 @@ pub fn anti_comm(A:&Array2::<Complex<f64>>,B:&Array2::<Complex<f64>>)->Array2::<
 }
 pub fn draw_heatmap(data: Array2<f64>,name:&str) {
     //!这个函数是用来画热图的, 给定一个二维矩阵, 会输出一个像素图片
-    use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT};
+    use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT,RAINBOW};
     let mut fg = Figure::new();
     let (width, height) = (data.shape()[1], data.shape()[0]);
     let mut heatmap_data = vec![];
@@ -192,7 +192,7 @@ pub fn draw_heatmap(data: Array2<f64>,name:&str) {
     let axes = fg.axes2d();
     axes.set_title("Heatmap", &[]);
     axes.set_cb_label("Values", &[]);
-    axes.set_palette(HOT);
+    axes.set_palette(RAINBOW);
     axes.image(heatmap_data.iter(), width, height,None, &[]);
     let size=data.shape();
     let axes=axes.set_x_range(Fix(0.0), Fix((size[0]-1) as f64));
@@ -400,6 +400,14 @@ macro_rules! update_hamiltonian {
                     $new_ham[[$ind_i, $ind_j]] = $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] = -$tmp;
                 }
+                /*
+                4 => {
+                    $new_ham[[$ind_i, $ind_j + $norb]] = $tmp;
+                }
+                5 => {
+                    $new_ham[[$ind_i + $norb, $ind_j]] = $tmp;
+                }
+                */
                 _ => todo!(),
             }
         } else {
@@ -431,6 +439,14 @@ macro_rules! add_hamiltonian {
                     $new_ham[[$ind_i, $ind_j]] += $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] -= $tmp;
                 }
+                /*
+                4 => {
+                    $new_ham[[$ind_i, $ind_j + $norb]] += $tmp;
+                }
+                5 => {
+                    $new_ham[[$ind_i + $norb, $ind_j]] += $tmp;
+                }
+                */
                 _ => todo!(),
             }
         } else {
@@ -439,6 +455,7 @@ macro_rules! add_hamiltonian {
         $new_ham
     }};
 }
+
 
 /*
 macro_rules! Fermi_tetrahedron_integrate {
@@ -547,104 +564,105 @@ macro_rules! Fermi_tetrahedron_integrate {
 
 }
 */
+
+///An example
+///
+///```
+///use gnuplot::{Color,Figure, AxesCommon, AutoOption::Fix,HOT};
+///use gnuplot::Major;
+///use ndarray::*;
+///use ndarray::prelude::*;
+///use num_complex::Complex;
+///use Rustb::*;
+///
+///fn graphene(){
+///    let li:Complex<f64>=1.0*Complex::i();
+///    let t1=1.0+0.0*li;
+///    let t2=0.1+0.0*li;
+///    let t3=0.0+0.0*li;
+///    let delta=0.0;
+///    let dim_r:usize=2;
+///    let norb:usize=2;
+///    let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
+///    let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
+///    let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+///    model.set_onsite(arr1(&[delta,-delta]),0);
+///    model.add_hop(t1,0,1,&array![0,0],0);
+///    model.add_hop(t1,0,1,&array![-1,0],0);
+///    model.add_hop(t1,0,1,&array![0,-1],0);
+///    model.add_hop(t2,0,0,&array![1,0],0);
+///    model.add_hop(t2,1,1,&array![1,0],0);
+///    model.add_hop(t2,0,0,&array![0,1],0);
+///    model.add_hop(t2,1,1,&array![0,1],0);
+///    model.add_hop(t2,0,0,&array![1,-1],0);
+///    model.add_hop(t2,1,1,&array![1,-1],0);
+///    model.add_hop(t3,0,1,&array![1,-1],0);
+///    model.add_hop(t3,0,1,&array![-1,1],0);
+///    model.add_hop(t3,0,1,&array![-1,-1],0);
+///    let nk:usize=1001;
+///    let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[0.0,0.0]];
+///    let path=arr2(&path);
+///    let (k_vec,k_dist,k_node)=model.k_path(&path,nk);
+///    let (eval,evec)=model.solve_all_parallel(&k_vec);
+///    let label=vec!["G","K","M","G"];
+///
+///    let (k_vec,k_dist,k_node)=model.k_path(&path,nk); //generate the k vector 
+///    let eval=model.solve_band_all_parallel(&k_vec);  //calculate the bands
+///    let mut fg = Figure::new();
+///    let x:Vec<f64>=k_dist.to_vec();
+///    let axes=fg.axes2d();
+///    for i in 0..model.nsta{
+///        let y:Vec<f64>=eval.slice(s![..,i]).to_owned().to_vec();
+///        axes.lines(&x, &y, &[Color("black")]);
+///    }
+///    let axes=axes.set_x_range(Fix(0.0), Fix(k_node[[k_node.len()-1]]));
+///    let label=label.clone();
+///    let mut show_ticks=Vec::new();
+///    for i in 0..k_node.len(){
+///        let A=k_node[[i]];
+///        let B=label[i];
+///        show_ticks.push(Major(A,Fix(B)));
+///    }
+///    axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+///    let k_node=k_node.to_vec();
+///    let mut jpg_name=String::new();
+///    jpg_name.push_str("band.jpg");
+///    fg.set_terminal("jpeg", &jpg_name);
+///    fg.show();
+///
+///    //start to draw the band structure
+///    //Starting to calculate the edge state, first is the zigzag state
+///    let nk:usize=501;
+///    let U=arr2(&[[1.0,1.0],[-1.0,1.0]]);
+///    let super_model=model.make_supercell(&U);
+///    let zig_model=super_model.cut_piece(100,0);
+///    let path=[[0.0,0.0],[0.0,0.5],[0.0,1.0]];
+///    let path=arr2(&path);
+///    let (k_vec,k_dist,k_node)=super_model.k_path(&path,nk);
+///    let (eval,evec)=super_model.solve_all_parallel(&k_vec);
+///    let label=vec!["G","M","G"];
+///    zig_model.show_band(&path,&label,nk,"graphene_zig");
+///    //Starting to calculate the DOS of graphene
+///    let nk:usize=101;
+///    let kmesh=arr1(&[nk,nk]);
+///    let E_min=-3.0;
+///    let E_max=3.0;
+///    let E_n=1000;
+///    let (E0,dos)=model.dos(&kmesh,E_min,E_max,E_n,1e-2);
+///    //start to show DOS
+///    let mut fg = Figure::new();
+///    let x:Vec<f64>=E0.to_vec();
+///    let axes=fg.axes2d();
+///    let y:Vec<f64>=dos.to_vec();
+///    axes.lines(&x, &y, &[Color("black")]);
+///    let mut show_ticks=Vec::<String>::new();
+///    let mut pdf_name=String::new();
+///    pdf_name.push_str("dos.jpg");
+///    fg.set_terminal("pdfcairo", &pdf_name);
+///    fg.show();
+///}
+///```
 impl Model{
-    //!#Example
-    //!
-    //!```
-    //!use gnuplot::{Color,Figure, AxesCommon, AutoOption::Fix,HOT};
-    //!use gnuplot::Major;
-    //!use ndarray::*;
-    //!use ndarray::prelude::*;
-    //!use num_complex::Complex;
-    //!use Rustb::*;
-    //!
-    //!fn graphene(){
-    //!    let li:Complex<f64>=1.0*Complex::i();
-    //!    let t1=1.0+0.0*li;
-    //!    let t2=0.1+0.0*li;
-    //!    let t3=0.0+0.0*li;
-    //!    let delta=0.0;
-    //!    let dim_r:usize=2;
-    //!    let norb:usize=2;
-    //!    let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
-    //!    let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
-    //!    let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
-    //!    model.set_onsite(arr1(&[delta,-delta]),0);
-    //!    model.add_hop(t1,0,1,&array![0,0],0);
-    //!    model.add_hop(t1,0,1,&array![-1,0],0);
-    //!    model.add_hop(t1,0,1,&array![0,-1],0);
-    //!    model.add_hop(t2,0,0,&array![1,0],0);
-    //!    model.add_hop(t2,1,1,&array![1,0],0);
-    //!    model.add_hop(t2,0,0,&array![0,1],0);
-    //!    model.add_hop(t2,1,1,&array![0,1],0);
-    //!    model.add_hop(t2,0,0,&array![1,-1],0);
-    //!    model.add_hop(t2,1,1,&array![1,-1],0);
-    //!    model.add_hop(t3,0,1,&array![1,-1],0);
-    //!    model.add_hop(t3,0,1,&array![-1,1],0);
-    //!    model.add_hop(t3,0,1,&array![-1,-1],0);
-    //!    let nk:usize=1001;
-    //!    let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[0.0,0.0]];
-    //!    let path=arr2(&path);
-    //!    let (k_vec,k_dist,k_node)=model.k_path(&path,nk);
-    //!    let (eval,evec)=model.solve_all_parallel(&k_vec);
-    //!    let label=vec!["G","K","M","G"];
-    //!
-    //!    let (k_vec,k_dist,k_node)=model.k_path(&path,nk); //generate the k vector 
-    //!    let eval=model.solve_band_all_parallel(&k_vec);  //calculate the bands
-    //!    let mut fg = Figure::new();
-    //!    let x:Vec<f64>=k_dist.to_vec();
-    //!    let axes=fg.axes2d();
-    //!    for i in 0..model.nsta{
-    //!        let y:Vec<f64>=eval.slice(s![..,i]).to_owned().to_vec();
-    //!        axes.lines(&x, &y, &[Color("black")]);
-    //!    }
-    //!    let axes=axes.set_x_range(Fix(0.0), Fix(k_node[[k_node.len()-1]]));
-    //!    let label=label.clone();
-    //!    let mut show_ticks=Vec::new();
-    //!    for i in 0..k_node.len(){
-    //!        let A=k_node[[i]];
-    //!        let B=label[i];
-    //!        show_ticks.push(Major(A,Fix(B)));
-    //!    }
-    //!    axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
-    //!    let k_node=k_node.to_vec();
-    //!    let mut jpg_name=String::new();
-    //!    jpg_name.push_str("band.jpg");
-    //!    fg.set_terminal("jpeg", &jpg_name);
-    //!    fg.show();
-    //!
-    //!    //start to draw the band structure
-    //!    //Starting to calculate the edge state, first is the zigzag state
-    //!    let nk:usize=501;
-    //!    let U=arr2(&[[1.0,1.0],[-1.0,1.0]]);
-    //!    let super_model=model.make_supercell(&U);
-    //!    let zig_model=super_model.cut_piece(100,0);
-    //!    let path=[[0.0,0.0],[0.0,0.5],[0.0,1.0]];
-    //!    let path=arr2(&path);
-    //!    let (k_vec,k_dist,k_node)=super_model.k_path(&path,nk);
-    //!    let (eval,evec)=super_model.solve_all_parallel(&k_vec);
-    //!    let label=vec!["G","M","G"];
-    //!    zig_model.show_band(&path,&label,nk,"graphene_zig");
-    //!    //Starting to calculate the DOS of graphene
-    //!    let nk:usize=101;
-    //!    let kmesh=arr1(&[nk,nk]);
-    //!    let E_min=-3.0;
-    //!    let E_max=3.0;
-    //!    let E_n=1000;
-    //!    let (E0,dos)=model.dos(&kmesh,E_min,E_max,E_n,1e-2);
-    //!    //start to show DOS
-    //!    let mut fg = Figure::new();
-    //!    let x:Vec<f64>=E0.to_vec();
-    //!    let axes=fg.axes2d();
-    //!    let y:Vec<f64>=dos.to_vec();
-    //!    axes.lines(&x, &y, &[Color("black")]);
-    //!    let mut show_ticks=Vec::<String>::new();
-    //!    let mut pdf_name=String::new();
-    //!    pdf_name.push_str("dos.jpg");
-    //!    fg.set_terminal("pdfcairo", &pdf_name);
-    //!    fg.show();
-    //!}
-    //!```
     pub fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
         /*
         //!这个函数是用来初始化一个 Model, 需要输入的变量意义为
@@ -993,7 +1011,20 @@ impl Model{
     }
     ///这个函数是用来生成速度算符的, 即 $\bra{m\bm k}\p_\ap H_{\bm k}\ket{n\bm k},$
     ///这里的基函数是布洛赫波函数
-    /// 这里速度算符的计算公式为
+    ///
+    /// 这里速度算符的计算公式, 我们在程序中采用 tight-binding 模型,
+    /// 即傅里叶变换的时候考虑原子位置. 
+    ///
+    /// 这样我们就有
+    ///
+    /// $$
+    /// \\begin\{aligned\}
+    /// \\bra{m\bm k}\p_\ap H_{\bm k}\ket{n\bm k}&=\p_\ap\left(\bra{m\bm k} H\ket{n\bm k}\rt)-\p_\ap\left(\bra{m\bm k}\rt) H\ket{n\bm k}-\bra{m\bm k} H\p_\ap\ket{n\bm k}\\\\
+    /// &=\sum_{\bm R} i(\bm R-\bm\tau_m+\bm\tau_n)H_{mn}(\bm R) e^{i\bm k\cdot(\bm R-\bm\tau_m+\bm\tau_n)}-\lt[H_{\bm k},\\mathcal A_{\bm k,\ap}\rt]_{mn}
+    /// \\end\{aligned\}
+    /// $$
+    ///
+    ///这里的 $\\mathcal A_{\bm k}$ 的定义为 $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R+\bm\tau_m-\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
     #[allow(non_snake_case)]
     pub fn gen_v(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
         if kvec.len() !=self.dim_r{
@@ -1482,7 +1513,7 @@ impl Model{
                     new_atom_list.push(old_model.atom_list[*use_i]);
                     new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
                 }
-                let mut new_model=Model::tb_model(3,old_model.lat,new_orb,self.spin,Some(new_atom),Some(new_atom_list));
+                let mut new_model=Model::tb_model(self.dim_r,old_model.lat,new_orb,self.spin,Some(new_atom),Some(new_atom_list));
                 let n_R=new_model.hamR.len_of(Axis(0));
                 let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta,new_model.nsta));
                 let mut new_hamR=Array2::<isize>::zeros((0,self.dim_r));
@@ -1513,11 +1544,17 @@ impl Model{
                 }
                 new_model.ham=new_ham;
                 new_model.hamR=new_hamR;
+                let nsta=new_model.nsta;
                 if self.rmatrix.len_of(Axis(0))==1{
                     for r in 0..self.dim_r{
-                        let mut use_rmatrix=Array2::<Complex<f64>>::zeros((norb,norb));
+                        let mut use_rmatrix=Array2::<Complex<f64>>::zeros((nsta,nsta));
                         for i in 0..norb{
-                            use_rmatrix[[i,i]]=Complex::new(new_model.orb[[r,i]],0.0);
+                            use_rmatrix[[i,i]]=Complex::new(new_model.orb[[i,r]],0.0);
+                        }
+                        if new_model.spin{
+                            for i in 0..norb{
+                                use_rmatrix[[i+norb,i+norb]]=Complex::new(new_model.orb[[i,r]],0.0);
+                            }
                         }
                         new_model.rmatrix.slice_mut(s![0,r,..,..]).assign(&use_rmatrix);
                     }
@@ -1656,11 +1693,12 @@ impl Model{
                     new_atom_list.push(old_model.atom_list[*use_i]);
                     new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
                 }
-                let mut new_model=Model::tb_model(3,old_model.lat,new_orb,self.spin,Some(new_atom),Some(new_atom_list));
+                let mut new_model=Model::tb_model(self.dim_r,old_model.lat,new_orb,self.spin,Some(new_atom),Some(new_atom_list));
                 let n_R=new_model.hamR.len_of(Axis(0));
                 let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta,new_model.nsta));
                 let mut new_hamR=Array2::<isize>::zeros((0,self.dim_r));
                 let norb=new_model.norb;
+                let nsta=new_model.nsta;
 
                 if self.spin{
                     let norb2=old_model.norb;
@@ -1683,9 +1721,14 @@ impl Model{
                 new_model.hamR=new_hamR;
                 if self.rmatrix.len_of(Axis(0))==1{
                     for r in 0..self.dim_r{
-                        let mut use_rmatrix=Array2::<Complex<f64>>::zeros((norb,norb));
+                        let mut use_rmatrix=Array2::<Complex<f64>>::zeros((nsta,nsta));
                         for i in 0..norb{
-                            use_rmatrix[[i,i]]=Complex::new(new_model.orb[[r,i]],0.0);
+                            use_rmatrix[[i,i]]=Complex::new(new_model.orb[[i,r]],0.0);
+                        }
+                        if new_model.spin{
+                            for i in 0..norb{
+                                use_rmatrix[[i+norb,i+norb]]=Complex::new(new_model.orb[[i,r]],0.0);
+                            }
                         }
                         new_model.rmatrix.slice_mut(s![0,r,..,..]).assign(&use_rmatrix);
                     }
@@ -1772,6 +1815,12 @@ impl Model{
                                     +(i as f64)*U_inv.row(0).to_owned()
                                     +(j as f64)*U_inv.row(1).to_owned()
                                     +(k as f64)*U_inv.row(2).to_owned(); //原子的位置在新的坐标系下的坐标
+                                atoms[[0]]=if atoms[[0]].abs()<1e-8{ 0.0}
+                                    else if (atoms[[0]]-1.0).abs()<1e-8 {1.0}  else {atoms[[0]]};
+                                atoms[[1]]=if atoms[[1]].abs()<1e-8{ 0.0}
+                                    else if (atoms[[1]]-1.0).abs()<1e-8 {1.0} else {atoms[[1]]};
+                                atoms[[2]]=if atoms[[2]].abs()<1e-8{ 0.0}
+                                    else if (atoms[[2]]-1.0).abs()<1e-8 {1.0} else {atoms[[2]]};
                                 if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
                                     new_atom.push_row(atoms.view()); 
                                     new_atom_list.push(self.atom_list[n]);
@@ -1795,6 +1844,12 @@ impl Model{
                             let mut atoms=use_atom.row(n).to_owned()
                                 +(i as f64)*U_inv.row(0).to_owned()
                                 +(j as f64)*U_inv.row(1).to_owned(); //原子的位置在新的坐标系下的坐标
+                            atoms[[0]]=if atoms[[0]].abs()<1e-8{ 0.0}
+                                else if (atoms[[0]]-1.0).abs()<1e-8 {1.0}
+                                else {atoms[[0]]};
+                            atoms[[1]]=if atoms[[1]].abs()<1e-8{ 0.0}
+                                else if (atoms[[1]]-1.0).abs()<1e-8 {1.0}
+                                else {atoms[[1]]};
                             if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
                                 new_atom.push_row(atoms.view()); 
                                 new_atom_list.push(self.atom_list[n]);
@@ -1814,6 +1869,7 @@ impl Model{
                 for i in -U_det..U_det{
                     for n in 0..self.natom{
                         let mut atoms=use_atom.row(n).to_owned()+(i as f64)*U_inv.row(0).to_owned(); //原子的位置在新的坐标系下的坐标
+                        atoms[[0]]=if atoms[[0]].abs()<1e-8{ 0.0}else if (atoms[[0]]-1.0).abs()<1e-8 {1.0}  else {atoms[[0]]};
                         if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
                             new_atom.push_row(atoms.view()); 
                             new_atom_list.push(self.atom_list[n]);
@@ -2244,12 +2300,14 @@ impl Model{
         let mut weights:Vec<usize>=Vec::new();
         let mut n_line:usize=0;
         for i in 3..reads.len(){
-            let string:Vec<usize>=reads[i].trim().split_whitespace().map(|x| x.parse::<usize>().unwrap()).collect();
-            weights.extend(string.clone());
-            if string.len() !=15{
-                n_line=i+1;
+            //if string.clone().count() !=15{
+            if reads[i].contains("."){
+                n_line=i;
                 break
             }
+            let string=reads[i].trim().split_whitespace();
+            let string:Vec<_>=string.map(|x| x.parse::<usize>().unwrap()).collect();
+            weights.extend(string.clone());
         }
         let mut hamR=Array2::<isize>::zeros((1,3));
         let mut ham=Array3::<Complex<f64>>::zeros((1,nsta,nsta));
@@ -2538,9 +2596,9 @@ impl Model{
         let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
         let evec_conj:Array2::<Complex<f64>>=evec.clone().map(|x| x.conj()).to_owned();
         let A1=J.dot(&evec.clone().reversed_axes());
-        let A1=evec_conj.clone().dot(&A1);
+        let A1=&evec_conj.dot(&A1);
         let A2=v.dot(&evec.reversed_axes());
-        let A2=evec_conj.dot(&A2);
+        let A2=&evec_conj.dot(&A2);
         let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         for i in 0..self.nsta{
             for j in 0..self.nsta{
@@ -2606,7 +2664,6 @@ impl Model{
         let nk:usize=kvec.len_of(Axis(0));
         let omega=self.berry_curvature(&kvec,&dir_1,&dir_2,T,og,mu,spin,eta);
         let min=omega.iter().fold(f64::NAN, |a, &b| a.min(b));
-        println!("berry_curvature_min={}",min);
         let conductivity:f64=omega.sum()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
         conductivity
     }
@@ -2710,12 +2767,12 @@ impl Model{
         let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
         let evec_conj:Array2::<Complex<f64>>=evec.clone().map(|x| x.conj()).to_owned();
         let v0=v0.dot(&evec.clone().reversed_axes());
-        let v0=evec_conj.clone().dot(&v0);
+        let v0=&evec_conj.dot(&v0);
         let partial_ve=v0.diag().map(|x| x.re);
         let A1=J.dot(&evec.clone().reversed_axes());
-        let A1=evec_conj.clone().dot(&A1);
+        let A1=&evec_conj.dot(&A1);
         let A2=v.dot(&evec.reversed_axes());
-        let A2=evec_conj.dot(&A2);
+        let A2=&evec_conj.dot(&A2);
         let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         for i in 0..self.nsta{
             for j in 0..self.nsta{
@@ -2767,13 +2824,15 @@ impl Model{
         //! 对于 T!=0 的情况, 我们会采用类似 Dos 的方法来计算
 
 
+        if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r || dir_3.len() != self.dim_r{
+            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r,dir_1.len(),dir_2.len())
+        }
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
+        //为了节省内存, 本来是可以直接算完求和, 但是为了方便, 我是先存下来再算, 让程序结构更合理
         let (omega,band)=self.berry_curvature_dipole_n(&kvec,&dir_1,&dir_2,&dir_3,og,spin,eta);
         let omega=omega.into_raw_vec();
-        //let omega=Array1::<f64>::from(omega);
         let band=band.into_raw_vec();
-        //let band=Array1::<f64>::from(band);
         let n_e=mu.len();
         let mut conductivity=Array1::<f64>::zeros(n_e);
         if T !=0.0{
@@ -2799,12 +2858,13 @@ impl Model{
         //!如果存在自旋, 即spin不等于0, 则还存在 $\p_{h_i} G_{jk}$ 项, 具体请看下面的非线性霍尔部分
         //!我们这里暂时不考虑磁场, 只考虑电场
         let mut v:Array3::<Complex<f64>>=self.gen_v(&k_vec);//这是速度算符
+        let mut J=v.clone();
         let (band,evec)=self.solve_onek(&k_vec);//能带和本征值
         let evec_conj=evec.clone().map(|x| x.conj());//本征值的复共轭
         for i in 0..self.dim_r{
-            let v_1=v.slice(s![i,..,..]).to_owned();
-            let v_1=evec_conj.clone().dot(&(v_1.dot(&evec.clone().reversed_axes())));//变换到本征态基函数
-            v.slice_mut(s![i,..,..]).assign(&v_1);//将 v 变换到以本征态为基底
+            let v_s=v.slice(s![i,..,..]).to_owned();
+            let v_s=evec_conj.clone().dot(&(v_s.dot(&evec.clone().reversed_axes())));//变换到本征态基函数
+            v.slice_mut(s![i,..,..]).assign(&v_s);//将 v 变换到以本征态为基底
         }
         //现在速度算符已经是以本征态为基函数
         let mut v_1=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//三个方向的速度算符
@@ -2849,26 +2909,39 @@ impl Model{
             let X=kron(&pauli,&Array2::eye(self.norb));
             let mut S=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));
             for i in 0..self.dim_r{
-                let v0=v.slice(s![i,..,..]).to_owned();
-                S.slice_mut(s![i,..,..]).assign(&(anti_comm(&X,&v0)/2.0));
+                let v0=J.slice(s![i,..,..]).to_owned();
+                let v0=anti_comm(&X,&v0)/2.0;
+                let v0=evec_conj.clone().dot(&(v0.dot(&evec.clone().reversed_axes())));//变换到本征态基函数
+                S.slice_mut(s![i,..,..]).assign(&v0);
             }
-            let S_1=anti_comm(&X,&v_1)/2.0;
-            let S_2=anti_comm(&X,&v_2)/2.0;
-            let S_3=anti_comm(&X,&v_3)/2.0;
+            let mut s_1=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//三个方向的速度算符
+            let mut s_2=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+            let mut s_3=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+            for i in 0..self.dim_r{
+                s_1=s_1.clone()+S.slice(s![i,..,..]).to_owned()*Complex::new(dir_1[[i]],0.0);
+                s_2=s_2.clone()+S.slice(s![i,..,..]).to_owned()*Complex::new(dir_2[[i]],0.0);
+                s_3=s_3.clone()+S.slice(s![i,..,..]).to_owned()*Complex::new(dir_3[[i]],0.0);
+            }
             let G_23:Array1::<f64>={//用来计算  beta gamma 的 G 
-                let A=v_2.clone()*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
-                let G=A.dot(&v_3);
-                G.diag().map(|x| 2.0*x.re)
+                let A=&v_2*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
+                let mut G=Array1::<f64>::zeros(self.nsta);
+                for i in 0..self.nsta{
+                    G[[i]]=A.slice(s![i,..]).dot(&v_3.slice(s![..,i])).re*2.0
+                }
+                G
             };
             let G_13_h:Array1::<f64>={//用来计算 alpha gamma 的 G 
-                let A=S_1.clone()*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
-                let G=A.dot(&v_3);
-                G.diag().map(|x| 2.0*x.re)
+                let A=&s_1*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
+                let mut G=Array1::<f64>::zeros(self.nsta);
+                for i in 0..self.nsta{
+                    G[[i]]=A.slice(s![i,..]).dot(&v_3.slice(s![..,i])).re*2.0
+                }
+                G
             };
             //开始计算partial_s
-            let partial_s_1=S_1.clone().diag().map(|x| x.re);
-            let partial_s_2=S_2.clone().diag().map(|x| x.re);
-            let partial_s_3=S_3.clone().diag().map(|x| x.re);
+            let partial_s_1=s_1.clone().diag().map(|x| x.re);
+            let partial_s_2=s_2.clone().diag().map(|x| x.re);
+            let partial_s_3=s_3.clone().diag().map(|x| x.re);
             let mut partial_s=Array2::<f64>::zeros((self.dim_r,self.nsta));
             for r in 0..self.dim_r{
                 let s0=S.slice(s![r,..,..]).to_owned();
@@ -2886,7 +2959,7 @@ impl Model{
                 for n in 0..self.nsta{
                     for n1 in 0..self.nsta{
                         for n2 in 0..self.nsta{
-                            B[[n]]+=S_1[[n,n2]]*(v_2[[n2,n1]]*v_3[[n1,n]]+v_3[[n2,n1]]*v_2[[n1,n]])*U0[[n,n1]].powi(3)*U0[[n,n2]];
+                            B[[n]]+=s_1[[n,n2]]*(v_2[[n2,n1]]*v_3[[n1,n]]+v_3[[n2,n1]]*v_2[[n1,n]])*U0[[n,n1]].powi(3)*U0[[n,n2]];
                         }
                     }
                 }
@@ -2894,7 +2967,7 @@ impl Model{
                 for n in 0..self.nsta{
                     for n1 in 0..self.nsta{
                         for n2 in 0..self.nsta{
-                            C[[n]]+=S_1[[n1,n2]]*(v_2[[n2,n]]*v_3[[n,n1]]+v_3[[n2,n]]*v_2[[n,n1]])*U0[[n,n1]].powi(3)*U0[[n1,n2]];
+                            C[[n]]+=s_1[[n1,n2]]*(v_2[[n2,n]]*v_3[[n,n1]]+v_3[[n2,n]]*v_2[[n,n1]])*U0[[n,n1]].powi(3)*U0[[n1,n2]];
                         }
                     }
                 }
@@ -2902,22 +2975,13 @@ impl Model{
             };
             //计算结束
             //开始最后的输出
-            return ((partial_s_1*G_23+partial_ve_2*G_13_h),band,Some(partial_G))
+            //println!("{},{}",&partial_s_1*&G_23,&partial_ve_2*&G_13_h);
+            return ((partial_s_1*G_23-partial_ve_2*G_13_h),band,Some(partial_G))
         }else{
             //开始计算 G_{ij}
             //G_{ij}=2Re\sum_{m\neq n} v_{i,nm}v_{j,mn}/(E_n-E_m)^3
-            /*
-            println!("U0={}",U0.map(|x| x.powi(3)));
-            println!("v1={}",v_1);
-            println!("v2={}",v_2);
-            println!("v3={}",v_3);
-            println!("ve_1={}",partial_ve_1);
-            println!("ve_2={}",partial_ve_2);
-            println!("evec={}",evec);
-            println!("band={}",band);
-            */
             let G_23:Array1::<f64>={//用来计算  beta gamma 的 G 
-                let A=v_2*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
+                let A=&v_2*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
                 let mut G=Array1::<f64>::zeros(self.nsta);
                 for i in 0..self.nsta{
                     G[[i]]=A.slice(s![i,..]).dot(&v_3.slice(s![..,i])).re*2.0
@@ -2925,15 +2989,14 @@ impl Model{
                 G
             };
             let G_13:Array1::<f64>={//用来计算 alpha gamma 的 G 
-                let A=v_1*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
+                let A=&v_1*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
                 let mut G=Array1::<f64>::zeros(self.nsta);
                 for i in 0..self.nsta{
                     G[[i]]=A.slice(s![i,..]).dot(&v_3.slice(s![..,i])).re*2.0
                 }
                 G
             };
-            //println!("G_12={}",G_13);
-            return (partial_ve_1*G_23+partial_ve_2*G_13,band,None)
+            return (partial_ve_1*G_23-partial_ve_2*G_13,band,None)
         }
     }
     pub fn berry_connection_dipole(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,spin:usize)->(Array2<f64>,Array2<f64>,Option<Array2<f64>>){
@@ -3051,6 +3114,7 @@ impl Model{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gnuplot::Major;
     use ndarray::prelude::*;
     use ndarray::*;
     use std::time::{Duration, Instant};
@@ -3062,10 +3126,39 @@ mod tests {
     use gnuplot::AxesCommon;
     #[test]
     fn anti_comm_test(){
-        let a=array![[1.0,2.0,3.0],[0.0,1.0,0.0],[0.0,0.0,0.0]];
-        let b=array![[1.0,0.0,0.0],[1.0,1.0,0.0],[2.0,0.0,1.0]];
-        let c=a.dot(&b)+b.dot(&a);
-        println!("{}",c)
+        let li:Complex<f64>=1.0*Complex::i();
+        let t=-1.0+0.0*li;
+        let t2=-1.0+0.0*li;
+        let delta=0.7;
+        let dim_r:usize=2;
+        let norb:usize=2;
+        let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
+        let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        model.set_onsite(arr1(&[-delta,delta]),0);
+        let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(t,0,1,&R,0);
+        }
+        let R0:Array2::<isize>=arr2(&[[1,0],[-1,1],[0,-1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(t2*li,0,0,&R,0);
+        }
+        let R0:Array2::<isize>=arr2(&[[-1,0],[1,-1],[0,1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(t2*li,1,1,&R,0);
+        }
+
+        let kvec=array![0.1,0.1];
+        let (eval,evec)=model.solve_onek(&kvec);
+        let v=model.gen_v(&kvec);
+        let v1:Array2<Complex<f64>>=v.slice(s![0,..,..]).to_owned();
+        let v2:Array2<Complex<f64>>=v.slice(s![1,..,..]).to_owned();
+        println!("{}",v1.dot(&v2)-v2.dot(&v1));
+
     }
     #[test]
     fn Haldan_model(){
@@ -3321,11 +3414,6 @@ mod tests {
         pdf_name.push_str("/nonlinear_ex.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
-        
-
-
-
-        
     }
 
     #[test]
@@ -3383,29 +3471,6 @@ mod tests {
             model.add_hop(-rashba*li*r0[[1]],1,1,&R,1);
             model.add_hop(-rashba*li*r0[[0]],1,1,&R,2);
         }
-        println!("{}",model.ham);
-        println!("{}",model.hamR);
-        /*
-        //加上altermagnetic 项
-        //加入的项为 $S_y \sg_y$
-        /*
-        //let R0:Array2::<isize>=arr2(&[[1,-1],[-1,1],[-1,-1]]);
-        let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
-        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
-            let R=R.to_owned();
-            model.add_hop(-alter,0,1,&R,3);
-        }
-        */
-        let R0:Array2::<isize>=arr2(&[[1,0],[-1,1],[0,-1]]);
-        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
-            let R=R.to_owned();
-            model.add_hop(alter*li,0,0,&R,3);
-            model.add_hop(-alter*li,1,1,&R,3);
-        }
-        println!("{}",model.ham);
-        println!("{}",model.hamR);
-        println!("{}",model.gen_ham(&arr1(&[0.0,0.0])));
-        */
         let nk:usize=1001;
         let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
         let path=arr2(&path);
@@ -3628,5 +3693,59 @@ mod tests {
         fg.show();
 
 
+    }
+    #[test]
+    fn kagome(){
+        let li:Complex<f64>=1.0*Complex::i();
+        let t1=1.0+0.0*li;
+        let t2=0.1+0.0*li;
+        let dim_r:usize=2;
+        let norb:usize=2;
+        let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
+        let orb=arr2(&[[0.0,0.0],[1.0/3.0,0.0],[0.0,1.0/3.0]]);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        //最近邻hopping
+        model.add_hop(t1,0,1,&array![0,0],0);
+        model.add_hop(t1,2,0,&array![0,0],0);
+        model.add_hop(t1,1,2,&array![0,0],0);
+        model.add_hop(t1,0,2,&array![0,-1],0);
+        model.add_hop(t1,0,1,&array![-1,0],0);
+        model.add_hop(t1,2,1,&array![-1,1],0);
+        let nk:usize=1001;
+        let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.],[0.0,0.0]];
+        let path=arr2(&path);
+        let label=vec!["G","K","M","G"];
+        model.show_band(&path,&label,nk,"tests/kagome/");
+        //start to draw the band structure
+        //Starting to calculate the edge state, first is the zigzag state
+        let nk:usize=501;
+        let U=arr2(&[[1.0,1.0],[-1.0,1.0]]);
+        let super_model=model.make_supercell(&U);
+        let zig_model=super_model.cut_piece(30,0);
+        let path=[[0.0,0.0],[0.0,0.5],[0.0,1.0]];
+        let path=arr2(&path);
+        let (k_vec,k_dist,k_node)=super_model.k_path(&path,nk);
+        let (eval,evec)=super_model.solve_all_parallel(&k_vec);
+        let label=vec!["G","M","G"];
+        zig_model.show_band(&path,&label,nk,"tests/kagome_zig/");
+        //Starting to calculate the DOS of kagome
+        let nk:usize=101;
+        let kmesh=arr1(&[nk,nk]);
+        let E_min=-3.0;
+        let E_max=3.0;
+        let E_n=1000;
+        let (E0,dos)=model.dos(&kmesh,E_min,E_max,E_n,1e-2);
+        //start to show DOS
+        let mut fg = Figure::new();
+        let x:Vec<f64>=E0.to_vec();
+        let axes=fg.axes2d();
+        let y:Vec<f64>=dos.to_vec();
+        axes.lines(&x, &y, &[Color("black")]);
+        let mut show_ticks=Vec::<String>::new();
+        let mut pdf_name=String::new();
+        pdf_name.push_str("tests/kagome/");
+        pdf_name.push_str("dos.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show();
     }
 }
