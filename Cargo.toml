@@ -8,6 +8,7 @@ edition = "2021"
 codegen-units = 1
 debug=false
 lto = "fat"
+target-cpu="native"
 
 [dependencies]
 ndarray={ version="*", features = ["rayon","blas","matrixmultiply-threading"] }
@@ -15,6 +16,9 @@ num-complex="*"
 ndarray-linalg={version="*",features=["intel-mkl-static"]}
 rayon="*"
 gnuplot="*"
+jemallocator = "0.3"
+jemalloc-sys = "0.3"
 
-#[build]
-#rustflags = ["-Ctarget-feature=+avx2,+fma"]
+[[example]]
+name = "WTe2_kp"
+path = "examples/WTe2_kp/src/main.rs"
