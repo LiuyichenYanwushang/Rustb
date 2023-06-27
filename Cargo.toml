@@ -18,7 +18,36 @@ rayon="*"
 gnuplot="*"
 jemallocator = "0.3"
 jemalloc-sys = "0.3"
+Rustb_basis={path="crate/Rustb_basis"}
+Rustb_conductivity={path="crate/Rustb_conductivity"}
 
 [[example]]
 name = "WTe2_kp"
-path = "examples/WTe2_kp/src/main.rs"
+path = "examples/WTe2_kp/main.rs"
+
+[[example]]
+name = "Intrinsic_nonlinear"
+path = "examples/Intrinsic_nonlinear/main.rs"
+
+[[example]]
+name = "z2_monopole"
+path = "examples/z2_monopole/main.rs"
+
+[[example]]
+name = "graphene"
+path="examples/graphene/main.rs"
+
+[[example]]
+name = "BiF_square"
+path="examples/BiF_square/main.rs"
+
+[[example]]
+name = "yuxuan_try"
+path="examples/yuxuan_try/main.rs"
+
+[[example]]
+name = "RuO2"
+path="examples/RuO2/main.rs"
+
+[workspace]
+members=["crate/Rustb_basis","crate/Rustb_conductivity"]
