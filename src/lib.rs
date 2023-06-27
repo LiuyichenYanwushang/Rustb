@@ -1,9 +1,11 @@
 #![allow(warnings)]
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 use num_complex::Complex;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
+use ndarray::concatenate;
 use ndarray_linalg::*;
 use std::f64::consts::PI;
 use ndarray_linalg::{Eigh, UPLO};
@@ -13,6 +15,9 @@ use std::io::Write;
 use std::fs::File;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
+
+pub use Rustb_basis::basis;
+pub use Rustb_conductivity::conductivity;
 /// This cate is used to perform various calculations on the TB model, currently including:
 ///
 /// - Calculate the band structure
@@ -605,7 +610,6 @@ macro_rules! Fermi_tetrahedron_integrate {
 ///    let (k_vec,k_dist,k_node)=model.k_path(&path,nk);
 ///    let (eval,evec)=model.solve_all_parallel(&k_vec);
 ///    let label=vec!["G","K","M","G"];
-///
 ///    let (k_vec,k_dist,k_node)=model.k_path(&path,nk); //generate the k vector 
 ///    let eval=model.solve_band_all_parallel(&k_vec);  //calculate the bands
 ///    let mut fg = Figure::new();
@@ -638,8 +642,6 @@ macro_rules! Fermi_tetrahedron_integrate {
 ///    let zig_model=super_model.cut_piece(100,0);
 ///    let path=[[0.0,0.0],[0.0,0.5],[0.0,1.0]];
 ///    let path=arr2(&path);
-///    let (k_vec,k_dist,k_node)=super_model.k_path(&path,nk);
-///    let (eval,evec)=super_model.solve_all_parallel(&k_vec);
 ///    let label=vec!["G","M","G"];
 ///    zig_model.show_band(&path,&label,nk,"graphene_zig");
 ///    //Starting to calculate the DOS of graphene
@@ -662,8 +664,20 @@ macro_rules! Fermi_tetrahedron_integrate {
 ///    fg.show();
 ///}
 ///```
-impl Model{
-    pub fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
+///
+///now you can use 
+///```
+///cargo new graphene
+///```
+///and then put the code into graphene/src/main.rs
+///
+///set Cargo.toml
+///
+///```
+///
+///```
+impl basis<'_> for Model{
+    fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
         /*
         //!这个函数是用来初始化一个 Model, 需要输入的变量意义为
         //!
@@ -764,7 +778,7 @@ impl Model{
         model
     }
     #[allow(non_snake_case)]
-    pub fn set_hop(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:&Array1::<isize>,pauli:isize){
+    fn set_hop(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:&Array1::<isize>,pauli:isize){
         /*
         //! 这个是用来给模型添加 hopping 的, "set" 表示可以用来覆盖之前的hopping
         //!
@@ -832,7 +846,7 @@ impl Model{
 
 
     #[allow(non_snake_case)]
-    pub fn add_hop(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:&Array1::<isize>,pauli:isize){
+    fn add_hop(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:&Array1::<isize>,pauli:isize){
         //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp 
         if pauli != 0 && self.spin==false{
             println!("Wrong, if spin is Ture and pauli is not zero, the pauli is not use")
@@ -865,8 +879,42 @@ impl Model{
             self.hamR.push(Axis(0),R.view()).unwrap();
         }
     }
+
+
     #[allow(non_snake_case)]
-    pub fn set_onsite(&mut self, tmp:Array1::<f64>,pauli:isize){
+    fn add_element(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:&Array1::<isize>){
+        //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp 
+        if R.len()!=self.dim_r{
+            panic!("Wrong, the R length should equal to dim_r")
+        }
+        if ind_i>=self.nsta ||ind_j>=self.nsta{
+            panic!("Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",self.norb,ind_i,ind_j)
+        }
+        let R_exist=find_R(&self.hamR,&R);
+        let negative_R=-R.clone();
+        let negative_R_exist=find_R(&self.hamR,&negative_R);
+        if R_exist {
+            let index=index_R(&self.hamR,&R);
+            self.ham[[index,ind_i,ind_j]]=tmp;
+            if negative_R_exist && ind_i !=ind_j{
+                self.ham[[index,ind_j,ind_i]]=tmp.conj();
+            }
+            if ind_i==ind_j && tmp.im !=0.0 && index==0{
+                panic!("Wrong, the onsite hopping must be real, but here is {}",tmp)
+            }
+        }else if negative_R_exist {
+            let index=index_R(&self.hamR,&negative_R);
+            self.ham[[index,ind_j,ind_i]]=tmp.conj();
+        }else{
+            let mut new_ham=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+            new_ham[[ind_i,ind_j]]=tmp;
+            self.ham.push(Axis(0),new_ham.view()).unwrap();
+            self.hamR.push(Axis(0),R.view()).unwrap();
+        }
+    }
+
+    #[allow(non_snake_case)]
+    fn set_onsite(&mut self, tmp:Array1::<f64>,pauli:isize){
         //! 直接对对角项进行设置
         if tmp.len()!=self.norb{
             panic!("Wrong, the norb is {}, however, the onsite input's length is {}",self.norb,tmp.len())
@@ -876,12 +924,12 @@ impl Model{
         }
     }
     #[allow(non_snake_case)]
-    pub fn set_onsite_one(&mut self, tmp:f64,ind:usize,pauli:isize){
+    fn set_onsite_one(&mut self, tmp:f64,ind:usize,pauli:isize){
         //!对  $\bra{i\bm 0}\hat H\ket{i\bm 0}$ 进行设置
         let R=Array1::<isize>::zeros(self.dim_r);
         self.set_hop(Complex::new(tmp,0.0),ind,ind,&R,pauli)
     }
-    pub fn del_hop(&mut self,ind_i:usize,ind_j:usize,R:Array1::<isize>,pauli:isize) {
+    fn del_hop(&mut self,ind_i:usize,ind_j:usize,R:Array1::<isize>,pauli:isize) {
         //! 删除 $\bra{i\bm 0}\hat H\ket{j\bm R}$
         if R.len()!=self.dim_r{
             panic!("Wrong, the R length should equal to dim_r")
@@ -893,7 +941,7 @@ impl Model{
     }
 
     #[allow(non_snake_case)]
-    pub fn k_path(&self,path:&Array2::<f64>,nk:usize)->(Array2::<f64>,Array1::<f64>,Array1::<f64>){
+    fn k_path(&self,path:&Array2::<f64>,nk:usize)->(Array2::<f64>,Array1::<f64>,Array1::<f64>){
         //!根据高对称点来生成高对称路径, 画能带图
         if self.dim_r==0{
             panic!("the k dimension of the model is 0, do not use k_path")
@@ -939,7 +987,7 @@ impl Model{
         (k_vec,k_dist,k_node)
     }
     #[allow(non_snake_case)]
-    pub fn gen_ham(&self,kvec:&Array1::<f64>)->Array2::<Complex<f64>>{
+    fn gen_ham(&self,kvec:&Array1::<f64>)->Array2::<Complex<f64>>{
         //!这个是做傅里叶变换, 将实空间的哈密顿量变换到倒空间的哈密顿量
         //!
         //!具体来说, 就是
@@ -971,7 +1019,7 @@ impl Model{
         re_ham
     }
     #[allow(non_snake_case)]
-    pub fn gen_r(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
+    fn gen_r(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
         //!和 gen_ham 类似, 将 $\hat{\bm r}$ 进行傅里叶变换
         //!
         //!$$\bm r_{mn,\bm k}=\bra{m\bm k}\hat{\bm r}\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat{\bm r}\ket{n\bm R}e^{-i(\bm R-\bm\tau_i+\bm \tau_j)\cdot\bm k}$$
@@ -1026,7 +1074,7 @@ impl Model{
     ///
     ///这里的 $\\mathcal A_{\bm k}$ 的定义为 $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R+\bm\tau_m-\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
     #[allow(non_snake_case)]
-    pub fn gen_v(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
+    fn gen_v(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length must equal to the dimension of model.")
         }
@@ -1098,7 +1146,7 @@ impl Model{
         v
     }
     #[allow(non_snake_case)]
-    pub fn solve_band_onek(&self,kvec:&Array1::<f64>)->Array1::<f64>{
+    fn solve_band_onek(&self,kvec:&Array1::<f64>)->Array1::<f64>{
         //!求解单个k点的能带值
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
@@ -1113,7 +1161,7 @@ impl Model{
         let eval = if let Ok(eigvals) = hamk.eigvalsh(UPLO::Lower) { eigvals } else { todo!() };
         eval
     }
-    pub fn solve_band_all(&self,kvec:&Array2::<f64>)->Array2::<f64>{
+    fn solve_band_all(&self,kvec:&Array2::<f64>)->Array2::<f64>{
         //!求解多个k点的能带值
         let nk=kvec.len_of(Axis(0));
         let mut band=Array2::<f64>::zeros((nk,self.nsta));
@@ -1126,7 +1174,7 @@ impl Model{
         band
     }
     #[allow(non_snake_case)]
-    pub fn solve_band_all_parallel(&self,kvec:&Array2::<f64>)->Array2::<f64>{
+    fn solve_band_all_parallel(&self,kvec:&Array2::<f64>)->Array2::<f64>{
         //!并行求解多个k点的能带值
         let nk=kvec.len_of(Axis(0));
         let eval:Vec<_>=kvec.axis_iter(Axis(0)).into_par_iter().map(|x| {
@@ -1137,7 +1185,7 @@ impl Model{
         band
     }
     #[allow(non_snake_case)]
-    pub fn solve_onek(&self,kvec:&Array1::<f64>)->(Array1::<f64>,Array2::<Complex<f64>>){
+    fn solve_onek(&self,kvec:&Array1::<f64>)->(Array1::<f64>,Array2::<Complex<f64>>){
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
         } 
@@ -1153,7 +1201,7 @@ impl Model{
         (eval,evec)
     }
     #[allow(non_snake_case)]
-    pub fn solve_all(&self,kvec:&Array2::<f64>)->(Array2::<f64>,Array3::<Complex<f64>>){
+    fn solve_all(&self,kvec:&Array2::<f64>)->(Array2::<f64>,Array3::<Complex<f64>>){
         let nk=kvec.len_of(Axis(0));
         let mut band=Array2::<f64>::zeros((nk,self.nsta));
         let mut vectors=Array3::<Complex<f64>>::zeros((nk,self.nsta,self.nsta));
@@ -1167,7 +1215,7 @@ impl Model{
         (band,vectors)
     }
     #[allow(non_snake_case)]
-    pub fn solve_all_parallel(&self,kvec:&Array2::<f64>)->(Array2::<f64>,Array3::<Complex<f64>>){
+    fn solve_all_parallel(&self,kvec:&Array2::<f64>)->(Array2::<f64>,Array3::<Complex<f64>>){
         let nk=kvec.len_of(Axis(0));
         let (eval,evec):(Vec<_>,Vec<_>)=kvec
             .axis_iter(Axis(0))
@@ -1188,7 +1236,7 @@ impl Model{
     ///dir:方向
     ///
     ///返回一个model, 其中 dir 和输入的model是一致的, 但是轨道数目和原子数目都会扩大num倍, 沿着dir方向没有胞间hopping.
-    pub fn cut_piece(&self,num:usize,dir:usize)->Model{
+    fn cut_piece(&self,num:usize,dir:usize)->Model{
         //! This function is used to truncate a certain direction of a model.
         //!
         //! Parameters:
@@ -1401,7 +1449,7 @@ impl Model{
         model
     }
 
-    pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
+    fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         //! 这个是用来且角态或者切棱态的
 
         match self.dim_r{
@@ -1442,8 +1490,9 @@ impl Model{
                         let mut a:usize=0;
                         for i in 0..model_2.natom{
                             let atom_position=model_2.atom.row(i).to_owned();
-                            if atom_position[[dir[1]]]> (num as f64)/(num as f64+1.0) 
-                                || atom_position[[dir[1]]]> (num as f64)/(num as f64+1.0)  {
+                            let num0=num as f64;
+                            if atom_position[[dir[0]]]*(num0+1.0)/num0> 1.0+1e-5 
+                                || atom_position[[dir[1]]]*(num0+1.0)/num0> 1.0+1e-5  {
                                 a+=model_2.atom_list[i];
                             }else{
                                 use_atom_item.push(i);
@@ -1511,10 +1560,12 @@ impl Model{
                 for (i,use_i) in use_atom_item.iter().enumerate(){
                     new_atom.row_mut(i).assign(&old_model.atom.row(*use_i));
                     new_atom_list.push(old_model.atom_list[*use_i]);
+                }
+                for (i,use_i) in use_orb_item.iter().enumerate(){
                     new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
                 }
                 let mut new_model=Model::tb_model(self.dim_r,old_model.lat,new_orb,self.spin,Some(new_atom),Some(new_atom_list));
-                let n_R=new_model.hamR.len_of(Axis(0));
+                let n_R=old_model.hamR.len_of(Axis(0));
                 let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta,new_model.nsta));
                 let mut new_hamR=Array2::<isize>::zeros((0,self.dim_r));
                 let norb=new_model.norb;
@@ -1769,7 +1820,7 @@ impl Model{
 
 
 
-    pub fn make_supercell(&self,U:&Array2::<f64>)->Model{
+    fn make_supercell(&self,U:&Array2::<f64>)->Model{
         //这个函数是用来对模型做变换的, 变换前后模型的基矢 $L'=UL$.
         //!This function is used to transform the model, where the new basis after transformation is given by $L' = UL$.
         if self.dim_r!=U.len_of(Axis(0)){
@@ -2162,10 +2213,170 @@ impl Model{
         };
         model
     }
-    pub fn shift_to_zero(&mut self){
+    fn shift_to_zero(&mut self){
+        //! 这个是把超出单元格的原子移动回原本的位置的代码
+        //! 这个可以用来重新构造原胞原子的位置.
+        //! 我们看一下 SSH model 的结果
+
+        //首先, 先确定哪些原子需要移动
+        let mut move_R=Array2::<isize>::zeros((0,self.dim_r));//对于给
+        let mut new_atom=Array2::<f64>::zeros((0,self.dim_r));
+        let mut new_orb=Array2::<f64>::zeros((0,self.dim_r));
+        let mut new_ham=Array3::<Complex<f64>>::zeros((1,self.nsta,self.nsta));
+        let mut new_rmatrix=Array4::<Complex<f64>>::zeros((1,self.dim_r,self.nsta,self.nsta));
+        let mut new_hamR=Array2::<isize>::zeros((1,self.dim_r));
+        let mut a:usize=0;
+        for (i,atom) in self.atom.axis_iter(Axis(0)).enumerate(){
+            let mut atom=atom.to_owned();
+            atom.map(|x| if (x.fract()-1.0).abs() < 1e-8 || x.fract().abs()<1e-8{x.round()} else {*x}); 
+            // 这是先把原子中靠近整数晶格的原子移动到整数晶格上, 方便判断原子属于哪个原胞
+            let R=atom.map(|x| x.trunc() as isize);
+            let use_atom=atom.map(|x| x.fract());
+            let R0=use_atom.clone().map(|x| if *x<0.0 {-1 as isize}else{0 as isize});
+            let R=R+&R0;
+            let use_atom=use_atom.map(|x| if *x<0.0 {*x+1.0}else{*x});
+            new_atom.push_row(use_atom.view());
+            for j in 0..self.atom_list[i] {
+                //self.orb.row_mut(i).add_assign(&(R.map(|x| *x as f64)));
+                new_orb.push_row((&self.orb.row_mut(a)-R.map(|x| *x as f64)).view());
+                move_R.push_row(R.view());
+                a+=1;
+            }
+        }
+        let nr=self.rmatrix.len_of(Axis(0));
+        if nr==1{
+            for i in 0..self.dim_r{
+                for j in 0..self.norb{
+                    self.rmatrix[[0,i,j,j]]=Complex::new(self.orb[[j,i]],0.0);
+                    if self.spin{
+                        self.rmatrix[[0,i,j+self.norb,j+self.norb]]=Complex::new(self.orb[[j,i]],0.0);
+                    }
+                }
+            }
+        }
+        for i in 0..self.norb{
+            for j in 0..self.norb{
+                for (r,hopR) in self.hamR.axis_iter(Axis(0)).enumerate(){
+                    if r==0 && i>j{
+                        continue
+                    }
+                    let useR=hopR.to_owned()-move_R.row(i)+move_R.row(j);
+                    let R_exist=find_R(&new_hamR,&useR);
+                    let negative_R=-useR.clone();
+                    let negative_R_exist=find_R(&new_hamR,&negative_R);
+                    if R_exist{
+                        let index=index_R(&new_hamR,&useR);
+                        if self.spin{
+                            new_ham[[index,i,j]]=self.ham[[r,i,j]];
+                            new_ham[[index,i+self.norb,j]]=self.ham[[r,i+self.norb,j]];
+                            new_ham[[index,i,j+self.norb]]=self.ham[[r,i,j+self.norb]];
+                            new_ham[[index,i+self.norb,j+self.norb]]=self.ham[[r,i+self.norb,j+self.norb]];
+                        }else{
+                            new_ham[[index,i,j]]=self.ham[[r,i,j]];
+                        }
+                        if negative_R_exist{
+                            if self.spin{
+                                new_ham[[index,j,i]]=self.ham[[r,i,j]].conj();
+                                new_ham[[index,j+self.norb,i]]=self.ham[[r,i+self.norb,j]].conj();
+                                new_ham[[index,j,i+self.norb]]=self.ham[[r,i,j+self.norb]].conj();
+                                new_ham[[index,j+self.norb,i+self.norb]]=self.ham[[r,i+self.norb,j+self.norb]].conj();
+                            }else{
+                                new_ham[[index,j,i]]=self.ham[[r,i,j]].conj();
+                            }
+                        }
+                        if nr !=1{
+                            if self.spin{
+                                for s in 0..self.dim_r{
+                                    new_rmatrix[[index,s,i,j]]=self.rmatrix[[r,s,i,j]];
+                                    new_rmatrix[[index,s,i+self.norb,j]]=self.rmatrix[[r,s,i+self.norb,j]];
+                                    new_rmatrix[[index,s,i,j+self.norb]]=self.rmatrix[[r,s,i,j+self.norb]];
+                                    new_rmatrix[[index,s,i+self.norb,j+self.norb]]=self.rmatrix[[r,s,i+self.norb,j+self.norb]];
+                                }
+                            }else{
+                                for s in 0..self.dim_r{
+                                    new_rmatrix[[index,s,i,j]]=self.rmatrix[[r,s,i,j]];
+                                }
+                            }
+
+                            if negative_R_exist{
+                                if self.spin{
+                                    for s in 0..self.dim_r{
+                                        new_rmatrix[[index,s,j,i]]=self.rmatrix[[r,s,i,j]];
+                                        new_rmatrix[[index,s,j+self.norb,i]]=self.rmatrix[[r,s,i+self.norb,j]];
+                                        new_rmatrix[[index,s,j,i+self.norb]]=self.rmatrix[[r,s,i,j+self.norb]];
+                                        new_rmatrix[[index,s,j+self.norb,i+self.norb]]=self.rmatrix[[r,s,i+self.norb,j+self.norb]];
+                                    }
+                                }else{
+                                    for s in 0..self.dim_r{
+                                        new_rmatrix[[index,s,j,i]]=self.rmatrix[[r,s,i,j]].conj();
+                                    }
+                                }
+                            }
+                        }
+                    }else if negative_R_exist{
+                        let index=index_R(&new_hamR,&negative_R);
+                        if self.spin{
+                            new_ham[[index,i,j]]=self.ham[[r,i,j]];
+                            new_ham[[index,i+self.norb,j]]=self.ham[[r,i+self.norb,j]];
+                            new_ham[[index,i,j+self.norb]]=self.ham[[r,i,j+self.norb]];
+                            new_ham[[index,i+self.norb,j+self.norb]]=self.ham[[r,i+self.norb,j+self.norb]];
+                        }else{
+                            new_ham[[index,i,j]]=self.ham[[r,i,j]];
+                        }
+                        if nr !=1{
+                            if self.spin{
+                                for s in 0..self.dim_r{
+                                    new_rmatrix[[index,s,i,j]]=self.rmatrix[[r,s,i,j]];
+                                    new_rmatrix[[index,s,i+self.norb,j]]=self.rmatrix[[r,s,i+self.norb,j]];
+                                    new_rmatrix[[index,s,i,j+self.norb]]=self.rmatrix[[r,s,i,j+self.norb]];
+                                    new_rmatrix[[index,s,i+self.norb,j+self.norb]]=self.rmatrix[[r,s,i+self.norb,j+self.norb]];
+                                }
+                            }else{
+                                for s in 0..self.dim_r{
+                                    new_rmatrix[[index,s,i,j]]=self.rmatrix[[r,s,i,j]];
+                                }
+                            }
+                        }
+                    }else{
+                        new_hamR.push_row(useR.view());
+                        let mut use_ham=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+                        if self.spin{
+                            use_ham[[i,j]]=self.ham[[r,i,j]];
+                            use_ham[[i+self.norb,j]]=self.ham[[r,i+self.norb,j]];
+                            use_ham[[i,j+self.norb]]=self.ham[[r,i,j+self.norb]];
+                            use_ham[[i+self.norb,j+self.norb]]=self.ham[[r,i+self.norb,j+self.norb]];
+                        }else{
+                            use_ham[[i,j]]=self.ham[[r,i,j]];
+                        }
+                        new_ham.push(Axis(0),use_ham.view());
+                        if nr !=1{
+                            let mut use_rmatrix=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));
+                            if self.spin{
+                                for s in 0..self.dim_r{
+                                    use_rmatrix[[s,i,j]]=self.rmatrix[[r,s,i,j]];
+                                    use_rmatrix[[s,i+self.norb,j]]=self.rmatrix[[r,s,i+self.norb,j]];
+                                    use_rmatrix[[s,i,j+self.norb]]=self.rmatrix[[r,s,i,j+self.norb]];
+                                    use_rmatrix[[s,i+self.norb,j+self.norb]]=self.rmatrix[[r,s,i+self.norb,j+self.norb]];
+                                }
+                            }else{
+                                for s in 0..self.dim_r{
+                                    use_rmatrix[[s,i,j]]=self.rmatrix[[r,s,i,j]];
+                                }
+                            }
+                            new_rmatrix.push(Axis(0),use_rmatrix.view());
+                        }
+                    }
+                }
+            }
+        }
+        self.atom=new_atom;
+        self.orb=new_orb;
+        self.hamR=new_hamR;
+        self.ham=new_ham;
+        self.rmatrix=new_rmatrix;
     }
     #[allow(non_snake_case)]
-    pub fn dos(&self,k_mesh:&Array1::<usize>,E_min:f64,E_max:f64,E_n:usize,sigma:f64)->(Array1::<f64>,Array1::<f64>){
+    fn dos(&self,k_mesh:&Array1::<usize>,E_min:f64,E_max:f64,E_n:usize,sigma:f64)->(Array1::<f64>,Array1::<f64>){
         //! 我这里用的算法是高斯算法, 其算法过程如下
         //! 首先, 根据 k_mesh 算出所有的能量 $\ve_n$, 然后, 按照定义
         //! $$\rho(\ve)=\sum_N\int\dd\bm k \delta(\ve_n-\ve)$$
@@ -2199,7 +2410,7 @@ impl Model{
     }
     ///这个函数是用来快速画能带图的, 用python画图, 因为Rust画图不太方便.
     #[allow(non_snake_case)]
-    pub fn show_band(&self,path:&Array2::<f64>,label:&Vec<&str>,nk:usize,name:&str)-> std::io::Result<()>{
+    fn show_band(&self,path:&Array2::<f64>,label:&Vec<&str>,nk:usize,name:&str)-> std::io::Result<()>{
         use std::fs::create_dir_all;
         use std::path::Path;
         use gnuplot::{Figure, Caption, Color};
@@ -2278,7 +2489,7 @@ impl Model{
         Ok(())
     }
     #[allow(non_snake_case)]
-    pub fn from_hr(path:&str,file_name:&str,zero_energy:f64)->Model{
+    fn from_hr(path:&str,file_name:&str,zero_energy:f64)->Model{
         use std::io::BufReader;
         use std::io::BufRead;
         use std::fs::File;
@@ -2557,10 +2768,11 @@ impl Model{
     }
 }
 
-impl Model{
+impl conductivity<'_> for Model{
 
     #[allow(non_snake_case)]
     fn berry_curvature_n_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array1::<f64>,Array1::<f64>){
+        //!给定一个k点, 返回 $\Omega_n(\bm k)$
         //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
         let li:Complex<f64>=1.0*Complex::i();
         let (band,evec)=self.solve_onek(&k_vec);
@@ -2619,7 +2831,7 @@ impl Model{
     }
 
     #[allow(non_snake_case)]
-    pub fn berry_curvature_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
+    fn berry_curvature_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
         //!给定一个 k 点, 指定 dir_1=$\alpha$, dir_2=$\beta$, T 代表温度, og= $\og$, 
         //!mu=$\mu$ 为费米能级, spin=0,1,2,3 为$\sg_0,\sg_x,\sg_y,\sg_z$,
         //!当体系不存在自旋的时候无论如何输入spin都默认 spin=0
@@ -2641,7 +2853,7 @@ impl Model{
         omega
     }
     #[allow(non_snake_case)]
-    pub fn berry_curvature(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->Array1::<f64>{
+    fn berry_curvature(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->Array1::<f64>{
     //!这个是用来并行计算大量k点的贝利曲率
     //!这个可以用来画能带上的贝利曲率, 或者画一个贝利曲率的热图
         if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r{
@@ -2656,7 +2868,7 @@ impl Model{
         omega
     }
     #[allow(non_snake_case)]
-    pub fn Hall_conductivity(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
+    fn Hall_conductivity(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
     //!这个是用来计算霍尔电导的.
     //!这里采用的是均匀撒点的方法, 利用 berry_curvature, 我们有
     //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}(\bm k),$$ 其中 $N$ 是 k 点数目, 
@@ -2669,7 +2881,7 @@ impl Model{
     }
     #[allow(non_snake_case)]
     ///这个是采用自适应积分算法来计算霍尔电导的, 一般来说, 我们建议 re_err 设置为 1, 而 ab_err 设置为 0.01
-    pub fn Hall_conductivity_adapted(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64,re_err:f64,ab_err:f64)->f64{
+    fn Hall_conductivity_adapted(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64,re_err:f64,ab_err:f64)->f64{
         let mut k_range=gen_krange(k_mesh);//将要计算的区域分成小块
         let n_range=k_range.len_of(Axis(0));
         let ab_err=ab_err/(n_range as f64);
@@ -2681,7 +2893,7 @@ impl Model{
         conductivity
     }
     ///用来计算多个 $\mu$ 值的, 这个函数是先求出 $\Omega_n$, 然后再分别用不同的费米能级来求和, 这样速度更快, 因为避免了重复求解 $\Omega_n$, 但是相对来说更耗内存, 而且不能做到自适应积分算法.
-    pub fn Hall_conductivity_mu(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:Array1::<f64>,spin:usize,eta:f64)->Array1::<f64>{
+    fn Hall_conductivity_mu(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:Array1::<f64>,spin:usize,eta:f64)->Array1::<f64>{
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let (omega_n,band):(Vec<_>,Vec<_>)=kvec.axis_iter(Axis(0)).into_par_iter().map(|x| {
@@ -2716,7 +2928,7 @@ impl Model{
         conductivity
     }
 
-    pub fn berry_curvature_dipole_n_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array1<f64>,Array1<f64>){
+    fn berry_curvature_dipole_n_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array1<f64>,Array1<f64>){
         //! 这个是用来计算 $$\pdv{\ve_{n\bm k}}{k_\gm}\Og_{n,\ap\bt}$$
         //!
         //!这里需要注意的一点是, 一般来说对于 $\p_\ap\ve_{\bm k}$, 需要用差分法来求解, 我这里提供了一个算法. 
@@ -2794,7 +3006,7 @@ impl Model{
         let omega_n:Array1::<f64>=omega_n*partial_ve;
         (omega_n,band) //最后得到的 D
     }
-    pub fn berry_curvature_dipole_n(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array2::<f64>,Array2::<f64>){
+    fn berry_curvature_dipole_n(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array2::<f64>,Array2::<f64>){
         //这个是在 onek的基础上进行并行计算得到一系列k点的berry curvature dipole
         //!This function performs parallel computation based on the onek function to obtain a series of Berry curvature dipoles at different k-points.
         //!这个方法用的是对费米分布的修正, 因为高阶的dipole 修正导致的非线性霍尔电导为 $$\sg_{\ap\bt\gm}=\tau\int\dd\bm k\sum_n\p_\gm\ve_{n\bm k}\Og_{n,\ap\bt}\lt\.\pdv{f_{\bm k}}{\ve}\rt\rvert_{E=\ve_{n\bm k}}.$$ 所以我们这里输出的是 
@@ -2811,7 +3023,7 @@ impl Model{
         let band=Array2::<f64>::from_shape_vec((nk, self.nsta),band.into_iter().flatten().collect()).unwrap();
         (omega,band)
     }
-    pub fn Nonlinear_Hall_conductivity_Extrinsic(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,mu:&Array1<f64>,T:f64,og:f64,spin:usize,eta:f64)->Array1<f64>{
+    fn Nonlinear_Hall_conductivity_Extrinsic(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,mu:&Array1<f64>,T:f64,og:f64,spin:usize,eta:f64)->Array1<f64>{
         //这个是用 berry curvature dipole 对整个布里渊去做积分得到非线性霍尔电导, 是extrinsic 的 
         //!This function calculates the extrinsic nonlinear Hall conductivity by integrating the Berry curvature dipole over the entire Brillouin zone. The Berry curvature dipole is first computed at a series of k-points using parallel computation based on the onek function.
 
@@ -2851,7 +3063,7 @@ impl Model{
         return conductivity
     }
 
-    pub fn berry_connection_dipole_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,spin:usize)->(Array1::<f64>,Array1::<f64>,Option<Array1<f64>>){
+    fn berry_connection_dipole_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,spin:usize)->(Array1::<f64>,Array1::<f64>,Option<Array1<f64>>){
         //!这个是根据 Nonlinear_Hall_conductivity_intrinsic 的注释, 当不存在自旋的时候提供
         //!$$v_\ap G_{\bt\gm}-v_\bt G_{\ap\gm}$$
         //!其中 $$ G_{ij}=2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3} $$
@@ -2999,7 +3211,7 @@ impl Model{
             return (partial_ve_1*G_23-partial_ve_2*G_13,band,None)
         }
     }
-    pub fn berry_connection_dipole(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,spin:usize)->(Array2<f64>,Array2<f64>,Option<Array2<f64>>){
+    fn berry_connection_dipole(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,spin:usize)->(Array2<f64>,Array2<f64>,Option<Array2<f64>>){
         //! 这个是基于 onek 的, 进行关于 k 点并行求解
         if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r || dir_3.len() != self.dim_r{
             panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r,dir_1.len(),dir_2.len())
@@ -3028,7 +3240,7 @@ impl Model{
             return (omega,band,None)
         }
     }
-    pub fn Nonlinear_Hall_conductivity_Intrinsic(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,mu:&Array1<f64>,T:f64,spin:usize)->Array1<f64>{
+    fn Nonlinear_Hall_conductivity_Intrinsic(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,mu:&Array1<f64>,T:f64,spin:usize)->Array1<f64>{
         //! The Intrinsic Nonlinear Hall Conductivity arises from the correction of the Berry connection by the electric and magnetic fields [PRL 112, 166601 (2014)]. The formula employed is:
         //!$$\tilde\bm\Og_{\bm k}=\nb_{\bm k}\times\lt(\bm A_{\bm k}+\bm A_{\bm k}^\prime\rt)$$
         //!and the $\bm A_{i,\bm k}^\prime=F_{ij}B_j+G_{ij}E_j$, where
@@ -3111,8 +3323,29 @@ impl Model{
     }
 }
 
+///这个模块是用来求解表面格林函数的一个模块.
+///公式后面再补充
+impl Model{
+    fn gen_ham_hop(&self,dir1:&Array1<f64>,dir2:&Array1<f64>)->(Array2<Complex<f64>>,Array2<Complex<f64>>){
+        //!这个模块是用来计算层间hopping的
+        let dir3=array![(dir1[[1]]*dir2[[2]]-dir2[[1]]*dir1[[2]]),-(dir1[[0]]*dir2[[2]]-dir2[[0]]*dir1[[2]]),dir1[[0]]*dir2[[1]]-dir2[[0]]*dir1[[1]]];
+        let dir_1=dir1.clone();
+        let dir_2=dir2.clone();
+        let dir1=dir_1.into_shape((1,3)).unwrap();
+        let dir2=dir_2.into_shape((1,3)).unwrap();
+        let dir3=dir3.into_shape((1,3)).unwrap();
+        let U=concatenate![Axis(0),dir1,dir2,dir3];
+        let model=self.make_supercell(&U);
+        let mut ham0=Array2::<Complex<f64>>::zeros((model.nsta,model.nsta));
+        let mut hamR=Array2::<Complex<f64>>::zeros((model.nsta,model.nsta));
+        (ham0,hamR)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::f64::consts::PI;
+    use num_complex::Complex;
     use super::*;
     use gnuplot::Major;
     use ndarray::prelude::*;
@@ -3210,7 +3443,7 @@ mod tests {
         let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,T,og,mu,spin,eta);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
-        println!("{}",conductivity/(2.0*PI));
+        println!("quantom_Hall_effect={}",conductivity/(2.0*PI));
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
 
         let nk:usize=50;
@@ -3747,5 +3980,35 @@ mod tests {
         pdf_name.push_str("dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
+    }
+
+    #[test]
+    fn SSH(){
+        let li:Complex<f64>=1.0*Complex::i();
+        let t1=1.0+0.0*li;
+        let t2=0.1+0.0*li;
+        let dim_r:usize=1;
+        let norb:usize=2;
+        let lat=arr2(&[[1.0]]);
+        let orb=arr2(&[[0.0],[0.5]]);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        model.add_hop(t1,0,1,&array![0],0);
+        model.add_hop(t2,0,1,&array![-1],0);
+        let nk:usize=1001;
+        let path=[[0.0],[0.5],[1.0]];
+        let path=arr2(&path);
+        let label=vec!["G","M","G"];
+        model.show_band(&path,&label,nk,"tests/SSH/");
+        println!("atom={}",model.atom);
+        println!("{}",model.ham);
+        println!("{}",model.hamR);
+        model.orb-=0.25;
+        model.atom-=0.25;
+        println!("orb_old={}",model.orb);
+        model.shift_to_zero();
+        println!("orb_new={}",model.orb);
+        println!("{}",model.ham);
+        println!("{}",model.hamR);
+        model.show_band(&path,&label,nk,"tests/SSH/new/");
     }
 }
