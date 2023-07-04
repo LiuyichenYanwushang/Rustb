@@ -1,0 +1,15 @@
+[package]
+name = "Rustb_basis"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ndarray={ version="*", features = ["rayon","blas","matrixmultiply-threading"] }
+num-complex="*"
+ndarray-linalg={version="*",features=["intel-mkl-static"]}
+rayon="*"
+gnuplot="*"
+jemallocator = "0.3"
+jemalloc-sys = "0.3"

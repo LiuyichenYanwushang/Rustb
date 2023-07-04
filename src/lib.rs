@@ -2893,7 +2893,7 @@ impl conductivity<'_> for Model{
         conductivity
     }
     ///用来计算多个 $\mu$ 值的, 这个函数是先求出 $\Omega_n$, 然后再分别用不同的费米能级来求和, 这样速度更快, 因为避免了重复求解 $\Omega_n$, 但是相对来说更耗内存, 而且不能做到自适应积分算法.
-    fn Hall_conductivity_mu(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:Array1::<f64>,spin:usize,eta:f64)->Array1::<f64>{
+    fn Hall_conductivity_mu(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:&Array1::<f64>,spin:usize,eta:f64)->Array1::<f64>{
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let (omega_n,band):(Vec<_>,Vec<_>)=kvec.axis_iter(Axis(0)).into_par_iter().map(|x| {
