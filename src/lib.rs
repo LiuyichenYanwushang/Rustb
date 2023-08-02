@@ -2,6 +2,7 @@
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
+use gnuplot::Major;
 use num_complex::Complex;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -27,31 +28,60 @@ pub use Rustb_conductivity::conductivity;
 /// - Calculate the first-order anomalous Hall conductivity and spin Hall conductivity
 ///
 #[allow(non_snake_case)]
-pub struct Model{
-/// - The real space dimension of the model.
-pub dim_r:usize,
-/// - The number of orbitals in the model.
-pub norb:usize,
-/// - The number of states in the model. If spin is enabled, nsta=norb$\times$2
-pub nsta:usize,
-/// - The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
-pub natom:usize,
-/// - Whether the model has spin enabled. If enabled, spin=true
-pub spin:bool,
-/// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
-pub lat:Array2::<f64>,
-/// - The position of the orbitals in the model. We use fractional coordinates uniformly.
-pub orb:Array2::<f64>,
-/// - The position of the atoms in the model, also in fractional coordinates.
-pub atom:Array2::<f64>,
-/// - The number of orbitals in the atoms, in the same order as the atom positions.
-pub atom_list:Vec<usize>,
-/// - The Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
-pub ham:Array3::<Complex<f64>>,
-/// - The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
-pub hamR:Array2::<isize>,
-/// - The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
-pub rmatrix:Array4::<Complex<f64>>,
+    pub struct Model{
+    /// - The real space dimension of the model.
+    pub dim_r:usize,
+    /// - The number of orbitals in the model.
+    pub norb:usize,
+    /// - The number of states in the model. If spin is enabled, nsta=norb$\times$2
+    pub nsta:usize,
+    /// - The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
+    pub natom:usize,
+    /// - Whether the model has spin enabled. If enabled, spin=true
+    pub spin:bool,
+    /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
+    pub lat:Array2::<f64>,
+    /// - The position of the orbitals in the model. We use fractional coordinates uniformly.
+    pub orb:Array2::<f64>,
+    /// - The position of the atoms in the model, also in fractional coordinates.
+    pub atom:Array2::<f64>,
+    /// - The number of orbitals in the atoms, in the same order as the atom positions.
+    pub atom_list:Vec<usize>,
+    /// - The Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
+    pub ham:Array3::<Complex<f64>>,
+    /// - The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
+    pub hamR:Array2::<isize>,
+    /// - The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
+    pub rmatrix:Array4::<Complex<f64>>,
+}
+
+pub struct surf_Green{
+    /// - The real space dimension of the model.
+    pub dim_r:usize,
+    /// - The number of orbitals in the model.
+    pub norb:usize,
+    /// - The number of states in the model. If spin is enabled, nsta=norb$\times$2
+    pub nsta:usize,
+    /// - The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
+    pub natom:usize,
+    /// - Whether the model has spin enabled. If enabled, spin=true
+    pub spin:bool,
+    /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
+    pub lat:Array2::<f64>,
+    /// - The position of the orbitals in the model. We use fractional coordinates uniformly.
+    pub orb:Array2::<f64>,
+    /// - The position of the atoms in the model, also in fractional coordinates.
+    pub atom:Array2::<f64>,
+    /// - The number of orbitals in the atoms, in the same order as the atom positions.
+    pub atom_list:Vec<usize>,
+    /// - The bulk Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
+    pub eta:f64,
+    pub ham_bulk:Array3::<Complex<f64>>,
+    /// - The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
+    pub ham_bulkR:Array2::<isize>,
+    /// - The bulk Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
+    pub ham_hop:Array3::<Complex<f64>>,
+    pub ham_hopR:Array2::<isize>,
 }
 #[allow(non_snake_case)]
 pub fn find_R(hamR:&Array2::<isize>,R:&Array1::<isize>)->bool{
@@ -84,6 +114,14 @@ pub fn index_R(hamR:&Array2::<isize>,R:&Array1::<isize>)->usize{
         }
     }
     panic!("Wrong, not find");
+}
+fn remove_row<T: Copy>(array: Array2<T>, row_to_remove: usize) -> Array2<T> {
+    let indices: Vec<_> = (0..array.nrows()).filter(|&r| r != row_to_remove).collect();
+    array.select(Axis(0), &indices)
+}
+fn remove_col<T: Copy>(array: Array2<T>, col_to_remove: usize) -> Array2<T> {
+    let indices: Vec<_> = (0..array.ncols()).filter(|&r| r != col_to_remove).collect();
+    array.select(Axis(1), &indices)
 }
 #[allow(non_snake_case)]
 pub fn gen_kmesh(k_mesh:&Array1::<usize>)->Array2::<f64>{
@@ -186,7 +224,7 @@ pub fn draw_heatmap(data: Array2<f64>,name:&str) {
     //!这个函数是用来画热图的, 给定一个二维矩阵, 会输出一个像素图片
     use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT,RAINBOW};
     let mut fg = Figure::new();
-    let (width, height) = (data.shape()[1], data.shape()[0]);
+    let (width, height):(usize,usize) = (data.shape()[1], data.shape()[0]);
     let mut heatmap_data = vec![];
 
     for i in 0..height {
@@ -460,6 +498,36 @@ macro_rules! add_hamiltonian {
         $new_ham
     }};
 }
+#[macro_export]
+macro_rules! plot{
+    ($x0:expr,$y0:expr,$name:expr)=>{{
+        use gnuplot::{Figure, Caption, Color};
+        use gnuplot::{AxesCommon};
+        use gnuplot::AutoOption::*;
+        use gnuplot::Tick::*;
+        let mut fg = Figure::new();
+        let x:Vec<f64>=$x0.to_vec();
+        let axes=fg.axes2d();
+        /*
+        let n=x.len();
+        if $y0.ndim()==2{
+            let n0=$y0.len_of(Axis(1));
+            for i in 0..n0{
+                let y:Vec<f64>=$y0.slice(s![..,i]).to_owned().to_vec();
+                axes.lines(&x, &y, &[Color("black")]);
+            }
+        }else{
+            let y:Vec<f64>=$y0.to_vec();
+            axes.lines(&x, &y, &[Color("black")]);
+        }
+        */
+
+        let y:Vec<f64>=$y0.to_vec();
+        axes.lines(&x, &y, &[Color("black")]);
+        fg.set_terminal("pdfcairo", &$name);
+        fg.show();
+    }};
+}
 
 
 /*
@@ -665,17 +733,7 @@ macro_rules! Fermi_tetrahedron_integrate {
 ///}
 ///```
 ///
-///now you can use 
-///```
-///cargo new graphene
-///```
-///and then put the code into graphene/src/main.rs
 ///
-///set Cargo.toml
-///
-///```
-///
-///```
 impl basis<'_> for Model{
     fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
         /*
@@ -2825,7 +2883,7 @@ impl conductivity<'_> for Model{
         let mut omega_n=Array1::<f64>::zeros(self.nsta);
         let A1=A1*U0;
         for i in 0..self.nsta{
-            omega_n[[i]]=-2.0*A1.slice(s![i,..]).dot(&A2.slice(s![..,i])).im;
+            omega_n[[i]]=2.0*A1.slice(s![i,..]).dot(&A2.slice(s![..,i])).im;
         }
         (omega_n,band)
     }
@@ -2875,7 +2933,7 @@ impl conductivity<'_> for Model{
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let omega=self.berry_curvature(&kvec,&dir_1,&dir_2,T,og,mu,spin,eta);
-        let min=omega.iter().fold(f64::NAN, |a, &b| a.min(b));
+        //let min=omega.iter().fold(f64::NAN, |a, &b| a.min(b));
         let conductivity:f64=omega.sum()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
         conductivity
     }
@@ -2903,28 +2961,29 @@ impl conductivity<'_> for Model{
         let omega_n=Array2::<f64>::from_shape_vec((nk, self.nsta),omega_n.into_iter().flatten().collect()).unwrap();
         let band=Array2::<f64>::from_shape_vec((nk, self.nsta),band.into_iter().flatten().collect()).unwrap();
         let n_mu:usize=mu.len();
-        let mut conductivity=Array1::zeros(n_mu);
-        if T==0.0{
-            for s in 0..n_mu{
+        let conductivity=if T==0.0{
+            let conductivity_new:Vec<f64>=mu.into_par_iter().map(|x| {
                 let mut omega=Array1::<f64>::zeros(nk);
                 for k in 0..nk{
                     for i in 0..self.nsta{
-                        omega[[k]]+= if band[[k,i]]> mu[[s]] {0.0} else {omega_n[[k,i]]};
+                        omega[[k]]+= if band[[k,i]]> *x {0.0} else {omega_n[[k,i]]};
                     }
                 }
-                conductivity[[s]]=omega.sum()*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
-            }
+                omega.sum()*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap()/(nk as f64)
+            }).collect();
+            Array1::<f64>::from_vec(conductivity_new)
         }else{
             let beta=1.0/(T*8.617e-5);
-            for s in 0..n_mu{
-                let fermi_dirac=band.map(|x| 1.0/((beta*(x-mu[[s]])).exp()+1.0));
+            let conductivity_new:Vec<f64>=mu.into_par_iter().map(|x| {
                 let mut omega=Array1::<f64>::zeros(nk);
+                let fermi_dirac=band.map(|x0| 1.0/((beta*(x0-x)).exp()+1.0));
                 for i in 0..nk{
                     omega[[i]]=(omega_n.row(i).to_owned()*fermi_dirac.row(i).to_owned()).sum();
                 }
-                conductivity[[s]]=omega.sum()*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
-            }
-        }
+                omega.sum()*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap()/(nk as f64)
+            }).collect();
+            Array1::<f64>::from_vec(conductivity_new)
+        };
         conductivity
     }
 
@@ -2999,7 +3058,7 @@ impl conductivity<'_> for Model{
         let mut omega_n=Array1::<f64>::zeros(self.nsta);
         let A1=A1*U0;
         for i in 0..self.nsta{
-            omega_n[[i]]=-2.0*A1.slice(s![i,..]).dot(&A2.slice(s![..,i])).im;
+            omega_n[[i]]=2.0*A1.slice(s![i,..]).dot(&A2.slice(s![..,i])).im;
         }
         
         //let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
@@ -3323,22 +3382,443 @@ impl conductivity<'_> for Model{
     }
 }
 
-///这个模块是用来求解表面格林函数的一个模块.
-///公式后面再补充
+///这个模块是用 wilson loop 的方法来计算 berry phase 等数值的
 impl Model{
-    fn gen_ham_hop(&self,dir1:&Array1<f64>,dir2:&Array1<f64>)->(Array2<Complex<f64>>,Array2<Complex<f64>>){
-        //!这个模块是用来计算层间hopping的
-        let dir3=array![(dir1[[1]]*dir2[[2]]-dir2[[1]]*dir1[[2]]),-(dir1[[0]]*dir2[[2]]-dir2[[0]]*dir1[[2]]),dir1[[0]]*dir2[[1]]-dir2[[0]]*dir1[[1]]];
-        let dir_1=dir1.clone();
-        let dir_2=dir2.clone();
-        let dir1=dir_1.into_shape((1,3)).unwrap();
-        let dir2=dir_2.into_shape((1,3)).unwrap();
-        let dir3=dir3.into_shape((1,3)).unwrap();
-        let U=concatenate![Axis(0),dir1,dir2,dir3];
-        let model=self.make_supercell(&U);
-        let mut ham0=Array2::<Complex<f64>>::zeros((model.nsta,model.nsta));
-        let mut hamR=Array2::<Complex<f64>>::zeros((model.nsta,model.nsta));
-        (ham0,hamR)
+    pub fn berry_loop(&self,kvec:&Array2<f64>)->Array1<f64>{
+        let nk=kvec.len_of(Axis(0));
+
+        let berry_phase=Array1::<f64>::zeros(nk);
+        berry_phase
+    }
+}
+
+///这个模块是用来求解表面格林函数的一个模块.
+impl surf_Green{
+    ///从 Model 中构建一个 surf_green 的结构体
+    ///
+    ///dir表示要看哪方向的表面态
+    ///
+    ///eta表示小虚数得取值
+    ///
+    ///对于非晶格矢量得方向, 需要用 model.make_supercell 先扩胞
+    fn from_Model(model:&Model,dir:usize,eta:f64)->surf_Green{
+        if dir > model.dim_r{
+            panic!("Wrong, the dir must smaller than model's dim_r")
+        }
+        let mut R_max:usize=0;
+        for R0 in model.hamR.rows(){
+            if R_max < R0[[dir]].abs() as usize{
+                R_max=R0[[dir]].abs() as usize;
+            }
+        }
+        let mut U=Array2::<f64>::eye(model.dim_r);
+        U[[dir,dir]]=R_max as f64;
+        let model=model.make_supercell(&U);
+        let mut ham0=Array3::<Complex<f64>>::zeros((0,model.nsta,model.nsta));
+        let mut hamR0=Array2::<isize>::zeros((0,model.dim_r));
+        let mut hamR=Array3::<Complex<f64>>::zeros((0,model.nsta,model.nsta));
+        let mut hamRR=Array2::<isize>::zeros((0,model.dim_r));
+        let use_hamR=model.hamR.rows();
+        let use_ham=model.ham.axis_iter(Axis(0));
+        for (ham,R) in use_ham.zip(use_hamR){
+            let ham=ham.clone();
+            let R=R.clone();
+            if R[[dir]]==0{
+                ham0.push(Axis(0),ham.view());
+                hamR0.push_row(R.view());
+            }else if R[[dir]] > 0{
+                hamR.push(Axis(0),ham.view());
+                hamRR.push_row(R.view());
+            }else{
+                hamR.push(Axis(0),ham.map(|x| x.conj()).t().view());
+                hamRR.push_row(R.map(|x| -x).view());
+            }
+        }
+        let new_lat=remove_row(model.lat,dir);
+        let new_orb=remove_col(model.orb,dir);
+        let new_atom=remove_col(model.atom,dir);
+        let new_hamR0=remove_col(hamR0,dir);
+        let new_hamRR=remove_col(hamRR,dir);
+        let mut green:surf_Green=surf_Green{
+            dim_r:model.dim_r-1,
+            norb:model.norb,
+            nsta:model.nsta,
+            natom:model.natom,
+            spin:model.spin,
+            lat:new_lat,
+            orb:new_orb,
+            atom:new_atom,
+            atom_list:model.atom_list,
+            ham_bulk:ham0,
+            ham_bulkR:new_hamR0,
+            ham_hop:hamR,
+            ham_hopR:new_hamRR,
+            eta,
+        };
+        green
+    }
+    fn k_path(&self,path:&Array2::<f64>,nk:usize)->(Array2::<f64>,Array1::<f64>,Array1::<f64>){
+        //!根据高对称点来生成高对称路径, 画能带图
+        if self.dim_r==0{
+            panic!("the k dimension of the model is 0, do not use k_path")
+        }
+        let n_node:usize=path.len_of(Axis(0));
+        if self.dim_r != path.len_of(Axis(1)){
+            panic!("Wrong, the path's length along 1 dimension must equal to the model's dimension")
+        }
+        let k_metric=(self.lat.dot(&self.lat.t())).inv().unwrap();
+        let mut k_node=Array1::<f64>::zeros(n_node);
+        for n in 1..n_node{
+            //let dk=path.slice(s![n,..]).to_owned()-path.slice(s![n-1,..]).to_owned();
+            let dk=path.row(n).to_owned()-path.slice(s![n-1,..]).to_owned();
+            let a=k_metric.dot(&dk);
+            let dklen=dk.dot(&a).sqrt();
+            k_node[[n]]=k_node[[n-1]]+dklen;
+        }
+        let mut node_index:Vec<usize>=vec![0];
+        for n in 1..n_node-1{
+            let frac=k_node[[n]]/k_node[[n_node-1]];
+            let a=(frac*((nk-1) as f64).round()) as usize;
+            node_index.push(a)
+        }
+        node_index.push(nk-1);
+        let mut k_dist=Array1::<f64>::zeros(nk);
+        let mut k_vec=Array2::<f64>::zeros((nk,self.dim_r));
+        //k_vec.slice_mut(s![0,..]).assign(&path.slice(s![0,..]));
+        k_vec.row_mut(0).assign(&path.row(0));
+        for n in 1..n_node {
+            let n_i=node_index[n-1];
+            let n_f=node_index[n];
+            let kd_i=k_node[[n-1]];
+            let kd_f=k_node[[n]];
+            let k_i=path.row(n-1);
+            let k_f=path.row(n);
+            for j in n_i..n_f+1{
+                let frac:f64= ((j-n_i) as f64)/((n_f-n_i) as f64);
+                k_dist[[j]]=kd_i + frac*(kd_f-kd_i);
+                k_vec.row_mut(j).assign(&((1.0-frac)*k_i.to_owned() +frac*k_f.to_owned()));
+
+            }
+        }
+        (k_vec,k_dist,k_node)
+    }
+    pub fn gen_ham_onek(&self,kvec:&Array1<f64>)->(Array2<Complex<f64>>,Array2<Complex<f64>>){
+        let mut ham0k=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        let mut hamRk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        if kvec.len() !=self.dim_r{
+            panic!("Wrong, the k-vector's length must equal to the dimension of model.")
+        }
+        let nR:usize=self.ham_bulkR.len_of(Axis(0));
+        let nRR:usize=self.ham_hopR.len_of(Axis(0));
+        let U0:Array1::<f64>=self.orb.dot(kvec);
+        let U0:Array1::<Complex<f64>>=U0.map(|x| Complex::<f64>::new(*x,0.0));
+        let U0=U0*Complex::new(0.0,2.0*PI);
+        let mut U0:Array1::<Complex<f64>>=U0.mapv(Complex::exp);//关于轨道的 guage
+        if self.spin{
+            let UU=U0.clone();
+            U0.append(Axis(0),UU.view()).unwrap();//因为自旋, 把坐标扩大一倍
+        }
+        let U=Array2::from_diag(&U0);
+        //对体系作傅里叶变换
+        let U0=(self.ham_bulkR.map(|x| *x as f64)).dot(kvec).map(|x| Complex::<f64>::new(*x,0.0));
+        let U0=U0*Complex::new(0.0,2.0*PI);
+        let U0=U0.mapv(Complex::exp);
+        //对 ham_hop 作傅里叶变换
+        let UR=(self.ham_hopR.map(|x| *x as f64)).dot(kvec).map(|x| Complex::<f64>::new(*x,0.0));
+        let UR=UR*Complex::new(0.0,2.0*PI);
+        let UR=UR.mapv(Complex::exp);
+        //先对 ham_bulk 中的 [0,0] 提取出来
+        let mut ham0=self.ham_bulk.slice(s![0,..,..]).to_owned();
+        for i in 1..nR{
+            ham0k=ham0k+self.ham_bulk.slice(s![i,..,..]).to_owned()*U0[[i]];
+        }
+        for i in 0..nRR{
+            hamRk=hamRk+self.ham_hop.slice(s![i,..,..]).to_owned()*UR[[i]];
+        }
+        ham0k=&ham0+&ham0k.map(|x| x.conj()).t()+&ham0k;
+        //hamRk=&hamRk.map(|x| x.conj()).t()+&hamRk;
+        //作规范变换
+        ham0k=ham0k.dot(&U);
+        let ham0k=U.map(|x| x.conj()).t().dot(&ham0k);
+        hamRk=hamRk.dot(&U);
+        let hamRk=U.map(|x| x.conj()).t().dot(&hamRk);
+        (ham0k,hamRk)
+
+    }
+    pub fn surf_green_one(&self,kvec:&Array1<f64>,Energy:f64)->(f64,f64,f64){
+        let (hamk,hamRk)=self.gen_ham_onek(kvec);
+        let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
+        let I0=Array2::<Complex<f64>>::eye(self.nsta);
+        let accurate:f64=1e-8;
+        let epsilon=Complex::new(Energy,self.eta)*&I0;
+        let mut epi=hamk.clone();
+        let mut eps=hamk.clone();
+        let mut eps_t=hamk.clone();
+        let mut ap=hamRk.clone();
+        let mut bt=hamRk_conj.clone();
+
+        for _ in 0..100{
+            let g0=(&epsilon-&epi).inv().unwrap();
+            let mat_1=&ap.dot(&g0);
+            let mat_2=&bt.dot(&g0);
+            let g0=&mat_1.dot(&bt);
+            epi=epi+g0;
+            eps=eps+g0;
+            let g0=&mat_2.dot(&ap);
+            epi=epi+g0;
+            eps_t=eps_t+g0;
+            ap=mat_1.dot(&ap);
+            bt=mat_2.dot(&bt);
+            //println!("{}",ap.map(|x| x.norm()).sum());
+            if ap.sum().norm() < accurate{
+                break
+            }
+        }
+        let g_LL=(&epsilon-eps).inv().unwrap();
+        let g_RR=(&epsilon-eps_t).inv().unwrap();
+        let g_B=(&epsilon-epi).inv().unwrap();
+        let N_R=-1.0/(PI)*g_RR.into_diag().sum().im;
+        let N_L=-1.0/(PI)*g_LL.into_diag().sum().im;
+        let N_B=-1.0/(PI)*g_B.into_diag().sum().im;
+        (N_R,N_L,N_B)
+    }
+
+    pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>)->(Array1<f64>,Array1<f64>,Array1<f64>){
+        let (hamk,hamRk)=self.gen_ham_onek(kvec);
+        let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
+        let I0=Array2::<Complex<f64>>::eye(self.nsta);
+        let accurate:f64=1e-16;
+        let ((N_R,N_L),N_B)=Energy.into_par_iter().map(|e| {
+            let epsilon=Complex::new(*e,self.eta)*&I0;
+            let mut epi=hamk.clone();
+            let mut eps=hamk.clone();
+            let mut eps_t=hamk.clone();
+            let mut ap=hamRk.clone();
+            let mut bt=hamRk_conj.clone();
+            for _ in 0..100{
+                let g0=(&epsilon-&epi).inv().unwrap();
+                let mat_1=&ap.dot(&g0);
+                let mat_2=&bt.dot(&g0);
+                let g0=&mat_1.dot(&bt);
+                epi=epi+g0;
+                eps=eps+g0;
+                let g0=&mat_2.dot(&ap);
+                epi=epi+g0;
+                eps_t=eps_t+g0;
+                ap=mat_1.dot(&ap);
+                bt=mat_2.dot(&bt);
+                if ap.map(|x| x.norm()).sum() < accurate{
+                    break
+                }
+            }
+            let g_LL=(&epsilon-eps).inv().unwrap();
+            let g_RR=(&epsilon-eps_t).inv().unwrap();
+            let g_B=(&epsilon-epi).inv().unwrap();
+            let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
+            let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
+            let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
+            ((NR,NL),NB)
+         }).collect();
+        let N_R=Array1::from_vec(N_R);
+        let N_L=Array1::from_vec(N_L);
+        let N_B=Array1::from_vec(N_B);
+        (N_R,N_L,N_B)
+    }
+    pub fn surf_green_path(&self,kvec:&Array2<f64>,E_min:f64,E_max:f64,E_n:usize)->(Array2<f64>,Array2<f64>,Array2<f64>){
+        let Energy=Array1::<f64>::linspace(E_min,E_max,E_n);
+        let ((N_R,N_L),N_B):((Vec<_>,Vec<_>),Vec<_>)=kvec.axis_iter(Axis(0)).into_par_iter().map( |k| {
+            let (NR,NL,NB)=self.surf_green_onek(&k.to_owned(),&Energy);
+            ((NR.to_vec(),NL.to_vec()),NB.to_vec())
+        }).collect();
+        let nk=kvec.nrows();
+        let N_L = Array2::from_shape_vec((nk, E_n), N_L.into_iter().flatten().collect()).unwrap();
+        let N_R = Array2::from_shape_vec((nk, E_n), N_R.into_iter().flatten().collect()).unwrap();
+        let N_B = Array2::from_shape_vec((nk, E_n), N_B.into_iter().flatten().collect()).unwrap();
+        (N_L,N_R,N_B)
+    }
+    pub fn show_surf_state(&self,name:&str,kpath:&Array2::<f64>,label:&Vec<&str>,nk:usize,E_min:f64,E_max:f64,E_n:usize){
+        let (kvec,kdist,knode)=self.k_path(kpath, nk);
+        let Energy=Array1::<f64>::linspace(E_min,E_max,E_n);
+        let (N_L,N_R,N_B)=self.surf_green_path(&kvec,E_min,E_max,E_n);
+
+        //绘制 left_dos------------------------
+        let mut left_name:String=String::new();
+        left_name.push_str(&name.clone());
+        left_name.push_str("/dos.surf_l");
+        let mut file=File::create(left_name).expect("Unable to dos.surf_l.dat");
+        for i in 0..nk{
+            for j in 0..E_n{
+                let mut s = String::new();
+                let aa= format!("{:.6}", kdist[[i]]);
+                s.push_str(&aa);
+                let bb:String=format!("{:.6}",Energy[[j]]);
+                if Energy[[j]]>=0.0{
+                    s.push_str("    ");
+                }else{
+                    s.push_str("   ");
+                }
+                s.push_str(&bb);
+                let cc:String=format!("{:.6}",N_L[[i,j]].ln());
+                if N_L[[i,j]]>=0.0{
+                    s.push_str("    ");
+                }else{
+                    s.push_str("   ");
+                }
+                s.push_str(&cc);
+                writeln!(file,"{}",s);
+            }
+            writeln!(file,"\n");
+        }
+        let _=file;
+
+        //接下来我们绘制表面态 
+        use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT,RAINBOW};
+        let mut fg = Figure::new();
+        let width:usize=nk;
+        let height:usize=E_n;
+        let mut heatmap_data = vec![];
+        for i in 0..height {
+            for j in 0..width {
+                heatmap_data.push(N_L[[j, i]].ln());
+            }
+        }
+        let axes = fg.axes2d();
+        axes.set_palette(RAINBOW);
+        axes.image(heatmap_data.iter(), width, height,None, &[]);
+        let axes=axes.set_x_range(Fix(0.0), Fix(nk as f64));
+        let axes=axes.set_y_range(Fix(0.0), Fix(E_n as f64));
+        let axes=axes.set_aspect_ratio(Fix(1.0));
+        let mut show_ticks=Vec::new();
+        for i in 0..knode.len(){
+            let A=knode[[i]];
+            let B=label[i];
+            show_ticks.push(Major(A,Fix(B)));
+        }
+        //axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+        let mut pdfname=String::new();
+        pdfname.push_str(&name.clone());
+        pdfname.push_str("/surf_state_l.pdf");
+        fg.set_terminal("pdfcairo",&pdfname);
+        fg.show().expect("Unable to draw heatmap");
+        let _=fg;
+
+        //绘制右表面态----------------------
+        let mut left_name:String=String::new();
+        left_name.push_str(&name.clone());
+        left_name.push_str("/dos.surf_r");
+        let mut file=File::create(left_name).expect("Unable to dos.surf_l.dat");
+        for i in 0..nk{
+            for j in 0..E_n{
+                let mut s = String::new();
+                let aa= format!("{:.6}", kdist[[i]]);
+                s.push_str(&aa);
+                let bb:String=format!("{:.6}",Energy[[j]]);
+                if Energy[[j]]>=0.0{
+                    s.push_str("    ");
+                }else{
+                    s.push_str("   ");
+                }
+                s.push_str(&bb);
+                let cc:String=format!("{:.6}",N_R[[i,j]].ln());
+                if N_R[[i,j]]>=0.0{
+                    s.push_str("    ");
+                }else{
+                    s.push_str("   ");
+                }
+                s.push_str(&cc);
+                writeln!(file,"{}",s);
+            }
+            writeln!(file,"\n");
+        }
+        let _=file;
+
+        //接下来我们绘制表面态 
+        let mut fg = Figure::new();
+        let width:usize=nk;
+        let height:usize=E_n;
+        let mut heatmap_data = vec![];
+        for i in 0..height {
+            for j in 0..width {
+                heatmap_data.push(N_R[[j, i]].ln());
+            }
+        }
+        let axes = fg.axes2d();
+        axes.set_palette(RAINBOW);
+        axes.image(heatmap_data.iter(), width, height,None, &[]);
+        let axes=axes.set_x_range(Fix(0.0), Fix(nk as f64));
+        let axes=axes.set_y_range(Fix(0.0), Fix(E_n as f64));
+        let axes=axes.set_aspect_ratio(Fix(1.0));
+        let mut show_ticks=Vec::new();
+        for i in 0..knode.len(){
+            let A=knode[[i]];
+            let B=label[i];
+            show_ticks.push(Major(A,Fix(B)));
+        }
+        //axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+        let mut pdfname=String::new();
+        pdfname.push_str(&name.clone());
+        pdfname.push_str("/surf_state_r.pdf");
+        fg.set_terminal("pdfcairo",&pdfname);
+        fg.show().expect("Unable to draw heatmap");
+        let _=fg;
+        //绘制体态----------------------
+        let mut left_name:String=String::new();
+        left_name.push_str(&name.clone());
+        left_name.push_str("/dos.surf_bulk");
+        let mut file=File::create(left_name).expect("Unable to dos.surf_l.dat");
+        for i in 0..nk{
+            for j in 0..E_n{
+                let mut s = String::new();
+                let aa= format!("{:.6}", kdist[[i]]);
+                s.push_str(&aa);
+                let bb:String=format!("{:.6}",Energy[[j]]);
+                if Energy[[j]]>=0.0{
+                    s.push_str("    ");
+                }else{
+                    s.push_str("   ");
+                }
+                s.push_str(&bb);
+                let cc:String=format!("{:.6}",N_B[[i,j]].ln());
+                if N_B[[i,j]]>=0.0{
+                    s.push_str("    ");
+                }else{
+                    s.push_str("   ");
+                }
+                s.push_str(&cc);
+                writeln!(file,"{}",s);
+            }
+            writeln!(file,"\n");
+        }
+
+        //接下来我们绘制表面态 
+        let mut fg = Figure::new();
+        let width:usize=nk;
+        let height:usize=E_n;
+        let mut heatmap_data = vec![];
+        for i in 0..height {
+            for j in 0..width {
+                heatmap_data.push(N_B[[j, i]].ln());
+            }
+        }
+        let axes = fg.axes2d();
+        axes.set_palette(RAINBOW);
+        axes.image(heatmap_data.iter(), width, height,None, &[]);
+        let axes=axes.set_x_range(Fix(0.0), Fix(nk as f64));
+        let axes=axes.set_y_range(Fix(0.0), Fix(E_n as f64));
+        let axes=axes.set_aspect_ratio(Fix(1.0));
+        let mut show_ticks=Vec::new();
+        for i in 0..knode.len(){
+            let A=knode[[i]];
+            let B=label[i];
+            show_ticks.push(Major(A,Fix(B)));
+        }
+        //axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+        let mut pdfname=String::new();
+        pdfname.push_str(&name.clone());
+        pdfname.push_str("/surf_state_b.pdf");
+        fg.set_terminal("pdfcairo",&pdfname);
+        fg.show().expect("Unable to draw heatmap");
+        let _=fg;
     }
 }
 
@@ -3653,11 +4133,11 @@ mod tests {
     fn kane_mele(){
         let li:Complex<f64>=1.0*Complex::i();
         let delta=0.0;
-        let t=-0.85+0.0*li;
-        let alter=0.2+0.0*li;
+        let t=-1.0+0.0*li;
+        let alter=0.0+0.0*li;
         //let soc=-1.0+0.0*li;
-        let soc=0.015+0.0*li;
-        let rashba=-0.02+0.0*li;
+        let soc=0.24+0.0*li;
+        let rashba=-0.00+0.0*li;
         let dim_r:usize=2;
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
@@ -3680,15 +4160,6 @@ mod tests {
             model.set_hop(soc*li,1,1,&R,3);
         }
         //加入rashba项
-        /*
-        let R0:Array2::<isize>=arr2(&[[0,0],[0,-1],[-1,0]]);
-        for  (i,R) in R0.axis_iter(Axis(0)).enumerate(){
-            let R=R.to_owned();
-            let r0=(R.map(|x| *x as f64)+model.orb.row(1)-model.orb.row(0)).dot(&model.lat);
-            model.add_hop(rashba*li*r0[[1]],0,1,&R,1);
-            model.add_hop(rashba*li*r0[[0]],0,1,&R,2);
-        }
-        */
         let R0:Array2::<isize>=arr2(&[[1,0],[-1,1],[0,-1]]);
         for  (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
@@ -3718,6 +4189,21 @@ mod tests {
         let path=arr2(&path);
         let label=vec!["G","M","G"];
         super_model.show_band(&path,&label,nk,"tests/kane_super");
+        //开始计算表面态
+        let green=surf_Green::from_Model(&model,0,1e-3);
+        let E_min=-3.0;
+        let E_max=3.0;
+        let E_n=nk.clone();
+        println!("{:.3},\n{}",model.ham,model.hamR);
+        println!("{:.3},\n{:.3},\n{},\n{}",green.ham_bulk,green.ham_bulkR,green.ham_hop,green.ham_hopR);
+        //let (hamR,hamRR)=green.gen_ham_onek(&array![0.5]);
+        //println!("{:.3}, \n{:.3}",hamR,hamRR);
+        let (N_L,N_R,N_B)=green.surf_green_one(&array![0.5],0.0);
+        println!("{},{},{}",N_L,N_R,N_B);
+        let path=[[0.0],[0.5],[1.0]];
+        let path=arr2(&path);
+        let label=vec!["G","M","G"];
+        green.show_surf_state("tests/kane",&path,&label,nk,E_min,E_max,E_n);
 
         /////开始计算体系的霍尔电导率//////
         let nk:usize=101;
@@ -3823,6 +4309,8 @@ mod tests {
         let berry_curv=model.berry_curvature(&kvec,&dir_1,&dir_2,T,0.0,0.0,1,1e-3);
         let data=berry_curv.into_shape((nk,nk)).unwrap();
         draw_heatmap((-data).map(|x| (x+1.0).log(10.0)),"heat_map.pdf");
+
+
 
     }
 
