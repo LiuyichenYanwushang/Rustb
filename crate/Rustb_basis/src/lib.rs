@@ -94,6 +94,8 @@ pub trait basis<'a>{
     fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Self;
         ///This function is used to transform the model, where the new basis after transformation is given by $L' = UL$.
     fn make_supercell(&self,U:&Array2::<f64>)->Self;
+    fn unfold(&self,U:&Array2::<f64>,kvec:&Array2::<f64>,E_min:f64,E_max:f64,E_n:usize)->Array2::<f64>;
+    /// 能带反折叠算法, 用来计算能带反折叠后的能带.
     fn shift_to_zero(&mut self);
     /// 我这里用的算法是高斯算法, 其算法过程如下
     /// 首先, 根据 k_mesh 算出所有的能量 $\ve_n$, 然后, 按照定义

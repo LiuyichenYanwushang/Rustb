@@ -782,7 +782,7 @@ impl basis<'_> for Model{
         if lat.len_of(Axis(1)) != dim_r{
             panic!("Wrong, the lat's second dimension's length must equal to dim_r") 
         }
-        if lat.len_of(Axis(0))<lat.len_of(Axis(1)) {
+        if lat.len_of(Axis(0)) != lat.len_of(Axis(1)) {
             panic!("Wrong, the lat's second dimension's length must less than first dimension's length") 
         }
         let mut natom:usize=0;
@@ -1878,6 +1878,12 @@ impl basis<'_> for Model{
 
 
 
+    fn unfold(&self,U:&Array2::<f64>,kvec:&Array2::<f64>,E_min:f64,E_max:f64,E_n:usize)->Array2::<f64>{
+    //! 能带反折叠算法, 用来计算能带反折叠后的能带.
+        let nk=kvec.nrows();
+        let mut A0=Array2::<f64>::zeros((E_n,nk));
+        A0
+    }
     fn make_supercell(&self,U:&Array2::<f64>)->Model{
         //这个函数是用来对模型做变换的, 变换前后模型的基矢 $L'=UL$.
         //!This function is used to transform the model, where the new basis after transformation is given by $L' = UL$.
@@ -2895,7 +2901,7 @@ impl conductivity<'_> for Model{
         //!当体系不存在自旋的时候无论如何输入spin都默认 spin=0
         //!eta=$\eta$ 是一个小量
         //! 这个函数返回的是 
-        //! $$ \sum_n f_n\Omega_{n,\ap\bt}^\gm(\bm k)=\sum_n \f{1}{e^{(\ve_{n\bm k}-\mu)/T/k_B}+1} \sum_{m=\not n}\f{J_{\ap,nm}^\gm v_{\bt,mn}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og+i\eta)^2}$$
+        //! $$\Og_{\ap\bt}^\gm= \sum_n f_n\Omega_{n,\ap\bt}^\gm(\bm k)=\sum_n \f{1}{e^{(\ve_{n\bm k}-\mu)/T/k_B}+1} \sum_{m=\not n}\f{J_{\ap,nm}^\gm v_{\bt,mn}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og+i\eta)^2}$$
         //! 其中 $J_\ap^\gm=\\{s_\gm,v_\ap\\}$
         let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
         let mut omega:f64=0.0;
@@ -2929,7 +2935,7 @@ impl conductivity<'_> for Model{
     fn Hall_conductivity(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
     //!这个是用来计算霍尔电导的.
     //!这里采用的是均匀撒点的方法, 利用 berry_curvature, 我们有
-    //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}(\bm k),$$ 其中 $N$ 是 k 点数目, 
+    //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}^\gm(\bm k),$$ 其中 $N$ 是 k 点数目, 
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let omega=self.berry_curvature(&kvec,&dir_1,&dir_2,T,og,mu,spin,eta);
@@ -3386,7 +3392,6 @@ impl conductivity<'_> for Model{
 impl Model{
     pub fn berry_loop(&self,kvec:&Array2<f64>)->Array1<f64>{
         let nk=kvec.len_of(Axis(0));
-
         let berry_phase=Array1::<f64>::zeros(nk);
         berry_phase
     }
@@ -3401,7 +3406,7 @@ impl surf_Green{
     ///eta表示小虚数得取值
     ///
     ///对于非晶格矢量得方向, 需要用 model.make_supercell 先扩胞
-    fn from_Model(model:&Model,dir:usize,eta:f64)->surf_Green{
+    pub fn from_Model(model:&Model,dir:usize,eta:f64)->surf_Green{
         if dir > model.dim_r{
             panic!("Wrong, the dir must smaller than model's dim_r")
         }
@@ -3457,7 +3462,7 @@ impl surf_Green{
         };
         green
     }
-    fn k_path(&self,path:&Array2::<f64>,nk:usize)->(Array2::<f64>,Array1::<f64>,Array1::<f64>){
+    pub fn k_path(&self,path:&Array2::<f64>,nk:usize)->(Array2::<f64>,Array1::<f64>,Array1::<f64>){
         //!根据高对称点来生成高对称路径, 画能带图
         if self.dim_r==0{
             panic!("the k dimension of the model is 0, do not use k_path")
@@ -3637,6 +3642,7 @@ impl surf_Green{
         (N_L,N_R,N_B)
     }
     pub fn show_surf_state(&self,name:&str,kpath:&Array2::<f64>,label:&Vec<&str>,nk:usize,E_min:f64,E_max:f64,E_n:usize){
+        use std::io::{BufWriter, Write};
         let (kvec,kdist,knode)=self.k_path(kpath, nk);
         let Energy=Array1::<f64>::linspace(E_min,E_max,E_n);
         let (N_L,N_R,N_B)=self.surf_green_path(&kvec,E_min,E_max,E_n);
@@ -3646,6 +3652,7 @@ impl surf_Green{
         left_name.push_str(&name.clone());
         left_name.push_str("/dos.surf_l");
         let mut file=File::create(left_name).expect("Unable to dos.surf_l.dat");
+        let mut writer = BufWriter::new(file);
         for i in 0..nk{
             for j in 0..E_n{
                 let mut s = String::new();
@@ -3665,9 +3672,12 @@ impl surf_Green{
                     s.push_str("   ");
                 }
                 s.push_str(&cc);
-                writeln!(file,"{}",s);
+                //writeln!(file,"{}",s);
+
+                writer.write(s.as_bytes()).unwrap();
             }
-            writeln!(file,"\n");
+            //writeln!(file,"\n");
+            writer.write(b"\n").unwrap();
         }
         let _=file;
 
@@ -3707,6 +3717,7 @@ impl surf_Green{
         left_name.push_str(&name.clone());
         left_name.push_str("/dos.surf_r");
         let mut file=File::create(left_name).expect("Unable to dos.surf_l.dat");
+        let mut writer = BufWriter::new(file);
         for i in 0..nk{
             for j in 0..E_n{
                 let mut s = String::new();
@@ -3720,15 +3731,18 @@ impl surf_Green{
                 }
                 s.push_str(&bb);
                 let cc:String=format!("{:.6}",N_R[[i,j]].ln());
-                if N_R[[i,j]]>=0.0{
+                if N_L[[i,j]]>=0.0{
                     s.push_str("    ");
                 }else{
                     s.push_str("   ");
                 }
                 s.push_str(&cc);
-                writeln!(file,"{}",s);
+                //writeln!(file,"{}",s);
+
+                writer.write(s.as_bytes()).unwrap();
             }
-            writeln!(file,"\n");
+            //writeln!(file,"\n");
+            writer.write(b"\n").unwrap();
         }
         let _=file;
 
@@ -3766,6 +3780,7 @@ impl surf_Green{
         left_name.push_str(&name.clone());
         left_name.push_str("/dos.surf_bulk");
         let mut file=File::create(left_name).expect("Unable to dos.surf_l.dat");
+        let mut writer = BufWriter::new(file);
         for i in 0..nk{
             for j in 0..E_n{
                 let mut s = String::new();
@@ -3779,16 +3794,20 @@ impl surf_Green{
                 }
                 s.push_str(&bb);
                 let cc:String=format!("{:.6}",N_B[[i,j]].ln());
-                if N_B[[i,j]]>=0.0{
+                if N_L[[i,j]]>=0.0{
                     s.push_str("    ");
                 }else{
                     s.push_str("   ");
                 }
                 s.push_str(&cc);
-                writeln!(file,"{}",s);
+                //writeln!(file,"{}",s);
+
+                writer.write(s.as_bytes()).unwrap();
             }
-            writeln!(file,"\n");
+            //writeln!(file,"\n");
+            writer.write(b"\n").unwrap();
         }
+        let _=file;
 
         //接下来我们绘制表面态 
         let mut fg = Figure::new();
