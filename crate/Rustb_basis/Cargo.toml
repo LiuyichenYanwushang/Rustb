@@ -8,8 +8,3 @@ edition = "2021"
 [dependencies]
 ndarray={ version="*", features = ["rayon","blas","matrixmultiply-threading"] }
 num-complex="*"
-ndarray-linalg={version="*",features=["intel-mkl-static"]}
-rayon="*"
-gnuplot="*"
-jemallocator = "0.3"
-jemalloc-sys = "0.3"

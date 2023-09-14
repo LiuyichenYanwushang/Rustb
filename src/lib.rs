@@ -28,7 +28,8 @@ pub use Rustb_conductivity::conductivity;
 /// - Calculate the first-order anomalous Hall conductivity and spin Hall conductivity
 ///
 #[allow(non_snake_case)]
-    pub struct Model{
+#[derive(Clone,Debug)]
+pub struct Model{
     /// - The real space dimension of the model.
     pub dim_r:usize,
     /// - The number of orbitals in the model.
@@ -530,113 +531,6 @@ macro_rules! plot{
 }
 
 
-/*
-macro_rules! Fermi_tetrahedron_integrate {
-    ($kmesh:expr,$kvec:expr,$band:expr,$omega:expr,$mu:expr,$nsta:expr)=>{
-        let dir=$kmesh.len_of(Axis(0));
-        let (value,surface)=match dir{
-            1 =>{
-                let nk=$kmesh[[0]];
-
-            }
-            2 =>{
-                let nx=$kmesh[[0]];
-                let ny=$kmesh[[1]];
-                let occ:Array1<usize>=$band.clone().map(|x| if *x<$mu {1} else {0}).sum_axis(Axis(1));
-                let occ:Array2<usize>=occ.into_shape((nx,ny)).unwrap();
-
-            }
-            3 =>{
-                let nx=$kmesh[[0]];//x方向的点的数目
-                let ny=$kmesh[[1]];//y方向的点的数目
-                let nz=$kmesh[[2]];//z方向的点的数目
-                let occ:Array1<usize>=$band.clone().map(|x| if *x<$mu {1} else {0}).sum_axis(Axis(1));
-                let occ:Array4<usize>=occ.into_shape((nx,ny,nz,nsta)).unwrap();
-                let occ:Array3<usize>=occ.sum_axis(Axis(3));
-                let bands:Array4<f64>=$band.clone().into_shape((nx,ny,nz,$nsta)).unwrap();
-                let kpoints:Array4<f64>=$kvec.clone().into_shape((nx,ny,nz,dir)).unwrap();
-                let mut points=A
-                let mut line_origin:Vec::<Vec<usize>>::new();
-                line_origin.push(vec![0,1]);
-                line_origin.push(vec![1,3]);
-                line_origin.push(vec![0,3]);
-                line_origin.push(vec![1,2]);
-                line_origin.push(vec![2,3]);
-                line_origin.push(vec![0,4]);
-                line_origin.push(vec![1,5]);
-                line_origin.push(vec![2,6]);
-                line_origin.push(vec![3,7]);
-                line_origin.push(vec![1,4]);
-                line_origin.push(vec![3,4]);
-                line_origin.push(vec![1,6]);
-                line_origin.push(vec![3,6]);
-                line_origin.push(vec![4,5]);
-                line_origin.push(vec![5,6]);
-                line_origin.push(vec![4,6]);
-                line_origin.push(vec![4,7]);
-                line_origin.push(vec![6,7]);
-                for i in 1..nx{
-                    for j in 1..ny{
-                        for k in 1..nz{
-                            let mut n=Vec::<usize>::new();
-                            n.push(occ[[i-1,j-1,k-1]]);
-                            n.push(occ[[i,j-1,k-1]]);
-                            n.push(occ[[i,j,k-1]]);
-                            n.push(occ[[i-1,j,k-1]]);
-                            n.push(occ[[i-1,j-1,k]]);
-                            n.push(occ[[i,j-1,k]]);
-                            n.push(occ[[i,j,k]]);
-                            n.push(occ[[i-1,j,k]]);
-                            let mut origen=Vec::<Vec<usize>::new();
-                            origen.push(vec![i-1,j-1,k-1]);
-                            origen.push(vec![i,j-1,k-1]);
-                            origen.push(vec![i,j,k-1]);
-                            origen.push(vec![i-1,j,k-1]);
-                            origen.push(vec![i-1,j-1,k]);
-                            origen.push(vec![i,j-1,k]);
-                            origen.push(vec![i,j,k]);
-                            origen.push(vec![i-1,j,k]);
-                            //接下来我们讨论各个截线上是否存在费米面通过
-                            let mut area=Vec::<Vec<usize>>::new()
-                            area.push(vec![0,1,2,5,9,10]);//五个四面体, 每个四面体有6个棱
-                            area.push(vec![1,3,4,7,11,12]);
-                            area.push(vec![6,9,11,13,14,15]);
-                            area.push(vec![8,10,12,15,16,17];
-                            area.push(vec![1,9,10,11,12,15];
-                            let mut point_origin=Vec::<Array1<f64>>::new();
-                            let mut data=Vec::<f64>::new()
-                            for (line in line_origin.iter(){//开始判断各个线上是否存在费米面交点
-                                if n[line[0]] > n[line[1]]{
-                                    let band0=band[origin[line[0]][0],origin[line[0]][1],origin[line[0]][2],n[line[0]]];
-                                    let band1=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2],n[line[0]]];
-                                    let ratio=($mu-band0)/(band1-band0);
-                                    let k1=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2]];
-                                    let k2=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2]];
-                                    point_origin.push(k1*ratio+(1.0-ratio)*k2);
-                                    data.push(band0*ratio+(1.0-ratio)*band1);
-                                    
-                                }else if n[line[0]] < n[line[1]]{
-                                    let band0=band[origin[line[0]][0],origin[line[0]][1],origin[line[0]][2],n[line[1]]];
-                                    let band1=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2],n[line[1]]];
-                                    let ratio=($mu-band0)/(band1-band0);
-                                    let k1=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2]];
-                                    let k2=band[origin[line[1]][0],origin[line[1]][1],origin[line[1]][2]];
-                                    point_origin.push(k1*ratio+(1.0-ratio)*k2);
-                                    data.push(band0*ratio+(1.0-ratio)*band1);
-                                }
-
-                            }
-        
-                        }
-                    }
-                }
-            }
-            _ =>{todo!()}
-        };
-    };
-
-}
-*/
 
 ///An example
 ///
@@ -653,7 +547,7 @@ macro_rules! Fermi_tetrahedron_integrate {
 ///    let t1=1.0+0.0*li;
 ///    let t2=0.1+0.0*li;
 ///    let t3=0.0+0.0*li;
-///    let delta=0.0;
+///    let delta=0.5;
 ///    let dim_r:usize=2;
 ///    let norb:usize=2;
 ///    let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
@@ -1350,6 +1244,7 @@ impl basis<'_> for Model{
                 }
             }
         }
+        //开始正式构建哈密顿量
         let n_R=self.hamR.len_of(Axis(0));
         for n in 0..num{
             for i0 in 0..n_R{
@@ -1876,6 +1771,76 @@ impl basis<'_> for Model{
 
     }
 
+    fn remove_orb(&mut self,orb_list:usize){
+        self.norb-=1;
+        let A=self.orb.clone();
+        self.orb=remove_row(A,orb_list);
+        if self.spin{
+            self.nsta=self.norb*2;
+        }else{
+            self.nsta=self.norb;
+        }
+        let mut b=0;
+        for (i,a) in self.atom_list.iter().enumerate(){
+            b+=*a;
+            if b>orb_list{
+                self.atom_list[i]-=1;
+                if self.atom_list[i]==0{
+                    let A=self.atom.clone();
+                    self.atom=remove_row(A,i);
+                    self.natom-=1;
+                    self.atom_list.remove(i);
+                }
+                break;
+            }
+        }
+        //开始操作哈密顿量
+        let n_R=self.hamR.nrows();
+        let mut new_ham=Array3::<Complex<f64>>::zeros((0,self.nsta,self.nsta));
+        for R in 0..n_R{
+            let ham0=self.ham.slice(s![R,..,..]).to_owned();
+            let ham0=remove_row(ham0,orb_list);
+            let ham0=remove_col(ham0,orb_list);
+            new_ham.push(Axis(0),ham0.view());
+        }
+        self.ham=new_ham
+    }
+
+    fn remove_atom(&mut self,atom_list:usize){
+        self.natom-=1;
+        let A=self.atom.clone();
+        self.atom=remove_row(A,atom_list);
+        let mut begin_orb=0;
+        for i in 0..atom_list{
+            begin_orb+=self.atom_list[i];
+        }
+        let end_orb=begin_orb+self.atom_list[atom_list];
+        let det_num_orb=self.atom_list[atom_list];
+        for i in begin_orb..end_orb{
+            let A=self.orb.clone();
+            self.orb=remove_row(A,begin_orb);
+        }
+        self.norb-=self.atom_list[atom_list];
+        self.atom_list.remove(atom_list);
+        if self.spin{
+            self.nsta=self.norb*2;
+        }else{
+            self.nsta=self.norb;
+        }
+        //开始操作哈密顿量
+        let n_R=self.hamR.nrows();
+        let mut new_ham=Array3::<Complex<f64>>::zeros((0,self.nsta,self.nsta));
+        for R in 0..n_R{
+            let mut ham0=self.ham.slice(s![R,..,..]).to_owned();
+            for i in 0..det_num_orb{
+                let a=ham0.clone();
+                let a=remove_row(a,begin_orb);
+                ham0=remove_col(a,begin_orb);
+            }
+            new_ham.push(Axis(0),ham0.view());
+        }
+        self.ham=new_ham
+    }
 
 
     fn unfold(&self,U:&Array2::<f64>,kvec:&Array2::<f64>,E_min:f64,E_max:f64,E_n:usize)->Array2::<f64>{
@@ -1884,6 +1849,7 @@ impl basis<'_> for Model{
         let mut A0=Array2::<f64>::zeros((E_n,nk));
         A0
     }
+
     fn make_supercell(&self,U:&Array2::<f64>)->Model{
         //这个函数是用来对模型做变换的, 变换前后模型的基矢 $L'=UL$.
         //!This function is used to transform the model, where the new basis after transformation is given by $L' = UL$.

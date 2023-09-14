@@ -63,24 +63,37 @@ fn main(){
     */
 
    //画一下贝利曲率的分布
+    let E_min=-1.0;
+    let E_max=1.0;
+    let E_n=2000;
+    let og=0.0;
+    let mu=Array1::linspace(E_min,E_max,E_n);
     let nk:usize=1000;
     let kmesh=arr1(&[nk,nk]);
     let kvec=gen_kmesh(&kmesh);
     let kvec=PI*model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec=kvec.reversed_axes();
-    let berry_curv=model.berry_curvature(&kvec,&dir_1,&dir_2,T,0.0,0.0,0,1e-3);
+    let berry_curv=model.berry_curvature(&kvec,&dir_1,&dir_2,T,0.0,0.0,3,1e-3);
     let data=berry_curv.clone().into_shape((nk,nk)).unwrap();
     draw_heatmap(data.map(|x| {let a:f64=if *x >= 0.0 {(x+1.0).log(10.0)} else {-(-x+1.0).log(10.0)}; a}),"./examples/RuO2/heat_map.pdf");
-    let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,0.0,0.0,0.0,0,1e-3);
-    println!("{}",conductivity/(2.0*PI));
+    let conductivity=model.Hall_conductivity_mu(&kmesh,&dir_1,&dir_2,0.0,0.0,&mu,3,1e-3);
+//    println!("{}",conductivity/(2.0*PI));
+
+    let mut fg = Figure::new();
+    let axes=fg.axes2d();
+    let x:Vec<f64>=mu.to_vec();
+    let y:Vec<f64>=conductivity.to_vec();
+    axes.lines(&x, &y, &[Color("black")]);
+    //axes.set_y_range(Fix(-10.0),Fix(10.0));
+    axes.set_x_range(Fix(E_min),Fix(E_max));
+    let mut show_ticks=Vec::<String>::new();
+    let mut pdf_name=String::new();
+    pdf_name.push_str("./examples/RuO2/spin_Hall_z.pdf");
+    fg.set_terminal("pdfcairo", &pdf_name);
+    fg.show();
         
 
-    let E_min=-1.0;
-    let E_max=1.0;
-    let E_n=2000;
-    let og=0.0;
-    let mu=Array1::linspace(E_min,E_max,E_n);
     let sigma:Array1<f64>=model.Nonlinear_Hall_conductivity_Extrinsic(&kmesh,&dir_1,&dir_2,&dir_3,&mu,T,og,0,1e-5);
     //开始绘制非线性电导
     let mut fg = Figure::new();

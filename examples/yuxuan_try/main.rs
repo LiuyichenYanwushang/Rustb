@@ -11,7 +11,7 @@ fn main(){
     let t1=1.0+0.0*li;
     let lm_so=0.2+0.0*li;
     let J=-0.5+0.0*li;
-    let delta=0.0;
+    let delta=0.2;
     let dim_r:usize=2;
     let norb:usize=2;
     let a0=0.5;
@@ -40,18 +40,19 @@ fn main(){
     model.add_hop(-lm_so*li*d3[[0]],0,1,&array![0,-1],2);
     model.add_hop(lm_so*li*d3[[1]],0,1,&array![0,-1],1);
     //最后加上d+id 项
+/*
+    model.add_hop(J,0,1,&array![0,0],1);
+    model.add_hop(J*(-PI*4.0/3.0*li).exp(),0,1,&array![-1,0],1);
+    model.add_hop(J*(-PI*8.0/3.0*li).exp(),0,1,&array![0,-1],1);
     /*
-    model.add_hop(J,0,1,&array![0,0],3);
-    model.add_hop(J*(-PI*4.0/3.0*li).exp(),0,1,&array![-1,0],3);
-    model.add_hop(J*(-PI*8.0/3.0*li).exp(),0,1,&array![0,-1],3);
-    */
     model.add_hop(J,0,0,&array![1,0],3);
     model.add_hop(J,1,1,&array![1,0],3);
     model.add_hop(J*(-PI*4.0/3.0*li).exp(),0,0,&array![0,1],3);
     model.add_hop(J*(-PI*4.0/3.0*li).exp(),1,1,&array![0,1],3);
     model.add_hop(J*(-PI*8.0/3.0*li).exp(),0,0,&array![-1,1],3);
     model.add_hop(J*(-PI*8.0/3.0*li).exp(),1,1,&array![-1,1],3);
-
+    */
+*/
     let nk:usize=1001;
     let path=array![[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
     let label=vec!["G","K","M","K'","G"];
@@ -96,6 +97,7 @@ fn main(){
     println!("{}",conductivity/(2.0*PI));
         
 
+    /*
     let E_min=-1.0;
     let E_max=1.0;
     let E_n=2000;
@@ -136,4 +138,5 @@ fn main(){
     pdf_name.push_str("./examples/yuxuan_try/nonlinear_in.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
     fg.show();
+    */
 }

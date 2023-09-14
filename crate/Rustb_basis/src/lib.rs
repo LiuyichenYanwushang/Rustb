@@ -1,14 +1,6 @@
 #![allow(warnings)]
 use num_complex::Complex;
-use ndarray::linalg::kron;
 use ndarray::prelude::*;
-use ndarray_linalg::*;
-use std::f64::consts::PI;
-use ndarray_linalg::{Eigh, UPLO};
-use ndarray_linalg::conjugate;
-use rayon::prelude::*;
-use std::io::Write;
-use std::fs::File;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
 pub trait basis<'a>{
@@ -94,6 +86,9 @@ pub trait basis<'a>{
     fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Self;
         ///This function is used to transform the model, where the new basis after transformation is given by $L' = UL$.
     fn make_supercell(&self,U:&Array2::<f64>)->Self;
+    fn remove_orb(&mut self,orb_list:usize);
+    fn remove_atom(&mut self,atom_list:usize);
+    ///这个函数是用来删除某个轨道的
     fn unfold(&self,U:&Array2::<f64>,kvec:&Array2::<f64>,E_min:f64,E_max:f64,E_n:usize)->Array2::<f64>;
     /// 能带反折叠算法, 用来计算能带反折叠后的能带.
     fn shift_to_zero(&mut self);

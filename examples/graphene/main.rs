@@ -9,28 +9,35 @@ use gnuplot::{Color,Fix,Figure,AxesCommon};
 fn main(){
     let li:Complex<f64>=1.0*Complex::i();
     let t1=1.0+0.0*li;
-    let t2=0.0+0.0*li;
+    let t2=0.1+0.0*li;
     let t3=0.0+0.0*li;
     let delta=0.5;
     let dim_r:usize=2;
     let norb:usize=2;
-    let a0=0.5;
+    let a0=1.0;
     let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]])*a0;
     let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
     let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
-    model.set_onsite(arr1(&[delta,delta]),3);
+    model.set_onsite(arr1(&[delta,-delta]),0);
     model.add_hop(t1,0,1,&array![0,0],0);
     model.add_hop(t1,0,1,&array![-1,0],0);
     model.add_hop(t1,0,1,&array![0,-1],0);
     model.add_hop(t2,0,0,&array![1,0],0);
-    model.add_hop(t2,1,1,&array![1,0],0);
+    model.add_hop(t3,1,1,&array![1,0],0);
     model.add_hop(t2,0,0,&array![0,1],0);
-    model.add_hop(t2,1,1,&array![0,1],0);
+    model.add_hop(t3,1,1,&array![0,1],0);
     model.add_hop(t2,0,0,&array![1,-1],0);
-    model.add_hop(t2,1,1,&array![1,-1],0);
+    model.add_hop(t3,1,1,&array![1,-1],0);
+    /*
     model.add_hop(t3,0,1,&array![1,-1],0);
     model.add_hop(t3,0,1,&array![-1,1],0);
     model.add_hop(t3,0,1,&array![-1,-1],0);
+    */
+    let path=array![[0.0,0.0],[1.0/3.0,2.0/3.0],[2.0/3.0,1.0/3.0],[0.0,0.0]];
+    let nk=1001;
+    let label=vec!["G","K","K'","G"];
+    let name="./examples/graphene/";
+    model.show_band(&path,&label,nk,name);
 
 
     //画一下贝利曲率的分布
