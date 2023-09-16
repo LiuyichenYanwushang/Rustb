@@ -1846,6 +1846,7 @@ impl basis<'_> for Model{
     fn unfold(&self,U:&Array2::<f64>,kvec:&Array2::<f64>,E_min:f64,E_max:f64,E_n:usize)->Array2::<f64>{
     //! 能带反折叠算法, 用来计算能带反折叠后的能带.
         let nk=kvec.nrows();
+        let E=Array1::<f64>::linspace(E_min,E_max,E_n);
         let mut A0=Array2::<f64>::zeros((E_n,nk));
         A0
     }
@@ -2443,7 +2444,7 @@ impl basis<'_> for Model{
     fn show_band(&self,path:&Array2::<f64>,label:&Vec<&str>,nk:usize,name:&str)-> std::io::Result<()>{
         use std::fs::create_dir_all;
         use std::path::Path;
-        use gnuplot::{Figure, Caption, Color};
+        use gnuplot::{Figure, Caption, Color,LineStyle,Solid};
         use gnuplot::{AxesCommon};
         use gnuplot::AutoOption::*;
         use gnuplot::Tick::*;
@@ -2499,7 +2500,7 @@ impl basis<'_> for Model{
         let axes=fg.axes2d();
         for i in 0..self.nsta{
             let y:Vec<f64>=eval.slice(s![..,i]).to_owned().to_vec();
-            axes.lines(&x, &y, &[Color("black")]);
+            axes.lines(&x, &y, &[Color("black"),LineStyle(Solid)]);
         }
         let axes=axes.set_x_range(Fix(0.0), Fix(k_node[[k_node.len()-1]]));
         let label=label.clone();
