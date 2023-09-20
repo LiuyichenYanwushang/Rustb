@@ -86,8 +86,8 @@ pub trait basis<'a>{
     fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Self;
         ///This function is used to transform the model, where the new basis after transformation is given by $L' = UL$.
     fn make_supercell(&self,U:&Array2::<f64>)->Self;
-    fn remove_orb(&mut self,orb_list:usize);
-    fn remove_atom(&mut self,atom_list:usize);
+    fn remove_orb(&mut self,orb_list:&Vec<usize>);
+    fn remove_atom(&mut self,atom_list:&Vec<usize>);
     ///这个函数是用来删除某个轨道的
     fn unfold(&self,U:&Array2::<f64>,kvec:&Array2::<f64>,E_min:f64,E_max:f64,E_n:usize)->Array2::<f64>;
     /// 能带反折叠算法, 用来计算能带反折叠后的能带.

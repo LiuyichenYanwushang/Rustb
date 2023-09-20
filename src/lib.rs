@@ -1233,13 +1233,11 @@ impl basis<'_> for Model{
         //先尝试构建位置函数
         let exist_r=self.rmatrix.len_of(Axis(0))!=1;
         if self.rmatrix.len_of(Axis(0))==1{
-            for n in 0..num{
-                for i in 0..new_norb{
-                    for r in 0..self.dim_r{
-                        new_rmatrix[[0,r,i,i]]=Complex::new(new_orb[[i,r]],0.0);
-                        if self.spin{
-                            new_rmatrix[[0,r,i+new_norb,i+new_norb]]=Complex::new(new_orb[[i,r]],0.0);
-                        }
+            for i in 0..new_norb{
+                for r in 0..self.dim_r{
+                    new_rmatrix[[0,r,i,i]]=Complex::new(new_orb[[i,r]],0.0);
+                    if self.spin{
+                        new_rmatrix[[0,r,i+new_norb,i+new_norb]]=Complex::new(new_orb[[i,r]],0.0);
                     }
                 }
             }
@@ -1771,74 +1769,96 @@ impl basis<'_> for Model{
 
     }
 
-    fn remove_orb(&mut self,orb_list:usize){
-        self.norb-=1;
-        let A=self.orb.clone();
-        self.orb=remove_row(A,orb_list);
-        if self.spin{
-            self.nsta=self.norb*2;
-        }else{
-            self.nsta=self.norb;
+    fn remove_orb(&mut self,orb_list:&Vec<usize>){
+        let mut use_orb_list=orb_list.clone();
+        use_orb_list.sort_by(|a, b|a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let has_duplicates={
+            use_orb_list.windows(2).any(|window| window[0] == window[1])
+        };
+        if has_duplicates{
+            panic!("Wrong, make sure no duplicates in orb_list");
         }
+        let mut index: Vec<_> = (1..=self.norb)
+        .filter(|&num| !use_orb_list.contains(&num))
+        .collect();//要保留下来的元素
+        let delete_n=orb_list.len();
+        self.norb-=delete_n;
+        self.orb=self.orb.clone().select(Axis(0),&index);
+
+        //开始删除atom_list
         let mut b=0;
-        for (i,a) in self.atom_list.iter().enumerate(){
+        for (i,a) in self.atom_list.clone().iter().enumerate(){
             b+=*a;
-            if b>orb_list{
+            while b>use_orb_list[0]{
                 self.atom_list[i]-=1;
+                let _=use_orb_list.remove(0);
+                
                 if self.atom_list[i]==0{
                     let A=self.atom.clone();
                     self.atom=remove_row(A,i);
                     self.natom-=1;
-                    self.atom_list.remove(i);
                 }
-                break;
             }
         }
-        //开始操作哈密顿量
-        let n_R=self.hamR.nrows();
-        let mut new_ham=Array3::<Complex<f64>>::zeros((0,self.nsta,self.nsta));
-        for R in 0..n_R{
-            let ham0=self.ham.slice(s![R,..,..]).to_owned();
-            let ham0=remove_row(ham0,orb_list);
-            let ham0=remove_col(ham0,orb_list);
-            new_ham.push(Axis(0),ham0.view());
+        self.atom_list.retain(|&x| x!=0);
+        //开始计算nsta
+        if self.spin{
+            self.nsta=self.norb*2;
+            let index_add:Vec<_>=index.iter().map(|x| *x+self.norb).collect();
+            index.extend(index_add);
+        }else{
+            self.nsta=self.norb;
         }
+        let mut b=0;
+        //开始操作哈密顿量
+        let new_ham=self.ham.select(Axis(1),&index);
+        let new_ham=new_ham.select(Axis(2),&index);
         self.ham=new_ham
     }
 
-    fn remove_atom(&mut self,atom_list:usize){
-        self.natom-=1;
-        let A=self.atom.clone();
-        self.atom=remove_row(A,atom_list);
-        let mut begin_orb=0;
-        for i in 0..atom_list{
-            begin_orb+=self.atom_list[i];
+    fn remove_atom(&mut self,atom_list:&Vec<usize>){
+
+        //----------判断是否存在重复, 并给出保留的index
+        let mut use_atom_list=atom_list.clone();
+        use_atom_list.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let has_duplicates={
+            use_atom_list.windows(2).any(|window| window[0] == window[1])
+        };
+        if has_duplicates{
+            panic!("Wrong, make sure no duplicates in orb_list");
         }
-        let end_orb=begin_orb+self.atom_list[atom_list];
-        let det_num_orb=self.atom_list[atom_list];
-        for i in begin_orb..end_orb{
-            let A=self.orb.clone();
-            self.orb=remove_row(A,begin_orb);
+
+        let mut atom_index: Vec<_> = (1..=self.natom)
+        .filter(|&num| !use_atom_list.contains(&num))
+        .collect();//要保留下来的元素
+        //--------------------------
+        self.natom-=atom_list.len();//让原子数保持一致
+        self.atom=self.atom.select(Axis(0),&atom_index);//选出需要的原子
+        //接下来选择需要的轨道
+        let mut b=0;
+        let mut orb_index=Vec::new();
+        let mut new_atom_list=Vec::new();
+        for (i,a) in self.atom_list.iter().enumerate(){
+            if atom_index.contains(&i){
+                for j in 0..*a{
+                    orb_index.push(b+j);
+                }
+                new_atom_list.push(*a);
+            }
+            b+=a;
         }
-        self.norb-=self.atom_list[atom_list];
-        self.atom_list.remove(atom_list);
+        self.orb=self.orb.select(Axis(0),&orb_index);
+        self.atom_list=new_atom_list;
         if self.spin{
             self.nsta=self.norb*2;
+            let index_add:Vec<_>=orb_index.iter().map(|x| *x+self.norb).collect();
+            orb_index.extend(index_add);
         }else{
             self.nsta=self.norb;
         }
         //开始操作哈密顿量
-        let n_R=self.hamR.nrows();
-        let mut new_ham=Array3::<Complex<f64>>::zeros((0,self.nsta,self.nsta));
-        for R in 0..n_R{
-            let mut ham0=self.ham.slice(s![R,..,..]).to_owned();
-            for i in 0..det_num_orb{
-                let a=ham0.clone();
-                let a=remove_row(a,begin_orb);
-                ham0=remove_col(a,begin_orb);
-            }
-            new_ham.push(Axis(0),ham0.view());
-        }
+        let new_ham=self.ham.select(Axis(1),&orb_index);
+        let new_ham=new_ham.select(Axis(2),&orb_index);
         self.ham=new_ham
     }
 
@@ -3610,6 +3630,8 @@ impl surf_Green{
     }
     pub fn show_surf_state(&self,name:&str,kpath:&Array2::<f64>,label:&Vec<&str>,nk:usize,E_min:f64,E_max:f64,E_n:usize){
         use std::io::{BufWriter, Write};
+        use std::fs::create_dir_all;
+        create_dir_all(name).expect("can't creat the file");
         let (kvec,kdist,knode)=self.k_path(kpath, nk);
         let Energy=Array1::<f64>::linspace(E_min,E_max,E_n);
         let (N_L,N_R,N_B)=self.surf_green_path(&kvec,E_min,E_max,E_n);
