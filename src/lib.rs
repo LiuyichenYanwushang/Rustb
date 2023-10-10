@@ -2083,8 +2083,8 @@ impl basis<'_> for Model{
                         let int_j:usize=j; //超胞中的 |j>
                         let use_j:usize=orb_list[j]; //超胞中的 |j>
                         //接下来计算超胞中的R在原胞中对应的hamR
-                        let R0:Array1::<f64>=new_orb.row(j).to_owned()-new_orb.row(i).to_owned()+use_R.map(|x| *x as f64); //超胞的 R 在原始原胞的 R
-                        let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(use_j)+self.orb.row(use_i)).map(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize}); 
+                        let R0:Array1::<f64>=new_orb.row(j).to_owned()-new_orb.row(i).to_owned()+use_R.mapv(|x| x as f64); //超胞的 R 在原始原胞的 R
+                        let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(use_j)+self.orb.row(use_i)).mapv(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize}); 
                         let R0_inv=-R0.clone();
                         let R0_exit=find_R(&self.hamR,&R0);
                         let R0_inv_exit=find_R(&self.hamR,&R0_inv);
