@@ -207,19 +207,19 @@ pub fn gen_krange(k_mesh:&Array1::<usize>)->Array3::<f64>{
 #[allow(non_snake_case)]
 pub fn comm(A:&Array2::<Complex<f64>>,B:&Array2::<Complex<f64>>)->Array2::<Complex<f64>>{
     //! 做 $[A,B]$ 对易操作
-    let A0=A.clone();
-    let B0=B.clone();
-    let C=A0.dot(&B0);
-    let D=B0.dot(&A0);
-    C-D
+    //let A0=A.clone();
+    //let B0=B.clone();
+    //let C=&A.dot(B);
+    //let D=&B.dot(A);
+    //C-D
+    &A.dot(B)-&B.dot(A)
 }
 #[allow(non_snake_case)]
 pub fn anti_comm(A:&Array2::<Complex<f64>>,B:&Array2::<Complex<f64>>)->Array2::<Complex<f64>>{
     //! 做 $\\\{A,B\\\}$ 反对易操作
-    let A0=A.clone();
-    let B0=B.clone();
-    let C=A0.dot(&B0)+B0.dot(&A0);
-    C
+    //let A0=A.clone();
+    //let B0=B.clone();
+    A.dot(B)+B.dot(A)
 }
 pub fn draw_heatmap(data: Array2<f64>,name:&str) {
     //!这个函数是用来画热图的, 给定一个二维矩阵, 会输出一个像素图片
@@ -939,6 +939,7 @@ impl basis<'_> for Model{
         (k_vec,k_dist,k_node)
     }
     #[allow(non_snake_case)]
+    #[inline(always)]
     fn gen_ham(&self,kvec:&Array1::<f64>)->Array2::<Complex<f64>>{
         //!这个是做傅里叶变换, 将实空间的哈密顿量变换到倒空间的哈密顿量
         //!
@@ -949,7 +950,7 @@ impl basis<'_> for Model{
         }
         let nR:usize=self.hamR.len_of(Axis(0));
         let U0:Array1::<f64>=self.orb.dot(kvec);
-        let U0:Array1::<Complex<f64>>=U0.map(|x| Complex::<f64>::new(*x,0.0));
+        let U0:Array1::<Complex<f64>>=U0.mapv(|x| Complex::<f64>::new(x,0.0));
         let U0=U0*Complex::new(0.0,2.0*PI);
         let mut U0:Array1::<Complex<f64>>=U0.mapv(Complex::exp);
         if self.spin{
@@ -957,17 +958,20 @@ impl basis<'_> for Model{
             U0.append(Axis(0),UU.view()).unwrap();
         }
         let U=Array2::from_diag(&U0);
-        let Us=(self.hamR.map(|x| *x as f64)).dot(kvec).map(|x| Complex::<f64>::new(*x,0.0));
+        let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
         let Us=Us*Complex::new(0.0,2.0*PI);
         let Us=Us.mapv(Complex::exp);
         let mut hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-        let ham0=self.ham.slice(s![0,..,..]).to_owned();
+        let ham0=self.ham.slice(s![0,..,..]);
+        /*
         for i in 1..nR{
             hamk=hamk+self.ham.slice(s![i,..,..]).to_owned()*Us[[i]];
         }
-        hamk=ham0+hamk.map(|x| x.conj()).t()+hamk;
+        */
+        hamk=self.ham.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(hamk,|acc,(A,us)| {acc+&A**us});
+        hamk=&ham0+&hamk.mapv(|x| x.conj()).t()+&hamk;
         hamk=hamk.dot(&U);
-        let re_ham=U.map(|x| x.conj()).t().dot(&hamk);
+        let re_ham=U.mapv(|x| x.conj()).t().dot(&hamk);
         re_ham
     }
     #[allow(non_snake_case)]
@@ -980,7 +984,7 @@ impl basis<'_> for Model{
         }
         let nR:usize=self.hamR.len_of(Axis(0));
         let U0=self.orb.dot(kvec);
-        let U0=U0.map(|x| Complex::<f64>::new(*x,0.0));
+        let U0=U0.mapv(|x| Complex::<f64>::new(x,0.0));
         let U0=U0*Complex::new(0.0,2.0*PI);
         let mut U0=U0.mapv(Complex::exp);
         if self.spin{
@@ -988,7 +992,7 @@ impl basis<'_> for Model{
             U0.append(Axis(0),UU.view()).unwrap();
         }
         let U=Array2::from_diag(&U0);
-        let Us=(self.hamR.map(|x| *x as f64)).dot(kvec).map(|x| Complex::<f64>::new(*x,0.0));
+        let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
         let Us=Us*Complex::new(0.0,2.0*PI);
         let Us=Us.mapv(Complex::exp);
         let mut rk=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));
@@ -996,15 +1000,13 @@ impl basis<'_> for Model{
         if self.rmatrix.len_of(Axis(0))==1{
             return self.rmatrix.slice(s![0,..,..,..]).to_owned()
         }else{
-            for i in 1..nR{
-                rk=rk+self.rmatrix.slice(s![i,..,..,..]).to_owned()*Us[[i]];
-            }
+            rk=self.rmatrix.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(rk,|acc,(ham,us)|{acc+&ham**us});
             for i in 0..self.dim_r{
-                let use_rk=rk.slice(s![i,..,..]).to_owned();
-                let use_rk:Array2::<Complex<f64>>=r0.slice(s![i,..,..]).to_owned()+use_rk.map(|x| x.conj()).t()+use_rk;
+                let use_rk=rk.slice(s![i,..,..]);
+                let use_rk:Array2::<Complex<f64>>=&r0.slice(s![i,..,..])+&use_rk.mapv(|x| x.conj()).t()+&use_rk;
                 //接下来向位置算符添加轨道的位置项
                 let use_rk=use_rk.dot(&U); //
-                rk.slice_mut(s![i,..,..]).assign(&(U.map(|x| x.conj()).t().dot(&use_rk)));
+                rk.slice_mut(s![i,..,..]).assign(&(U.mapv(|x| x.conj()).t().dot(&use_rk)));
             }
             return rk
         }
@@ -1026,13 +1028,14 @@ impl basis<'_> for Model{
     ///
     ///这里的 $\\mathcal A_{\bm k}$ 的定义为 $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R+\bm\tau_m-\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
     #[allow(non_snake_case)]
+    #[inline(always)]
     fn gen_v(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length must equal to the dimension of model.")
         }
         let nR:usize=self.hamR.len_of(Axis(0));
         let U0=self.orb.dot(kvec);
-        let U0=U0.map(|x| Complex::<f64>::new(*x,0.0));
+        let U0=U0.mapv(|x| Complex::<f64>::new(x,0.0));
         let U0=U0*Complex::new(0.0,2.0*PI);
         let mut U0=U0.mapv(Complex::exp);
         if self.spin{
@@ -1040,41 +1043,46 @@ impl basis<'_> for Model{
             U0.append(Axis(0),UU.view()).unwrap();
         }
         let U=Array2::from_diag(&U0);
-        let Us=(self.hamR.map(|x| *x as f64)).dot(kvec).map(|x| Complex::<f64>::new(*x,0.0));
+        let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
         let Us=Us*Complex::new(0.0,2.0*PI);
         let Us=Us.mapv(Complex::exp);
         let mut UU=Array3::<f64>::zeros((self.dim_r,self.nsta,self.nsta));
         let orb_real=self.orb.dot(&self.lat);
-        for r in 0..self.dim_r{
-            for i in 0..self.norb{
-                for j in 0..self.norb{
-                    UU[[r,i,j]]=-orb_real[[i,r]]+orb_real[[j,r]];
-                    if self.spin{
+        if self.spin{
+            for r in 0..self.dim_r{
+                for i in 0..self.norb{
+                    for j in 0..self.norb{
+                        UU[[r,i,j]]=-orb_real[[i,r]]+orb_real[[j,r]];
                         UU[[r,i+self.norb,j]]=-orb_real[[i,r]]+orb_real[[j,r]];
                         UU[[r,i,j+self.norb]]=-orb_real[[i,r]]+orb_real[[j,r]];
                         UU[[r,i+self.norb,j+self.norb]]=-orb_real[[i,r]]+orb_real[[j,r]];
                     }
                 }
             }
+        }else{
+            for r in 0..self.dim_r{
+                for i in 0..self.norb{
+                    for j in 0..self.norb{
+                        UU[[r,i,j]]=-orb_real[[i,r]]+orb_real[[j,r]];
+                    }
+                }
+            }
         }
-        let UU=UU.map(|x| Complex::<f64>::new(0.0,*x)); //UU[i,j]=-tau[i]+tau[j] 
+        let UU=UU.mapv(|x| Complex::<f64>::new(0.0,x)); //UU[i,j]=-tau[i]+tau[j] 
         let mut v=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));//定义一个初始化的速度矩阵
-        let ham0=self.ham.slice(s![0,..,..]).to_owned();
-        let R0=self.hamR.clone().map(|x| Complex::<f64>::new((*x) as f64,0.0));
-        let R0=R0.dot(&self.lat.map(|x| Complex::new(*x,0.0)));
+        let R0=self.hamR.clone().mapv(|x| Complex::<f64>::new(x as f64,0.0));
+        let R0=R0.dot(&self.lat.mapv(|x| Complex::new(x,0.0)));
         for i0 in 0..self.dim_r{
             let mut hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
             let mut vv=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-            for i in 1..nR{
-                vv=vv+self.ham.slice(s![i,..,..]).to_owned()*Us[[i]]*R0[[i,i0]]*Complex::i(); //这一步对 R 求和
-                hamk=hamk+self.ham.slice(s![i,..,..]).to_owned()*Us[[i]];
-            }
-            vv=vv.clone().reversed_axes().map(|x| x.conj())+vv;
+            (vv,hamk)=self.ham.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1).zip(R0.column(i0).iter().skip(1))).fold((vv,hamk),|(acc1,acc2),(ham,(us,r))|{ (acc1+&ham**us**r*Complex::i(),acc2+&ham**us)});
+
+            vv=vv.clone().reversed_axes().mapv(|x| x.conj())+vv;
             let hamk0=hamk.clone();
-            let hamk=hamk+self.ham.slice(s![0,..,..]).to_owned()+hamk0.map(|x| x.conj()).t();
-            vv=vv+hamk.clone()*UU.slice(s![i0,..,..]).to_owned();
-            let vv=vv.dot(&U); //加下来两步填上轨道坐标导致的相位
-            let vv=U.map(|x| x.conj()).t().dot(&vv);
+            let hamk=hamk+&self.ham.slice(s![0,..,..])+hamk0.mapv(|x| x.conj()).t();
+            vv=vv+hamk.clone()*&UU.slice(s![i0,..,..]);
+            let vv=vv.dot(&U); //接下来两步填上轨道坐标导致的相位
+            let vv=U.mapv(|x| x.conj()).t().dot(&vv);
             v.slice_mut(s![i0,..,..]).assign(&vv);
         }
         //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
@@ -1089,7 +1097,7 @@ impl basis<'_> for Model{
                     UU.append(Axis(0),UUU.view()).unwrap();
                 }
                 let mut UU=Array2::from_diag(&UU); //将其化为矩阵
-                let A=rk.slice(s![i,..,..]).to_owned()-UU;
+                let A=&rk.slice(s![i,..,..])-&UU;
                 let A=comm(&hamk,&A)*Complex::i();
                 //let vv=v.slice(s![i,..,..]).to_owned().clone();
                 v.slice_mut(s![i,..,..]).add_assign(&A);
@@ -1104,25 +1112,25 @@ impl basis<'_> for Model{
             panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
         } 
         let hamk=self.gen_ham(&kvec);
+        /*
         let hamk_conj=hamk.clone().map(|x| x.conj());
         let hamk_conj=hamk_conj.t();
         let sum0=(hamk.clone()-hamk_conj).sum();
         if sum0.im()> 1e-8 || sum0.re() >1e-8{
             panic!("Wrong, hamiltonian is not hamilt");
         }
+        */
         let eval = if let Ok(eigvals) = hamk.eigvalsh(UPLO::Lower) { eigvals } else { todo!() };
         eval
     }
     fn solve_band_all(&self,kvec:&Array2::<f64>)->Array2::<f64>{
         //!求解多个k点的能带值
         let nk=kvec.len_of(Axis(0));
-        let mut band=Array2::<f64>::zeros((nk,self.nsta));
-        for i in 0..nk{
-            //let k=kvec.slice(s![i,..]).to_owned();
-            let k=kvec.row(i).to_owned();
-            let eval=self.solve_band_onek(&k);
-            band.slice_mut(s![i,..]).assign(&eval);
-        }
+        let eval:Vec<_>=kvec.axis_iter(Axis(0)).map(|x| {
+            let eval=self.solve_band_onek(&x.to_owned()); 
+            eval.to_vec()
+            }).collect();
+        let band = Array2::from_shape_vec((nk, self.nsta), eval.into_iter().flatten().collect()).unwrap();
         band
     }
     #[allow(non_snake_case)]
@@ -1142,12 +1150,6 @@ impl basis<'_> for Model{
             panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
         } 
         let hamk=self.gen_ham(&kvec);
-        let hamk_conj=hamk.clone().map(|x| x.conj());
-        let hamk_conj=hamk_conj.t();
-        let sum0=(hamk.clone()-hamk_conj).sum();
-        if sum0.im()> 1e-8 || sum0.re() >1e-8{
-            panic!("Wrong, hamiltonian is not hamilt");
-        }
         let (eval, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) { (eigvals, eigvecs) } else { todo!() };
         let evec=evec.reversed_axes().map(|x| x.conj());
         (eval,evec)
@@ -1155,15 +1157,14 @@ impl basis<'_> for Model{
     #[allow(non_snake_case)]
     fn solve_all(&self,kvec:&Array2::<f64>)->(Array2::<f64>,Array3::<Complex<f64>>){
         let nk=kvec.len_of(Axis(0));
-        let mut band=Array2::<f64>::zeros((nk,self.nsta));
-        let mut vectors=Array3::<Complex<f64>>::zeros((nk,self.nsta,self.nsta));
-        for i in 0..nk{
-            //let k=kvec.slice(s![i,..]).to_owned();
-            let k=kvec.row(i).to_owned();
-            let (eval,evec)=self.solve_onek(&k);
-            band.slice_mut(s![i,..]).assign(&eval);
-            vectors.slice_mut(s![i,..,..]).assign(&evec);
-        }
+        let (eval,evec):(Vec<_>,Vec<_>)=kvec
+            .axis_iter(Axis(0))
+            .map(|x| {
+                let (eval, evec) =self.solve_onek(&x.to_owned()); 
+                (eval.to_vec(),evec.into_raw_vec())
+                }).unzip();
+        let band = Array2::from_shape_vec((nk, self.nsta), eval.into_iter().flatten().collect()).unwrap();
+        let vectors=Array3::from_shape_vec((nk, self.nsta,self.nsta), evec.into_iter().flatten().collect()).unwrap();
         (band,vectors)
     }
     #[allow(non_snake_case)]
@@ -1241,6 +1242,7 @@ impl basis<'_> for Model{
                     }
                 }
             }
+
         }
         //开始正式构建哈密顿量
         let n_R=self.hamR.len_of(Axis(0));
@@ -1250,9 +1252,9 @@ impl basis<'_> for Model{
                 let mut rmatrix=Array3::<Complex<f64>>::zeros((self.dim_r,new_nsta,new_nsta));
                 let ham=if ind_R[[dir]]<0{//如果这个方向的ind_R 小于0, 将其变成大于0
                     ind_R*=-1;
-                    let h0=self.ham.slice(s![i0,..,..]).map(|x| x.conj()).t().to_owned();
+                    let h0=self.ham.slice(s![i0,..,..]).mapv(|x| x.conj()).t().to_owned();
                     if exist_r{
-                        rmatrix=self.rmatrix.slice(s![i0,..,..,..]).map(|x| x.conj());
+                        rmatrix=self.rmatrix.slice(s![i0,..,..,..]).mapv(|x| x.conj());
                         rmatrix.swap_axes(1,2);
                     }
                     h0
@@ -1271,41 +1273,45 @@ impl basis<'_> for Model{
                     let negative_R_exist=find_R(&new_hamR,&negative_R);
                     let mut use_ham=Array2::<Complex<f64>>::zeros((new_nsta,new_nsta));
                     if self.spin{ //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
-                        for i in 0..self.norb{
-                            for j in 0..self.norb{
-                                use_ham[[i+n*self.norb,j+ind*self.norb]]=ham[[i,j]];
-                                use_ham[[i+n*self.norb+new_norb,j+ind*self.norb]]=ham[[i+self.norb,j]];
-                                use_ham[[i+n*self.norb,j+ind*self.norb+new_norb]]=ham[[i,j+self.norb]];
-                                use_ham[[i+n*self.norb+new_norb,j+ind*self.norb+new_norb]]=ham[[i+self.norb,j+self.norb]];
-                            }
-                        }
+                        let mut s=use_ham.slice_mut(s![n*self.norb..(n+1)*self.norb,ind*self.norb..(ind+1)*self.norb]);
+                        let ham0=ham.slice(s![0..self.norb,0..self.norb]);
+                        s.assign(&ham0);
+                        let mut s=use_ham.slice_mut(s![(new_norb+n*self.norb)..(new_norb+(n+1)*self.norb),ind*self.norb..(ind+1)*self.norb]);
+                        let ham0=ham.slice(s![self.norb..2*self.norb,0..self.norb]);
+                        s.assign(&ham0);
+                        let mut s=use_ham.slice_mut(s![n*self.norb..(n+1)*self.norb,(new_norb+ind*self.norb)..(new_norb+(ind+1)*self.norb)]);
+                        let ham0=ham.slice(s![0..self.norb,self.norb..2*self.norb]);
+                        s.assign(&ham0);
+                        let mut s=use_ham.slice_mut(s![(new_norb+n*self.norb)..(new_norb+(n+1)*self.norb),(new_norb+ind*self.norb)..(new_norb+(ind+1)*self.norb)]);
+                        let ham0=ham.slice(s![self.norb..2*self.norb,self.norb..2*self.norb]);
+                        s.assign(&ham0);
+
                         if R_exist{
                             let index=index_R(&new_hamR,&ind_R);
                             if index==0 && ind !=0{
-                                for i in 0..self.norb{
-                                    for j in 0..self.norb{
-                                       use_ham[[j+ind*self.norb,i+n*self.norb]]=ham[[i,j]].conj();
-                                       use_ham[[j+ind*self.norb,i+n*self.norb+new_norb]]=ham[[i+self.norb,j]].conj();
-                                       use_ham[[j+ind*self.norb+new_norb,i+n*self.norb]]=ham[[i,j+self.norb]].conj();
-                                       use_ham[[j+ind*self.norb+new_norb,i+n*self.norb+new_norb]]=ham[[i+self.norb,j+self.norb]].conj();
-                                    }
-                                }
+                                let ham=ham.mapv(|x| x.conj()).reversed_axes();
+                                let mut s=use_ham.slice_mut(s![n*self.norb..(n+1)*self.norb,ind*self.norb..(ind+1)*self.norb]);
+                                let ham0=ham.slice(s![0..self.norb,0..self.norb]);
+                                s.assign(&ham0);
+                                let mut s=use_ham.slice_mut(s![(new_norb+n*self.norb)..(new_norb+(n+1)*self.norb),ind*self.norb..(ind+1)*self.norb]);
+                                let ham0=ham.slice(s![self.norb..2*self.norb,0..self.norb]);
+                                s.assign(&ham0);
+                                let mut s=use_ham.slice_mut(s![n*self.norb..(n+1)*self.norb,(new_norb+ind*self.norb)..(new_norb+(ind+1)*self.norb)]);
+                                let ham0=ham.slice(s![0..self.norb,self.norb..2*self.norb]);
+                                s.assign(&ham0);
+                                let mut s=use_ham.slice_mut(s![(new_norb+n*self.norb)..(new_norb+(n+1)*self.norb),(new_norb+ind*self.norb)..(new_norb+(ind+1)*self.norb)]);
+                                let ham0=ham.slice(s![self.norb..2*self.norb,self.norb..2*self.norb]);
+                                s.assign(&ham0);
                             }
                         }
                     }else{
-                        for i in 0..self.norb{
-                            for j in 0..self.norb{
-                               use_ham[[i+n*self.norb,j+ind*self.norb]]=ham[[i,j]];
-                            }
-                        }
+                        let mut s=use_ham.slice_mut(s![n*self.norb..(n+1)*self.norb,ind*self.norb..(ind+1)*self.norb]);
+                        s.assign(&ham);
                         if R_exist{
                             let index=index_R(&new_hamR,&ind_R);
                             if index==0 && ind !=0{
-                                for i in 0..self.norb{
-                                    for j in 0..self.norb{
-                                       use_ham[[j+ind*self.norb,i+n*self.norb]]=ham[[i,j]].conj();
-                                    }
-                                }
+                                let mut s=use_ham.slice_mut(s![ind*self.norb..(ind+1)*self.norb,n*self.norb..(n+1)*self.norb]);
+                                s.assign(&(ham.mapv(|x| x.conj()).t()));
                             }
                         }
                     }
@@ -1313,49 +1319,48 @@ impl basis<'_> for Model{
                     let mut use_rmatrix=Array3::<Complex<f64>>::zeros((self.dim_r,new_nsta,new_nsta));
                     if exist_r{
                         if self.spin{ //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
-                            for i in 0..self.norb{
-                                for j in 0..self.norb{
-                                    for r in 0..self.dim_r{
-                                        use_rmatrix[[r,i+n*self.norb,j+ind*self.norb]]=rmatrix[[r,i,j]];
-                                        use_rmatrix[[r,i+n*self.norb+new_norb,j+ind*self.norb]]=rmatrix[[r,i+self.norb,j]];
-                                        use_rmatrix[[r,i+n*self.norb,j+ind*self.norb+new_norb]]=rmatrix[[r,i,j+self.norb]];
-                                        use_rmatrix[[r,i+n*self.norb+new_norb,j+ind*self.norb+new_norb]]=rmatrix[[r,i+self.norb,j+self.norb]];
-                                    }
-                                }
-                            }
+                            let mut s=use_rmatrix.slice_mut(s![..,n*self.norb..(n+1)*self.norb,ind*self.norb..(ind+1)*self.norb]);
+                            let rmatrix0=rmatrix.slice(s![..,0..self.norb,0..self.norb]);
+                            s.assign(&rmatrix0);
+                            let mut s=use_rmatrix.slice_mut(s![..,(new_norb+n*self.norb)..(new_norb+(n+1)*self.norb),ind*self.norb..(ind+1)*self.norb]);
+                            let rmatrix0=rmatrix.slice(s![..,self.norb..2*self.norb,0..self.norb]);
+                            s.assign(&rmatrix0);
+                            let mut s=use_rmatrix.slice_mut(s![..,n*self.norb..(n+1)*self.norb,(new_norb+ind*self.norb)..(new_norb+(ind+1)*self.norb)]);
+                            let rmatrix0=rmatrix.slice(s![..,0..self.norb,self.norb..2*self.norb]);
+                            s.assign(&rmatrix0);
+                            let mut s=use_rmatrix.slice_mut(s![..,(new_norb+n*self.norb)..(new_norb+(n+1)*self.norb),(new_norb+ind*self.norb)..(new_norb+(ind+1)*self.norb)]);
+                            let rmatrix0=rmatrix.slice(s![..,self.norb..2*self.norb,self.norb..2*self.norb]);
+                            s.assign(&rmatrix0);
+
                             if R_exist{
                                 let index=index_R(&new_hamR,&ind_R);
                                 if index==0 && ind !=0{
-                                    for i in 0..self.norb{
-                                        for j in 0..self.norb{
-                                            for r in 0..self.dim_r{
-                                               use_rmatrix[[r,j+ind*self.norb,i+n*self.norb]]=rmatrix[[r,i,j]].conj();
-                                               use_rmatrix[[r,j+ind*self.norb,i+n*self.norb+new_norb]]=rmatrix[[r,i+self.norb,j]].conj();
-                                               use_rmatrix[[r,j+ind*self.norb+new_norb,i+n*self.norb]]=rmatrix[[r,i,j+self.norb]].conj();
-                                               use_rmatrix[[r,j+ind*self.norb+new_norb,i+n*self.norb+new_norb]]=rmatrix[[r,i+self.norb,j+self.norb]].conj();
-                                            }
-                                        }
-                                    }
+                                    let mut rmatrix=rmatrix.mapv(|x| x.conj());
+                                    rmatrix.swap_axes(1,2);
+                                    let mut s=use_rmatrix.slice_mut(s![..,n*self.norb..(n+1)*self.norb,ind*self.norb..(ind+1)*self.norb]);
+                                    let rmatrix0=rmatrix.slice(s![..,0..self.norb,0..self.norb]);
+                                    s.assign(&rmatrix0);
+                                    let mut s=use_rmatrix.slice_mut(s![..,(new_norb+n*self.norb)..(new_norb+(n+1)*self.norb),ind*self.norb..(ind+1)*self.norb]);
+                                    let rmatrix0=rmatrix.slice(s![..,self.norb..2*self.norb,0..self.norb]);
+                                    s.assign(&rmatrix0);
+                                    let mut s=use_rmatrix.slice_mut(s![..,n*self.norb..(n+1)*self.norb,(new_norb+ind*self.norb)..(new_norb+(ind+1)*self.norb)]);
+                                    let rmatrix0=rmatrix.slice(s![..,0..self.norb,self.norb..2*self.norb]);
+                                    s.assign(&rmatrix0);
+                                    let mut s=use_rmatrix.slice_mut(s![..,(new_norb+n*self.norb)..(new_norb+(n+1)*self.norb),(new_norb+ind*self.norb)..(new_norb+(ind+1)*self.norb)]);
+                                    let rmatrix0=rmatrix.slice(s![..,self.norb..2*self.norb,self.norb..2*self.norb]);
+                                    s.assign(&rmatrix0);
                                 }
                             }
                         }else{
-                            for i in 0..self.norb{
-                                for j in 0..self.norb{
-                                    for r in 0..self.dim_r{
-                                       use_rmatrix[[r,i+n*self.norb,j+ind*self.norb]]=rmatrix[[r,i,j]];
-                                    }
-                                }
-                            }
+                            let mut s=use_rmatrix.slice_mut(s![..,n*self.norb..(n+1)*self.norb,ind*self.norb..(ind+1)*self.norb]);
+                            s.assign(&rmatrix);
                             if R_exist{
                                 let index=index_R(&new_hamR,&ind_R);
                                 if index==0 && ind !=0{
-                                    for i in 0..self.norb{
-                                        for j in 0..self.norb{
-                                            for r in 0..self.dim_r{
-                                               use_rmatrix[[r,j+ind*self.norb,i+n*self.norb]]=rmatrix[[r,i,j]].conj();
-                                           }
-                                        }
-                                    }
+                                    let mut rmatrix=rmatrix.mapv(|x| x.conj());
+                                    rmatrix.swap_axes(1,2);
+                                    let mut s=use_rmatrix.slice_mut(s![..,n*self.norb..(n+1)*self.norb,ind*self.norb..(ind+1)*self.norb]);
+                                    s.assign(&rmatrix);
                                 }
                             }
                         }
@@ -1383,6 +1388,7 @@ impl basis<'_> for Model{
                 }
             }
         }
+
         let mut model=Model{
             dim_r:self.dim_r,
             norb:new_norb,
@@ -1778,7 +1784,7 @@ impl basis<'_> for Model{
         if has_duplicates{
             panic!("Wrong, make sure no duplicates in orb_list");
         }
-        let mut index: Vec<_> = (1..=self.norb)
+        let mut index: Vec<_> = (0..=self.norb-1)
         .filter(|&num| !use_orb_list.contains(&num))
         .collect();//要保留下来的元素
         let delete_n=orb_list.len();
@@ -1828,7 +1834,7 @@ impl basis<'_> for Model{
             panic!("Wrong, make sure no duplicates in orb_list");
         }
 
-        let mut atom_index: Vec<_> = (1..=self.natom)
+        let mut atom_index: Vec<_> = (0..=self.natom-1)
         .filter(|&num| !use_atom_list.contains(&num))
         .collect();//要保留下来的元素
         //--------------------------
@@ -1848,6 +1854,7 @@ impl basis<'_> for Model{
             b+=a;
         }
         self.orb=self.orb.select(Axis(0),&orb_index);
+        self.norb=self.orb.len_of(Axis(0));
         self.atom_list=new_atom_list;
         if self.spin{
             self.nsta=self.norb*2;
@@ -2875,9 +2882,15 @@ impl conductivity<'_> for Model{
         //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
         let mut omega_n=Array1::<f64>::zeros(self.nsta);
         let A1=A1*U0;
+        let A1=A1.axis_iter(Axis(0));
+        let A2=A2.axis_iter(Axis(1));
+        let omega_n=A1.zip(A2).map(|(x1,x2)| x1.dot(&x2).im*2.0).collect();
+        let omega_n=Array1::from_vec(omega_n);
+        /*
         for i in 0..self.nsta{
             omega_n[[i]]=2.0*A1.slice(s![i,..]).dot(&A2.slice(s![..,i])).im;
         }
+        */
         (omega_n,band)
     }
 
@@ -3050,9 +3063,16 @@ impl conductivity<'_> for Model{
         //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
         let mut omega_n=Array1::<f64>::zeros(self.nsta);
         let A1=A1*U0;
+
+        let A1=A1.axis_iter(Axis(0));
+        let A2=A2.axis_iter(Axis(1));
+        let omega_n=A1.zip(A2).map(|(x1,x2)| x1.dot(&x2).im*2.0).collect();
+        let omega_n=Array1::from_vec(omega_n);
+        /*
         for i in 0..self.nsta{
             omega_n[[i]]=2.0*A1.slice(s![i,..]).dot(&A2.slice(s![..,i])).im;
         }
+        */
         
         //let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
         let omega_n:Array1::<f64>=omega_n*partial_ve;
@@ -3494,6 +3514,8 @@ impl surf_Green{
         }
         (k_vec,k_dist,k_node)
     }
+
+    #[inline(always)]
     pub fn gen_ham_onek(&self,kvec:&Array1<f64>)->(Array2<Complex<f64>>,Array2<Complex<f64>>){
         let mut ham0k=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         let mut hamRk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
@@ -4202,12 +4224,9 @@ mod tests {
         let E_min=-3.0;
         let E_max=3.0;
         let E_n=nk.clone();
-        println!("{:.3},\n{}",model.ham,model.hamR);
-        println!("{:.3},\n{:.3},\n{},\n{}",green.ham_bulk,green.ham_bulkR,green.ham_hop,green.ham_hopR);
         //let (hamR,hamRR)=green.gen_ham_onek(&array![0.5]);
         //println!("{:.3}, \n{:.3}",hamR,hamRR);
         let (N_L,N_R,N_B)=green.surf_green_one(&array![0.5],0.0);
-        println!("{},{},{}",N_L,N_R,N_B);
         let path=[[0.0],[0.5],[1.0]];
         let path=arr2(&path);
         let label=vec!["G","M","G"];
@@ -4301,7 +4320,6 @@ mod tests {
         let beta=1.0/T/(8.617e-5);
         let f:Array2::<f64>=band.clone().map(|x| 1.0/((beta*x).exp()+1.0));
         let f=beta*&f*(1.0-&f);
-        println!("{:?}",berry_curv.shape());
         let berry_curv=(berry_curv.clone()*f).sum_axis(Axis(1));
         let data=berry_curv.into_shape((nk,nk)).unwrap();
         draw_heatmap(data,"nonlinear.pdf");
