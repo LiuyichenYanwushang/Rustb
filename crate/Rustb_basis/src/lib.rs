@@ -89,7 +89,7 @@ pub trait basis<'a>{
     fn remove_orb(&mut self,orb_list:&Vec<usize>);
     fn remove_atom(&mut self,atom_list:&Vec<usize>);
     ///这个函数是用来删除某个轨道的
-    fn unfold(&self,U:&Array2::<f64>,kvec:&Array2::<f64>,E_min:f64,E_max:f64,E_n:usize)->Array2::<f64>;
+    fn unfold(&self,U:&Array2::<f64>,path:&Array2::<f64>,nk:usize,E_min:f64,E_max:f64,E_n:usize,eta:f64,precision:f64)->Array2::<f64>;
     /// 能带反折叠算法, 用来计算能带反折叠后的能带.
     fn shift_to_zero(&mut self);
     /// 我这里用的算法是高斯算法, 其算法过程如下
