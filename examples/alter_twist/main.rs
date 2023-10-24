@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use std::arch::x86_64::*;
 use std::fs::create_dir_all;
 use std::str::FromStr;

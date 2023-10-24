@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use std::ops::AddAssign;
 use ndarray::*;
 use ndarray::linalg::kron;
