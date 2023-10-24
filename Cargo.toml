@@ -21,11 +21,11 @@ opt_level=3
 debug=true
 
 [dependencies]
-ndarray={ version="*", features = ["rayon","blas","matrixmultiply-threading"] }
-num-complex="*"
+ndarray={ version="0.15.6", features = ["rayon","blas","matrixmultiply-threading"] }
+num-complex="0.4.4"
 ndarray-linalg={version="*",features=["intel-mkl-static"]}
-rayon="*"
-gnuplot="*"
+rayon="1.8.0"
+gnuplot="0.0.39"
 jemallocator = "0.3"
 jemalloc-sys = "0.3"
 mimalloc = { version = "*", features = ["secure"] }
