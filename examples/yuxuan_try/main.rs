@@ -80,7 +80,7 @@ fn main(){
     println!("{:?}",berry_curv.shape());
     let berry_curv=(berry_curv.clone()*f).sum_axis(Axis(1));
     let data=berry_curv.into_shape((nk,nk)).unwrap();
-    draw_heatmap(data,"./examples/yuxuan_try/nonlinear.pdf");
+    draw_heatmap(&data,"./examples/yuxuan_try/nonlinear.pdf");
     */
 
    //画一下贝利曲率的分布
@@ -92,7 +92,7 @@ fn main(){
     let kvec=kvec.reversed_axes();
     let berry_curv=model.berry_curvature(&kvec,&dir_1,&dir_2,T,0.0,0.0,0,1e-3);
     let data=berry_curv.clone().into_shape((nk,nk)).unwrap();
-    draw_heatmap(data.map(|x| {let a:f64=if *x >= 0.0 {(x+1.0).log(10.0)} else {-(-x+1.0).log(10.0)}; a}),"./examples/yuxuan_try/heat_map.pdf");
+    draw_heatmap(&data.map(|x| {let a:f64=if *x >= 0.0 {(x+1.0).log(10.0)} else {-(-x+1.0).log(10.0)}; a}),"./examples/yuxuan_try/heat_map.pdf");
     let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,0.0,0.0,0.0,0,1e-3);
     println!("{}",conductivity/(2.0*PI));
         

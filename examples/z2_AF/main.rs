@@ -111,17 +111,17 @@ fn main(){
     //let data=berry_curv.slice(s![..,..,0..4]).to_owned().sum_axis(Axis(2));
     let data=berry_curv.slice(s![..,..,3]).to_owned();
     let data=data.map(|x| if *x>0.0 {(x+1.0).ln()} else {-(-x+1.0).ln()});
-    draw_heatmap(data.clone().reversed_axes(),"heat_map.pdf");
+    draw_heatmap(&data.reversed_axes(),"heat_map.pdf");
     let band=band.into_shape((nk,nk,model.nsta)).unwrap();
     let f:Array3::<f64>=1.0/(beta*(&band-mu0)).map(|x| x.exp()+1.0);
     let pf=&f*(1.0-&f)*beta;
-    draw_heatmap(pf.slice(s![..,..,4]).to_owned().reversed_axes(),"f_map.pdf");
+    draw_heatmap(&pf.slice(s![..,..,4]).reversed_axes(),"f_map.pdf");
     let a=(&berry_curv*&pf).sum_axis(Axis(2));
     //let a=a.map(|x| if *x>0.0 {(x+1.0).ln()} else {-(-x+1.0).ln()});
-    draw_heatmap(a.clone().reversed_axes(),"result_map.pdf");
+    draw_heatmap(&a.clone().reversed_axes(),"result_map.pdf");
     let a=(&G*&f).sum_axis(Axis(2));
     //let a=a.map(|x| if *x>0.0 {(x+1.0).ln()} else {-(-x+1.0).ln()});
-    draw_heatmap(a.clone().reversed_axes(),"result_map_1.pdf");
+    draw_heatmap(&a.clone().reversed_axes(),"result_map_1.pdf");
 
     let mut dir_1=arr1(&[0.0,0.0,0.0]);
     let mut dir_2=arr1(&[0.0,0.0,0.0]);

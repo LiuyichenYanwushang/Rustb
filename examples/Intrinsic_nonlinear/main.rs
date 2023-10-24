@@ -78,13 +78,13 @@ fn main() {
     let (berry_curv,band,_)=model.berry_connection_dipole(&kvec,&dir_1,&dir_2,&dir_3,0);
     let berry_curv=berry_curv.into_shape((nk,nk,model.nsta)).unwrap();
     let data=berry_curv.slice(s![..,..,0..2]).to_owned().sum_axis(Axis(2));
-    draw_heatmap(data.clone().reversed_axes(),"examples/Intrinsic_nonlinear/result/heat_map.pdf");
+    draw_heatmap(&data.clone().reversed_axes(),"examples/Intrinsic_nonlinear/result/heat_map.pdf");
     let band=band.into_shape((nk,nk,model.nsta)).unwrap();
     let f:Array3::<f64>=1.0/(beta*(&band-mu0)).map(|x| x.exp()+1.0);
     let pf=&f*(1.0-&f)*beta;
-    draw_heatmap(pf.slice(s![..,..,0]).to_owned().reversed_axes(),"examples/Intrinsic_nonlinear/result/f_map.pdf");
+    draw_heatmap(&pf.slice(s![..,..,0]).to_owned().reversed_axes(),"examples/Intrinsic_nonlinear/result/f_map.pdf");
     let a=(&berry_curv*&pf).sum_axis(Axis(2));
-    draw_heatmap(a.clone().reversed_axes(),"examples/Intrinsic_nonlinear/result/result_map.pdf");
+    draw_heatmap(&a.clone().reversed_axes(),"examples/Intrinsic_nonlinear/result/result_map.pdf");
     println!("{}",a.sum()/(nk.pow(2) as f64)*ratio.powi(2));
 
     let mut conductivity=Vec::<f64>::new();

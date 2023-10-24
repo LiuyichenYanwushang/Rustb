@@ -58,7 +58,7 @@ fn main(){
     println!("{:?}",berry_curv.shape());
     let berry_curv=(berry_curv.clone()*f).sum_axis(Axis(1));
     let data=berry_curv.into_shape((nk,nk)).unwrap();
-    draw_heatmap(data,"./examples/chern_alter/nonlinear.pdf");
+    draw_heatmap(&data,"./examples/chern_alter/nonlinear.pdf");
 
    //画一下贝利曲率的分布
     let nk:usize=1000;
@@ -69,7 +69,7 @@ fn main(){
     let kvec=kvec.reversed_axes();
     let berry_curv=model.berry_curvature(&kvec,&dir_1,&dir_2,T,0.0,0.0,0,1e-3);
     let data=berry_curv.clone().into_shape((nk,nk)).unwrap();
-    draw_heatmap(data.map(|x| {let a:f64=if *x >= 0.0 {(x+1.0).log(10.0)} else {-(-x+1.0).log(10.0)}; a}),"./examples/chern_alter/heat_map.pdf");
+    draw_heatmap(&data.map(|x| {let a:f64=if *x >= 0.0 {(x+1.0).log(10.0)} else {-(-x+1.0).log(10.0)}; a}),"./examples/chern_alter/heat_map.pdf");
     let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,0.0,0.0,0.0,0,1e-3);
     println!("{}",conductivity/(2.0*PI));
         
@@ -88,7 +88,6 @@ fn main(){
     axes.lines(&x, &y, &[Color("black")]);
     //axes.set_y_range(Fix(-10.0),Fix(10.0));
     axes.set_x_range(Fix(E_min),Fix(E_max));
-    let mut show_ticks=Vec::<String>::new();
     let mut pdf_name=String::new();
     pdf_name.push_str("./examples/chern_alter/nonlinear_ex.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
@@ -109,7 +108,6 @@ fn main(){
     axes.lines(&x, &y, &[Color("black")]);
     //axes.set_y_range(Fix(-10.0),Fix(10.0));
     axes.set_x_range(Fix(E_min),Fix(E_max));
-    let mut show_ticks=Vec::<String>::new();
     let mut pdf_name=String::new();
     pdf_name.push_str("./examples/chern_alter/nonlinear_in.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);

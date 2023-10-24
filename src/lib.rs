@@ -169,42 +169,47 @@ pub fn gen_kmesh(k_mesh:&Array1::<usize>)->Array2::<f64>{
 pub fn gen_krange(k_mesh:&Array1::<usize>)->Array3::<f64>{
     let dim_r=k_mesh.len();
     let mut k_range=Array3::<f64>::zeros((0,dim_r,2));
-    if dim_r==1{
-        for i in 0..k_mesh[[0]]{
-            let mut k=Array2::<f64>::zeros((dim_r,2));
-            k[[0,0]]=(i as f64)/((k_mesh[[0]]) as f64);
-            k[[0,1]]=((i+1) as f64)/((k_mesh[[0]]) as f64);
-            k_range.push(Axis(0),k.view()).unwrap();
-        }
-    }else if dim_r==2{
-        for i in 0..k_mesh[[0]]{
-            for j in 0..k_mesh[[1]]{
+    match dim_r{
+        1=>{
+            for i in 0..k_mesh[[0]]{
                 let mut k=Array2::<f64>::zeros((dim_r,2));
                 k[[0,0]]=(i as f64)/((k_mesh[[0]]) as f64);
                 k[[0,1]]=((i+1) as f64)/((k_mesh[[0]]) as f64);
-                k[[1,0]]=(j as f64)/((k_mesh[[1]]) as f64);
-                k[[1,1]]=((j+1) as f64)/((k_mesh[[1]]) as f64);
                 k_range.push(Axis(0),k.view()).unwrap();
             }
-        }
-    }else if dim_r==3{
-        for i in 0..k_mesh[[0]]{
-            for j in 0..k_mesh[[1]]{
-                for ks in 0..k_mesh[[2]]{
+        },
+        2=>{
+            for i in 0..k_mesh[[0]]{
+                for j in 0..k_mesh[[1]]{
                     let mut k=Array2::<f64>::zeros((dim_r,2));
                     k[[0,0]]=(i as f64)/((k_mesh[[0]]) as f64);
                     k[[0,1]]=((i+1) as f64)/((k_mesh[[0]]) as f64);
                     k[[1,0]]=(j as f64)/((k_mesh[[1]]) as f64);
                     k[[1,1]]=((j+1) as f64)/((k_mesh[[1]]) as f64);
-                    k[[2,0]]=(ks as f64)/((k_mesh[[1]]) as f64);
-                    k[[2,1]]=((ks+1) as f64)/((k_mesh[[1]]) as f64);
                     k_range.push(Axis(0),k.view()).unwrap();
                 }
             }
+        },
+        3=>{
+            for i in 0..k_mesh[[0]]{
+                for j in 0..k_mesh[[1]]{
+                    for ks in 0..k_mesh[[2]]{
+                        let mut k=Array2::<f64>::zeros((dim_r,2));
+                        k[[0,0]]=(i as f64)/((k_mesh[[0]]) as f64);
+                        k[[0,1]]=((i+1) as f64)/((k_mesh[[0]]) as f64);
+                        k[[1,0]]=(j as f64)/((k_mesh[[1]]) as f64);
+                        k[[1,1]]=((j+1) as f64)/((k_mesh[[1]]) as f64);
+                        k[[2,0]]=(ks as f64)/((k_mesh[[1]]) as f64);
+                        k[[2,1]]=((ks+1) as f64)/((k_mesh[[1]]) as f64);
+                        k_range.push(Axis(0),k.view()).unwrap();
+                    }
+                }
+            }
+        },
+        _=>{
+            panic!("Wrong, the dim should be 1,2 or 3, but you give {}",dim_r);
         }
-    }else{
-        panic!("Wrong, the dim should be 1,2 or 3, but you give {}",dim_r);
-    }
+    };
     k_range
 }
 
@@ -228,7 +233,7 @@ where
     //! 做 $\\\{A,B\\\}$ 反对易操作
     A.dot(B)+B.dot(A)
 }
-pub fn draw_heatmap(data: &Array2<f64>,name:&str) {
+pub fn draw_heatmap<A:Data<Elem=f64>>(data: &ArrayBase<A, Ix2>,name:&str) {
     //!这个函数是用来画热图的, 给定一个二维矩阵, 会输出一个像素图片
     use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT,RAINBOW};
     let mut fg = Figure::new();
@@ -424,7 +429,7 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
 }
 
 
-////下面是宏
+////下面是宏------------------------------------------------------
 macro_rules! update_hamiltonian {
     //这个代码是用来更新哈密顿量的, 判断是否有自旋, 以及要更新的 ind_i, ind_j,
     //输入一个哈密顿量, 返回一个新的哈密顿量
@@ -973,6 +978,7 @@ impl basis<'_> for Model{
         re_ham
     }
     #[allow(non_snake_case)]
+    #[inline(always)]
     fn gen_r(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
         //!和 gen_ham 类似, 将 $\hat{\bm r}$ 进行傅里叶变换
         //!
@@ -1115,6 +1121,7 @@ impl basis<'_> for Model{
         v
     }
     #[allow(non_snake_case)]
+    #[inline(always)]
     fn solve_band_onek(&self,kvec:&Array1::<f64>)->Array1::<f64>{
         //!求解单个k点的能带值
         if kvec.len() !=self.dim_r{
@@ -2225,7 +2232,7 @@ impl basis<'_> for Model{
             }; 
             acc
         });
-        let max_R=max_hamR.mapv(|x| x.ceil() as isize);
+        let max_R=max_hamR.mapv(|x| (x.ceil() as isize)*2);
         println!("{}",max_R);
         //let mut max_R=Array1::<isize>::zeros(self.dim_r);
         //let max_R:isize=U_det.abs()*(self.dim_r as isize);
@@ -2893,13 +2900,14 @@ impl basis<'_> for Model{
                             let a2=prj[2].parse::<f64>().unwrap();
                             let a3=prj[3].parse::<f64>().unwrap();
                             let a=array![a1,a2,a3];
-                            atom_pos.push_row(a.view());
+                            atom_pos.push_row(a.view()); //这里我们不用win 里面的, 因为这个和orb没法对应, 如果没有xyz文件才考虑用这个
 
                         }
                     }
                 }
             }
         }
+        /*
         for (i,name) in atom_name.iter().enumerate(){
             for (j,j_name) in proj_name.iter().enumerate(){
                 if j_name==name{
@@ -2909,6 +2917,7 @@ impl basis<'_> for Model{
                 }
             }
         }
+        */
         //开始读取 seedname_centres.xyz 文件
         let mut reads:Vec<String>=Vec::new();
         let mut xyz_path=file_path.clone();
@@ -2931,14 +2940,26 @@ impl basis<'_> for Model{
             orb[[i,2]]=a[3].parse::<f64>().unwrap();
         }
         orb=orb.dot(&lat.inv().unwrap());
-        /*
-        for i in 0..natom{
+        let mut new_atom=Array2::<f64>::zeros((reads.len()-2-nsta,3));
+        let mut new_atom_name=Vec::new();
+        for i in 0..reads.len()-2-nsta{
             let a:Vec<&str>=reads[i+2+nsta].trim().split_whitespace().collect();
-            atom[[i,0]]=a[1].parse::<f64>().unwrap();
-            atom[[i,1]]=a[2].parse::<f64>().unwrap();
-            atom[[i,2]]=a[3].parse::<f64>().unwrap();
+            new_atom[[i,0]]=a[1].parse::<f64>().unwrap();
+            new_atom[[i,1]]=a[2].parse::<f64>().unwrap();
+            new_atom[[i,2]]=a[3].parse::<f64>().unwrap();
+            new_atom_name.push(a[0]);
         }
-        */
+        //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
+
+        for (i,name) in new_atom_name.iter().enumerate(){
+            for (j,j_name) in proj_name.iter().enumerate(){
+                if j_name==name{
+                    atom_list.push(proj_list[j]);
+                    atom.push_row(new_atom.row(i));
+                    natom+=1;
+                }
+            }
+        }
         atom=atom.dot(&lat.inv().unwrap());
         //开始尝试读取 _r.dat 文件
         let mut reads:Vec<String>=Vec::new();
@@ -3093,6 +3114,7 @@ impl conductivity<'_> for Model{
         omega
     }
     #[allow(non_snake_case)]
+    #[inline(always)]
     fn berry_curvature(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->Array1::<f64>{
     //!这个是用来并行计算大量k点的贝利曲率
     //!这个可以用来画能带上的贝利曲率, 或者画一个贝利曲率的热图

@@ -90,7 +90,7 @@ fn main(){
             use_conductivity[[i,j]]=conductivity/2.0/PI;
         }
     }
-    draw_heatmap(use_conductivity,"./examples/alterhexagonal/heat_map1.pdf");
+    draw_heatmap(&use_conductivity,"./examples/alterhexagonal/heat_map1.pdf");
         
     /*
     let E_min=-1.0;

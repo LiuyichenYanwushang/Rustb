@@ -59,7 +59,7 @@ fn main(){
     println!("{:?}",berry_curv.shape());
     let berry_curv=(berry_curv.clone()*f).sum_axis(Axis(1));
     let data=berry_curv.into_shape((nk,nk)).unwrap();
-    draw_heatmap(data,"./examples/graphene/nonlinear.pdf");
+    draw_heatmap(&data,"./examples/graphene/nonlinear.pdf");
 
    //画一下贝利曲率的分布
     let nk:usize=1000;
@@ -70,7 +70,7 @@ fn main(){
     let kvec=kvec.reversed_axes();
     let berry_curv=model.berry_curvature(&kvec,&dir_1,&dir_2,T,0.0,0.0,0,1e-3);
     let data=berry_curv.into_shape((nk,nk)).unwrap();
-    draw_heatmap(data.map(|x| {let a:f64=if *x >= 0.0 {(x+1.0).log(10.0)} else {-(-x+1.0).log(10.0)}; a}),"./examples/graphene/heat_map.pdf");
+    draw_heatmap(&data.map(|x| {let a:f64=if *x >= 0.0 {(x+1.0).log(10.0)} else {-(-x+1.0).log(10.0)}; a}),"./examples/graphene/heat_map.pdf");
 
     let E_min=-3.0;
     let E_max=3.0;

@@ -6,20 +6,21 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [profile.release]
 codegen-units = 1
-debug=false
 lto = "fat"
-target-cpu="native"
+opt_level=3
+debug=true
 
 [dependencies]
 ndarray={ version="*", features = ["rayon","blas","matrixmultiply-threading"] }
 num-complex="*"
-ndarray-linalg={version="*",features=["intel-mkl-static"]}
+ndarray-linalg={version="*",features=["intel-mkl-system"]}
 rayon="*"
 gnuplot="*"
 jemallocator = "0.3"
 jemalloc-sys = "0.3"
 Rustb_basis={path="crate/Rustb_basis"}
 Rustb_conductivity={path="crate/Rustb_conductivity"}
+mimalloc = { version = "*", features = ["secure"] }
 
 [[example]]
 name = "WTe2_kp"
@@ -48,6 +49,18 @@ path="examples/yuxuan_try/main.rs"
 [[example]]
 name = "RuO2"
 path="examples/RuO2/main.rs"
+
+[[example]]
+name = "alterhexagonal"
+path="examples/alterhexagonal/main.rs"
+
+[[example]]
+name = "chern_alter"
+path="examples/chern_alter/main.rs"
+
+[[example]]
+name = "alter_twist"
+path="examples/alter_twist/main.rs"
 
 [workspace]
 members=["crate/Rustb_basis","crate/Rustb_conductivity"]
