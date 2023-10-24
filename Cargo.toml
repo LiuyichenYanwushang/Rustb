@@ -28,8 +28,6 @@ rayon="*"
 gnuplot="*"
 jemallocator = "0.3"
 jemalloc-sys = "0.3"
-Rustb_basis={path="crate/Rustb_basis",version="0.1.0"}
-Rustb_conductivity={path="crate/Rustb_conductivity",version="0.1.0"}
 mimalloc = { version = "*", features = ["secure"] }
 
 [[example]]

@@ -20,9 +20,6 @@ use std::fs::File;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
 use std::time::Instant;
-
-pub use Rustb_basis::basis;
-pub use Rustb_conductivity::conductivity;
 /// This cate is used to perform various calculations on the TB model, currently including:
 ///
 /// - Calculate the band structure
@@ -636,7 +633,7 @@ macro_rules! plot{
 ///```
 ///
 ///
-impl basis<'_> for Model{
+impl Model{
     fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
         /*
         //!这个函数是用来初始化一个 Model, 需要输入的变量意义为
@@ -3041,7 +3038,7 @@ impl basis<'_> for Model{
     }
 }
 
-impl conductivity<'_> for Model{
+impl Model{
 
     #[allow(non_snake_case)]
     fn berry_curvature_n_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array1::<f64>,Array1::<f64>){
