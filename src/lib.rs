@@ -3144,8 +3144,8 @@ impl Model{
         let mut k_range=gen_krange(k_mesh);//将要计算的区域分成小块
         let n_range=k_range.len_of(Axis(0));
         let ab_err=ab_err/(n_range as f64);
-        let use_pub fn=|k0:&Array1::<f64>| self.berry_curvature_onek(k0,&dir_1,&dir_2,T,og,mu,spin,eta);
-        let inte=|k_range| adapted_integrate_quick(&use_pub fn,&k_range,re_err,ab_err);
+        let use_fn=|k0:&Array1::<f64>| self.berry_curvature_onek(k0,&dir_1,&dir_2,T,og,mu,spin,eta);
+        let inte=|k_range| adapted_integrate_quick(&use_fn,&k_range,re_err,ab_err);
         let omega:Vec<f64>=k_range.axis_iter(Axis(0)).into_par_iter().map(|x| { inte(x.to_owned())}).collect();
         let omega:Array1::<f64>=arr1(&omega);
         let conductivity:f64=omega.sum()*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
