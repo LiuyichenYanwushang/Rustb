@@ -3,6 +3,16 @@ name = "Rustb"
 version = "0.1.0"
 edition = "2021"
 
+categories = ["Tight bind calculation","wannier function"]
+description = "A package for calculating band, angle state, linear and nonlinear conductivities based on tight-binding models"
+exclude = ["target/", "examples/", ".github/", "crate/","tests/"]
+homepage = "https://bevyengine.org"
+keywords = ["tight-binding", "wannier function", "condensed matter physics","Rustb"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/LiuyichenYanwushang/Rustb"
+rust-version = "1.73.0"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [profile.release]
 codegen-units = 1
@@ -18,8 +28,8 @@ rayon="*"
 gnuplot="*"
 jemallocator = "0.3"
 jemalloc-sys = "0.3"
-Rustb_basis={path="crate/Rustb_basis"}
-Rustb_conductivity={path="crate/Rustb_conductivity"}
+Rustb_basis={path="crate/Rustb_basis",version="0.1.0"}
+Rustb_conductivity={path="crate/Rustb_conductivity",version="0.1.0"}
 mimalloc = { version = "*", features = ["secure"] }
 
 [[example]]

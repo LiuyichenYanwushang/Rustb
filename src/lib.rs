@@ -4783,9 +4783,9 @@ mod tests {
         let duration = end.duration_since(start); // 计算执行时间
         println!("make_supercell took {} seconds", duration.as_secs_f64());   // 输出执行时间
         let A=super_model.unfold(&U,&path,nk,-3.0,5.0,nk,1e-2,1e-3);
-        let name="./test/unfold_test/";
+        let name="./tests/unfold_test/";
         create_dir_all(&name).expect("can't creat the file");
-        draw_heatmap(&A.reversed_axes(),"./test/unfold_test/unfold_band.pdf");
+        draw_heatmap(&A.reversed_axes(),"./tests/unfold_test/unfold_band.pdf");
         super_model.show_band(&path,&label,nk,name);
     }
 }
