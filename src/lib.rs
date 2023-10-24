@@ -4546,7 +4546,7 @@ mod tests {
         let f=beta*&f*(1.0-&f);
         let berry_curv=(berry_curv.clone()*f).sum_axis(Axis(1));
         let data=berry_curv.into_shape((nk,nk)).unwrap();
-        draw_heatmap(&data,"nonlinear.pdf");
+        draw_heatmap(&data,"./tests/kane/nonlinear_ex_heatmap.pdf");
 
        //画一下贝利曲率的分布
         let nk:usize=1000;
@@ -4558,7 +4558,7 @@ mod tests {
         let kvec=kvec.reversed_axes();
         let berry_curv=model.berry_curvature(&kvec,&dir_1,&dir_2,T,0.0,0.0,1,1e-3);
         let data=berry_curv.into_shape((nk,nk)).unwrap();
-        draw_heatmap(&(-data).map(|x| (x+1.0).log(10.0)),"heat_map.pdf");
+        draw_heatmap(&(-data).map(|x| (x+1.0).log(10.0)),"./tests/kane/berry_curvature_distribution.pdf");
 
 
 
