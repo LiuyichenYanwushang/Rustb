@@ -28,7 +28,7 @@ rayon="1.8.0"
 gnuplot="0.0.39"
 jemallocator = "0.3"
 jemalloc-sys = "0.3"
-mimalloc = { version = "*", features = ["secure"] }
+mimalloc = { version = "0.1.39", features = ["secure"] }
 
 [[example]]
 name = "WTe2_kp"
