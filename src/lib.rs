@@ -1005,7 +1005,8 @@ impl Model{
             let mut rk0=rk.view().mapv(|x| x.conj());
             rk0.swap_axes(1,2);
             let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
-            Zip::from(rk.outer_iter_mut()).apply(|mut x0| {x0.assign(&U.mapv(|x| x.conj()).t().dot(&x0.dot(&U)));});
+            //Zip::from(rk.outer_iter_mut()).apply(|mut x0| {x0.assign(&U.mapv(|x| x.conj()).t().dot(&x0.dot(&U)));});
+            Zip::from(rk.outer_iter_mut()).apply(|mut x0| {x0.assign(&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&x0.dot(&U)));});
             //let rk:Vec<_>=rk.axis_iter(Axis(0)).map(|x0| (U.mapv(|x| x.conj()).t().dot(&x0.dot(&U)))).collect();
             //let rk=Array3::from_shape_vec((self.nsta, self.nsta,self.nsta), rk.into_iter().flatten().collect()).unwrap();
             return rk
@@ -1088,9 +1089,11 @@ impl Model{
                 .zip(Us.iter().skip(1)
                      .zip(R0.column(i0).iter().skip(1)))
                 .fold((vv,hamk),|(acc1,acc2),(ham,(us,r))|{ (acc1+&ham**us**r*Complex::i(),acc2+&ham**us)});
-            vv=&vv.mapv(|x| x.conj()).t()+vv;
+            //vv=&vv.mapv(|x| x.conj()).t()+vv;
+            vv=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&vv)+vv;
             let hamk0=hamk.clone();
-            let hamk=hamk+&self.ham.slice(s![0,..,..])+hamk0.mapv(|x| x.conj()).t();
+            //let hamk=hamk+&self.ham.slice(s![0,..,..])+hamk0.mapv(|x| x.conj()).t();
+            let hamk=hamk+&self.ham.slice(s![0,..,..])+conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk0);
             vv=vv+hamk.clone()*&UU.slice(s![i0,..,..]);
             let vv=vv.dot(&U); //接下来两步填上轨道坐标导致的相位
             let vv=U.mapv(|x| x.conj()).t().dot(&vv);

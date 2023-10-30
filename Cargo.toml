@@ -1,6 +1,6 @@
 [package]
 name = "Rustb"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 categories = ["Tight bind calculation","wannier function"]
@@ -27,10 +27,13 @@ debug=true
 [dependencies]
 ndarray={ version="0.15.6", features = ["rayon","blas","matrixmultiply-threading"] }
 num-complex="0.4.4"
-ndarray-linalg={version="0.16.0"}
+ndarray-linalg={version="0.16.0",default-features=false}
 rayon="1.8.0"
 gnuplot="0.0.39"
 mimalloc = { version = "0.1.39", features = ["secure"] }
+
+[features]
+intel-mkl-static = ["ndarray-linalg/intel-mkl-static"]
 
 [[example]]
 name = "WTe2_kp"
@@ -71,6 +74,3 @@ path="examples/chern_alter/main.rs"
 [[example]]
 name = "alter_twist"
 path="examples/alter_twist/main.rs"
-
-[workspace]
-members=["crate/Rustb_basis","crate/Rustb_conductivity"]
