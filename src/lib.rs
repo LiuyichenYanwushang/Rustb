@@ -1096,7 +1096,7 @@ impl Model{
             let hamk=hamk+&self.ham.slice(s![0,..,..])+conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk0);
             vv=vv+hamk.clone()*&UU.slice(s![i0,..,..]);
             let vv=vv.dot(&U); //接下来两步填上轨道坐标导致的相位
-            let vv=U.mapv(|x| x.conj()).t().dot(&vv);
+            let vv=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&vv);
             v.slice_mut(s![i0,..,..]).assign(&vv);
         }
         //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
@@ -1164,7 +1164,8 @@ impl Model{
         } 
         let hamk=self.gen_ham(&kvec);
         let (eval, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) { (eigvals, eigvecs) } else { todo!() };
-        let evec=evec.reversed_axes().map(|x| x.conj());
+        //let evec=evec.reversed_axes().map(|x| x.conj());
+        let evec=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&evec);
         (eval,evec)
     }
     #[allow(non_snake_case)]
@@ -1268,7 +1269,8 @@ impl Model{
                 let mut rmatrix=Array3::<Complex<f64>>::zeros((self.dim_r,new_nsta,new_nsta));
                 let ham=if ind_R[[dir]]<0{//如果这个方向的ind_R 小于0, 将其变成大于0
                     ind_R*=-1;
-                    let h0=self.ham.slice(s![i0,..,..]).mapv(|x| x.conj()).t().to_owned();
+                    //let h0=self.ham.slice(s![i0,..,..]).mapv(|x| x.conj()).t().to_owned();
+                    let h0=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&self.ham.slice(s![i0,..,..]).to_owned());
                     if exist_r{
                         rmatrix=self.rmatrix.slice(s![i0,..,..,..]).mapv(|x| x.conj());
                         rmatrix.swap_axes(1,2);
@@ -1305,7 +1307,8 @@ impl Model{
                         if R_exist{
                             let index=index_R(&new_hamR,&ind_R);
                             if index==0 && ind !=0{
-                                let ham=ham.mapv(|x| x.conj()).reversed_axes();
+                                //let ham=ham.mapv(|x| x.conj()).reversed_axes();
+                                let ham=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&ham);
                                 let mut s=use_ham.slice_mut(s![n*self.norb..(n+1)*self.norb,ind*self.norb..(ind+1)*self.norb]);
                                 let ham0=ham.slice(s![0..self.norb,0..self.norb]);
                                 s.assign(&ham0);
@@ -1390,10 +1393,10 @@ impl Model{
                     }else if negative_R_exist{
                         let index=index_R(&new_hamR,&negative_R);
                         //let addham=new_ham.slice(s![index,..,..]).to_owned();
-                        new_ham.slice_mut(s![index,..,..]).add_assign(&use_ham.t().map(|x| x.conj()));
+                        new_ham.slice_mut(s![index,..,..]).add_assign(&use_ham.t().mapv(|x| x.conj()));
                         //let mut addr=new_rmatrix.slice(s![index,..,..,..]).to_owned();
                         use_rmatrix.swap_axes(1,2);
-                        new_rmatrix.slice_mut(s![index,..,..,..]).add_assign(&use_rmatrix.map(|x| x.conj()));
+                        new_rmatrix.slice_mut(s![index,..,..,..]).add_assign(&use_rmatrix.mapv(|x| x.conj()));
                     }else{
                         new_ham.push(Axis(0),use_ham.view());
                         new_hamR.push(Axis(0),ind_R.view());
@@ -3238,7 +3241,7 @@ impl Model{
 
         let J:Array2::<Complex<f64>>=J.sum_axis(Axis(0));
         let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
-        let evec_conj:Array2::<Complex<f64>>=evec.clone().map(|x| x.conj()).to_owned();
+        let evec_conj:Array2::<Complex<f64>>=evec.clone().mapv(|x| x.conj()).to_owned();
         let v0=v0.dot(&evec.clone().reversed_axes());
         let v0=&evec_conj.dot(&v0);
         let partial_ve=v0.diag().map(|x| x.re);
@@ -3340,7 +3343,7 @@ impl Model{
         let mut v:Array3::<Complex<f64>>=self.gen_v(&k_vec);//这是速度算符
         let mut J=v.clone();
         let (band,evec)=self.solve_onek(&k_vec);//能带和本征值
-        let evec_conj=evec.clone().map(|x| x.conj());//本征值的复共轭
+        let evec_conj=evec.clone().mapv(|x| x.conj());//本征值的复共轭
         for i in 0..self.dim_r{
             let v_s=v.slice(s![i,..,..]).to_owned();
             let v_s=evec_conj.clone().dot(&(v_s.dot(&evec.clone().reversed_axes())));//变换到本征态基函数
