@@ -27,7 +27,7 @@ debug=true
 [dependencies]
 ndarray={ version="0.15.6", features = ["rayon","blas","matrixmultiply-threading"] }
 num-complex="0.4.4"
-ndarray-linalg={version="0.16.0",features=["intel-mkl-static"]}
+ndarray-linalg={version="0.16.0"}
 rayon="1.8.0"
 gnuplot="0.0.39"
 mimalloc = { version = "0.1.39", features = ["secure"] }
