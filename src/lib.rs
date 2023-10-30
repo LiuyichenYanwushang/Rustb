@@ -86,6 +86,7 @@ pub struct surf_Green{
     pub ham_hopR:Array2::<isize>,
 }
 #[allow(non_snake_case)]
+#[inline(always)]
 pub fn find_R<A: Data<Elem = T>,B: Data<Elem = T>,T: std::cmp::PartialEq>(hamR:&ArrayBase<A, Ix2>,R:&ArrayBase<B, Ix1>)->bool{
     //!用来寻找 R 在hamR 中是否存在
     let n_R:usize=hamR.len_of(Axis(0));
@@ -102,6 +103,7 @@ pub fn find_R<A: Data<Elem = T>,B: Data<Elem = T>,T: std::cmp::PartialEq>(hamR:&
     false
 }
 #[allow(non_snake_case)]
+#[inline(always)]
 pub fn index_R<A: Data<Elem = T>,B: Data<Elem = T>,T: std::cmp::PartialEq>(hamR:&ArrayBase<A, Ix2>,R:&ArrayBase<B, Ix1>)->usize{
     //!如果 R 在 hamR 中存在, 返回 R 在hamR 中的位置
     let n_R:usize=hamR.len_of(Axis(0));
@@ -117,15 +119,18 @@ pub fn index_R<A: Data<Elem = T>,B: Data<Elem = T>,T: std::cmp::PartialEq>(hamR:
     }
     panic!("Wrong, not find");
 }
+#[inline(always)]
 fn remove_row<T: Copy>(array: Array2<T>, row_to_remove: usize) -> Array2<T> {
     let indices: Vec<_> = (0..array.nrows()).filter(|&r| r != row_to_remove).collect();
     array.select(Axis(0), &indices)
 }
+#[inline(always)]
 fn remove_col<T: Copy>(array: Array2<T>, col_to_remove: usize) -> Array2<T> {
     let indices: Vec<_> = (0..array.ncols()).filter(|&r| r != col_to_remove).collect();
     array.select(Axis(1), &indices)
 }
 #[allow(non_snake_case)]
+#[inline(always)]
 pub fn gen_kmesh(k_mesh:&Array1::<usize>)->Array2::<f64>{
     let dim:usize=k_mesh.len();
     let mut nk:usize=1;
@@ -163,6 +168,7 @@ pub fn gen_kmesh(k_mesh:&Array1::<usize>)->Array2::<f64>{
     gen_kmesh_arr(&k_mesh,0,usek)
 }
 #[allow(non_snake_case)]
+#[inline(always)]
 pub fn gen_krange(k_mesh:&Array1::<usize>)->Array3::<f64>{
     let dim_r=k_mesh.len();
     let mut k_range=Array3::<f64>::zeros((0,dim_r,2));
@@ -211,6 +217,7 @@ pub fn gen_krange(k_mesh:&Array1::<usize>)->Array3::<f64>{
 }
 
 #[allow(non_snake_case)]
+#[inline(always)]
 pub fn comm<A,B,T>(A: &ArrayBase<A, Ix2>, B: &ArrayBase<B, Ix2>) -> Array2<T>
 where  
     A: Data<Elem = T>,
@@ -221,6 +228,7 @@ where
     A.dot(B)-B.dot(A)
 }
 #[allow(non_snake_case)]
+#[inline(always)]
 pub fn anti_comm<A,B,T>(A: &ArrayBase<A, Ix2>, B: &ArrayBase<B, Ix2>) -> Array2<T>
 where  
     A: Data<Elem = T>,
@@ -255,6 +263,7 @@ pub fn draw_heatmap<A:Data<Elem=f64>>(data: &ArrayBase<A, Ix2>,name:&str) {
     fg.show().expect("Unable to draw heatmap");
 }
 
+#[inline(always)]
 pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::<f64>,re_err:f64,ab_err:f64)->f64{
     //!对于任意维度的积分 n, 我们的将区域刨分成 n+1面体的小块, 然后用线性插值来近似这个n+1的积分结果
     //!设被积函数为 $f(x_1,x_2,...,x_n)$, 存在 $n+1$ 个点 $(y_{01},y_{02},\cdots y_{0n})\cdots(y_{n1},y_{n2}\cdots y_{nn})$, 对应的值为 $z_0,z_1,...,z_n$
@@ -292,6 +301,7 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
     //对于二维, 我们依旧假设线性插值, 这样我们考虑的就是二维平面上的三角形上的任意一点的值是到其余三个点的距离的加权系数的平均值, 我们将四边形变成两个三角形来考虑.
         let area_1:Array2::<f64>=arr2(&[[k_range.row(0)[0],k_range.row(1)[0]],[k_range.row(0)[1],k_range.row(1)[0]],[k_range.row(0)[0],k_range.row(1)[1]]]);//第一个三角形
         let area_2:Array2::<f64>=arr2(&[[k_range.row(0)[1],k_range.row(1)[1]],[k_range.row(0)[1],k_range.row(1)[0]],[k_range.row(0)[0],k_range.row(1)[1]]]);//第二个三角形
+        #[inline(always)]
         fn adapt_integrate_triangle(f0:&dyn Fn(&Array1::<f64>)->f64,kvec:&Array2::<f64>,re_err:f64,ab_err:f64,s1:f64,s2:f64,s3:f64)->f64{
             //这个函数是用来进行自适应算法的
             let mut result=0.0;
@@ -338,6 +348,7 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
         return all_1+all_2;
     }else if dim==3{
     //对于三位情况, 需要用到四面体, 所以需要先将6面体变成6个四面体
+        #[inline(always)]
         fn adapt_integrate_tetrahedron(f0:&dyn Fn(&Array1::<f64>)->f64,kvec:&Array2::<f64>,re_err:f64,ab_err:f64,s1:f64,s2:f64,s3:f64,s4:f64,S:f64)->f64{
             //这个函数是用来进行自适应算法的
             let mut result=0.0;
@@ -969,9 +980,9 @@ impl Model{
         let mut hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         let ham0=self.ham.slice(s![0,..,..]);
         hamk=self.ham.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(hamk,|acc,(A,us)| {acc+&A**us});
-        hamk=&ham0+&hamk.mapv(|x| x.conj()).t()+&hamk;
+        hamk=&ham0+&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk)+&hamk;
         hamk=hamk.dot(&U);
-        let re_ham=U.mapv(|x| x.conj()).t().dot(&hamk);
+        let re_ham=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&hamk);
         re_ham
     }
     #[allow(non_snake_case)]
@@ -3051,7 +3062,8 @@ impl Model{
         //!给定一个k点, 返回 $\Omega_n(\bm k)$
         //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
         let li:Complex<f64>=1.0*Complex::i();
-        let (band,evec)=self.solve_onek(&k_vec);
+        let hamk=self.gen_ham(&k_vec);
+        let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) { (eigvals, eigvecs) } else { todo!() };
         let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
         let mut J:Array3::<Complex<f64>>=v.clone();
         if self.spin {
@@ -3080,10 +3092,11 @@ impl Model{
 
         let J:Array2::<Complex<f64>>=J.sum_axis(Axis(0));
         let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
-        let evec_conj:Array2::<Complex<f64>>=evec.clone().mapv(|x| x.conj()).to_owned();
-        let A1=J.dot(&evec.t());
+        let evec_conj=evec.t();
+        let evec=evec.mapv(|x| x.conj());
+        let A1=J.dot(&evec);
         let A1=&evec_conj.dot(&A1);
-        let A2=v.dot(&evec.t());
+        let A2=v.dot(&evec);
         let A2=&evec_conj.dot(&A2);
         let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         Zip::from(U0.outer_iter_mut()).and(band.view()).apply(|mut U,band_i| {let A=U.iter().zip(band.iter()).map(|(u,band_j)| {1.0/((band_i-band_j).powi(2)-(og+li*eta).powi(2))}).collect(); U.assign(&Array1::from_vec(A));});
@@ -3641,7 +3654,7 @@ impl surf_Green{
                 hamR.push(Axis(0),ham.view());
                 hamRR.push_row(R.view());
             }else{
-                hamR.push(Axis(0),ham.map(|x| x.conj()).t().view());
+                hamR.push(Axis(0),ham.mapv(|x| x.conj()).t().view());
                 hamRR.push_row(R.map(|x| -x).view());
             }
         }
