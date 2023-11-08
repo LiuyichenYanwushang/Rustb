@@ -292,8 +292,8 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
             }else{
                 let k_range_l=arr2(&[[kvec_l[[0]],kvec_m[[0]]]]);
                 let k_range_r=arr2(&[[kvec_m[[0]],kvec_r[[0]]]]);
-                use_range.push((k_range_l.clone(),re_err,ab_err/2.0));
-                use_range.push((k_range_r.clone(),re_err,ab_err/2.0));
+                use_range.push((k_range_l,re_err,ab_err/2.0));
+                use_range.push((k_range_r,re_err,ab_err/2.0));
             }
         }
         return result;
@@ -330,9 +330,9 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
                 let all_new:f64=all/3.0*2.0+sm*S/6.0;
                 let abs_err:f64= if ab_err>all*re_err{ab_err} else {all*re_err};
                 if (all_new-all).abs() > abs_err && S>1e-8{
-                   use_kvec.push((kvec_1.clone(),re_err,ab_err/3.0,s1,s2,sm));
-                   use_kvec.push((kvec_2.clone(),re_err,ab_err/3.0,s1,sm,s3));
-                   use_kvec.push((kvec_3.clone(),re_err,ab_err/3.0,sm,s2,s3));
+                   use_kvec.push((kvec_1,re_err,ab_err/3.0,s1,s2,sm));
+                   use_kvec.push((kvec_2,re_err,ab_err/3.0,s1,sm,s3));
+                   use_kvec.push((kvec_3,re_err,ab_err/3.0,sm,s2,s3));
                 }else{
                     result+=all_new; 
                 }
@@ -386,10 +386,10 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
                 let S1=S/4.0;
                 let abs_err= if ab_err>all*re_err{ab_err} else {all*re_err};
                 if (all_new-all).abs()> abs_err && S > 1e-9{
-                    use_kvec.push((kvec_1.clone(),re_err,ab_err*0.25,s1,s2,s3,sm,S1));
-                    use_kvec.push((kvec_2.clone(),re_err,ab_err*0.25,s1,s2,sm,s4,S1));
-                    use_kvec.push((kvec_3.clone(),re_err,ab_err*0.25,s1,sm,s3,s4,S1));
-                    use_kvec.push((kvec_4.clone(),re_err,ab_err*0.25,sm,s2,s3,s4,S1));
+                    use_kvec.push((kvec_1,re_err,ab_err*0.25,s1,s2,s3,sm,S1));
+                    use_kvec.push((kvec_2,re_err,ab_err*0.25,s1,s2,sm,s4,S1));
+                    use_kvec.push((kvec_3,re_err,ab_err*0.25,s1,sm,s3,s4,S1));
+                    use_kvec.push((kvec_4,re_err,ab_err*0.25,sm,s2,s3,s4,S1));
                 }else{
                     result+=all_new;
                 }
@@ -782,8 +782,8 @@ impl Model{
             panic!("Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",self.norb,ind_i,ind_j)
         }
         let R_exist=find_R(&self.hamR,&R);
-        let negative_R=-R.clone();
-        let negative_R_exist=find_R(&self.hamR,&negative_R);
+        let negative_R=&(-R);
+        let negative_R_exist=find_R(&self.hamR,negative_R);
         if R_exist {
             let index=index_R(&self.hamR,&R);
             if self.ham[[index,ind_i,ind_j]]!=Complex::new(0.0,0.0){
@@ -826,7 +826,7 @@ impl Model{
             panic!("Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",self.norb,ind_i,ind_j)
         }
         let R_exist=find_R(&self.hamR,&R);
-        let negative_R=-R.clone();
+        let negative_R=&(-R);
         let negative_R_exist=find_R(&self.hamR,&negative_R);
         if R_exist {
             let index=index_R(&self.hamR,&R);
@@ -859,7 +859,7 @@ impl Model{
             panic!("Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",self.norb,ind_i,ind_j)
         }
         let R_exist=find_R(&self.hamR,&R);
-        let negative_R=-R.clone();
+        let negative_R=(-R);
         let negative_R_exist=find_R(&self.hamR,&negative_R);
         if R_exist {
             let index=index_R(&self.hamR,&R);
@@ -994,6 +994,9 @@ impl Model{
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length must equal to the dimension of model.")
         }
+        if self.rmatrix.len_of(Axis(0))==1{
+            return self.rmatrix.slice(s![0,..,..,..]).to_owned()
+        }
         let nR:usize=self.hamR.len_of(Axis(0));
         let U0=self.orb.dot(kvec);
         let U0=U0.mapv(|x| Complex::<f64>::new(x,0.0));
@@ -1008,20 +1011,16 @@ impl Model{
         let Us=Us*Complex::new(0.0,2.0*PI);
         let Us=Us.mapv(Complex::exp);
         let r0=self.rmatrix.slice(s![0,..,..,..]).to_owned();
-        if self.rmatrix.len_of(Axis(0))==1{
-            return self.rmatrix.slice(s![0,..,..,..]).to_owned()
-        }else{
-            let rk=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));
-            let rk=self.rmatrix.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(rk,|acc,(ham,us)|{acc+&ham**us});
-            let mut rk0=rk.view().mapv(|x| x.conj());
-            rk0.swap_axes(1,2);
-            let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
-            //Zip::from(rk.outer_iter_mut()).apply(|mut x0| {x0.assign(&U.mapv(|x| x.conj()).t().dot(&x0.dot(&U)));});
-            Zip::from(rk.outer_iter_mut()).apply(|mut x0| {x0.assign(&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&x0.dot(&U)));});
-            //let rk:Vec<_>=rk.axis_iter(Axis(0)).map(|x0| (U.mapv(|x| x.conj()).t().dot(&x0.dot(&U)))).collect();
-            //let rk=Array3::from_shape_vec((self.nsta, self.nsta,self.nsta), rk.into_iter().flatten().collect()).unwrap();
-            return rk
-        }
+        let rk=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));
+        let rk=self.rmatrix.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(rk,|acc,(ham,us)|{acc+&ham**us});
+        let mut rk0=rk.view().mapv(|x| x.conj());
+        rk0.swap_axes(1,2);
+        let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
+        Zip::from(rk.outer_iter_mut())
+            .apply(|mut x0| {
+                x0.assign(&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&x0.dot(&U)));
+            });
+        return rk
     }
     ///这个函数是用来生成速度算符的, 即 $\bra{m\bm k}\p_\ap H_{\bm k}\ket{n\bm k},$
     ///这里的基函数是布洛赫波函数
@@ -1091,7 +1090,7 @@ impl Model{
         }
         let UU=UU.mapv(|x| Complex::<f64>::new(0.0,x)); //UU[i,j]=-tau[i]+tau[j] 
         let mut v=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));//定义一个初始化的速度矩阵
-        let R0=self.hamR.clone().mapv(|x| Complex::<f64>::new(x as f64,0.0));
+        let R0=&self.hamR.mapv(|x| Complex::<f64>::new(x as f64,0.0));
         let R0=R0.dot(&self.lat.mapv(|x| Complex::new(x,0.0)));
         for i0 in 0..self.dim_r{
             let mut hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
@@ -1100,12 +1099,10 @@ impl Model{
                 .zip(Us.iter().skip(1)
                      .zip(R0.column(i0).iter().skip(1)))
                 .fold((vv,hamk),|(acc1,acc2),(ham,(us,r))|{ (acc1+&ham**us**r*Complex::i(),acc2+&ham**us)});
-            //vv=&vv.mapv(|x| x.conj()).t()+vv;
             vv=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&vv)+vv;
-            let hamk0=hamk.clone();
-            //let hamk=hamk+&self.ham.slice(s![0,..,..])+hamk0.mapv(|x| x.conj()).t();
-            let hamk=hamk+&self.ham.slice(s![0,..,..])+conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk0);
-            vv=vv+hamk.clone()*&UU.slice(s![i0,..,..]);
+            let hamk0=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk);
+            let hamk=hamk+&self.ham.slice(s![0,..,..])+hamk0;
+            vv=vv+&hamk*&UU.slice(s![i0,..,..]);
             let vv=vv.dot(&U); //接下来两步填上轨道坐标导致的相位
             let vv=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&vv);
             v.slice_mut(s![i0,..,..]).assign(&vv);
@@ -1116,7 +1113,6 @@ impl Model{
             let hamk=self.gen_ham(&kvec);
             let rk=self.gen_r(&kvec); 
             for i in 0..self.dim_r{
-                //let mut UU=self.orb.slice(s![..,i]).to_owned().clone(); //我们首先提取出alpha方向的轨道的位置
                 let mut UU=Array1::<f64>::zeros(self.nsta);
                 UU.slice_mut(s![0..self.norb]).assign(&self.orb.slice(s![..,i]));
                 if self.spin{
@@ -1125,7 +1121,6 @@ impl Model{
                 let mut UU=Array2::from_diag(&UU); //将其化为矩阵
                 let A=&rk.slice(s![i,..,..])-&UU;
                 let A=comm(&hamk,&A)*Complex::i();
-                //let vv=v.slice(s![i,..,..]).to_owned().clone();
                 v.slice_mut(s![i,..,..]).add_assign(&A);
             }
         }
@@ -1175,7 +1170,6 @@ impl Model{
         } 
         let hamk=self.gen_ham(&kvec);
         let (eval, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) { (eigvals, eigvecs) } else { todo!() };
-        //let evec=evec.reversed_axes().map(|x| x.conj());
         let evec=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&evec);
         (eval,evec)
     }
@@ -1280,7 +1274,6 @@ impl Model{
                 let mut rmatrix=Array3::<Complex<f64>>::zeros((self.dim_r,new_nsta,new_nsta));
                 let ham=if ind_R[[dir]]<0{//如果这个方向的ind_R 小于0, 将其变成大于0
                     ind_R*=-1;
-                    //let h0=self.ham.slice(s![i0,..,..]).mapv(|x| x.conj()).t().to_owned();
                     let h0=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&self.ham.slice(s![i0,..,..]).to_owned());
                     if exist_r{
                         rmatrix=self.rmatrix.slice(s![i0,..,..,..]).mapv(|x| x.conj());
@@ -1318,7 +1311,6 @@ impl Model{
                         if R_exist{
                             let index=index_R(&new_hamR,&ind_R);
                             if index==0 && ind !=0{
-                                //let ham=ham.mapv(|x| x.conj()).reversed_axes();
                                 let ham=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&ham);
                                 let mut s=use_ham.slice_mut(s![n*self.norb..(n+1)*self.norb,ind*self.norb..(ind+1)*self.norb]);
                                 let ham0=ham.slice(s![0..self.norb,0..self.norb]);
@@ -2659,26 +2651,25 @@ impl Model{
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk=kvec.len_of(Axis(0));
         let band=self.solve_band_all_parallel(&kvec);
-        let E0=Array1::linspace(E_min,E_max,E_n);
-        let E=E0.clone();
+        let E=Array1::linspace(E_min,E_max,E_n);
         let mut dos=Array1::<f64>::zeros(E_n);
         let dim:usize=k_mesh.len();
         let centre=band.into_raw_vec().into_par_iter();
         let sigma0=1.0/sigma;
         let pi0=1.0/(2.0*PI).sqrt();
-        let mut dos=Array1::<f64>::zeros(E_n);
-        dos=centre.fold(|| dos.clone(),|acc,x|{
-                let A=(&E0-x)*sigma0;
+        let dos=Array1::<f64>::zeros(E_n);
+        let dos=centre.fold(|| Array1::<f64>::zeros(E_n),|acc,x|{
+                let A=(&E-x)*sigma0;
                 let f=(-&A*&A/2.0).mapv(|x| x.exp())*sigma0*pi0;
                 acc+&f
-            }).reduce(|| dos.clone(), |acc, x| acc + x);
+            }).reduce(|| Array1::<f64>::zeros(E_n), |acc, x| acc + x);
         /*
         for i in centre.iter(){
             //dos.map(|x| x+pi0*sigma0*(-((x-i)*sigma0).powi(2)/2.0).exp());
             dos=dos+E0.clone().map(|x| pi0*sigma0*(-((x-i)*sigma0).powi(2)/2.0).exp());
         }
         */
-        dos=dos/(nk as f64);
+        let dos=dos/(nk as f64);
         (E,dos)
     }
     ///这个函数是用来快速画能带图的, 用python画图, 因为Rust画图不太方便.
@@ -3093,11 +3084,11 @@ impl Model{
         let J:Array2::<Complex<f64>>=J.sum_axis(Axis(0));
         let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
         let evec_conj=evec.t();
+        let A1=&evec_conj.dot(&J);
+        let A2=&evec_conj.dot(&v);
         let evec=evec.mapv(|x| x.conj());
-        let A1=J.dot(&evec);
-        let A1=&evec_conj.dot(&A1);
-        let A2=v.dot(&evec);
-        let A2=&evec_conj.dot(&A2);
+        let A1=A1.dot(&evec);
+        let A2=A2.dot(&evec);
         let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         Zip::from(U0.outer_iter_mut()).and(band.view()).apply(|mut U,band_i| {let A=U.iter().zip(band.iter()).map(|(u,band_j)| {1.0/((band_i-band_j).powi(2)-(og+li*eta).powi(2))}).collect(); U.assign(&Array1::from_vec(A));});
         let mut omega_n=Array1::<f64>::zeros(self.nsta);
@@ -3254,13 +3245,13 @@ impl Model{
 
         let J:Array2::<Complex<f64>>=J.sum_axis(Axis(0));
         let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
-        let evec_conj:Array2::<Complex<f64>>=evec.clone().mapv(|x| x.conj()).to_owned();
-        let v0=v0.dot(&evec.clone().reversed_axes());
-        let v0=&evec_conj.dot(&v0);
+        let v0=v0.dot(&evec.t());
         let partial_ve=v0.diag().map(|x| x.re);
-        let A1=J.dot(&evec.clone().reversed_axes());
+        let A1=J.dot(&evec.t());
+        let A2=v.dot(&evec.t());
+        let evec_conj:Array2::<Complex<f64>>=evec.mapv(|x| x.conj()).to_owned();
+        let v0=&evec_conj.dot(&v0);
         let A1=&evec_conj.dot(&A1);
-        let A2=v.dot(&evec.reversed_axes());
         let A2=&evec_conj.dot(&A2);
         let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         for i in 0..self.nsta{
@@ -3280,13 +3271,6 @@ impl Model{
         let A2=A2.axis_iter(Axis(1));
         let omega_n=A1.zip(A2).map(|(x1,x2)| x1.dot(&x2).im*2.0).collect();
         let omega_n=Array1::from_vec(omega_n);
-        /*
-        for i in 0..self.nsta{
-            omega_n[[i]]=2.0*A1.slice(s![i,..]).dot(&A2.slice(s![..,i])).im;
-        }
-        */
-        
-        //let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
         let omega_n:Array1::<f64>=omega_n*partial_ve;
         (omega_n,band) //最后得到的 D
     }
@@ -3334,15 +3318,16 @@ impl Model{
         if T !=0.0{
             let beta=1.0/T/(8.617e-5);
             let use_iter=band.iter().zip(omega.iter()).par_bridge();
-            conductivity=use_iter.fold(|| conductivity.clone(),|acc,(energy,omega0)|{
+            conductivity=use_iter.fold(|| Array1::<f64>::zeros(n_e),|acc,(energy,omega0)|{
                 let f=1.0/(beta*(mu-*energy)).mapv(|x| x.exp()+1.0);
                 acc+&f*(1.0-&f)*beta**omega0
-            }).reduce(|| conductivity.clone(), |acc, x| acc + x);
+            }).reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
             conductivity=conductivity.clone()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
         }else{
             //采用四面体积分法, 或者对于二维体系, 采用三角形积分法
             //积分的思路是, 通过将一个六面体变成5个四面体, 然后用线性插值的方法, 得到费米面,
             //以及费米面上的数, 最后, 通过积分算出来结果
+            panic!("When T=0, the algorithm have not been writed, please wait for next version");
         }
         return conductivity
     }
@@ -3773,7 +3758,7 @@ impl surf_Green{
     }
     pub fn surf_green_one(&self,kvec:&Array1<f64>,Energy:f64)->(f64,f64,f64){
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
-        let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
+        let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
         let I0=Array2::<Complex<f64>>::eye(self.nsta);
         let accurate:f64=1e-8;
         let epsilon=Complex::new(Energy,self.eta)*&I0;
@@ -3811,7 +3796,8 @@ impl surf_Green{
 
     pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>)->(Array1<f64>,Array1<f64>,Array1<f64>){
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
-        let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
+        //let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
+        let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
         let I0=Array2::<Complex<f64>>::eye(self.nsta);
         let accurate:f64=1e-16;
         let ((N_R,N_L),N_B)=Energy.into_par_iter().map(|e| {
@@ -3852,14 +3838,16 @@ impl surf_Green{
     }
     pub fn surf_green_path(&self,kvec:&Array2<f64>,E_min:f64,E_max:f64,E_n:usize)->(Array2<f64>,Array2<f64>,Array2<f64>){
         let Energy=Array1::<f64>::linspace(E_min,E_max,E_n);
-        let ((N_R,N_L),N_B):((Vec<_>,Vec<_>),Vec<_>)=kvec.axis_iter(Axis(0)).into_par_iter().map( |k| {
-            let (NR,NL,NB)=self.surf_green_onek(&k.to_owned(),&Energy);
-            ((NR.to_vec(),NL.to_vec()),NB.to_vec())
-        }).collect();
         let nk=kvec.nrows();
-        let N_L = Array2::from_shape_vec((nk, E_n), N_L.into_iter().flatten().collect()).unwrap();
-        let N_R = Array2::from_shape_vec((nk, E_n), N_R.into_iter().flatten().collect()).unwrap();
-        let N_B = Array2::from_shape_vec((nk, E_n), N_B.into_iter().flatten().collect()).unwrap();
+        let mut N_R=Array2::<f64>::zeros((nk,E_n));
+        let mut N_L=Array2::<f64>::zeros((nk,E_n));
+        let mut N_B=Array2::<f64>::zeros((nk,E_n));
+        Zip::from(N_R.outer_iter_mut()).and(N_L.outer_iter_mut()).and(N_B.outer_iter_mut()).and(kvec.outer_iter()).par_apply(|mut nr,mut nl,mut nb, k| {
+            let (NR,NL,NB)=self.surf_green_onek(&k.to_owned(),&Energy);
+            nr.assign(&NR);
+            nl.assign(&NL);
+            nb.assign(&NB);
+        });
         (N_L,N_R,N_B)
     }
     pub fn show_surf_state(&self,name:&str,kpath:&Array2::<f64>,label:&Vec<&str>,nk:usize,E_min:f64,E_max:f64,E_n:usize){
