@@ -136,7 +136,7 @@ fn main(){
         for j in 0..3{
             dir_2[[j]]=1.0;
             for s in 0..4{
-                let sigma=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,T,og,mu0,s,1e-5);
+                let sigma=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu0,T,og,s,1e-5);
                 println!("{},{},{},sigma={}",s,i,j,sigma);
             }
             dir_2[[j]]=0.0;

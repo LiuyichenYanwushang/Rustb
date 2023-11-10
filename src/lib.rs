@@ -3137,7 +3137,7 @@ impl Model{
         omega
     }
     #[allow(non_snake_case)]
-    pub fn Hall_conductivity(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
+    pub fn Hall_conductivity(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->f64{
     //!这个是用来计算霍尔电导的.
     //!这里采用的是均匀撒点的方法, 利用 berry_curvature, 我们有
     //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}^\gm(\bm k),$$ 其中 $N$ 是 k 点数目, 
@@ -3150,7 +3150,7 @@ impl Model{
     }
     #[allow(non_snake_case)]
     ///这个是采用自适应积分算法来计算霍尔电导的, 一般来说, 我们建议 re_err 设置为 1, 而 ab_err 设置为 0.01
-    pub fn Hall_conductivity_adapted(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64,re_err:f64,ab_err:f64)->f64{
+    pub fn Hall_conductivity_adapted(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64,re_err:f64,ab_err:f64)->f64{
         let mut k_range=gen_krange(k_mesh);//将要计算的区域分成小块
         let n_range=k_range.len_of(Axis(0));
         let ab_err=ab_err/(n_range as f64);
@@ -3162,7 +3162,7 @@ impl Model{
         conductivity
     }
     ///用来计算多个 $\mu$ 值的, 这个函数是先求出 $\Omega_n$, 然后再分别用不同的费米能级来求和, 这样速度更快, 因为避免了重复求解 $\Omega_n$, 但是相对来说更耗内存, 而且不能做到自适应积分算法.
-    pub fn Hall_conductivity_mu(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:&Array1::<f64>,spin:usize,eta:f64)->Array1::<f64>{
+    pub fn Hall_conductivity_mu(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:&Array1::<f64>,T:f64,og:f64,spin:usize,eta:f64)->Array1::<f64>{
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let (omega_n,band):(Vec<_>,Vec<_>)=kvec.axis_iter(Axis(0)).into_par_iter().map(|x| {
@@ -3214,9 +3214,7 @@ impl Model{
         let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
         let mut J:Array3::<Complex<f64>>=v.clone();
         let mut v0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是速度项, 对应的dir_3 的速度
-        for r in 0..self.dim_r{
-            v0=v0+v.slice(s![r,..,..]).to_owned()*dir_3[[r]];
-        }
+        let mut v0=v.outer_iter().zip(dir_3.iter()).fold(v0,|acc,(v0,dir)|{acc+&v0**dir});
         if self.spin {
             let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta);
             let pauli:Array2::<Complex<f64>>= match spin{
@@ -3228,7 +3226,7 @@ impl Model{
             };
             X=kron(&pauli,&Array2::eye(self.norb));
             for i in 0..self.dim_r{
-                let j=J.slice(s![i,..,..]).to_owned();
+                let j=J.slice(s![i,..,..]);
                 let j=anti_comm(&X,&j)/2.0; //这里做反对易
                 J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
                 v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
@@ -4131,7 +4129,7 @@ mod tests {
         let spin:usize=0;
         let kmesh=arr1(&[nk,nk]);
         let start = Instant::now();   // 开始计时
-        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,T,og,mu,spin,eta);
+        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("Hall_conductivity took {} seconds", duration.as_secs_f64());   // 输出执行时间
@@ -4183,7 +4181,7 @@ mod tests {
         let kmesh=arr1(&[nk,nk]);
 
         let start = Instant::now();   // 开始计时
-        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,T,og,mu,spin,eta);
+        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("quantom_Hall_effect={}",conductivity/(2.0*PI));
@@ -4192,7 +4190,7 @@ mod tests {
         let nk:usize=50;
         let kmesh=arr1(&[nk,nk]);
         let start = Instant::now();   // 开始计时
-        let conductivity=model.Hall_conductivity_adapted(&kmesh,&dir_1,&dir_2,T,og,mu,spin,eta,0.01,0.01);
+        let conductivity=model.Hall_conductivity_adapted(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta,0.01,0.01);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("霍尔电导率{}",conductivity/(2.0*PI));
@@ -4330,7 +4328,7 @@ mod tests {
         let spin:usize=0;
         let kmesh=arr1(&[nk,nk]);
         let (eval,evec)=model.solve_onek(&arr1(&[0.3,0.5]));
-        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,T,og,mu,spin,eta);
+        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta);
         //println!("{}",conductivity/(2.0*PI));
         //开始计算边缘态, 首先是zigsag态
         let nk:usize=501;
@@ -4479,7 +4477,7 @@ mod tests {
         let kmesh=arr1(&[nk,nk]);
         let (eval,evec)=model.solve_onek(&arr1(&[0.3,0.5]));
         let start = Instant::now();   // 开始计时
-        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,T,og,mu,spin,eta);
+        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}",conductivity/(2.0*PI));
@@ -4487,7 +4485,7 @@ mod tests {
         let nk:usize=31;
         let kmesh=arr1(&[nk,nk]);
         let start = Instant::now();   // 开始计时
-        let conductivity=model.Hall_conductivity_adapted(&kmesh,&dir_1,&dir_2,T,og,mu,spin,eta,0.01,0.01);
+        let conductivity=model.Hall_conductivity_adapted(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta,0.01,0.01);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}",conductivity/(2.0*PI));

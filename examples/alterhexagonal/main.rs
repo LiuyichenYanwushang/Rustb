@@ -79,7 +79,7 @@ fn main(){
             //plot!(E,dos,"examples/alterhexagonal/dos.pdf");
 
             
-            let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,0.0,0.0,mu,0,1e-3);
+            let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu,0.0,0.0,0,1e-3);
             /*
             println!("{},{}",mu,conductivity/(2.0*PI));
             if (conductivity/2.0/PI-1.0).abs()<1e-2{
@@ -100,7 +100,7 @@ fn main(){
     let og=0.0;
     let mu=Array1::linspace(E_min,E_max,E_n);
     let eta=1e-5;
-    let conductivity=model.Hall_conductivity_mu(&kmesh,&dir_1,&dir_2,T,og,&mu,0,eta);
+    let conductivity=model.Hall_conductivity_mu(&kmesh,&dir_1,&dir_2,&mu,T,og,0,eta);
     let mut file=File::create("conductivity.dat").expect("Unable to BAND.dat");
     for i in 0..E_n{
         let mut s = String::new();
