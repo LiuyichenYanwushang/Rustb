@@ -897,7 +897,7 @@ impl Model{
         let R=Array1::<isize>::zeros(self.dim_r);
         self.set_hop(Complex::new(tmp,0.0),ind,ind,&R,pauli)
     }
-    pub fn del_hop(&mut self,ind_i:usize,ind_j:usize,R:Array1::<isize>,pauli:isize) {
+    pub fn del_hop(&mut self,ind_i:usize,ind_j:usize,R:&Array1::<isize>,pauli:isize) {
         //! 删除 $\bra{i\bm 0}\hat H\ket{j\bm R}$
         if R.len()!=self.dim_r{
             panic!("Wrong, the R length should equal to dim_r")
