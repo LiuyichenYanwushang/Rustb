@@ -1,6 +1,6 @@
 [package]
 name = "Rustb"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 
 categories = ["Tight bind calculation","wannier function"]
@@ -28,11 +28,13 @@ debug=true
 ndarray={ version="0.15.6", features = ["rayon","matrixmultiply-threading"] }
 num-complex="0.4.4"
 ndarray-linalg={version="0.16.0",default-features=false}
+#ndarray-linalg={path="/home/liuyichen/ndarray-linalg/ndarray-linalg"}
 rayon="1.8.0"
 gnuplot="0.0.39"
 
 [features]
 intel-mkl-static = ["ndarray-linalg/intel-mkl-static"]
+intel-mkl-system = ["ndarray-linalg/intel-mkl-system"]
 
 [[example]]
 name = "WTe2_kp"
@@ -53,6 +55,10 @@ path="examples/graphene/main.rs"
 [[example]]
 name = "BiF_square"
 path="examples/BiF_square/main.rs"
+
+[[example]]
+name = "Bi2F2"
+path="examples/Bi2F2/main.rs"
 
 [[example]]
 name = "yuxuan_try"

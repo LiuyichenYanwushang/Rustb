@@ -79,14 +79,6 @@ pub mod basis{
                         $new_ham[[$ind_i, $ind_j]] = $tmp;
                         $new_ham[[$ind_i + $norb, $ind_j + $norb]] = -$tmp;
                     }
-                    /*
-                    4 => {
-                        $new_ham[[$ind_i, $ind_j + $norb]] = $tmp;
-                    }
-                    5 => {
-                        $new_ham[[$ind_i + $norb, $ind_j]] = $tmp;
-                    }
-                    */
                     _ => todo!(),
                 }
             } else {
@@ -264,7 +256,7 @@ pub mod basis{
             //! In general, this function is used to set $\bra{i\bm 0}\hat H\ket{j\bm R}=$tmp.
 
             if pauli != 0 && self.spin==false{
-                println!("Wrong, if spin is Ture and pauli is not zero, the pauli is not use")
+                eprintln!("Wrong, if spin is Ture and pauli is not zero, the pauli is not use")
             }
             if R.len()!=self.dim_r{
                 panic!("Wrong, the R length should equal to dim_r")
@@ -278,7 +270,7 @@ pub mod basis{
             if R_exist {
                 let index=index_R(&self.hamR,&R);
                 if self.ham[[index,ind_i,ind_j]]!=Complex::new(0.0,0.0){
-                    println!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_i,ind_j]])
+                    eprintln!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_i,ind_j]])
                 }
                 update_hamiltonian!(self.spin,pauli,tmp,self.ham.slice_mut(s![index,..,..]),ind_i,ind_j,self.norb);
                 if negative_R_exist && ind_i != ind_j{
@@ -290,7 +282,7 @@ pub mod basis{
             }else if negative_R_exist {
                 let index=index_R(&self.hamR,&negative_R);
                 if self.ham[[index,ind_j,ind_i]]!=Complex::new(0.0,0.0){
-                    println!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_j,ind_i]])
+                    eprintln!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_j,ind_i]])
                 }
                 update_hamiltonian!(self.spin,pauli,tmp.conj(),self.ham.slice_mut(s![index,..,..]),ind_j,ind_i,self.norb);
 
@@ -373,7 +365,7 @@ pub mod basis{
         }
 
         #[allow(non_snake_case)]
-        pub fn set_onsite(&mut self, tmp:Array1::<f64>,pauli:isize){
+        pub fn set_onsite(&mut self, tmp:&Array1::<f64>,pauli:isize){
             //! 直接对对角项进行设置
             if tmp.len()!=self.norb{
                 panic!("Wrong, the norb is {}, however, the onsite input's length is {}",self.norb,tmp.len())
@@ -447,7 +439,7 @@ pub mod basis{
         }
         #[allow(non_snake_case)]
         #[inline(always)]
-        pub fn gen_ham(&self,kvec:&Array1::<f64>)->Array2::<Complex<f64>>{
+        pub fn gen_ham<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->Array2::<Complex<f64>>{
             //!这个是做傅里叶变换, 将实空间的哈密顿量变换到倒空间的哈密顿量
             //!
             //!具体来说, 就是
@@ -464,6 +456,7 @@ pub mod basis{
                 let UU=U0.clone();
                 U0.append(Axis(0),UU.view()).unwrap();
             }
+            //assert_eq!(self.nsta,U0.len(),"the nsta must equal to the U0");
             let U=Array2::from_diag(&U0);
             let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
             let Us=Us*Complex::new(0.0,2.0*PI);
@@ -507,9 +500,11 @@ pub mod basis{
             let mut rk0=rk.view().mapv(|x| x.conj());
             rk0.swap_axes(1,2);
             let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
+            let U_conj=U.map(|x| x.conj());
+            let U_dag=&U_conj.t();
             Zip::from(rk.outer_iter_mut())
                 .apply(|mut x0| {
-                    x0.assign(&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&x0.dot(&U)));
+                    x0.assign(&U_dag.dot(&x0.dot(&U)));
                 });
             return rk
         }
@@ -535,7 +530,6 @@ pub mod basis{
             if kvec.len() !=self.dim_r{
                 panic!("Wrong, the k-vector's length must equal to the dimension of model.")
             }
-            let nR:usize=self.hamR.len_of(Axis(0));
             let U0=self.orb.dot(kvec);
             let U0=U0.mapv(|x| Complex::<f64>::new(x,0.0));
             let U0=U0*Complex::new(0.0,2.0*PI);
@@ -544,10 +538,10 @@ pub mod basis{
                 let UU=U0.clone();
                 U0.append(Axis(0),UU.view()).unwrap();
             }
-            let U=Array2::from_diag(&U0);
+            let U=Array2::from_diag(&U0); //U[[i,j]]=exp(i k (ri-rj))
             let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
             let Us=Us*Complex::new(0.0,2.0*PI);
-            let Us=Us.mapv(Complex::exp);
+            let Us=Us.mapv(Complex::exp); //Us 就是 exp(i k R)
             let orb_real=self.orb.dot(&self.lat);
             let mut UU=Array3::<f64>::zeros((orb_real.ncols(),self.nsta,self.nsta));
             if self.spin{
@@ -579,10 +573,26 @@ pub mod basis{
                 }
                 UU=U0;
             }
-            let UU=UU.mapv(|x| Complex::<f64>::new(0.0,x)); //UU[i,j]=-tau[i]+tau[j] 
+            let UU=UU.mapv(|x| Complex::<f64>::new(0.0,x)); //UU[i,j]=i(-tau[i]+tau[j])
             let mut v=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));//定义一个初始化的速度矩阵
             let R0=&self.hamR.mapv(|x| Complex::<f64>::new(x as f64,0.0));
             let R0=R0.dot(&self.lat.mapv(|x| Complex::new(x,0.0)));
+            let mut hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+            let hamk=self.ham.outer_iter().skip(1).zip(Us.iter().skip(1)).fold(hamk,|acc,(ham,us)| {acc+&ham**us});//这个是真胞间hopping得到的hamk
+            let ham0=self.ham.slice(s![0,..,..]);
+            //assert_eq!(v.len_of(Axis(0)),R0.len_of(Axis(1)),"v and R0's length 0 should be equal");
+            //assert_eq!(UU.len_of(Axis(0)),R0.len_of(Axis(1)),"v and R0's length 0 should be equal");
+            Zip::from(v.outer_iter_mut()).and(R0.axis_iter(Axis(1))).and(UU.outer_iter()).apply(|mut v0,r,det_tau|{
+                let vv:Array2::<Complex<f64>>=self.ham.outer_iter().skip(1).zip(Us.iter().skip(1).zip(r.iter().skip(1))).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(ham,(us,r0))| {
+                    acc+&ham**us**r0*Complex::i()
+                });
+                let vv=&vv+&vv.map(|x| x.conj()).reversed_axes();
+                let vv:Array2::<Complex<f64>>=&vv+(&hamk+&ham0+&hamk.map(|x| x.conj()).t())*det_tau;
+                let vv=vv.dot(&U); //接下来两步填上轨道坐标导致的相位
+                let vv=&U.map(|x| x.conj()).reversed_axes().dot(&vv);
+                v0.assign(&vv);
+            });
+            /*
             for i0 in 0..self.dim_r{
                 let mut hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
                 let mut vv=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
@@ -590,14 +600,18 @@ pub mod basis{
                     .zip(Us.iter().skip(1)
                          .zip(R0.column(i0).iter().skip(1)))
                     .fold((vv,hamk),|(acc1,acc2),(ham,(us,r))|{ (acc1+&ham**us**r*Complex::i(),acc2+&ham**us)});
-                vv=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&vv)+vv;
-                let hamk0=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk);
-                let hamk=hamk+&self.ham.slice(s![0,..,..])+hamk0;
+                //vv=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&vv)+vv;
+                vv=&vv+&vv.map(|x| x.conj()).reversed_axes();
+                //let hamk0=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk);
+                let hamk0=hamk.clone().map(|x| x.conj()).reversed_axes();
+                let hamk=&hamk+&self.ham.slice(s![0,..,..])+hamk0;
                 vv=vv+&hamk*&UU.slice(s![i0,..,..]);
                 let vv=vv.dot(&U); //接下来两步填上轨道坐标导致的相位
-                let vv=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&vv);
+                //let vv=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&vv);
+                let vv=&U.map(|x| x.conj()).reversed_axes().dot(&vv);
                 v.slice_mut(s![i0,..,..]).assign(&vv);
             }
+            */
             //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
             //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
             if self.rmatrix.len_of(Axis(0))!=1 {
@@ -619,16 +633,16 @@ pub mod basis{
         }
         #[allow(non_snake_case)]
         #[inline(always)]
-        pub fn solve_band_onek(&self,kvec:&Array1::<f64>)->Array1::<f64>{
+        pub fn solve_band_onek<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->Array1::<f64>{
             //!求解单个k点的能带值
             if kvec.len() !=self.dim_r{
                 panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
             } 
-            let hamk=self.gen_ham(&kvec);
+            let hamk=self.gen_ham(kvec);
             let eval = if let Ok(eigvals) = hamk.eigvalsh(UPLO::Lower) { eigvals } else { todo!() };
             eval
         }
-        pub fn solve_band_all(&self,kvec:&Array2::<f64>)->Array2::<f64>{
+        pub fn solve_band_all<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix2>)->Array2::<f64>{
             //!求解多个k点的能带值
             let nk=kvec.len_of(Axis(0));
             let mut band=Array2::<f64>::zeros((nk,self.nsta));
@@ -641,7 +655,7 @@ pub mod basis{
             band
         }
         #[allow(non_snake_case)]
-        pub fn solve_band_all_parallel(&self,kvec:&Array2::<f64>)->Array2::<f64>{
+        pub fn solve_band_all_parallel<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix2>)->Array2::<f64>{
             //!并行求解多个k点的能带值
             let nk=kvec.len_of(Axis(0));
             let mut band=Array2::<f64>::zeros((nk,self.nsta));
@@ -655,7 +669,7 @@ pub mod basis{
         }
         #[allow(non_snake_case)]
         #[inline(always)]
-        pub fn solve_onek(&self,kvec:&Array1::<f64>)->(Array1::<f64>,Array2::<Complex<f64>>){
+        pub fn solve_onek<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->(Array1::<f64>,Array2::<Complex<f64>>){
             if kvec.len() !=self.dim_r{
                 panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
             } 
@@ -665,7 +679,7 @@ pub mod basis{
             (eval,evec)
         }
         #[allow(non_snake_case)]
-        pub fn solve_all(&self,kvec:&Array2::<f64>)->(Array2::<f64>,Array3::<Complex<f64>>){
+        pub fn solve_all<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix2>)->(Array2::<f64>,Array3::<Complex<f64>>){
             let nk=kvec.len_of(Axis(0));
             let mut band=Array2::<f64>::zeros((nk,self.nsta));
             let mut vectors=Array3::<Complex<f64>>::zeros((nk,self.nsta,self.nsta));
@@ -680,7 +694,7 @@ pub mod basis{
             (band,vectors)
         }
         #[allow(non_snake_case)]
-        pub fn solve_all_parallel(&self,kvec:&Array2::<f64>)->(Array2::<f64>,Array3::<Complex<f64>>){
+        pub fn solve_all_parallel<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix2>)->(Array2::<f64>,Array3::<Complex<f64>>){
             let nk=kvec.len_of(Axis(0));
             let mut band=Array2::<f64>::zeros((nk,self.nsta));
             let mut vectors=Array3::<Complex<f64>>::zeros((nk,self.nsta,self.nsta));
@@ -1439,12 +1453,13 @@ pub mod basis{
                 }
                 b+=a;
             }
+            let norb=self.norb;//保留之前的norb
             self.orb=self.orb.select(Axis(0),&orb_index);
             self.norb=self.orb.len_of(Axis(0));
             self.atom_list=new_atom_list;
             if self.spin{
                 self.nsta=self.norb*2;
-                let index_add:Vec<_>=orb_index.iter().map(|x| *x+self.norb).collect();
+                let index_add:Vec<_>=orb_index.iter().map(|x| *x+norb).collect();
                 orb_index.extend(index_add);
             }else{
                 self.nsta=self.norb;
@@ -1794,7 +1809,7 @@ pub mod basis{
                 }; 
                 acc
             });
-            let max_R=max_hamR.mapv(|x| (x.ceil() as isize)*2);
+            let max_R=max_hamR.mapv(|x| (x.ceil() as isize)+1);
             //let mut max_R=Array1::<isize>::zeros(self.dim_r);
             //let max_R:isize=U_det.abs()*(self.dim_r as isize);
             //let max_R=Array1::<isize>::ones(self.dim_r)*max_R;
@@ -2050,7 +2065,7 @@ pub mod basis{
                 let mut atom=atom.to_owned();
                 atom.mapv(|x| if (x.fract()-1.0).abs() < 1e-8 || x.fract().abs()<1e-8{x.round()} else {x}); 
                 // 这是先把原子中靠近整数晶格的原子移动到整数晶格上, 方便判断原子属于哪个原胞
-                let R=atom.mapv(|x| x.trunc() as isize);
+                let R=atom.mapv(|x| x.trunc() as isize); //将原子位置得整数部分拿出来
                 let use_atom=atom.map(|x| x.fract());
                 let R0=use_atom.clone().mapv(|x| if x<0.0 {-1 as isize}else{0 as isize});
                 let R=R+&R0;

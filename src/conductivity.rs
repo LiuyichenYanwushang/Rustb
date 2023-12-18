@@ -185,15 +185,16 @@ pub mod conductivity{
     }
     #[allow(non_snake_case)]
     impl Model{
+        #[allow(non_snake_case)]
+        #[inline(always)]
         pub fn berry_curvature_n_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array1::<f64>,Array1::<f64>){
             //!给定一个k点, 返回 $\Omega_n(\bm k)$
             //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
             let li:Complex<f64>=1.0*Complex::i();
-            let hamk=self.gen_ham(&k_vec);
-            let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) { (eigvals, eigvecs) } else { todo!() };
+            let (band,evec)=self.solve_onek(&k_vec);
             let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
             let mut J:Array3::<Complex<f64>>=v.clone();
-            if self.spin {
+            let (J,v)=if self.spin {
                 let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta);
                 let pauli:Array2::<Complex<f64>>= match spin{
                     0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
@@ -203,62 +204,68 @@ pub mod conductivity{
                     _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
                 };
                 X=kron(&pauli,&Array2::eye(self.norb));
-                for i in 0..self.dim_r{
-                    let j=J.slice(s![i,..,..]).to_owned();
-                    let j=anti_comm(&X,&J.slice(s![i,..,..]))/2.0; //这里做反对易
-                    J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
-                    v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
-                }
+                
+                let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&anti_comm(&X,&x)*(*d/2.0+0.0*li)});
+                let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
+                (J,v)
             }else{ 
                 if spin !=0{
                     println!("Warning, the model haven't got spin, so the spin input will be ignord");
                 }
-                Zip::from(J.outer_iter_mut()).and(dir_1.view()).apply(|mut j,dir| {j*=Complex::new(*dir,0.0);});
-                Zip::from(v.outer_iter_mut()).and(dir_2.view()).apply(|mut v,dir| {v*=Complex::new(*dir,0.0);});
+
+                let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
+                let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
+                (J,v)
             };
 
-            let J:Array2::<Complex<f64>>=J.sum_axis(Axis(0));
-            let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
-            let evec_conj=evec.t();
-            let A1=&evec_conj.dot(&J);
-            let A2=&evec_conj.dot(&v);
-            let evec=evec.mapv(|x| x.conj());
-            let A1=A1.dot(&evec);
-            let A2=A2.dot(&evec);
+            let evec_conj:Array2::<Complex<f64>>=evec.map(|x| x.conj());
+            let A1=J.dot(&evec.t());
+            let A1=&evec_conj.dot(&A1);
+            let A2=v.dot(&evec.t());
+            let A2=&evec_conj.dot(&A2);
             let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-            Zip::from(U0.outer_iter_mut()).and(band.view()).apply(|mut U,band_i| {let A=U.iter().zip(band.iter()).map(|(u,band_j)| {1.0/((band_i-band_j).powi(2)-(og+li*eta).powi(2))}).collect(); U.assign(&Array1::from_vec(A));});
+            for i in 0..self.nsta{
+                for j in 0..self.nsta{
+                    if i != j{
+                        U0[[i,j]]=1.0/((band[[i]]-band[[j]]).powi(2)-(og+li*eta).powi(2));
+                    }else{
+                        U0[[i,j]]=Complex::new(0.0,0.0);
+                    }
+                }
+            }
+            //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
             let mut omega_n=Array1::<f64>::zeros(self.nsta);
             let A1=A1*U0;
-            let A1=A1.axis_iter(Axis(0));
+            let A1=A1.outer_iter();
             let A2=A2.axis_iter(Axis(1));
-            let omega_n=A1.zip(A2).map(|(x1,x2)| x1.dot(&x2).im*2.0).collect();
-            let omega_n=Array1::from_vec(omega_n);
+            Zip::from(omega_n.view_mut()).and(A1).and(A2).apply(|mut x,a,b|{*x=-2.0*(a.dot(&b)).im;});
             (omega_n,band)
         }
 
         #[allow(non_snake_case)]
-        pub fn berry_curvature_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->f64{
+        pub fn berry_curvature_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->f64{
             //!给定一个 k 点, 指定 dir_1=$\alpha$, dir_2=$\beta$, T 代表温度, og= $\og$, 
             //!mu=$\mu$ 为费米能级, spin=0,1,2,3 为$\sg_0,\sg_x,\sg_y,\sg_z$,
             //!当体系不存在自旋的时候无论如何输入spin都默认 spin=0
             //!eta=$\eta$ 是一个小量
             //! 这个函数返回的是 
-            //! $$\Og_{\ap\bt}^\gm= \sum_n f_n\Omega_{n,\ap\bt}^\gm(\bm k)=\sum_n \f{1}{e^{(\ve_{n\bm k}-\mu)/T/k_B}+1} \sum_{m=\not n}\f{J_{\ap,nm}^\gm v_{\bt,mn}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og+i\eta)^2}$$
+            //! $$ \sum_n f_n\Omega_{n,\ap\bt}^\gm(\bm k)=\sum_n \f{1}{e^{(\ve_{n\bm k}-\mu)/T/k_B}+1} \sum_{m=\not n}\f{J_{\ap,nm}^\gm v_{\bt,mn}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og+i\eta)^2}$$
             //! 其中 $J_\ap^\gm=\\{s_\gm,v_\ap\\}$
             let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
             let mut omega:f64=0.0;
             if T==0.0{
-                omega=band.iter().zip(omega_n.iter()).fold(omega,|mut acc,(x,a)| {acc=if *x>mu {acc} else {*a+acc};acc});
+                for i in 0..self.nsta{
+                    omega+= if band[[i]]> mu {0.0} else {omega_n[[i]]};
+                }
             }else{
                 let beta=1.0/(T*8.617e-5);
-                let fermi_dirac=band.mapv(|x| 1.0/((beta*(x-mu)).exp()+1.0));
+                let fermi_dirac=band.map(|x| 1.0/((beta*(x-mu)).exp()+1.0));
                 omega=(omega_n*fermi_dirac).sum();
             }
             omega
         }
         #[allow(non_snake_case)]
-        #[inline(always)]
-        pub fn berry_curvature(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,og:f64,mu:f64,spin:usize,eta:f64)->Array1::<f64>{
+        pub fn berry_curvature(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->Array1::<f64>{
         //!这个是用来并行计算大量k点的贝利曲率
         //!这个可以用来画能带上的贝利曲率, 或者画一个贝利曲率的热图
             if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r{
@@ -266,7 +273,7 @@ pub mod conductivity{
             }
             let nk=k_vec.len_of(Axis(0));
             let omega:Vec<f64>=k_vec.axis_iter(Axis(0)).into_par_iter().map(|x| {
-                let omega_one=self.berry_curvature_onek(&x.to_owned(),&dir_1,&dir_2,T,og,mu,spin,eta); 
+                let omega_one=self.berry_curvature_onek(&x.to_owned(),&dir_1,&dir_2,mu,T,og,spin,eta); 
                 omega_one
                 }).collect();
             let omega=arr1(&omega);
@@ -276,11 +283,10 @@ pub mod conductivity{
         pub fn Hall_conductivity(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->f64{
         //!这个是用来计算霍尔电导的.
         //!这里采用的是均匀撒点的方法, 利用 berry_curvature, 我们有
-        //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}^\gm(\bm k),$$ 其中 $N$ 是 k 点数目, 
+        //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}(\bm k),$$ 其中 $N$ 是 k 点数目, 
             let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
             let nk:usize=kvec.len_of(Axis(0));
-            let omega=self.berry_curvature(&kvec,&dir_1,&dir_2,T,og,mu,spin,eta);
-            //let min=omega.iter().fold(f64::NAN, |a, &b| a.min(b));
+            let omega=self.berry_curvature(&kvec,&dir_1,&dir_2,mu,T,og,spin,eta);
             let conductivity:f64=omega.sum()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
             conductivity
         }
@@ -290,7 +296,7 @@ pub mod conductivity{
             let mut k_range=gen_krange(k_mesh);//将要计算的区域分成小块
             let n_range=k_range.len_of(Axis(0));
             let ab_err=ab_err/(n_range as f64);
-            let use_fn=|k0:&Array1::<f64>| self.berry_curvature_onek(k0,&dir_1,&dir_2,T,og,mu,spin,eta);
+            let use_fn=|k0:&Array1::<f64>| self.berry_curvature_onek(k0,&dir_1,&dir_2,mu,T,og,spin,eta);
             let inte=|k_range| adapted_integrate_quick(&use_fn,&k_range,re_err,ab_err);
             let omega:Vec<f64>=k_range.axis_iter(Axis(0)).into_par_iter().map(|x| { inte(x.to_owned())}).collect();
             let omega:Array1::<f64>=arr1(&omega);
@@ -345,68 +351,70 @@ pub mod conductivity{
             //!$$\pdv{\ve_{\bm k}}{\bm k}=\text{diag}\lt(v_{\bm k}\rt)$$
             //我们首先求解 omega_n 和 U^\dag j
 
-            let li:Complex<f64>=1.0*Complex::i();
-            let (band,evec)=self.solve_onek(&k_vec);
-            let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
-            let mut J:Array3::<Complex<f64>>=v.clone();
-            let mut v0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是速度项, 对应的dir_3 的速度
-            let mut v0=v.outer_iter().zip(dir_3.iter()).fold(v0,|acc,(v0,dir)|{acc+&v0**dir});
-            if self.spin {
-                let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta);
-                let pauli:Array2::<Complex<f64>>= match spin{
-                    0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
-                    1=> arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0,
-                    2=> arr2(&[[0.0+0.0*li,0.0-1.0*li],[0.0+1.0*li,0.0+0.0*li]])/2.0,
-                    3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
-                    _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
-                };
-                X=kron(&pauli,&Array2::eye(self.norb));
-                for i in 0..self.dim_r{
-                    let j=J.slice(s![i,..,..]);
-                    let j=anti_comm(&X,&j)/2.0; //这里做反对易
-                    J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
-                    v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
-                }
-            }else{ 
-                if spin !=0{
-                    println!("Warning, the model haven't got spin, so the spin input will be ignord");
-                }
-                for i in 0..self.dim_r{
-                    J.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_1[[i]],0.0));
-                    v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
-                }
+        let li:Complex<f64>=1.0*Complex::i();
+        let (band,evec)=self.solve_onek(&k_vec);
+        let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
+        let mut J:Array3::<Complex<f64>>=v.clone();
+        let mut v0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是速度项, 对应的dir_3 的速度
+        for r in 0..self.dim_r{
+            v0=v0+v.slice(s![r,..,..]).to_owned()*dir_3[[r]];
+        }
+        if self.spin {
+            let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta);
+            let pauli:Array2::<Complex<f64>>= match spin{
+                0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
+                1=> arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0,
+                2=> arr2(&[[0.0+0.0*li,0.0-1.0*li],[0.0+1.0*li,0.0+0.0*li]])/2.0,
+                3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
+                _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
             };
+            X=kron(&pauli,&Array2::eye(self.norb));
+            for i in 0..self.dim_r{
+                let j=J.slice(s![i,..,..]).to_owned();
+                let j=anti_comm(&X,&j)/2.0; //这里做反对易
+                J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
+                v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
+            }
+        }else{ 
+            if spin !=0{
+                println!("Warning, the model haven't got spin, so the spin input will be ignord");
+            }
+            for i in 0..self.dim_r{
+                J.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_1[[i]],0.0));
+                v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
+            }
+        };
 
-            let J:Array2::<Complex<f64>>=J.sum_axis(Axis(0));
-            let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
-            let v0=v0.dot(&evec.t());
-            let partial_ve=v0.diag().map(|x| x.re);
-            let A1=J.dot(&evec.t());
-            let A2=v.dot(&evec.t());
-            let evec_conj:Array2::<Complex<f64>>=evec.mapv(|x| x.conj()).to_owned();
-            let v0=&evec_conj.dot(&v0);
-            let A1=&evec_conj.dot(&A1);
-            let A2=&evec_conj.dot(&A2);
-            let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-            for i in 0..self.nsta{
-                for j in 0..self.nsta{
-                    if i != j{
-                        U0[[i,j]]=1.0/((band[[i]]-band[[j]]).powi(2)-(og+li*eta).powi(2));
-                    }else{
-                        U0[[i,j]]=Complex::new(0.0,0.0);
-                    }
+        let J:Array2::<Complex<f64>>=J.sum_axis(Axis(0));
+        let v:Array2::<Complex<f64>>=v.sum_axis(Axis(0));
+        let evec_conj:Array2::<Complex<f64>>=evec.clone().map(|x| x.conj()).to_owned();
+        let v0=v0.dot(&evec.clone().reversed_axes());
+        let v0=&evec_conj.dot(&v0);
+        let partial_ve=v0.diag().map(|x| x.re);
+        let A1=J.dot(&evec.clone().reversed_axes());
+        let A1=&evec_conj.dot(&A1);
+        let A2=v.dot(&evec.reversed_axes());
+        let A2=&evec_conj.dot(&A2);
+        let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        for i in 0..self.nsta{
+            for j in 0..self.nsta{
+                if i != j{
+                    U0[[i,j]]=1.0/((band[[i]]-band[[j]]).powi(2)-(og+li*eta).powi(2));
+                }else{
+                    U0[[i,j]]=Complex::new(0.0,0.0);
                 }
             }
-            //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
-            let mut omega_n=Array1::<f64>::zeros(self.nsta);
-            let A1=A1*U0;
-
-            let A1=A1.axis_iter(Axis(0));
-            let A2=A2.axis_iter(Axis(1));
-            let omega_n=A1.zip(A2).map(|(x1,x2)| x1.dot(&x2).im*2.0).collect();
-            let omega_n=Array1::from_vec(omega_n);
-            let omega_n:Array1::<f64>=omega_n*partial_ve;
-            (omega_n,band) //最后得到的 D
+        }
+        //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
+        let mut omega_n=Array1::<f64>::zeros(self.nsta);
+        let A1=A1*U0;
+        for i in 0..self.nsta{
+            omega_n[[i]]=-2.0*A1.slice(s![i,..]).dot(&A2.slice(s![..,i])).im;
+        }
+        
+        //let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
+        let omega_n:Array1::<f64>=omega_n*partial_ve;
+        (omega_n,band) //最后得到的 D
         }
         pub fn berry_curvature_dipole_n(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array2::<f64>,Array2::<f64>){
             //这个是在 onek的基础上进行并行计算得到一系列k点的berry curvature dipole
@@ -590,7 +598,6 @@ pub mod conductivity{
                 };
                 //计算结束
                 //开始最后的输出
-                //println!("{},{}",&partial_s_1*&G_23,&partial_ve_2*&G_13_h);
                 return ((partial_s_1*G_23-partial_ve_2*G_13_h),band,Some(partial_G))
             }else{
                 //开始计算 G_{ij}

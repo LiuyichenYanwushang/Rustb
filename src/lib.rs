@@ -2,6 +2,7 @@
 pub mod basis;
 pub mod conductivity;
 pub mod surfgreen;
+pub mod geometry;
 pub mod sparse_model;
 use gnuplot::Major;
 use num_complex::Complex;
@@ -18,6 +19,7 @@ use std::io::Write;
 use std::fs::File;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
+use std::ops::Deref;
 use std::time::Instant;
 /// This cate is used to perform various calculations on the TB model, currently including:
 ///
@@ -108,6 +110,7 @@ pub struct surf_Green{
     pub ham_hop:Array3::<Complex<f64>>,
     pub ham_hopR:Array2::<isize>,
 }
+
 #[inline(always)]
 fn remove_row<T: Copy>(array: Array2<T>, row_to_remove: usize) -> Array2<T> {
     let indices: Vec<_> = (0..array.nrows()).filter(|&r| r != row_to_remove).collect();
@@ -388,7 +391,7 @@ macro_rules! plot{
 ///    let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
 ///    let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
 ///    let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
-///    model.set_onsite(arr1(&[delta,-delta]),0);
+///    model.set_onsite(&arr1(&[delta,-delta]),0);
 ///    model.add_hop(t1,0,1,&array![0,0],0);
 ///    model.add_hop(t1,0,1,&array![-1,0],0);
 ///    model.add_hop(t1,0,1,&array![0,-1],0);
@@ -465,31 +468,15 @@ macro_rules! plot{
 ///
 
 
-///这个模块是用 wilson loop 的方法来计算 berry phase 等数值的
-impl Model{
-    pub fn berry_loop(&self,kvec:&Array2<f64>)->Array1<f64>{
-        let nk=kvec.len_of(Axis(0));
-        let berry_phase=Array1::<f64>::zeros(nk);
-        berry_phase
-    }
-}
-
-
 #[cfg(test)]
 mod tests {
     use std::f64::consts::PI;
     use num_complex::Complex;
     use super::*;
-    use gnuplot::Major;
     use ndarray::prelude::*;
     use ndarray::*;
     use std::time::{Duration, Instant};
-    use gnuplot::Figure;
-    use gnuplot::Color;
-    use gnuplot::PointSymbol;
-    use gnuplot::AutoOption;
-    use gnuplot::Fix;
-    use gnuplot::AxesCommon;
+    use gnuplot::{Major,Figure,Color,PointSymbol,AutoOption,Fix,AxesCommon,LineStyle,Solid};
     #[test]
     fn function_speed_test(){
         println!("开始测试各个函数的运行速度, 用次近邻的石墨烯模型");
@@ -502,7 +489,7 @@ mod tests {
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
         let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
-        model.set_onsite(arr1(&[-delta,delta]),0);
+        model.set_onsite(&arr1(&[-delta,delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
@@ -598,7 +585,7 @@ mod tests {
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
         let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
-        model.set_onsite(arr1(&[-delta,delta]),0);
+        model.set_onsite(&arr1(&[-delta,delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
@@ -737,6 +724,29 @@ mod tests {
         pdf_name.push_str("/dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
+
+
+        //-----算一下wilson loop 的结果-----------------------
+        let dir_1=arr1(&[1.0,0.0]);
+        let dir_2=arr1(&[0.0,1.0]);
+        let occ=vec![0];
+        let wcc=model.wannier_centre(&occ,&array![0.0,0.0],&dir_1,&dir_2,101,101);
+        let nocc=occ.len();
+        println!("{}",wcc);
+
+
+        let mut fg = Figure::new();
+        let x:Vec<f64>=Array1::<f64>::linspace(0.0,1.0,101).to_vec();
+        let axes=fg.axes2d();
+        for i in 0..nocc{
+            let y:Vec<f64>=wcc.row(i).to_vec();
+            axes.lines(&x, &y, &[Color("black"),LineStyle(Solid)]);
+        }
+        let axes=axes.set_x_range(Fix(0.0), Fix(1.0));
+        let mut pdf_name=String::new();
+        pdf_name.push_str("tests/Haldan/wcc.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show();
     }
     #[test]
     fn graphene(){
@@ -750,7 +760,7 @@ mod tests {
         let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
         let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
         let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
-        model.set_onsite(arr1(&[delta,-delta]),0);
+        model.set_onsite(&arr1(&[delta,-delta]),0);
         model.add_hop(t1,0,1,&array![0,0],0);
         model.add_hop(t1,0,1,&array![-1,0],0);
         model.add_hop(t1,0,1,&array![0,-1],0);
@@ -847,18 +857,17 @@ mod tests {
     #[test]
     fn kane_mele(){
         let li:Complex<f64>=1.0*Complex::i();
-        let delta=0.0;
         let t=-1.0+0.0*li;
+        let delta=0.0;
         let alter=0.0+0.0*li;
-        //let soc=-1.0+0.0*li;
-        let soc=0.24+0.0*li;
-        let rashba=-0.00+0.0*li;
+        let soc=0.06*t;
+        let rashba=0.0*t;
         let dim_r:usize=2;
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
         let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
-        model.set_onsite(arr1(&[delta,-delta]),0);
+        model.set_onsite(&arr1(&[delta,-delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();
@@ -906,16 +915,43 @@ mod tests {
         super_model.show_band(&path,&label,nk,"tests/kane_super");
         //开始计算表面态
         let green=surf_Green::from_Model(&model,0,1e-3);
-        let E_min=-3.0;
-        let E_max=3.0;
+        let E_min=-1.0;
+        let E_max=1.0;
         let E_n=nk.clone();
-        //let (hamR,hamRR)=green.gen_ham_onek(&array![0.5]);
-        //println!("{:.3}, \n{:.3}",hamR,hamRR);
-        let (N_L,N_R,N_B)=green.surf_green_one(&array![0.5],0.0);
         let path=[[0.0],[0.5],[1.0]];
         let path=arr2(&path);
         let label=vec!["G","M","G"];
-        green.show_surf_state("tests/kane",&path,&label,nk,E_min,E_max,E_n);
+        green.show_surf_state("tests/kane",&path,&label,nk,E_min,E_max,E_n,0);
+
+
+        //-----算一下wilson loop 的结果-----------------------
+        let n=301;
+        let dir_1=arr1(&[1.0,0.0]);
+        let dir_2=arr1(&[0.0,1.0]);
+        let occ=vec![0,1];
+        let wcc=model.wannier_centre(&occ,&array![0.0,0.0],&dir_1,&dir_2,n,n);
+        let nocc=occ.len();
+        let mut fg = Figure::new();
+        let x:Vec<f64>=Array1::<f64>::linspace(0.0,1.0,n).to_vec();
+        let axes=fg.axes2d();
+        for j in -1..2{
+            for i in 0..nocc{
+                let a=wcc.row(i).to_owned()+(j as f64)*2.0*PI;
+                let y:Vec<f64>=a.to_vec();
+                axes.points(&x, &y, &[Color("black"),gnuplot::PointSymbol('O')]);
+            }
+        }
+        let axes=axes.set_x_range(Fix(0.0), Fix(1.0));
+        let axes=axes.set_y_range(Fix(0.0), Fix(2.0*PI));
+        let show_ticks=vec![Major(0.0,Fix("0")),Major(0.5,Fix("π")),Major(1.0,Fix("2π"))];
+        axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+        let show_ticks=vec![Major(0.0,Fix("0")),Major(PI,Fix("π")),Major(2.0*PI,Fix("2π"))];
+        axes.set_y_ticks_custom(show_ticks.into_iter(),&[],&[]);
+        let mut pdf_name=String::new();
+        pdf_name.push_str("tests/kane/wcc.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show();
+
 
         /////开始计算体系的霍尔电导率//////
         let nk:usize=101;
@@ -928,7 +964,6 @@ mod tests {
         let dir_2=arr1(&[0.0,1.0]);
         let spin:usize=3;
         let kmesh=arr1(&[nk,nk]);
-        let (eval,evec)=model.solve_onek(&arr1(&[0.3,0.5]));
         let start = Instant::now();   // 开始计时
         let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta);
         let end = Instant::now();    // 结束计时
@@ -1018,8 +1053,101 @@ mod tests {
         let data=berry_curv.into_shape((nk,nk)).unwrap();
         draw_heatmap(&(-data).map(|x| (x+1.0).log(10.0)),"./tests/kane/berry_curvature_distribution.pdf");
 
+        //开始考虑磁场, 加入磁性
+        let B=0.1+0.0*li;
+        let tha=30.0/180.0*PI;
 
+        model.add_hop(B*tha.cos(),0,0,&array![0,0],1);
+        model.add_hop(B*tha.cos(),1,1,&array![0,0],1);
+        model.add_hop(B*tha.sin(),0,0,&array![0,0],2);
+        model.add_hop(B*tha.sin(),1,1,&array![0,0],2);
 
+        let green=surf_Green::from_Model(&model,0,1e-3);
+        let E_min=-1.0;
+        let E_max=1.0;
+        let E_n=nk.clone();
+        let path=[[0.0],[0.5],[1.0]];
+        let path=arr2(&path);
+        let label=vec!["G","M","G"];
+        green.show_surf_state("tests/kane/magnetic",&path,&label,nk,E_min,E_max,E_n,0);
+
+        /*
+        //开始计算角态
+        let model=model.make_supercell(&array![[0.0,-1.0],[1.0,0.0]]);
+        let num=20;
+        /*
+        let model_1=model.cut_piece(num,0);
+        let new_model=model_1.cut_piece(num,1);
+        */
+        let new_model=model.cut_dot(num,6,None);
+        let mut s=0;
+        let start = Instant::now();
+        let (band,evec)=new_model.solve_onek(&arr1(&[0.0,0.0]));
+        let end = Instant::now();    // 结束计时
+        let duration = end.duration_since(start); // 计算执行时间
+        println!("solve_band_all took {} seconds", duration.as_secs_f64());   // 输出执行时间
+        let show_evec=evec.to_owned().map(|x| x.norm_sqr());
+        let mut size=Array2::<f64>::zeros((new_model.nsta,new_model.natom));
+        let norb=new_model.norb;
+        for i in 0..new_model.nsta{
+            let mut s=0;
+            for j in 0..new_model.natom{
+                for k in 0..new_model.atom_list[j]{
+                    size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb]];
+                    s+=1;
+                }
+            }
+        }
+
+        let show_str=new_model.atom.clone().dot(&model.lat);
+        let show_str=show_str.slice(s![..,0..2]).to_owned();
+        let show_size=size.row(new_model.norb).to_owned();
+        use std::fs::create_dir_all;
+        create_dir_all("tests/kane/magnetic").expect("can't creat the file");
+        write_txt_1(band,"tests/kane/magnetic/band.txt");
+        write_txt(size,"tests/kane/magnetic/evec.txt");
+        write_txt(show_str,"tests/kane/magnetic/structure.txt");
+
+        fn  write_txt(data:Array2<f64>,output:&str)-> std::io::Result<()>{
+            use std::fs::File;
+            use std::io::Write;
+            let mut file=File::create(output).expect("Unable to BAND.dat");
+            let n=data.len_of(Axis(0));
+            let s=data.len_of(Axis(1));
+            for i in 0..n{
+                let mut s0=String::new();
+                for j in 0..s{
+                    if data[[i,j]]>=0.0{
+                        s0.push_str("     ");
+                    }else{
+                        s0.push_str("    ");
+                    }
+                    let aa= format!("{:.6}", data[[i,j]]);
+                    s0.push_str(&aa);
+                }
+                writeln!(file,"{}",s0)?;
+            }
+            Ok(())
+        }
+
+        fn  write_txt_1(data:Array1<f64>,output:&str)-> std::io::Result<()>{
+            use std::fs::File;
+            use std::io::Write;
+            let mut file=File::create(output).expect("Unable to BAND.dat");
+            let n=data.len_of(Axis(0));
+            for i in 0..n{
+                let mut s0=String::new();
+                if data[[i]]>=0.0{
+                    s0.push_str(" ");
+                }
+                let aa= format!("{:.6}", data[[i]]);
+                s0.push_str(&aa);
+                writeln!(file,"{}",s0)?;
+            }
+            Ok(())
+        }
+
+        */
     }
 
     #[test]
@@ -1036,7 +1164,7 @@ mod tests {
         let lat=arr2(&[[1.0,0.0,0.0],[0.5,3.0_f64.sqrt()/2.0,0.0],[0.0,0.0,1.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0,0.0],[2.0/3.0,2.0/3.0,0.0]]);
         let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
-        model.set_onsite(arr1(&[delta,-delta]),0);
+        model.set_onsite(&arr1(&[delta,-delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0,0],[-1,0,0],[0,-1,0]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
             let R=R.to_owned();

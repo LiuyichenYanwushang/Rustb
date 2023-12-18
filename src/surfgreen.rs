@@ -1,12 +1,13 @@
 pub mod surfgreen{
 
-    use crate::{surf_Green,Model,remove_col,remove_row};
+    use crate::{surf_Green,Model,remove_col,remove_row,gen_kmesh};
     use gnuplot::Major;
     use num_complex::Complex;
     use ndarray::*;
     use ndarray::prelude::*;
     use ndarray::concatenate;
     use ndarray_linalg::*;
+    use ndarray::linalg::kron;
     use std::f64::consts::PI;
     use ndarray_linalg::conjugate;
     use rayon::prelude::*;
@@ -41,7 +42,7 @@ pub mod surfgreen{
             let mut hamR=Array3::<Complex<f64>>::zeros((0,model.nsta,model.nsta));
             let mut hamRR=Array2::<isize>::zeros((0,model.dim_r));
             let use_hamR=model.hamR.rows();
-            let use_ham=model.ham.axis_iter(Axis(0));
+            let use_ham=model.ham.outer_iter();
             for (ham,R) in use_ham.zip(use_hamR){
                 let ham=ham.clone();
                 let R=R.clone();
@@ -169,7 +170,8 @@ pub mod surfgreen{
             (ham0k,hamRk)
 
         }
-        pub fn surf_green_one(&self,kvec:&Array1<f64>,Energy:f64)->(f64,f64,f64){
+        #[inline(always)]
+        pub fn surf_green_one(&self,kvec:&Array1<f64>,Energy:f64,spin:usize)->(f64,f64,f64){
             let (hamk,hamRk)=self.gen_ham_onek(kvec);
             let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
             let I0=Array2::<Complex<f64>>::eye(self.nsta);
@@ -193,7 +195,6 @@ pub mod surfgreen{
                 eps_t=eps_t+g0;
                 ap=mat_1.dot(&ap);
                 bt=mat_2.dot(&bt);
-                //println!("{}",ap.map(|x| x.norm()).sum());
                 if ap.sum().norm() < accurate{
                     break
                 }
@@ -201,13 +202,52 @@ pub mod surfgreen{
             let g_LL=(&epsilon-eps).inv().unwrap();
             let g_RR=(&epsilon-eps_t).inv().unwrap();
             let g_B=(&epsilon-epi).inv().unwrap();
-            let N_R=-1.0/(PI)*g_RR.into_diag().sum().im;
-            let N_L=-1.0/(PI)*g_LL.into_diag().sum().im;
-            let N_B=-1.0/(PI)*g_B.into_diag().sum().im;
+            let ((N_R,N_L),N_B)=if self.spin{
+                let ((NR,NL),NB)=match spin{
+                    0=>{
+                        let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
+                        let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
+                        let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
+                        ((NR,NL),NB)
+                    },
+                    1=>{
+                        let s=array![[Complex::new(0.0,0.0),Complex::new(1.0,0.0)],[Complex::new(1.0,0.0),Complex::new(0.0,0.0)]];
+                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
+                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
+                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
+                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
+                        ((NR,NL),NB)
+                    },
+                    2=>{
+                        let s=array![[Complex::new(0.0,0.0),Complex::new(0.0,-1.0)],[Complex::new(0.0,1.0),Complex::new(0.0,0.0)]];
+                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
+                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
+                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
+                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
+                        ((NR,NL),NB)
+                    },
+                    3=>{
+                        let s=array![[Complex::new(1.0,0.0),Complex::new(0.0,0.0)],[Complex::new(0.0,0.0),Complex::new(-1.0,0.0)]];
+                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
+                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
+                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
+                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
+                        ((NR,NL),NB)
+                    },
+                    _=>todo!(),
+                };
+                ((NR,NL),NB)
+            }else{
+                let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
+                let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
+                let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
+                ((NR,NL),NB)
+            };
             (N_R,N_L,N_B)
         }
 
-        pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>)->(Array1<f64>,Array1<f64>,Array1<f64>){
+        #[inline(always)]
+        pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>,spin:usize)->(Array1<f64>,Array1<f64>,Array1<f64>){
             let (hamk,hamRk)=self.gen_ham_onek(kvec);
             //let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
             let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
@@ -239,37 +279,86 @@ pub mod surfgreen{
                 let g_LL=(&epsilon-eps).inv().unwrap();
                 let g_RR=(&epsilon-eps_t).inv().unwrap();
                 let g_B=(&epsilon-epi).inv().unwrap();
-                let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
-                let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
-                let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
-                ((NR,NL),NB)
+                let ((N_R,N_L),N_B)=if self.spin{
+                    let ((NR,NL),NB)=match spin{
+                        0=>{
+                            let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
+                            let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
+                            let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
+                            ((NR,NL),NB)
+                        },
+                        1=>{
+                            let s=array![[Complex::new(0.0,0.0),Complex::new(1.0,0.0)],[Complex::new(1.0,0.0),Complex::new(0.0,0.0)]];
+                            let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
+                            let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
+                            let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
+                            let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
+                            ((NR,NL),NB)
+                        },
+                        2=>{
+                            let s=array![[Complex::new(0.0,0.0),Complex::new(0.0,-1.0)],[Complex::new(0.0,1.0),Complex::new(0.0,0.0)]];
+                            let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
+                            let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
+                            let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
+                            let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
+                            ((NR,NL),NB)
+                        },
+                        3=>{
+                            let s=array![[Complex::new(1.0,0.0),Complex::new(0.0,0.0)],[Complex::new(0.0,0.0),Complex::new(-1.0,0.0)]];
+                            let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
+                            let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
+                            let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
+                            let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
+                            ((NR,NL),NB)
+                        },
+                        _=>todo!(),
+                    };
+                    ((NR,NL),NB)
+                }else{
+                    let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
+                    let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
+                    let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
+                    ((NR,NL),NB)
+                };
+                ((N_R,N_L),N_B)
              }).collect();
             let N_R=Array1::from_vec(N_R);
             let N_L=Array1::from_vec(N_L);
             let N_B=Array1::from_vec(N_B);
             (N_R,N_L,N_B)
         }
-        pub fn surf_green_path(&self,kvec:&Array2<f64>,E_min:f64,E_max:f64,E_n:usize)->(Array2<f64>,Array2<f64>,Array2<f64>){
+        pub fn surf_green_path(&self,kvec:&Array2<f64>,E_min:f64,E_max:f64,E_n:usize,spin:usize)->(Array2<f64>,Array2<f64>,Array2<f64>){
             let Energy=Array1::<f64>::linspace(E_min,E_max,E_n);
             let nk=kvec.nrows();
             let mut N_R=Array2::<f64>::zeros((nk,E_n));
             let mut N_L=Array2::<f64>::zeros((nk,E_n));
             let mut N_B=Array2::<f64>::zeros((nk,E_n));
             Zip::from(N_R.outer_iter_mut()).and(N_L.outer_iter_mut()).and(N_B.outer_iter_mut()).and(kvec.outer_iter()).par_apply(|mut nr,mut nl,mut nb, k| {
-                let (NR,NL,NB)=self.surf_green_onek(&k.to_owned(),&Energy);
+                let (NR,NL,NB)=self.surf_green_onek(&k.to_owned(),&Energy,spin);
                 nr.assign(&NR);
                 nl.assign(&NL);
                 nb.assign(&NB);
             });
             (N_L,N_R,N_B)
         }
-        pub fn show_surf_state(&self,name:&str,kpath:&Array2::<f64>,label:&Vec<&str>,nk:usize,E_min:f64,E_max:f64,E_n:usize){
+        pub fn show_surf_state(&self,name:&str,kpath:&Array2::<f64>,label:&Vec<&str>,nk:usize,E_min:f64,E_max:f64,E_n:usize,spin:usize){
             use std::io::{BufWriter, Write};
             use std::fs::create_dir_all;
             create_dir_all(name).expect("can't creat the file");
             let (kvec,kdist,knode)=self.k_path(kpath, nk);
             let Energy=Array1::<f64>::linspace(E_min,E_max,E_n);
-            let (N_L,N_R,N_B)=self.surf_green_path(&kvec,E_min,E_max,E_n);
+            let (N_L,N_R,N_B)=self.surf_green_path(&kvec,E_min,E_max,E_n,spin);
+            //let N_L=N_L.mapv(|x| if x > 0.0 {x.ln()} else if  x< 0.0 {-x.abs().ln()} else {0.0});
+            //let N_R=N_R.mapv(|x| if x > 0.0 {x.ln()} else if  x< 0.0 {-x.abs().ln()} else {0.0});
+            //let N_B=N_B.mapv(|x| if x > 0.0 {x.ln()} else if  x< 0.0 {-x.abs().ln()} else {0.0});
+            let ((N_L,N_R),N_B)=if spin==0{
+                let N_L=N_L.mapv(|x| x.ln());
+                let N_R=N_R.mapv(|x| x.ln());
+                let N_B=N_B.mapv(|x| x.ln());
+                ((N_L,N_R),N_B)
+            }else{
+                ((N_L,N_R),N_B)
+            };
 
             //绘制 left_dos------------------------
             let mut left_name:String=String::new();
@@ -289,19 +378,21 @@ pub mod surfgreen{
                         s.push_str("   ");
                     }
                     s.push_str(&bb);
-                    let cc:String=format!("{:.6}",N_L[[i,j]].ln());
+                    let cc:String=format!("{:.6}",N_L[[i,j]]);
                     if N_L[[i,j]]>=0.0{
                         s.push_str("    ");
                     }else{
                         s.push_str("   ");
                     }
                     s.push_str(&cc);
+                    s.push_str("    ");
                     //writeln!(file,"{}",s);
 
                     writer.write(s.as_bytes()).unwrap();
+                    writer.write(b"\n").unwrap();
                 }
-                //writeln!(file,"\n");
                 writer.write(b"\n").unwrap();
+                //writeln!(file,"\n");
             }
             let _=file;
 
@@ -313,7 +404,7 @@ pub mod surfgreen{
             let mut heatmap_data = vec![];
             for i in 0..height {
                 for j in 0..width {
-                    heatmap_data.push(N_L[[j, i]].ln());
+                    heatmap_data.push(N_L[[j, i]]);
                 }
             }
             let axes = fg.axes2d();
@@ -354,18 +445,19 @@ pub mod surfgreen{
                         s.push_str("   ");
                     }
                     s.push_str(&bb);
-                    let cc:String=format!("{:.6}",N_R[[i,j]].ln());
+                    let cc:String=format!("{:.6}",N_R[[i,j]]);
                     if N_L[[i,j]]>=0.0{
                         s.push_str("    ");
                     }else{
                         s.push_str("   ");
                     }
                     s.push_str(&cc);
+                    s.push_str("    ");
                     //writeln!(file,"{}",s);
 
                     writer.write(s.as_bytes()).unwrap();
+                    writer.write(b"\n").unwrap();
                 }
-                //writeln!(file,"\n");
                 writer.write(b"\n").unwrap();
             }
             let _=file;
@@ -377,7 +469,7 @@ pub mod surfgreen{
             let mut heatmap_data = vec![];
             for i in 0..height {
                 for j in 0..width {
-                    heatmap_data.push(N_R[[j, i]].ln());
+                    heatmap_data.push(N_R[[j, i]]);
                 }
             }
             let axes = fg.axes2d();
@@ -417,18 +509,19 @@ pub mod surfgreen{
                         s.push_str("   ");
                     }
                     s.push_str(&bb);
-                    let cc:String=format!("{:.6}",N_B[[i,j]].ln());
+                    let cc:String=format!("{:.6}",N_B[[i,j]]);
                     if N_L[[i,j]]>=0.0{
                         s.push_str("    ");
                     }else{
                         s.push_str("   ");
                     }
                     s.push_str(&cc);
+                    s.push_str("    ");
                     //writeln!(file,"{}",s);
 
                     writer.write(s.as_bytes()).unwrap();
+                    writer.write(b"\n").unwrap();
                 }
-                //writeln!(file,"\n");
                 writer.write(b"\n").unwrap();
             }
             let _=file;
@@ -440,7 +533,7 @@ pub mod surfgreen{
             let mut heatmap_data = vec![];
             for i in 0..height {
                 for j in 0..width {
-                    heatmap_data.push(N_B[[j, i]].ln());
+                    heatmap_data.push(N_B[[j, i]]);
                 }
             }
             let axes = fg.axes2d();
