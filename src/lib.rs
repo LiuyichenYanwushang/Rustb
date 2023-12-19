@@ -524,7 +524,7 @@ mod tests {
 
         println!("开始计算 gen_v 的耗时速度, 为了平均, 我们单线程求解gen_v");
         let start = Instant::now();   // 开始计时
-        let A=kvec.outer_iter().map(|x| model.gen_v(&x.to_owned()));
+        let A:Vec<_>=kvec.outer_iter().map(|x| model.gen_v(&x.to_owned())).collect();
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("run gen_v {} times took {} seconds", kvec.nrows(), duration.as_secs_f64());   // 输出执行时间

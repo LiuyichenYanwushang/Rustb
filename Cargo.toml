@@ -1,12 +1,11 @@
 [package]
 name = "Rustb"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 
 categories = ["Tight bind calculation","wannier function"]
 description = "A package for calculating band, angle state, linear and nonlinear conductivities based on tight-binding models"
 exclude = ["target/", "examples/", ".github/", "crate/","tests/"]
-homepage = "https://bevyengine.org"
 keywords = ["tight-binding", "wannier-function", "physics","Rustb"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"

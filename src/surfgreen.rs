@@ -1,5 +1,6 @@
 pub mod surfgreen{
 
+    use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT,RAINBOW,Font,Auto};
     use crate::{surf_Green,Model,remove_col,remove_row,gen_kmesh};
     use gnuplot::Major;
     use num_complex::Complex;
@@ -397,7 +398,6 @@ pub mod surfgreen{
             let _=file;
 
             //接下来我们绘制表面态 
-            use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT,RAINBOW};
             let mut fg = Figure::new();
             let width:usize=nk;
             let height:usize=E_n;
@@ -409,9 +409,9 @@ pub mod surfgreen{
             }
             let axes = fg.axes2d();
             axes.set_palette(RAINBOW);
-            axes.image(heatmap_data.iter(), width, height,None, &[]);
-            let axes=axes.set_x_range(Fix(0.0), Fix(nk as f64));
-            let axes=axes.set_y_range(Fix(0.0), Fix(E_n as f64));
+            axes.image(heatmap_data.iter(), width, height,Some((kdist[[0]],E_min,kdist[[nk-1]],E_max)), &[]);
+            let axes=axes.set_y_range(Fix(E_min), Fix(E_max));
+            let axes=axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk-1]]));
             let axes=axes.set_aspect_ratio(Fix(1.0));
             let mut show_ticks=Vec::new();
             for i in 0..knode.len(){
@@ -419,7 +419,9 @@ pub mod surfgreen{
                 let B=label[i];
                 show_ticks.push(Major(A,Fix(B)));
             }
-            //axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+            axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
+            axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+            axes.set_cb_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
             let mut pdfname=String::new();
             pdfname.push_str(&name.clone());
             pdfname.push_str("/surf_state_l.pdf");
@@ -474,9 +476,9 @@ pub mod surfgreen{
             }
             let axes = fg.axes2d();
             axes.set_palette(RAINBOW);
-            axes.image(heatmap_data.iter(), width, height,None, &[]);
-            let axes=axes.set_x_range(Fix(0.0), Fix(nk as f64));
-            let axes=axes.set_y_range(Fix(0.0), Fix(E_n as f64));
+            axes.image(heatmap_data.iter(), width, height,Some((kdist[[0]],E_min,kdist[[nk-1]],E_max)), &[]);
+            let axes=axes.set_y_range(Fix(E_min), Fix(E_max));
+            let axes=axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk-1]]));
             let axes=axes.set_aspect_ratio(Fix(1.0));
             let mut show_ticks=Vec::new();
             for i in 0..knode.len(){
@@ -484,7 +486,9 @@ pub mod surfgreen{
                 let B=label[i];
                 show_ticks.push(Major(A,Fix(B)));
             }
-            //axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+            axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
+            axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+            axes.set_cb_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
             let mut pdfname=String::new();
             pdfname.push_str(&name.clone());
             pdfname.push_str("/surf_state_r.pdf");
@@ -538,9 +542,9 @@ pub mod surfgreen{
             }
             let axes = fg.axes2d();
             axes.set_palette(RAINBOW);
-            axes.image(heatmap_data.iter(), width, height,None, &[]);
-            let axes=axes.set_x_range(Fix(0.0), Fix(nk as f64));
-            let axes=axes.set_y_range(Fix(0.0), Fix(E_n as f64));
+            axes.image(heatmap_data.iter(), width, height,Some((kdist[[0]],E_min,kdist[[nk-1]],E_max)), &[]);
+            let axes=axes.set_y_range(Fix(E_min), Fix(E_max));
+            let axes=axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk-1]]));
             let axes=axes.set_aspect_ratio(Fix(1.0));
             let mut show_ticks=Vec::new();
             for i in 0..knode.len(){
@@ -548,7 +552,9 @@ pub mod surfgreen{
                 let B=label[i];
                 show_ticks.push(Major(A,Fix(B)));
             }
-            //axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+            axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
+            axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+            axes.set_cb_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
             let mut pdfname=String::new();
             pdfname.push_str(&name.clone());
             pdfname.push_str("/surf_state_b.pdf");

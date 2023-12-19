@@ -187,7 +187,7 @@ pub mod conductivity{
     impl Model{
         #[allow(non_snake_case)]
         #[inline(always)]
-        pub fn berry_curvature_n_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array1::<f64>,Array1::<f64>){
+        pub fn berry_curvature_n_onek<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix1>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array1::<f64>,Array1::<f64>){
             //!给定一个k点, 返回 $\Omega_n(\bm k)$
             //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
             let li:Complex<f64>=1.0*Complex::i();
@@ -204,7 +204,6 @@ pub mod conductivity{
                     _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
                 };
                 X=kron(&pauli,&Array2::eye(self.norb));
-                
                 let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&anti_comm(&X,&x)*(*d/2.0+0.0*li)});
                 let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
                 (J,v)
@@ -218,20 +217,18 @@ pub mod conductivity{
                 (J,v)
             };
 
-            let evec_conj:Array2::<Complex<f64>>=evec.map(|x| x.conj());
+            let evec_conj:Array2::<Complex<f64>>=evec.mapv(|x| x.conj());
             let A1=J.dot(&evec.t());
             let A1=&evec_conj.dot(&A1);
             let A2=v.dot(&evec.t());
             let A2=&evec_conj.dot(&A2);
             let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+            let a0=(og+li*eta).powi(2);
             for i in 0..self.nsta{
                 for j in 0..self.nsta{
-                    if i != j{
-                        U0[[i,j]]=1.0/((band[[i]]-band[[j]]).powi(2)-(og+li*eta).powi(2));
-                    }else{
-                        U0[[i,j]]=Complex::new(0.0,0.0);
-                    }
+                    U0[[i,j]]=1.0/((band[[i]]-band[[j]]).powi(2)-a0);
                 }
+                U0[[i,i]]=Complex::new(0.0,0.0);
             }
             //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
             let mut omega_n=Array1::<f64>::zeros(self.nsta);
@@ -243,7 +240,7 @@ pub mod conductivity{
         }
 
         #[allow(non_snake_case)]
-        pub fn berry_curvature_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->f64{
+        pub fn berry_curvature_onek<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix1>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->f64{
             //!给定一个 k 点, 指定 dir_1=$\alpha$, dir_2=$\beta$, T 代表温度, og= $\og$, 
             //!mu=$\mu$ 为费米能级, spin=0,1,2,3 为$\sg_0,\sg_x,\sg_y,\sg_z$,
             //!当体系不存在自旋的时候无论如何输入spin都默认 spin=0
@@ -265,7 +262,7 @@ pub mod conductivity{
             omega
         }
         #[allow(non_snake_case)]
-        pub fn berry_curvature(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->Array1::<f64>{
+        pub fn berry_curvature<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix2>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->Array1::<f64>{
         //!这个是用来并行计算大量k点的贝利曲率
         //!这个可以用来画能带上的贝利曲率, 或者画一个贝利曲率的热图
             if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r{

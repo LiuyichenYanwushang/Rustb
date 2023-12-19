@@ -471,7 +471,7 @@ pub mod basis{
         }
         #[allow(non_snake_case)]
         #[inline(always)]
-        pub fn gen_r(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
+        pub fn gen_r<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->Array3::<Complex<f64>>{
             //!和 gen_ham 类似, 将 $\hat{\bm r}$ 进行傅里叶变换
             //!
             //!$$\bm r_{mn,\bm k}=\bra{m\bm k}\hat{\bm r}\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat{\bm r}\ket{n\bm R}e^{-i(\bm R-\bm\tau_i+\bm \tau_j)\cdot\bm k}$$
@@ -526,7 +526,7 @@ pub mod basis{
         ///这里的 $\\mathcal A_{\bm k}$ 的定义为 $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R+\bm\tau_m-\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
         #[allow(non_snake_case)]
         #[inline(always)]
-        pub fn gen_v(&self,kvec:&Array1::<f64>)->Array3::<Complex<f64>>{
+        pub fn gen_v<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->Array3::<Complex<f64>>{
             if kvec.len() !=self.dim_r{
                 panic!("Wrong, the k-vector's length must equal to the dimension of model.")
             }
@@ -578,40 +578,18 @@ pub mod basis{
             let R0=&self.hamR.mapv(|x| Complex::<f64>::new(x as f64,0.0));
             let R0=R0.dot(&self.lat.mapv(|x| Complex::new(x,0.0)));
             let mut hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-            let hamk=self.ham.outer_iter().skip(1).zip(Us.iter().skip(1)).fold(hamk,|acc,(ham,us)| {acc+&ham**us});//这个是真胞间hopping得到的hamk
+            let hamk=self.ham.outer_iter().skip(1).zip(Us.iter().skip(1)).fold(hamk,|acc,(ham,us)| {acc+&ham**us});//这个是原胞间hopping得到的hamk
             let ham0=self.ham.slice(s![0,..,..]);
-            //assert_eq!(v.len_of(Axis(0)),R0.len_of(Axis(1)),"v and R0's length 0 should be equal");
-            //assert_eq!(UU.len_of(Axis(0)),R0.len_of(Axis(1)),"v and R0's length 0 should be equal");
             Zip::from(v.outer_iter_mut()).and(R0.axis_iter(Axis(1))).and(UU.outer_iter()).apply(|mut v0,r,det_tau|{
                 let vv:Array2::<Complex<f64>>=self.ham.outer_iter().skip(1).zip(Us.iter().skip(1).zip(r.iter().skip(1))).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(ham,(us,r0))| {
                     acc+&ham**us**r0*Complex::i()
                 });
-                let vv=&vv+&vv.map(|x| x.conj()).reversed_axes();
+                let vv=&vv+&vv.map(|x| x.conj()).t();
                 let vv:Array2::<Complex<f64>>=&vv+(&hamk+&ham0+&hamk.map(|x| x.conj()).t())*det_tau;
                 let vv=vv.dot(&U); //接下来两步填上轨道坐标导致的相位
-                let vv=&U.map(|x| x.conj()).reversed_axes().dot(&vv);
+                let vv=&U.map(|x| x.conj()).t().dot(&vv);
                 v0.assign(&vv);
             });
-            /*
-            for i0 in 0..self.dim_r{
-                let mut hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-                let mut vv=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-                (vv,hamk)=self.ham.outer_iter().skip(1)
-                    .zip(Us.iter().skip(1)
-                         .zip(R0.column(i0).iter().skip(1)))
-                    .fold((vv,hamk),|(acc1,acc2),(ham,(us,r))|{ (acc1+&ham**us**r*Complex::i(),acc2+&ham**us)});
-                //vv=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&vv)+vv;
-                vv=&vv+&vv.map(|x| x.conj()).reversed_axes();
-                //let hamk0=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk);
-                let hamk0=hamk.clone().map(|x| x.conj()).reversed_axes();
-                let hamk=&hamk+&self.ham.slice(s![0,..,..])+hamk0;
-                vv=vv+&hamk*&UU.slice(s![i0,..,..]);
-                let vv=vv.dot(&U); //接下来两步填上轨道坐标导致的相位
-                //let vv=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&vv);
-                let vv=&U.map(|x| x.conj()).reversed_axes().dot(&vv);
-                v.slice_mut(s![i0,..,..]).assign(&vv);
-            }
-            */
             //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
             //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
             if self.rmatrix.len_of(Axis(0))!=1 {
@@ -649,7 +627,7 @@ pub mod basis{
             Zip::from(kvec.outer_iter())
                 .and(band.outer_iter_mut())
                 .apply(|x,mut a| {
-                    let eval =self.solve_band_onek(&x.to_owned()); 
+                    let eval =self.solve_band_onek(&x); 
                     a.assign(&eval);
                 });
             band
@@ -662,7 +640,7 @@ pub mod basis{
             Zip::from(kvec.outer_iter())
                 .and(band.outer_iter_mut())
                 .par_apply(|x,mut a| {
-                    let eval =self.solve_band_onek(&x.to_owned()); 
+                    let eval =self.solve_band_onek(&x); 
                     a.assign(&eval);
                 });
             band
@@ -687,7 +665,7 @@ pub mod basis{
                 .and(band.outer_iter_mut())
                 .and(vectors.outer_iter_mut())
                 .apply(|x,mut a,mut b| {
-                    let (eval, evec) =self.solve_onek(&x.to_owned()); 
+                    let (eval, evec) =self.solve_onek(&x); 
                     a.assign(&eval);
                     b.assign(&evec);
                 });
@@ -702,7 +680,7 @@ pub mod basis{
                 .and(band.outer_iter_mut())
                 .and(vectors.outer_iter_mut())
                 .par_apply(|x,mut a,mut b| {
-                    let (eval, evec) =self.solve_onek(&x.to_owned()); 
+                    let (eval, evec) =self.solve_onek(&x); 
                     a.assign(&eval);
                     b.assign(&evec);
                 });
@@ -2322,6 +2300,11 @@ pub mod basis{
             fg.show();
             Ok(())
         }
+        /*
+        pub fn show_3D_band<S:Data<Elem=f64>>(&self,start_k:Arraybase<S,Ix1>,dir_1:Arraybase<S,Ix1>,dir_2:Arraybase<S,Ix1>,nk1:<f64>,nk2:<f64>,name:&str){
+            let kvec
+        }
+        */
         #[allow(non_snake_case)]
         pub fn from_hr(path:&str,file_name:&str,zero_energy:f64)->Model{
             use std::io::BufReader;
