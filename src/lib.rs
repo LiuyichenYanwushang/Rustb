@@ -4,6 +4,7 @@ pub mod conductivity;
 pub mod surfgreen;
 pub mod geometry;
 pub mod sparse_model;
+pub mod ndarray_lapack;
 use gnuplot::Major;
 use num_complex::Complex;
 use ndarray::linalg::kron;
@@ -1071,7 +1072,6 @@ mod tests {
         let label=vec!["G","M","G"];
         green.show_surf_state("tests/kane/magnetic",&path,&label,nk,E_min,E_max,E_n,0);
 
-        /*
         //开始计算角态
         let model=model.make_supercell(&array![[0.0,-1.0],[1.0,0.0]]);
         let num=20;
@@ -1082,14 +1082,15 @@ mod tests {
         let new_model=model.cut_dot(num,6,None);
         let mut s=0;
         let start = Instant::now();
-        let (band,evec)=new_model.solve_onek(&arr1(&[0.0,0.0]));
+        let (band,evec)=new_model.solve_range_onek(&arr1(&[0.0,0.0]),(-0.2,0.2),1e-8);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("solve_band_all took {} seconds", duration.as_secs_f64());   // 输出执行时间
+        let nresults=band.len();
         let show_evec=evec.to_owned().map(|x| x.norm_sqr());
         let mut size=Array2::<f64>::zeros((new_model.nsta,new_model.natom));
         let norb=new_model.norb;
-        for i in 0..new_model.nsta{
+        for i in 0..nresults{
             let mut s=0;
             for j in 0..new_model.natom{
                 for k in 0..new_model.atom_list[j]{
@@ -1114,8 +1115,8 @@ mod tests {
             let mut file=File::create(output).expect("Unable to BAND.dat");
             let n=data.len_of(Axis(0));
             let s=data.len_of(Axis(1));
+            let mut s0=String::new();
             for i in 0..n{
-                let mut s0=String::new();
                 for j in 0..s{
                     if data[[i,j]]>=0.0{
                         s0.push_str("     ");
@@ -1125,8 +1126,9 @@ mod tests {
                     let aa= format!("{:.6}", data[[i,j]]);
                     s0.push_str(&aa);
                 }
-                writeln!(file,"{}",s0)?;
+                s0.push_str("\n");
             }
+            writeln!(file,"{}",s0)?;
             Ok(())
         }
 
@@ -1135,19 +1137,18 @@ mod tests {
             use std::io::Write;
             let mut file=File::create(output).expect("Unable to BAND.dat");
             let n=data.len_of(Axis(0));
+            let mut s0=String::new();
             for i in 0..n{
-                let mut s0=String::new();
                 if data[[i]]>=0.0{
                     s0.push_str(" ");
                 }
-                let aa= format!("{:.6}", data[[i]]);
+                let aa= format!("{:.6}\n", data[[i]]);
                 s0.push_str(&aa);
-                writeln!(file,"{}",s0)?;
             }
+            writeln!(file,"{}",s0)?;
             Ok(())
         }
 
-        */
     }
 
     #[test]

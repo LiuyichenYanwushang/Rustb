@@ -1,6 +1,6 @@
 pub mod surfgreen{
 
-    use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT,RAINBOW,Font,Auto};
+    use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT,RAINBOW,Font,Auto,Custom};
     use crate::{surf_Green,Model,remove_col,remove_row,gen_kmesh};
     use gnuplot::Major;
     use num_complex::Complex;
@@ -12,7 +12,7 @@ pub mod surfgreen{
     use std::f64::consts::PI;
     use ndarray_linalg::conjugate;
     use rayon::prelude::*;
-    use std::io::Write;
+    use std::io::{Write};
     use std::fs::File;
     use std::ops::AddAssign;
     use std::ops::MulAssign;
@@ -356,6 +356,15 @@ pub mod surfgreen{
                 let N_L=N_L.mapv(|x| x.ln());
                 let N_R=N_R.mapv(|x| x.ln());
                 let N_B=N_B.mapv(|x| x.ln());
+                let max = N_L.iter().fold(f64::NEG_INFINITY, |acc, &x| acc.max(x));
+                let min = N_L.iter().fold(f64::INFINITY, |acc, &x| acc.min(x));
+                let N_L=(N_L-min)/(max-min)*20.0-10.0;
+                let max = N_R.iter().fold(f64::NEG_INFINITY, |acc, &x| acc.max(x));
+                let min = N_R.iter().fold(f64::INFINITY, |acc, &x| acc.min(x));
+                let N_R=(N_R-min)/(max-min)*20.0-10.0;
+                let max = N_B.iter().fold(f64::NEG_INFINITY, |acc, &x| acc.max(x));
+                let min = N_B.iter().fold(f64::INFINITY, |acc, &x| acc.min(x));
+                let N_B=(N_B-min)/(max-min)*20.0-10.0;
                 ((N_L,N_R),N_B)
             }else{
                 ((N_L,N_R),N_B)
@@ -367,9 +376,9 @@ pub mod surfgreen{
             left_name.push_str("/dos.surf_l");
             let mut file=File::create(left_name).expect("Unable to dos.surf_l.dat");
             let mut writer = BufWriter::new(file);
+            let mut s = String::new();
             for i in 0..nk{
                 for j in 0..E_n{
-                    let mut s = String::new();
                     let aa= format!("{:.6}", kdist[[i]]);
                     s.push_str(&aa);
                     let bb:String=format!("{:.6}",Energy[[j]]);
@@ -388,13 +397,13 @@ pub mod surfgreen{
                     s.push_str(&cc);
                     s.push_str("    ");
                     //writeln!(file,"{}",s);
+                    s.push_str("\n");
 
-                    writer.write(s.as_bytes()).unwrap();
-                    writer.write(b"\n").unwrap();
                 }
-                writer.write(b"\n").unwrap();
+                s.push_str("\n");
                 //writeln!(file,"\n");
             }
+            writer.write_all(s.as_bytes()).unwrap();
             let _=file;
 
             //接下来我们绘制表面态 
@@ -408,7 +417,8 @@ pub mod surfgreen{
                 }
             }
             let axes = fg.axes2d();
-            axes.set_palette(RAINBOW);
+            //axes.set_palette(RAINBOW);
+            axes.set_palette(Custom(&[(-1.0,0.0,0.0,0.0),(-0.9,65.0/255.0,9.0/255.0,103.0/255.0),(0.0,147.0/255.0,37.0/255.0,103.0/255.0),(0.2,220.0/255.0,80.0/255.0,57.0/255.0),(1.0,252.0/255.0,254.0/255.0,164.0/255.0)]));
             axes.image(heatmap_data.iter(), width, height,Some((kdist[[0]],E_min,kdist[[nk-1]],E_max)), &[]);
             let axes=axes.set_y_range(Fix(E_min), Fix(E_max));
             let axes=axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk-1]]));
@@ -421,7 +431,8 @@ pub mod surfgreen{
             }
             axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
             axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
-            axes.set_cb_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+            //axes.set_cb_ticks(Some((Fix(5.0),0)),&[],&[Font("Times New Roman",24.0)]);
+            axes.set_cb_ticks_custom([Major(-10.0,Fix("low")),Major(0.0,Fix("0")),Major(10.0,Fix("high"))].into_iter(),&[],&[Font("Times New Roman",24.0)]);
             let mut pdfname=String::new();
             pdfname.push_str(&name.clone());
             pdfname.push_str("/surf_state_l.pdf");
@@ -435,9 +446,9 @@ pub mod surfgreen{
             left_name.push_str("/dos.surf_r");
             let mut file=File::create(left_name).expect("Unable to dos.surf_l.dat");
             let mut writer = BufWriter::new(file);
+            let mut s = String::new();
             for i in 0..nk{
                 for j in 0..E_n{
-                    let mut s = String::new();
                     let aa= format!("{:.6}", kdist[[i]]);
                     s.push_str(&aa);
                     let bb:String=format!("{:.6}",Energy[[j]]);
@@ -456,12 +467,13 @@ pub mod surfgreen{
                     s.push_str(&cc);
                     s.push_str("    ");
                     //writeln!(file,"{}",s);
+                    s.push_str("\n");
 
-                    writer.write(s.as_bytes()).unwrap();
-                    writer.write(b"\n").unwrap();
                 }
-                writer.write(b"\n").unwrap();
+                s.push_str("\n");
+                //writeln!(file,"\n");
             }
+            writer.write_all(s.as_bytes()).unwrap();
             let _=file;
 
             //接下来我们绘制表面态 
@@ -475,7 +487,8 @@ pub mod surfgreen{
                 }
             }
             let axes = fg.axes2d();
-            axes.set_palette(RAINBOW);
+            //axes.set_palette(RAINBOW);
+            axes.set_palette(Custom(&[(-1.0,0.0,0.0,0.0),(-0.9,65.0/255.0,9.0/255.0,103.0/255.0),(0.0,147.0/255.0,37.0/255.0,103.0/255.0),(0.2,220.0/255.0,80.0/255.0,57.0/255.0),(1.0,252.0/255.0,254.0/255.0,164.0/255.0)]));
             axes.image(heatmap_data.iter(), width, height,Some((kdist[[0]],E_min,kdist[[nk-1]],E_max)), &[]);
             let axes=axes.set_y_range(Fix(E_min), Fix(E_max));
             let axes=axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk-1]]));
@@ -488,7 +501,8 @@ pub mod surfgreen{
             }
             axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
             axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
-            axes.set_cb_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+            //axes.set_cb_ticks(Some((Fix(5.0),0)),&[],&[Font("Times New Roman",24.0)]);
+            axes.set_cb_ticks_custom([Major(-10.0,Fix("low")),Major(0.0,Fix("0")),Major(10.0,Fix("high"))].into_iter(),&[],&[Font("Times New Roman",24.0)]);
             let mut pdfname=String::new();
             pdfname.push_str(&name.clone());
             pdfname.push_str("/surf_state_r.pdf");
@@ -501,9 +515,9 @@ pub mod surfgreen{
             left_name.push_str("/dos.surf_bulk");
             let mut file=File::create(left_name).expect("Unable to dos.surf_l.dat");
             let mut writer = BufWriter::new(file);
+            let mut s = String::new();
             for i in 0..nk{
                 for j in 0..E_n{
-                    let mut s = String::new();
                     let aa= format!("{:.6}", kdist[[i]]);
                     s.push_str(&aa);
                     let bb:String=format!("{:.6}",Energy[[j]]);
@@ -522,12 +536,13 @@ pub mod surfgreen{
                     s.push_str(&cc);
                     s.push_str("    ");
                     //writeln!(file,"{}",s);
+                    s.push_str("\n");
 
-                    writer.write(s.as_bytes()).unwrap();
-                    writer.write(b"\n").unwrap();
                 }
-                writer.write(b"\n").unwrap();
+                s.push_str("\n");
+                //writeln!(file,"\n");
             }
+            writer.write_all(s.as_bytes()).unwrap();
             let _=file;
 
             //接下来我们绘制表面态 
@@ -541,7 +556,8 @@ pub mod surfgreen{
                 }
             }
             let axes = fg.axes2d();
-            axes.set_palette(RAINBOW);
+            //axes.set_palette(RAINBOW);
+            axes.set_palette(Custom(&[(-1.0,0.0,0.0,0.0),(-0.9,65.0/255.0,9.0/255.0,103.0/255.0),(0.0,147.0/255.0,37.0/255.0,103.0/255.0),(0.2,220.0/255.0,80.0/255.0,57.0/255.0),(1.0,252.0/255.0,254.0/255.0,164.0/255.0)]));
             axes.image(heatmap_data.iter(), width, height,Some((kdist[[0]],E_min,kdist[[nk-1]],E_max)), &[]);
             let axes=axes.set_y_range(Fix(E_min), Fix(E_max));
             let axes=axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk-1]]));
@@ -554,7 +570,8 @@ pub mod surfgreen{
             }
             axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
             axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
-            axes.set_cb_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+            //axes.set_cb_ticks(Some((Fix(5.0),0)),&[],&[Font("Times New Roman",24.0)]);
+            axes.set_cb_ticks_custom([Major(-10.0,Fix("low")),Major(0.0,Fix("0")),Major(10.0,Fix("high"))].into_iter(),&[],&[Font("Times New Roman",24.0)]);
             let mut pdfname=String::new();
             pdfname.push_str(&name.clone());
             pdfname.push_str("/surf_state_b.pdf");
