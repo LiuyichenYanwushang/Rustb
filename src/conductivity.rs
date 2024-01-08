@@ -204,7 +204,7 @@ pub mod conductivity{
                     _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
                 };
                 X=kron(&pauli,&Array2::eye(self.norb));
-                let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&anti_comm(&X,&x)*(*d/2.0+0.0*li)});
+                let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&anti_comm(&X,&x)*(*d*0.5+0.0*li)});
                 let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
                 (J,v)
             }else{ 
@@ -218,15 +218,16 @@ pub mod conductivity{
             };
 
             let evec_conj:Array2::<Complex<f64>>=evec.mapv(|x| x.conj());
-            let A1=J.dot(&evec.t());
+            let evec=evec.t();
+            let A1=J.dot(&evec);
             let A1=&evec_conj.dot(&A1);
-            let A2=v.dot(&evec.t());
-            let A2=&evec_conj.dot(&A2);
+            let A2=v.dot(&evec);
+            let A2=&evec_conj.dot(&A2).reversed_axes();
             let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
             let a0=(og+li*eta).powi(2);
             for i in 0..self.nsta{
                 for j in 0..self.nsta{
-                    U0[[i,j]]=1.0/((band[[i]]-band[[j]]).powi(2)-a0);
+                    U0[[i,j]]=((band[[i]]-band[[j]]).powi(2)-a0).finv();
                 }
                 U0[[i,i]]=Complex::new(0.0,0.0);
             }
@@ -234,8 +235,9 @@ pub mod conductivity{
             let mut omega_n=Array1::<f64>::zeros(self.nsta);
             let A1=A1*U0;
             let A1=A1.outer_iter();
-            let A2=A2.axis_iter(Axis(1));
-            Zip::from(omega_n.view_mut()).and(A1).and(A2).apply(|mut x,a,b|{*x=-2.0*(a.dot(&b)).im;});
+            let A2=A2.outer_iter();
+            //Zip::from(omega_n.view_mut()).and(A1).and(A2).apply(|mut x,a,b|{*x=-2.0*(a.dot(&b)).im;});
+            omega_n.iter_mut().zip(A1.zip(A2)).for_each(|(mut x,(a,b))| {*x=-2.0*(a.dot(&b)).im;});
             (omega_n,band)
         }
 
@@ -251,12 +253,15 @@ pub mod conductivity{
             let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
             let mut omega:f64=0.0;
             if T==0.0{
-                for i in 0..self.nsta{
-                    omega+= if band[[i]]> mu {0.0} else {omega_n[[i]]};
+                /*
+                for (i,(e0,o0)) in band.iter().zip(omega_n.iter()).enumerate(){
+                    omega+= if e0> &mu {0.0} else {*o0};
                 }
+                */
+                omega=omega_n.iter().zip(band.iter()).fold(0.0,|acc,(x,y)| {if *y> mu {acc} else {acc+*x}});
             }else{
-                let beta=1.0/(T*8.617e-5);
-                let fermi_dirac=band.map(|x| 1.0/((beta*(x-mu)).exp()+1.0));
+                let beta=(T*8.617e-5).recip();
+                let fermi_dirac=band.mapv(|x| ((beta*(x-mu)).exp()+1.0).recip());
                 omega=(omega_n*fermi_dirac).sum();
             }
             omega

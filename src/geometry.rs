@@ -28,15 +28,15 @@ pub mod geometry{
                     panic!("wrong, the end of this loop must differ from the beginning by an integer grid vector.")
                 }
             }
-            let add_phase=diff.dot(&self.orb.t());
-            let add_phase=if self.spin{
-                let mut a=add_phase.mapv(|x| Complex::new(0.0,-2.0*x).exp());
-                let b=a.clone();
-                a.append(Axis(0),b.view()).unwrap();
-                a
+            let use_orb=if self.spin{
+                let mut orb0=self.orb.to_owned();
+                orb0.append(Axis(0),self.orb.view());
+                orb0
             }else{
-                add_phase.mapv(|x| Complex::new(0.0,-2.0*x).exp())
+                self.orb.to_owned()
             };
+            let add_phase=diff.dot(&use_orb.t());
+            let add_phase=add_phase.mapv(|x| Complex::new(0.0,-2.0*x*PI).exp());
             let (eval,mut evec)=self.solve_all(kvec);
             let first_evec=&evec.slice(s![0,..,..]);
             let mut end_evec=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
@@ -114,6 +114,15 @@ pub mod geometry{
                 panic!("Wrong!, the dir_1's length is {} but dim_r is {}, it's not equal!",dir_1.len(),self.dim_r);
             }else if dir_1.len() != self.dim_r {
                 panic!("Wrong!, the dir_2's length is {} but dim_r is {}, it's not equal!",dir_2.len(),self.dim_r);
+            }
+            let length_dir_1=dir_1.mapv(|x| x.powi(2)).sum();
+            let length_dir_2=dir_2.mapv(|x| x.powi(2)).sum();
+            if (length_dir_1-1.0).abs() > 1e-5{
+                panic!("Wrong!, the direction 1's norm length must equal to 1, yours {}",length_dir_1);
+            }
+
+            if (length_dir_2-1.0).abs() > 1e-5{
+                panic!("Wrong!, the direction 1's norm length must equal to 1, yours {}",length_dir_2);
             }
             let mut kvec=Array3::zeros((nk1,nk2,self.dim_r));
             for i in 0..nk1{

@@ -477,7 +477,48 @@ mod tests {
     use ndarray::prelude::*;
     use ndarray::*;
     use std::time::{Duration, Instant};
-    use gnuplot::{Major,Figure,Color,PointSymbol,AutoOption,Fix,AxesCommon,LineStyle,Solid};
+    use gnuplot::{Major,Figure,Color,PointSymbol,AutoOption,Fix,AxesCommon,LineStyle,Solid,Font,TextOffset,Rotate};
+
+
+    fn  write_txt(data:Array2<f64>,output:&str)-> std::io::Result<()>{
+        use std::fs::File;
+        use std::io::Write;
+        let mut file=File::create(output).expect("Unable to BAND.dat");
+        let n=data.len_of(Axis(0));
+        let s=data.len_of(Axis(1));
+        let mut s0=String::new();
+        for i in 0..n{
+            for j in 0..s{
+                if data[[i,j]]>=0.0{
+                    s0.push_str("     ");
+                }else{
+                    s0.push_str("    ");
+                }
+                let aa= format!("{:.6}", data[[i,j]]);
+                s0.push_str(&aa);
+            }
+            s0.push_str("\n");
+        }
+        writeln!(file,"{}",s0)?;
+        Ok(())
+    }
+
+    fn  write_txt_1(data:Array1<f64>,output:&str)-> std::io::Result<()>{
+        use std::fs::File;
+        use std::io::Write;
+        let mut file=File::create(output).expect("Unable to BAND.dat");
+        let n=data.len_of(Axis(0));
+        let mut s0=String::new();
+        for i in 0..n{
+            if data[[i]]>=0.0{
+                s0.push_str(" ");
+            }
+            let aa= format!("{:.6}\n", data[[i]]);
+            s0.push_str(&aa);
+        }
+        writeln!(file,"{}",s0)?;
+        Ok(())
+    }
     #[test]
     fn function_speed_test(){
         println!("开始测试各个函数的运行速度, 用次近邻的石墨烯模型");
@@ -512,23 +553,29 @@ mod tests {
         let nk=1001;
         let k_mesh=array![nk,nk];
         let kvec=gen_kmesh(&k_mesh);
+        {
         let start = Instant::now();   // 开始计时
         let band=model.solve_band_all(&kvec);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("solve_band_all took {} seconds", duration.as_secs_f64());   // 输出执行时间
+        }
+        {
         let start = Instant::now();   // 开始计时
         let band=model.solve_band_all_parallel(&kvec);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("solve_band_all_parallel took {} seconds", duration.as_secs_f64());   // 输出执行时间
+        }
 
+        {
         println!("开始计算 gen_v 的耗时速度, 为了平均, 我们单线程求解gen_v");
         let start = Instant::now();   // 开始计时
-        let A:Vec<_>=kvec.outer_iter().map(|x| model.gen_v(&x.to_owned())).collect();
+        let A:Vec<_>=kvec.outer_iter().into_par_iter().map(|x| model.gen_v(&x.to_owned())).collect();
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("run gen_v {} times took {} seconds", kvec.nrows(), duration.as_secs_f64());   // 输出执行时间
+        }
 
         println!("开始测试 求解贝利曲率的耗时速度, 多线程测试");
         let nk:usize=1001;
@@ -541,39 +588,13 @@ mod tests {
         let dir_3=arr1(&[0.0,1.0]);
         let spin:usize=0;
         let kmesh=arr1(&[nk,nk]);
+        {
         let start = Instant::now();   // 开始计时
         let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("Hall_conductivity took {} seconds", duration.as_secs_f64());   // 输出执行时间
-                                                                                 
-
-        println!("开始测试cut piece 的正确性");
-        let new_model=model.cut_piece(2,0);
-        println!("{}",new_model.ham.slice(s![0,..,..]));
-
-
-        println!("开始测试cut dot 的正确性");
-        let new_model=model.cut_piece(3,0);
-        let new_model=new_model.cut_piece(2,1);
-        let super_model=model.make_supercell(&array![[3.0,0.0],[0.0,2.0]]);
-        let mut orb_order=vec![];
-        for (i,orb1) in super_model.orb.outer_iter().enumerate(){
-            for (j,orb2) in new_model.orb.outer_iter().enumerate(){
-                if (orb1[[0]]-orb2[[0]]).powi(2)+(orb1[[1]]-orb2[[1]]).powi(2)<1e-5{
-                    orb_order.push(j);
-                }
-            }
         }
-        let new_ham=new_model.ham.slice(s![0,..,..]);
-        //let new_orb=new_model.orb;
-        let new_ham=new_ham.select(Axis(0),&orb_order);
-        let new_ham=new_ham.select(Axis(1),&orb_order);
-        let new_orb=new_model.orb.select(Axis(0),&orb_order);
-        println!("{}",new_ham);
-        println!("{}",super_model.ham.slice(s![0,..,..]));
-        println!("{}",new_orb);
-        println!("{}",super_model.orb);
     }
     #[test]
     fn Haldan_model(){
@@ -945,9 +966,11 @@ mod tests {
         let axes=axes.set_x_range(Fix(0.0), Fix(1.0));
         let axes=axes.set_y_range(Fix(0.0), Fix(2.0*PI));
         let show_ticks=vec![Major(0.0,Fix("0")),Major(0.5,Fix("π")),Major(1.0,Fix("2π"))];
-        axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+        axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",32.0)]);
         let show_ticks=vec![Major(0.0,Fix("0")),Major(PI,Fix("π")),Major(2.0*PI,Fix("2π"))];
-        axes.set_y_ticks_custom(show_ticks.into_iter(),&[],&[]);
+        axes.set_y_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",32.0)]);
+        axes.set_x_label("k_x",&[Font("Times New Roman",32.0),TextOffset(0.0,-0.5)]);
+        axes.set_y_label("WCC",&[Font("Times New Roman",32.0),Rotate(90.0),TextOffset(-1.0,0.0)]);
         let mut pdf_name=String::new();
         pdf_name.push_str("tests/kane/wcc.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
@@ -980,33 +1003,6 @@ mod tests {
         println!("{}",conductivity/(2.0*PI));
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
 
-
-        //开始算非线性霍尔电导
-        let dir_1=arr1(&[1.0,0.0]);
-        let dir_2=arr1(&[1.0,0.0]);
-        let dir_3=arr1(&[1.0,0.0]);
-        let nk:usize=200;
-        let kmesh=arr1(&[nk,nk]);
-        let E_min=-0.2;
-        let E_max=0.2;
-        let E_n=1000;
-        let og=0.0;
-        let mu=Array1::linspace(E_min,E_max,E_n);
-        let T=10.0;
-        let sigma:Array1<f64>=model.Nonlinear_Hall_conductivity_Extrinsic(&kmesh,&dir_1,&dir_2,&dir_3,&mu,T,og,1,1e-5);
-        //开始绘制非线性电导
-        let mut fg = Figure::new();
-        let x:Vec<f64>=mu.to_vec();
-        let axes=fg.axes2d();
-        let y:Vec<f64>=sigma.to_vec();
-        axes.lines(&x, &y, &[Color("black")]);
-        let mut show_ticks=Vec::<String>::new();
-        let mut pdf_name=String::new();
-        pdf_name.push_str("tests/kane");
-        pdf_name.push_str("/nonlinear_ex.pdf");
-        fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
-
         let (E0,dos)=model.dos(&kmesh,E_min,E_max,E_n,1e-2);
         //开始绘制dos
         let mut fg = Figure::new();
@@ -1022,26 +1018,6 @@ mod tests {
         fg.show();
         //绘制非线性霍尔电导的平面图
         
-        //画一下贝利曲率的分布
-        let dir_1=arr1(&[1.0,0.0]);
-        let dir_2=arr1(&[1.0,0.0]);
-        let dir_3=arr1(&[1.0,0.0]);
-        let T=1000.0;
-        let nk:usize=1000;
-        let kmesh=arr1(&[nk,nk]);
-        let kvec=gen_kmesh(&kmesh);
-        let kvec=kvec*2.0-0.1;
-        let kvec=model.lat.dot(&(kvec.reversed_axes()));
-        let kvec=kvec.reversed_axes();
-        let (berry_curv,band)=model.berry_curvature_dipole_n(&kvec,&dir_1,&dir_2,&dir_3,0.0,1,1e-3);
-        ///////////////////////////////////////////
-        let beta=1.0/T/(8.617e-5);
-        let f:Array2::<f64>=band.clone().map(|x| 1.0/((beta*x).exp()+1.0));
-        let f=beta*&f*(1.0-&f);
-        let berry_curv=(berry_curv.clone()*f).sum_axis(Axis(1));
-        let data=berry_curv.into_shape((nk,nk)).unwrap();
-        draw_heatmap(&data,"./tests/kane/nonlinear_ex_heatmap.pdf");
-
        //画一下贝利曲率的分布
         let nk:usize=1000;
         let kmesh=arr1(&[nk,nk]);
@@ -1062,6 +1038,7 @@ mod tests {
         model.add_hop(B*tha.cos(),1,1,&array![0,0],1);
         model.add_hop(B*tha.sin(),0,0,&array![0,0],2);
         model.add_hop(B*tha.sin(),1,1,&array![0,0],2);
+        //考虑添加onsite 项破坏空间反演和mirror
 
         let green=surf_Green::from_Model(&model,0,1e-3);
         let E_min=-1.0;
@@ -1074,7 +1051,7 @@ mod tests {
 
         //开始计算角态
         let model=model.make_supercell(&array![[0.0,-1.0],[1.0,0.0]]);
-        let num=20;
+        let num=10;
         /*
         let model_1=model.cut_piece(num,0);
         let new_model=model_1.cut_piece(num,1);
@@ -1108,47 +1085,6 @@ mod tests {
         write_txt_1(band,"tests/kane/magnetic/band.txt");
         write_txt(size,"tests/kane/magnetic/evec.txt");
         write_txt(show_str,"tests/kane/magnetic/structure.txt");
-
-        fn  write_txt(data:Array2<f64>,output:&str)-> std::io::Result<()>{
-            use std::fs::File;
-            use std::io::Write;
-            let mut file=File::create(output).expect("Unable to BAND.dat");
-            let n=data.len_of(Axis(0));
-            let s=data.len_of(Axis(1));
-            let mut s0=String::new();
-            for i in 0..n{
-                for j in 0..s{
-                    if data[[i,j]]>=0.0{
-                        s0.push_str("     ");
-                    }else{
-                        s0.push_str("    ");
-                    }
-                    let aa= format!("{:.6}", data[[i,j]]);
-                    s0.push_str(&aa);
-                }
-                s0.push_str("\n");
-            }
-            writeln!(file,"{}",s0)?;
-            Ok(())
-        }
-
-        fn  write_txt_1(data:Array1<f64>,output:&str)-> std::io::Result<()>{
-            use std::fs::File;
-            use std::io::Write;
-            let mut file=File::create(output).expect("Unable to BAND.dat");
-            let n=data.len_of(Axis(0));
-            let mut s0=String::new();
-            for i in 0..n{
-                if data[[i]]>=0.0{
-                    s0.push_str(" ");
-                }
-                let aa= format!("{:.6}\n", data[[i]]);
-                s0.push_str(&aa);
-            }
-            writeln!(file,"{}",s0)?;
-            Ok(())
-        }
-
     }
 
     #[test]
@@ -1310,31 +1246,35 @@ mod tests {
     #[test]
     fn SSH(){
         let li:Complex<f64>=1.0*Complex::i();
-        let t1=1.0+0.0*li;
-        let t2=0.1+0.0*li;
+        let t1=0.1+0.0*li;
+        let t2=1.0+0.0*li;
         let dim_r:usize=1;
         let norb:usize=2;
         let lat=arr2(&[[1.0]]);
-        let orb=arr2(&[[0.0],[0.5]]);
+        let orb=arr2(&[[0.0],[0.5],[0.0],[0.5]]);
         let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
         model.add_hop(t1,0,1,&array![0],0);
         model.add_hop(t2,0,1,&array![-1],0);
+        model.add_hop(t1,2,3,&array![0],0);
+        model.add_hop(t2,2,3,&array![-1],0);
+        let t_hop_1=0.0+0.0*li;
+        let t_hop_2=0.0+0.0*li;
+        model.add_hop(t_hop_1,0,2,&array![0],0);
+        model.add_hop(t_hop_1,1,3,&array![0],0);
+        /*
+        model.add_hop(t_hop_1,0,3,array![0],0);
+        model.add_hop(t_hop_1,1,2,array![0],0);
+        */
+
         let nk:usize=1001;
         let path=[[0.0],[0.5],[1.0]];
         let path=arr2(&path);
         let label=vec!["G","M","G"];
         model.show_band(&path,&label,nk,"tests/SSH/");
-        println!("atom={}",model.atom);
-        println!("{}",model.ham);
-        println!("{}",model.hamR);
-        model.orb-=0.25;
-        model.atom-=0.25;
-        println!("orb_old={}",model.orb);
-        model.shift_to_zero();
-        println!("orb_new={}",model.orb);
-        println!("{}",model.ham);
-        println!("{}",model.hamR);
-        model.show_band(&path,&label,nk,"tests/SSH/new/");
+        let mut super_model=model.cut_piece(5,0);
+
+        let (band,evec)=super_model.solve_onek(&array![0.0]);
+        println!("{}",band);
     }
     #[test]
     fn unfold_test(){
@@ -1371,5 +1311,94 @@ mod tests {
         create_dir_all(&name).expect("can't creat the file");
         draw_heatmap(&A.reversed_axes(),"./tests/unfold_test/unfold_band.pdf");
         super_model.show_band(&path,&label,nk,name);
+    }
+    #[test]
+    fn BBH_model(){
+        let li:Complex<f64>=1.0*Complex::i();
+        let t1=0.1+0.0*li;
+        let t2=1.0+0.0*li;
+        let i0=-1.0;
+        let dim_r:usize=2;
+        let norb:usize=2;
+        let lat=arr2(&[[1.0,0.0],[0.0,1.0]]);
+        let orb=arr2(&[[0.0,0.0],[0.5,0.0],[0.5,0.5],[0.0,0.5]]);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        model.add_hop(t1,0,1,&array![0,0],0);
+        model.add_hop(t1,1,2,&array![0,0],0);
+        model.add_hop(t1,2,3,&array![0,0],0);
+        model.add_hop(i0*t1,3,0,&array![0,0],0);
+        model.add_hop(t2,0,1,&array![-1,0],0);
+        model.add_hop(i0*t2,0,3,&array![0,-1],0);
+        model.add_hop(t2,2,3,&array![1,0],0);
+        model.add_hop(t2,2,1,&array![0,1],0);
+        let nk:usize=1001;
+        let path=[[0.0,0.0],[0.5,0.0],[0.5,0.5],[0.0,0.0]];
+        let path=arr2(&path);
+        let label=vec!["G","X","M","G"];
+        model.show_band(&path,&label,nk,"tests/BBH/");
+
+
+        //算一下wilson loop
+        let n=301;
+        let dir_1=arr1(&[1.0,0.0]);
+        let dir_2=arr1(&[0.0,1.0]);
+        let occ=vec![0,1];
+        let wcc=model.wannier_centre(&occ,&array![0.0,0.0],&dir_1,&dir_2,n,n);
+        let nocc=occ.len();
+        let mut fg = Figure::new();
+        let x:Vec<f64>=Array1::<f64>::linspace(0.0,1.0,n).to_vec();
+        let axes=fg.axes2d();
+        for j in -1..2{
+            for i in 0..nocc{
+                let a=wcc.row(i).to_owned()+(j as f64)*2.0*PI;
+                let y:Vec<f64>=a.to_vec();
+                axes.points(&x, &y, &[Color("black"),gnuplot::PointSymbol('O')]);
+            }
+        }
+        let axes=axes.set_x_range(Fix(0.0), Fix(1.0));
+        let axes=axes.set_y_range(Fix(0.0), Fix(2.0*PI));
+        let show_ticks=vec![Major(0.0,Fix("0")),Major(0.5,Fix("π")),Major(1.0,Fix("2π"))];
+        axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+        let show_ticks=vec![Major(0.0,Fix("0")),Major(PI,Fix("π")),Major(2.0*PI,Fix("2π"))];
+        axes.set_y_ticks_custom(show_ticks.into_iter(),&[],&[]);
+        let mut pdf_name=String::new();
+        pdf_name.push_str("tests/BBH/wcc.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show();
+        //算一下边界态
+        let green=surf_Green::from_Model(&model,0,1e-3);
+        let E_min=-2.0;
+        let E_max=2.0;
+        let E_n=nk.clone();
+        let path=[[0.0],[0.5],[1.0]];
+        let path=arr2(&path);
+        let label=vec!["G","X","G"];
+        green.show_surf_state("tests/BBH",&path,&label,nk,E_min,E_max,E_n,0);
+
+
+        //算一下corner state
+        let num=10;
+        let model_1=model.cut_piece(num,0);
+        let new_model=model_1.cut_piece(2*num,1);
+        /*
+        let new_model=model.cut_dot(num,4,None);
+        */
+        let mut s=0;
+        let start = Instant::now();
+        let (band,evec)=new_model.solve_onek(&arr1(&[0.0,0.0]));
+        println!("band shape is {:?}, evec shape is {:?}",band.shape(),evec.shape());
+        let end = Instant::now();    // 结束计时
+        let duration = end.duration_since(start); // 计算执行时间
+        println!("solve_band_all took {} seconds", duration.as_secs_f64());   // 输出执行时间
+        let nresults=band.len();
+        let show_evec=evec.to_owned().map(|x| x.norm_sqr());
+        let norb=new_model.norb;
+        let size=show_evec;
+        let show_str=new_model.atom.clone().dot(&model.lat);
+        use std::fs::create_dir_all;
+        create_dir_all("tests/BBH/corner").expect("can't creat the file");
+        write_txt_1(band,"tests/BBH/corner/band.txt");
+        write_txt(size,"tests/BBH/corner/evec.txt");
+        write_txt(show_str,"tests/BBH/corner/structure.txt");
     }
 }

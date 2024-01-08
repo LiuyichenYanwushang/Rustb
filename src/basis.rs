@@ -526,55 +526,39 @@ pub mod basis{
         /// $$
         ///
         ///这里的 $\\mathcal A_{\bm k}$ 的定义为 $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R+\bm\tau_m-\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
+        ///其中 $\bm r_{mn}$ 可以由 wannier90 给出, 只需要设定 ``write_r=ture"
+        ///在这里, 所有的 $\bm R$, $\bm r$, 以及 $\bm \tau$ 都是以实空间为坐标系.
         #[allow(non_snake_case)]
         #[inline(always)]
         pub fn gen_v<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->Array3::<Complex<f64>>{
             if kvec.len() !=self.dim_r{
                 panic!("Wrong, the k-vector's length must equal to the dimension of model.")
             }
-            let U0=self.orb.dot(kvec);
+            let orb_sta=if self.spin{
+                let mut orb0=self.orb.to_owned();
+                let orb1=self.orb.view();
+                orb0.append(Axis(0),orb1).unwrap();
+                orb0
+            }else{
+                self.orb.to_owned()
+            };
+            let U0=orb_sta.dot(kvec);
             let U0=U0.mapv(|x| Complex::<f64>::new(x,0.0));
             let U0=U0*Complex::new(0.0,2.0*PI);
             let mut U0=U0.mapv(Complex::exp);
-            if self.spin{
-                let UU=U0.clone();
-                U0.append(Axis(0),UU.view()).unwrap();
-            }
             let U=Array2::from_diag(&U0); //U[[i,j]]=exp(i k (ri-rj))
             let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
             let Us=Us*Complex::new(0.0,2.0*PI);
             let Us=Us.mapv(Complex::exp); //Us 就是 exp(i k R)
-            let orb_real=self.orb.dot(&self.lat);
-            let mut UU=Array3::<f64>::zeros((self.dim_r,self.norb,self.norb));
+            let orb_real=orb_sta.dot(&self.lat);
+            let mut UU=Array3::<f64>::zeros((self.dim_r,self.nsta,self.nsta));
             for r in 0..self.dim_r{
-                for i in 0..self.norb{
-                    for j in 0..self.norb{
+                for i in 0..self.nsta{
+                    for j in 0..self.nsta{
                         UU[[r,i,j]]=-orb_real[[i,r]]+orb_real[[j,r]];
                     }
                 }
             }
-            /*
-            unsafe {
-                for r in 0..self.dim_r {
-                    for i in 0..self.norb {
-                        for j in 0..self.norb {
-                            let orb_real_i_r = *orb_real.uget((i,r));
-                            let orb_real_j_r = *orb_real.uget((j,r));
-                            *UU.uget_mut((r,i,j)) = -orb_real_i_r + orb_real_j_r;
-                        }
-                    }
-                }
-            }
-            */
-            let UU=if self.spin{
-                let mut U0=Array3::<f64>::zeros((self.dim_r,self.nsta,self.nsta));
-                Zip::from(U0.outer_iter_mut()).and(UU.outer_iter()).apply(|mut u,uu| {
-                    u.assign(&kron(&array![[1.0,1.0],[1.0,1.0]],&uu));
-                });
-                U0
-            }else{
-                UU
-            };
             let UU=UU.mapv(|x| Complex::<f64>::new(0.0,x)); //UU[i,j]=i(-tau[i]+tau[j])
             let mut v=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));//定义一个初始化的速度矩阵
             let R0=&self.hamR.mapv(|x| Complex::<f64>::new(x as f64,0.0));
@@ -585,11 +569,11 @@ pub mod basis{
             let hamk:Array2::<Complex<f64>>=&hamk+&ham0+&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk);
             let U_conj=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U);
             Zip::from(v.outer_iter_mut()).and(R0.axis_iter(Axis(1))).and(UU.outer_iter()).apply(|mut v0,r,det_tau|{
-                let vv:Array2::<Complex<f64>>=self.ham.outer_iter().skip(1).zip(Us.iter().skip(1).zip(r.iter().skip(1))).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(ham,(us,r0))| {
+                let vv:Array2::<Complex<f64>>=self.ham.outer_iter().skip(1).zip(Us.iter().skip(1).zip(r.iter().skip(1))).fold(
+                    Array2::zeros((self.nsta,self.nsta)),|acc,(ham,(us,r0))| {
                     acc+&ham**us**r0*Complex::i()
                 });
                 let vv:Array2::<Complex<f64>>=&vv+&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&vv)+&hamk*&det_tau;
-                //let vv:Array2::<Complex<f64>>=&vv+&hamk*&det_tau;
                 let vv=&U_conj.dot(&vv);
                 let vv=vv.dot(&U); //接下来两步填上轨道坐标导致的相位
                 v0.assign(&vv);
@@ -599,11 +583,7 @@ pub mod basis{
             if self.rmatrix.len_of(Axis(0))!=1 {
                 let rk=self.gen_r(&kvec); 
                 for i in 0..self.dim_r{
-                    let mut UU=Array1::<f64>::zeros(self.nsta);
-                    UU.slice_mut(s![0..self.norb]).assign(&self.orb.slice(s![..,i]));
-                    if self.spin{
-                        UU.slice_mut(s![self.norb..2*self.norb]).assign(&self.orb.slice(s![..,i]));
-                    }
+                    let UU=orb_real.column(i);//这个是实空间的数据, 
                     let mut UU=Array2::from_diag(&UU); //将其化为矩阵
                     let A=&rk.slice(s![i,..,..])-&UU;
                     let A=comm(&hamk,&A)*Complex::i();
@@ -717,6 +697,306 @@ pub mod basis{
         ///dir:方向
         ///
         ///返回一个model, 其中 dir 和输入的model是一致的, 但是轨道数目和原子数目都会扩大num倍, 沿着dir方向没有胞间hopping.
+
+        /*
+        pub fn cut_piece(&self,num:usize,dir:usize)->Model{
+            //! This function is used to truncate a certain direction of a model.
+            //!
+            //! Parameters:
+            //! - num: number of unit cells to truncate.
+            //! - dir: the direction to be truncated.
+            //!
+            //! Returns a new model with the same direction as the input model, but with the number of orbitals and atoms increased by a factor of "num". There is no inter-cell hopping along the "dir" direction.
+            if num<1{
+                panic!("Wrong, the num={} is less than 1",num);
+            }
+            if dir> self.dim_r{
+                panic!("Wrong, the dir is larger than dim_r");
+            }
+            let mut new_orb=Array2::<f64>::zeros((self.norb*num,self.dim_r));//定义一个新的轨道
+            let mut new_atom=Array2::<f64>::zeros((self.natom*num,self.dim_r));//定义一个新的原子
+            let new_norb=self.norb*num;
+            let new_nsta=self.nsta*num;
+            let new_natom=self.natom*num;
+            let mut new_atom_list:Vec<usize>=Vec::new();
+            let mut new_lat=self.lat.clone();
+            new_lat.row_mut(dir).assign(&(self.lat.row(dir).to_owned()*(num as f64)));
+            for i in 0..num{
+                for n in 0..self.norb{
+                    let mut use_orb=self.orb.row(n).to_owned();
+                    use_orb[[dir]]+=i as f64;
+                    use_orb[[dir]]=use_orb[[dir]]/(num as f64);
+                    new_orb.row_mut(i*self.norb+n).assign(&use_orb);
+                }
+                for n in 0..self.natom{
+                    let mut use_atom=self.atom.row(n).to_owned();
+                    use_atom[[dir]]+=i as f64;
+                    use_atom[[dir]]*=1.0/(num as f64);
+                    new_atom.row_mut(i*self.natom+n).assign(&use_atom);
+                    new_atom_list.push(self.atom_list[n]);
+                }
+            }
+            let mut new_ham=Array3::<Complex<f64>>::zeros((1,new_nsta,new_nsta));
+            let mut new_rmatrix=Array4::<Complex<f64>>::zeros((1,self.dim_r,new_nsta,new_nsta));
+            let mut new_hamR=Array2::<isize>::zeros((1,self.dim_r));
+            //新的轨道和原子构造完成, 开始构建哈密顿量
+            //let new_model=tb_model(self.dim_r,new_norb,new_lat,new_orb,self.spin,Some(new_natom),Some(new_atom),Some(atom_list));
+            //先尝试构建位置函数
+            let exist_r=self.rmatrix.len_of(Axis(0))!=1;
+            if exist_r{
+                let n_R=self.hamR.len_of(Axis(0));
+                for n in 0..num{
+                    for i0 in 0..n_R{
+                        let mut ind_R:Array1::<isize>=self.hamR.row(i0).to_owned();
+                        let mut rmatrix=Array3::<Complex<f64>>::zeros((self.dim_r,new_nsta,new_nsta));
+                        let ham=if ind_R[[dir]]<0{//如果这个方向的ind_R 小于0, 将其变成大于0
+                            ind_R*=-1;
+                            let h0=self.ham.slice(s![i0,..,..]).map(|x| x.conj()).t().to_owned();
+                            rmatrix=self.rmatrix.slice(s![i0,..,..,..]).map(|x| x.conj());
+                            rmatrix.swap_axes(1,2);
+                            h0
+                        }else{
+                            rmatrix=self.rmatrix.slice(s![i0,..,..,..]).to_owned();
+                            self.ham.slice(s![i0,..,..]).to_owned()
+                        };
+                        let ind:usize=(ind_R[[dir]]+(n as isize)) as usize;
+                        ind_R[[dir]]=0;
+                        if ind<num{
+                            //开始构建哈密顿量
+                            let R_exist=find_R(&new_hamR,&ind_R);
+                            let negative_R=-ind_R.clone();
+                            let negative_R_exist=find_R(&new_hamR,&negative_R);
+                            let mut use_ham=Array2::<Complex<f64>>::zeros((new_nsta,new_nsta));
+                            if self.spin{ //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
+                                for i in 0..self.norb{
+                                    for j in 0..self.norb{
+                                        use_ham[[i+n*self.norb,j+ind*self.norb]]=ham[[i,j]];
+                                        use_ham[[i+n*self.norb+new_norb,j+ind*self.norb]]=ham[[i+self.norb,j]];
+                                        use_ham[[i+n*self.norb,j+ind*self.norb+new_norb]]=ham[[i,j+self.norb]];
+                                        use_ham[[i+n*self.norb+new_norb,j+ind*self.norb+new_norb]]=ham[[i+self.norb,j+self.norb]];
+                                    }
+                                }
+                                if R_exist{
+                                    let index=index_R(&new_hamR,&ind_R);
+                                    if index==0 && ind !=0{
+                                        for i in 0..self.norb{
+                                            for j in 0..self.norb{
+                                               use_ham[[j+ind*self.norb,i+n*self.norb]]=ham[[i,j]].conj();
+                                               use_ham[[j+ind*self.norb,i+n*self.norb+new_norb]]=ham[[i+self.norb,j]].conj();
+                                               use_ham[[j+ind*self.norb+new_norb,i+n*self.norb]]=ham[[i,j+self.norb]].conj();
+                                               use_ham[[j+ind*self.norb+new_norb,i+n*self.norb+new_norb]]=ham[[i+self.norb,j+self.norb]].conj();
+                                            }
+                                        }
+                                    }
+                                }
+                            }else{
+                                for i in 0..self.norb{
+                                    for j in 0..self.norb{
+                                       use_ham[[i+n*self.norb,j+ind*self.norb]]=ham[[i,j]];
+                                    }
+                                }
+                                if R_exist{
+                                    let index=index_R(&new_hamR,&ind_R);
+                                    if index==0 && ind !=0{
+                                        for i in 0..self.norb{
+                                            for j in 0..self.norb{
+                                               use_ham[[j+ind*self.norb,i+n*self.norb]]=ham[[i,j]].conj();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            //开始对 r_matrix 进行操作
+                            let mut use_rmatrix=Array3::<Complex<f64>>::zeros((self.dim_r,new_nsta,new_nsta));
+                            if self.spin{ //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
+                                for i in 0..self.norb{
+                                    for j in 0..self.norb{
+                                        for r in 0..self.dim_r{
+                                            use_rmatrix[[r,i+n*self.norb,j+ind*self.norb]]=rmatrix[[r,i,j]];
+                                            use_rmatrix[[r,i+n*self.norb+new_norb,j+ind*self.norb]]=rmatrix[[r,i+self.norb,j]];
+                                            use_rmatrix[[r,i+n*self.norb,j+ind*self.norb+new_norb]]=rmatrix[[r,i,j+self.norb]];
+                                            use_rmatrix[[r,i+n*self.norb+new_norb,j+ind*self.norb+new_norb]]=rmatrix[[r,i+self.norb,j+self.norb]];
+                                        }
+                                    }
+                                }
+                                if R_exist{
+                                    let index=index_R(&new_hamR,&ind_R);
+                                    if index==0 && ind !=0{
+                                        for i in 0..self.norb{
+                                            for j in 0..self.norb{
+                                                for r in 0..self.dim_r{
+                                                   use_rmatrix[[r,j+ind*self.norb,i+n*self.norb]]=rmatrix[[r,i,j]].conj();
+                                                   use_rmatrix[[r,j+ind*self.norb,i+n*self.norb+new_norb]]=rmatrix[[r,i+self.norb,j]].conj();
+                                                   use_rmatrix[[r,j+ind*self.norb+new_norb,i+n*self.norb]]=rmatrix[[r,i,j+self.norb]].conj();
+                                                   use_rmatrix[[r,j+ind*self.norb+new_norb,i+n*self.norb+new_norb]]=rmatrix[[r,i+self.norb,j+self.norb]].conj();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }else{
+                                for i in 0..self.norb{
+                                    for j in 0..self.norb{
+                                        for r in 0..self.dim_r{
+                                           use_rmatrix[[r,i+n*self.norb,j+ind*self.norb]]=rmatrix[[r,i,j]];
+                                        }
+                                    }
+                                }
+                                if R_exist{
+                                    let index=index_R(&new_hamR,&ind_R);
+                                    if index==0 && ind !=0{
+                                        for i in 0..self.norb{
+                                            for j in 0..self.norb{
+                                                for r in 0..self.dim_r{
+                                                   use_rmatrix[[r,j+ind*self.norb,i+n*self.norb]]=rmatrix[[r,i,j]].conj();
+                                               }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if R_exist{
+                                let index=index_R(&new_hamR,&ind_R);
+                                new_ham.slice_mut(s![index,..,..]).add_assign(&use_ham);
+                                new_rmatrix.slice_mut(s![index,..,..,..]).add_assign(&use_rmatrix);
+                            }else if negative_R_exist{
+                                let index=index_R(&new_hamR,&negative_R);
+                                new_ham.slice_mut(s![index,..,..]).add_assign(&use_ham.t().map(|x| x.conj()));
+                                use_rmatrix.swap_axes(1,2);
+                                new_rmatrix.slice_mut(s![index,..,..,..]).add_assign(&use_rmatrix.map(|x| x.conj()));
+                            }else{
+                                new_ham.push(Axis(0),use_ham.view());
+                                new_hamR.push(Axis(0),ind_R.view());
+                                new_rmatrix.push(Axis(0),use_rmatrix.view());
+                            }
+                        }else{
+                            continue
+                        }
+                    }
+                }
+            } else{
+                for n in 0..num{
+                    for i in 0..new_norb{
+                        for r in 0..self.dim_r{
+                            new_rmatrix[[0,r,i,i]]=Complex::new(new_orb[[i,r]],0.0);
+                            if self.spin{
+                                new_rmatrix[[0,r,i+new_norb,i+new_norb]]=Complex::new(new_orb[[i,r]],0.0);
+                            }
+                        }
+                    }
+                }
+
+                //接下来, 我们创建一个新的哈密顿量, 如果 hamR[[dir]]<0, 那么就将哈密顿量反号,
+                //保证沿着切的方向的哈密顿量是正方向hopping的
+                let mut using_ham=self.ham.clone();
+                let mut using_hamR=self.hamR.clone();
+                Zip::from(using_ham.outer_iter_mut()).and(using_hamR.outer_iter_mut()).par_apply(
+                    |mut ham,mut R|{
+                        if R[[dir]]<0{
+                            let h0=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&ham.to_owned());
+                            ham.assign(&h0);
+                            R.assign(&(-&R));
+                        }
+                });
+                let n_R=self.hamR.len_of(Axis(0));
+                for n in 0..num{
+                    for (i0,(ind_R,ham)) in using_hamR.outer_iter().zip(using_ham.outer_iter()).enumerate(){
+                    /*
+                    for (i0,(ind_R,ham)) in self.hamR.outer_iter().zip(self.ham.outer_iter()).enumerate(){
+                        let mut ind_R=ind_R.to_owned();
+                        let ham=if ind_R[[dir]]<0{//如果这个方向的ind_R 小于0, 将其变成大于0
+                            ind_R*=-1;
+                            let h0=ham.map(|x| x.conj()).t().to_owned();
+                            h0
+                        }else{
+                            ham.to_owned()
+                        };
+                        let ind:usize=(ind_R[[dir]]+(n as isize)) as usize;
+                        ind_R[[dir]]=0;
+                        */
+                        let ind:usize=(ind_R[[dir]]+(n as isize)) as usize;
+                        let mut ind_R=ind_R.to_owned();
+                        let ham=ham.to_owned();
+                        ind_R[[dir]]=0;
+                        if ind<num{
+                            //开始构建哈密顿量
+                            let R_exist=find_R(&new_hamR,&ind_R);
+                            let negative_R=-ind_R.clone();
+                            let negative_R_exist=find_R(&new_hamR,&negative_R);
+                            let mut use_ham=Array2::<Complex<f64>>::zeros((new_nsta,new_nsta));
+                            if self.spin{ //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
+                                for i in 0..self.norb{
+                                    for j in 0..self.norb{
+                                        use_ham[[i+n*self.norb,j+ind*self.norb]]=ham[[i,j]];
+                                        use_ham[[i+n*self.norb+new_norb,j+ind*self.norb]]=ham[[i+self.norb,j]];
+                                        use_ham[[i+n*self.norb,j+ind*self.norb+new_norb]]=ham[[i,j+self.norb]];
+                                        use_ham[[i+n*self.norb+new_norb,j+ind*self.norb+new_norb]]=ham[[i+self.norb,j+self.norb]];
+                                    }
+                                }
+                                if R_exist{
+                                    let index=index_R(&new_hamR,&ind_R);
+                                    if index==0 && ind !=0{
+                                        for i in 0..self.norb{
+                                            for j in 0..self.norb{
+                                               use_ham[[j+ind*self.norb,i+n*self.norb]]=ham[[i,j]].conj();
+                                               use_ham[[j+ind*self.norb,i+n*self.norb+new_norb]]=ham[[i+self.norb,j]].conj();
+                                               use_ham[[j+ind*self.norb+new_norb,i+n*self.norb]]=ham[[i,j+self.norb]].conj();
+                                               use_ham[[j+ind*self.norb+new_norb,i+n*self.norb+new_norb]]=ham[[i+self.norb,j+self.norb]].conj();
+                                            }
+                                        }
+                                    }
+                                }
+                            }else{
+                                for i in 0..self.norb{
+                                    for j in 0..self.norb{
+                                       use_ham[[i+n*self.norb,j+ind*self.norb]]=ham[[i,j]];
+                                    }
+                                }
+                                if R_exist{
+                                    let index=index_R(&new_hamR,&ind_R);
+                                    if index==0 && ind !=0{
+                                        for i in 0..self.norb{
+                                            for j in 0..self.norb{
+                                               use_ham[[j+ind*self.norb,i+n*self.norb]]=ham[[i,j]].conj();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            //开始对 r_matrix 进行操作
+                            if R_exist{
+                                let index=index_R(&new_hamR,&ind_R);
+                                new_ham.slice_mut(s![index,..,..]).add_assign(&use_ham);
+                            }else if negative_R_exist{
+                                let index=index_R(&new_hamR,&negative_R);
+                                new_ham.slice_mut(s![index,..,..]).add_assign(&use_ham.t().map(|x| x.conj()));
+                            }else{
+                                new_ham.push(Axis(0),use_ham.view());
+                                new_hamR.push(Axis(0),ind_R.view());
+                            }
+                        }else{
+                            continue
+                        }
+                    }
+                }
+            }
+            let mut model=Model{
+                dim_r:self.dim_r,
+                norb:new_norb,
+                nsta:new_nsta,
+                natom:new_natom,
+                spin:self.spin,
+                lat:new_lat,
+                orb:new_orb,
+                atom:new_atom,
+                atom_list:new_atom_list,
+                ham:new_ham,
+                hamR:new_hamR,
+                rmatrix:new_rmatrix,
+            };
+            model
+        }
+    */
         pub fn cut_piece(&self,num:usize,dir:usize)->Model{
             //! This function is used to truncate a certain direction of a model.
             //!
@@ -783,7 +1063,7 @@ pub mod basis{
                         if R[[dir]]<0{
                             let h0=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&ham.to_owned());
                             ham.assign(&h0);
-                            R[[dir]]*=-1;
+                            R.assign(&(-&R));
                         }
                 });
                 for n in 0..num{
@@ -882,7 +1162,7 @@ pub mod basis{
                         if R[[dir]]<0{
                             let h0=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&ham.to_owned());
                             ham.assign(&h0);
-                            R[[dir]]*=-1;
+                            R.assign(&(-&R));
                             let mut r0=rmatrix.map(|x| x.conj());
                             r0.to_owned().swap_axes(1,2);
                             rmatrix.assign(&r0);
@@ -1063,6 +1343,7 @@ pub mod basis{
             };
             model
         }
+
     pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         //! 这个是用来且角态或者切棱态的
 
