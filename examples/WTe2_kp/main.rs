@@ -49,7 +49,6 @@ fn main(){
     fg.set_terminal("pdfcairo", &pdf_name);
     fg.show();
 
-/*
     let nk:usize=500;
     let kmesh=arr1(&[nk,nk]);
     let m=0.01;
@@ -74,10 +73,9 @@ fn main(){
     axes.set_x_range(Fix(0.0),Fix(2.0*v));
     let mut show_ticks=Vec::<String>::new();
     let mut pdf_name=String::new();
-    pdf_name.push_str("./WTe2_result/nonlinear_t.pdf");
+    pdf_name.push_str("./WTe2_kp/result/nonlinear_t.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
     fg.show();
-*/
 }
 
 
@@ -88,7 +86,7 @@ fn gen_model(t:f64,v:f64,ap:f64,eta:f64,m:f64)-> Model{
     let lat=arr2(&[[1.0,0.0],[0.0,1.0]]);
     let orb=arr2(&[[0.0,0.0],[0.0,0.0]]);
     let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
-    model.set_onsite(array![m/2.0-4.0*ap,-m/2.0+4.0*ap],0);
+    model.set_onsite(&array![m/2.0-4.0*ap,-m/2.0+4.0*ap],0);
     let t=Complex::new(t,0.0);
     let v=Complex::new(v,0.0);
     let ap=Complex::new(ap,0.0);

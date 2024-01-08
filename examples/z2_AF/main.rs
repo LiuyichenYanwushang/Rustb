@@ -17,7 +17,7 @@ fn main(){
     let lat=arr2(&[[1.0,0.0,0.0],[1.0/2.0,3.0_f64.sqrt()/2.0,0.0],[0.0,0.0,2.0]]);
     let orb=arr2(&[[1.0/3.0,1.0/3.0,0.1],[2.0/3.0,2.0/3.0,0.9],[1.0/3.0,1.0/3.0,0.4],[2.0/3.0,2.0/3.0,0.6]]);
     let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
-    model.set_onsite(arr1(&[delta,-delta,delta,-delta]),3);
+    model.set_onsite(&arr1(&[delta,-delta,delta,-delta]),3);
     model.add_hop(t1,0,1,&array![0,0,0],0);
     model.add_hop(t1,0,1,&array![-1,0,0],0);
     model.add_hop(t1,0,1,&array![0,-1,0],0);

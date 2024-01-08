@@ -30,7 +30,7 @@ fn main() {
     let t1=-2.0+0.0*li;
     let t2=-1.5+0.0*li;
     let J=1.0;
-    //model.set_onsite(array![J],3);
+    //model.set_onsite(&array![J],3);
     model_1.add_hop(t1,0,0,&array![-1,0,0],0);
     model_1.add_hop(t2,0,0,&array![0,-1,0],0);
 
@@ -44,7 +44,7 @@ fn main() {
     let t1=-2.0+0.0*li;
     let t2=-1.5+0.0*li;
     let J=1.0;
-    //model.set_onsite(array![J],3);
+    //model.set_onsite(&array![J],3);
     model_2.add_hop(t2,0,0,&array![-1,0,0],0);
     model_2.add_hop(t1,0,0,&array![0,-1,0],0);
 
@@ -75,7 +75,7 @@ fn main() {
         onsite[[i]]=J;
         onsite[[i+model_1.norb]]=-J;
     }
-    new_model.set_onsite(onsite,3);
+    new_model.set_onsite(&onsite,3);
     for i in 0..model_1.norb{
         for j in 0..model_1.norb{
             for (r1,R1) in model_1.hamR.axis_iter(Axis(0)).enumerate(){
@@ -101,7 +101,7 @@ fn main() {
         onsite[[i]]=J;
         onsite[[i+model_1.norb]]=-J;
     }
-    model_up.set_onsite(onsite,0);
+    model_up.set_onsite(&onsite,0);
     for i in 0..model_1.norb{
         for j in 0..model_1.norb{
             for (r1,R1) in model_1.hamR.axis_iter(Axis(0)).enumerate(){
@@ -122,7 +122,7 @@ fn main() {
         onsite[[i]]=J;
         onsite[[i+model_1.norb]]=-J;
     }
-    model_dn.set_onsite(-onsite,0);
+    model_dn.set_onsite(&(-onsite),0);
     for i in 0..model_1.norb{
         for j in 0..model_1.norb{
             for (r1,R1) in model_1.hamR.axis_iter(Axis(0)).enumerate(){

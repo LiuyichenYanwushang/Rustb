@@ -19,7 +19,7 @@ fn main(){
     let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]])*a0;
     let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
     let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
-    model.set_onsite(arr1(&[delta,delta]),3);
+    model.set_onsite(&arr1(&[delta,delta]),3);
     //最近邻hopping
     model.add_hop(t1,0,1,&array![0,0],0);
     model.add_hop(t1,0,1,&array![-1,0],0);
@@ -41,7 +41,6 @@ fn main(){
     model.add_hop(-lm_so*li*d3[[0]],0,1,&array![0,-1],2);
     model.add_hop(lm_so*li*d3[[1]],0,1,&array![0,-1],1);
     //最后加上d+id 项
-/*
     model.add_hop(J,0,1,&array![0,0],1);
     model.add_hop(J*(-PI*4.0/3.0*li).exp(),0,1,&array![-1,0],1);
     model.add_hop(J*(-PI*8.0/3.0*li).exp(),0,1,&array![0,-1],1);
@@ -53,7 +52,6 @@ fn main(){
     model.add_hop(J*(-PI*8.0/3.0*li).exp(),0,0,&array![-1,1],3);
     model.add_hop(J*(-PI*8.0/3.0*li).exp(),1,1,&array![-1,1],3);
     */
-*/
     let nk:usize=1001;
     let path=array![[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
     let label=vec!["G","K","M","K'","G"];

@@ -117,7 +117,7 @@ fn gen_model(w:f64,vx:f64,vy:f64,m:f64)-> Model{
     let lat=arr2(&[[1.0,0.0],[0.0,1.0]]);
     let orb=arr2(&[[0.0,0.0],[0.0,0.0],[0.0,0.0],[0.0,0.0]]);
     let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
-    model.set_onsite(array![m,m,-m,-m],0);
+    model.set_onsite(&array![m,m,-m,-m],0);
     let w=Complex::new(w,0.0);
     let vx=Complex::new(vx,0.0);
     let vy=Complex::new(vy,0.0);

@@ -123,7 +123,7 @@ fn gen_model(dim_r:usize,lat:&Array2<f64>,orb:&Array2<f64>,t1:Complex<f64>,lm_so
 
     let li:Complex<f64>=1.0*Complex::i();
     let mut model=Model::tb_model(dim_r,lat.clone(),orb.clone(),true,None,None);
-    model.set_onsite(arr1(&[delta,delta]),3);
+    model.set_onsite(&arr1(&[delta,delta]),3);
     //最近邻hopping
     model.add_hop(t1,0,1,&array![0,0],0);
     model.add_hop(t1,0,1,&array![-1,0],0);
