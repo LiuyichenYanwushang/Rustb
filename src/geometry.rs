@@ -15,17 +15,32 @@ pub mod geometry{
     use std::ops::AddAssign;
     use std::ops::MulAssign;
 
+
     impl Model{
-        //!这个模块是用wilson loop 的方法来计算各种几何量.
+        ///这个模块是用wilson loop 的方法来计算各种几何量.
         pub fn berry_loop<S>(&self,kvec:&ArrayBase<S,Ix2>,occ:&Vec<usize>)->Array1::<f64>
         where
             S:Data<Elem=f64>,
         {
+            //! 这个函数是计算某一个闭合路径上的 berry phase, 用的是wilson loop 方法.l
+            //!
+            //! 其算法如下: 我们首先将末端的k点的波函数相位统一. 如果闭合回路沿着布里渊区两端,
+            //! 那么因为布洛赫函数在布里渊区存在一个相位差 $e^{-2\pi i \bm \tau_i}$, 我们有
+            //! $\ket{\psi_{n,\bm k_\text{end}}}=e^{-2\pi i \bm \tau_i}\ket{\psi_{n,\bm k_\text{first}}}$
+            //!
+            //! 我们定义交叠矩阵 $F_{mn,\bm k}=\braket{\psi_{m,\bm k}}{\psi_{n,\bm k+\dd\bm k}}$
+            //!
+            //! 接下来我们将其正交化, 用 SVD 分解, 有 $U,S,V=\text{svd}(F_{\bm k})$, $F_{\bm k}=UV$
+            //!
+            //! 接下来我们 将其 连乘, 有 $$W=\prod_{i} F_{\bm k_i} F_{\bm k_{i+1}}$$, 
+            //!
+            //! 最后, 我们求本征值并取其幅角, 有 $e^{i\Theta}=\text{eigh}(W)$,
+            //! 就能够得到这个loop的wanniercentre
             let n_k=kvec.nrows();
             let diff=&kvec.row(n_k-1)-&kvec.row(0);
             for i in diff.iter(){
-                if i.fract() >1e-3{
-                    panic!("wrong, the end of this loop must differ from the beginning by an integer grid vector.")
+                if (i-i.round()).abs() >1e-5{
+                    panic!("wrong, the end of this loop must differ from the beginning by an integer grid vector. yours {}",i.fract())
                 }
             }
             let use_orb=if self.spin{
@@ -66,8 +81,9 @@ pub mod geometry{
             let result=result.mapv(|x| -x.arg());
             result
         }
+
         pub fn berry_flux(&self,occ:&Vec<usize>,k_start:&Array1<f64>,dir_1:&Array1<f64>,dir_2:&Array1<f64>,nk1:usize,nk2:usize)->Array3<f64>{
-            //!这个函数是用来计算berry curvature 的. 根据给定的平面, 其返回一个 Array2<f64>
+            //!这个函数是用 wilson loop 方法来计算berry curvature 的. 根据给定的平面, 其返回一个 Array2<f64>, 这个算法的优点是精度高, 计算量小, 能快速收敛, 但是只能用于绝缘体.
             //!前两个指标表示横和纵, 数值表示大小
             assert_eq!(k_start.len(),self.dim_r,"Wrong!, the k_start's length is {} but dim_r is {}, it's not equal!",k_start.len(),self.dim_r);
             assert_eq!(dir_1.len(),self.dim_r,"Wrong!, the dir_1's length is {} but dim_r is {}, it's not equal!",dir_1.len(),self.dim_r);
@@ -115,15 +131,6 @@ pub mod geometry{
             }else if dir_1.len() != self.dim_r {
                 panic!("Wrong!, the dir_2's length is {} but dim_r is {}, it's not equal!",dir_2.len(),self.dim_r);
             }
-            let length_dir_1=dir_1.mapv(|x| x.powi(2)).sum();
-            let length_dir_2=dir_2.mapv(|x| x.powi(2)).sum();
-            if (length_dir_1-1.0).abs() > 1e-5{
-                panic!("Wrong!, the direction 1's norm length must equal to 1, yours {}",length_dir_1);
-            }
-
-            if (length_dir_2-1.0).abs() > 1e-5{
-                panic!("Wrong!, the direction 1's norm length must equal to 1, yours {}",length_dir_2);
-            }
             let mut kvec=Array3::zeros((nk1,nk2,self.dim_r));
             for i in 0..nk1{
                 for j in 0..nk2{
@@ -141,5 +148,13 @@ pub mod geometry{
             let wcc=wcc.reversed_axes();
             wcc
         }
+
+        /*
+        pub fn nested_wilson_loop(&self,occ:&Vec<Vec<usize>>,kvec1:&Array2<f64>,kvec2:&Array2<f64>)->Array1<f64>{
+            assert_eq!(self.dim_r,kvec1.ncolumns(),"Wrong!, the kvec's shape is {}*{}, but your model's dim is {}",kvec.nrows(),kvec1.ncolumns(),self.dim_r);
+            assert_eq!(self.dim_r,kvec2.ncolumns(),"Wrong!, the kvec's shape is {}*{}, but your model's dim is {}",kvec.nrows(),kvec2.ncolumns(),self.dim_r);
+            //接下来我们开始计算nested wilson loop
+        }
+        */
     }
 }

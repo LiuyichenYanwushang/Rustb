@@ -1,19 +1,19 @@
 pub mod ndarray_lapack{
-#[cfg(any(feature = "intel-mkl-system", feature = "intel-mkl-static"))]
-extern crate intel_mkl_src as _src;
+    #[cfg(any(feature = "intel-mkl-system", feature = "intel-mkl-static"))]
+    extern crate intel_mkl_src as _src;
 
-#[cfg(any(feature = "openblas-system", feature = "openblas-static"))]
-extern crate openblas_src as _src;
+    #[cfg(any(feature = "openblas-system", feature = "openblas-static"))]
+    extern crate openblas_src as _src;
 
-#[cfg(any(feature = "netlib-system", feature = "netlib-static"))]
-extern crate netlib_src as _src;
+    #[cfg(any(feature = "netlib-system", feature = "netlib-static"))]
+    extern crate netlib_src as _src;
 
-use std::ffi::c_char;
-use ndarray::{Array2,Array1,Ix2,ArrayBase,Data};
-use ndarray_linalg::UPLO;
-use ndarray_linalg::EigValsh;
-use lapack::{cheevx,zheevx,zheevr_2stage,zheevr};
-use num_complex::Complex;
+    use std::ffi::c_char;
+    use ndarray::{Array2,Array1,Ix2,ArrayBase,Data};
+    use ndarray_linalg::UPLO;
+    use ndarray_linalg::EigValsh;
+    use lapack::{cheevx,zheevx,zheevr_2stage,zheevr};
+    use num_complex::Complex;
 
     pub fn eigh_x<S>(x: &ArrayBase<S,Ix2>, range: (f64,f64),epsilon:f64,uplo:UPLO) -> (Array1<f64>,Array2<Complex<f64>>)
     where
@@ -223,7 +223,6 @@ use num_complex::Complex;
         let lwork=n*33 as i32;
         let liwork=n*10 as i32;
         let lrwork=n*24 as i32;
-        println!("{},{},{},{}",n,lwork,liwork,lrwork);
         let mut work = vec![Complex::new(0.0,0.0); lwork as usize];
         // 创建一个可变的向量，用于作为实数工作空间
         let mut rwork = vec![0.0; lrwork as usize];

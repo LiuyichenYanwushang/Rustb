@@ -1,3 +1,4 @@
+///这个模块提供了计算各种线性和非线性的霍尔效应的模块
 pub mod conductivity{
     use crate::{Model,gen_kmesh,gen_krange,comm,anti_comm};
     use num_complex::Complex;
@@ -11,11 +12,17 @@ pub mod conductivity{
     use std::ops::AddAssign;
     use std::ops::MulAssign;
 
+    /**
+    这个函数是用来做自适应积分算法的
+
+    对于任意维度的积分 n, 我们的将区域刨分成 n+1面体的小块, 然后用线性插值来近似这个n+1的积分结果
+
+    设被积函数为 $f(x_1,x_2,...,x_n)$, 存在 $n+1$ 个点 $(y_{01},y_{02},\cdots y_{0n})\cdots(y_{n1},y_{n2}\cdots y_{nn})$, 对应的值为 $z_0,z_1,...,z_n$
+
+    这样我们就能得到这一块积分的近似值为 $$ \f{1}{(n+1)!}\times\sum_{i=0}^n z_i *\dd V.$$ 其中$\dd V$ 是正 $n+1$ 面体的体积.
+    */
     #[inline(always)]
-    fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::<f64>,re_err:f64,ab_err:f64)->f64{
-        //!对于任意维度的积分 n, 我们的将区域刨分成 n+1面体的小块, 然后用线性插值来近似这个n+1的积分结果
-        //!设被积函数为 $f(x_1,x_2,...,x_n)$, 存在 $n+1$ 个点 $(y_{01},y_{02},\cdots y_{0n})\cdots(y_{n1},y_{n2}\cdots y_{nn})$, 对应的值为 $z_0,z_1,...,z_n$
-        //!这样我们就能得到这一块积分的近似值为 $$ \f{1}{(n+1)!}\times\sum_{i=0}^n z_i *\dd V.$$ 其中$\dd V$ 是正 $n+1$ 面体的体积.
+    pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::<f64>,re_err:f64,ab_err:f64)->f64{
 
         let dim=k_range.len_of(Axis(0));
         if dim==1{

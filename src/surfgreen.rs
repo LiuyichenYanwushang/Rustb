@@ -1,5 +1,5 @@
+///这个模块是用来求解表面格林函数的一个模块.
 pub mod surfgreen{
-
     use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT,RAINBOW,Font,Auto,Custom};
     use crate::{surf_Green,Model,remove_col,remove_row,gen_kmesh};
     use gnuplot::Major;
@@ -16,7 +16,6 @@ pub mod surfgreen{
     use std::fs::File;
     use std::ops::AddAssign;
     use std::ops::MulAssign;
-    ///这个模块是用来求解表面格林函数的一个模块.
     impl surf_Green{
         ///从 Model 中构建一个 surf_green 的结构体
         ///

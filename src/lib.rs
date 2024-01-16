@@ -7,6 +7,7 @@ pub mod sparse_model;
 pub mod ndarray_lapack;
 use gnuplot::Major;
 use num_complex::Complex;
+use num_traits::identities::Zero;
 use ndarray::linalg::kron;
 use ndarray::*;
 use ndarray::prelude::*;
@@ -112,6 +113,36 @@ pub struct surf_Green{
     pub ham_hopR:Array2::<isize>,
 }
 
+pub trait ToFloat {
+    fn to_float(self) -> f64;
+}
+impl ToFloat for usize {
+    fn to_float(self) -> f64 {
+        self as f64
+    }
+}
+
+impl ToFloat for isize {
+    fn to_float(self) -> f64 {
+        self as f64
+    }
+}
+pub trait usefloat: Copy + Clone + Zero {
+    fn from<T: ToFloat>(n: T) -> Self;
+}
+impl usefloat for f32 {
+    fn from<T: ToFloat>(n: T) -> Self {
+        n.to_float() as f32
+    }
+}
+
+impl usefloat for f64 {
+    fn from<T: ToFloat>(n: T) -> Self {
+        n.to_float()
+    }
+}
+
+
 #[inline(always)]
 fn remove_row<T: Copy>(array: Array2<T>, row_to_remove: usize) -> Array2<T> {
     let indices: Vec<_> = (0..array.nrows()).filter(|&r| r != row_to_remove).collect();
@@ -124,64 +155,70 @@ fn remove_col<T: Copy>(array: Array2<T>, col_to_remove: usize) -> Array2<T> {
 }
 #[allow(non_snake_case)]
 #[inline(always)]
-pub fn gen_kmesh(k_mesh:&Array1::<usize>)->Array2::<f64>{
+pub fn gen_kmesh<T>(k_mesh:&Array1::<usize>)->Array2::<T>
+    where T:usefloat+ std::ops::Div<Output = T>,
+          {
     let dim:usize=k_mesh.len();
     let mut nk:usize=1;
     for i in 0..dim{
         nk*=k_mesh[[i]];
     }
-    fn gen_kmesh_arr(k_mesh:&Array1::<usize>,r0:usize,mut usek:Array1::<f64>)->Array2::<f64>{
+    fn gen_kmesh_arr<T>(k_mesh:&Array1::<usize>,r0:usize,mut usek:Array1::<T>)->Array2::<T>
+        where T:usefloat+ std::ops::Div<Output = T>,
+        {
         let dim:usize=k_mesh.len();
-        let mut kvec=Array2::<f64>::zeros((0,dim));
+        let mut kvec=Array2::<T>::zeros((0,dim));
         if r0==0{
             for i in 0..(k_mesh[[r0]]){
-               let mut usek=Array1::<f64>::zeros(dim);
-               usek[[r0]]=(i as f64)/((k_mesh[[r0]]) as f64);
-               let k0:Array2::<f64>=gen_kmesh_arr(&k_mesh,r0+1,usek);
+               let mut usek=Array1::<T>::zeros(dim);
+               usek[[r0]]=T::from(i)/T::from(k_mesh[[r0]]);
+               let k0:Array2::<T>=gen_kmesh_arr(&k_mesh,r0+1,usek);
                kvec.append(Axis(0),k0.view()).unwrap();
             }
             return kvec
         }else if r0<k_mesh.len()-1{
             for i in 0..(k_mesh[[r0]]){
                let mut kk=usek.clone();
-               kk[[r0]]=(i as f64)/((k_mesh[[r0]]) as f64);
-               let k0:Array2::<f64>=gen_kmesh_arr(&k_mesh,r0+1,kk);
+               kk[[r0]]=T::from(i)/T::from(k_mesh[[r0]]);
+               let k0:Array2::<T>=gen_kmesh_arr(&k_mesh,r0+1,kk);
                kvec.append(Axis(0),k0.view()).unwrap();
             }
             return kvec
         }else{
             for i in 0..(k_mesh[[r0]]){
-               usek[[r0]]=(i as f64)/((k_mesh[[r0]]) as f64);
+               usek[[r0]]=T::from(i)/T::from(k_mesh[[r0]]);
                kvec.push_row(usek.view()).unwrap();
             }
             return kvec
         }
     }
-    let mut usek=Array1::<f64>::zeros(dim);
+    let mut usek=Array1::<T>::zeros(dim);
     gen_kmesh_arr(&k_mesh,0,usek)
 }
 #[allow(non_snake_case)]
 #[inline(always)]
-pub fn gen_krange(k_mesh:&Array1::<usize>)->Array3::<f64>{
+pub fn gen_krange<T>(k_mesh:&Array1::<usize>)->Array3::<T>
+        where T:usefloat+ std::ops::Div<Output = T>,
+{
     let dim_r=k_mesh.len();
-    let mut k_range=Array3::<f64>::zeros((0,dim_r,2));
+    let mut k_range=Array3::<T>::zeros((0,dim_r,2));
     match dim_r{
         1=>{
             for i in 0..k_mesh[[0]]{
-                let mut k=Array2::<f64>::zeros((dim_r,2));
-                k[[0,0]]=(i as f64)/((k_mesh[[0]]) as f64);
-                k[[0,1]]=((i+1) as f64)/((k_mesh[[0]]) as f64);
+                let mut k=Array2::<T>::zeros((dim_r,2));
+                k[[0,0]]=T::from(i)/T::from(k_mesh[[0]]);
+                k[[0,1]]=T::from(i+1)/T::from(k_mesh[[0]]);
                 k_range.push(Axis(0),k.view()).unwrap();
             }
         },
         2=>{
             for i in 0..k_mesh[[0]]{
                 for j in 0..k_mesh[[1]]{
-                    let mut k=Array2::<f64>::zeros((dim_r,2));
-                    k[[0,0]]=(i as f64)/((k_mesh[[0]]) as f64);
-                    k[[0,1]]=((i+1) as f64)/((k_mesh[[0]]) as f64);
-                    k[[1,0]]=(j as f64)/((k_mesh[[1]]) as f64);
-                    k[[1,1]]=((j+1) as f64)/((k_mesh[[1]]) as f64);
+                    let mut k=Array2::<T>::zeros((dim_r,2));
+                    k[[0,0]]=T::from(i)/T::from(k_mesh[[0]]);
+                    k[[0,1]]=T::from(i+1)/T::from(k_mesh[[0]]);
+                    k[[1,0]]=T::from(j)/T::from(k_mesh[[1]]);
+                    k[[1,1]]=T::from(j+1)/T::from(k_mesh[[1]]);
                     k_range.push(Axis(0),k.view()).unwrap();
                 }
             }
@@ -190,13 +227,13 @@ pub fn gen_krange(k_mesh:&Array1::<usize>)->Array3::<f64>{
             for i in 0..k_mesh[[0]]{
                 for j in 0..k_mesh[[1]]{
                     for ks in 0..k_mesh[[2]]{
-                        let mut k=Array2::<f64>::zeros((dim_r,2));
-                        k[[0,0]]=(i as f64)/((k_mesh[[0]]) as f64);
-                        k[[0,1]]=((i+1) as f64)/((k_mesh[[0]]) as f64);
-                        k[[1,0]]=(j as f64)/((k_mesh[[1]]) as f64);
-                        k[[1,1]]=((j+1) as f64)/((k_mesh[[1]]) as f64);
-                        k[[2,0]]=(ks as f64)/((k_mesh[[1]]) as f64);
-                        k[[2,1]]=((ks+1) as f64)/((k_mesh[[1]]) as f64);
+                        let mut k=Array2::<T>::zeros((dim_r,2));
+                        k[[0,0]]=T::from(i)/T::from(k_mesh[[0]]);
+                        k[[0,1]]=T::from(i+1)/T::from(k_mesh[[0]]);
+                        k[[1,0]]=T::from(j)/T::from(k_mesh[[1]]);
+                        k[[1,1]]=T::from(j+1)/T::from(k_mesh[[1]]);
+                        k[[2,0]]=T::from(ks)/T::from(k_mesh[[2]]);
+                        k[[2,1]]=T::from(ks+1)/T::from(k_mesh[[2]]);
                         k_range.push(Axis(0),k.view()).unwrap();
                     }
                 }
@@ -879,7 +916,7 @@ mod tests {
     #[test]
     fn kane_mele(){
         let li:Complex<f64>=1.0*Complex::i();
-        let t=-1.0+0.0*li;
+        let t=-1.0;
         let delta=0.0;
         let alter=0.0+0.0*li;
         let soc=0.06*t;
@@ -1048,6 +1085,37 @@ mod tests {
         let path=arr2(&path);
         let label=vec!["G","M","G"];
         green.show_surf_state("tests/kane/magnetic",&path,&label,nk,E_min,E_max,E_n,0);
+
+        //-----算一下wilson loop 的结果-----------------------
+        let n=301;
+        let dir_1=arr1(&[1.0,0.0]);
+        let dir_2=arr1(&[0.0,1.0]);
+        let occ=vec![0,1];
+        let wcc=model.wannier_centre(&occ,&array![0.0,0.0],&dir_1,&dir_2,n,n);
+        let nocc=occ.len();
+        let mut fg = Figure::new();
+        let x:Vec<f64>=Array1::<f64>::linspace(0.0,1.0,n).to_vec();
+        let axes=fg.axes2d();
+        for j in -1..2{
+            for i in 0..nocc{
+                let a=wcc.row(i).to_owned()+(j as f64)*2.0*PI;
+                let y:Vec<f64>=a.to_vec();
+                axes.points(&x, &y, &[Color("black"),gnuplot::PointSymbol('O')]);
+            }
+        }
+        let axes=axes.set_x_range(Fix(0.0), Fix(1.0));
+        let axes=axes.set_y_range(Fix(0.0), Fix(2.0*PI));
+        let show_ticks=vec![Major(0.0,Fix("0")),Major(0.5,Fix("π")),Major(1.0,Fix("2π"))];
+        axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",32.0)]);
+        let show_ticks=vec![Major(0.0,Fix("0")),Major(PI,Fix("π")),Major(2.0*PI,Fix("2π"))];
+        axes.set_y_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",32.0)]);
+        axes.set_x_label("k_x",&[Font("Times New Roman",32.0),TextOffset(0.0,-0.5)]);
+        axes.set_y_label("WCC",&[Font("Times New Roman",32.0),Rotate(90.0),TextOffset(-1.0,0.0)]);
+        let mut pdf_name=String::new();
+        pdf_name.push_str("tests/kane/magnetic/wcc.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show();
+
 
         //开始计算角态
         let model=model.make_supercell(&array![[0.0,-1.0],[1.0,0.0]]);
