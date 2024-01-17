@@ -17,7 +17,7 @@ pub mod basis{
     use num_traits::identities::Zero;
 
     //这里的trait是为了让set_hop 可以同时满足 f64 和 Complex64 的
-    trait hop_use:Copy+Clone+Zero{
+    pub trait hop_use:Copy+Clone+Zero{
         fn to_complex(&self)->Complex64;
     }
     impl hop_use for f64{
