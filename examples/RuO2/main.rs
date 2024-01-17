@@ -176,7 +176,6 @@ fn main(){
         omega_one
         }).collect();
     let data=arr1(&omega);
-    let kvec=gen_kmesh(&k_mesh);
     let data=data.into_shape((nk,nk)).unwrap();
     draw_heatmap(&data.map(|x| {let a:f64=if *x >= 0.0 {(x+1.0).log(10.0)} else {-(-x+1.0).log(10.0)}; a}),"./examples/RuO2/spin_current_BZ.pdf");
     let cond_xy=conductivity_all(&model,&k_mesh,&dir_1,&dir_2,mu,spin,eta);

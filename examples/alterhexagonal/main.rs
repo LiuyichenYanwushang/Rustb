@@ -46,7 +46,7 @@ fn main(){
    //画一下贝利曲率的分布
     let nk:usize=1000;
     let kmesh=arr1(&[nk,nk]);
-    let kvec=gen_kmesh(&kmesh);
+    let kvec=gen_kmesh::<f64>(&kmesh);
     let E_min=-3.2;
     let E_max=3.6;
     let E_n=500;

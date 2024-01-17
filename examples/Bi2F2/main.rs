@@ -120,7 +120,7 @@ fn main(){
     let label=vec!["X","G","X"];
     green.show_surf_state("examples/Bi2F2/xy/surf",&path,&label,nk,E_min,E_max,E_n,0);
 
-    let num=30;
+    let num=20;
     let name="examples/Bi2F2/xy";
 
     let start = Instant::now();
@@ -162,7 +162,7 @@ fn main(){
     let label=vec!["X","G","X"];
     green.show_surf_state("examples/Bi2F2/bar_xy/surf",&path,&label,nk,E_min,E_max,E_n,0);
 
-    let num=30;
+    let num=20;
     let name="examples/Bi2F2/bar_xy";
     let start = Instant::now();
     cut(&model_xy,num,1,name);
