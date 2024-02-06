@@ -1,4 +1,87 @@
 ///这个模块提供了计算各种线性和非线性的霍尔效应的模块
+///
+///# Niu qian 方程推导非线性霍尔效应
+///以下是用niuqian 方程来推导各阶线性和非线性霍尔效应的公式过程
+///
+///出发点是如下公式
+///$$\bm J=-e\int_\tx{BZ}\dd\bm k\sum_n f_n\bm v_n$$
+///这里 n 表示能带, 而 $f_n$ 是feimi-dirac distribution. 这里速度算符的定义按照 niuqian
+///老师的定义为 $$\bm v=\f{1}{\hbar}\f{\p\ve_n}{\p\bm k}-\f{e}{\hbar}\bm E\times\bm\Og_n$$
+///我们设第 $n$ 阶霍尔电导的定义为
+///$$\sg_{\ap_1,\ap_2,\cdots,\ap_n;d}=\f{1}{n!}\left\.\f{\p^n J_d}{\p E_{\ap_1}\cdots\p E_{\ap_n}}\right\vert_{\bm E=0}$$
+///为了得到其表达式, 我们定义级数展开
+///$$\lt\\\{\\begin{aligned}
+///f_n=f_n^{(0)}+f_n^{(1)}+f_n^{(2)}\cdots\\\\
+///\bm v_n=\bm v_n^{(0)}+\bm v_n^{(1)}+\bm v_n^{(2)}\cdots\\\\
+///\\end{aligned}\rt\.$$
+///这样我们有
+///$$ \\begin{aligned}\bm J^{(0)}&=-e\int_\tx{BZ}\dd\bm k\sum_n f_n^{(0)}\bm v_n^{(0)}\\\\
+///\bm J^{(1)}&=-e\int_\tx{BZ}\dd\bm k\sum_n f_n^{(1)}\bm v_n^{(0)}+f_n^{(0)}\bm v_n^{(1)}\\\\
+///\bm J^{(2)}&=-e\int_\tx{BZ}\dd\bm k\sum_n f_n^{(2)}\bm v_n^{(0)}+f_n^{(1)}\bm v_n^{(1)}+f_n^{(0)}\bm v_n^{(2)}\\\\
+///\\end{aligned}$$
+///
+///接下来我们考虑 $f$ 的各阶修正. 利用玻尔兹曼方程, 我们有
+///$$\p_t f-\f{e}{\hbar}\bm E\cdot\nb_{\bm k} f=-\f{f-f_0}{\tau}$$
+///令 $f=e^{i\og t}\sum_{i=1} f_n^{(i)}$, 我们有
+///$$\\begin{aligned} i\og\sum_{i=1}f_n^{(i)}-\f{e}{\hbar}\bm E\cdot\nb_{\bm k}\sum_{i=0} f_n^{(i)}=-\f{1}{\tau}\sum_{i=1} f_n^{(i)}\\\\
+///\Rightarrow (i\og+\f{1}{\tau})\sum_{i=1} f_n^{(i)}-\f{e}{\hbar}\bm E\cdot\nb_{\bm k}\sum_{i=0} f_n^{(i)}=0\\\\
+///\\end{aligned}$$
+///最终, 我们能够得到高阶的费米分布, 为
+///$$f_n^{(l)}=\f{e}{\hbar} \f{\bm E\nb_{\bm k} f_n^{(l-1)}}{i\og+1/\tau}=\lt(\f{e/\hbar}{i\og+1/\tau}\rt)\bm E^l\nb^l_{\bm k} f_n^{(0)}$$
+///取零频极限, 我们有 $$\lim_{\og\to 0} f_n^{(l)}\approx \lt(\f{e\tau}{\hbar}\rt)^l \bm E^l\nb^l_{\bm k} f_n^{(0)}$$
+///
+///关于费米速度 $\bm v_n=\f{1}{\hbar}\pdv{\ve_n}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n$,
+///我们可以定义各阶展开
+///$$\\begin{aligned}
+///\bm v_n^{(0)}&=\f{1}{\hbar}\pdv{\ve_n^{(0)}}{\bm k}\\\\
+///\bm v_n^{(1)}&=\f{1}{\hbar}\pdv{\ve_n^{(1)}}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n^{(0)}\\\\
+///\bm v_n^{(2)}&=\f{1}{\hbar}\pdv{\ve_n^{(2)}}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n^{(1)}\\\\
+///\\end{aligned}$$
+///对于接下来我们的出发点是电场下的哈密顿量
+///$$H_{\bm k}=\sum_{mn}\lt(\ve_n^{(0)}\dt_{nm}-e\bm E\cdot\bra{\psi_n}\bm r\ket{\psi_n}\rt)\ket{\psi_n}\bra{\psi_m}$$
+///我们将其拆成两部分, 对角部分和非对角部分
+///$$\\begin{aligned}
+///H_{\bm k}^{(0)}&=\sum_{n}\lt(\ve_{n\bm k}^{(0)}-e\bm E\cdot\bm A_n\rt)\dyad{\psi_n}\\\\
+///H_{\bm k}^{(1)}&=\sum_{n=\not m}\lt(-e\bm E\cdot\bm A_{mn}\rt)\ket{\psi_m}\bra{\psi_n}\\\\
+///\\end{aligned}$$
+///这里 $\bm A_{mn}=\bra{\psi_n}\bm r\ket{\psi_n}$
+///
+///显然, 我们知道公式
+///$$e^{\hat S}\hat{\mathcal{O}}e^{-\hat S}=\mathcal{O}+\lt[\hat S,\hat{\mcl{O}}\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\hat{\mcl{O}}\rt]\rt]+\f{1}{6}\lt[\hat S,\lt[\hat S,\lt[\hat S,\hat{\mcl{O}}\rt]\rt]\rt]\cdots$$
+/// 为了方便计算, 我们可以选择一个 $\hat S$, 让 $H_{\bm k}^{(1)}+\lt[\hat S,\hat H_{\bm k}^{(0)}\rt]=0$, 我们有
+///$$\\begin{aligned}
+///H^\prime_{\bm k}&=e^{\hat S}H_{\bm k} e^{-\hat S}=H_{\bm k}^{(0)}+\lt(H_{\bm k}^{(1)}+\lt[\hat S,\hat H_{\bm k}^{(0)}\rt]\rt)+\lt(\lt[\hat S,\hat H_{\bm k}^{(1)}\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\hat H_{\bm k}^{(0)}\rt]\rt]\rt)\cdots\\\\
+///&=H_{\bm k}^{(0)}+\f{1}{2}\lt[S,H_{\bm k}^{(1)}\rt]+\f{1}{3}\lt[S,\lt[S,H_{\bm k}^{(1)}\rt]\rt]\cdots
+///\\end{aligned}$$
+///为了满足条件, 我们选择 $$S_{nn}=0,\ S_{nm}=\f{-e\bm E\cdot \bm A_{nm}}{\ve_{nm}-e\bm E\cdot \bm A_{nm}}$$
+///
+///因为我们有
+///$$\\begin{aligned} \lt[S,H_{\bm k}^{(0)}\rt]&=SH_{\bm k}^{(0)}-H_{\bm k}^{(0)}S=\sum_{j=\not m} S_{mj}H_{\bm k,jn}^{(0)}-\sum_{j=\not n }H_{\bm k,mj}^{(0)}S_{jn}\\\\
+///&=\sum_{j=\not m}\f{-e\bm E\cdot \bm A_{mj}\lt(\ve_j^{(0)}-e\bm E\cdot\bm A_j\rt)\dt_{jn}}{\ve_{mj}-e\bm E\cdot\lt(\bm A_m-\bm A_j\rt)}-\sum_{j=\not n}\f{-e\lt(\ve_j^{(0)}-e\bm E\cdot\bm A_j\rt)\lt(\bm E\cdot \bm A_{jn}\rt)\dt_{mj}}{\ve_{jn}-e\bm E\cdot\lt(\bm A_j-\bm A_n\rt)}\\\\
+///&=\f{e\lt(\bm E\cdot\bm A_{mn}\rt)\lt[\ve_{mn}- e\bm E\cdot\lt(\bm A_m-\bm A_n\rt)\rt]}{\ve_{mn}-e\bm E\cdot(\bm A_m-\bm A_n)}=-H_{\bm k}^{(1)}
+///\\end{aligned}$$
+///这样我们就验证了我们的结果, 我们将 $\hat S$ 进行化简和展开有
+///$$S_{nm}\approx \f{-e\bm E\cdot\bm A_{nm}}{\ve_n^{(0)}-\ve_m^{(0)}}-\f{ e^2\lt(\bm E\cdot\bm A_{nm}\rt)\lt(\bm E\cdot\lt(\bm A_n-\bm A_m\rt)\rt)}{\lt(\ve_n^{(0)}-\ve_m^{(0)}\rt)^2}$$
+///这样我们就能得到能带的各阶扰动
+///$$\\begin{aligned}
+///\ve_n^{(1)}&=-e\bm E\cdot\bm A_n\\\\
+///\ve_n^{(2)}&=\f{e^2}{2}E_a E_b \sum_{m=\not n}\f{A_{nm}^a A_{mn}^b+A_{mn}^a A_{nm}^b}{\ve_n-\ve_m}=e^2 G_n^{ab}E_a E_b\\\\
+///\ve_n^{(3)}&=-e^3E_a E_b E_c \lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nl}^a A_{lm}^b A_{mn}^c}{(\ve_n-\ve_m)(\ve_n-\ve_l)}\rt)+e^3 E_a E_b E_c\lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nm}^a A_{mn}^b (A_n^c-A_m^c)}{(\ve_n-\ve_m)^2}\rt)\\\\
+///\\end{aligned}$$
+///这里 $$G_n^{ab}=\sum_{m=\not n}\f{A_{nm}^a A_{mn}^b+A_{mn}^a A_{nm}^b}{\ve_n-\ve_m}=\sum_{m=\not n} -2\tx{Re}\f{v_{nm}^a v_{mn}^b}{(\ve_n-\ve_m)^3}$$
+///到这里, 我们将能带的扰动得到了. 但是有一个问题, 就是 $\bm A$ 是一个规范变换, 所以并不是唯一的,
+///因为 $\bm A=-e\bra{\psi_n}\bm r\ket{\psi_n}$ 破坏了平移对称性. 但是我们总是可以选择一个规范.
+///在这里我们选择 $-e\bm E\cdot\bm A_n=0$, 这个规范令 $\ve_n^{(1)}=0$. 从意义上,
+///贝利联络和电场的方向垂直. 对于贝利曲率的高阶项, 利用 $\bm A\to\bm A^\prime=A+\lt[\hat S,\bm A\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\bm A\rt]\rt]\cdots$, 我们有
+///$$\\begin{aligned}
+///\lt(A_n^b\rt)^{(1)}&=-e\bm E_a G_n^{ab}\\\\
+///\lt(A_n^c\rt)^{(2)}&=e^2 E_a E_b \lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nl}^a A_{lm}^b A_{mn}^c}{(\ve_n-\ve_m)(\ve_n-\ve_l)}\rt)+e^2 E_a E_b\lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nm}^a A_{mn}^b (A_n^c-A_m^c)}{(\ve_n-\ve_m)^2}\rt)\\\\
+///\\end{aligned}$$
+///
+///这样利用贝利曲率公式 $\Og_n^{ab}=\p_a A_n^b -\p_b A_n^a$
+///
+///
+///
 pub mod conductivity{
     use crate::{Model,gen_kmesh,gen_krange,comm,anti_comm};
     use num_complex::Complex;
@@ -25,169 +108,142 @@ pub mod conductivity{
     pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::<f64>,re_err:f64,ab_err:f64)->f64{
 
         let dim=k_range.len_of(Axis(0));
-        if dim==1{
-            //对于一维情况, 我们就是用梯形算法的 (a+b)*h/2, 这里假设的是函数的插值为线性插值.
-            let mut use_range=vec![(k_range.clone(),re_err,ab_err)];
-            let mut result=0.0;
-            while let Some((k_range,re_err,ab_err))=use_range.pop() {
-                let kvec_l:Array1::<f64>=arr1(&[k_range[[0,0]]]);
-                let kvec_r:Array1::<f64>=arr1(&[k_range[[0,1]]]);
-                let kvec_m:Array1::<f64>=arr1(&[(k_range[[0,1]]+k_range[[0,0]])/2.0]);
-                let dk:f64=k_range[[0,1]]-k_range[[0,0]];
-                let y_l:f64=f0(&kvec_l);
-                let y_r:f64=f0(&kvec_r);
-                let y_m:f64=f0(&kvec_m);
-                let all:f64=(y_l+y_r)*dk/2.0;
-                let all_1=(y_l+y_m)*dk/4.0;
-                let all_2=(y_r+y_m)*dk/4.0;
-                let err=all_1+all_2-all;
-                let abs_err= if ab_err>all*re_err{ab_err} else {all*re_err};
-                if err< abs_err{
-                    result+=all_1+all_2;
-                }else{
-                    let k_range_l=arr2(&[[kvec_l[[0]],kvec_m[[0]]]]);
-                    let k_range_r=arr2(&[[kvec_m[[0]],kvec_r[[0]]]]);
-                    use_range.push((k_range_l,re_err,ab_err/2.0));
-                    use_range.push((k_range_r,re_err,ab_err/2.0));
-                }
-            }
-            return result;
-        }else if dim==2{
-        //对于二维, 我们依旧假设线性插值, 这样我们考虑的就是二维平面上的三角形上的任意一点的值是到其余三个点的距离的加权系数的平均值, 我们将四边形变成两个三角形来考虑.
-            let area_1:Array2::<f64>=arr2(&[[k_range.row(0)[0],k_range.row(1)[0]],[k_range.row(0)[1],k_range.row(1)[0]],[k_range.row(0)[0],k_range.row(1)[1]]]);//第一个三角形
-            let area_2:Array2::<f64>=arr2(&[[k_range.row(0)[1],k_range.row(1)[1]],[k_range.row(0)[1],k_range.row(1)[0]],[k_range.row(0)[0],k_range.row(1)[1]]]);//第二个三角形
-            #[inline(always)]
-            fn adapt_integrate_triangle(f0:&dyn Fn(&Array1::<f64>)->f64,kvec:&Array2::<f64>,re_err:f64,ab_err:f64,s1:f64,s2:f64,s3:f64)->f64{
-                //这个函数是用来进行自适应算法的
+        match dim{
+            1=>{
+                //对于一维情况, 我们就是用梯形算法的 (a+b)*h/2, 这里假设的是函数的插值为线性插值.
+                let mut use_range=vec![(k_range.clone(),re_err,ab_err)];
                 let mut result=0.0;
-                let mut use_kvec=vec![(kvec.clone(),re_err,ab_err,s1,s2,s3)];
-                while let Some((kvec,re_err,ab_err,s1,s2,s3))=use_kvec.pop() {
-                    let S:f64=((kvec[[1,0]]*kvec[[2,1]]-kvec[[2,0]]*kvec[[1,1]])-(kvec[[0,0]]*kvec[[2,1]]-kvec[[0,1]]*kvec[[2,0]])+(kvec[[0,0]]*kvec[[1,1]]-kvec[[1,0]]*kvec[[0,1]])).abs();
-                    let kvec_m=kvec.mean_axis(Axis(0)).unwrap();
-                    let sm:f64=f0(&kvec_m.to_owned());
-
-                    let mut kvec_1=Array2::<f64>::zeros((0,2));
-                    kvec_1.push_row(kvec.row(0));
-                    kvec_1.push_row(kvec.row(1));
-                    kvec_1.push_row(kvec_m.view());
-
-                    let mut kvec_2=Array2::<f64>::zeros((0,2));
-                    kvec_2.push_row(kvec.row(0));
-                    kvec_2.push_row(kvec_m.view());
-                    kvec_2.push_row(kvec.row(2));
-
-                    let mut kvec_3=Array2::<f64>::zeros((0,2));
-                    kvec_3.push_row(kvec_m.view());
-                    kvec_3.push_row(kvec.row(1));
-                    kvec_3.push_row(kvec.row(2));
-
-                    let all:f64=(s1+s2+s3)*S/6.0;
-                    let all_new:f64=all/3.0*2.0+sm*S/6.0;
-                    let abs_err:f64= if ab_err>all*re_err{ab_err} else {all*re_err};
-                    if (all_new-all).abs() > abs_err && S>1e-8{
-                       use_kvec.push((kvec_1,re_err,ab_err/3.0,s1,s2,sm));
-                       use_kvec.push((kvec_2,re_err,ab_err/3.0,s1,sm,s3));
-                       use_kvec.push((kvec_3,re_err,ab_err/3.0,sm,s2,s3));
-                    }else{
-                        result+=all_new; 
-                    }
-                }
-                result
-            }
-            let s1=f0(&arr1(&[k_range.row(0)[0],k_range.row(1)[0]]));
-            let s2=f0(&arr1(&[k_range.row(0)[1],k_range.row(1)[0]]));
-            let s3=f0(&arr1(&[k_range.row(0)[0],k_range.row(1)[1]]));
-            let s4=f0(&arr1(&[k_range.row(0)[1],k_range.row(1)[1]]));
-            let all_1=adapt_integrate_triangle(f0,&area_1,re_err,ab_err/2.0,s1,s2,s3);
-            let all_2=adapt_integrate_triangle(f0,&area_2,re_err,ab_err/2.0,s4,s2,s3);
-            return all_1+all_2;
-        }else if dim==3{
-        //对于三位情况, 需要用到四面体, 所以需要先将6面体变成6个四面体
-            #[inline(always)]
-            fn adapt_integrate_tetrahedron(f0:&dyn Fn(&Array1::<f64>)->f64,kvec:&Array2::<f64>,re_err:f64,ab_err:f64,s1:f64,s2:f64,s3:f64,s4:f64,S:f64)->f64{
-                //这个函数是用来进行自适应算法的
-                let mut result=0.0;
-                let mut use_kvec=vec![(kvec.clone(),re_err,ab_err,s1,s2,s3,s4,S)];
-                while let Some((kvec,re_err,ab_err,s1,s2,s3,s4,S))=use_kvec.pop() {
-                    let kvec_m=kvec.mean_axis(Axis(0)).unwrap();
-                    let sm=f0(&kvec_m.to_owned());
-                    /////////////////////////
-                    let mut kvec_1=Array2::<f64>::zeros((0,3));
-                    kvec_1.push_row(kvec.row(0));
-                    kvec_1.push_row(kvec.row(1));
-                    kvec_1.push_row(kvec.row(2));
-                    kvec_1.push_row(kvec_m.view());
-                    
-                    let mut kvec_2=Array2::<f64>::zeros((0,3));
-                    kvec_2.push_row(kvec.row(0));
-                    kvec_2.push_row(kvec.row(1));
-                    kvec_2.push_row(kvec_m.view());
-                    kvec_2.push_row(kvec.row(3));
-
-                    let mut kvec_3=Array2::<f64>::zeros((0,3));
-                    kvec_3.push_row(kvec.row(0));
-                    kvec_3.push_row(kvec_m.view());
-                    kvec_3.push_row(kvec.row(2));
-                    kvec_3.push_row(kvec.row(3));
-
-                    let mut kvec_4=Array2::<f64>::zeros((0,3));
-                    kvec_4.push_row(kvec_m.view());
-                    kvec_4.push_row(kvec.row(1));
-                    kvec_4.push_row(kvec.row(2));
-                    kvec_4.push_row(kvec.row(3));
-
-                    let all=(s1+s2+s3+s4)*S/24.0;
-                    let all_new=all/4.0*3.0+sm*S/24.0;
-                    let S1=S/4.0;
+                while let Some((k_range,re_err,ab_err))=use_range.pop() {
+                    let kvec_l:Array1::<f64>=arr1(&[k_range[[0,0]]]);
+                    let kvec_r:Array1::<f64>=arr1(&[k_range[[0,1]]]);
+                    let kvec_m:Array1::<f64>=arr1(&[(k_range[[0,1]]+k_range[[0,0]])/2.0]);
+                    let dk:f64=k_range[[0,1]]-k_range[[0,0]];
+                    let y_l:f64=f0(&kvec_l);
+                    let y_r:f64=f0(&kvec_r);
+                    let y_m:f64=f0(&kvec_m);
+                    let all:f64=(y_l+y_r)*dk/2.0;
+                    let all_1=(y_l+y_m)*dk/4.0;
+                    let all_2=(y_r+y_m)*dk/4.0;
+                    let err=all_1+all_2-all;
                     let abs_err= if ab_err>all*re_err{ab_err} else {all*re_err};
-                    if (all_new-all).abs()> abs_err && S > 1e-9{
-                        use_kvec.push((kvec_1,re_err,ab_err*0.25,s1,s2,s3,sm,S1));
-                        use_kvec.push((kvec_2,re_err,ab_err*0.25,s1,s2,sm,s4,S1));
-                        use_kvec.push((kvec_3,re_err,ab_err*0.25,s1,sm,s3,s4,S1));
-                        use_kvec.push((kvec_4,re_err,ab_err*0.25,sm,s2,s3,s4,S1));
+                    if err< abs_err{
+                        result+=all_1+all_2;
                     }else{
-                        result+=all_new;
+                        let k_range_l=arr2(&[[kvec_l[[0]],kvec_m[[0]]]]);
+                        let k_range_r=arr2(&[[kvec_m[[0]],kvec_r[[0]]]]);
+                        use_range.push((k_range_l,re_err,ab_err/2.0));
+                        use_range.push((k_range_r,re_err,ab_err/2.0));
                     }
                 }
-                result
+                return result;
+            },
+            2=>{
+            //对于二维, 我们依旧假设线性插值, 这样我们考虑的就是二维平面上的三角形上的任意一点的值是到其余三个点的距离的加权系数的平均值, 我们将四边形变成两个三角形来考虑.
+                let area_1:Array2::<f64>=arr2(&[[k_range.row(0)[0],k_range.row(1)[0]],[k_range.row(0)[1],k_range.row(1)[0]],[k_range.row(0)[0],k_range.row(1)[1]]]);//第一个三角形
+                let area_2:Array2::<f64>=arr2(&[[k_range.row(0)[1],k_range.row(1)[1]],[k_range.row(0)[1],k_range.row(1)[0]],[k_range.row(0)[0],k_range.row(1)[1]]]);//第二个三角形
+                #[inline(always)]
+                fn adapt_integrate_triangle(f0:&dyn Fn(&Array1::<f64>)->f64,kvec:&Array2::<f64>,re_err:f64,ab_err:f64,s1:f64,s2:f64,s3:f64,S:f64)->f64{
+                    //这个函数是用来进行自适应算法的
+                    let mut result=0.0;
+                    let mut use_kvec=vec![(kvec.clone(),re_err,ab_err,s1,s2,s3,S)];
+                    while let Some((kvec,re_err,ab_err,s1,s2,s3,S))=use_kvec.pop() {
+                        let kvec_m=kvec.mean_axis(Axis(0)).unwrap();
+                        let sm:f64=f0(&kvec_m.to_owned());
+
+                        let mut new_kvec=kvec.to_owned();
+                        new_kvec.push_row(kvec_m.view());
+                        let kvec_1=new_kvec.select(Axis(0),&[0,1,3]);
+                        let kvec_2=new_kvec.select(Axis(0),&[0,3,2]);
+                        let kvec_3=new_kvec.select(Axis(0),&[3,1,2]);
+                        let all:f64=(s1+s2+s3)*S/6.0;
+                        let all_new:f64=all/3.0*2.0+sm*S/6.0;
+                        let abs_err:f64= if ab_err>all*re_err{ab_err} else {all*re_err};
+                        if (all_new-all).abs() > abs_err && S>1e-8{
+                            let S1=S/2.0;
+                            use_kvec.push((kvec_1,re_err,ab_err/3.0,s1,s2,sm,S1));
+                            use_kvec.push((kvec_2,re_err,ab_err/3.0,s1,sm,s3,S1));
+                            use_kvec.push((kvec_3,re_err,ab_err/3.0,sm,s2,s3,S1));
+                        }else{
+                            result+=all_new; 
+                        }
+                    }
+                    result
+                }
+                let S=(k_range[[0,1]]-k_range[[0,0]])*(k_range[[1,1]]-k_range[[1,0]]);
+                let s1=f0(&arr1(&[k_range.row(0)[0],k_range.row(1)[0]]));
+                let s2=f0(&arr1(&[k_range.row(0)[1],k_range.row(1)[0]]));
+                let s3=f0(&arr1(&[k_range.row(0)[0],k_range.row(1)[1]]));
+                let s4=f0(&arr1(&[k_range.row(0)[1],k_range.row(1)[1]]));
+                let all_1=adapt_integrate_triangle(f0,&area_1,re_err,ab_err/2.0,s1,s2,s3,S);
+                let all_2=adapt_integrate_triangle(f0,&area_2,re_err,ab_err/2.0,s4,s2,s3,S);
+                return all_1+all_2;
+            },
+            3=>{
+            //对于三位情况, 需要用到四面体, 所以需要先将6面体变成6个四面体
+                #[inline(always)]
+                fn adapt_integrate_tetrahedron(f0:&dyn Fn(&Array1::<f64>)->f64,kvec:&Array2::<f64>,re_err:f64,ab_err:f64,s1:f64,s2:f64,s3:f64,s4:f64,S:f64)->f64{
+                    //这个函数是用来进行自适应算法的
+                    let mut result=0.0;
+                    let mut use_kvec=vec![(kvec.clone(),re_err,ab_err,s1,s2,s3,s4,S)];
+                    while let Some((kvec,re_err,ab_err,s1,s2,s3,s4,S))=use_kvec.pop() {
+                        let kvec_m=kvec.mean_axis(Axis(0)).unwrap();
+                        let sm=f0(&kvec_m.to_owned());
+                        let mut new_kvec=kvec.to_owned();
+                        new_kvec.push_row(kvec_m.view());
+                        let kvec_1=new_kvec.select(Axis(0),&[0,1,2,4]);
+                        let kvec_2=new_kvec.select(Axis(0),&[0,1,4,3]);
+                        let kvec_3=new_kvec.select(Axis(0),&[0,4,2,3]);
+                        let kvec_4=new_kvec.select(Axis(0),&[4,1,2,3]);
+
+                        let all=(s1+s2+s3+s4)*S/24.0;
+                        let all_new=all*0.75+sm*S/24.0;
+                        let S1=S*0.25;
+                        let abs_err= if ab_err>all*re_err{ab_err} else {all*re_err};
+                        if (all_new-all).abs()> abs_err && S > 1e-9{
+                            use_kvec.push((kvec_1,re_err,ab_err*0.25,s1,s2,s3,sm,S1));
+                            use_kvec.push((kvec_2,re_err,ab_err*0.25,s1,s2,sm,s4,S1));
+                            use_kvec.push((kvec_3,re_err,ab_err*0.25,s1,sm,s3,s4,S1));
+                            use_kvec.push((kvec_4,re_err,ab_err*0.25,sm,s2,s3,s4,S1));
+                        }else{
+                            result+=all_new;
+                        }
+                    }
+                    result
+                }
+
+                let k_points:Array2::<f64>=arr2(&[[k_range.row(0)[0],k_range.row(1)[0],k_range.row(2)[0]],
+                                                  [k_range.row(0)[1],k_range.row(1)[0],k_range.row(2)[0]],
+                                                  [k_range.row(0)[0],k_range.row(1)[1],k_range.row(2)[0]],
+                                                  [k_range.row(0)[1],k_range.row(1)[1],k_range.row(2)[0]],
+                                                  [k_range.row(0)[0],k_range.row(1)[0],k_range.row(2)[1]],
+                                                  [k_range.row(0)[1],k_range.row(1)[0],k_range.row(2)[1]],
+                                                  [k_range.row(0)[0],k_range.row(1)[1],k_range.row(2)[1]],
+                                                  [k_range.row(0)[1],k_range.row(1)[1],k_range.row(2)[1]]]);//六面体的顶点
+
+                let area_1=k_points.select(Axis(0),&[0,1,2,5]);
+                let area_2=k_points.select(Axis(0),&[0,2,4,5]);
+                let area_3=k_points.select(Axis(0),&[6,2,4,5]);
+                let area_4=k_points.select(Axis(0),&[1,2,3,5]);
+                let area_5=k_points.select(Axis(0),&[7,2,3,5]);
+                let area_6=k_points.select(Axis(0),&[7,2,6,5]);
+                let s0=f0(&k_points.row(0).to_owned());
+                let s1=f0(&k_points.row(1).to_owned());
+                let s2=f0(&k_points.row(2).to_owned());
+                let s3=f0(&k_points.row(3).to_owned());
+                let s4=f0(&k_points.row(4).to_owned());
+                let s5=f0(&k_points.row(5).to_owned());
+                let s6=f0(&k_points.row(6).to_owned());
+                let s7=f0(&k_points.row(7).to_owned());
+                let V=(k_range[[0,1]]-k_range[[0,0]])*(k_range[[1,1]]-k_range[[1,0]])*(k_range[[2,1]]-k_range[[2,0]]);
+                let all_1=adapt_integrate_tetrahedron(f0,&area_1,re_err,ab_err/6.0,s0,s1,s2,s5,V);
+                let all_2=adapt_integrate_tetrahedron(f0,&area_2,re_err,ab_err/6.0,s0,s2,s4,s5,V);
+                let all_3=adapt_integrate_tetrahedron(f0,&area_3,re_err,ab_err/6.0,s6,s2,s4,s5,V);
+                let all_4=adapt_integrate_tetrahedron(f0,&area_4,re_err,ab_err/6.0,s1,s2,s3,s5,V);
+                let all_5=adapt_integrate_tetrahedron(f0,&area_5,re_err,ab_err/6.0,s7,s2,s3,s5,V);
+                let all_6=adapt_integrate_tetrahedron(f0,&area_5,re_err,ab_err/6.0,s7,s2,s6,s5,V);
+                return all_1+all_2+all_3+all_4+all_5+all_6
             }
-            let area_1:Array2::<f64>=arr2(&[[k_range.row(0)[0],k_range.row(1)[0],k_range.row(2)[0]],
-                                            [k_range.row(0)[1],k_range.row(1)[0],k_range.row(2)[0]],
-                                            [k_range.row(0)[0],k_range.row(1)[1],k_range.row(2)[0]],
-                                            [k_range.row(0)[0],k_range.row(1)[0],k_range.row(2)[1]]]);//第一个四面体
-            let area_2:Array2::<f64>=arr2(&[[k_range.row(0)[1],k_range.row(1)[1],k_range.row(2)[0]],
-                                            [k_range.row(0)[1],k_range.row(1)[0],k_range.row(2)[0]],
-                                            [k_range.row(0)[0],k_range.row(1)[1],k_range.row(2)[0]],
-                                            [k_range.row(0)[1],k_range.row(1)[1],k_range.row(2)[1]]]);//第二个四面体
-            let area_3:Array2::<f64>=arr2(&[[k_range.row(0)[1],k_range.row(1)[0],k_range.row(2)[1]],
-                                            [k_range.row(0)[1],k_range.row(1)[0],k_range.row(2)[0]],
-                                            [k_range.row(0)[0],k_range.row(1)[0],k_range.row(2)[1]],
-                                            [k_range.row(0)[1],k_range.row(1)[1],k_range.row(2)[1]]]);//第三个四面体
-            let area_4:Array2::<f64>=arr2(&[[k_range.row(0)[0],k_range.row(1)[1],k_range.row(2)[1]],
-                                            [k_range.row(0)[0],k_range.row(1)[0],k_range.row(2)[1]],
-                                            [k_range.row(0)[0],k_range.row(1)[1],k_range.row(2)[0]],
-                                            [k_range.row(0)[1],k_range.row(1)[1],k_range.row(2)[1]]]);//第四个四面体
-            let area_5:Array2::<f64>=arr2(&[[k_range.row(0)[0],k_range.row(1)[0],k_range.row(2)[1]],
-                                            [k_range.row(0)[1],k_range.row(1)[1],k_range.row(2)[1]],
-                                            [k_range.row(0)[0],k_range.row(1)[1],k_range.row(2)[0]],
-                                            [k_range.row(0)[1],k_range.row(1)[0],k_range.row(2)[0]]]);//第五个四面体
-            let s1=f0(&area_1.row(0).to_owned());
-            let s2=f0(&area_1.row(1).to_owned());
-            let s3=f0(&area_2.row(0).to_owned());
-            let s4=f0(&area_1.row(2).to_owned());
-            let s5=f0(&area_1.row(3).to_owned());
-            let s6=f0(&area_3.row(0).to_owned());
-            let s7=f0(&area_2.row(3).to_owned());
-            let s8=f0(&area_4.row(0).to_owned());
-            let V=(k_range[[0,1]]-k_range[[0,0]])*(k_range[[1,1]]-k_range[[1,0]])*(k_range[[2,1]]-k_range[[2,0]]);
-            let all_1=adapt_integrate_tetrahedron(f0,&area_1,re_err,ab_err/6.0,s1,s2,s4,s5,V/6.0);
-            let all_2=adapt_integrate_tetrahedron(f0,&area_2,re_err,ab_err/6.0,s3,s2,s4,s7,V/6.0);
-            let all_3=adapt_integrate_tetrahedron(f0,&area_3,re_err,ab_err/6.0,s6,s2,s5,s7,V/6.0);
-            let all_4=adapt_integrate_tetrahedron(f0,&area_4,re_err,ab_err/6.0,s8,s5,s4,s7,V/6.0);
-            let all_5=adapt_integrate_tetrahedron(f0,&area_5,re_err,ab_err/3.0,s5,s7,s4,s2,V/3.0);
-            return all_1+all_2+all_3+all_4+all_5
-        }else{
-            panic!("wrong, the row_dim if k_range must be 1,2 or 3, but you's give {}",dim);
+            _=>{ panic!("wrong, the row_dim if k_range must be 1,2 or 3, but you's give {}",dim); }
         }
     }
     #[allow(non_snake_case)]
@@ -486,7 +542,7 @@ pub mod conductivity{
         pub fn berry_connection_dipole_onek(&self,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,spin:usize)->(Array1::<f64>,Array1::<f64>,Option<Array1<f64>>){
             //!这个是根据 Nonlinear_Hall_conductivity_intrinsic 的注释, 当不存在自旋的时候提供
             //!$$v_\ap G_{\bt\gm}-v_\bt G_{\ap\gm}$$
-            //!其中 $$ G_{ij}=2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3} $$
+            //!其中 $$ G_{ij}=-2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3} $$
             //!如果存在自旋, 即spin不等于0, 则还存在 $\p_{h_i} G_{jk}$ 项, 具体请看下面的非线性霍尔部分
             //!我们这里暂时不考虑磁场, 只考虑电场
             let mut v:Array3::<Complex<f64>>=self.gen_v(&k_vec);//这是速度算符

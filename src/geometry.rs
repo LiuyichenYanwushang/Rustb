@@ -122,6 +122,20 @@ pub mod geometry{
 
         }
 
+        pub fn berry_phase(&self,occ:&Vec<usize>,kvec:&Array3<f64>)->Array2::<f64>{
+            //!这里是计算wcc的, 沿着第一个方向走, 沿着第二个方向积分
+            let nk1=kvec.shape()[0];
+            let nk2=kvec.shape()[1];
+            let nocc=occ.len();
+            let mut wcc=Array2::zeros((nk1,nocc));
+            Zip::from(wcc.outer_iter_mut()).and(kvec.outer_iter()).par_apply(|mut w,k|{w.assign(&self.berry_loop(&k.to_owned(),occ));});
+            for mut row in wcc.outer_iter_mut(){
+                row.as_slice_mut().unwrap().sort_by(|a, b| a.partial_cmp(b).unwrap());
+            }
+            let wcc=wcc.reversed_axes();
+            wcc
+        }
+
         pub fn wannier_centre(&self,occ:&Vec<usize>,k_start:&Array1<f64>,dir_1:&Array1<f64>,dir_2:&Array1<f64>,nk1:usize,nk2:usize)->Array2::<f64>{
             //!这里是计算wcc的, 沿着第一个方向走, 沿着第二个方向积分
             if k_start.len() != self.dim_r {
@@ -148,13 +162,5 @@ pub mod geometry{
             let wcc=wcc.reversed_axes();
             wcc
         }
-
-        /*
-        pub fn nested_wilson_loop(&self,occ:&Vec<Vec<usize>>,kvec1:&Array2<f64>,kvec2:&Array2<f64>)->Array1<f64>{
-            assert_eq!(self.dim_r,kvec1.ncolumns(),"Wrong!, the kvec's shape is {}*{}, but your model's dim is {}",kvec.nrows(),kvec1.ncolumns(),self.dim_r);
-            assert_eq!(self.dim_r,kvec2.ncolumns(),"Wrong!, the kvec's shape is {}*{}, but your model's dim is {}",kvec.nrows(),kvec2.ncolumns(),self.dim_r);
-            //接下来我们开始计算nested wilson loop
-        }
-        */
     }
 }

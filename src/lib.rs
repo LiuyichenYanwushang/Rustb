@@ -5,6 +5,7 @@ pub mod surfgreen;
 pub mod geometry;
 pub mod sparse_model;
 pub mod ndarray_lapack;
+pub mod generics;
 use gnuplot::Major;
 use num_complex::Complex;
 use num_traits::identities::Zero;
@@ -23,6 +24,7 @@ use std::ops::AddAssign;
 use std::ops::MulAssign;
 use std::ops::Deref;
 use std::time::Instant;
+use crate::generics::generics::usefloat;
 /// This cate is used to perform various calculations on the TB model, currently including:
 ///
 /// - Calculate the band structure
@@ -113,34 +115,6 @@ pub struct surf_Green{
     pub ham_hopR:Array2::<isize>,
 }
 
-pub trait ToFloat {
-    fn to_float(self) -> f64;
-}
-impl ToFloat for usize {
-    fn to_float(self) -> f64 {
-        self as f64
-    }
-}
-
-impl ToFloat for isize {
-    fn to_float(self) -> f64 {
-        self as f64
-    }
-}
-pub trait usefloat: Copy + Clone + Zero {
-    fn from<T: ToFloat>(n: T) -> Self;
-}
-impl usefloat for f32 {
-    fn from<T: ToFloat>(n: T) -> Self {
-        n.to_float() as f32
-    }
-}
-
-impl usefloat for f64 {
-    fn from<T: ToFloat>(n: T) -> Self {
-        n.to_float()
-    }
-}
 
 
 #[inline(always)]
@@ -291,6 +265,49 @@ pub fn draw_heatmap<A:Data<Elem=f64>>(data: &ArrayBase<A, Ix2>,name:&str) {
     let axes=axes.set_aspect_ratio(Fix(1.0));
     fg.set_terminal("pdfcairo",name);
     fg.show().expect("Unable to draw heatmap");
+}
+
+
+pub fn  write_txt<T:usefloat>(data:&Array2<T>,output:&str)-> std::io::Result<()>
+{
+    use std::fs::File;
+    use std::io::Write;
+    let mut file=File::create(output).expect("Unable to BAND.dat");
+    let n=data.len_of(Axis(0));
+    let s=data.len_of(Axis(1));
+    let mut s0=String::new();
+    for i in 0..n{
+        for j in 0..s{
+            if data[[i,j]]>=T::from(0.0){
+                s0.push_str("     ");
+            }else{
+                s0.push_str("    ");
+            }
+            let aa= format!("{:.6}", data[[i,j]]);
+            s0.push_str(&aa);
+        }
+        s0.push_str("\n");
+    }
+    writeln!(file,"{}",s0)?;
+    Ok(())
+}
+
+pub fn  write_txt_1<T:usefloat>(data:&Array1<T>,output:&str)-> std::io::Result<()>
+{
+    use std::fs::File;
+    use std::io::Write;
+    let mut file=File::create(output).expect("Unable to BAND.dat");
+    let n=data.len_of(Axis(0));
+    let mut s0=String::new();
+    for i in 0..n{
+        if data[[i]]>=T::from(0.0){
+            s0.push_str(" ");
+        }
+        let aa= format!("{:.6}\n", data[[i]]);
+        s0.push_str(&aa);
+    }
+    writeln!(file,"{}",s0)?;
+    Ok(())
 }
 
 
@@ -1069,7 +1086,7 @@ mod tests {
 
         //开始考虑磁场, 加入磁性
         let B=0.1+0.0*li;
-        let tha=30.0/180.0*PI;
+        let tha=0.0/180.0*PI;
 
         model.add_hop(B*tha.cos(),0,0,&array![0,0],1);
         model.add_hop(B*tha.cos(),1,1,&array![0,0],1);
@@ -1127,7 +1144,7 @@ mod tests {
         let new_model=model.cut_dot(num,6,None);
         let mut s=0;
         let start = Instant::now();
-        let (band,evec)=new_model.solve_range_onek(&arr1(&[0.0,0.0]),(-0.2,0.2),1e-8);
+        let (band,evec)=new_model.solve_range_onek(&arr1(&[0.0,0.0]),(-0.3,0.3),1e-5);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("solve_band_all took {} seconds", duration.as_secs_f64());   // 输出执行时间

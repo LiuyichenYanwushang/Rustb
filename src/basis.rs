@@ -14,23 +14,7 @@ pub mod basis{
     use rayon::prelude::*;
     use std::ops::AddAssign;
     use crate::ndarray_lapack::ndarray_lapack::{eigh_r,eigvalsh_r};
-    use num_traits::identities::Zero;
-
-    //这里的trait是为了让set_hop 可以同时满足 f64 和 Complex64 的
-    pub trait hop_use:Copy+Clone+Zero{
-        fn to_complex(&self)->Complex64;
-    }
-    impl hop_use for f64{
-        fn to_complex(&self)->Complex64{
-            Complex::<f64>::new(*self,0.0)
-        }
-    }
-    
-    impl hop_use for Complex64{
-        fn to_complex(&self)->Complex64{
-            *self
-        }
-    }
+    use crate::generics::generics::hop_use;
 
 
     pub fn find_R<A: Data<Elem = T>,B: Data<Elem = T>,T: std::cmp::PartialEq>(hamR:&ArrayBase<A, Ix2>,R:&ArrayBase<B, Ix1>)->bool{
@@ -476,7 +460,13 @@ pub mod basis{
             //!这个是做傅里叶变换, 将实空间的哈密顿量变换到倒空间的哈密顿量
             //!
             //!具体来说, 就是
-            //!$$H_{mn,\bm k}=\bra{m\bm k}\hat H\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat H\ket{n\bm R}e^{-i(\bm R-\bm\tau_i+\bm \tau_j)\cdot\bm k}$$
+            //!
+            //!对于wannier 基函数 $\ket{\bm R,i}$, 我们和布洛赫函数 $\ket{\bm k,i}$ 的变换形式为
+            //!$$\ket{\bm k,i}=\sum_{\bm R} e^{i\bm k\cdot(\bm R+\bm\tau_i)}\ket{\bm R}$$
+            //!这样, 我们有
+            //!$$\\begin{aligned}H_{mn,\bm k}&=\bra{m\bm k}\hat H\ket{n\bm k}=\sum_{\bm R^\prime}\sum_{\bm R} \bra{m\bm R^\prime}\hat H\ket{n\bm R}e^{-i(\bm R'-\bm R+\bm\tau_m-\bm \tau_n)\cdot\bm k}\\\\
+            //!&=\sum_{\bm R} \bra{m\bm 0}\hat H\ket{n\bm R}e^{i(\bm R-\bm\tau_m+\bm \tau_n)\cdot\bm k}
+            //!\\end{aligned}$$
             if kvec.len() !=self.dim_r{
                 panic!("Wrong, the k-vector's length must equal to the dimension of model.")
             }
@@ -491,6 +481,7 @@ pub mod basis{
             }
             //assert_eq!(self.nsta,U0.len(),"the nsta must equal to the U0");
             let U=Array2::from_diag(&U0);
+            let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj()));
             let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
             let Us=Us*Complex::new(0.0,2.0*PI);
             let Us=Us.mapv(Complex::exp);
@@ -499,7 +490,7 @@ pub mod basis{
             hamk=self.ham.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(hamk,|acc,(A,us)| {acc+&A**us});
             hamk=&ham0+&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk)+&hamk;
             hamk=hamk.dot(&U);
-            let re_ham=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U).dot(&hamk);
+            let re_ham=U_conj.dot(&hamk);
             re_ham
         }
         #[allow(non_snake_case)]
@@ -507,7 +498,9 @@ pub mod basis{
         pub fn gen_r<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->Array3::<Complex<f64>>{
             //!和 gen_ham 类似, 将 $\hat{\bm r}$ 进行傅里叶变换
             //!
-            //!$$\bm r_{mn,\bm k}=\bra{m\bm k}\hat{\bm r}\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat{\bm r}\ket{n\bm R}e^{-i(\bm R-\bm\tau_i+\bm \tau_j)\cdot\bm k}$$
+            //!使用这个函数需要wannier90 中设置 warite_rmn=true, 在拟合的时候得到 seedname_r.dat 文件.
+            //!
+            //!$$\bm r_{mn,\bm k}=\bra{m\bm k}\hat{\bm r}\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat{\bm r}\ket{n\bm R}e^{i(\bm R-\bm\tau_i+\bm \tau_j)\cdot\bm k}$$
             if kvec.len() !=self.dim_r{
                 panic!("Wrong, the k-vector's length must equal to the dimension of model.")
             }
@@ -557,7 +550,7 @@ pub mod basis{
         /// $$
         ///
         ///这里的 $\\mathcal A_{\bm k}$ 的定义为 $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R+\bm\tau_m-\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
-        ///其中 $\bm r_{mn}$ 可以由 wannier90 给出, 只需要设定 ``write_r=ture"
+        ///其中 $\bm r_{mn}$ 可以由 wannier90 给出, 只需要设定 ``write_rmn=ture"
         ///在这里, 所有的 $\bm R$, $\bm r$, 以及 $\bm \tau$ 都是以实空间为坐标系.
         #[allow(non_snake_case)]
         #[inline(always)]
@@ -577,7 +570,8 @@ pub mod basis{
             let U0=U0.mapv(|x| Complex::<f64>::new(x,0.0));
             let U0=U0*Complex::new(0.0,2.0*PI);
             let mut U0=U0.mapv(Complex::exp);
-            let U=Array2::from_diag(&U0); //U[[i,j]]=exp(i k (ri-rj))
+            let U=Array2::from_diag(&U0); 
+            let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
             let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
             let Us=Us*Complex::new(0.0,2.0*PI);
             let Us=Us.mapv(Complex::exp); //Us 就是 exp(i k R)
@@ -598,7 +592,6 @@ pub mod basis{
             let hamk:Array2::<Complex<f64>>=self.ham.outer_iter().skip(1).zip(Us.iter().skip(1)).fold(hamk,|acc,(ham,us)| {acc+&ham**us});//这个是原胞间hopping得到的hamk
             let ham0=self.ham.slice(s![0,..,..]);
             let hamk:Array2::<Complex<f64>>=&hamk+&ham0+&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk);
-            let U_conj=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U);
             Zip::from(v.outer_iter_mut()).and(R0.axis_iter(Axis(1))).and(UU.outer_iter()).apply(|mut v0,r,det_tau|{
                 let vv:Array2::<Complex<f64>>=self.ham.outer_iter().skip(1).zip(Us.iter().skip(1).zip(r.iter().skip(1))).fold(
                     Array2::zeros((self.nsta,self.nsta)),|acc,(ham,(us,r0))| {
@@ -2320,7 +2313,7 @@ pub mod basis{
         pub fn show_band(&self,path:&Array2::<f64>,label:&Vec<&str>,nk:usize,name:&str)-> std::io::Result<()>{
             use std::fs::create_dir_all;
             use std::path::Path;
-            use gnuplot::{Figure, Caption, Color,LineStyle,Solid};
+            use gnuplot::{Figure, Caption, Color,LineStyle,Solid,Font};
             use gnuplot::{AxesCommon};
             use gnuplot::AutoOption::*;
             use gnuplot::Tick::*;
@@ -2386,7 +2379,7 @@ pub mod basis{
                 let B=label[i];
                 show_ticks.push(Major(A,Fix(B)));
             }
-            axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
+            axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
             
             let k_node=k_node.to_vec();
             let mut pdf_name=name.clone();
@@ -2402,6 +2395,15 @@ pub mod basis{
         */
         #[allow(non_snake_case)]
         pub fn from_hr(path:&str,file_name:&str,zero_energy:f64)->Model{
+            //! 这个函数是从 wannier90 中读取 TB 文件的
+            //!
+            //! 这里 path 表示 文件的位置, 可以使用绝对路径, 即 "/" 开头的路径, 也可以使用相对路径, 即运行 cargo run 时候的文件夹作为起始路径.
+            //!
+            //! file_name 就是 wannier90 中的 seedname, 文件可以读取 
+            //! seedname.win, seedname_centres.xyz, seedname_hr.dat, 以及可选的 seedname_r.dat.
+            //!
+            //! 这里 seedname_centres.xyz 需要在 wannier90 中设置 write_xyz=true, 而
+            //! seedname_hr.dat 需要设置 write_hr=true.
             use std::io::BufReader;
             use std::io::BufRead;
             use std::fs::File;
