@@ -467,18 +467,17 @@ pub mod basis{
             //!$$\\begin{aligned}H_{mn,\bm k}&=\bra{m\bm k}\hat H\ket{n\bm k}=\sum_{\bm R^\prime}\sum_{\bm R} \bra{m\bm R^\prime}\hat H\ket{n\bm R}e^{-i(\bm R'-\bm R+\bm\tau_m-\bm \tau_n)\cdot\bm k}\\\\
             //!&=\sum_{\bm R} \bra{m\bm 0}\hat H\ket{n\bm R}e^{i(\bm R-\bm\tau_m+\bm \tau_n)\cdot\bm k}
             //!\\end{aligned}$$
-            if kvec.len() !=self.dim_r{
-                panic!("Wrong, the k-vector's length must equal to the dimension of model.")
-            }
-            let nR:usize=self.hamR.len_of(Axis(0));
+            assert!(kvec.len() ==self.dim_r,"Wrong, the k-vector's length must equal to the dimension of model.");
             let U0:Array1::<f64>=self.orb.dot(kvec);
             let U0:Array1::<Complex<f64>>=U0.mapv(|x| Complex::<f64>::new(x,0.0));
             let U0=U0*Complex::new(0.0,2.0*PI);
             let mut U0:Array1::<Complex<f64>>=U0.mapv(Complex::exp);
-            if self.spin{
-                let UU=U0.clone();
-                U0.append(Axis(0),UU.view()).unwrap();
-            }
+            let U0=if self.spin{
+                let U0=concatenate![Axis(0),U0,U0];
+                U0
+            }else{
+                U0
+            };
             //assert_eq!(self.nsta,U0.len(),"the nsta must equal to the U0");
             let U=Array2::from_diag(&U0);
             let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj()));
@@ -501,21 +500,21 @@ pub mod basis{
             //!使用这个函数需要wannier90 中设置 warite_rmn=true, 在拟合的时候得到 seedname_r.dat 文件.
             //!
             //!$$\bm r_{mn,\bm k}=\bra{m\bm k}\hat{\bm r}\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat{\bm r}\ket{n\bm R}e^{i(\bm R-\bm\tau_i+\bm \tau_j)\cdot\bm k}$$
-            if kvec.len() !=self.dim_r{
-                panic!("Wrong, the k-vector's length must equal to the dimension of model.")
-            }
             if self.rmatrix.len_of(Axis(0))==1{
                 return self.rmatrix.slice(s![0,..,..,..]).to_owned()
             }
-            let nR:usize=self.hamR.len_of(Axis(0));
-            let U0=self.orb.dot(kvec);
-            let U0=U0.mapv(|x| Complex::<f64>::new(x,0.0));
-            let U0=U0*Complex::new(0.0,2.0*PI);
+            assert!(kvec.len() ==self.dim_r,"Wrong, the k-vector's length must equal to the dimension of model.");
+            let U0=self.orb.dot(kvec);// get the r*k
+            let U0=U0.mapv(|x| Complex::<f64>::new(0.0,2.0*PI*x));//take it in
             let mut U0=U0.mapv(Complex::exp);
-            if self.spin{
-                let UU=U0.clone();
-                U0.append(Axis(0),UU.view()).unwrap();
-            }
+            let U0=if self.spin{
+                //let UU=U0.clone();
+                //U0.append(Axis(0),UU.view()).unwrap();
+                let U0=concatenate![Axis(0),U0,U0];
+                U0
+            }else{
+                U0
+            };
             let U=Array2::from_diag(&U0);
             let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
             let Us=Us*Complex::new(0.0,2.0*PI);
@@ -577,13 +576,15 @@ pub mod basis{
             let Us=Us.mapv(Complex::exp); //Us 就是 exp(i k R)
             let orb_real=orb_sta.dot(&self.lat);
             let mut UU=Array3::<f64>::zeros((self.dim_r,self.nsta,self.nsta));
-            for r in 0..self.dim_r{
-                for i in 0..self.nsta{
-                    for j in 0..self.nsta{
-                        UU[[r,i,j]]=-orb_real[[i,r]]+orb_real[[j,r]];
-                    }
-                }
+            //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];
+            let mut slices=Vec::new();
+            for _ in 0..self.nsta{
+                slices.push(orb_real.view());
             }
+            let A=stack(Axis(0),&slices).unwrap().permuted_axes([2,0,1]);
+            let mut B=A.view();
+            B.swap_axes(1,2);
+            let UU=&B-&A;
             let UU=UU.mapv(|x| Complex::<f64>::new(0.0,x)); //UU[i,j]=i(-tau[i]+tau[j])
             let mut v=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));//定义一个初始化的速度矩阵
             let R0=&self.hamR.mapv(|x| Complex::<f64>::new(x as f64,0.0));
@@ -680,6 +681,8 @@ pub mod basis{
             } 
             let hamk=self.gen_ham(&kvec);
             let (eval,evec)=eigh_r(&hamk,range,epsilon,UPLO::Upper);
+            //let evec=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&evec);
+            let evec=evec.mapv(|x| x.conj());
             (eval,evec)
         }
 

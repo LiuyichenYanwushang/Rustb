@@ -649,6 +649,20 @@ mod tests {
         let duration = end.duration_since(start); // 计算执行时间
         println!("Hall_conductivity took {} seconds", duration.as_secs_f64());   // 输出执行时间
         }
+        /*
+        //开始测试 solve_onek 的正确性
+        let kvec=array![0.25,0.25];
+        let (band,evec)=model.solve_onek(&kvec);
+        //let (band,evec)=model.solve_range_onek(&kvec,(-10.0,10.0),1e-5);
+        let hamk=model.gen_ham(&kvec);
+        let evec_conj=evec.map(|x| x.conj());
+        let evec=evec.t();
+        let A=hamk.dot(&evec);
+        let A=evec_conj.dot(&A);
+        let A=A.diag().map(|x| x.re);
+        println!("{}",band);
+        println!("{}",A);
+        */
     }
     #[test]
     fn Haldan_model(){
