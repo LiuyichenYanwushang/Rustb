@@ -44,7 +44,7 @@
 ///H_{\bm k}^{(0)}&=\sum_{n}\lt(\ve_{n\bm k}^{(0)}-e\bm E\cdot\bm A_n\rt)\dyad{\psi_n}\\\\
 ///H_{\bm k}^{(1)}&=\sum_{n=\not m}\lt(-e\bm E\cdot\bm A_{mn}\rt)\ket{\psi_m}\bra{\psi_n}\\\\
 ///\\end{aligned}$$
-///这里 $\bm A_{mn}=\bra{\psi_n}\bm r\ket{\psi_n}$
+///这里 $\bm A_{mn}=\bra{\psi_m}\bm r\ket{\psi_n}=i\bra{\psi_m}\p_{\bm k}\ket{\psi_n}$
 ///
 ///显然, 我们知道公式
 ///$$e^{\hat S}\hat{\mathcal{O}}e^{-\hat S}=\mathcal{O}+\lt[\hat S,\hat{\mcl{O}}\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\hat{\mcl{O}}\rt]\rt]+\f{1}{6}\lt[\hat S,\lt[\hat S,\lt[\hat S,\hat{\mcl{O}}\rt]\rt]\rt]\cdots$$
@@ -68,20 +68,41 @@
 ///\ve_n^{(2)}&=\f{e^2}{2}E_a E_b \sum_{m=\not n}\f{A_{nm}^a A_{mn}^b+A_{mn}^a A_{nm}^b}{\ve_n-\ve_m}=e^2 G_n^{ab}E_a E_b\\\\
 ///\ve_n^{(3)}&=-e^3E_a E_b E_c \lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nl}^a A_{lm}^b A_{mn}^c}{(\ve_n-\ve_m)(\ve_n-\ve_l)}\rt)+e^3 E_a E_b E_c\lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nm}^a A_{mn}^b (A_n^c-A_m^c)}{(\ve_n-\ve_m)^2}\rt)\\\\
 ///\\end{aligned}$$
-///这里 $$G_n^{ab}=\sum_{m=\not n}\f{A_{nm}^a A_{mn}^b+A_{mn}^a A_{nm}^b}{\ve_n-\ve_m}=\sum_{m=\not n} -2\tx{Re}\f{v_{nm}^a v_{mn}^b}{(\ve_n-\ve_m)^3}$$
+///这里 $$G_n^{ab}=\sum_{m=\not n}\f{A_{nm}^a A_{mn}^b+A_{mn}^a A_{nm}^b}{\ve_n-\ve_m}=\sum_{m=\not n} 2\tx{Re}\f{v_{nm}^a v_{mn}^b}{(\ve_n-\ve_m)^3}$$
 ///到这里, 我们将能带的扰动得到了. 但是有一个问题, 就是 $\bm A$ 是一个规范变换, 所以并不是唯一的,
-///因为 $\bm A=-e\bra{\psi_n}\bm r\ket{\psi_n}$ 破坏了平移对称性. 但是我们总是可以选择一个规范.
-///在这里我们选择 $-e\bm E\cdot\bm A_n=0$, 这个规范令 $\ve_n^{(1)}=0$. 从意义上,
-///贝利联络和电场的方向垂直. 对于贝利曲率的高阶项, 利用 $\bm A\to\bm A^\prime=A+\lt[\hat S,\bm A\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\bm A\rt]\rt]\cdots$, 我们有
+///同时, 对于带内的贡献 $\bm A_{n}=i\bra{\psi_{n\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}$, 没有好的求解方法,因为 $\bm A=-e\bra{\psi_n}\bm r\ket{\psi_n}$ 破坏了平移对称性. 但是我们总是可以选择一个规范.
+///在这里我们选择 $-e\bm E\cdot\bm A_n=0$, 这个规范令 $\ve_n^{(1)}=0$. 这种规范在物理的意义上, 可以理解为贝利联络和电场的方向垂直. 对于贝利曲率的高阶项, 利用 $\bm A\to\bm A^\prime=A+\lt[\hat S,\bm A\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\bm A\rt]\rt]\cdots$, 我们有
 ///$$\\begin{aligned}
 ///\lt(A_n^b\rt)^{(1)}&=-e\bm E_a G_n^{ab}\\\\
-///\lt(A_n^c\rt)^{(2)}&=e^2 E_a E_b \lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nl}^a A_{lm}^b A_{mn}^c}{(\ve_n-\ve_m)(\ve_n-\ve_l)}\rt)+e^2 E_a E_b\lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nm}^a A_{mn}^b (A_n^c-A_m^c)}{(\ve_n-\ve_m)^2}\rt)\\\\
+///\lt(A_n^c\rt)^{(2)}&=e^2 E_a E_b \lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nl}^a A_{lm}^b A_{mn}^c}{(\ve_n-\ve_m)(\ve_n-\ve_l)}\rt)+e^2 E_a E_b\lt( \sum_{m=\not n}\f{A_{nm}^a A_{mn}^b (A_n^c-A_m^c)}{(\ve_n-\ve_m)^2}\rt)\\\\
+///&=e^2 E_a E_b\lt(S_n^{abc}-F_n^{abc}\rt)
 ///\\end{aligned}$$
 ///
 ///这样利用贝利曲率公式 $\Og_n^{ab}=\p_a A_n^b -\p_b A_n^a$
+///我们有 $$\\begin{aligned}
+///\lt(\Og_n^{ab}\rt)^{(1)}&=-e E_c\lt(\p_a G_n^{bc}-\p_b G_n^{ac}\rt)\\\\
+///\lt(\Og_n^{ab}\rt)^{(2)}&=e^2 E_{\ap}E_{\bt}\lt(\p_a S^{\ap\bt b}-\p_b S^{\ap\bt a}-\p_a F^{\ap\bt b}+\p_b F^{\ap\bt a}\rt)
+///\\end{aligned}$$
+///最终我们带入到电导率公式中, 有
+///$$\begin{aligned}
+///\sigma_{ab}=&-\f{e^2}{\hbar}\int_\tx{BZ} \f{\dd\bm k}{(2\pi)^3}\sum_n f_n\Og_n^{ab}+\f{e^2\tau}{\hbar^2}\sum_n \int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3}\f{\p^2\ve_n}{\p k_a\p k_b}\\\\
+///\sigma_{abc}=&-\f{e^3\tau^2}{\hbar^3}\sum_n\int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3}\f{\p^3\ve_n}{\p k_a \p k_b \p k_c}
+///+\f{e^3\tau}{\hbar^2}\sum_n \int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3} \f{1}{2} f_n \lt(\p_a\Og_n^{bc}+\p_b\Og_n^{ac}\rt)\\\\
+///&-\f{e^3}{\hbar}\sum_n\int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3} f_n\lt(2\p_c G_n^{ab}-\f{1}{2}\lt(\p_a G_n^{bc}+\p_b G_n^{ac}\rt)\rt)
+///\end{aligned}$$
 ///
 ///
 ///
+/// ## Berry connection 的化简
+///
+///为了实际的计算, 我们需要将 Berry connection 的形式修改一下, 我们首先按照微分的定理有 $$\p_{\bm k}\lt(H_{\bm k}\ket{\psi_{n\bm k}}\rt)=\lt(\p_{\bm k}H_{\bm k}+H_{\bm k}\p_{\bm k}\rt)\ket{\psi_{n\bm k}}$$
+///然后我们又因为 $H_{\bm k}\ket{\psi_{n\bm k}}=\ve_{n\bm k}\ket{\psi_{n\bm k}}$, 所以 $$\p_{\bm k}\lt(H_{\bm k}\ket{\psi_{n\bm k}}\rt)=\p_{\bm k}\ve_{n\bm k}\ket{\psi_{n\bm k}}+\ve_{n\bm k}\p_{\bm k}\ket{\psi_{n\bm k}}$$
+///所以我们有 $$\\begin{aligned}
+///\p_{\bm k}H_{\bm k}\ket{\psi_{n\bm k}}+H_{\bm k}\p_{\bm k}\ket{\psi_{n\bm k}}=\p_{\bm k}\ve_{n\bm k}\ket{\psi_{n\bm k}}+\ve_{n\bm k}\p_{\bm k}\ket{\psi_{n\bm k}}
+///\\end{aligned}$$
+///显然我们将上式等号两边的左侧插入一个完备算符 $\sum_m \dyad{\psi_{m\bm k}}$ 有 $$\sum_m\lt[\bra{\psi_{m\bm k}}\p_{\bm k}H_{\bm k}\ket{\psi_{n\bm k}}+\lt(\ve_{m\bm k}-\ve_{n\bm k}\rt)\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}\rt]\ket{\psi_{m\bm k}}=\bra{\psi_{n\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}\ket{\psi_{n\bm k}} $$
+///根据上面的式子, 我们很容易得到当 $m=\not n$ 时 $$\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}=\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
+///也就是说, 我们能够最终得到 $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 pub mod conductivity{
     use crate::{Model,gen_kmesh,gen_krange,comm,anti_comm};
     use num_complex::Complex;
