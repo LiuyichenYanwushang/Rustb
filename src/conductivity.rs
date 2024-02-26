@@ -22,12 +22,12 @@
 ///
 ///接下来我们考虑 $f$ 的各阶修正. 利用玻尔兹曼方程, 我们有
 ///$$\p_t f-\f{e}{\hbar}\bm E\cdot\nb_{\bm k} f=-\f{f-f_0}{\tau}$$
-///令 $f=e^{i\og t}\sum_{i=1} f_n^{(i)}$, 我们有
-///$$\\begin{aligned} i\og\sum_{i=1}f_n^{(i)}-\f{e}{\hbar}\bm E\cdot\nb_{\bm k}\sum_{i=0} f_n^{(i)}=-\f{1}{\tau}\sum_{i=1} f_n^{(i)}\\\\
-///\Rightarrow (i\og+\f{1}{\tau})\sum_{i=1} f_n^{(i)}-\f{e}{\hbar}\bm E\cdot\nb_{\bm k}\sum_{i=0} f_n^{(i)}=0\\\\
+///令 $f=\sum_{s=1}e^{is\og t} f_n^{(s)}$, 我们有
+///$$\\begin{aligned} is\og\sum_{s=1}f_n^{(s)}-\f{e}{\hbar}\bm E\cdot\nb_{\bm k}\sum_{s=0} f_n^{(s)}=-\f{1}{\tau}\sum_{s=1} f_n^{(s)}\\\\
+///\Rightarrow (is\og+\f{1}{\tau})\sum_{s=1} f_n^{(i)}-\f{e}{\hbar}\bm E\cdot\nb_{\bm k}\sum_{i=0} f_n^{(i)}=0\\\\
 ///\\end{aligned}$$
 ///最终, 我们能够得到高阶的费米分布, 为
-///$$f_n^{(l)}=\f{e}{\hbar} \f{\bm E\nb_{\bm k} f_n^{(l-1)}}{i\og+1/\tau}=\lt(\f{e/\hbar}{i\og+1/\tau}\rt)\bm E^l\nb^l_{\bm k} f_n^{(0)}$$
+///$$f_n^{(l)}=\f{e}{\hbar} \f{\bm E\nb_{\bm k} f_n^{(l-1)}}{i l \og+1/\tau}=\lt(\f{e/\hbar}{i\og+1/\tau}\rt)\bm E^l\nb^l_{\bm k} f_n^{(0)}$$
 ///取零频极限, 我们有 $$\lim_{\og\to 0} f_n^{(l)}\approx \lt(\f{e\tau}{\hbar}\rt)^l \bm E^l\nb^l_{\bm k} f_n^{(0)}$$
 ///
 ///关于费米速度 $\bm v_n=\f{1}{\hbar}\pdv{\ve_n}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n$,
