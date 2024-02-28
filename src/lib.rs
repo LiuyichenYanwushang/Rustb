@@ -24,7 +24,10 @@ use std::ops::AddAssign;
 use std::ops::MulAssign;
 use std::ops::Deref;
 use std::time::Instant;
-use crate::generics::generics::usefloat;
+use crate::generics::usefloat;
+#[doc(hidden)]
+pub use crate::surfgreen::surf_Green;
+
 /// This cate is used to perform various calculations on the TB model, currently including:
 ///
 /// - Calculate the band structure
@@ -57,6 +60,8 @@ pub struct Model_sparse<hop_element>{
     /// - The Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
     pub ham:Vec<hop_element>,
 }
+
+///这个是 tight-binding 模型的基本单位
 #[derive(Clone,Debug)]
 pub struct Model{
     /// - The real space dimension of the model.
@@ -85,35 +90,6 @@ pub struct Model{
     pub rmatrix:Array4::<Complex<f64>>,
 }
 
-#[derive(Clone,Debug)]
-pub struct surf_Green{
-    /// - The real space dimension of the model.
-    pub dim_r:usize,
-    /// - The number of orbitals in the model.
-    pub norb:usize,
-    /// - The number of states in the model. If spin is enabled, nsta=norb$\times$2
-    pub nsta:usize,
-    /// - The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
-    pub natom:usize,
-    /// - Whether the model has spin enabled. If enabled, spin=true
-    pub spin:bool,
-    /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
-    pub lat:Array2::<f64>,
-    /// - The position of the orbitals in the model. We use fractional coordinates uniformly.
-    pub orb:Array2::<f64>,
-    /// - The position of the atoms in the model, also in fractional coordinates.
-    pub atom:Array2::<f64>,
-    /// - The number of orbitals in the atoms, in the same order as the atom positions.
-    pub atom_list:Vec<usize>,
-    /// - The bulk Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
-    pub eta:f64,
-    pub ham_bulk:Array3::<Complex<f64>>,
-    /// - The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
-    pub ham_bulkR:Array2::<isize>,
-    /// - The bulk Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
-    pub ham_hop:Array3::<Complex<f64>>,
-    pub ham_hopR:Array2::<isize>,
-}
 
 
 
@@ -309,120 +285,6 @@ pub fn  write_txt_1<T:usefloat>(data:&Array1<T>,output:&str)-> std::io::Result<(
     writeln!(file,"{}",s0)?;
     Ok(())
 }
-
-
-
-////下面是宏------------------------------------------------------
-/*
-macro_rules! update_hamiltonian {
-    //这个代码是用来更新哈密顿量的, 判断是否有自旋, 以及要更新的 ind_i, ind_j,
-    //输入一个哈密顿量, 返回一个新的哈密顿量
-    ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {
-        {if $spin {
-            match $pauli {
-                0 => {
-                    $new_ham[[$ind_i, $ind_j]] = $tmp;
-                    $new_ham[[$ind_i + $norb, $ind_j + $norb]] = $tmp;
-                }
-                1 => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] = $tmp;
-                    $new_ham[[$ind_i, $ind_j + $norb]] = $tmp;
-                }
-                2 => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] = $tmp * Complex::<f64>::i();
-                    $new_ham[[$ind_i, $ind_j + $norb]] = -$tmp * Complex::<f64>::i();
-                }
-                3 => {
-                    $new_ham[[$ind_i, $ind_j]] = $tmp;
-                    $new_ham[[$ind_i + $norb, $ind_j + $norb]] = -$tmp;
-                }
-                /*
-                4 => {
-                    $new_ham[[$ind_i, $ind_j + $norb]] = $tmp;
-                }
-                5 => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] = $tmp;
-                }
-                */
-                _ => todo!(),
-            }
-        } else {
-            $new_ham[[$ind_i, $ind_j]] = $tmp;
-        }
-        $new_ham
-    }};
-}
-
-macro_rules! add_hamiltonian {
-    //这个代码是用来更新哈密顿量的, 判断是否有自旋, 以及要更新的 ind_i, ind_j,
-    //输入一个哈密顿量, 返回一个新的哈密顿量
-    ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {
-        {if $spin {
-            match $pauli {
-                0 => {
-                    $new_ham[[$ind_i, $ind_j]] += $tmp;
-                    $new_ham[[$ind_i + $norb, $ind_j + $norb]] += $tmp;
-                }
-                1 => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] += $tmp;
-                    $new_ham[[$ind_i, $ind_j + $norb]] += $tmp;
-                }
-                2 => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] += $tmp * Complex::<f64>::i();
-                    $new_ham[[$ind_i, $ind_j + $norb]] -= $tmp * Complex::<f64>::i();
-                }
-                3 => {
-                    $new_ham[[$ind_i, $ind_j]] += $tmp;
-                    $new_ham[[$ind_i + $norb, $ind_j + $norb]] -= $tmp;
-                }
-                /*
-                4 => {
-                    $new_ham[[$ind_i, $ind_j + $norb]] += $tmp;
-                }
-                5 => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] += $tmp;
-                }
-                */
-                _ => todo!(),
-            }
-        } else {
-            $new_ham[[$ind_i, $ind_j]] += $tmp;
-        }
-        $new_ham
-    }};
-}
-*/
-#[macro_export]
-macro_rules! plot{
-    ($x0:expr,$y0:expr,$name:expr)=>{{
-        use gnuplot::{Figure, Caption, Color};
-        use gnuplot::{AxesCommon};
-        use gnuplot::AutoOption::*;
-        use gnuplot::Tick::*;
-        let mut fg = Figure::new();
-        let x:Vec<f64>=$x0.to_vec();
-        let axes=fg.axes2d();
-        /*
-        let n=x.len();
-        if $y0.ndim()==2{
-            let n0=$y0.len_of(Axis(1));
-            for i in 0..n0{
-                let y:Vec<f64>=$y0.slice(s![..,i]).to_owned().to_vec();
-                axes.lines(&x, &y, &[Color("black")]);
-            }
-        }else{
-            let y:Vec<f64>=$y0.to_vec();
-            axes.lines(&x, &y, &[Color("black")]);
-        }
-        */
-
-        let y:Vec<f64>=$y0.to_vec();
-        axes.lines(&x, &y, &[Color("black")]);
-        fg.set_terminal("pdfcairo", &$name);
-        fg.show();
-    }};
-}
-
 
 
 ///An example
@@ -989,7 +851,7 @@ mod tests {
             model.add_hop(-rashba*li*r0[[1]],1,1,&R,1);
             model.add_hop(-rashba*li*r0[[0]],1,1,&R,2);
         }
-        let nk:usize=1001;
+        let nk:usize=101;
         let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
         let path=arr2(&path);
         let (k_vec,k_dist,k_node)=model.k_path(&path,nk);
@@ -1015,7 +877,7 @@ mod tests {
 
 
         //-----算一下wilson loop 的结果-----------------------
-        let n=301;
+        let n=101;
         let dir_1=arr1(&[1.0,0.0]);
         let dir_2=arr1(&[0.0,1.0]);
         let occ=vec![0,1];
@@ -1046,7 +908,7 @@ mod tests {
 
 
         /////开始计算体系的霍尔电导率//////
-        let nk:usize=101;
+        let nk:usize=11;
         let T:f64=0.0;
         let eta:f64=0.001;
         let og:f64=0.0;
@@ -1087,7 +949,7 @@ mod tests {
         //绘制非线性霍尔电导的平面图
         
        //画一下贝利曲率的分布
-        let nk:usize=1000;
+        let nk:usize=100;
         let kmesh=arr1(&[nk,nk]);
         let kvec=gen_kmesh(&kmesh);
         //let kvec=kvec-0.5;
@@ -1118,7 +980,7 @@ mod tests {
         green.show_surf_state("tests/kane/magnetic",&path,&label,nk,E_min,E_max,E_n,0);
 
         //-----算一下wilson loop 的结果-----------------------
-        let n=301;
+        let n=101;
         let dir_1=arr1(&[1.0,0.0]);
         let dir_2=arr1(&[0.0,1.0]);
         let occ=vec![0,1];
