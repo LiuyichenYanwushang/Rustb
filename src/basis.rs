@@ -590,6 +590,7 @@ impl Model{
         let mut v=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));//定义一个初始化的速度矩阵
         let R0=&self.hamR.mapv(|x| Complex::<f64>::new(x as f64,0.0));
         let R0=R0.dot(&self.lat.mapv(|x| Complex::new(x,0.0)));
+
         /*
         let U=Array2::from_diag(&U0); 
         let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
@@ -646,34 +647,27 @@ impl Model{
         //开始计算速度算符
         let vv=(&Rs1*&ham2*&Us1*Complex::i()).sum_axis(Axis(0));
         let v=&vv+hamks*&UU+&vv.permuted_axes([0,2,1]).mapv(|x| x.conj());
-        //接下来我们考虑位置算符的修正
-        let mut v=if self.rmatrix.len_of(Axis(0))!=1 {
-            //这里我们放弃了 gen_r, 而是自己直接用广播的方法重写
-            let r1=self.rmatrix.slice(s![1..n_R,..,..,..]);
-            let r0=self.rmatrix.slice(s![0,..,..,..]);
-            let rk=(&r1*&Us1).sum_axis(Axis(0));
-            let rk=&rk+&r0+&rk.permuted_axes([0,2,1]).mapv(|x| x.conj());
-            let mut rk0=Array3::zeros((self.dim_r,self.nsta,self.nsta));
-            Zip::from(rk0.outer_iter_mut()).and(orb_real.axis_iter(Axis(1))).apply(|mut r,orbr|{
-                r.assign(&Array2::from_diag(&orbr));
-            });
-            let rk=rk-rk0;
-            //接下来进行对易操作
-            let mut A0=Array3::zeros((self.dim_r,self.nsta,self.nsta));
-            Zip::from(A0.outer_iter_mut()).and(rk.outer_iter()).apply(|mut a0,r|{
-                a0.assign(&comm(&hamk,&r));
-            });
+        //最后我们对 hamk 和 v 都做一下幺正变换, 变换到原子轨道上
 
-            let v=v+Complex::i()*&A0;
-            v
-        }else{
-            v
-        };
-        //最后我们做一下幺正变换, 变换到原子轨道上
-        let U1=U0.insert_axis(Axis(1)).insert_axis(Axis(2));
+        let U1=U0.clone().insert_axis(Axis(1)).insert_axis(Axis(2));
         let U1=U1.broadcast((self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([2,1,0]);
         let U2=U1.permuted_axes([0,2,1]).mapv(|x| x.conj());
-        let v=v*U1*U2;
+        let mut v=v*&U1*&U2;
+        //接下来我们考虑位置算符的修正
+        if self.rmatrix.len_of(Axis(0))!=1 {
+            let rk=self.gen_r(&kvec); 
+            for i in 0..self.dim_r{
+                let UU=orb_real.column(i);//这个是实空间的数据, 
+                let mut UU=Array2::from_diag(&UU); //将其化为矩阵
+                let A=&rk.slice(s![i,..,..])-&UU;
+                let U=Array2::from_diag(&U0); 
+                let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
+                let hamk=hamk.dot(&U);
+                let hamk=U_conj.dot(&hamk);
+                let A=comm(&hamk,&A)*Complex::i();
+                v.slice_mut(s![i,..,..]).add_assign(&A);
+            }
+        }
         v
     }
     #[allow(non_snake_case)]
