@@ -652,7 +652,7 @@ impl Model{
         //接下来我们考虑位置算符的修正
         let mut v=if self.rmatrix.len_of(Axis(0))!=1 {
             //这里我们放弃了 gen_r, 而是自己直接用广播的方法重写
-            let r1=self.rmatrix.slice(s![1..n_R,..,,..,..]);
+            let r1=self.rmatrix.slice(s![1..n_R,..,..,..]);
             let r0=self.rmatrix.slice(s![0,..,..,..]);
             let rk=(&r1*&Us1).sum_axis(Axis(0));
             let rk=&rk+&r0+&rk.permuted_axes([0,2,1]).mapv(|x| x.conj());
