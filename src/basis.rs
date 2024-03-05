@@ -641,9 +641,9 @@ impl Model{
         let Rs1=binding.broadcast((self.dim_r,n_R-1,self.nsta,self.nsta)).unwrap();
         //接下来对 ham1 和 Us1 进行广播
         let binding = ham1.insert_axis(Axis(3));
-        let ham2=binding.broadcast((n_R-1,self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([3,0,1,2]);
+        let ham2=binding.broadcast((n_R-1,self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([0,3,1,2]);
         let binding = Us1.insert_axis(Axis(3));
-        let Us1=binding.broadcast((n_R-1,self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([3,0,1,2]);
+        let Us1=binding.broadcast((n_R-1,self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([0,3,1,2]);
         //开始计算速度算符
         let vv=(&Rs1*&ham2*&Us1*Complex::i()).sum_axis(Axis(1));
         //let vv_permuted = vv.clone().permuted_axes([0,2,1]).mapv(|x| x.conj());
@@ -652,9 +652,9 @@ impl Model{
         //接下来我们考虑位置算符的修正
         let mut v=if self.rmatrix.len_of(Axis(0))!=1 {
             //这里我们放弃了 gen_r, 而是自己直接用广播的方法重写
-            let r1=self.rmatrix.slice(s![..,1..n_R,..,..]);
-            let r0=self.rmatrix.slice(s![..,0,..,..]);
-            let rk=(&r1*&Us1).sum_axis(Axis(1));
+            let r1=self.rmatrix.slice(s![1..n_R,..,,..,..]);
+            let r0=self.rmatrix.slice(s![0,..,..,..]);
+            let rk=(&r1*&Us1).sum_axis(Axis(0));
             let rk=&rk+&r0+&rk.permuted_axes([0,2,1]).mapv(|x| x.conj());
             let mut rk0=Array3::zeros((self.dim_r,self.nsta,self.nsta));
             Zip::from(rk0.outer_iter_mut()).and(orb_real.axis_iter(Axis(1))).apply(|mut r,orbr|{
