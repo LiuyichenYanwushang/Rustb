@@ -635,19 +635,16 @@ impl Model{
         let binding=hamk.clone().insert_axis(Axis(2));
         let hamks=&binding.broadcast((self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([2,0,1]);
         //广播成功, 接下来对 hamR 转化, 变成 (dim_r,n_R-1,self.nsta,self.nsta)
-        let binding=R0.t();
-        let binding=binding.slice(s![..,1..n_R]);
+        let binding=R0.slice(s![1..n_R,..]);
         let binding = binding.insert_axis(Axis(2)).insert_axis(Axis(3));
-        let Rs1=binding.broadcast((self.dim_r,n_R-1,self.nsta,self.nsta)).unwrap();
+        let Rs1=binding.broadcast((n_R-1,self.dim_r,self.nsta,self.nsta)).unwrap();
         //接下来对 ham1 和 Us1 进行广播
         let binding = ham1.insert_axis(Axis(3));
         let ham2=binding.broadcast((n_R-1,self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([0,3,1,2]);
         let binding = Us1.insert_axis(Axis(3));
         let Us1=binding.broadcast((n_R-1,self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([0,3,1,2]);
         //开始计算速度算符
-        let vv=(&Rs1*&ham2*&Us1*Complex::i()).sum_axis(Axis(1));
-        //let vv_permuted = vv.clone().permuted_axes([0,2,1]).mapv(|x| x.conj());
-        //let v=vv+vv_permuted+hamks*&UU;
+        let vv=(&Rs1*&ham2*&Us1*Complex::i()).sum_axis(Axis(0));
         let v=&vv+hamks*&UU+&vv.permuted_axes([0,2,1]).mapv(|x| x.conj());
         //接下来我们考虑位置算符的修正
         let mut v=if self.rmatrix.len_of(Axis(0))!=1 {
