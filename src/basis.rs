@@ -577,21 +577,19 @@ impl Model{
         let Us=Us.mapv(Complex::exp); //Us 就是 exp(i k R)
         let orb_real=orb_sta.dot(&self.lat);
         let mut UU=Array3::<f64>::zeros((self.dim_r,self.nsta,self.nsta));
-        //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];
-        let mut slices=Vec::new();
-        for _ in 0..self.nsta{
-            slices.push(orb_real.view());
-        }
-        let A=stack(Axis(0),&slices).unwrap().permuted_axes([2,0,1]);
-        let mut B=A.view();
-        B.swap_axes(1,2);
+        //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
+        let A=orb_real.clone().insert_axis(Axis(2));
+        let A=A.broadcast((self.nsta,self.dim_r,self.nsta)).unwrap().permuted_axes([1,0,2]);
+        let mut B=A.view().permuted_axes([0,2,1]);
         let UU=&B-&A;
         let UU=UU.mapv(|x| Complex::<f64>::new(0.0,x)); //UU[i,j]=i(-tau[i]+tau[j])
+        //-----------构建结束
         let mut v=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));//定义一个初始化的速度矩阵
         let R0=&self.hamR.mapv(|x| Complex::<f64>::new(x as f64,0.0));
         let R0=R0.dot(&self.lat.mapv(|x| Complex::new(x,0.0)));
 
         /*
+        //这里使用老方法
         let U=Array2::from_diag(&U0); 
         let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
         let hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
