@@ -132,6 +132,20 @@ macro_rules! add_hamiltonian {
 
 impl Model{
     //! 这个 impl 是给 tight-binding 模型提供基础的函数.
+    //! #Examples
+    //! ```
+    //!use ndarray::*;
+    //!use ndarray::prelude::*;
+    //!use num_complex::Complex;
+    //!use Rustb::*;
+    //!
+    //!//set the graphene model
+    //!let lat=array![[1.0,0.0],[-1.0/2.0,3_f64.sqrt()/2.0]];
+    //!let orb=array![[1.0/3.0,2.0/3.0],[2.0/3.0,1.0/3.0]];
+    //!let spin=false;
+    //!let graphene_model=Model::tb_model(2,lat,orb,spin,None,None);
+    //!
+    //!```
     pub fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
         /*
         //!这个函数是用来初始化一个 Model, 需要输入的变量意义为

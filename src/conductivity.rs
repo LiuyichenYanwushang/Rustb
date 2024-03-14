@@ -323,6 +323,7 @@ impl Model{
         */
 
 
+        assert_eq!(band.len(),self.nsta,"this is strange for band's length is not equal to self.nsta");
         let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         for i in 0..self.nsta{
             for j in 0..self.nsta{
@@ -832,4 +833,9 @@ impl Model{
         }
         return conductivity
     }
+
+    /*
+    pub fn orbital_magnetic_moment(
+    //! 按照定义,G
+    */
 }

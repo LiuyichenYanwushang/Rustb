@@ -23,7 +23,7 @@ opt_level=3
 
 
 [dependencies]
-ndarray={ version="0.15.6", features = ["rayon","matrixmultiply-threading"] }
+ndarray={ version = "0.15.6", features = ["rayon", "matrixmultiply-threading"] }
 num-complex="0.4.4"
 ndarray-linalg={version="0.16.0",default-features=false}
 rayon="1.8.0"

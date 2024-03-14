@@ -436,7 +436,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn function_speed_test(){
+    fn gen_v_speed_test(){
         println!("开始测试各个函数的运行速度, 用次近邻的石墨烯模型");
         let li:Complex<f64>=1.0*Complex::i();
         let t=2.0+0.0*li;
@@ -463,12 +463,15 @@ mod tests {
             let R=R.to_owned();
             model.add_hop(t2*li,1,1,&R,0);
         }
+        let U=array![[10.0,0.0],[0.0,10.0]];
+        let model=model.make_supercell(&U);
 
-        //开始计算单线程和多线程求解能带的速度
-        println!("开始计算单线程和多线程求解能带的速度");
-        let nk=1001;
+        let nk=101;
         let k_mesh=array![nk,nk];
         let kvec=gen_kmesh(&k_mesh);
+        /*
+        //开始计算单线程和多线程求解能带的速度
+        println!("开始计算单线程和多线程求解能带的速度");
         {
         let start = Instant::now();   // 开始计时
         let band=model.solve_band_all(&kvec);
@@ -483,6 +486,7 @@ mod tests {
         let duration = end.duration_since(start); // 计算执行时间
         println!("solve_band_all_parallel took {} seconds", duration.as_secs_f64());   // 输出执行时间
         }
+        */
 
         {
         println!("开始计算 gen_v 的耗时速度, 为了平均, 我们单线程求解gen_v");
@@ -491,8 +495,10 @@ mod tests {
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("run gen_v {} times took {} seconds", kvec.nrows(), duration.as_secs_f64());   // 输出执行时间
+
         }
 
+        /*
         println!("开始测试 求解贝利曲率的耗时速度, 多线程测试");
         let nk:usize=1001;
         let T:f64=0.0;
@@ -511,7 +517,6 @@ mod tests {
         let duration = end.duration_since(start); // 计算执行时间
         println!("Hall_conductivity took {} seconds", duration.as_secs_f64());   // 输出执行时间
         }
-        /*
         //开始测试 solve_onek 的正确性
         let kvec=array![0.25,0.25];
         let (band,evec)=model.solve_onek(&kvec);
