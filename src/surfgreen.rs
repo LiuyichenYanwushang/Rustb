@@ -292,7 +292,7 @@ impl surf_Green{
             let mut eps_t=hamk.clone();
             let mut ap=hamRk.clone();
             let mut bt=hamRk_conj.clone();
-            for _ in 0..100{
+            for _ in 0..10{
                 let g0=(&epsilon-&epi).inv().unwrap();
                 let mat_1=&ap.dot(&g0);
                 let mat_2=&bt.dot(&g0);
@@ -384,7 +384,7 @@ impl surf_Green{
             epi.assign(&hamk);
             ap.assign(&hamRk);
             bt.assign(&hamRk_conj);
-            for _ in 0..20{
+            for _ in 0..10{
                 let g0=(&epsilon-&epi).inv().unwrap();
                 let mat_1=&ap.dot(&g0);
                 let mat_2=&bt.dot(&g0);
