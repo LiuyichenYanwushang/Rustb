@@ -132,20 +132,19 @@ macro_rules! add_hamiltonian {
 
 impl Model{
     //! 这个 impl 是给 tight-binding 模型提供基础的函数.
-    //! #Examples
-    //! ```
-    //!use ndarray::*;
-    //!use ndarray::prelude::*;
-    //!use num_complex::Complex;
-    //!use Rustb::*;
-    //!
-    //!//set the graphene model
-    //!let lat=array![[1.0,0.0],[-1.0/2.0,3_f64.sqrt()/2.0]];
-    //!let orb=array![[1.0/3.0,2.0/3.0],[2.0/3.0,1.0/3.0]];
-    //!let spin=false;
-    //!let graphene_model=Model::tb_model(2,lat,orb,spin,None,None);
-    //!
-    //!```
+    /// #Examples
+    /// ```
+    ///use ndarray::*;
+    ///use ndarray::prelude::*;
+    ///use num_complex::Complex;
+    ///use Rustb::*;
+    /// //set the graphene model
+    ///let lat=array![[1.0,0.0],[-1.0/2.0,3_f64.sqrt()/2.0]];
+    ///let orb=array![[1.0/3.0,2.0/3.0],[2.0/3.0,1.0/3.0]];
+    ///let spin=false;
+    ///let mut graphene_model=Model::tb_model(2,lat,orb,spin,None,None);
+    ///
+    ///```
     pub fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Array2::<f64>>,atom_list:Option<Vec<usize>>)->Model{
         /*
         //!这个函数是用来初始化一个 Model, 需要输入的变量意义为
@@ -183,6 +182,8 @@ impl Model{
         //! - atom_list: the number of orbitals for each atom, which can be None.
         //!
         //! Note that if any of the atomic variables are None, it is better to make them all None.
+        //!
+        //!
         let norb:usize=orb.len_of(Axis(0));
         let mut nsta:usize=norb;
         if spin{
@@ -272,6 +273,26 @@ impl Model{
         //! - pauli: can take the values of 0, 1, 2, or 3, representing $\sigma_0$, $\sigma_x$, $\sigma_y$, $\sigma_z$.
         //!
         //! In general, this function is used to set $\bra{i\bm 0}\hat H\ket{j\bm R}=$tmp.
+        //!
+        //!
+        //! #Examples
+        //! ```
+        //!use ndarray::*;
+        //!use ndarray::prelude::*;
+        //!use num_complex::Complex;
+        //!use Rustb::*;
+        //! //set the graphene model
+        //!let lat=array![[1.0,0.0],[-1.0/2.0,3_f64.sqrt()/2.0]];
+        //!let orb=array![[1.0/3.0,2.0/3.0],[2.0/3.0,1.0/3.0]];
+        //!let spin=false;
+        //!let mut graphene_model=Model::tb_model(2,lat,orb,spin,None,None);
+        //! let t=1.0; //the nearst hopping
+        //! graphene_model.set_hop(t,0,1,&array![0,0],0);
+        //! // t is the hopping, 0, 1 is the orbital ,array![0,0] is the unit cell
+        //! graphene_model.set_hop(t,0,1,&arr1(&[1,0]),0); 
+        //! graphene_model.set_hop(t,0,1,&arr1(&vec![0,-1]),0);
+        //!
+        //! ```
 
         let tmp:Complex<f64>=tmp.to_complex();
         if pauli != 0 && self.spin==false{
@@ -354,7 +375,7 @@ impl Model{
 
     #[allow(non_snake_case)]
     pub fn add_element(&mut self,tmp:Complex<f64>,ind_i:usize,ind_j:usize,R:&Array1::<isize>){
-        //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp 
+        //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp , 不考虑自旋, 直接添加参数
         if R.len()!=self.dim_r{
             panic!("Wrong, the R length should equal to dim_r")
         }
@@ -571,9 +592,7 @@ impl Model{
     #[allow(non_snake_case)]
     #[inline(always)]
     pub fn gen_v<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->Array3::<Complex<f64>>{
-        if kvec.len() !=self.dim_r{
-            panic!("Wrong, the k-vector's length must equal to the dimension of model.")
-        }
+        assert_eq!(kvec.len(),self.dim_r,"Wrong, the k-vector's length {} must equal to the dimension of model {}.",kvec.len(),self.dim_r);
         let orb_sta=if self.spin{
             let mut orb0=self.orb.to_owned();
             let orb1=self.orb.view();
@@ -657,8 +676,9 @@ impl Model{
         let binding = Us1.insert_axis(Axis(3));
         let Us1=binding.broadcast((n_R-1,self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([0,3,1,2]);
         //开始计算速度算符
-        let vv=(&Rs1*&ham2*&Us1*Complex::i()).sum_axis(Axis(0));
-        let v=&vv+hamks*&UU+&vv.permuted_axes([0,2,1]).mapv(|x| x.conj());
+        let vv=(&Rs1*&ham2*Us1*Complex::i()).sum_axis(Axis(0));
+        let v=&vv+hamks*UU+&vv.permuted_axes([0,2,1]).mapv(|x| x.conj());
+        let _=vv;
         //最后我们对 hamk 和 v 都做一下幺正变换, 变换到原子轨道上
 
         let U1=U0.clone().insert_axis(Axis(1)).insert_axis(Axis(2));

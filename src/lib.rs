@@ -871,6 +871,7 @@ mod tests {
         let label=vec!["G","M","G"];
         super_model.show_band(&path,&label,nk,"tests/kane_super");
         //开始计算表面态
+        let nk=1001;
         let green=surf_Green::from_Model(&model,0,1e-3);
         let E_min=-1.0;
         let E_max=1.0;

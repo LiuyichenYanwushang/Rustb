@@ -125,6 +125,12 @@ use std::ops::MulAssign;
 设被积函数为 $f(x_1,x_2,...,x_n)$, 存在 $n+1$ 个点 $(y_{01},y_{02},\cdots y_{0n})\cdots(y_{n1},y_{n2}\cdots y_{nn})$, 对应的值为 $z_0,z_1,...,z_n$
 
 这样我们就能得到这一块积分的近似值为 $$ \f{1}{(n+1)!}\times\sum_{i=0}^n z_i *\dd V.$$ 其中$\dd V$ 是正 $n+1$ 面体的体积.
+
+在这里, 对于一维体系, 线性插值积分等价于梯形积分. 在两个相邻的数据点 ($x_1$,$f_1$) 和 ($x_2,$f_2$), 其积分结果为$\Delta=\f{f_1+f_2}{2}*(x_2-x_2)$.
+
+对于二维系统, 用三角形进行近似, 对于任意的小三角形得到的积分结果为 $\Delta=S\sum_{i=1}^3 f_i/3!$
+
+对于三维系统, 线性插值的结果为 $\Delta=S\sum_{i=1}^4 f_i/4!$
 */
 #[inline(always)]
 pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::<f64>,re_err:f64,ab_err:f64)->f64{
@@ -389,6 +395,9 @@ impl Model{
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let omega=self.berry_curvature(&kvec,&dir_1,&dir_2,mu,T,og,spin,eta);
+        //目前求积分的方法上, 还是直接求和最有用, 其他的典型积分方法, 如gauss 法等,
+        //都因为存在间断点而效率不高. 
+        //对于非零温的, 使用梯形法应该效果能好一些.
         let conductivity:f64=omega.sum()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
         conductivity
     }
