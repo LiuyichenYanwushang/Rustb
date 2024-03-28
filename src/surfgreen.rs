@@ -184,27 +184,19 @@ impl surf_Green{
         let UR=UR*Complex::new(0.0,2.0*PI);
         let UR=UR.mapv(Complex::exp);
         //先对 ham_bulk 中的 [0,0] 提取出来
-        let U0=U0.slice(s![1..nR]).insert_axis(Axis(1)).insert_axis(Axis(2));
-        let U0=U0.broadcast((nR-1,self.nsta,self.nsta)).unwrap();
         let mut ham0=self.ham_bulk.slice(s![0,..,..]).to_owned();
-        let ham0k=(&self.ham_bulk.slice(s![1..nR,..,..])*&U0).sum_axis(Axis(0));
-        let UR=UR.insert_axis(Axis(1)).insert_axis(Axis(2));
-        let UR=UR.broadcast((nRR,self.nsta,self.nsta)).unwrap();
-        let hamRk=(&self.ham_hop*&UR).sum_axis(Axis(0));
-        /*
         for i in 1..nR{
             ham0k=ham0k+self.ham_bulk.slice(s![i,..,..]).to_owned()*U0[[i]];
         }
         for i in 0..nRR{
             hamRk=hamRk+self.ham_hop.slice(s![i,..,..]).to_owned()*UR[[i]];
         }
-        */
-        let ham0k:Array2<Complex<f64>>=ham0+&ham0k.map(|x| x.conj()).t()+&ham0k;
+        ham0k=&ham0+&ham0k.map(|x| x.conj()).t()+&ham0k;
         //hamRk=&hamRk.map(|x| x.conj()).t()+&hamRk;
         //作规范变换
-        let ham0k=ham0k.dot(&U);
+        ham0k=ham0k.dot(&U);
         let ham0k=U.map(|x| x.conj()).t().dot(&ham0k);
-        let hamRk=hamRk.dot(&U);
+        hamRk=hamRk.dot(&U);
         let hamRk=U.map(|x| x.conj()).t().dot(&hamRk);
         (ham0k,hamRk)
 
@@ -218,9 +210,9 @@ impl surf_Green{
         let epsilon=Complex::new(Energy,self.eta)*&I0;
         let mut epi=hamk.clone();
         let mut eps=hamk.clone();
-        let mut eps_t=hamk;
-        let mut ap=hamRk;
-        let mut bt=hamRk_conj;
+        let mut eps_t=hamk.clone();
+        let mut ap=hamRk.clone();
+        let mut bt=hamRk_conj.clone();
 
         for _ in 0..100{
             let g0=(&epsilon-&epi).inv().unwrap();
@@ -284,6 +276,90 @@ impl surf_Green{
         };
         (N_R,N_L,N_B)
     }
+
+    /*
+    #[inline(always)]
+    pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>,spin:usize)->(Array1<f64>,Array1<f64>,Array1<f64>){
+        let (hamk,hamRk)=self.gen_ham_onek(kvec);
+        //let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
+        let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
+        let I0=Array2::<Complex<f64>>::eye(self.nsta);
+        let accurate:f64=1e-16;
+        let ((N_R,N_L),N_B)=Energy.into_par_iter().map(|e| {
+            let epsilon=Complex::new(*e,self.eta)*&I0;
+            let mut epi=hamk.clone();
+            let mut eps=hamk.clone();
+            let mut eps_t=hamk.clone();
+            let mut ap=hamRk.clone();
+            let mut bt=hamRk_conj.clone();
+            for _ in 0..100{
+                let g0=(&epsilon-&epi).inv().unwrap();
+                let mat_1=&ap.dot(&g0);
+                let mat_2=&bt.dot(&g0);
+                let g0=&mat_1.dot(&bt);
+                epi=epi+g0;
+                eps=eps+g0;
+                let g0=&mat_2.dot(&ap);
+                epi=epi+g0;
+                eps_t=eps_t+g0;
+                ap=mat_1.dot(&ap);
+                bt=mat_2.dot(&bt);
+                if ap.map(|x| x.norm()).sum() < accurate{
+                    break
+                }
+            }
+            let g_LL=(&epsilon-eps).inv().unwrap();
+            let g_RR=(&epsilon-eps_t).inv().unwrap();
+            let g_B=(&epsilon-epi).inv().unwrap();
+            let ((N_R,N_L),N_B)=if self.spin{
+                let ((NR,NL),NB)=match spin{
+                    0=>{
+                        let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
+                        let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
+                        let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
+                        ((NR,NL),NB)
+                    },
+                    1=>{
+                        let s=array![[Complex::new(0.0,0.0),Complex::new(1.0,0.0)],[Complex::new(1.0,0.0),Complex::new(0.0,0.0)]];
+                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
+                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
+                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
+                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
+                        ((NR,NL),NB)
+                    },
+                    2=>{
+                        let s=array![[Complex::new(0.0,0.0),Complex::new(0.0,-1.0)],[Complex::new(0.0,1.0),Complex::new(0.0,0.0)]];
+                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
+                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
+                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
+                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
+                        ((NR,NL),NB)
+                    },
+                    3=>{
+                        let s=array![[Complex::new(1.0,0.0),Complex::new(0.0,0.0)],[Complex::new(0.0,0.0),Complex::new(-1.0,0.0)]];
+                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
+                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
+                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
+                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
+                        ((NR,NL),NB)
+                    },
+                    _=>todo!(),
+                };
+                ((NR,NL),NB)
+            }else{
+                let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
+                let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
+                let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
+                ((NR,NL),NB)
+            };
+            ((N_R,N_L),N_B)
+         }).collect();
+        let N_R=Array1::from_vec(N_R);
+        let N_L=Array1::from_vec(N_L);
+        let N_B=Array1::from_vec(N_B);
+        (N_R,N_L,N_B)
+    }
+*/
 
     #[inline(always)]
     pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>,spin:usize)->(Array1<f64>,Array1<f64>,Array1<f64>){
