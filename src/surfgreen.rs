@@ -284,7 +284,7 @@ impl surf_Green{
         //let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
         let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
         let I0=Array2::<Complex<f64>>::eye(self.nsta);
-        let accurate:f64=1e-16;
+        let accurate:f64=1e-6;
         let ((N_R,N_L),N_B)=Energy.into_par_iter().map(|e| {
             let epsilon=Complex::new(*e,self.eta)*&I0;
             let mut epi=hamk.clone();
@@ -367,7 +367,7 @@ impl surf_Green{
         //let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
         let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
         let I0=Array2::<Complex<f64>>::eye(self.nsta);
-        let accurate:f64=1e-16;
+        let accurate:f64=1e-6;
         let mut epsilon=Array2::<Complex<f64>>::eye(self.nsta);
         let mut epi=hamk.clone();
         let mut eps=hamk.clone();
@@ -396,7 +396,8 @@ impl surf_Green{
                 eps_t+=g0;
                 ap=mat_1.dot(&ap);
                 bt=mat_2.dot(&bt);
-                if ap.map(|x| x.norm()).sum() < accurate{
+                let aa=ap.map(|x| x.norm()).sum();
+                if  aa< accurate{
                     break
                 }
             }
