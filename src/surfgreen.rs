@@ -15,6 +15,7 @@ use std::io::{Write};
 use std::fs::File;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
+use std::time::Instant;
 
 ///计算表面格林函数的时候使用的基本单位
 #[derive(Clone,Debug)]
@@ -277,7 +278,6 @@ impl surf_Green{
         (N_R,N_L,N_B)
     }
 
-    /*
     #[inline(always)]
     pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>,spin:usize)->(Array1<f64>,Array1<f64>,Array1<f64>){
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
@@ -297,11 +297,11 @@ impl surf_Green{
                 let mat_1=&ap.dot(&g0);
                 let mat_2=&bt.dot(&g0);
                 let g0=&mat_1.dot(&bt);
-                epi=epi+g0;
-                eps=eps+g0;
+                epi+=g0;
+                eps+=g0;
                 let g0=&mat_2.dot(&ap);
-                epi=epi+g0;
-                eps_t=eps_t+g0;
+                epi+=g0;
+                eps_t+=g0;
                 ap=mat_1.dot(&ap);
                 bt=mat_2.dot(&bt);
                 if ap.map(|x| x.norm()).sum() < accurate{
@@ -311,6 +311,11 @@ impl surf_Green{
             let g_LL=(&epsilon-eps).inv().unwrap();
             let g_RR=(&epsilon-eps_t).inv().unwrap();
             let g_B=(&epsilon-epi).inv().unwrap();
+            let N_R:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
+            let N_L:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
+            let N_B:f64=-1.0/(PI)*g_B.into_diag().sum().im;
+            ((N_R,N_L),N_B)
+            /*
             let ((N_R,N_L),N_B)=if self.spin{
                 let ((NR,NL),NB)=match spin{
                     0=>{
@@ -353,14 +358,15 @@ impl surf_Green{
                 ((NR,NL),NB)
             };
             ((N_R,N_L),N_B)
+            */
          }).collect();
         let N_R=Array1::from_vec(N_R);
         let N_L=Array1::from_vec(N_L);
         let N_B=Array1::from_vec(N_B);
         (N_R,N_L,N_B)
     }
-*/
 
+    /*
     #[inline(always)]
     pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>,spin:usize)->(Array1<f64>,Array1<f64>,Array1<f64>){
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
@@ -369,11 +375,17 @@ impl surf_Green{
         let I0=Array2::<Complex<f64>>::eye(self.nsta);
         let accurate:f64=1e-6;
         let mut epsilon=Array2::<Complex<f64>>::eye(self.nsta);
-        let mut epi=hamk.clone();
-        let mut eps=hamk.clone();
-        let mut eps_t=hamk.clone();
-        let mut ap=hamRk.clone();
-        let mut bt=hamRk_conj.clone();
+        //let mut epi=hamk.clone();
+        //let mut eps=hamk.clone();
+        //let mut eps_t=hamk.clone();
+        //let mut ap=hamRk.clone();
+        //let mut bt=hamRk_conj.clone();
+
+        let mut epi=Array2::zeros((self.nsta,self.nsta));
+        let mut eps=Array2::zeros((self.nsta,self.nsta));
+        let mut eps_t=Array2::zeros((self.nsta,self.nsta));
+        let mut ap=Array2::zeros((self.nsta,self.nsta));
+        let mut bt=Array2::zeros((self.nsta,self.nsta));
         let mut g_LL=Array2::zeros((self.nsta,self.nsta));
         let mut g_RR=Array2::zeros((self.nsta,self.nsta));
         let mut g_B=Array2::zeros((self.nsta,self.nsta));
@@ -384,7 +396,7 @@ impl surf_Green{
             epi.assign(&hamk);
             ap.assign(&hamRk);
             bt.assign(&hamRk_conj);
-            for _ in 0..10{
+            for _ in 0..100{
                 let g0=(&epsilon-&epi).inv().unwrap();
                 let mat_1=&ap.dot(&g0);
                 let mat_2=&bt.dot(&g0);
@@ -404,6 +416,10 @@ impl surf_Green{
             g_LL.assign(&(&epsilon-&eps).inv().unwrap());
             g_RR.assign(&(&epsilon-&eps_t).inv().unwrap());
             g_B.assign(&(&epsilon-&epi).inv().unwrap());
+            let N_R:f64=-1.0/(PI)*g_RR.diag().sum().im;
+            let N_L:f64=-1.0/(PI)*g_LL.diag().sum().im;
+            let N_B:f64=-1.0/(PI)*g_B.diag().sum().im;
+            /*
             let ((N_R,N_L),N_B)=if self.spin{
                 let ((NR,NL),NB)=match spin{
                     0=>{
@@ -445,6 +461,7 @@ impl surf_Green{
                 let NB:f64=-1.0/(PI)*g_B.diag().sum().im;
                 ((NR,NL),NB)
             };
+        */
             ((N_R,N_L),N_B)
          }).unzip();
         let N_R=Array1::from_vec(N_R);
@@ -452,6 +469,7 @@ impl surf_Green{
         let N_B=Array1::from_vec(N_B);
         (N_R,N_L,N_B)
     }
+*/
     pub fn surf_green_path(&self,kvec:&Array2<f64>,E_min:f64,E_max:f64,E_n:usize,spin:usize)->(Array2<f64>,Array2<f64>,Array2<f64>){
         let Energy=Array1::<f64>::linspace(E_min,E_max,E_n);
         let nk=kvec.nrows();
@@ -530,39 +548,6 @@ impl surf_Green{
         writer.write_all(s.as_bytes()).unwrap();
         let _=file;
 
-        //接下来我们绘制表面态 
-        let mut fg = Figure::new();
-        let width:usize=nk;
-        let height:usize=E_n;
-        let mut heatmap_data = vec![];
-        for i in 0..height {
-            for j in 0..width {
-                heatmap_data.push(N_L[[j, i]]);
-            }
-        }
-        let axes = fg.axes2d();
-        //axes.set_palette(RAINBOW);
-        axes.set_palette(Custom(&[(-1.0,0.0,0.0,0.0),(-0.9,65.0/255.0,9.0/255.0,103.0/255.0),(0.0,147.0/255.0,37.0/255.0,103.0/255.0),(0.2,220.0/255.0,80.0/255.0,57.0/255.0),(1.0,252.0/255.0,254.0/255.0,164.0/255.0)]));
-        axes.image(heatmap_data.iter(), width, height,Some((kdist[[0]],E_min,kdist[[nk-1]],E_max)), &[]);
-        let axes=axes.set_y_range(Fix(E_min), Fix(E_max));
-        let axes=axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk-1]]));
-        let axes=axes.set_aspect_ratio(Fix(1.0));
-        let mut show_ticks=Vec::new();
-        for i in 0..knode.len(){
-            let A=knode[[i]];
-            let B=label[i];
-            show_ticks.push(Major(A,Fix(B)));
-        }
-        axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
-        axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
-        //axes.set_cb_ticks(Some((Fix(5.0),0)),&[],&[Font("Times New Roman",24.0)]);
-        axes.set_cb_ticks_custom([Major(-10.0,Fix("low")),Major(0.0,Fix("0")),Major(10.0,Fix("high"))].into_iter(),&[],&[Font("Times New Roman",24.0)]);
-        let mut pdfname=String::new();
-        pdfname.push_str(&name.clone());
-        pdfname.push_str("/surf_state_l.pdf");
-        fg.set_terminal("pdfcairo",&pdfname);
-        fg.show().expect("Unable to draw heatmap");
-        let _=fg;
 
         //绘制右表面态----------------------
         let mut left_name:String=String::new();
@@ -600,39 +585,6 @@ impl surf_Green{
         writer.write_all(s.as_bytes()).unwrap();
         let _=file;
 
-        //接下来我们绘制表面态 
-        let mut fg = Figure::new();
-        let width:usize=nk;
-        let height:usize=E_n;
-        let mut heatmap_data = vec![];
-        for i in 0..height {
-            for j in 0..width {
-                heatmap_data.push(N_R[[j, i]]);
-            }
-        }
-        let axes = fg.axes2d();
-        //axes.set_palette(RAINBOW);
-        axes.set_palette(Custom(&[(-1.0,0.0,0.0,0.0),(-0.9,65.0/255.0,9.0/255.0,103.0/255.0),(0.0,147.0/255.0,37.0/255.0,103.0/255.0),(0.2,220.0/255.0,80.0/255.0,57.0/255.0),(1.0,252.0/255.0,254.0/255.0,164.0/255.0)]));
-        axes.image(heatmap_data.iter(), width, height,Some((kdist[[0]],E_min,kdist[[nk-1]],E_max)), &[]);
-        let axes=axes.set_y_range(Fix(E_min), Fix(E_max));
-        let axes=axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk-1]]));
-        let axes=axes.set_aspect_ratio(Fix(1.0));
-        let mut show_ticks=Vec::new();
-        for i in 0..knode.len(){
-            let A=knode[[i]];
-            let B=label[i];
-            show_ticks.push(Major(A,Fix(B)));
-        }
-        axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
-        axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
-        //axes.set_cb_ticks(Some((Fix(5.0),0)),&[],&[Font("Times New Roman",24.0)]);
-        axes.set_cb_ticks_custom([Major(-10.0,Fix("low")),Major(0.0,Fix("0")),Major(10.0,Fix("high"))].into_iter(),&[],&[Font("Times New Roman",24.0)]);
-        let mut pdfname=String::new();
-        pdfname.push_str(&name.clone());
-        pdfname.push_str("/surf_state_r.pdf");
-        fg.set_terminal("pdfcairo",&pdfname);
-        fg.show().expect("Unable to draw heatmap");
-        let _=fg;
         //绘制体态----------------------
         let mut left_name:String=String::new();
         left_name.push_str(&name.clone());
@@ -669,7 +621,75 @@ impl surf_Green{
         writer.write_all(s.as_bytes()).unwrap();
         let _=file;
 
+
         //接下来我们绘制表面态 
+        let mut fg = Figure::new();
+        let width:usize=nk;
+        let height:usize=E_n;
+        let mut heatmap_data = vec![];
+        for i in 0..height {
+            for j in 0..width {
+                heatmap_data.push(N_L[[j, i]]);
+            }
+        }
+        let axes = fg.axes2d();
+        //axes.set_palette(RAINBOW);
+        axes.set_palette(Custom(&[(-1.0,0.0,0.0,0.0),(-0.9,65.0/255.0,9.0/255.0,103.0/255.0),(0.0,147.0/255.0,37.0/255.0,103.0/255.0),(0.2,220.0/255.0,80.0/255.0,57.0/255.0),(1.0,252.0/255.0,254.0/255.0,164.0/255.0)]));
+        axes.image(heatmap_data.iter(), width, height,Some((kdist[[0]],E_min,kdist[[nk-1]],E_max)), &[]);
+        let axes=axes.set_y_range(Fix(E_min), Fix(E_max));
+        let axes=axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk-1]]));
+        let axes=axes.set_aspect_ratio(Fix(1.0));
+        let mut show_ticks=Vec::new();
+        for i in 0..knode.len(){
+            let A=knode[[i]];
+            let B=label[i];
+            show_ticks.push(Major(A,Fix(B)));
+        }
+        axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
+        axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+        //axes.set_cb_ticks(Some((Fix(5.0),0)),&[],&[Font("Times New Roman",24.0)]);
+        axes.set_cb_ticks_custom([Major(-10.0,Fix("low")),Major(0.0,Fix("0")),Major(10.0,Fix("high"))].into_iter(),&[],&[Font("Times New Roman",24.0)]);
+        let mut pdfname=String::new();
+        pdfname.push_str(&name.clone());
+        pdfname.push_str("/surf_state_l.pdf");
+        fg.set_terminal("pdfcairo",&pdfname);
+        fg.show().expect("Unable to draw heatmap");
+        let _=fg;
+
+        //接下来我们绘制right表面态 
+        let mut fg = Figure::new();
+        let width:usize=nk;
+        let height:usize=E_n;
+        let mut heatmap_data = vec![];
+        for i in 0..height {
+            for j in 0..width {
+                heatmap_data.push(N_R[[j, i]]);
+            }
+        }
+        let axes = fg.axes2d();
+        //axes.set_palette(RAINBOW);
+        axes.set_palette(Custom(&[(-1.0,0.0,0.0,0.0),(-0.9,65.0/255.0,9.0/255.0,103.0/255.0),(0.0,147.0/255.0,37.0/255.0,103.0/255.0),(0.2,220.0/255.0,80.0/255.0,57.0/255.0),(1.0,252.0/255.0,254.0/255.0,164.0/255.0)]));
+        axes.image(heatmap_data.iter(), width, height,Some((kdist[[0]],E_min,kdist[[nk-1]],E_max)), &[]);
+        let axes=axes.set_y_range(Fix(E_min), Fix(E_max));
+        let axes=axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk-1]]));
+        let axes=axes.set_aspect_ratio(Fix(1.0));
+        let mut show_ticks=Vec::new();
+        for i in 0..knode.len(){
+            let A=knode[[i]];
+            let B=label[i];
+            show_ticks.push(Major(A,Fix(B)));
+        }
+        axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
+        axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+        //axes.set_cb_ticks(Some((Fix(5.0),0)),&[],&[Font("Times New Roman",24.0)]);
+        axes.set_cb_ticks_custom([Major(-10.0,Fix("low")),Major(0.0,Fix("0")),Major(10.0,Fix("high"))].into_iter(),&[],&[Font("Times New Roman",24.0)]);
+        let mut pdfname=String::new();
+        pdfname.push_str(&name.clone());
+        pdfname.push_str("/surf_state_r.pdf");
+        fg.set_terminal("pdfcairo",&pdfname);
+        fg.show().expect("Unable to draw heatmap");
+        let _=fg;
+        //接下来我们绘制bulk表面态 
         let mut fg = Figure::new();
         let width:usize=nk;
         let height:usize=E_n;

@@ -538,10 +538,12 @@ impl Model{
         //!使用这个函数需要wannier90 中设置 warite_rmn=true, 在拟合的时候得到 seedname_r.dat 文件.
         //!
         //!$$\bm r_{mn,\bm k}=\bra{m\bm k}\hat{\bm r}\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat{\bm r}\ket{n\bm R}e^{i(\bm R-\bm\tau_i+\bm \tau_j)\cdot\bm k}$$
+        //!
+        //!注意, 这里采用的都是笛卡尔坐标系的结果
         if self.rmatrix.len_of(Axis(0))==1{
             return self.rmatrix.slice(s![0,..,..,..]).to_owned()
         }
-        assert!(kvec.len() ==self.dim_r,"Wrong, the k-vector's length must equal to the dimension of model.");
+        assert_eq!(kvec.len(),self.dim_r,"Wrong, the k-vector's length must equal to the dimension of model.");
         let U0=self.orb.dot(kvec);// get the r*k
         let U0=U0.mapv(|x| Complex::<f64>::new(0.0,2.0*PI*x));//take it in
         let mut U0=U0.mapv(Complex::exp);
@@ -554,6 +556,7 @@ impl Model{
             U0
         };
         let U=Array2::from_diag(&U0);
+        let U_dag=Array2::from_diag(&U0.map(|x| x.conj()));
         let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
         let Us=Us*Complex::new(0.0,2.0*PI);
         let Us=Us.mapv(Complex::exp);
@@ -563,8 +566,7 @@ impl Model{
         let mut rk0=rk.view().mapv(|x| x.conj());
         rk0.swap_axes(1,2);
         let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
-        let U_conj=U.map(|x| x.conj());
-        let U_dag=&U_conj.t();
+        //let U_dag=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U);
         Zip::from(rk.outer_iter_mut())
             .apply(|mut x0| {
                 x0.assign(&U_dag.dot(&x0.dot(&U)));
@@ -586,7 +588,7 @@ impl Model{
     /// \\end\{aligned\}
     /// $$
     ///
-    ///这里的 $\\mathcal A_{\bm k}$ 的定义为 $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R+\bm\tau_m-\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
+    ///这里的 $\\mathcal A_{\bm k}$ 的定义为 $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R-\bm\tau_m+\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
     ///其中 $\bm r_{mn}$ 可以由 wannier90 给出, 只需要设定 ``write_rmn=ture"
     ///在这里, 所有的 $\bm R$, $\bm r$, 以及 $\bm \tau$ 都是以实空间为坐标系.
     #[allow(non_snake_case)]
@@ -690,7 +692,7 @@ impl Model{
             let rk=self.gen_r(&kvec); 
             for i in 0..self.dim_r{
                 let UU=orb_real.column(i);//这个是实空间的数据, 
-                let mut UU=Array2::from_diag(&UU); //将其化为矩阵
+                let UU=Array2::from_diag(&UU); //将其化为矩阵
                 let A=&rk.slice(s![i,..,..])-&UU;
                 let U=Array2::from_diag(&U0); 
                 let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
