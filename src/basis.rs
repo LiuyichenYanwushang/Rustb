@@ -296,7 +296,7 @@ impl Model{
 
         let tmp:Complex<f64>=tmp.to_complex();
         if pauli != 0 && self.spin==false{
-            eprintln!("Wrong, if spin is Ture and pauli is not zero, the pauli is not use")
+            println!("Wrong, if spin is Ture and pauli is not zero, the pauli is not use")
         }
         if R.len()!=self.dim_r{
             panic!("Wrong, the R length should equal to dim_r")
@@ -310,7 +310,7 @@ impl Model{
         if R_exist {
             let index=index_R(&self.hamR,&R);
             if self.ham[[index,ind_i,ind_j]]!=Complex::new(0.0,0.0){
-                eprintln!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_i,ind_j]])
+                println!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_i,ind_j]])
             }
             update_hamiltonian!(self.spin,pauli,tmp,self.ham.slice_mut(s![index,..,..]),ind_i,ind_j,self.norb);
             if negative_R_exist && ind_i != ind_j{
@@ -322,7 +322,7 @@ impl Model{
         }else if negative_R_exist {
             let index=index_R(&self.hamR,&negative_R);
             if self.ham[[index,ind_j,ind_i]]!=Complex::new(0.0,0.0){
-                eprintln!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_j,ind_i]])
+                println!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_j,ind_i]])
             }
             update_hamiltonian!(self.spin,pauli,tmp.conj(),self.ham.slice_mut(s![index,..,..]),ind_j,ind_i,self.norb);
 
@@ -623,7 +623,6 @@ impl Model{
         let R0=&self.hamR.mapv(|x| Complex::<f64>::new(x as f64,0.0));
         let R0=R0.dot(&self.lat.mapv(|x| Complex::new(x,0.0)));
 
-        /*
         //这里使用老方法
         let U=Array2::from_diag(&U0); 
         let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
@@ -654,55 +653,7 @@ impl Model{
             }
         }
         v
-        */
 
-        //这里我们放弃了用fold, 而是用广播的方法来求解, 将 Us 广播为 Array3, 速度应该会更块
-        let n_R=Us.len();
-        let ham1=self.ham.slice(s![1..n_R,..,..]);
-        let Us1=Us.slice(s![1..n_R]).insert_axis(Axis(1)).insert_axis(Axis(2));
-        let Us1=Us1.broadcast((n_R-1,self.nsta,self.nsta)).unwrap();
-        let hamk:Array2<Complex<f64>>=(&ham1*&Us1).sum_axis(Axis(0));
-        let ham0=self.ham.slice(s![0,..,..]);
-        let hamk:Array2::<Complex<f64>>=&hamk+&ham0+&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk); //现在我们得到了 hamk
-        //接下来计算速度算符, 我们首先将 hamk 进行广播, 这里 v 的形状是 (dim_r,nsta,nsta),
-        //我们需要将 hamk 也广播成 (dim_r,nsta,nsta)
-        let binding=hamk.clone().insert_axis(Axis(2));
-        let hamks=&binding.broadcast((self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([2,0,1]);
-        //广播成功, 接下来对 hamR 转化, 变成 (dim_r,n_R-1,self.nsta,self.nsta)
-        let binding=R0.slice(s![1..n_R,..]);
-        let binding = binding.insert_axis(Axis(2)).insert_axis(Axis(3));
-        let Rs1=binding.broadcast((n_R-1,self.dim_r,self.nsta,self.nsta)).unwrap();
-        //接下来对 ham1 和 Us1 进行广播
-        let binding = ham1.insert_axis(Axis(3));
-        let ham2=binding.broadcast((n_R-1,self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([0,3,1,2]);
-        let binding = Us1.insert_axis(Axis(3));
-        let Us1=binding.broadcast((n_R-1,self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([0,3,1,2]);
-        //开始计算速度算符
-        let vv=(&Rs1*&ham2*Us1*Complex::i()).sum_axis(Axis(0));
-        let v=&vv+hamks*UU+&vv.permuted_axes([0,2,1]).mapv(|x| x.conj());
-        let _=vv;
-        //最后我们对 hamk 和 v 都做一下幺正变换, 变换到原子轨道上
-
-        let U1=U0.clone().insert_axis(Axis(1)).insert_axis(Axis(2));
-        let U1=U1.broadcast((self.nsta,self.nsta,self.dim_r)).unwrap().permuted_axes([2,1,0]);
-        let U2=U1.permuted_axes([0,2,1]).mapv(|x| x.conj());
-        let mut v=v*&U1*&U2;
-        //接下来我们考虑位置算符的修正
-        if self.rmatrix.len_of(Axis(0))!=1 {
-            let rk=self.gen_r(&kvec); 
-            for i in 0..self.dim_r{
-                let UU=orb_real.column(i);//这个是实空间的数据, 
-                let UU=Array2::from_diag(&UU); //将其化为矩阵
-                let A=&rk.slice(s![i,..,..])-&UU;
-                let U=Array2::from_diag(&U0); 
-                let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
-                let hamk=hamk.dot(&U);
-                let hamk=U_conj.dot(&hamk);
-                let A=comm(&hamk,&A)*Complex::i();
-                v.slice_mut(s![i,..,..]).add_assign(&A);
-            }
-        }
-        v
     }
     #[allow(non_snake_case)]
     #[inline(always)]
@@ -1890,6 +1841,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                 }
             }
             2=>{
+                let U_det=U_det*2;
                 for i in -U_det..U_det{
                     for j in -U_det..U_det{
                         for n in 0..self.natom{
@@ -2124,7 +2076,8 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                 for (int_i,use_i) in orb_list.iter().enumerate(){
                     for (int_j,use_j) in orb_list.iter().enumerate(){
                         //接下来计算超胞中的R在原胞中对应的hamR
-                        let R0:Array1::<f64>=new_orb.row(int_j).to_owned()-new_orb.row(int_i).to_owned()+use_R.mapv(|x| x as f64); //超胞的 R 在原始原胞的 R
+                        let R0:Array1::<f64>=&new_orb.row(int_j)-&new_orb.row(int_i)+&use_R.map(|x| *x as f64); //超胞的 R 在原始原胞的 R
+                                                                                                                
                         let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(*use_j)+self.orb.row(*use_i)).mapv(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize}); 
                         let R0_inv=-R0.clone();
                         let R0_exit=find_R(&self.hamR,&R0);
