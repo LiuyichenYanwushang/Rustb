@@ -203,7 +203,7 @@ impl surf_Green{
 
     }
     #[inline(always)]
-    pub fn surf_green_one(&self,kvec:&Array1<f64>,Energy:f64,spin:usize)->(f64,f64,f64){
+    pub fn surf_green_one(&self,kvec:&Array1<f64>,Energy:f64)->(f64,f64,f64){
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
         let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
         let I0=Array2::<Complex<f64>>::eye(self.nsta);
@@ -234,52 +234,14 @@ impl surf_Green{
         let g_LL=(&epsilon-eps).inv().unwrap();
         let g_RR=(&epsilon-eps_t).inv().unwrap();
         let g_B=(&epsilon-epi).inv().unwrap();
-        let ((N_R,N_L),N_B)=if self.spin{
-            let ((NR,NL),NB)=match spin{
-                0=>{
-                    let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
-                    let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
-                    let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
-                    ((NR,NL),NB)
-                },
-                1=>{
-                    let s=array![[Complex::new(0.0,0.0),Complex::new(1.0,0.0)],[Complex::new(1.0,0.0),Complex::new(0.0,0.0)]];
-                    let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
-                    let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
-                    let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
-                    let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
-                    ((NR,NL),NB)
-                },
-                2=>{
-                    let s=array![[Complex::new(0.0,0.0),Complex::new(0.0,-1.0)],[Complex::new(0.0,1.0),Complex::new(0.0,0.0)]];
-                    let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
-                    let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
-                    let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
-                    let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
-                    ((NR,NL),NB)
-                },
-                3=>{
-                    let s=array![[Complex::new(1.0,0.0),Complex::new(0.0,0.0)],[Complex::new(0.0,0.0),Complex::new(-1.0,0.0)]];
-                    let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
-                    let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
-                    let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
-                    let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
-                    ((NR,NL),NB)
-                },
-                _=>todo!(),
-            };
-            ((NR,NL),NB)
-        }else{
-            let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
-            let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
-            let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
-            ((NR,NL),NB)
-        };
+        let N_R:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
+        let N_L:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
+        let N_B:f64=-1.0/(PI)*g_B.into_diag().sum().im;
         (N_R,N_L,N_B)
     }
 
     #[inline(always)]
-    pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>,spin:usize)->(Array1<f64>,Array1<f64>,Array1<f64>){
+    pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>)->(Array1<f64>,Array1<f64>,Array1<f64>){
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
         //let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
         let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
@@ -315,50 +277,6 @@ impl surf_Green{
             let N_L:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
             let N_B:f64=-1.0/(PI)*g_B.into_diag().sum().im;
             ((N_R,N_L),N_B)
-            /*
-            let ((N_R,N_L),N_B)=if self.spin{
-                let ((NR,NL),NB)=match spin{
-                    0=>{
-                        let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
-                        let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
-                        let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
-                        ((NR,NL),NB)
-                    },
-                    1=>{
-                        let s=array![[Complex::new(0.0,0.0),Complex::new(1.0,0.0)],[Complex::new(1.0,0.0),Complex::new(0.0,0.0)]];
-                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
-                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
-                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
-                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
-                        ((NR,NL),NB)
-                    },
-                    2=>{
-                        let s=array![[Complex::new(0.0,0.0),Complex::new(0.0,-1.0)],[Complex::new(0.0,1.0),Complex::new(0.0,0.0)]];
-                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
-                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
-                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
-                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
-                        ((NR,NL),NB)
-                    },
-                    3=>{
-                        let s=array![[Complex::new(1.0,0.0),Complex::new(0.0,0.0)],[Complex::new(0.0,0.0),Complex::new(-1.0,0.0)]];
-                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
-                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).into_diag().sum().im;
-                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).into_diag().sum().im;
-                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).into_diag().sum().im;
-                        ((NR,NL),NB)
-                    },
-                    _=>todo!(),
-                };
-                ((NR,NL),NB)
-            }else{
-                let NR:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
-                let NL:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
-                let NB:f64=-1.0/(PI)*g_B.into_diag().sum().im;
-                ((NR,NL),NB)
-            };
-            ((N_R,N_L),N_B)
-            */
          }).collect();
         let N_R=Array1::from_vec(N_R);
         let N_L=Array1::from_vec(N_L);
@@ -477,12 +395,75 @@ impl surf_Green{
         let mut N_L=Array2::<f64>::zeros((nk,E_n));
         let mut N_B=Array2::<f64>::zeros((nk,E_n));
         Zip::from(N_R.outer_iter_mut()).and(N_L.outer_iter_mut()).and(N_B.outer_iter_mut()).and(kvec.outer_iter()).par_apply(|mut nr,mut nl,mut nb, k| {
-            let (NR,NL,NB)=self.surf_green_onek(&k.to_owned(),&Energy,spin);
+            let (NR,NL,NB)=self.surf_green_onek(&k.to_owned(),&Energy);
             nr.assign(&NR);
             nl.assign(&NL);
             nb.assign(&NB);
         });
         (N_L,N_R,N_B)
+    }
+    
+    pub fn show_arc_state(&self,name:&str,kmesh:&Array1::<usize>,nk:usize,energy:f64,spin:usize){
+        use std::io::{BufWriter, Write};
+        use std::fs::create_dir_all;
+        create_dir_all(name).expect("can't creat the file");
+        assert_eq!(kmesh.len(),2,"show_arc_state can only calculated the three dimension system, so the kmesh need to be [m,n], but you give {}",kmesh);
+        let kvec=gen_kmesh(kmesh);
+        let nk=kvec.nrows();
+        let mut N_R=Array1::<f64>::zeros(nk);
+        let mut N_L=Array1::<f64>::zeros(nk);
+        let mut N_B=Array1::<f64>::zeros(nk);
+        Zip::from(N_R.view_mut()).and(N_L.view_mut()).and(N_B.view_mut()).and(kvec.outer_iter()).par_apply(|mut nr,mut nl,mut nb, k| {
+            let (NR,NL,NB)=self.surf_green_one(&k.to_owned(),energy);
+            *nr=NR;
+            *nl=NL;
+            *nb=NB;
+        });
+        let K=2.0*PI*self.lat.inv().unwrap().reversed_axes();
+        let kvec_real=kvec.dot(&K);
+        let mut file_name=String::new();
+        file_name.push_str(&name);
+        file_name.push_str("/arc.dat");
+        let mut file=File::create(file_name).expect("Uable to create arc.dat");
+        writeln!(file,r"# nk1, nk2, N_L, N_R, N_B");
+        let mut writer = BufWriter::new(file);
+        let mut s = String::new();
+        for i in 0..nk{
+            let aa= format!("{:.6}", kvec_real[[i,0]]);
+            s.push_str(&aa);
+            let bb:String=format!("{:.6}", kvec_real[[i,1]]);
+            if kvec_real[[i,1]]>=0.0{
+                s.push_str("    ");
+            }else{
+                s.push_str("   ");
+            }
+            s.push_str(&bb);
+            let cc:String=format!("{:.6}",N_L[[i]]);
+            if N_L[[i]]>=0.0{
+                s.push_str("    ");
+            }else{
+                s.push_str("   ");
+            }
+            s.push_str(&cc);
+            let cc:String=format!("{:.6}",N_R[[i]]);
+            if N_R[[i]]>=0.0{
+                s.push_str("    ");
+            }else{
+                s.push_str("   ");
+            }
+            let cc:String=format!("{:.6}",N_B[[i]]);
+            if N_B[[i]]>=0.0{
+                s.push_str("    ");
+            }else{
+                s.push_str("   ");
+            }
+            s.push_str(&cc);
+            s.push_str("\n");
+        }
+        writer.write_all(s.as_bytes()).unwrap();
+        let _=file;
+
+        
     }
     pub fn show_surf_state(&self,name:&str,kpath:&Array2::<f64>,label:&Vec<&str>,nk:usize,E_min:f64,E_max:f64,E_n:usize,spin:usize){
         use std::io::{BufWriter, Write};

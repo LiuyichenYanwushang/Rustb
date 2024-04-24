@@ -316,7 +316,8 @@ impl Model{
         let A1=J.dot(&evec);
         let A1=&evec_conj.dot(&A1);
         let A2=v.dot(&evec);
-        let A2=&evec_conj.dot(&A2).reversed_axes();
+        let A2=evec_conj.dot(&A2);
+        let A2=A2.reversed_axes();
         let a0=(og+li*eta).powi(2);
         /*
         let U1=band.clone().insert_axis(Axis(1));

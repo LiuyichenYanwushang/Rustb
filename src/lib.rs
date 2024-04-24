@@ -436,6 +436,121 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn test_gen_v(){
+
+        //判断两个Array1<f64> 是否足够接近
+        fn are_arrays_close(a: &Array1<f64>, b: &Array1<f64>, tolerance: f64) -> bool {
+            a.iter().zip(b.iter()).all(|(&x, &y)| (x - y).abs() < tolerance)
+        }
+
+        //判断两个Array2<Compelx<f64>> 是否足够接近
+        fn are_complex_arrays_close(a: &Array2<Complex<f64>>, b: &Array2<Complex<f64>>, tolerance: f64) -> bool {
+            a.iter().zip(b.iter()).all(|(&x, &y)| {
+                (x.re - y.re).abs() < tolerance && (x.im - y.im).abs() < tolerance
+            })
+        }
+        let li:Complex<f64>=1.0*Complex::i();
+        let t=1.0+0.0*li;
+        let t2=-0.0+0.0*li;
+        let delta=0.0;
+        let dim_r:usize=2;
+        let norb:usize=2;
+        let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
+        let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        model.set_onsite(&arr1(&[-delta,delta]),0);
+        let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(t,0,1,&R,0);
+        }
+        let R0:Array2::<isize>=arr2(&[[1,0],[-1,1],[0,-1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(t2*li,0,0,&R,0);
+        }
+        let R0:Array2::<isize>=arr2(&[[-1,0],[1,-1],[0,1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(t2*li,1,1,&R,0);
+        }
+        assert_eq!(model.solve_band_onek(&array![0.0,0.0]),array![-3.0,3.0]);
+        let result=model.solve_band_onek(&array![1.0/3.0,2.0/3.0]);
+        assert!(are_arrays_close(&result,&array![0.0,0.0],1e-5),"wrong!, the solve_band_onek get wrong result! please check it!");
+        let result=model.gen_v(&array![1.0/3.0,1.0/3.0]);
+        let resulty=array![[0.0*li,-0.4698463103929542-0.17101007166283436*li],[-0.4698463103929542+0.17101007166283436*li,0.0*li]];
+        let resultx=array![[0.0*li,-0.8137976813493737-0.2961981327260237*li],[-0.8137976813493737+0.2961981327260237*li,0.0*li]];
+        assert!(are_complex_arrays_close(&result.slice(s![0,..,..]).to_owned(),&resultx,1e-8),"Wrong! the gen_v is get wrong results! please check it!");
+        assert!(are_complex_arrays_close(&result.slice(s![1,..,..]).to_owned(),&resulty,1e-8),"Wrong! the gen_v is get wrong results! please check it!");
+
+        let kvec=array![1.0/3.0,1.0/3.0];
+        let (band,evec)=model.solve_onek(&kvec);
+        let ham=model.gen_ham(&kvec);
+        //let evec=evec.reversed_axes();
+        //let evec_conj=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&evec);
+        let evec_conj=evec.map(|x| x.conj());
+        let evec=evec.t();
+        let ham=ham.dot(&evec);
+        let ham=evec_conj.dot(&ham);
+        let new_band=ham.diag().map(|x| x.re);
+        assert!(are_arrays_close(&new_band,&band,1e-5),"wrong!, the solve_onek get wrong result! please check it!");
+    }
+    #[test]
+    fn conductivity_test(){
+        //这个是用 Haldan 模型来测试
+        let li:Complex<f64>=1.0*Complex::i();
+        let t=-1.0+0.0*li;
+        let t2=-1.0+0.0*li;
+        let delta=0.7;
+        let dim_r:usize=2;
+        let norb:usize=2;
+        let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
+        let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        model.set_onsite(&arr1(&[-delta,delta]),0);
+        let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(t,0,1,&R,0);
+        }
+        let R0:Array2::<isize>=arr2(&[[1,0],[-1,1],[0,-1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(t2*li,0,0,&R,0);
+        }
+        let R0:Array2::<isize>=arr2(&[[-1,0],[1,-1],[0,1]]);
+        for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
+            let R=R.to_owned();
+            model.add_hop(t2*li,1,1,&R,0);
+        }
+        let k_vec=array![1.0/3.0,2.0/3.0];
+        let dir_1=array![1.0,0.0];
+        let dir_2=array![0.0,1.0];
+        let mu=0.0;
+        let T=0.0;
+        let og=0.0;
+        let spin=0;
+        let eta=1e-3;
+        let result1=model.berry_curvature_onek(&k_vec,&dir_1,&dir_2,mu,T,og,spin,eta)*(2.0*PI).powi(2)/3_f64.sqrt()/PI;
+
+        let mut k_list=Array2::zeros((9,2));
+        let dk=0.0001;
+        k_list.row_mut(0).assign(&(&k_vec+dk*&dir_1));
+        k_list.row_mut(1).assign(&(&k_vec+dk*&dir_1+dk*&dir_2));
+        k_list.row_mut(2).assign(&(&k_vec+dk*&dir_2));
+        k_list.row_mut(3).assign(&(&k_vec-dk*&dir_1+dk*&dir_2));
+        k_list.row_mut(4).assign(&(&k_vec-dk*&dir_1));
+        k_list.row_mut(5).assign(&(&k_vec-dk*&dir_1-dk*&dir_2));
+        k_list.row_mut(6).assign(&(&k_vec-dk*&dir_2));
+        k_list.row_mut(7).assign(&(&k_vec+dk*&dir_1-dk*&dir_2));
+        k_list.row_mut(8).assign(&(&k_vec+dk*&dir_1));
+        let result2=model.berry_loop(&k_list,&vec![0]);
+        let result2=result2[[0]]/(dk.powi(2))/4.0/(2.0*PI);
+        assert!((result2-result1).abs()<1e-4,"Wrong!, the berry_curvature or berry_flux mut be false")
+
+        
+    }
+    #[test]
     fn gen_v_speed_test(){
         println!("开始测试各个函数的运行速度, 用次近邻的石墨烯模型");
         let li:Complex<f64>=1.0*Complex::i();
@@ -463,30 +578,12 @@ mod tests {
             let R=R.to_owned();
             model.add_hop(t2*li,1,1,&R,0);
         }
-        let U=array![[10.0,0.0],[0.0,10.0]];
+        let U=array![[3.0,0.0],[0.0,3.0]];
         let model=model.make_supercell(&U);
 
         let nk=101;
         let k_mesh=array![nk,nk];
         let kvec=gen_kmesh(&k_mesh);
-        /*
-        //开始计算单线程和多线程求解能带的速度
-        println!("开始计算单线程和多线程求解能带的速度");
-        {
-        let start = Instant::now();   // 开始计时
-        let band=model.solve_band_all(&kvec);
-        let end = Instant::now();    // 结束计时
-        let duration = end.duration_since(start); // 计算执行时间
-        println!("solve_band_all took {} seconds", duration.as_secs_f64());   // 输出执行时间
-        }
-        {
-        let start = Instant::now();   // 开始计时
-        let band=model.solve_band_all_parallel(&kvec);
-        let end = Instant::now();    // 结束计时
-        let duration = end.duration_since(start); // 计算执行时间
-        println!("solve_band_all_parallel took {} seconds", duration.as_secs_f64());   // 输出执行时间
-        }
-        */
 
         {
         println!("开始计算 gen_v 的耗时速度, 为了平均, 我们单线程求解gen_v");
@@ -498,38 +595,6 @@ mod tests {
 
         }
 
-        /*
-        println!("开始测试 求解贝利曲率的耗时速度, 多线程测试");
-        let nk:usize=1001;
-        let T:f64=0.0;
-        let eta:f64=0.001;
-        let og:f64=0.0;
-        let mu:f64=0.0;
-        let dir_1=arr1(&[1.0,0.0]);
-        let dir_2=arr1(&[0.0,1.0]);
-        let dir_3=arr1(&[0.0,1.0]);
-        let spin:usize=0;
-        let kmesh=arr1(&[nk,nk]);
-        {
-        let start = Instant::now();   // 开始计时
-        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta);
-        let end = Instant::now();    // 结束计时
-        let duration = end.duration_since(start); // 计算执行时间
-        println!("Hall_conductivity took {} seconds", duration.as_secs_f64());   // 输出执行时间
-        }
-        //开始测试 solve_onek 的正确性
-        let kvec=array![0.25,0.25];
-        let (band,evec)=model.solve_onek(&kvec);
-        //let (band,evec)=model.solve_range_onek(&kvec,(-10.0,10.0),1e-5);
-        let hamk=model.gen_ham(&kvec);
-        let evec_conj=evec.map(|x| x.conj());
-        let evec=evec.t();
-        let A=hamk.dot(&evec);
-        let A=evec_conj.dot(&A);
-        let A=A.diag().map(|x| x.re);
-        println!("{}",band);
-        println!("{}",A);
-        */
     }
     #[test]
     fn Haldan_model(){
@@ -566,7 +631,7 @@ mod tests {
         let label=vec!["G","K","M","K'","G"];
         model.show_band(&path,&label,nk,"tests/Haldan");
         /////开始计算体系的霍尔电导率//////
-        let nk:usize=50;
+        let nk:usize=100;
         let T:f64=0.0;
         let eta:f64=0.001;
         let og:f64=0.0;
@@ -582,30 +647,18 @@ mod tests {
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("quantom_Hall_effect={}",conductivity/(2.0*PI));
+        assert!((conductivity/(2.0*PI)-1.0).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!");
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
 
-        let nk:usize=50;
+        let nk:usize=1000;
         let kmesh=arr1(&[nk,nk]);
         let start = Instant::now();   // 开始计时
-        let conductivity=model.Hall_conductivity_adapted(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta,0.01,0.01);
+        let conductivity=model.Hall_conductivity_adapted(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta,0.01,0.0001);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("霍尔电导率{}",conductivity/(2.0*PI));
+        assert!((conductivity/(2.0*PI)-1.0).abs()<1e-5,"Wrong!, the Hall conductivity is wrong!");
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
-        //测试一下速度算符的对角项是否等于能带本征值的导数
-        let kvec=array![1.0/2.0,1.0/2.0];
-        let (band,evec)=model.solve_onek(&kvec);
-        let evec_conj=evec.clone().map(|x| x.conj());
-        let (omega_n,band)=model.berry_curvature_n_onek(&kvec,&dir_1,&dir_2,og,0,1e-5);
-        let mut partial_ve=Array1::<f64>::zeros(model.nsta);
-        let v=model.gen_v(&kvec);
-        for i in 0..model.dim_r{
-            let vs=v.slice(s![i,..,..]).to_owned(); 
-            let vs=evec_conj.dot(&(vs.dot(&evec.clone().reversed_axes()))).diag().map(|x| x.re);
-            partial_ve=partial_ve.clone()+vs*dir_3[[i]];
-        }
-        println!("{}",partial_ve);
-        println!("{}",omega_n);
         //画一下3000k的时候的费米导数分布
         let T=100.0;
         let nk:usize=101;
@@ -653,6 +706,7 @@ mod tests {
 
         //开始算非线性霍尔电导
 
+        /*
         let sigma:Array1<f64>=model.Nonlinear_Hall_conductivity_Extrinsic(&kmesh,&dir_1,&dir_2,&dir_3,&mu,T,og,0,1e-5);
 
         //开始绘制非线性电导
@@ -681,16 +735,13 @@ mod tests {
         pdf_name.push_str("/dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
-
-
+        */
         //-----算一下wilson loop 的结果-----------------------
         let dir_1=arr1(&[1.0,0.0]);
         let dir_2=arr1(&[0.0,1.0]);
         let occ=vec![0];
         let wcc=model.wannier_centre(&occ,&array![0.0,0.0],&dir_1,&dir_2,101,101);
         let nocc=occ.len();
-        println!("{}",wcc);
-
 
         let mut fg = Figure::new();
         let x:Vec<f64>=Array1::<f64>::linspace(0.0,1.0,101).to_vec();
@@ -914,7 +965,7 @@ mod tests {
 
 
         /////开始计算体系的霍尔电导率//////
-        let nk:usize=11;
+        let nk:usize=101;
         let T:f64=0.0;
         let eta:f64=0.001;
         let og:f64=0.0;

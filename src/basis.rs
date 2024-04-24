@@ -412,7 +412,7 @@ impl Model{
             panic!("Wrong, the norb is {}, however, the onsite input's length is {}",self.norb,tmp.len())
         }
         for (i,item) in tmp.iter().enumerate(){
-            self.set_onsite_one(*item,i,pauli)
+            self.set_onsite_one(*item,i,pauli);
         }
     }
 
@@ -589,7 +589,7 @@ impl Model{
     /// $$
     ///
     ///这里的 $\\mathcal A_{\bm k}$ 的定义为 $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R-\bm\tau_m+\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
-    ///其中 $\bm r_{mn}$ 可以由 wannier90 给出, 只需要设定 ``write_rmn=ture"
+    ///其中 $\bm r_{mn}$ 可以由 wannier90 给出, 只需要设定 write_rmn=ture
     ///在这里, 所有的 $\bm R$, $\bm r$, 以及 $\bm \tau$ 都是以实空间为坐标系.
     #[allow(non_snake_case)]
     #[inline(always)]
@@ -623,7 +623,6 @@ impl Model{
         let R0=&self.hamR.mapv(|x| Complex::<f64>::new(x as f64,0.0));
         let R0=R0.dot(&self.lat.mapv(|x| Complex::new(x,0.0)));
 
-        //这里使用老方法
         let U=Array2::from_diag(&U0); 
         let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
         let hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
@@ -719,7 +718,6 @@ impl Model{
         } 
         let hamk=self.gen_ham(&kvec);
         let (eval,evec)=eigh_r(&hamk,range,epsilon,UPLO::Upper);
-        //let evec=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&evec);
         let evec=evec.mapv(|x| x.conj());
         (eval,evec)
     }
