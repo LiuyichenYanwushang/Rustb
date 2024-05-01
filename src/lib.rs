@@ -66,30 +66,53 @@ pub struct Model_sparse<hop_element>{
 #[derive(Clone,Debug)]
 pub struct Model{
     /// - The real space dimension of the model.
-    pub dim_r:usize,
-    /// - The number of orbitals in the model.
-    pub norb:usize,
-    /// - The number of states in the model. If spin is enabled, nsta=norb$\times$2
-    pub nsta:usize,
-    /// - The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
-    pub natom:usize,
-    /// - Whether the model has spin enabled. If enabled, spin=true
     pub spin:bool,
     /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
     pub lat:Array2::<f64>,
     /// - The position of the orbitals in the model. We use fractional coordinates uniformly.
-    pub orb:Array2::<f64>,
-    /// - The position of the atoms in the model, also in fractional coordinates.
-    pub atom:Array2::<f64>,
-    /// - The number of orbitals in the atoms, in the same order as the atom positions.
-    pub atom_list:Vec<usize>,
-    /// - The Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
+    pub model_atom:Vec<atom>,
+    /// - Define the atoms of the model. Each atom records the orbital position, atomic position and atomic orbital pattern.
     pub ham:Array3::<Complex<f64>>,
     /// - The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
     pub hamR:Array2::<isize>,
     /// - The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
     pub rmatrix:Array4::<Complex<f64>>,
 }
+
+pub struct atom{
+    n_orb:usize,
+    orb:Array2<f64>,
+    position:Array1<f64>,
+    projection:Vec<orb_projection>,
+}
+
+pub enum orb_projection{
+    s,
+    px,
+    py,
+    pz,
+    dxy,
+    dyz,
+    dxz,
+    dz2,
+    dx2y2,
+}
+
+impl Model{
+    pub fn natom(&self)->usize{
+        model_atom.len()
+    }
+    pub fn norb(&self)->usize{
+        model_atom.iter().fold(0 |acc,x| x.orb.len())
+    }
+    pub fn dim_r(&self)->usize{
+        self.lat.len()
+    }
+    pub fn orb(&self)->Array2<f64>{
+        let mut orb=Array2::zeros((self.norb(),self.dim_r()));
+    }
+}
+
 
 
 
