@@ -70,7 +70,7 @@ pub struct Model{
     /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
     pub lat:Array2::<f64>,
     /// - The position of the orbitals in the model. We use fractional coordinates uniformly.
-    pub model_atom:Vec<atom>,
+    pub atom:Vec<atom>,
     /// - Define the atoms of the model. Each atom records the orbital position, atomic position and atomic orbital pattern.
     pub ham:Array3::<Complex<f64>>,
     /// - The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
@@ -100,16 +100,25 @@ pub enum orb_projection{
 
 impl Model{
     pub fn natom(&self)->usize{
-        model_atom.len()
+        self.atom.len()
     }
     pub fn norb(&self)->usize{
-        model_atom.iter().fold(0 |acc,x| x.orb.len())
+        self.atom.iter().fold(0 |acc,x| x.orb.len())
     }
     pub fn dim_r(&self)->usize{
         self.lat.len()
     }
     pub fn orb(&self)->Array2<f64>{
         let mut orb=Array2::zeros((self.norb(),self.dim_r()));
+        let mut a=0;
+        for atom_ele in self.atom.iter(){
+            for orb_ele in atom_ele.orb.outer_iter(){
+                orb.slice_mut(s![a,..]).assign(&orb_ele);
+            }
+        }
+        orb
+    }
+    pub fn atom(&self)->Array2<f64>{
     }
 }
 
