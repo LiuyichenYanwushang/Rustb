@@ -514,6 +514,8 @@ impl Model{
         }else{
             U0
         };
+        let U=Array2::from_diag(&U0);
+        let U_dag=Array2::from_diag(&U0.map(|x| x.conj()));
         let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
         let Us=Us*Complex::new(0.0,2.0*PI);
         let Us=Us.mapv(Complex::exp);
@@ -524,10 +526,8 @@ impl Model{
         let Us1=Us1.broadcast((n_R-1,self.nsta,self.nsta)).unwrap();
         let hamk:Array2<Complex<f64>>=(&ham1*&Us1).sum_axis(Axis(0));
         let hamk=&ham0+&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamk)+&hamk;
-        let U1=U0.insert_axis(Axis(1));
-        let U1=U1.broadcast((self.nsta,self.nsta)).unwrap();
-        let U2=U1.mapv(|x| x.conj());
-        let re_ham=hamk*U1.permuted_axes([1,0])*U2;
+        let hamk:Array2<Complex<f64>>=U_dag.dot(&hamk);
+        let re_ham=hamk.dot(&U); //接下来两步填上轨道坐标导致的相位
         return re_ham
     }
     #[allow(non_snake_case)]
@@ -642,11 +642,17 @@ impl Model{
         //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
         //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
         if self.rmatrix.len_of(Axis(0))!=1 {
-            let rk=self.gen_r(&kvec); 
+            let r0=self.rmatrix.slice(s![0,..,..,..]);
+            let rk=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));
+            let rk=self.rmatrix.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(rk,|acc,(ham,us)|{acc+&ham**us});
+            let mut rk0=rk.view().mapv(|x| x.conj());
+            rk0.swap_axes(1,2);
+            let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
             for i in 0..self.dim_r{
+                let r0=&U_conj.dot(&rk.slice(s![i,..,..]).dot(&U));
                 let UU=orb_real.column(i);//这个是实空间的数据, 
-                let mut UU=Array2::from_diag(&UU); //将其化为矩阵
-                let A=&rk.slice(s![i,..,..])-&UU;
+                let UU=Array2::from_diag(&UU); //将其化为矩阵
+                let A=r0-&UU;
                 let A=comm(&hamk,&A)*Complex::i();
                 v.slice_mut(s![i,..,..]).add_assign(&A);
             }
@@ -2161,22 +2167,22 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         //! 我们看一下 SSH model 的结果
 
         //首先, 先确定哪些原子需要移动
-        let mut move_R=Array2::<isize>::zeros((0,self.dim_r));//对于给
+        let mut move_R=Array2::<isize>::zeros((0,self.dim_r));//初始化
         let mut new_atom=Array2::<f64>::zeros((0,self.dim_r));
         let mut new_orb=Array2::<f64>::zeros((0,self.dim_r));
         let mut new_ham=Array3::<Complex<f64>>::zeros((1,self.nsta,self.nsta));
         let mut new_rmatrix=Array4::<Complex<f64>>::zeros((1,self.dim_r,self.nsta,self.nsta));
         let mut new_hamR=Array2::<isize>::zeros((1,self.dim_r));
         let mut a:usize=0;
-        for (i,atom) in self.atom.axis_iter(Axis(0)).enumerate(){
-            let mut atom=atom.to_owned();
-            atom.mapv(|x| if (x.fract()-1.0).abs() < 1e-8 || x.fract().abs()<1e-8{x.round()} else {x}); 
+        for (i,atom) in self.atom.outer_iter().enumerate(){
+            //let mut atom=atom.to_owned();
+            let atom=&atom.map(|x| if (x.fract()-1.0).abs() < 1e-8 || x.fract().abs()<1e-8{x.round()} else {*x}); 
             // 这是先把原子中靠近整数晶格的原子移动到整数晶格上, 方便判断原子属于哪个原胞
             let R=atom.mapv(|x| x.trunc() as isize); //将原子位置得整数部分拿出来
             let use_atom=atom.map(|x| x.fract());
             let R0=use_atom.clone().mapv(|x| if x<0.0 {-1 as isize}else{0 as isize});
             let R=R+&R0;
-            let use_atom=use_atom.mapv(|x| if x<0.0 {x+1.0}else{x});
+            let use_atom=use_atom.mapv(|x| if x<0.0 {x-1.0}else{x});
             new_atom.push_row(use_atom.view());
             for j in 0..self.atom_list[i] {
                 //self.orb.row_mut(i).add_assign(&(R.map(|x| *x as f64)));

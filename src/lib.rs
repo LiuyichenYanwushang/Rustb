@@ -6,6 +6,7 @@ pub mod geometry;
 pub mod sparse_model;
 pub mod ndarray_lapack;
 pub mod generics;
+pub mod output;
 use gnuplot::Major;
 use num_complex::Complex;
 use num_traits::identities::Zero;
@@ -1354,6 +1355,7 @@ mod tests {
         let path=arr2(&path);
         let label=vec!["G","X","M","G"];
         model.show_band(&path,&label,nk,"tests/BBH/");
+        model.output_hr("tests/BBH/","wannier90");
 
 
         //算一下wilson loop

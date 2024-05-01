@@ -283,6 +283,8 @@ impl Model{
     #[inline(always)]
     pub fn berry_curvature_n_onek<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix1>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array1::<f64>,Array1::<f64>){
         //!给定一个k点, 返回 $\Omega_n(\bm k)$
+        //! 对于含有频率的Berry_curvature公式, 我们采用的是
+        //! $$\Omega_n(\bm k)=-2\text{Im}\frac{\bra{\psi_{n\bm k}}
         //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
         let li:Complex<f64>=1.0*Complex::i();
         let (band,evec)=self.solve_onek(&k_vec);
@@ -319,17 +321,6 @@ impl Model{
         let A2=evec_conj.dot(&A2);
         let A2=A2.reversed_axes();
         let a0=(og+li*eta).powi(2);
-        /*
-        let U1=band.clone().insert_axis(Axis(1));
-        let U1=U1.broadcast((self.nsta,self.nsta)).unwrap();
-        let U0=&U0+0.0-&U0.permuted_axes([1,0]);
-        let U0=&U0*&U0;
-        let U0=U0-a0;
-        let mut U0=U0.mapv(Complex::finv);
-        U0.diag_mut().fill(Complex::new(0.0,0.0));
-        */
-
-
         assert_eq!(band.len(),self.nsta,"this is strange for band's length is not equal to self.nsta");
         let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         for i in 0..self.nsta{
