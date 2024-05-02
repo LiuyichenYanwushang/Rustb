@@ -291,7 +291,7 @@ impl Model{
         let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
         let mut J:Array3::<Complex<f64>>=v.clone();
         let (J,v)=if self.spin {
-            let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta);
+            let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta());
             let pauli:Array2::<Complex<f64>>= match spin{
                 0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
                 1=> arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0,
@@ -299,17 +299,17 @@ impl Model{
                 3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
                 _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
             };
-            X=kron(&pauli,&Array2::eye(self.norb));
-            let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&anti_comm(&X,&x)*(*d*0.5+0.0*li)});
-            let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
+            X=kron(&pauli,&Array2::eye(self.norb()));
+            let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&anti_comm(&X,&x)*(*d*0.5+0.0*li)});
+            let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
             (J,v)
         }else{ 
             if spin !=0{
                 println!("Warning, the model haven't got spin, so the spin input will be ignord");
             }
 
-            let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
-            let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
+            let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
+            let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
             (J,v)
         };
 
@@ -321,16 +321,16 @@ impl Model{
         let A2=evec_conj.dot(&A2);
         let A2=A2.reversed_axes();
         let a0=(og+li*eta).powi(2);
-        assert_eq!(band.len(),self.nsta,"this is strange for band's length is not equal to self.nsta");
-        let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-        for i in 0..self.nsta{
-            for j in 0..self.nsta{
+        assert_eq!(band.len(),self.nsta(),"this is strange for band's length is not equal to self.nsta()");
+        let mut U0=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
+        for i in 0..self.nsta(){
+            for j in 0..self.nsta(){
                 U0[[i,j]]=((band[[i]]-band[[j]]).powi(2)-a0).finv();
             }
             U0[[i,i]]=Complex::new(0.0,0.0);
         }
         //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
-        let mut omega_n=Array1::<f64>::zeros(self.nsta);
+        let mut omega_n=Array1::<f64>::zeros(self.nsta());
         let A1=A1*U0;
         let A1=A1.outer_iter();
         let A2=A2.outer_iter();
@@ -414,14 +414,14 @@ impl Model{
             let (omega_n,band)=self.berry_curvature_n_onek(&x.to_owned(),&dir_1,&dir_2,og,spin,eta); 
             (omega_n,band)
             }).collect();
-        let omega_n=Array2::<f64>::from_shape_vec((nk, self.nsta),omega_n.into_iter().flatten().collect()).unwrap();
-        let band=Array2::<f64>::from_shape_vec((nk, self.nsta),band.into_iter().flatten().collect()).unwrap();
+        let omega_n=Array2::<f64>::from_shape_vec((nk, self.nsta()),omega_n.into_iter().flatten().collect()).unwrap();
+        let band=Array2::<f64>::from_shape_vec((nk, self.nsta()),band.into_iter().flatten().collect()).unwrap();
         let n_mu:usize=mu.len();
         let conductivity=if T==0.0{
             let conductivity_new:Vec<f64>=mu.into_par_iter().map(|x| {
                 let mut omega=Array1::<f64>::zeros(nk);
                 for k in 0..nk{
-                    for i in 0..self.nsta{
+                    for i in 0..self.nsta(){
                         omega[[k]]+= if band[[k,i]]> *x {0.0} else {omega_n[[k,i]]};
                     }
                 }
@@ -458,12 +458,12 @@ impl Model{
     let (band,evec)=self.solve_onek(&k_vec);
     let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
     let mut J:Array3::<Complex<f64>>=v.clone();
-    let mut v0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//这个是速度项, 对应的dir_3 的速度
+    let mut v0=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));//这个是速度项, 对应的dir_3 的速度
     for r in 0..self.dim_r{
         v0=v0+v.slice(s![r,..,..]).to_owned()*dir_3[[r]];
     }
     if self.spin {
-        let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta);
+        let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta());
         let pauli:Array2::<Complex<f64>>= match spin{
             0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
             1=> arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0,
@@ -471,7 +471,7 @@ impl Model{
             3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
             _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
         };
-        X=kron(&pauli,&Array2::eye(self.norb));
+        X=kron(&pauli,&Array2::eye(self.norb()));
         for i in 0..self.dim_r{
             let j=J.slice(s![i,..,..]).to_owned();
             let j=anti_comm(&X,&j)/2.0; //这里做反对易
@@ -498,9 +498,9 @@ impl Model{
     let A1=&evec_conj.dot(&A1);
     let A2=v.dot(&evec.reversed_axes());
     let A2=&evec_conj.dot(&A2);
-    let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-    for i in 0..self.nsta{
-        for j in 0..self.nsta{
+    let mut U0=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
+    for i in 0..self.nsta(){
+        for j in 0..self.nsta(){
             if i != j{
                 U0[[i,j]]=1.0/((band[[i]]-band[[j]]).powi(2)-(og+li*eta).powi(2));
             }else{
@@ -509,9 +509,9 @@ impl Model{
         }
     }
     //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
-    let mut omega_n=Array1::<f64>::zeros(self.nsta);
+    let mut omega_n=Array1::<f64>::zeros(self.nsta());
     let A1=A1*U0;
-    for i in 0..self.nsta{
+    for i in 0..self.nsta(){
         omega_n[[i]]=-2.0*A1.slice(s![i,..]).dot(&A2.slice(s![..,i])).im;
     }
     
@@ -532,8 +532,8 @@ impl Model{
             let (omega_one,band)=self.berry_curvature_dipole_n_onek(&x.to_owned(),&dir_1,&dir_2,&dir_3,og,spin,eta);
             (omega_one,band)
             }).collect();
-        let omega=Array2::<f64>::from_shape_vec((nk, self.nsta),omega.into_iter().flatten().collect()).unwrap();
-        let band=Array2::<f64>::from_shape_vec((nk, self.nsta),band.into_iter().flatten().collect()).unwrap();
+        let omega=Array2::<f64>::from_shape_vec((nk, self.nsta()),omega.into_iter().flatten().collect()).unwrap();
+        let band=Array2::<f64>::from_shape_vec((nk, self.nsta()),band.into_iter().flatten().collect()).unwrap();
         (omega,band)
     }
     pub fn Nonlinear_Hall_conductivity_Extrinsic(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,mu:&Array1<f64>,T:f64,og:f64,spin:usize,eta:f64)->Array1<f64>{
@@ -593,18 +593,18 @@ impl Model{
             v.slice_mut(s![i,..,..]).assign(&v_s);//将 v 变换到以本征态为基底
         }
         //现在速度算符已经是以本征态为基函数
-        let mut v_1=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//三个方向的速度算符
-        let mut v_2=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-        let mut v_3=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        let mut v_1=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));//三个方向的速度算符
+        let mut v_2=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
+        let mut v_3=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
         for i in 0..self.dim_r{
             v_1=v_1.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_1[[i]],0.0);
             v_2=v_2.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_2[[i]],0.0);
             v_3=v_3.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_3[[i]],0.0);
         }
         //三个方向的速度算符都得到了
-        let mut U0=Array2::<f64>::zeros((self.nsta,self.nsta));
-        for i in 0..self.nsta{
-            for j in 0..self.nsta{
+        let mut U0=Array2::<f64>::zeros((self.nsta(),self.nsta()));
+        for i in 0..self.nsta(){
+            for j in 0..self.nsta(){
                 if (band[[i]]-band[[j]]).abs() < 1e-5{
                     U0[[i,j]]=0.0;
                 }else{
@@ -623,7 +623,7 @@ impl Model{
 
         //开始最后的计算
         if self.spin{//如果考虑自旋, 我们就计算 \partial_h G_{ij}
-            let mut S:Array2::<Complex<f64>>=Array2::eye(self.nsta);
+            let mut S:Array2::<Complex<f64>>=Array2::eye(self.nsta());
             let li=Complex::<f64>::new(0.0,1.0);
             let pauli:Array2::<Complex<f64>>= match spin{
                 0=> Array2::<Complex<f64>>::eye(2),
@@ -632,17 +632,17 @@ impl Model{
                 3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
                 _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
             };
-            let X=kron(&pauli,&Array2::eye(self.norb));
-            let mut S=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta,self.nsta));
+            let X=kron(&pauli,&Array2::eye(self.norb()));
+            let mut S=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta(),self.nsta()));
             for i in 0..self.dim_r{
                 let v0=J.slice(s![i,..,..]).to_owned();
                 let v0=anti_comm(&X,&v0)/2.0;
                 let v0=evec_conj.clone().dot(&(v0.dot(&evec.clone().reversed_axes())));//变换到本征态基函数
                 S.slice_mut(s![i,..,..]).assign(&v0);
             }
-            let mut s_1=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));//三个方向的速度算符
-            let mut s_2=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-            let mut s_3=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+            let mut s_1=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));//三个方向的速度算符
+            let mut s_2=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
+            let mut s_3=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
             for i in 0..self.dim_r{
                 s_1=s_1.clone()+S.slice(s![i,..,..]).to_owned()*Complex::new(dir_1[[i]],0.0);
                 s_2=s_2.clone()+S.slice(s![i,..,..]).to_owned()*Complex::new(dir_2[[i]],0.0);
@@ -650,16 +650,16 @@ impl Model{
             }
             let G_23:Array1::<f64>={//用来计算  beta gamma 的 G 
                 let A=&v_2*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
-                let mut G=Array1::<f64>::zeros(self.nsta);
-                for i in 0..self.nsta{
+                let mut G=Array1::<f64>::zeros(self.nsta());
+                for i in 0..self.nsta(){
                     G[[i]]=A.slice(s![i,..]).dot(&v_3.slice(s![..,i])).re*2.0
                 }
                 G
             };
             let G_13_h:Array1::<f64>={//用来计算 alpha gamma 的 G 
                 let A=&s_1*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
-                let mut G=Array1::<f64>::zeros(self.nsta);
-                for i in 0..self.nsta{
+                let mut G=Array1::<f64>::zeros(self.nsta());
+                for i in 0..self.nsta(){
                     G[[i]]=A.slice(s![i,..]).dot(&v_3.slice(s![..,i])).re*2.0
                 }
                 G
@@ -668,31 +668,31 @@ impl Model{
             let partial_s_1=s_1.clone().diag().map(|x| x.re);
             let partial_s_2=s_2.clone().diag().map(|x| x.re);
             let partial_s_3=s_3.clone().diag().map(|x| x.re);
-            let mut partial_s=Array2::<f64>::zeros((self.dim_r,self.nsta));
+            let mut partial_s=Array2::<f64>::zeros((self.dim_r,self.nsta()));
             for r in 0..self.dim_r{
                 let s0=S.slice(s![r,..,..]).to_owned();
                 partial_s.slice_mut(s![r,..]).assign(&s0.diag().map(|x| x.re));//\p_i s算符的对角项
             }
             //开始计算partial G
             let partial_G:Array1::<f64>={
-                let mut A=Array1::<Complex<f64>>::zeros(self.nsta);//第一项
-                for i in 0..self.nsta{
-                    for j in 0..self.nsta{
+                let mut A=Array1::<Complex<f64>>::zeros(self.nsta());//第一项
+                for i in 0..self.nsta(){
+                    for j in 0..self.nsta(){
                         A[[i]]+=3.0*(partial_s_1[[i]]-partial_s_1[[j]])*v_2[[i,j]]*v_3[[j,i]]*U0[[i,j]].powi(4);
                     }
                 }
-                let mut B=Array1::<Complex<f64>>::zeros(self.nsta);//第二项
-                for n in 0..self.nsta{
-                    for n1 in 0..self.nsta{
-                        for n2 in 0..self.nsta{
+                let mut B=Array1::<Complex<f64>>::zeros(self.nsta());//第二项
+                for n in 0..self.nsta(){
+                    for n1 in 0..self.nsta(){
+                        for n2 in 0..self.nsta(){
                             B[[n]]+=s_1[[n,n2]]*(v_2[[n2,n1]]*v_3[[n1,n]]+v_3[[n2,n1]]*v_2[[n1,n]])*U0[[n,n1]].powi(3)*U0[[n,n2]];
                         }
                     }
                 }
-                let mut C=Array1::<Complex<f64>>::zeros(self.nsta);//第三项
-                for n in 0..self.nsta{
-                    for n1 in 0..self.nsta{
-                        for n2 in 0..self.nsta{
+                let mut C=Array1::<Complex<f64>>::zeros(self.nsta());//第三项
+                for n in 0..self.nsta(){
+                    for n1 in 0..self.nsta(){
+                        for n2 in 0..self.nsta(){
                             C[[n]]+=s_1[[n1,n2]]*(v_2[[n2,n]]*v_3[[n,n1]]+v_3[[n2,n]]*v_2[[n,n1]])*U0[[n,n1]].powi(3)*U0[[n1,n2]];
                         }
                     }
@@ -707,16 +707,16 @@ impl Model{
             //G_{ij}=2Re\sum_{m\neq n} v_{i,nm}v_{j,mn}/(E_n-E_m)^3
             let G_23:Array1::<f64>={//用来计算  beta gamma 的 G 
                 let A=&v_2*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
-                let mut G=Array1::<f64>::zeros(self.nsta);
-                for i in 0..self.nsta{
+                let mut G=Array1::<f64>::zeros(self.nsta());
+                for i in 0..self.nsta(){
                     G[[i]]=A.slice(s![i,..]).dot(&v_3.slice(s![..,i])).re*2.0
                 }
                 G
             };
             let G_13:Array1::<f64>={//用来计算 alpha gamma 的 G 
                 let A=&v_1*(U0.map(|x| Complex::<f64>::new(x.powi(3),0.0)));
-                let mut G=Array1::<f64>::zeros(self.nsta);
-                for i in 0..self.nsta{
+                let mut G=Array1::<f64>::zeros(self.nsta());
+                for i in 0..self.nsta(){
                     G[[i]]=A.slice(s![i,..]).dot(&v_3.slice(s![..,i])).re*2.0
                 }
                 G
@@ -738,9 +738,9 @@ impl Model{
                 ((omega_one,band),partial_G)
                 }).collect();
 
-            let omega=Array2::<f64>::from_shape_vec((nk, self.nsta),omega.into_iter().flatten().collect()).unwrap();
-            let band=Array2::<f64>::from_shape_vec((nk, self.nsta),band.into_iter().flatten().collect()).unwrap();
-            let partial_G=Array2::<f64>::from_shape_vec((nk, self.nsta),partial_G.into_iter().flatten().collect()).unwrap();
+            let omega=Array2::<f64>::from_shape_vec((nk, self.nsta()),omega.into_iter().flatten().collect()).unwrap();
+            let band=Array2::<f64>::from_shape_vec((nk, self.nsta()),band.into_iter().flatten().collect()).unwrap();
+            let partial_G=Array2::<f64>::from_shape_vec((nk, self.nsta()),partial_G.into_iter().flatten().collect()).unwrap();
 
             return (omega,band,Some(partial_G))
         }else{
@@ -748,8 +748,8 @@ impl Model{
                 let (omega_one,band,partial_G)=self.berry_connection_dipole_onek(&x.to_owned(),&dir_1,&dir_2,&dir_3,spin); 
                 (omega_one,band)
                 }).collect();
-            let omega=Array2::<f64>::from_shape_vec((nk, self.nsta),omega.into_iter().flatten().collect()).unwrap();
-            let band=Array2::<f64>::from_shape_vec((nk, self.nsta),band.into_iter().flatten().collect()).unwrap();
+            let omega=Array2::<f64>::from_shape_vec((nk, self.nsta()),omega.into_iter().flatten().collect()).unwrap();
+            let band=Array2::<f64>::from_shape_vec((nk, self.nsta()),band.into_iter().flatten().collect()).unwrap();
             return (omega,band,None)
         }
     }

@@ -105,6 +105,14 @@ impl Model{
     pub fn norb(&self)->usize{
         self.atom.iter().fold(0 |acc,x| x.orb.len())
     }
+    pub fn nsta(&self)->usize{
+        if self.spin{
+            return 2*self.norb();
+        }else{
+            return self.norb();
+        }
+
+    }
     pub fn dim_r(&self)->usize{
         self.lat.len()
     }
@@ -114,11 +122,17 @@ impl Model{
         for atom_ele in self.atom.iter(){
             for orb_ele in atom_ele.orb.outer_iter(){
                 orb.slice_mut(s![a,..]).assign(&orb_ele);
+                a+=1;
             }
         }
         orb
     }
     pub fn atom(&self)->Array2<f64>{
+        let mut atom=Array2::zeros((self.natom(),self.dim_r()));
+        for (i,atom_ele) in self.atom.iter().enumerate(){
+            atom.slice_mut(s![i,..]).assign(&atom_ele.position);
+        }
+        atom
     }
 }
 
