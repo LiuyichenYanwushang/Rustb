@@ -279,13 +279,12 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
 #[allow(non_snake_case)]
 impl Model{
     //! 这个模块是用来提供电导率张量的, 包括自旋霍尔电导率和霍尔电导率, 以及非线性霍尔电导率.
+    //! 
+    //! 
+    //!
     #[allow(non_snake_case)]
     #[inline(always)]
     pub fn berry_curvature_n_onek<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix1>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array1::<f64>,Array1::<f64>){
-        //!给定一个k点, 返回 $\Omega_n(\bm k)$
-        //! 对于含有频率的Berry_curvature公式, 我们采用的是
-        //! $$\Omega_n(\bm k)=-2\text{Im}\frac{\bra{\psi_{n\bm k}}
-        //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
         let li:Complex<f64>=1.0*Complex::i();
         let (band,evec)=self.solve_onek(&k_vec);
         let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
@@ -839,4 +838,72 @@ impl Model{
     pub fn orbital_magnetic_moment(
     //! 按照定义,G
     */
+}
+
+
+
+impl Model {
+    //! 这个模块我们计算的是光电导率
+    //! 这里采用的定义为
+    //! $$\sigma_{\ap\bt}=\f{2ie^2\hbar}{V}\sum_{\bm k}\sum_{n} f_n (g_{n,\ap\bt}+\f{i}{2}\Og_{n,\ap\bt})$$
+    //!
+    //! 其中
+    //! $$\\begin{aligned}
+    //! g_{n\ap\bt}&=\sum_{m=\not n}\f{\og-i\eta}{\ve_{n\bm k}-\ve_{m\bm k}}\f{\text{Re} \bra{\psi_{n\bm k}}\p_\ap H\ket{\psi_{m\bm k}}\bra{\psi_{m\bm k}}\p_\bt H\ket{\psi_{n\bm k}}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og-i\eta)^2}\\\\
+    //! \Og_{n\ap\bt}&=\sum_{m=\not n}\f{\text{Re} \bra{\psi_{n\bm k}}\p_\ap H\ket{\psi_{m\bm k}}\bra{\psi_{m\bm k}}\p_\bt H\ket{\psi_{n\bm k}}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og-i\eta)^2}
+    //! \\end{aligned}
+    //! $$
+    pub fn optical_geometry_n_onek<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix1>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:&Array1<f64>,eta:f64)->(Array2::<Complex<f64>>,Array2::<Complex<f64>>,Array1::<f64>){
+        //!这个函数是用来计算 $g_{n,\ap\bt}$ 和 $\og_{n\ap\bt}$ 的
+        //! og 代表频率
+        //! eta 是一个小量
+
+        let li:Complex<f64>=1.0*Complex::i();
+        let (band,evec)=self.solve_onek(&k_vec);
+        let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
+        //let mut J:Array3::<Complex<f64>>=v.clone();
+        let mut J=v.view();
+        let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
+        let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
+
+        let evec_conj:Array2::<Complex<f64>>=evec.mapv(|x| x.conj());
+        let evec=evec.t();
+        let A1=J.dot(&evec);
+        let A1=&evec_conj.dot(&A1);
+        let A2=v.dot(&evec);
+        let A2=evec_conj.dot(&A2);
+        let A2=A2.reversed_axes();
+        let AA=A1*A2;
+        let Complex { re, im } = AA.view().split_complex();
+        let n_og=og.len();
+        assert_eq!(band.len(),self.nsta,"this is strange for band's length is not equal to self.nsta");
+        let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        let mut Us=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        for i in 0..self.nsta{
+            for j in 0..self.nsta{
+                U0[[i,j]]=Complex::new(band[[j]]-band[[i]],0.0);
+            }
+        }
+        let Us=U0.map(|x| {if U0.norm()< 1e-8{ Complex::new(0.0,0.0)} else { x.finv()}} );
+        let mut matric_n=Array2::zeros((n_og,self.nsta));
+        let mut omega_n=Array2::zeros((n_og,self.nsta));
+        Zip::from(omega_n.outer_iter_mut()).and(matric_n.outer_iter_mut()).and(og.view()).apply(
+            |mut omega,mut matric,a0|{ 
+                let li_eta=a0+li*eta;
+                let UU=U0.mapv(|x| (x*x-li_eta*li_eta).finv());
+                let U1=&UU*&Us*li_eta;
+                omega.assign(&(&im*(UU.t()).sum_axis(Axis(1))));
+                matric.assign(&(&re*(U1.t()).sum_axis(Axis(1))));
+            }
+        );
+        (matric_n,omega_n,band)
+    }
+    /*
+    pub fn optical_geometry_onek<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix1>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:&Array1<f64>,T:&Array1<f64>,eta:f64)->(Array2::<Complex<f64>>,Array2::<Complex<f64>>){
+        //!这个函数是用来计算含有温度(包括0温) 时候某一个K 点的光电导率
+
+        let (matric_n,omega_n,band)=
+    }
+    */
+
 }

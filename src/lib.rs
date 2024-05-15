@@ -1204,8 +1204,6 @@ mod tests {
         pdf_name.push_str("/dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
-
-
     }
     #[test]
     fn kagome(){
