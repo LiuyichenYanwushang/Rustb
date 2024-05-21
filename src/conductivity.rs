@@ -898,12 +898,6 @@ impl Model {
         );
         (matric_n,omega_n,band)
     }
-    /*
-    pub fn optical_geometry_onek<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix1>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:&Array1<f64>,T:&Array1<f64>,eta:f64)->(Array2::<Complex<f64>>,Array2::<Complex<f64>>){
-        //!这个函数是用来计算含有温度(包括0温) 时候某一个K 点的光电导率
 
-        let (matric_n,omega_n,band)=
-    }
-    */
 
 }
