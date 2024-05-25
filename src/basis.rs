@@ -2484,6 +2484,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         }
         let mut hamR=Array2::<isize>::zeros((1,3));
         let mut ham=Array3::<Complex<f64>>::zeros((1,nsta,nsta));
+        //没有修正
         for i in 0..n_R{
             let mut string=reads[i*nsta*nsta+n_line].trim().split_whitespace();
             let a=string.next().unwrap().parse::<isize>().unwrap();
@@ -2661,7 +2662,9 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         let mut rmatrix=Array4::<Complex<f64>>::zeros((1,3,nsta,nsta));
         let path=Path::new(&r_path);
         let hr=File::open(path);
+        let mut have_r=false;
         if hr.is_ok(){
+            have_r=true;
             let hr=hr.unwrap();
             let reader = BufReader::new(hr);
             let mut reads:Vec<String>=Vec::new();
@@ -2684,7 +2687,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                                 for r in 0..3{
                                     let re=string.next().unwrap().parse::<f64>().unwrap();
                                     let im=string.next().unwrap().parse::<f64>().unwrap();
-                                    rmatrix[[0,r,ind_i,ind_j]]=Complex::new(re,im);
+                                    rmatrix[[0,r,ind_j,ind_i]]=Complex::new(re,im);
                                 }
                             }
                         }
@@ -2697,7 +2700,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                                 for r in 0..3{
                                     let re=string.next().unwrap().parse::<f64>().unwrap();
                                     let im=string.next().unwrap().parse::<f64>().unwrap();
-                                    matrix[[0,r,ind_i,ind_j]]=Complex::new(re,im);
+                                    matrix[[0,r,ind_j,ind_i]]=Complex::new(re,im);
                                 }
                             }
                         }

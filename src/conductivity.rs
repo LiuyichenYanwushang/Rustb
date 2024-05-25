@@ -389,7 +389,7 @@ impl Model{
         //目前求积分的方法上, 还是直接求和最有用, 其他的典型积分方法, 如gauss 法等,
         //都因为存在间断点而效率不高. 
         //对于非零温的, 使用梯形法应该效果能好一些.
-        let conductivity:f64=omega.sum()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
+        let conductivity:f64=omega.sum()/(nk as f64)/self.lat.det().unwrap();
         conductivity
     }
     #[allow(non_snake_case)]
@@ -402,7 +402,7 @@ impl Model{
         let inte=|k_range| adapted_integrate_quick(&use_fn,&k_range,re_err,ab_err);
         let omega:Vec<f64>=k_range.axis_iter(Axis(0)).into_par_iter().map(|x| { inte(x.to_owned())}).collect();
         let omega:Array1::<f64>=arr1(&omega);
-        let conductivity:f64=omega.sum()*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
+        let conductivity:f64=omega.sum()/self.lat.det().unwrap();
         conductivity
     }
     ///用来计算多个 $\mu$ 值的, 这个函数是先求出 $\Omega_n$, 然后再分别用不同的费米能级来求和, 这样速度更快, 因为避免了重复求解 $\Omega_n$, 但是相对来说更耗内存, 而且不能做到自适应积分算法.
@@ -424,7 +424,7 @@ impl Model{
                         omega[[k]]+= if band[[k,i]]> *x {0.0} else {omega_n[[k,i]]};
                     }
                 }
-                omega.sum()*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap()/(nk as f64)
+                omega.sum()/self.lat.det().unwrap()/(nk as f64)
             }).collect();
             Array1::<f64>::from_vec(conductivity_new)
         }else{
@@ -433,7 +433,7 @@ impl Model{
                 let fermi_dirac=band.mapv(|x0| 1.0/((beta*(x0-x)).exp()+1.0));
                 let omega:Vec<f64>=omega_n.axis_iter(Axis(0)).zip(fermi_dirac.axis_iter(Axis(0))).map(|(a,b)| {(&a*&b).sum()}).collect();
                 let omega:Array1::<f64>=arr1(&omega);
-                omega.sum()*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap()/(nk as f64)
+                omega.sum()/self.lat.det().unwrap()/(nk as f64)
             }).collect();
             Array1::<f64>::from_vec(conductivity_new)
         };
@@ -566,7 +566,7 @@ impl Model{
                 let f=1.0/(beta*(mu-*energy)).mapv(|x| x.exp()+1.0);
                 acc+&f*(1.0-&f)*beta**omega0
             }).reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
-            conductivity=conductivity.clone()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
+            conductivity=conductivity.clone()/(nk as f64)/self.lat.det().unwrap();
         }else{
             //采用四面体积分法, 或者对于二维体系, 采用三角形积分法
             //积分的思路是, 通过将一个六面体变成5个四面体, 然后用线性插值的方法, 得到费米面,
@@ -824,7 +824,7 @@ impl Model{
                 let conductivity_new=Array1::<f64>::from_vec(conductivity_new);
                 conductivity=conductivity.clone()+conductivity_new;
             }
-            conductivity=conductivity.clone()/(nk as f64)*(2.0*PI).powi(self.dim_r as i32)/self.lat.det().unwrap();
+            conductivity=conductivity.clone()/(nk as f64)/self.lat.det().unwrap();
         }else{
             //采用四面体积分法, 或者对于二维体系, 采用三角形积分法
             //积分的思路是, 通过将一个六面体变成5个四面体, 然后用线性插值的方法, 得到费米面,
@@ -875,16 +875,23 @@ impl Model {
         let A2=A2.reversed_axes();
         let AA=A1*A2;
         let Complex { re, im } = AA.view().split_complex();
+        let re=re.mapv(|x| Complex::new(2.0*x, 0.0));
+        let im=im.mapv(|x| Complex::new(0.0, -2.0*x));
         let n_og=og.len();
         assert_eq!(band.len(),self.nsta,"this is strange for band's length is not equal to self.nsta");
         let mut U0=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         let mut Us=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         for i in 0..self.nsta{
             for j in 0..self.nsta{
-                U0[[i,j]]=Complex::new(band[[j]]-band[[i]],0.0);
+                let a=band[[i]]-band[[j]];
+                U0[[i,j]]=Complex::new(a,0.0);
+                Us[[i,j]]=if a.abs() > 1e-6{
+                    Complex::new(1.0/a,0.0)
+                }else{
+                    Complex::new(0.0,0.0)
+                };
             }
         }
-        let Us=U0.map(|x| {if U0.norm()< 1e-8{ Complex::new(0.0,0.0)} else { x.finv()}} );
         let mut matric_n=Array2::zeros((n_og,self.nsta));
         let mut omega_n=Array2::zeros((n_og,self.nsta));
         Zip::from(omega_n.outer_iter_mut()).and(matric_n.outer_iter_mut()).and(og.view()).apply(
@@ -892,12 +899,86 @@ impl Model {
                 let li_eta=a0+li*eta;
                 let UU=U0.mapv(|x| (x*x-li_eta*li_eta).finv());
                 let U1=&UU*&Us*li_eta;
-                omega.assign(&(&im*(UU.t()).sum_axis(Axis(1))));
-                matric.assign(&(&re*(U1.t()).sum_axis(Axis(1))));
+                omega.assign(&((&im*&(UU)).sum_axis(Axis(1))));
+                matric.assign(&((&re*&(U1)).sum_axis(Axis(1))));
             }
         );
         (matric_n,omega_n,band)
     }
 
+    pub fn optical_conductivity(&self,k_mesh:&Array1<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:f64,mu:f64,og:&Array1<f64>,eta:f64)->(Array1::<Complex<f64>>,Array1::<Complex<f64>>)
+        //针对单个的
+    {
+        let li:Complex<f64>=1.0*Complex::i();
+        let kvec:Array2::<f64>=gen_kmesh(k_mesh);
+        let nk:usize=kvec.len_of(Axis(0));
+        let n_og=og.len();
+        let (matric_sum,omega_sum)=kvec.outer_iter().into_par_iter()
+            .map(|k| {
+                let (matric_n,omega_n,band)=self.optical_geometry_n_onek(&k,dir_1,dir_2,og,eta);
+                let fermi_dirac=if T==0.0{
+                    band.mapv(|x| if x>mu {0.0} else {1.0})
+                }else{
+                    let beta=1.0/T/8.617e-5;
+                    band.mapv(|x| {((beta*(x-mu)).exp()+1.0).recip()})
+                };
+                let fermi_dirac=fermi_dirac.mapv(|x| Complex::new(x,0.0));
+                let matric=matric_n.dot(&fermi_dirac);
+                let omega=omega_n.dot(&fermi_dirac);
+                (matric,omega)
+            })
+            .reduce(
+                ||{
+                    (
+                        Array1::zeros(n_og),
+                        Array1::zeros(n_og)
+                    )
+                },
+                |(matric_acc,omega_acc),(matric,omega)|{
+                    (matric_acc+matric,omega_acc+omega)
+                }
+                );
+        let matric_sum=li*matric_sum/self.lat.det().unwrap()/(nk as f64);
+        let omega_sum=li*omega_sum/self.lat.det().unwrap()/(nk as f64);
+        (matric_sum, omega_sum)
+    }
+
+
+    pub fn optical_conductivity_T(&self,k_mesh:&Array1<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:&Array1<f64>,mu:f64,og:&Array1<f64>,eta:f64)->(Array2::<Complex<f64>>,Array2::<Complex<f64>>)
+    {
+        let kvec:Array2::<f64>=gen_kmesh(k_mesh);
+        let nk:usize=kvec.len_of(Axis(0));
+        let n_og=og.len();
+        let n_T=T.len();
+        let (matric_sum,omega_sum)=kvec.outer_iter().into_par_iter()
+            .map(|k| {
+                let (matric_n,omega_n,band)=self.optical_geometry_n_onek(&k,dir_1,dir_2,og,eta);
+                let beta=T.mapv(|x| 1.0/x/8.617e-5);
+                let nsta=band.len();
+                let n_T=beta.len();
+                let mut fermi_dirac:Array2<Complex<f64>>=Array2::zeros((nsta,n_T));
+                Zip::from(fermi_dirac.outer_iter_mut()).and(band.view()).apply(|mut f0,e0|{
+                    let a=beta.map(|x0| Complex::new(((x0*(e0-mu)).exp()+1.0).recip(),0.0));
+                    f0.assign(&a);
+                });
+                let matric=matric_n.dot(&fermi_dirac);
+                let omega=omega_n.dot(&fermi_dirac);
+                (matric,omega)
+            })
+            .reduce(
+                ||{
+                    (
+                        Array2::zeros((n_og,n_T)),
+                        Array2::zeros((n_og,n_T))
+                    )
+                },
+                |(matric_acc,omega_acc),(matric,omega)|{
+                    (matric_acc+matric,omega_acc+omega)
+                }
+                );
+        let matric_sum=matric_sum/self.lat.det().unwrap()/(nk as f64);
+        let omega_sum=omega_sum/self.lat.det().unwrap()/(nk as f64);
+        (matric_sum, omega_sum)
+    }
 
 }
