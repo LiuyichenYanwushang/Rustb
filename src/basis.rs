@@ -649,10 +649,11 @@ impl Model{
             rk0.swap_axes(1,2);
             let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
             for i in 0..self.dim_r{
-                let r0=&U_conj.dot(&rk.slice(s![i,..,..]).dot(&U));
+                let r0=rk.slice(s![i,..,..]);
                 let UU=orb_real.column(i);//这个是实空间的数据, 
                 let UU=Array2::from_diag(&UU); //将其化为矩阵
-                let A=r0-&UU;
+                let A=&r0-&UU;
+                let r0=&U_conj.dot(&A).dot(&U);
                 let A=comm(&hamk,&A)*Complex::i();
                 v.slice_mut(s![i,..,..]).add_assign(&A);
             }
@@ -2460,7 +2461,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         let mut hr_path=file_path.clone();
         hr_path.push_str("_hr.dat");
         let path=Path::new(&hr_path);
-        let hr=File::open(path).expect("Unable open the file, please check if have hr file");
+        let hr=File::open(path).expect(&format!("Unable open the file {:?}, please check if have hr file",path));
         let reader = BufReader::new(hr);
         let mut reads:Vec<String>=Vec::new();
         for line in reader.lines() {
@@ -2483,6 +2484,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         }
         let mut hamR=Array2::<isize>::zeros((1,3));
         let mut ham=Array3::<Complex<f64>>::zeros((1,nsta,nsta));
+        //没有修正
         for i in 0..n_R{
             let mut string=reads[i*nsta*nsta+n_line].trim().split_whitespace();
             let a=string.next().unwrap().parse::<isize>().unwrap();
@@ -2582,7 +2584,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                                     "dyz"=>1,
                                     "dz2"=>1,
                                     "dx2-y2"=>1,
-                                    &_=>panic!("Wrong, no matching"),
+                                    &_=>panic!("Wrong, no matching, please check the projection field in seedname.win. There are some projections that can not be identified"),
                                 };
                                 atom_orb_number+=aa;
                             }
@@ -2660,7 +2662,9 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         let mut rmatrix=Array4::<Complex<f64>>::zeros((1,3,nsta,nsta));
         let path=Path::new(&r_path);
         let hr=File::open(path);
+        let mut have_r=false;
         if hr.is_ok(){
+            have_r=true;
             let hr=hr.unwrap();
             let reader = BufReader::new(hr);
             let mut reads:Vec<String>=Vec::new();
@@ -2683,7 +2687,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                                 for r in 0..3{
                                     let re=string.next().unwrap().parse::<f64>().unwrap();
                                     let im=string.next().unwrap().parse::<f64>().unwrap();
-                                    rmatrix[[0,r,ind_i,ind_j]]=Complex::new(re,im);
+                                    rmatrix[[0,r,ind_j,ind_i]]=Complex::new(re,im);
                                 }
                             }
                         }
@@ -2696,7 +2700,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                                 for r in 0..3{
                                     let re=string.next().unwrap().parse::<f64>().unwrap();
                                     let im=string.next().unwrap().parse::<f64>().unwrap();
-                                    matrix[[0,r,ind_i,ind_j]]=Complex::new(re,im);
+                                    matrix[[0,r,ind_j,ind_i]]=Complex::new(re,im);
                                 }
                             }
                         }

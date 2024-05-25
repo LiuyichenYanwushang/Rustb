@@ -693,8 +693,8 @@ mod tests {
         let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
-        println!("quantom_Hall_effect={}",conductivity/(2.0*PI));
-        assert!((conductivity/(2.0*PI)-1.0).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!");
+        println!("quantom_Hall_effect={}",conductivity*(2.0*PI));
+        assert!((conductivity*(2.0*PI)-1.0).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!");
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
 
         let nk:usize=1000;
@@ -703,8 +703,8 @@ mod tests {
         let conductivity=model.Hall_conductivity_adapted(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta,0.01,0.0001);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
-        println!("霍尔电导率{}",conductivity/(2.0*PI));
-        assert!((conductivity/(2.0*PI)-1.0).abs()<1e-5,"Wrong!, the Hall conductivity is wrong!");
+        println!("霍尔电导率{}",conductivity*(2.0*PI));
+        assert!((conductivity*(2.0*PI)-1.0).abs()<1e-5,"Wrong!, the Hall conductivity is wrong!");
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
         //画一下3000k的时候的费米导数分布
         let T=100.0;
@@ -1250,8 +1250,6 @@ mod tests {
         pdf_name.push_str("/dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
-
-
     }
     #[test]
     fn kagome(){
