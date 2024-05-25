@@ -62,6 +62,20 @@ pub struct Model_sparse<hop_element>{
     pub ham:Vec<hop_element>,
 }
 
+
+pub enum orb_projection{
+    s,
+    px,
+    py,
+    pz,
+    dxy,
+    dyz,
+    dxz,
+    dz2,
+    dx2y2,
+}
+
+
 ///这个是 tight-binding 模型的基本单位
 #[derive(Clone,Debug)]
 pub struct Model{
@@ -78,25 +92,30 @@ pub struct Model{
     /// - The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
     pub rmatrix:Array4::<Complex<f64>>,
 }
+struct orb{
+    position:Array1<f64>,
+    projection:orb_projection,
+}
+impl orb{
+    positon(&self)->{
+        self.position
+    }
+    projection(&self)->{
+        self.projection
+    }
+}
 
 pub struct atom{
-    n_orb:usize,
-    orb:Array2<f64>,
     position:Array1<f64>,
-    projection:Vec<orb_projection>,
+    orb:Vec<orb>,
 }
 
-pub enum orb_projection{
-    s,
-    px,
-    py,
-    pz,
-    dxy,
-    dyz,
-    dxz,
-    dz2,
-    dx2y2,
+impl atom{
+    position(&self)->{
+        self.position
+    }
 }
+
 
 impl Model{
     pub fn natom(&self)->usize{
@@ -120,8 +139,8 @@ impl Model{
         let mut orb=Array2::zeros((self.norb(),self.dim_r()));
         let mut a=0;
         for atom_ele in self.atom.iter(){
-            for orb_ele in atom_ele.orb.outer_iter(){
-                orb.slice_mut(s![a,..]).assign(&orb_ele);
+            for orb_ele in atom_ele.orb.iter(){
+                orb.slice_mut(s![a,..]).assign(&orb_ele.position());
                 a+=1;
             }
         }
@@ -130,12 +149,12 @@ impl Model{
     pub fn atom(&self)->Array2<f64>{
         let mut atom=Array2::zeros((self.natom(),self.dim_r()));
         for (i,atom_ele) in self.atom.iter().enumerate(){
-            atom.slice_mut(s![i,..]).assign(&atom_ele.position);
+            atom.slice_mut(s![i,..]).assign(&atom_ele.position());
         }
         atom
     }
-}
 
+}
 
 
 
