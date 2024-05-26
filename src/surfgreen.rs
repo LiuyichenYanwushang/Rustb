@@ -57,7 +57,7 @@ impl surf_Green{
     ///
     ///对于非晶格矢量得方向, 需要用 model.make_supercell 先扩胞
     pub fn from_Model(model:&Model,dir:usize,eta:f64)->surf_Green{
-        if dir > model.dim_r{
+        if dir > model.dim_r(){
             panic!("Wrong, the dir must smaller than model's dim_r")
         }
         let mut R_max:usize=0;
@@ -66,13 +66,13 @@ impl surf_Green{
                 R_max=R0[[dir]].abs() as usize;
             }
         }
-        let mut U=Array2::<f64>::eye(model.dim_r);
+        let mut U=Array2::<f64>::eye(model.dim_r());
         U[[dir,dir]]=R_max as f64;
         let model=model.make_supercell(&U);
-        let mut ham0=Array3::<Complex<f64>>::zeros((0,model.nsta,model.nsta));
-        let mut hamR0=Array2::<isize>::zeros((0,model.dim_r));
-        let mut hamR=Array3::<Complex<f64>>::zeros((0,model.nsta,model.nsta));
-        let mut hamRR=Array2::<isize>::zeros((0,model.dim_r));
+        let mut ham0=Array3::<Complex<f64>>::zeros((0,model.nsta(),model.nsta()));
+        let mut hamR0=Array2::<isize>::zeros((0,model.dim_r()));
+        let mut hamR=Array3::<Complex<f64>>::zeros((0,model.nsta(),model.nsta()));
+        let mut hamRR=Array2::<isize>::zeros((0,model.dim_r()));
         let use_hamR=model.hamR.rows();
         let use_ham=model.ham.outer_iter();
         for (ham,R) in use_ham.zip(use_hamR){
@@ -95,9 +95,9 @@ impl surf_Green{
         let new_hamR0=remove_col(hamR0,dir);
         let new_hamRR=remove_col(hamRR,dir);
         let mut green:surf_Green=surf_Green{
-            dim_r:model.dim_r-1,
-            norb:model.norb,
-            nsta:model.nsta,
+            dim_r:model.dim_r()-1,
+            norb:model.norb(),
+            nsta:model.nsta(),
             natom:model.natom,
             spin:model.spin,
             lat:new_lat,
@@ -114,11 +114,11 @@ impl surf_Green{
     }
     pub fn k_path(&self,path:&Array2::<f64>,nk:usize)->(Array2::<f64>,Array1::<f64>,Array1::<f64>){
         //!根据高对称点来生成高对称路径, 画能带图
-        if self.dim_r==0{
+        if self.dim_r()==0{
             panic!("the k dimension of the model is 0, do not use k_path")
         }
         let n_node:usize=path.len_of(Axis(0));
-        if self.dim_r != path.len_of(Axis(1)){
+        if self.dim_r() != path.len_of(Axis(1)){
             panic!("Wrong, the path's length along 1 dimension must equal to the model's dimension")
         }
         let k_metric=(self.lat.dot(&self.lat.t())).inv().unwrap();
@@ -138,7 +138,7 @@ impl surf_Green{
         }
         node_index.push(nk-1);
         let mut k_dist=Array1::<f64>::zeros(nk);
-        let mut k_vec=Array2::<f64>::zeros((nk,self.dim_r));
+        let mut k_vec=Array2::<f64>::zeros((nk,self.dim_r()));
         //k_vec.slice_mut(s![0,..]).assign(&path.slice(s![0,..]));
         k_vec.row_mut(0).assign(&path.row(0));
         for n in 1..n_node {
@@ -160,9 +160,9 @@ impl surf_Green{
 
     #[inline(always)]
     pub fn gen_ham_onek(&self,kvec:&Array1<f64>)->(Array2<Complex<f64>>,Array2<Complex<f64>>){
-        let mut ham0k=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-        let mut hamRk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
-        if kvec.len() !=self.dim_r{
+        let mut ham0k=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
+        let mut hamRk=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
+        if kvec.len() !=self.dim_r(){
             panic!("Wrong, the k-vector's length must equal to the dimension of model.")
         }
         let nR:usize=self.ham_bulkR.len_of(Axis(0));
@@ -206,7 +206,7 @@ impl surf_Green{
     pub fn surf_green_one(&self,kvec:&Array1<f64>,Energy:f64)->(f64,f64,f64){
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
         let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
-        let I0=Array2::<Complex<f64>>::eye(self.nsta);
+        let I0=Array2::<Complex<f64>>::eye(self.nsta());
         let accurate:f64=1e-8;
         let epsilon=Complex::new(Energy,self.eta)*&I0;
         let mut epi=hamk.clone();
@@ -245,7 +245,7 @@ impl surf_Green{
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
         //let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
         let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
-        let I0=Array2::<Complex<f64>>::eye(self.nsta);
+        let I0=Array2::<Complex<f64>>::eye(self.nsta());
         let accurate:f64=1e-6;
         let ((N_R,N_L),N_B)=Energy.into_par_iter().map(|e| {
             let epsilon=Complex::new(*e,self.eta)*&I0;
@@ -290,23 +290,23 @@ impl surf_Green{
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
         //let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
         let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
-        let I0=Array2::<Complex<f64>>::eye(self.nsta);
+        let I0=Array2::<Complex<f64>>::eye(self.nsta());
         let accurate:f64=1e-6;
-        let mut epsilon=Array2::<Complex<f64>>::eye(self.nsta);
+        let mut epsilon=Array2::<Complex<f64>>::eye(self.nsta());
         //let mut epi=hamk.clone();
         //let mut eps=hamk.clone();
         //let mut eps_t=hamk.clone();
         //let mut ap=hamRk.clone();
         //let mut bt=hamRk_conj.clone();
 
-        let mut epi=Array2::zeros((self.nsta,self.nsta));
-        let mut eps=Array2::zeros((self.nsta,self.nsta));
-        let mut eps_t=Array2::zeros((self.nsta,self.nsta));
-        let mut ap=Array2::zeros((self.nsta,self.nsta));
-        let mut bt=Array2::zeros((self.nsta,self.nsta));
-        let mut g_LL=Array2::zeros((self.nsta,self.nsta));
-        let mut g_RR=Array2::zeros((self.nsta,self.nsta));
-        let mut g_B=Array2::zeros((self.nsta,self.nsta));
+        let mut epi=Array2::zeros((self.nsta(),self.nsta()));
+        let mut eps=Array2::zeros((self.nsta(),self.nsta()));
+        let mut eps_t=Array2::zeros((self.nsta(),self.nsta()));
+        let mut ap=Array2::zeros((self.nsta(),self.nsta()));
+        let mut bt=Array2::zeros((self.nsta(),self.nsta()));
+        let mut g_LL=Array2::zeros((self.nsta(),self.nsta()));
+        let mut g_RR=Array2::zeros((self.nsta(),self.nsta()));
+        let mut g_B=Array2::zeros((self.nsta(),self.nsta()));
         let ((N_R,N_L),N_B): ((Vec<f64>,Vec<f64>),Vec<f64>)=Energy.into_iter().map(|e| {
             epsilon.assign(&(Complex::new(*e,self.eta)*&I0));
             eps.assign(&hamk);

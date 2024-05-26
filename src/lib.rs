@@ -62,7 +62,7 @@ pub struct Model_sparse<hop_element>{
     pub ham:Vec<hop_element>,
 }
 
-
+#[derive(Clone,Copy)]
 pub enum orb_projection{
     s,
     px,
@@ -97,11 +97,15 @@ struct orb{
     projection:orb_projection,
 }
 impl orb{
-    positon(&self)->{
+
+    fn position(&self)->Array1<f64>{
         self.position
     }
-    projection(&self)->{
+    fn projection(&self)->orb_projection{
         self.projection
+    }
+    fn gen_orb(position:Array1<f64>,projection:orb_projection)->orb{
+        orb{position,projection}
     }
 }
 
@@ -111,8 +115,17 @@ pub struct atom{
 }
 
 impl atom{
-    position(&self)->{
+    fn position(&self)->Array1<f64>{
         self.position
+    }
+    fn push_orb(&self,orb:orb){
+        self.orb.push(orb);
+    }
+    fn norb(&self)->usize{
+        self.orb.len();
+    }
+    fn gen_atom(position:Array1<f64>,orb:&Vec<orb>)->atom{
+        atom{position,orb:orb.clone()}
     }
 }
 
@@ -122,7 +135,7 @@ impl Model{
         self.atom.len()
     }
     pub fn norb(&self)->usize{
-        self.atom.iter().fold(0 |acc,x| x.orb.len())
+        self.atom.iter().fold(0, |acc,x| acc+x.orb.len())
     }
     pub fn nsta(&self)->usize{
         if self.spin{
@@ -140,7 +153,7 @@ impl Model{
         let mut a=0;
         for atom_ele in self.atom.iter(){
             for orb_ele in atom_ele.orb.iter(){
-                orb.slice_mut(s![a,..]).assign(&orb_ele.position());
+                orb.row_mut(a).assign(&orb_ele.position());
                 a+=1;
             }
         }
@@ -398,7 +411,7 @@ pub fn  write_txt_1<T:usefloat>(data:&Array1<T>,output:&str)-> std::io::Result<(
 ///    let mut fg = Figure::new();
 ///    let x:Vec<f64>=k_dist.to_vec();
 ///    let axes=fg.axes2d();
-///    for i in 0..model.nsta{
+///    for i in 0..model.nsta(){
 ///        let y:Vec<f64>=eval.slice(s![..,i]).to_owned().to_vec();
 ///        axes.lines(&x, &y, &[Color("black")]);
 ///    }
@@ -1149,7 +1162,7 @@ mod tests {
         println!("solve_band_all took {} seconds", duration.as_secs_f64());   // 输出执行时间
         let nresults=band.len();
         let show_evec=evec.to_owned().map(|x| x.norm_sqr());
-        let mut size=Array2::<f64>::zeros((new_model.nsta,new_model.natom));
+        let mut size=Array2::<f64>::zeros((new_model.nsta(),new_model.natom));
         let norb=new_model.norb;
         for i in 0..nresults{
             let mut s=0;

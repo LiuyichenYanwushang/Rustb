@@ -37,7 +37,7 @@ impl Model{
         hr_name.push_str(seedname);
         hr_name.push_str("_hr.dat");
         let mut file=File::create(hr_name).expect("Unable to BAND.dat");
-        writeln!(file,"{}",self.nsta);
+        writeln!(file,"{}",self.nsta());
         writeln!(file,"{}",n_R);
         let mut weight=String::new();
         let lines=n_R.div_euclid(15);
@@ -52,12 +52,12 @@ impl Model{
         }
         writeln!(file,"{}",weight);
         //接下来我们进行数据的写入
-        match self.dim_r{
+        match self.dim_r(){
             0 =>{
                 let mut s=String::new();
                 let ham=self.ham.slice(s![0,..,..]);
-                for orb_1 in 0..self.nsta{
-                    for orb_2 in 0..self.nsta{
+                for orb_1 in 0..self.nsta(){
+                    for orb_2 in 0..self.nsta(){
                         s.push_str(&format!("0    0    0    {:11.8}    {:11.8}\n",ham[[orb_1,orb_2]].re,ham[[orb_1,orb_2]].im));
                     }
                 }
@@ -71,8 +71,8 @@ impl Model{
                     if R_exist{
                         let r0=index_R(&self.hamR,&array![i as isize]);
                         let ham=self.ham.slice(s![r0,..,..]);
-                        for orb_1 in 0..self.nsta{
-                            for orb_2 in 0..self.nsta{
+                        for orb_1 in 0..self.nsta(){
+                            for orb_2 in 0..self.nsta(){
                                 s.push_str(&format!("{}    0    0    {:11.8}    {:11.8}\n",i,ham[[orb_1,orb_2]].re,ham[[orb_1,orb_2]].im));
                             }
                         }
@@ -80,8 +80,8 @@ impl Model{
                     else if R_inv_exist{
                         let r0=index_R(&self.hamR,&(-array![i as isize]));
                         let ham=self.ham.slice(s![r0,..,..]);
-                        for orb_1 in 0..self.nsta{
-                            for orb_2 in 0..self.nsta{
+                        for orb_1 in 0..self.nsta(){
+                            for orb_2 in 0..self.nsta(){
                                 s.push_str(&format!("{}    0    0    {:>11.8}    {:>11.8}\n",i,ham[[orb_1,orb_2]].re,-ham[[orb_1,orb_2]].im));
 
                             }
@@ -101,8 +101,8 @@ impl Model{
                         if R_exist{
                             let r0=index_R(&self.hamR,&array![R1 as isize,R2 as isize]);
                             let ham=self.ham.slice(s![r0,..,..]);
-                            for orb_1 in 0..self.nsta{
-                                for orb_2 in 0..self.nsta{
+                            for orb_1 in 0..self.nsta(){
+                                for orb_2 in 0..self.nsta(){
                                     s.push_str(&format!("{:>3}  {:>3}    0    {:>11.8}    {:>11.8}\n",R1,R2,ham[[orb_1,orb_2]].re,ham[[orb_1,orb_2]].im));
                                 }
                             }
@@ -110,8 +110,8 @@ impl Model{
                         else if R_inv_exist{
                             let r0=index_R(&self.hamR,&(-array![R1 as isize, R2 as isize]));
                             let ham=self.ham.slice(s![r0,..,..]);
-                            for orb_1 in 0..self.nsta{
-                                for orb_2 in 0..self.nsta{
+                            for orb_1 in 0..self.nsta(){
+                                for orb_2 in 0..self.nsta(){
                                     s.push_str(&format!("{:>3}  {:>3}    0    {:>11.8}    {:>11.8}\n",R1,R2,ham[[orb_1,orb_2]].re,-ham[[orb_1,orb_2]].im));
 
                                 }
@@ -132,8 +132,8 @@ impl Model{
                             if R_exist{
                                 let r0=index_R(&self.hamR,&array![R1 as isize,R2 as isize]);
                                 let ham=self.ham.slice(s![r0,..,..]);
-                                for orb_1 in 0..self.nsta{
-                                    for orb_2 in 0..self.nsta{
+                                for orb_1 in 0..self.nsta(){
+                                    for orb_2 in 0..self.nsta(){
                                         s.push_str(&format!("{:3}  {:3}  {:3}    {:11.8}    {:11.8}\n",R1,R2,R3,ham[[orb_1,orb_2]].re,ham[[orb_1,orb_2]].im));
                                     }
                                 }
@@ -141,8 +141,8 @@ impl Model{
                             else if R_inv_exist{
                                 let r0=index_R(&self.hamR,&(-array![R1 as isize, R2 as isize,R3 as isize]));
                                 let ham=self.ham.slice(s![r0,..,..]);
-                                for orb_1 in 0..self.nsta{
-                                    for orb_2 in 0..self.nsta{
+                                for orb_1 in 0..self.nsta(){
+                                    for orb_2 in 0..self.nsta(){
                                         s.push_str(&format!("{:3}  {:3}  {:3}    {:11.8}    {:11.8}\n",R1,R2,R3,ham[[orb_1,orb_2]].re,-ham[[orb_1,orb_2]].im));
                                     }
                                 }

@@ -54,7 +54,7 @@ impl Model{
         let add_phase=add_phase.mapv(|x| Complex::new(0.0,-2.0*x*PI).exp());
         let (eval,mut evec)=self.solve_all(kvec);
         let first_evec=&evec.slice(s![0,..,..]);
-        let mut end_evec=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        let mut end_evec=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
         Zip::from(end_evec.outer_iter_mut()).and(first_evec.outer_iter()).apply(|mut A,B|{A.assign(&(&B*&add_phase))});
         evec.slice_mut(s![n_k-1,..,..]).assign(&end_evec);
         let evec=evec.select(Axis(1),occ);
@@ -85,11 +85,11 @@ impl Model{
     pub fn berry_flux(&self,occ:&Vec<usize>,k_start:&Array1<f64>,dir_1:&Array1<f64>,dir_2:&Array1<f64>,nk1:usize,nk2:usize)->Array3<f64>{
         //!这个函数是用 wilson loop 方法来计算berry curvature 的. 根据给定的平面, 其返回一个 Array2<f64>, 这个算法的优点是精度高, 计算量小, 能快速收敛, 但是只能用于绝缘体.
         //!前两个指标表示横和纵, 数值表示大小
-        assert_eq!(k_start.len(),self.dim_r,"Wrong!, the k_start's length is {} but dim_r is {}, it's not equal!",k_start.len(),self.dim_r);
-        assert_eq!(dir_1.len(),self.dim_r,"Wrong!, the dir_1's length is {} but dim_r is {}, it's not equal!",dir_1.len(),self.dim_r);
-        assert_eq!(dir_2.len(),self.dim_r,"Wrong!, the dir_2's length is {} but dim_r is {}, it's not equal!",dir_2.len(),self.dim_r);
+        assert_eq!(k_start.len(),self.dim_r(),"Wrong!, the k_start's length is {} but dim_r is {}, it's not equal!",k_start.len(),self.dim_r());
+        assert_eq!(dir_1.len(),self.dim_r(),"Wrong!, the dir_1's length is {} but dim_r is {}, it's not equal!",dir_1.len(),self.dim_r());
+        assert_eq!(dir_2.len(),self.dim_r(),"Wrong!, the dir_2's length is {} but dim_r is {}, it's not equal!",dir_2.len(),self.dim_r());
         //开始构造loop
-        let mut k_loop=Array3::<f64>::zeros((nk1*nk2,9,self.dim_r));
+        let mut k_loop=Array3::<f64>::zeros((nk1*nk2,9,self.dim_r()));
         for i in 0..nk1{
             for j in 0..nk2{
                 let i0=(i as f64)/(nk1 as f64);
@@ -138,14 +138,14 @@ impl Model{
 
     pub fn wannier_centre(&self,occ:&Vec<usize>,k_start:&Array1<f64>,dir_1:&Array1<f64>,dir_2:&Array1<f64>,nk1:usize,nk2:usize)->Array2::<f64>{
         //!这里是计算wcc的, 沿着第一个方向走, 沿着第二个方向积分
-        if k_start.len() != self.dim_r {
-            panic!("Wrong!, the k_start's length is {} but dim_r is {}, it's not equal!",k_start.len(),self.dim_r);
-        }else if dir_1.len() != self.dim_r {
-            panic!("Wrong!, the dir_1's length is {} but dim_r is {}, it's not equal!",dir_1.len(),self.dim_r);
-        }else if dir_1.len() != self.dim_r {
-            panic!("Wrong!, the dir_2's length is {} but dim_r is {}, it's not equal!",dir_2.len(),self.dim_r);
+        if k_start.len() != self.dim_r() {
+            panic!("Wrong!, the k_start's length is {} but dim_r is {}, it's not equal!",k_start.len(),self.dim_r());
+        }else if dir_1.len() != self.dim_r() {
+            panic!("Wrong!, the dir_1's length is {} but dim_r is {}, it's not equal!",dir_1.len(),self.dim_r());
+        }else if dir_1.len() != self.dim_r() {
+            panic!("Wrong!, the dir_2's length is {} but dim_r is {}, it's not equal!",dir_2.len(),self.dim_r());
         }
-        let mut kvec=Array3::zeros((nk1,nk2,self.dim_r));
+        let mut kvec=Array3::zeros((nk1,nk2,self.dim_r()));
         for i in 0..nk1{
             for j in 0..nk2{
                 let mut s=kvec.slice_mut(s![i,j,..]);
