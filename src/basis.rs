@@ -198,27 +198,31 @@ impl Model{
             panic!("Wrong, the lat's second dimension's length must less than first dimension's length") 
         }
         let mut natom:usize=0;
-        if atom !=None && atom_list !=None{
-            new_atom=atom.unwrap();
-            natom=new_atom.len_of(Axis(0));
-            new_atom_list=atom_list.unwrap();
-        }else if atom_list !=None || atom != None{
-            panic!("Wrong, the atom and atom_list is not all None, please correspondence them");
-        }else if atom_list==None && atom==None{
-            //通过判断轨道是不是离得太近而判定是否属于一个原子,
-            //这种方法只适用于wannier90不开最局域化
-            new_atom.push_row(orb.row(0));
-            natom+=1;
-            for i in 1..norb{
-                if (orb.row(i).to_owned()-new_atom.row(new_atom.nrows()-1).to_owned()).norm_l2()>1e-2{
-                    new_atom.push_row(orb.row(i));
-                    new_atom_list.push(1);
-                    natom+=1;
-                }else{
-                    let last=new_atom_list.pop().unwrap();
-                    new_atom_list.push(last+1);
+        match (atom,atom_list){
+            (Some(atom0),Some(atom_list0))=>{
+                new_atom=atom0;
+                new_atom_list=atom_list0;
+                natom=new_atom.nrows();
+            },
+            (None,None)=>{
+                //通过判断轨道是不是离得太近而判定是否属于一个原子,
+                //这种方法只适用于wannier90不开最局域化
+                new_atom.push_row(orb.row(0));
+                natom+=1;
+                for i in 1..norb{
+                    if (orb.row(i).to_owned()-new_atom.row(new_atom.nrows()-1).to_owned()).norm_l2()>1e-2{
+                        new_atom.push_row(orb.row(i));
+                        new_atom_list.push(1);
+                        natom+=1;
+                    }else{
+                        let last=new_atom_list.pop().unwrap();
+                        new_atom_list.push(last+1);
+                    }
                 }
-            }
+            },
+            _=>{
+            panic!("Wrong, the atom and atom_list is not all None, please correspondence them");
+            },
         }
         let ham=Array3::<Complex<f64>>::zeros((1,nsta,nsta));
         let hamR=Array2::<isize>::zeros((1,dim_r));
@@ -607,12 +611,14 @@ impl Model{
         let U0=U0.mapv(|x| Complex::<f64>::new(x,0.0));
         let U0=U0*Complex::new(0.0,2.0*PI);
         let mut U0=U0.mapv(Complex::exp);
+        let U=Array2::from_diag(&U0); 
+        let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
+        let orb_real=orb_sta.dot(&self.lat);
         let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
         let Us=Us*Complex::new(0.0,2.0*PI);
         let Us=Us.mapv(Complex::exp); //Us 就是 exp(i k R)
-        let orb_real=orb_sta.dot(&self.lat);
-        let mut UU=Array3::<f64>::zeros((self.dim_r,self.nsta,self.nsta));
         //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
+        let mut UU=Array3::<f64>::zeros((self.dim_r,self.nsta,self.nsta));
         let A=orb_real.clone().insert_axis(Axis(2));
         let A=A.broadcast((self.nsta,self.dim_r,self.nsta)).unwrap().permuted_axes([1,0,2]);
         let mut B=A.view().permuted_axes([0,2,1]);
@@ -623,8 +629,6 @@ impl Model{
         let R0=&self.hamR.mapv(|x| Complex::<f64>::new(x as f64,0.0));
         let R0=R0.dot(&self.lat.mapv(|x| Complex::new(x,0.0)));
 
-        let U=Array2::from_diag(&U0); 
-        let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
         let hamk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
         let hamk:Array2::<Complex<f64>>=self.ham.outer_iter().skip(1).zip(Us.iter().skip(1)).fold(hamk,|acc,(ham,us)| {acc+&ham**us});//这个是原胞间hopping得到的hamk
         let ham0=self.ham.slice(s![0,..,..]);
@@ -650,11 +654,13 @@ impl Model{
             let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
             for i in 0..self.dim_r{
                 let r0=rk.slice(s![i,..,..]);
-                let UU=orb_real.column(i);//这个是实空间的数据, 
-                let UU=Array2::from_diag(&UU); //将其化为矩阵
-                let A=&r0-&UU;
-                let r0=&U_conj.dot(&A).dot(&U);
-                let A=comm(&hamk,&A)*Complex::i();
+                //let UU=orb_real.column(i);//这个是实空间的数据, 
+                //let UU=Array2::from_diag(&UU); //将其化为矩阵
+                //let A=&r0-&UU;
+                //let r0=&U_conj.dot(&A).dot(&U);
+                //let r0=&U_conj.dot(&r).dot(&U);
+                //let A=comm(&hamk,&A)*Complex::i();
+                let A=comm(&hamk,&r0)*Complex::i();
                 v.slice_mut(s![i,..,..]).add_assign(&A);
             }
         }
