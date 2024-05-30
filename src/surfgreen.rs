@@ -205,7 +205,6 @@ impl surf_Green{
         let UR=UR.broadcast((nRR,self.nsta,self.nsta)).unwrap();
         let hamRk=(&self.ham_hop*&UR).sum_axis(Axis(0));
         let ham0k:Array2<Complex<f64>>=&ham0+&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&ham0k)+&ham0k;
-        //hamRk=&hamRk.map(|x| x.conj()).t()+&hamRk;
         //作规范变换
         let ham0k=ham0k.dot(&U);
         let ham0k=U_conj.dot(&ham0k);
