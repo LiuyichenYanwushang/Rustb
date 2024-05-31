@@ -1,6 +1,6 @@
 [package]
 name = "Rustb"
-version = "0.1.29"
+version = "0.1.30"
 edition = "2021"
 
 categories = ["Tight bind calculation","wannier function"]
@@ -18,8 +18,9 @@ rustdoc-args = [ "--html-in-header", "./docs-header.html" ]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [profile.release]
 codegen-units = 1
-lto = "thin"
+lto = "fat"
 opt_level=3
+panic = 'abort'
 
 
 [dependencies]

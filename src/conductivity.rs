@@ -276,6 +276,8 @@ pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::
 }
 
 
+
+
 #[allow(non_snake_case)]
 impl Model{
     //! 这个模块是用来提供电导率张量的, 包括自旋霍尔电导率和霍尔电导率, 以及非线性霍尔电导率.
@@ -833,11 +835,6 @@ impl Model{
         }
         return conductivity
     }
-
-    /*
-    pub fn orbital_magnetic_moment(
-    //! 按照定义,G
-    */
 }
 
 
@@ -853,6 +850,7 @@ impl Model {
     //! \Og_{n\ap\bt}&=\sum_{m=\not n}\f{\text{Re} \bra{\psi_{n\bm k}}\p_\ap H\ket{\psi_{m\bm k}}\bra{\psi_{m\bm k}}\p_\bt H\ket{\psi_{n\bm k}}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og-i\eta)^2}
     //! \\end{aligned}
     //! $$
+    #[inline(always)]
     pub fn optical_geometry_n_onek<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix1>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:&Array1<f64>,eta:f64)->(Array2::<Complex<f64>>,Array2::<Complex<f64>>,Array1::<f64>){
         //!这个函数是用来计算 $g_{n,\ap\bt}$ 和 $\og_{n\ap\bt}$ 的
         //! og 代表频率

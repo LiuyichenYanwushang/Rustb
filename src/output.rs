@@ -9,30 +9,30 @@
 //!整合的 wannier90 格式
 //!
 //!POSCAR 格式
-use crate::{Model,gen_kmesh,comm};
-use std::fs::File;
-use std::io::Write;
-use num_complex::Complex;
-use ndarray::linalg::kron;
-use ndarray::*;
-use ndarray::prelude::*;
-use ndarray::concatenate;
-use ndarray_linalg::*;
-use std::f64::consts::PI;
-use ndarray_linalg::{Eigh, UPLO};
-use ndarray_linalg::conjugate;
-use rayon::prelude::*;
-use std::ops::AddAssign;
-use std::ops::MulAssign;
 use crate::basis::find_R;
 use crate::basis::index_R;
+use crate::{comm, gen_kmesh, Model};
+use ndarray::concatenate;
+use ndarray::linalg::kron;
+use ndarray::prelude::*;
+use ndarray::*;
+use ndarray_linalg::conjugate;
+use ndarray_linalg::*;
+use ndarray_linalg::{Eigh, UPLO};
+use num_complex::Complex;
+use rayon::prelude::*;
+use std::f64::consts::PI;
+use std::fs::File;
+use std::io::Write;
+use std::ops::AddAssign;
+use std::ops::MulAssign;
 
-impl Model{
-    pub fn output_hr(&self,path:&str,seedname:&str){
+impl Model {
+    pub fn output_hr(&self, path: &str, seedname: &str) {
         //! 这个函数是用来将 tight-binding 模型输出到 wannier90_hr.dat 格式的
 
-        let n_R=self.hamR.len();//length of hamR
-        let mut hr_name=String::new();
+        let n_R = self.hamR.len(); //length of hamR
+        let mut hr_name = String::new();
         hr_name.push_str(path);
         hr_name.push_str(seedname);
         hr_name.push_str("_hr.dat");
@@ -47,10 +47,10 @@ impl Model{
                 weight.push_str("1 1 1 1 1 1 1 1 1 1 1 1 1 1 1\n");
             }
         }
-        for i in 0..last_lines{
+        for i in 0..last_lines {
             weight.push_str("1 ");
         }
-        writeln!(file,"{}",weight);
+        writeln!(file, "{}", weight);
         //接下来我们进行数据的写入
         match self.dim_r(){
             0 =>{
@@ -150,14 +150,20 @@ impl Model{
                         }
                     }
                 }
-                writeln!(file,"{}",s);
-            },
-            _=> todo!(),
+                writeln!(file, "{}", s);
+            }
+            _ => todo!(),
         }
     }
 
-    pub fn output_win(&self,path:&str,seedname:&str){
+    pub fn output_win(&self, path: &str, seedname: &str) {
         //!这个是用来输出 win 文件的. 这里projection 需要人为添加, 因为没有保存相关的projection 数据
+        let mut name = String::new();
+        name.push_str(path);
+        name.push_str(seedname);
+        name.push_str(".win");
+        let mut file = File::create(name).expect("Wrong, can't create seedname.win");
+        writeln!(file, "begin unit_cell_cart");
+        writeln!(file, "end unit_cell_cart");
     }
-
 }

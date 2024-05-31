@@ -600,12 +600,16 @@ impl Model{
         let U0=U0.mapv(|x| Complex::<f64>::new(x,0.0));
         let U0=U0*Complex::new(0.0,2.0*PI);
         let mut U0=U0.mapv(Complex::exp);
+        let U=Array2::from_diag(&U0); 
+        let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
+        let orb_real=orb_sta.dot(&self.lat);
         let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
         let Us=Us*Complex::new(0.0,2.0*PI);
         let Us=Us.mapv(Complex::exp); //Us 就是 exp(i k R)
         let orb_real=orb_sta.dot(&self.lat);
         let mut UU=Array3::<f64>::zeros((self.dim_r(),self.nsta(),self.nsta()));
         //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
+        let mut UU=Array3::<f64>::zeros((self.dim_r(),self.nsta(),self.nsta()));
         let A=orb_real.clone().insert_axis(Axis(2));
         let A=A.broadcast((self.nsta(),self.dim_r(),self.nsta())).unwrap().permuted_axes([1,0,2]);
         let mut B=A.view().permuted_axes([0,2,1]);
@@ -643,11 +647,13 @@ impl Model{
             let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
             for i in 0..self.dim_r(){
                 let r0=rk.slice(s![i,..,..]);
-                let UU=orb_real.column(i);//这个是实空间的数据, 
-                let UU=Array2::from_diag(&UU); //将其化为矩阵
-                let A=&r0-&UU;
-                let r0=&U_conj.dot(&A).dot(&U);
-                let A=comm(&hamk,&A)*Complex::i();
+                //let UU=orb_real.column(i);//这个是实空间的数据, 
+                //let UU=Array2::from_diag(&UU); //将其化为矩阵
+                //let A=&r0-&UU;
+                //let r0=&U_conj.dot(&A).dot(&U);
+                //let r0=&U_conj.dot(&r).dot(&U);
+                //let A=comm(&hamk,&A)*Complex::i();
+                let A=comm(&hamk,&r0)*Complex::i();
                 v.slice_mut(s![i,..,..]).add_assign(&A);
             }
         }
@@ -1121,10 +1127,10 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     for i in 0..model_2.natom(){
                         let atom_position=model_2.atom[i].position();
                         if atom_position[[dir[0]]]+atom_position[[dir[1]]] > (num as f64)/(num as f64+1.0) {
-                            a+=model_2.atom_list[i];
+                            a+=model_2.atom[i].norb();
                         }else{
                             use_atom_item.push(i);
-                            for i in 0..model_2.atom_list[i]{
+                            for i in 0..model_2.atom[i].norb(){
                                 use_orb_item.push(a);
                                 a+=1;
                             }
@@ -1138,15 +1144,15 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let mut use_atom_item:Vec<usize>=Vec::new();
                     let mut use_orb_item:Vec<usize>=Vec::new();//这个是确定要保留哪些轨道
                     let mut a:usize=0;
-                    for i in 0..model_2.natom{
-                        let atom_position=model_2.atom.row(i).to_owned();
+                    for i in 0..model_2.natom(){
+                        let atom_position=model_2.atom[i].position();
                         let num0=num as f64;
                         if atom_position[[dir[0]]]*(num0+1.0)/num0> 1.0+1e-5 
                             || atom_position[[dir[1]]]*(num0+1.0)/num0> 1.0+1e-5  {
-                            a+=model_2.atom_list[i];
+                            a+=model_2.atom[i].norb();
                         }else{
                             use_atom_item.push(i);
-                            for i in 0..model_2.atom_list[i]{
+                            for i in 0..model_2.atom[i].norb(){
                                 use_orb_item.push(a);
                                 a+=1;
                             }
@@ -1160,13 +1166,13 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let mut use_atom_item=Vec::<usize>::new();
                     let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
                     let mut a:usize=0;
-                    for i in 0..model_2.natom{
-                        let atom_position=model_2.atom.row(i).to_owned();
+                    for i in 0..model_2.natom(){
+                        let atom_position=model_2.atom[i].position();
                         if (atom_position[[1]]-atom_position[[dir[0]]] + 0.5 < 0.0) || (atom_position[[dir[0]]]-atom_position[[1]] + 0.5 < 0.0) {
-                            a+=model_2.atom_list[i];
+                            a+=model_2.atom[i].norb();
                         }else{
                             use_atom_item.push(i);
-                            for i in 0..model_2.atom_list[i]{
+                            for i in 0..model_2.atom[i].norb(){
                                 use_orb_item.push(a);
                                 a+=1;
                             }
@@ -1180,16 +1186,16 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let mut use_atom_item=Vec::<usize>::new();
                     let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
                     let mut a:usize=0;
-                    for i in 0..model_2.natom{
-                        let atom_position=model_2.atom.row(i).to_owned();
+                    for i in 0..model_2.natom(){
+                        let atom_position=model_2.atom[i].position();
                         if (atom_position[[dir[1]]]-atom_position[[dir[0]]] + 0.5 < 0.0) || 
                             (atom_position[[dir[0]]]-atom_position[[dir[1]]] + 0.5 < 0.0) ||
                                 (atom_position[[dir[1]]]+atom_position[[dir[0]]] < 0.5) || 
                                 (atom_position[[dir[1]]]-atom_position[[dir[0]]] > 0.5) {
-                            a+=model_2.atom_list[i];
+                            a+=model_2.atom[i].norb();
                         }else{
                             use_atom_item.push(i);
-                            for i in 0..model_2.atom_list[i]{
+                            for i in 0..model_2.atom[i].norb(){
                                 use_orb_item.push(a);
                                 a+=1;
                             }
@@ -1204,24 +1210,26 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             };
             let natom=use_atom_item.len();
             let norb=use_orb_item.len();
-            let mut new_atom=Array2::<f64>::zeros((natom,self.dim_r()));
-            let mut new_atom_list=Vec::<usize>::new();
+            let mut new_atom=Vec::new();
             let mut new_orb=Array2::<f64>::zeros((norb,self.dim_r()));
             for (i,use_i) in use_atom_item.iter().enumerate(){
-                new_atom.row_mut(i).assign(&old_model.atom.row(*use_i));
-                new_atom_list.push(old_model.atom_list[*use_i]);
+                new_atom.push(old_model.atom[*use_i]);
             }
-            for (i,use_i) in use_orb_item.iter().enumerate(){
-                new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
-            }
-            let mut new_model=Model::tb_model(self.dim_r(),old_model.lat,new_orb,self.spin,Some(new_atom),Some(new_atom_list));
+            let mut new_model=Model {
+                spin:self.spin,
+                lat:old_model.lat,
+                atom:new_atom,
+                ham:Array3::zeros((1,norb,norb)),
+                hamR:Array2::zeros((1,self.dim_r())),
+                rmatrix:Array4::zeros((1,self.dim_r(),norb,norb)),
+            };
             let n_R=old_model.hamR.len_of(Axis(0));
-            let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta,new_model.nsta));
+            let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta(),new_model.nsta()));
             let mut new_hamR=Array2::<isize>::zeros((0,self.dim_r()));
-            let norb=new_model.norb;
+            let norb=new_model.norb();
 
             if self.spin{
-                let norb2=old_model.norb;
+                let norb2=old_model.norb();
                 for (r,R) in old_model.hamR.axis_iter(Axis(0)).enumerate(){
                     new_hamR.push_row(R);
                     for (i,use_i) in use_orb_item.iter().enumerate(){
@@ -1245,24 +1253,24 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             }
             new_model.ham=new_ham;
             new_model.hamR=new_hamR;
-            let nsta=new_model.nsta;
+            let nsta=new_model.nsta();
             if self.rmatrix.len_of(Axis(0))==1{
                 for r in 0..self.dim_r(){
                     let mut use_rmatrix=Array2::<Complex<f64>>::zeros((nsta,nsta));
                     for i in 0..norb{
-                        use_rmatrix[[i,i]]=Complex::new(new_model.orb[[i,r]],0.0);
+                        use_rmatrix[[i,i]]=Complex::new(new_model.orb()[[i,r]],0.0);
                     }
                     if new_model.spin{
                         for i in 0..norb{
-                            use_rmatrix[[i+norb,i+norb]]=Complex::new(new_model.orb[[i,r]],0.0);
+                            use_rmatrix[[i+norb,i+norb]]=Complex::new(new_model.orb()[[i,r]],0.0);
                         }
                     }
                     new_model.rmatrix.slice_mut(s![0,r,..,..]).assign(&use_rmatrix);
                 }
             }else{
-                let mut new_rmatrix=Array4::<Complex<f64>>::zeros((n_R,self.dim_r(),new_model.nsta,new_model.nsta));
+                let mut new_rmatrix=Array4::<Complex<f64>>::zeros((n_R,self.dim_r(),new_model.nsta(),new_model.nsta()));
                 if old_model.spin{
-                    let norb2=old_model.norb;
+                    let norb2=old_model.norb();
                     for r in 0..n_R{
                         for dim in 0..self.dim_r(){
                             for (i,use_i) in use_orb_item.iter().enumerate(){
@@ -1301,13 +1309,13 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let mut use_atom_item:Vec<usize>=Vec::new();
                     let mut use_orb_item:Vec<usize>=Vec::new();//这个是确定要保留哪些轨道
                     let mut a:usize=0;
-                    for i in 0..model_2.natom{
-                        let atom_position=model_2.atom.row(i).to_owned();
+                    for i in 0..model_2.natom(){
+                        let atom_position=model_2.atom[i].position();
                         if atom_position[[0]]+atom_position[[1]] > (num as f64)/(num as f64+1.0) {
-                            a+=model_2.atom_list[i];
+                            a+=model_2.atom[i].norb();
                         }else{
                             use_atom_item.push(i);
-                            for i in 0..model_2.atom_list[i]{
+                            for i in 0..model_2.atom[i].norb(){
                                 use_orb_item.push(a);
                                 a+=1;
                             }
@@ -1321,14 +1329,14 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let mut use_atom_item=Vec::<usize>::new();
                     let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
                     let mut a:usize=0;
-                    for i in 0..model_2.natom{
-                        let atom_position=model_2.atom.row(i).to_owned();
+                    for i in 0..model_2.natom(){
+                        let atom_position=model_2.atom[i].position();
                         if atom_position[[0]]> (num as f64)/(num as f64+1.0) 
                             || atom_position[[1]]> (num as f64)/(num as f64+1.0)  {
-                            a+=model_2.atom_list[i];
+                            a+=model_2.atom[i].norb();
                         }else{
                             use_atom_item.push(i);
-                            for i in 0..model_2.atom_list[i]{
+                            for i in 0..model_2.atom[i].norb(){
                                 use_orb_item.push(a);
                                 a+=1;
                             }
@@ -1342,13 +1350,13 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let mut use_atom_item=Vec::<usize>::new();
                     let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
                     let mut a:usize=0;
-                    for i in 0..model_2.natom{
-                        let atom_position=model_2.atom.row(i).to_owned();
+                    for i in 0..model_2.natom(){
+                        let atom_position=model_2.atom[i].position();
                         if (atom_position[[0]] > 0.5 && atom_position[[1]]-atom_position[[0]] + 0.5 < 0.0) || (atom_position[[1]] > 0.5 && atom_position[[0]]-atom_position[[1]] + 0.5 < 0.0) {
-                            a+=model_2.atom_list[i];
+                            a+=model_2.atom[i].norb();
                         }else{
                             use_atom_item.push(i);
-                            for i in 0..model_2.atom_list[i]{
+                            for i in 0..model_2.atom[i].norb(){
                                 use_orb_item.push(a);
                                 a+=1;
                             }
@@ -1362,16 +1370,16 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let mut use_atom_item=Vec::<usize>::new();
                     let mut use_orb_item=Vec::<usize>::new();//这个是确定要保留哪些轨道
                     let mut a:usize=0;
-                    for i in 0..model_2.natom{
-                        let atom_position=model_2.atom.row(i).to_owned();
+                    for i in 0..model_2.natom(){
+                        let atom_position=model_2.atom[i].position();
                         if (atom_position[[1]]-atom_position[[0]] + 0.5 < 0.0) || 
                             (atom_position[[0]]-atom_position[[1]] + 0.5 < 0.0) ||
                                 (atom_position[[1]]+atom_position[[0]] < 0.5) || 
                                 (atom_position[[1]]-atom_position[[0]] > 0.5) {
-                            a+=model_2.atom_list[i];
+                            a+=model_2.atom[i].norb();
                         }else{
                             use_atom_item.push(i);
-                            for i in 0..model_2.atom_list[i]{
+                            for i in 0..model_2.atom[i].norb(){
                                 use_orb_item.push(a);
                                 a+=1;
                             }
@@ -1386,23 +1394,27 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             };
             let natom=use_atom_item.len();
             let norb=use_orb_item.len();
-            let mut new_atom=Array2::<f64>::zeros((natom,self.dim_r()));
-            let mut new_atom_list=Vec::<usize>::new();
+            let mut new_atom=Vec::new();
             let mut new_orb=Array2::<f64>::zeros((norb,self.dim_r()));
             for (i,use_i) in use_atom_item.iter().enumerate(){
-                new_atom.row_mut(i).assign(&old_model.atom.row(*use_i));
-                new_atom_list.push(old_model.atom_list[*use_i]);
-                new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
+                new_atom.push(old_model.atom[*use_i]);
             }
-            let mut new_model=Model::tb_model(self.dim_r(),old_model.lat,new_orb,self.spin,Some(new_atom),Some(new_atom_list));
+            let mut new_model=Model {
+                spin:self.spin,
+                lat:old_model.lat,
+                atom:new_atom,
+                ham:Array3::zeros((1,norb,norb)),
+                hamR:Array2::zeros((1,self.dim_r())),
+                rmatrix:Array4::zeros((1,self.dim_r(),norb,norb)),
+            };
             let n_R=new_model.hamR.len_of(Axis(0));
-            let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta,new_model.nsta));
+            let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta(),new_model.nsta()));
             let mut new_hamR=Array2::<isize>::zeros((1,self.dim_r()));
-            let norb=new_model.norb;
-            let nsta=new_model.nsta;
+            let norb=new_model.norb();
+            let nsta=new_model.nsta();
 
             if self.spin{
-                let norb2=old_model.norb;
+                let norb2=old_model.norb();
                 for (i,use_i) in use_orb_item.iter().enumerate(){
                     for (j,use_j) in use_orb_item.iter().enumerate(){
                         new_ham[[0,i,j]]=old_model.ham[[0,*use_i,*use_j]];
@@ -1424,19 +1436,19 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                 for r in 0..self.dim_r(){
                     let mut use_rmatrix=Array2::<Complex<f64>>::zeros((nsta,nsta));
                     for i in 0..norb{
-                        use_rmatrix[[i,i]]=Complex::new(new_model.orb[[i,r]],0.0);
+                        use_rmatrix[[i,i]]=Complex::new(new_model.orb()[[i,r]],0.0);
                     }
                     if new_model.spin{
                         for i in 0..norb{
-                            use_rmatrix[[i+norb,i+norb]]=Complex::new(new_model.orb[[i,r]],0.0);
+                            use_rmatrix[[i+norb,i+norb]]=Complex::new(new_model.orb()[[i,r]],0.0);
                         }
                     }
                     new_model.rmatrix.slice_mut(s![0,r,..,..]).assign(&use_rmatrix);
                 }
             }else{
-                let mut new_rmatrix=Array4::<Complex<f64>>::zeros((n_R,self.dim_r(),new_model.nsta,new_model.nsta));
+                let mut new_rmatrix=Array4::<Complex<f64>>::zeros((n_R,self.dim_r(),new_model.nsta(),new_model.nsta()));
                 if old_model.spin{
-                    let norb2=old_model.norb;
+                    let norb2=old_model.norb();
                     for dim in 0..self.dim_r(){
                         for (i,use_i) in use_orb_item.iter().enumerate(){
                             for (j,use_j) in use_orb_item.iter().enumerate(){
@@ -1481,7 +1493,6 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         .filter(|&num| !use_orb_list.contains(&num))
         .collect();//要保留下来的元素
         let delete_n=orb_list.len();
-        self.norb()-=delete_n;
         self.orb()=self.orb().clone().select(Axis(0),&index);
 
         //开始删除atom_list

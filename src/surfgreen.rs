@@ -48,6 +48,7 @@ pub struct surf_Green{
     pub ham_hopR:Array2::<isize>,
 }
 
+
 impl surf_Green{
     ///从 Model 中构建一个 surf_green 的结构体
     ///
@@ -56,8 +57,8 @@ impl surf_Green{
     ///eta表示小虚数得取值
     ///
     ///对于非晶格矢量得方向, 需要用 model.make_supercell 先扩胞
-    pub fn from_Model(model:&Model,dir:usize,eta:f64)->surf_Green{
-        if dir > model.dim_r(){
+    pub fn from_Model(model:&Model,dir:usize,eta:f64,Np:Option<usize>)->surf_Green{
+        if dir > model.dim_r{
             panic!("Wrong, the dir must smaller than model's dim_r")
         }
         let mut R_max:usize=0;
@@ -66,7 +67,20 @@ impl surf_Green{
                 R_max=R0[[dir]].abs() as usize;
             }
         }
-        let mut U=Array2::<f64>::eye(model.dim_r());
+        let R_max=match Np{
+            Some(np)=>{
+                if R_max > np{
+                    np
+                }else{
+                    R_max
+                }
+            },
+            None =>{
+                R_max
+            }
+        };
+        
+        let mut U=Array2::<f64>::eye(model.dim_r);
         U[[dir,dir]]=R_max as f64;
         let model=model.make_supercell(&U);
         let mut ham0=Array3::<Complex<f64>>::zeros((0,model.nsta(),model.nsta()));
@@ -124,8 +138,7 @@ impl surf_Green{
         let k_metric=(self.lat.dot(&self.lat.t())).inv().unwrap();
         let mut k_node=Array1::<f64>::zeros(n_node);
         for n in 1..n_node{
-            //let dk=path.slice(s![n,..]).to_owned()-path.slice(s![n-1,..]).to_owned();
-            let dk=path.row(n).to_owned()-path.slice(s![n-1,..]).to_owned();
+            let dk=&path.row(n)-&path.row(n-1);
             let a=k_metric.dot(&dk);
             let dklen=dk.dot(&a).sqrt();
             k_node[[n]]=k_node[[n-1]]+dklen;
@@ -151,7 +164,7 @@ impl surf_Green{
             for j in n_i..n_f+1{
                 let frac:f64= ((j-n_i) as f64)/((n_f-n_i) as f64);
                 k_dist[[j]]=kd_i + frac*(kd_f-kd_i);
-                k_vec.row_mut(j).assign(&((1.0-frac)*k_i.to_owned() +frac*k_f.to_owned()));
+                k_vec.row_mut(j).assign(&((1.0-frac)*&k_i +frac*&k_f));
 
             }
         }
@@ -159,51 +172,49 @@ impl surf_Green{
     }
 
     #[inline(always)]
-    pub fn gen_ham_onek(&self,kvec:&Array1<f64>)->(Array2<Complex<f64>>,Array2<Complex<f64>>){
-        let mut ham0k=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
-        let mut hamRk=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
-        if kvec.len() !=self.dim_r(){
+    pub fn gen_ham_onek<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->(Array2<Complex<f64>>,Array2<Complex<f64>>){
+        let mut ham0k=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        let mut hamRk=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length must equal to the dimension of model.")
         }
         let nR:usize=self.ham_bulkR.len_of(Axis(0));
         let nRR:usize=self.ham_hopR.len_of(Axis(0));
         let U0:Array1::<f64>=self.orb.dot(kvec);
-        let U0:Array1::<Complex<f64>>=U0.map(|x| Complex::<f64>::new(*x,0.0));
-        let U0=U0*Complex::new(0.0,2.0*PI);
-        let mut U0:Array1::<Complex<f64>>=U0.mapv(Complex::exp);//关于轨道的 guage
-        if self.spin{
-            let UU=U0.clone();
-            U0.append(Axis(0),UU.view()).unwrap();//因为自旋, 把坐标扩大一倍
-        }
-        let U=Array2::from_diag(&U0);
+        let U0:Array1::<Complex<f64>>=U0.map(|x| Complex::<f64>::new(0.0,2.0*PI**x));
+        let U0:Array1::<Complex<f64>>=U0.mapv(Complex::exp);//关于轨道的 guage
+        let U0=if self.spin{
+            let U0=concatenate![Axis(0),U0,U0];
+            U0
+        }else{
+            U0
+        };
+        let U:Array2<Complex<f64>>=Array2::from_diag(&U0);
+        let U_conj=Array2::from_diag(&U0.map(|x| x.conj()));
         //对体系作傅里叶变换
-        let U0=(self.ham_bulkR.map(|x| *x as f64)).dot(kvec).map(|x| Complex::<f64>::new(*x,0.0));
-        let U0=U0*Complex::new(0.0,2.0*PI);
-        let U0=U0.mapv(Complex::exp);
+        let U0=(self.ham_bulkR.map(|x| *x as f64)).dot(kvec).map(|x| Complex::<f64>::new(0.0,*x*2.0*PI).exp());
         //对 ham_hop 作傅里叶变换
-        let UR=(self.ham_hopR.map(|x| *x as f64)).dot(kvec).map(|x| Complex::<f64>::new(*x,0.0));
-        let UR=UR*Complex::new(0.0,2.0*PI);
-        let UR=UR.mapv(Complex::exp);
+        let UR=(self.ham_hopR.map(|x| *x as f64)).dot(kvec).map(|x| Complex::<f64>::new(0.0,*x*2.0*PI).exp());
         //先对 ham_bulk 中的 [0,0] 提取出来
-        let mut ham0=self.ham_bulk.slice(s![0,..,..]).to_owned();
-        for i in 1..nR{
-            ham0k=ham0k+self.ham_bulk.slice(s![i,..,..]).to_owned()*U0[[i]];
-        }
-        for i in 0..nRR{
-            hamRk=hamRk+self.ham_hop.slice(s![i,..,..]).to_owned()*UR[[i]];
-        }
-        ham0k=&ham0+&ham0k.map(|x| x.conj()).t()+&ham0k;
-        //hamRk=&hamRk.map(|x| x.conj()).t()+&hamRk;
+        let ham0=self.ham_bulk.slice(s![0,..,..]);
+        let U0=U0.slice(s![1..nR]);
+        let U0=U0.into_shape((nR-1,1,1)).unwrap();
+        let U0=U0.broadcast((nR-1,self.nsta,self.nsta)).unwrap();
+        let ham0k=(&self.ham_bulk.slice(s![1..nR,..,..])*&U0).sum_axis(Axis(0));
+        let UR=UR.into_shape((nRR,1,1)).unwrap();
+        let UR=UR.broadcast((nRR,self.nsta,self.nsta)).unwrap();
+        let hamRk=(&self.ham_hop*&UR).sum_axis(Axis(0));
+        let ham0k:Array2<Complex<f64>>=&ham0+&conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&ham0k)+&ham0k;
         //作规范变换
-        ham0k=ham0k.dot(&U);
-        let ham0k=U.map(|x| x.conj()).t().dot(&ham0k);
-        hamRk=hamRk.dot(&U);
-        let hamRk=U.map(|x| x.conj()).t().dot(&hamRk);
+        let ham0k=ham0k.dot(&U);
+        let ham0k=U_conj.dot(&ham0k);
+        let hamRk=hamRk.dot(&U);
+        let hamRk=U_conj.dot(&hamRk);
         (ham0k,hamRk)
 
     }
     #[inline(always)]
-    pub fn surf_green_one(&self,kvec:&Array1<f64>,Energy:f64)->(f64,f64,f64){
+    pub fn surf_green_one<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>,Energy:f64)->(f64,f64,f64){
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
         let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
         let I0=Array2::<Complex<f64>>::eye(self.nsta());
@@ -241,13 +252,12 @@ impl surf_Green{
     }
 
     #[inline(always)]
-    pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>)->(Array1<f64>,Array1<f64>,Array1<f64>){
+    pub fn surf_green_onek<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>,Energy:&Array1<f64>)->(Array1<f64>,Array1<f64>,Array1<f64>){
         let (hamk,hamRk)=self.gen_ham_onek(kvec);
-        //let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
         let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
         let I0=Array2::<Complex<f64>>::eye(self.nsta());
         let accurate:f64=1e-6;
-        let ((N_R,N_L),N_B)=Energy.into_par_iter().map(|e| {
+        let ((N_R,N_L),N_B):((Vec<_>,Vec<_>),Vec<_>)=Energy.map(|e| {
             let epsilon=Complex::new(*e,self.eta)*&I0;
             let mut epi=hamk.clone();
             let mut eps=hamk.clone();
@@ -277,117 +287,13 @@ impl surf_Green{
             let N_L:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
             let N_B:f64=-1.0/(PI)*g_B.into_diag().sum().im;
             ((N_R,N_L),N_B)
-         }).collect();
+         }).into_iter().unzip();
         let N_R=Array1::from_vec(N_R);
         let N_L=Array1::from_vec(N_L);
         let N_B=Array1::from_vec(N_B);
         (N_R,N_L,N_B)
     }
 
-    /*
-    #[inline(always)]
-    pub fn surf_green_onek(&self,kvec:&Array1<f64>,Energy:&Array1<f64>,spin:usize)->(Array1<f64>,Array1<f64>,Array1<f64>){
-        let (hamk,hamRk)=self.gen_ham_onek(kvec);
-        //let hamRk_conj:Array2<Complex<f64>>=hamRk.clone().map(|x| x.conj()).reversed_axes();
-        let hamRk_conj:Array2<Complex<f64>>=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&hamRk);
-        let I0=Array2::<Complex<f64>>::eye(self.nsta());
-        let accurate:f64=1e-6;
-        let mut epsilon=Array2::<Complex<f64>>::eye(self.nsta());
-        //let mut epi=hamk.clone();
-        //let mut eps=hamk.clone();
-        //let mut eps_t=hamk.clone();
-        //let mut ap=hamRk.clone();
-        //let mut bt=hamRk_conj.clone();
-
-        let mut epi=Array2::zeros((self.nsta(),self.nsta()));
-        let mut eps=Array2::zeros((self.nsta(),self.nsta()));
-        let mut eps_t=Array2::zeros((self.nsta(),self.nsta()));
-        let mut ap=Array2::zeros((self.nsta(),self.nsta()));
-        let mut bt=Array2::zeros((self.nsta(),self.nsta()));
-        let mut g_LL=Array2::zeros((self.nsta(),self.nsta()));
-        let mut g_RR=Array2::zeros((self.nsta(),self.nsta()));
-        let mut g_B=Array2::zeros((self.nsta(),self.nsta()));
-        let ((N_R,N_L),N_B): ((Vec<f64>,Vec<f64>),Vec<f64>)=Energy.into_iter().map(|e| {
-            epsilon.assign(&(Complex::new(*e,self.eta)*&I0));
-            eps.assign(&hamk);
-            eps_t.assign(&hamk);
-            epi.assign(&hamk);
-            ap.assign(&hamRk);
-            bt.assign(&hamRk_conj);
-            for _ in 0..100{
-                let g0=(&epsilon-&epi).inv().unwrap();
-                let mat_1=&ap.dot(&g0);
-                let mat_2=&bt.dot(&g0);
-                let g0=&mat_1.dot(&bt);
-                epi+=g0;
-                eps+=g0;
-                let g0=&mat_2.dot(&ap);
-                epi+=g0;
-                eps_t+=g0;
-                ap=mat_1.dot(&ap);
-                bt=mat_2.dot(&bt);
-                let aa=ap.map(|x| x.norm()).sum();
-                if  aa< accurate{
-                    break
-                }
-            }
-            g_LL.assign(&(&epsilon-&eps).inv().unwrap());
-            g_RR.assign(&(&epsilon-&eps_t).inv().unwrap());
-            g_B.assign(&(&epsilon-&epi).inv().unwrap());
-            let N_R:f64=-1.0/(PI)*g_RR.diag().sum().im;
-            let N_L:f64=-1.0/(PI)*g_LL.diag().sum().im;
-            let N_B:f64=-1.0/(PI)*g_B.diag().sum().im;
-            /*
-            let ((N_R,N_L),N_B)=if self.spin{
-                let ((NR,NL),NB)=match spin{
-                    0=>{
-                        let NR:f64=-1.0/(PI)*g_RR.diag().sum().im;
-                        let NL:f64=-1.0/(PI)*g_LL.diag().sum().im;
-                        let NB:f64=-1.0/(PI)*g_B.diag().sum().im;
-                        ((NR,NL),NB)
-                    },
-                    1=>{
-                        let s=array![[Complex::new(0.0,0.0),Complex::new(1.0,0.0)],[Complex::new(1.0,0.0),Complex::new(0.0,0.0)]];
-                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
-                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).diag().sum().im;
-                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).diag().sum().im;
-                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).diag().sum().im;
-                        ((NR,NL),NB)
-                    },
-                    2=>{
-                        let s=array![[Complex::new(0.0,0.0),Complex::new(0.0,-1.0)],[Complex::new(0.0,1.0),Complex::new(0.0,0.0)]];
-                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
-                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).diag().sum().im;
-                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).diag().sum().im;
-                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).diag().sum().im;
-                        ((NR,NL),NB)
-                    },
-                    3=>{
-                        let s=array![[Complex::new(1.0,0.0),Complex::new(0.0,0.0)],[Complex::new(0.0,0.0),Complex::new(-1.0,0.0)]];
-                        let s=kron(&Array2::from_diag(&Array1::ones(self.norb).mapv(|x| Complex::new(x,0.0))),&s);
-                        let NR:f64=-1.0/(PI)*(g_RR.dot(&s)).diag().sum().im;
-                        let NL:f64=-1.0/(PI)*(g_LL.dot(&s)).diag().sum().im;
-                        let NB:f64=-1.0/(PI)*(g_B.dot(&s)).diag().sum().im;
-                        ((NR,NL),NB)
-                    },
-                    _=>todo!(),
-                };
-                ((NR,NL),NB)
-            }else{
-                let NR:f64=-1.0/(PI)*g_RR.diag().sum().im;
-                let NL:f64=-1.0/(PI)*g_LL.diag().sum().im;
-                let NB:f64=-1.0/(PI)*g_B.diag().sum().im;
-                ((NR,NL),NB)
-            };
-        */
-            ((N_R,N_L),N_B)
-         }).unzip();
-        let N_R=Array1::from_vec(N_R);
-        let N_L=Array1::from_vec(N_L);
-        let N_B=Array1::from_vec(N_B);
-        (N_R,N_L,N_B)
-    }
-*/
     pub fn surf_green_path(&self,kvec:&Array2<f64>,E_min:f64,E_max:f64,E_n:usize,spin:usize)->(Array2<f64>,Array2<f64>,Array2<f64>){
         let Energy=Array1::<f64>::linspace(E_min,E_max,E_n);
         let nk=kvec.nrows();
@@ -395,7 +301,7 @@ impl surf_Green{
         let mut N_L=Array2::<f64>::zeros((nk,E_n));
         let mut N_B=Array2::<f64>::zeros((nk,E_n));
         Zip::from(N_R.outer_iter_mut()).and(N_L.outer_iter_mut()).and(N_B.outer_iter_mut()).and(kvec.outer_iter()).par_apply(|mut nr,mut nl,mut nb, k| {
-            let (NR,NL,NB)=self.surf_green_onek(&k.to_owned(),&Energy);
+            let (NR,NL,NB)=self.surf_green_onek(&k,&Energy);
             nr.assign(&NR);
             nl.assign(&NL);
             nb.assign(&NB);
@@ -414,7 +320,7 @@ impl surf_Green{
         let mut N_L=Array1::<f64>::zeros(nk);
         let mut N_B=Array1::<f64>::zeros(nk);
         Zip::from(N_R.view_mut()).and(N_L.view_mut()).and(N_B.view_mut()).and(kvec.outer_iter()).par_apply(|mut nr,mut nl,mut nb, k| {
-            let (NR,NL,NB)=self.surf_green_one(&k.to_owned(),energy);
+            let (NR,NL,NB)=self.surf_green_one(&k,energy);
             *nr=NR;
             *nl=NL;
             *nb=NB;

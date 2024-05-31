@@ -1002,7 +1002,7 @@ mod tests {
         super_model.show_band(&path,&label,nk,"tests/kane_super");
         //开始计算表面态
         let nk=1001;
-        let green=surf_Green::from_Model(&model,0,1e-3);
+        let green=surf_Green::from_Model(&model,0,1e-3,None);
         let E_min=-1.0;
         let E_max=1.0;
         let E_n=nk.clone();
@@ -1106,7 +1106,7 @@ mod tests {
         model.add_hop(B*tha.sin(),1,1,&array![0,0],2);
         //考虑添加onsite 项破坏空间反演和mirror
 
-        let green=surf_Green::from_Model(&model,0,1e-3);
+        let green=surf_Green::from_Model(&model,0,1e-3,None);
         let E_min=-1.0;
         let E_max=1.0;
         let E_n=nk.clone();
@@ -1462,7 +1462,7 @@ mod tests {
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
         //算一下边界态
-        let green=surf_Green::from_Model(&model,0,1e-3);
+        let green=surf_Green::from_Model(&model,0,1e-3,None);
         let E_min=-2.0;
         let E_max=2.0;
         let E_n=nk.clone();
