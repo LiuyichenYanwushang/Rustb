@@ -47,12 +47,6 @@ pub struct Model{
     /// - The real space dimension of the model.
     pub dim_r:usize,
     /// - The number of orbitals in the model.
-    pub norb:usize,
-    /// - The number of states in the model. If spin is enabled, nsta=norb$\times$2
-    pub nsta:usize,
-    /// - The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
-    pub natom:usize,
-    /// - Whether the model has spin enabled. If enabled, spin=true
     pub spin:bool,
     /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
     pub lat:Array2::<f64>,
@@ -1059,13 +1053,13 @@ mod tests {
         println!("solve_band_all took {} seconds", duration.as_secs_f64());   // 输出执行时间
         let nresults=band.len();
         let show_evec=evec.to_owned().map(|x| x.norm_sqr());
-        let mut size=Array2::<f64>::zeros((new_model.nsta,new_model.natom));
-        let norb=new_model.norb;
+        let mut size=Array2::<f64>::zeros((new_model.nsta(),new_model.natom()));
+        let norb=new_model.norb();
         for i in 0..nresults{
             let mut s=0;
-            for j in 0..new_model.natom{
+            for j in 0..new_model.natom(){
                 for k in 0..new_model.atoms[j].norb(){
-                    size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb]];
+                    size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb()]];
                     s+=1;
                 }
             }
@@ -1073,7 +1067,7 @@ mod tests {
 
         let show_str=new_model.atom_position().dot(&model.lat);
         let show_str=show_str.slice(s![..,0..2]).to_owned();
-        let show_size=size.row(new_model.norb).to_owned();
+        let show_size=size.row(new_model.norb()).to_owned();
         use std::fs::create_dir_all;
         create_dir_all("tests/kane/magnetic").expect("can't creat the file");
         write_txt_1(band,"tests/kane/magnetic/band.txt");
@@ -1385,7 +1379,7 @@ mod tests {
         println!("solve_band_all took {} seconds", duration.as_secs_f64());   // 输出执行时间
         let nresults=band.len();
         let show_evec=evec.to_owned().map(|x| x.norm_sqr());
-        let norb=new_model.norb;
+        let norb=new_model.norb();
         let size=show_evec;
         let show_str=new_model.atom_position().dot(&model.lat);
         use std::fs::create_dir_all;

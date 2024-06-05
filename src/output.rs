@@ -11,7 +11,7 @@
 //!POSCAR 格式
 use crate::basis::find_R;
 use crate::basis::index_R;
-use crate::{comm, gen_kmesh, Model};
+use crate::{comm, gen_kmesh,Model};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -37,7 +37,7 @@ impl Model {
         hr_name.push_str(seedname);
         hr_name.push_str("_hr.dat");
         let mut file = File::create(hr_name).expect("Unable to BAND.dat");
-        writeln!(file, "{}", self.nsta);
+        writeln!(file, "{}", self.nsta());
         writeln!(file, "{}", n_R);
         let mut weight = String::new();
         let lines = n_R.div_euclid(15);
@@ -56,8 +56,8 @@ impl Model {
             0 => {
                 let mut s = String::new();
                 let ham = self.ham.slice(s![0, .., ..]);
-                for orb_1 in 0..self.nsta {
-                    for orb_2 in 0..self.nsta {
+                for orb_1 in 0..self.nsta() {
+                    for orb_2 in 0..self.nsta() {
                         s.push_str(&format!(
                             "0    0    0    {:11.8}    {:11.8}\n",
                             ham[[orb_1, orb_2]].re,
@@ -75,8 +75,8 @@ impl Model {
                     if R_exist {
                         let r0 = index_R(&self.hamR, &array![i as isize]);
                         let ham = self.ham.slice(s![r0, .., ..]);
-                        for orb_1 in 0..self.nsta {
-                            for orb_2 in 0..self.nsta {
+                        for orb_1 in 0..self.nsta() {
+                            for orb_2 in 0..self.nsta() {
                                 s.push_str(&format!(
                                     "{}    0    0    {:11.8}    {:11.8}\n",
                                     i,
@@ -88,8 +88,8 @@ impl Model {
                     } else if R_inv_exist {
                         let r0 = index_R(&self.hamR, &(-array![i as isize]));
                         let ham = self.ham.slice(s![r0, .., ..]);
-                        for orb_1 in 0..self.nsta {
-                            for orb_2 in 0..self.nsta {
+                        for orb_1 in 0..self.nsta() {
+                            for orb_2 in 0..self.nsta() {
                                 s.push_str(&format!(
                                     "{}    0    0    {:>11.8}    {:>11.8}\n",
                                     i,
@@ -116,8 +116,8 @@ impl Model {
                         if R_exist {
                             let r0 = index_R(&self.hamR, &array![R1 as isize, R2 as isize]);
                             let ham = self.ham.slice(s![r0, .., ..]);
-                            for orb_1 in 0..self.nsta {
-                                for orb_2 in 0..self.nsta {
+                            for orb_1 in 0..self.nsta() {
+                                for orb_2 in 0..self.nsta() {
                                     s.push_str(&format!(
                                         "{:>3}  {:>3}    0    {:>11.8}    {:>11.8}\n",
                                         R1,
@@ -130,8 +130,8 @@ impl Model {
                         } else if R_inv_exist {
                             let r0 = index_R(&self.hamR, &(-array![R1 as isize, R2 as isize]));
                             let ham = self.ham.slice(s![r0, .., ..]);
-                            for orb_1 in 0..self.nsta {
-                                for orb_2 in 0..self.nsta {
+                            for orb_1 in 0..self.nsta() {
+                                for orb_2 in 0..self.nsta() {
                                     s.push_str(&format!(
                                         "{:>3}  {:>3}    0    {:>11.8}    {:>11.8}\n",
                                         R1,
@@ -165,8 +165,8 @@ impl Model {
                             if R_exist {
                                 let r0 = index_R(&self.hamR, &array![R1 as isize, R2 as isize]);
                                 let ham = self.ham.slice(s![r0, .., ..]);
-                                for orb_1 in 0..self.nsta {
-                                    for orb_2 in 0..self.nsta {
+                                for orb_1 in 0..self.nsta() {
+                                    for orb_2 in 0..self.nsta() {
                                         s.push_str(&format!(
                                             "{:3}  {:3}  {:3}    {:11.8}    {:11.8}\n",
                                             R1,
@@ -183,8 +183,8 @@ impl Model {
                                     &(-array![R1 as isize, R2 as isize, R3 as isize]),
                                 );
                                 let ham = self.ham.slice(s![r0, .., ..]);
-                                for orb_1 in 0..self.nsta {
-                                    for orb_2 in 0..self.nsta {
+                                for orb_1 in 0..self.nsta() {
+                                    for orb_2 in 0..self.nsta() {
                                         s.push_str(&format!(
                                             "{:3}  {:3}  {:3}    {:11.8}    {:11.8}\n",
                                             R1,
@@ -213,6 +213,21 @@ impl Model {
         name.push_str(".win");
         let mut file = File::create(name).expect("Wrong, can't create seedname.win");
         writeln!(file, "begin unit_cell_cart");
+        for at in self.atoms.iter(){
+            let atom_position=at.position();
+            match self.dim_r{
+                3=>{
+                    writeln!(file,"{}{:5.6}{:5.6}{:5.6}",at.atom_type(),atom_position[0],atom_position[1],atom_position[1]);
+                },
+                2=>{
+                    writeln!(file,"{}{:5.6}{:5.6}{:5.6}",at.atom_type(),atom_position[0],atom_position[1],0.0);
+                },
+                1=>{
+                    writeln!(file,"{}{:5.6}{:5.6}{:5.6}",at.atom_type(),atom_position[0],0.0,0.0);
+                },
+                _=>panic!("Wrong, your model's dim_r is not 1,2 or 3"),
+            }
+        }
         writeln!(file, "end unit_cell_cart");
     }
 }

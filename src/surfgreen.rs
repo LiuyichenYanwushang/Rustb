@@ -1,6 +1,6 @@
 //!这个模块是用来求解表面格林函数的一个模块.
 use gnuplot::{Figure, AxesCommon, AutoOption::Fix,HOT,RAINBOW,Font,Auto,Custom};
-use crate::{Model,remove_col,remove_row,gen_kmesh};
+use crate::{remove_col,remove_row,gen_kmesh,Model};
 use gnuplot::Major;
 use num_complex::Complex;
 use ndarray::*;
@@ -83,9 +83,9 @@ impl surf_Green{
         let mut U=Array2::<f64>::eye(model.dim_r);
         U[[dir,dir]]=R_max as f64;
         let model=model.make_supercell(&U);
-        let mut ham0=Array3::<Complex<f64>>::zeros((0,model.nsta,model.nsta));
+        let mut ham0=Array3::<Complex<f64>>::zeros((0,model.nsta(),model.nsta()));
         let mut hamR0=Array2::<isize>::zeros((0,model.dim_r));
-        let mut hamR=Array3::<Complex<f64>>::zeros((0,model.nsta,model.nsta));
+        let mut hamR=Array3::<Complex<f64>>::zeros((0,model.nsta(),model.nsta()));
         let mut hamRR=Array2::<isize>::zeros((0,model.dim_r));
         let use_hamR=model.hamR.rows();
         let use_ham=model.ham.outer_iter();
@@ -103,21 +103,21 @@ impl surf_Green{
                 hamRR.push_row(R.map(|x| -x).view());
             }
         }
-        let new_lat=remove_row(model.lat,dir);
-        let new_orb=remove_col(model.orb,dir);
-        let new_atom=remove_col(model.atom,dir);
+        let new_lat=remove_row(model.lat.clone(),dir);
+        let new_orb=remove_col(model.orb.clone(),dir);
+        let new_atom=remove_col(model.atom_position(),dir);
         let new_hamR0=remove_col(hamR0,dir);
         let new_hamRR=remove_col(hamRR,dir);
         let mut green:surf_Green=surf_Green{
             dim_r:model.dim_r-1,
-            norb:model.norb,
-            nsta:model.nsta,
-            natom:model.natom,
+            norb:model.norb(),
+            nsta:model.nsta(),
+            natom:model.natom(),
             spin:model.spin,
             lat:new_lat,
             orb:new_orb,
             atom:new_atom,
-            atom_list:model.atom_list,
+            atom_list:model.atom_list(),
             ham_bulk:ham0,
             ham_bulkR:new_hamR0,
             ham_hop:hamR,

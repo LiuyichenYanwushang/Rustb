@@ -1,5 +1,5 @@
 //!这个模块是用wilson loop 的方法来计算各种几何量.
-use crate::{Model,gen_kmesh,comm};
+use crate::{gen_kmesh,comm,Model};
 use std::fs::File;
 use std::io::Write;
 use num_complex::Complex;
@@ -54,7 +54,7 @@ impl Model{
         let add_phase=add_phase.mapv(|x| Complex::new(0.0,-2.0*x*PI).exp());
         let (eval,mut evec)=self.solve_all(kvec);
         let first_evec=&evec.slice(s![0,..,..]);
-        let mut end_evec=Array2::<Complex<f64>>::zeros((self.nsta,self.nsta));
+        let mut end_evec=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
         Zip::from(end_evec.outer_iter_mut()).and(first_evec.outer_iter()).apply(|mut A,B|{A.assign(&(&B*&add_phase))});
         evec.slice_mut(s![n_k-1,..,..]).assign(&end_evec);
         let evec=evec.select(Axis(1),occ);
