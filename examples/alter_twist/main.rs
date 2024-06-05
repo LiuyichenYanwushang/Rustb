@@ -26,7 +26,7 @@ fn main() {
     let spin=false;
     let atom=orb.clone();
     let atom_list=vec![1];
-    let mut model_1=Model::tb_model(dim_r,lat,orb,spin,Some(atom),Some(atom_list));
+    let mut model_1=Model::tb_model(dim_r,lat,orb,spin,None);
     let t1=-2.0+0.0*li;
     let t2=-1.5+0.0*li;
     let J=1.0;
@@ -40,7 +40,7 @@ fn main() {
     let spin=false;
     let atom=orb.clone();
     let atom_list=vec![1];
-    let mut model_2=Model::tb_model(dim_r,lat,orb,spin,Some(atom),Some(atom_list));
+    let mut model_2=Model::tb_model(dim_r,lat,orb,spin,None);
     let t1=-2.0+0.0*li;
     let t2=-1.5+0.0*li;
     let J=1.0;
@@ -61,15 +61,13 @@ fn main() {
     let model_1=model_1.make_supercell(&U1);
     let model_2=model_2.make_supercell(&U2);
     let orb= concatenate![Axis(0), model_1.orb, model_2.orb];
-    let atom= concatenate![Axis(0), model_1.atom, model_2.atom];
-    let mut atom_list=model_1.atom_list.clone();
-    let mut atom_list_1=model_2.atom_list.clone();
-    atom_list.append(&mut atom_list_1);
-
+    let mut atom= model_1.atoms;
+    let mut added_atom=model_2.atoms;
+    atom.append(&mut added_atom);
 
     let U0=array![[(PI/4.0).cos(),-(PI/4.0).sin(),0.0],[(PI/4.0).sin(),(PI/4.0).cos(),0.0],[0.0,0.0,1.0]];
     let lat=U0.dot(&model_1.lat);
-    let mut new_model=Model::tb_model(dim_r,lat.clone(),orb.clone(),true,Some(atom.clone()),Some(atom_list.clone()));
+    let mut new_model=Model::tb_model(dim_r,lat.clone(),orb.clone(),true,Some(atom.clone()));
     let mut onsite=Array1::zeros(new_model.norb);
     for  i in 0..model_1.norb{
         onsite[[i]]=J;
@@ -95,7 +93,7 @@ fn main() {
     let (evec,eval)=new_model.solve_onek(&array![0.0,0.0,0.0]);
     println!("{}",evec);
     
-    let mut model_up=Model::tb_model(dim_r,lat.clone(),orb.clone(),false,Some(atom.clone()),Some(atom_list.clone()));
+    let mut model_up=Model::tb_model(dim_r,lat.clone(),orb.clone(),false,Some(atom.clone()));
     let mut onsite=Array1::zeros(model_up.norb);
     for  i in 0..model_1.norb{
         onsite[[i]]=J;
@@ -116,7 +114,7 @@ fn main() {
             }
         }
     }
-    let mut model_dn=Model::tb_model(dim_r,lat,orb,false,Some(atom),Some(atom_list));
+    let mut model_dn=Model::tb_model(dim_r,lat,orb,false,Some(atom));
     let mut onsite=Array1::zeros(model_dn.norb);
     for  i in 0..model_1.norb{
         onsite[[i]]=J;

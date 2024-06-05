@@ -1,4 +1,5 @@
-#![allow(warnings)] use std::cmp::Ordering;
+#![allow(warnings)] 
+use std::cmp::Ordering;
 use std::time::Instant;
 use std::ops::AddAssign;
 use std::fs::create_dir_all;
@@ -18,7 +19,7 @@ fn main(){
     let h=0.0;
     let lat=arr2(&[[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]])*a0;
     let orb=arr2(&[[0.5,0.0,0.0],[0.5,0.0,0.0],[0.0,0.5,0.0],[0.0,0.5,0.0]]);
-    let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
+    let mut model=Model::tb_model(dim_r,lat,orb,true,None);
     let R0:Array2::<isize>=arr2(&[[0,0,0],[1,0,0],[0,-1,0],[1,-1,0]]);
     //------开始添加hopping----------------
     let lm=1.0+0.0*li;
@@ -109,7 +110,7 @@ fn main(){
 
 
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model,0,1e-3);
+    let green=surf_Green::from_Model(&model,0,1e-3,None);
     let E_min=-0.5;
     let E_max=0.5;
     let E_n=nk.clone();
@@ -123,76 +124,6 @@ fn main(){
     let path=arr2(&path);
     let label=vec!["M","G","M"];
     super_model.show_band(&path,&label,nk,"examples/Bi2F2_new/super_band");
-
-    /*
-    let J=0.1;
-    let a1=0.1;
-    let a2=0.3;
-    let model_xy=add_altermagnetism_1(model.clone(),J,true);
-
-    let path=array![[0.0,0.0,0.0],[0.5,0.0,0.0],[0.5,0.5,0.0],[0.0,0.0,0.0]];
-    let label=vec!["G","X","M","G"];
-    let path=array![[0.0,0.0,0.0],[0.5,0.0,0.0],[0.5,0.5,0.0],[0.0,0.5,0.0],[0.0,0.0,0.0],[0.5,0.5,0.0]];
-    let label=vec!["G","X","M","Y","G","M"];
-    let nk=1001;
-    model_xy.show_band(&path,&label,nk,"examples/Bi2F2_new/xy/band");
-
-    show_alter(&model_xy,"examples/Bi2F2_new/xy/alter");
-
-    let n=301;
-    let dir_1=arr1(&[1.0,0.0,0.0]);
-    let dir_2=arr1(&[0.0,1.0,0.0]);
-    let occ=vec![0,1,2,3];
-    show_wilson_loop(&model_xy,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/xy/wcc.pdf");
-
-    let nk:usize=501;
-    let green=surf_Green::from_Model(&model_xy,0,1e-3);
-    let E_min=-0.5;
-    let E_max=0.5;
-    let E_n=nk.clone();
-    let path=[[-0.5,-0.0],[0.0,0.0],[0.5,0.0]];
-    let path=arr2(&path);
-    let label=vec!["X","G","X"];
-    green.show_surf_state("examples/Bi2F2_new/xy/surf",&path,&label,nk,E_min,E_max,E_n,0);
-
-    let num=42;
-    let name="examples/Bi2F2_new/xy";
-    cut(&model_xy,num,1,name);
-    cut(&model_xy,num,2,name);
-
-
-    let J=0.1;
-    let model_xy=add_altermagnetism_1(model.clone(),J,false);
-    let path=array![[0.0,0.0,0.0],[0.5,0.0,0.0],[0.5,0.5,0.0],[0.0,0.0,0.0]];
-    let label=vec!["G","X","M","G"];
-    let path=array![[0.0,0.0,0.0],[0.5,0.0,0.0],[0.5,0.5,0.0],[0.0,0.5,0.0],[0.0,0.0,0.0],[0.5,0.5,0.0]];
-    let label=vec!["G","X","M","Y","G","M"];
-    let nk=1001;
-    model_xy.show_band(&path,&label,nk,"examples/Bi2F2_new/bar_xy/band");
-
-    show_alter(&model_xy,"examples/Bi2F2_new/bar_xy/alter");
-
-    let n=301;
-    let dir_1=arr1(&[1.0,0.0,0.0]);
-    let dir_2=arr1(&[0.0,1.0,0.0]);
-    let occ=vec![0,1,2,3];
-    show_wilson_loop(&model_xy,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/bar_xy/wcc.pdf");
-
-    let nk:usize=501;
-    let green=surf_Green::from_Model(&model_xy,0,1e-3);
-    let E_min=-0.5;
-    let E_max=0.5;
-    let E_n=nk.clone();
-    let path=[[-0.5,-0.0],[0.0,0.0],[0.5,0.0]];
-    let path=arr2(&path);
-    let label=vec!["X","G","X"];
-    green.show_surf_state("examples/Bi2F2_new/bar_xy/surf",&path,&label,nk,E_min,E_max,E_n,0);
-
-    let num=42;
-    let name="examples/Bi2F2_new/bar_xy";
-    cut(&model_xy,num,1,name);
-    cut(&model_xy,num,2,name);
-    */
 
     let J=-0.05;
     let m = 0.05;
@@ -214,7 +145,7 @@ fn main(){
     show_wilson_loop(&model_xy,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/xy/wcc.pdf");
 
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model_xy,0,1e-3);
+    let green=surf_Green::from_Model(&model_xy,0,1e-3,None);
     let E_min=-0.5;
     let E_max=0.5;
     let E_n=nk.clone();
@@ -225,8 +156,8 @@ fn main(){
 
     let num=42;
     let name="examples/Bi2F2_new/xy";
-    cut(&model_xy,num,1,name);
-    cut(&model_xy,num,2,name);
+    //cut(&model_xy,num,1,name);
+    //cut(&model_xy,num,2,name);
 
 
     let model_xy=add_altermagnetism_0(model.clone(),J,m,&[1.0,-1.0,0.0]);
@@ -246,7 +177,7 @@ fn main(){
     show_wilson_loop(&model_xy,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/bar_xy/wcc.pdf");
 
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model_xy,0,1e-3);
+    let green=surf_Green::from_Model(&model_xy,0,1e-3,None);
     let E_min=-0.5;
     let E_max=0.5;
     let E_n=nk.clone();
@@ -257,11 +188,10 @@ fn main(){
 
     let num=42;
     let name="examples/Bi2F2_new/bar_xy";
-    cut(&model_xy,num,1,name);
-    cut(&model_xy,num,2,name);
+    //cut(&model_xy,num,1,name);
+    //cut(&model_xy,num,2,name);
 
 
-    /*
     let J=0.8;
     let model_z=add_altermagnetism_0(model.clone(),J,m,&[0.0,0.0,1.0]);
     let path=array![[0.0,0.0,0.0],[0.5,0.0,0.0],[0.5,0.5,0.0],[0.0,0.0,0.0]];
@@ -280,7 +210,7 @@ fn main(){
     show_wilson_loop(&model_z,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/z_new/wcc.pdf");
 
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model_z,0,1e-3);
+    let green=surf_Green::from_Model(&model_z,0,1e-3,None);
     let E_min=-0.5;
     let E_max=0.5;
     let E_n=nk.clone();
@@ -291,9 +221,8 @@ fn main(){
 
     let num=30;
     let name="examples/Bi2F2_new/z_new";
-    cut(&model_z,num,1,name);
-    cut(&model_z,num,2,name);
-    */
+    //cut(&model_z,num,1,name);
+    //cut(&model_z,num,2,name);
 }
 
 
@@ -363,115 +292,6 @@ fn add_altermagnetism_0(mut model:Model,J:f64,m:f64,direction:&[f64;3])->Model{
     return model
 }
 
-fn add_altermagnetism_1(mut model:Model,J:f64,direction_xy:bool)->Model{
-    //接下来开始加入 altermagnetism 项
-    //首先, 我们设定磁矩为 J, 加在 onsite 项上, 看能否得到altermagnetism, 目前加入的是 \tau_z(cos kx- cos ky)(a sx+b sy)
-    let J=Complex::new(J,0.0);
-    if direction_xy{
-        model.add_hop(J,0,0,&array![1,0,0],1);
-        model.add_hop(-J,1,1,&array![1,0,0],1);
-        model.add_hop(-J,2,2,&array![1,0,0],1);
-        model.add_hop(J,3,3,&array![1,0,0],1);
-        model.add_hop(J,0,0,&array![0,1,0],1);
-        model.add_hop(-J,1,1,&array![0,1,0],1);
-        model.add_hop(-J,2,2,&array![0,1,0],1);
-        model.add_hop(J,3,3,&array![0,1,0],1);
-
-        model.add_hop(J,0,0,&array![1,0,0],2);
-        model.add_hop(-J,1,1,&array![1,0,0],2);
-        model.add_hop(-J,2,2,&array![1,0,0],2);
-        model.add_hop(J,3,3,&array![1,0,0],2);
-        model.add_hop(J,0,0,&array![0,1,0],2);
-        model.add_hop(-J,1,1,&array![0,1,0],2);
-        model.add_hop(-J,2,2,&array![0,1,0],2);
-        model.add_hop(J,3,3,&array![0,1,0],2);
-        return model
-    }else{
-        model.add_hop(J,0,0,&array![1,0,0],1);
-        model.add_hop(-J,1,1,&array![1,0,0],1);
-        model.add_hop(-J,2,2,&array![1,0,0],1);
-        model.add_hop(J,3,3,&array![1,0,0],1);
-        model.add_hop(J,0,0,&array![0,1,0],1);
-        model.add_hop(-J,1,1,&array![0,1,0],1);
-        model.add_hop(-J,2,2,&array![0,1,0],1);
-        model.add_hop(J,3,3,&array![0,1,0],1);
-
-        let J=-J;
-        model.add_hop(J,0,0,&array![1,0,0],2);
-        model.add_hop(-J,1,1,&array![1,0,0],2);
-        model.add_hop(-J,2,2,&array![1,0,0],2);
-        model.add_hop(J,3,3,&array![1,0,0],2);
-        model.add_hop(J,0,0,&array![0,1,0],2);
-        model.add_hop(-J,1,1,&array![0,1,0],2);
-        model.add_hop(-J,2,2,&array![0,1,0],2);
-        model.add_hop(J,3,3,&array![0,1,0],2);
-        return model
-    }
-}
-fn add_altermagnetism_2(mut model:Model,J:f64,t3:f64,t4:f64,direction_xy:bool)->Model{
-    //目前, 根据magneticTB, 我们能够得到的altermagnetism 可以考虑为如下形式:
-    let li:Complex<f64>=1.0*Complex::i();
-    let t3=Complex::new(t3,0.0);
-    let t4=Complex::new(t4,0.0);
-    if direction_xy{
-        model.set_onsite(&array![J,J,-J,-J],1);
-        model.set_onsite(&array![J,J,-J,-J],2);
-        let R0:Array2::<isize>=arr2(&[[1,0,0],[0,-1,0]]);
-        //hopping 项
-        model.add_hop(t3,0,0,&R0.row(0).to_owned(),0);
-        model.add_hop(t4,1,1,&R0.row(0).to_owned(),0);
-        model.add_hop(t3,2,2,&R0.row(0).to_owned(),0);
-        model.add_hop(t4,3,3,&R0.row(0).to_owned(),0);
-        model.add_hop(-t3,0,0,&R0.row(1).to_owned(),0);
-        model.add_hop(-t4,1,1,&R0.row(1).to_owned(),0);
-        model.add_hop(-t3,2,2,&R0.row(1).to_owned(),0);
-        model.add_hop(-t4,3,3,&R0.row(1).to_owned(),0);
-        return model
-    }else{
-        model.set_onsite(&array![J,J,-J,-J],1);
-        model.set_onsite(&array![-J,-J,J,J],2);
-        let R0:Array2::<isize>=arr2(&[[1,0,0],[0,-1,0]]);
-        //hopping 项
-        model.add_hop(t3,0,0,&R0.row(0).to_owned(),0);
-        model.add_hop(t4,1,1,&R0.row(0).to_owned(),0);
-        model.add_hop(t3,2,2,&R0.row(0).to_owned(),0);
-        model.add_hop(t4,3,3,&R0.row(0).to_owned(),0);
-        model.add_hop(-t3,0,0,&R0.row(1).to_owned(),0);
-        model.add_hop(-t4,1,1,&R0.row(1).to_owned(),0);
-        model.add_hop(-t3,2,2,&R0.row(1).to_owned(),0);
-        model.add_hop(-t4,3,3,&R0.row(1).to_owned(),0);
-        return model
-    }
-}
-fn add_altermagnetism_3(mut model:Model,J:f64,t1:f64,t2:f64,direction_xy:bool)->Model{
-    let t1=Complex::new(t1,0.0);
-    let t2=Complex::new(t2,0.0);
-    if direction_xy{
-        model.set_onsite(&array![J,J,-J,-J],1);
-        model.set_onsite(&array![J,J,-J,-J],2);
-        model.add_hop(t1,0,0,&array![1,0,0],0);
-        model.add_hop(t1,1,1,&array![1,0,0],0);
-        model.add_hop(t2,2,2,&array![1,0,0],0);
-        model.add_hop(t2,3,3,&array![1,0,0],0);
-        model.add_hop(t2,0,0,&array![0,1,0],0);
-        model.add_hop(t2,1,1,&array![0,1,0],0);
-        model.add_hop(t1,2,2,&array![0,1,0],0);
-        model.add_hop(t1,3,3,&array![0,1,0],0);
-        return model
-    }else{
-        model.set_onsite(&array![J,J,-J,-J],1);
-        model.set_onsite(&array![-J,-J,J,J],2);
-        model.add_hop(t1,0,0,&array![1,0,0],0);
-        model.add_hop(t1,1,1,&array![1,0,0],0);
-        model.add_hop(t2,2,2,&array![1,0,0],0);
-        model.add_hop(t2,3,3,&array![1,0,0],0);
-        model.add_hop(t2,0,0,&array![0,1,0],0);
-        model.add_hop(t2,1,1,&array![0,1,0],0);
-        model.add_hop(t1,2,2,&array![0,1,0],0);
-        model.add_hop(t1,3,3,&array![0,1,0],0);
-        return model
-    }
-}
 
 fn show_wilson_loop(model:&Model,dir_1:&Array1<f64>,dir_2:&Array1<f64>,occ:&Vec<usize>,n1:usize,n2:usize,name:&str){
     let wcc=model.wannier_centre(occ,&array![0.0,0.0,0.0],dir_1,dir_2,n1,n2);
@@ -565,7 +385,7 @@ fn cut(model:&Model,num:usize,cut_type:usize,name:&str){
             let mut new_model=model.cut_dot(num,4,Some(vec![0,1]));
             let mut del_atom=Vec::new();
             let num0=num as f64;
-            for (i,a) in new_model.atom.outer_iter().enumerate(){
+            for (i,a) in new_model.atom_position().outer_iter().enumerate(){
                 if a[[0]].abs()<1e-3 || (a[[0]]-num0/(num0+1.0)).abs() < 1e-3{
                     del_atom.push(i)
                 }else if a[[1]] > (num0-1.0)/(num0+1.0){
@@ -597,14 +417,14 @@ fn cut(model:&Model,num:usize,cut_type:usize,name:&str){
     for i in 0..nresult[0]{
         let mut s=0;
         for j in 0..new_model.natom{
-            for k in 0..new_model.atom_list[j]{
+            for k in 0..new_model.atoms[j].norb(){
                 size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb]];
                 s+=1;
             }
         }
     }
 
-    let show_str=new_model.atom.clone().dot(&model.lat);
+    let show_str=new_model.atom_position().dot(&model.lat);
     let show_str=show_str.slice(s![..,0..2]).to_owned();
     let show_size=size.row(new_model.norb).to_owned();
     let dir_name=match cut_type{

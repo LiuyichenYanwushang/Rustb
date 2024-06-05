@@ -3,10 +3,11 @@ pub mod basis;
 pub mod conductivity;
 pub mod surfgreen;
 pub mod geometry;
-pub mod sparse_model;
 pub mod ndarray_lapack;
 pub mod generics;
 pub mod output;
+pub mod atom_struct;
+pub mod model_struct;
 use gnuplot::Major;
 use num_complex::Complex;
 use num_traits::identities::Zero;
@@ -26,6 +27,7 @@ use std::ops::MulAssign;
 use std::ops::Deref;
 use std::time::Instant;
 use crate::generics::usefloat;
+use crate::atom_struct::atom;
 #[doc(hidden)]
 pub use crate::surfgreen::surf_Green;
 
@@ -38,29 +40,6 @@ pub use crate::surfgreen::surf_Green;
 /// - Calculate the first-order anomalous Hall conductivity and spin Hall conductivity
 ///
 
-#[derive(Clone,Debug)]
-pub struct Model_sparse<hop_element>{
-    /// - The real space dimension of the model.
-    pub dim_r:usize,
-    /// - The number of orbitals in the model.
-    pub norb:usize,
-    /// - The number of states in the model. If spin is enabled, nsta=norb$\times$2
-    pub nsta:usize,
-    /// - The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
-    pub natom:usize,
-    /// - Whether the model has spin enabled. If enabled, spin=true
-    pub spin:bool,
-    /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
-    pub lat:Array2::<f64>,
-    /// - The position of the orbitals in the model. We use fractional coordinates uniformly.
-    pub orb:Array2::<f64>,
-    /// - The position of the atoms in the model, also in fractional coordinates.
-    pub atom:Array2::<f64>,
-    /// - The number of orbitals in the atoms, in the same order as the atom positions.
-    pub atom_list:Vec<usize>,
-    /// - The Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
-    pub ham:Vec<hop_element>,
-}
 
 ///这个是 tight-binding 模型的基本单位
 #[derive(Clone,Debug)]
@@ -80,18 +59,14 @@ pub struct Model{
     /// - The position of the orbitals in the model. We use fractional coordinates uniformly.
     pub orb:Array2::<f64>,
     /// - The position of the atoms in the model, also in fractional coordinates.
-    pub atom:Array2::<f64>,
+    pub atoms:Vec<atom>,
     /// - The number of orbitals in the atoms, in the same order as the atom positions.
-    pub atom_list:Vec<usize>,
-    /// - The Hamiltonian of the model, $\bra{m0}\hat H\ket{nR}$, a three-dimensional complex tensor of size n_R$\times$nsta$\times$ nsta, where the first nsta*nsta matrix corresponds to hopping within the unit cell, i.e. <m0|H|n0>, and the subsequent matrices correspond to hopping within hamR.
     pub ham:Array3::<Complex<f64>>,
     /// - The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
     pub hamR:Array2::<isize>,
     /// - The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
     pub rmatrix:Array4::<Complex<f64>>,
 }
-
-
 
 
 #[inline(always)]
@@ -308,7 +283,7 @@ pub fn  write_txt_1<T:usefloat>(data:&Array1<T>,output:&str)-> std::io::Result<(
 ///    let norb:usize=2;
 ///    let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
 ///    let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
-///    let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+///    let mut model=Model::tb_model(dim_r,lat,orb,false,None);
 ///    model.set_onsite(&arr1(&[delta,-delta]),0);
 ///    model.add_hop(t1,0,1,&array![0,0],0);
 ///    model.add_hop(t1,0,1,&array![-1,0],0);
@@ -458,7 +433,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None);
         model.set_onsite(&arr1(&[-delta,delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
@@ -507,7 +482,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None);
         model.set_onsite(&arr1(&[-delta,delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
@@ -562,7 +537,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None);
         model.set_onsite(&arr1(&[-delta,delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
@@ -607,7 +582,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None);
         model.set_onsite(&arr1(&[-delta,delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
@@ -768,7 +743,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
         let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None);
         model.set_onsite(&arr1(&[delta,-delta]),0);
         model.add_hop(t1,0,1,&array![0,0],0);
         model.add_hop(t1,0,1,&array![-1,0],0);
@@ -875,7 +850,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.5,3.0_f64.sqrt()/2.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,true,None);
         model.set_onsite(&arr1(&[delta,-delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0],[-1,0],[0,-1]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
@@ -1089,14 +1064,14 @@ mod tests {
         for i in 0..nresults{
             let mut s=0;
             for j in 0..new_model.natom{
-                for k in 0..new_model.atom_list[j]{
+                for k in 0..new_model.atoms[j].norb(){
                     size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb]];
                     s+=1;
                 }
             }
         }
 
-        let show_str=new_model.atom.clone().dot(&model.lat);
+        let show_str=new_model.atom_position().dot(&model.lat);
         let show_str=show_str.slice(s![..,0..2]).to_owned();
         let show_size=size.row(new_model.norb).to_owned();
         use std::fs::create_dir_all;
@@ -1119,7 +1094,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0,0.0],[0.5,3.0_f64.sqrt()/2.0,0.0],[0.0,0.0,1.0]]);
         let orb=arr2(&[[1.0/3.0,1.0/3.0,0.0],[2.0/3.0,2.0/3.0,0.0]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None);
         model.set_onsite(&arr1(&[delta,-delta]),0);
         let R0:Array2::<isize>=arr2(&[[0,0,0],[-1,0,0],[0,-1,0]]);
         for (i,R) in R0.axis_iter(Axis(0)).enumerate(){
@@ -1214,7 +1189,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
         let orb=arr2(&[[0.0,0.0],[1.0/3.0,0.0],[0.0,1.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None);
         //最近邻hopping
         model.add_hop(t1,0,1,&array![0,0],0);
         model.add_hop(t1,2,0,&array![0,0],0);
@@ -1269,7 +1244,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[1.0]]);
         let orb=arr2(&[[0.0],[0.5],[0.0],[0.5]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None);
         model.add_hop(t1,0,1,&array![0],0);
         model.add_hop(t2,0,1,&array![-1],0);
         model.add_hop(t1,2,3,&array![0],0);
@@ -1303,7 +1278,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
         let orb=arr2(&[[0.,0.],[1.0/3.0,0.0],[0.0,1.0/3.0]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,true,None);
         //最近邻hopping
         model.add_hop(t1,0,1,&array![0,0],0);
         model.add_hop(t1,2,0,&array![0,0],0);
@@ -1339,7 +1314,7 @@ mod tests {
         let norb:usize=2;
         let lat=arr2(&[[1.0,0.0],[0.0,1.0]]);
         let orb=arr2(&[[0.0,0.0],[0.5,0.0],[0.5,0.5],[0.0,0.5]]);
-        let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+        let mut model=Model::tb_model(dim_r,lat,orb,false,None);
         model.add_hop(t1,0,1,&array![0,0],0);
         model.add_hop(t1,1,2,&array![0,0],0);
         model.add_hop(t1,2,3,&array![0,0],0);
@@ -1412,7 +1387,7 @@ mod tests {
         let show_evec=evec.to_owned().map(|x| x.norm_sqr());
         let norb=new_model.norb;
         let size=show_evec;
-        let show_str=new_model.atom.clone().dot(&model.lat);
+        let show_str=new_model.atom_position().dot(&model.lat);
         use std::fs::create_dir_all;
         create_dir_all("tests/BBH/corner").expect("can't creat the file");
         write_txt_1(band,"tests/BBH/corner/band.txt");

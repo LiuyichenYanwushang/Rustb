@@ -17,7 +17,7 @@ fn main(){
     let a0=1.0;
     let lat=arr2(&[[1.0,0.0],[0.0,1.0]])*a0;//正方晶格
     let orb=arr2(&[[0.0,0.0],[0.5,0.5]]);
-    let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
+    let mut model=Model::tb_model(dim_r,lat,orb,true,None);
     model.set_onsite(&arr1(&[J,-J]),3);
     //底层最近邻hopping
     model.add_hop(t+delta,0,0,&array![-1,0],0);

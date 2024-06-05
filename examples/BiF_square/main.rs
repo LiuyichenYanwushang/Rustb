@@ -23,7 +23,7 @@ fn main(){
     let h=0.1;
     let lat=arr2(&[[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,3.0]])*a0;
     let orb=arr2(&[[0.5,0.0,0.5+h],[0.5,0.0,0.5+h],[0.0,0.5,0.5-h],[0.0,0.5,0.5-h]]);
-    let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
+    let mut model=Model::tb_model(dim_r,lat,orb,true,None);
     let R0:Array2::<isize>=arr2(&[[0,0,0],[1,0,0],[0,-1,0],[1,-1,0]]);
     let cos_t2=1.0-h.powi(2)/2.0;
     let t_sg=t_sg*cos_t2;
@@ -182,11 +182,11 @@ fn main(){
 
     let mu=Array1::<f64>::linspace(-1.0,1.0,1001);
     let conductivity=model.Hall_conductivity_mu(&kmesh,&dir_1,&dir_2,&mu,T,og,spin,eta);
-    plot!(mu,conductivity,"examples/BiF_square/hall.pdf");
+
     let mu:f64=0.0;
 
     let nk:usize=1001;
-    let green=surf_Green::from_Model(&model,0,1e-3);
+    let green=surf_Green::from_Model(&model,0,1e-3,None);
     let E_min=-1.0;
     let E_max=1.0;
     let E_n=nk.clone();
@@ -239,7 +239,7 @@ fn main(){
     fg.set_terminal("pdfcairo", &pdf_name);
     fg.show();
     //开始计算角态
-    let show_str=model.atom.clone().dot(&model.lat);
+    let show_str=model.atom_position().clone().dot(&model.lat);
     let show_str=show_str.slice(s![..,0..2]).to_owned();
     let num=30;
     let model_1=model.cut_piece(num,0);
@@ -266,14 +266,14 @@ fn main(){
     for i in 0..new_model.nsta{
         let mut s=0;
         for j in 0..new_model.natom{
-            for k in 0..new_model.atom_list[j]{
+            for k in 0..new_model.atoms[j].norb(){
                 size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb]];
                 s+=1;
             }
         }
     }
 
-    let show_str=new_model.atom.clone().dot(&model.lat);
+    let show_str=new_model.atom_position().dot(&model.lat);
     let show_str=show_str.slice(s![..,0..2]).to_owned();
     let show_size=size.row(new_model.norb).to_owned();
 

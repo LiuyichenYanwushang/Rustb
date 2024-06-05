@@ -22,7 +22,7 @@ fn main(){
     let a0=1.0;
     let lat=arr2(&[[1.0,0.0],[0.0,1.0]])*a0;
     let orb=arr2(&[[0.0,0.0],[0.0,0.0]]);
-    let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
+    let mut model=Model::tb_model(dim_r,lat,orb,true,None);
     model.add_hop(t1,0,0,&array![1,0],0);
     model.add_hop(t1,0,0,&array![0,1],0);
     model.add_hop(t1,1,1,&array![1,0],0);

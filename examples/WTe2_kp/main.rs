@@ -85,7 +85,7 @@ fn gen_model(t:f64,v:f64,ap:f64,eta:f64,m:f64)-> Model{
     let norb:usize=2;
     let lat=arr2(&[[1.0,0.0],[0.0,1.0]]);
     let orb=arr2(&[[0.0,0.0],[0.0,0.0]]);
-    let mut model=Model::tb_model(dim_r,lat,orb,false,None,None);
+    let mut model=Model::tb_model(dim_r,lat,orb,false,None);
     model.set_onsite(&array![m/2.0-4.0*ap,-m/2.0+4.0*ap],0);
     let t=Complex::new(t,0.0);
     let v=Complex::new(v,0.0);

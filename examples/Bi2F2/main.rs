@@ -19,7 +19,7 @@ fn main(){
     let h=0.0;
     let lat=arr2(&[[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]])*a0;
     let orb=arr2(&[[0.5,0.0,0.0],[0.5,0.0,0.0],[0.0,0.5,0.0],[0.0,0.5,0.0]]);
-    let mut model=Model::tb_model(dim_r,lat,orb,true,None,None);
+    let mut model=Model::tb_model(dim_r,lat,orb,true,None);
     let R0:Array2::<isize>=arr2(&[[0,0,0],[1,0,0],[0,-1,0],[1,-1,0]]);
     //------开始添加hopping----------------
     let lm=1.0+0.0*li;
@@ -79,7 +79,7 @@ fn main(){
 
 
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model,0,1e-3);
+    let green=surf_Green::from_Model(&model,0,1e-3,None);
     let E_min=-1.0;
     let E_max=1.0;
     let E_n=nk.clone();
@@ -111,7 +111,7 @@ fn main(){
     model_xy.show_band(&path,&label,nk,"examples/Bi2F2/xy/band");
 
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model_xy,0,1e-3);
+    let green=surf_Green::from_Model(&model_xy,0,1e-3,None);
     let E_min=-1.0;
     let E_max=1.0;
     let E_n=nk.clone();
@@ -153,7 +153,7 @@ fn main(){
     model_xy.show_band(&path,&label,nk,"examples/Bi2F2/bar_xy/band");
 
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model_xy,0,1e-3);
+    let green=surf_Green::from_Model(&model_xy,0,1e-3,None);
     let E_min=-1.0;
     let E_max=1.0;
     let E_n=nk.clone();
@@ -511,7 +511,7 @@ fn cut(model:&Model,num:usize,cut_type:usize,name:&str){
             let mut new_model=model.cut_dot(num,4,Some(vec![0,1]));
             let mut del_atom=Vec::new();
             let num0=num as f64;
-            for (i,a) in new_model.atom.outer_iter().enumerate(){
+            for (i,a) in new_model.atom_position().outer_iter().enumerate(){
                 if a[[0]].abs()<1e-3 || (a[[0]]-num0/(num0+1.0)).abs() < 1e-3{
                     del_atom.push(i)
                 }else if a[[1]] > (num0-1.0)/(num0+1.0){
@@ -541,14 +541,14 @@ fn cut(model:&Model,num:usize,cut_type:usize,name:&str){
     for i in 0..nresult{
         let mut s=0;
         for j in 0..new_model.natom{
-            for k in 0..new_model.atom_list[j]{
+            for k in 0..new_model.atoms[j].norb(){
                 size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb]];
                 s+=1;
             }
         }
     }
 
-    let show_str=new_model.atom.clone().dot(&model.lat);
+    let show_str=new_model.atom_position().dot(&model.lat);
     let show_str=show_str.slice(s![..,0..2]).to_owned();
     let show_size=size.row(new_model.norb).to_owned();
     let dir_name=match cut_type{
