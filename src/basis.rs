@@ -113,14 +113,6 @@ macro_rules! add_hamiltonian {
                     $new_ham[[$ind_i, $ind_j]] += $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] -= $tmp;
                 }
-                /*
-                4 => {
-                    $new_ham[[$ind_i, $ind_j + $norb]] += $tmp;
-                }
-                5 => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] += $tmp;
-                }
-                */
                 _ => todo!(),
             }
         } else {
@@ -192,10 +184,10 @@ impl Model{
         let mut new_atom_list:Vec<usize>=vec![1];
         let mut new_atom=Array2::<f64>::zeros((0,dim_r));
         if lat.len_of(Axis(1)) != dim_r{
-            panic!("Wrong, the lat's second dimension's length must equal to dim_r") 
+            panic!("Wrong, the lat's second dimension's length must equal to dim_r")
         }
         if lat.len_of(Axis(0)) != lat.len_of(Axis(1)) {
-            panic!("Wrong, the lat's second dimension's length must less than first dimension's length") 
+            panic!("Wrong, the lat's second dimension's length must less than first dimension's length")
         }
         let mut natom:usize=0;
         match (atom,atom_list){
@@ -259,7 +251,7 @@ impl Model{
         //! tmp: hopping 的参数
         //!
         //! ind_i,ind_j: 哈密顿量中的轨道序数, 表示从 i-> j 的hopping
-        //! 
+        //!
         //! R: 表示hopping 到的原胞位置
         //!
         //! pauli:可以取0,1,2,3, 分别表示 $\sg_0$, $\sg_x$, $\sg_y$, $\sg_z$.
@@ -293,7 +285,7 @@ impl Model{
         //! let t=1.0; //the nearst hopping
         //! graphene_model.set_hop(t,0,1,&array![0,0],0);
         //! // t is the hopping, 0, 1 is the orbital ,array![0,0] is the unit cell
-        //! graphene_model.set_hop(t,0,1,&arr1(&[1,0]),0); 
+        //! graphene_model.set_hop(t,0,1,&arr1(&[1,0]),0);
         //! graphene_model.set_hop(t,0,1,&arr1(&vec![0,-1]),0);
         //!
         //! ```
@@ -342,7 +334,7 @@ impl Model{
 
     #[allow(non_snake_case)]
     pub fn add_hop<T:Data<Elem=isize>,U:hop_use>(&mut self,tmp:U,ind_i:usize,ind_j:usize,R:&ArrayBase<T,Ix1>,pauli:isize){
-        //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp 
+        //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp
         let tmp:Complex<f64>=tmp.to_complex();
         if pauli != 0 && self.spin==false{
             println!("Wrong, if spin is Ture and pauli is not zero, the pauli is not use")
@@ -581,7 +573,7 @@ impl Model{
     ///这里的基函数是布洛赫波函数
     ///
     /// 这里速度算符的计算公式, 我们在程序中采用 tight-binding 模型,
-    /// 即傅里叶变换的时候考虑原子位置. 
+    /// 即傅里叶变换的时候考虑原子位置.
     ///
     /// 这样我们就有
     ///
@@ -611,8 +603,8 @@ impl Model{
         let U0=U0.mapv(|x| Complex::<f64>::new(x,0.0));
         let U0=U0*Complex::new(0.0,2.0*PI);
         let mut U0=U0.mapv(Complex::exp);
-        let U=Array2::from_diag(&U0); 
-        let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj())); 
+        let U=Array2::from_diag(&U0);
+        let U_conj=Array2::from_diag(&U0.mapv(|x| x.conj()));
         let orb_real=orb_sta.dot(&self.lat);
         let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
         let Us=Us*Complex::new(0.0,2.0*PI);
@@ -654,7 +646,7 @@ impl Model{
             let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
             for i in 0..self.dim_r{
                 let r0=rk.slice(s![i,..,..]);
-                //let UU=orb_real.column(i);//这个是实空间的数据, 
+                //let UU=orb_real.column(i);//这个是实空间的数据,
                 //let UU=Array2::from_diag(&UU); //将其化为矩阵
                 //let A=&r0-&UU;
                 //let r0=&U_conj.dot(&A).dot(&U);
@@ -673,7 +665,7 @@ impl Model{
         //!求解单个k点的能带值
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
-        } 
+        }
         let hamk=self.gen_ham(kvec);
         let eval = if let Ok(eigvals) = hamk.eigvalsh(UPLO::Lower) { eigvals } else { todo!() };
         eval
@@ -683,7 +675,7 @@ impl Model{
         ///这个是用来求解部分能带的算法, 可以加快求解速度, 尤其是求解角态或者hing state.
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
-        } 
+        }
         let hamk=self.gen_ham(&kvec);
         let eval=eigvalsh_r(&hamk,range,epsilon,UPLO::Upper);
         eval
@@ -695,7 +687,7 @@ impl Model{
         Zip::from(kvec.outer_iter())
             .and(band.outer_iter_mut())
             .apply(|x,mut a| {
-                let eval =self.solve_band_onek(&x); 
+                let eval =self.solve_band_onek(&x);
                 a.assign(&eval);
             });
         band
@@ -708,7 +700,7 @@ impl Model{
         Zip::from(kvec.outer_iter())
             .and(band.outer_iter_mut())
             .par_apply(|x,mut a| {
-                let eval =self.solve_band_onek(&x); 
+                let eval =self.solve_band_onek(&x);
                 a.assign(&eval);
             });
         band
@@ -718,7 +710,7 @@ impl Model{
     pub fn solve_onek<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->(Array1::<f64>,Array2::<Complex<f64>>){
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
-        } 
+        }
         let hamk=self.gen_ham(&kvec);
         let (eval, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) { (eigvals, eigvecs) } else { todo!() };
         let evec=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&evec);
@@ -728,7 +720,7 @@ impl Model{
         ///这个是用来求解部分能带的算法, 可以加快求解速度, 尤其是求解角态或者hing state.
         if kvec.len() !=self.dim_r{
             panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
-        } 
+        }
         let hamk=self.gen_ham(&kvec);
         let (eval,evec)=eigh_r(&hamk,range,epsilon,UPLO::Upper);
         let evec=evec.mapv(|x| x.conj());
@@ -744,7 +736,7 @@ impl Model{
             .and(band.outer_iter_mut())
             .and(vectors.outer_iter_mut())
             .apply(|x,mut a,mut b| {
-                let (eval, evec) =self.solve_onek(&x); 
+                let (eval, evec) =self.solve_onek(&x);
                 a.assign(&eval);
                 b.assign(&evec);
             });
@@ -759,7 +751,7 @@ impl Model{
             .and(band.outer_iter_mut())
             .and(vectors.outer_iter_mut())
             .par_apply(|x,mut a,mut b| {
-                let (eval, evec) =self.solve_onek(&x); 
+                let (eval, evec) =self.solve_onek(&x);
                 a.assign(&eval);
                 b.assign(&evec);
             });
@@ -1162,7 +1154,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     for i in 0..model_2.natom{
                         let atom_position=model_2.atom.row(i).to_owned();
                         let num0=num as f64;
-                        if atom_position[[dir[0]]]*(num0+1.0)/num0> 1.0+1e-5 
+                        if atom_position[[dir[0]]]*(num0+1.0)/num0> 1.0+1e-5
                             || atom_position[[dir[1]]]*(num0+1.0)/num0> 1.0+1e-5  {
                             a+=model_2.atom_list[i];
                         }else{
@@ -1203,9 +1195,9 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let mut a:usize=0;
                     for i in 0..model_2.natom{
                         let atom_position=model_2.atom.row(i).to_owned();
-                        if (atom_position[[dir[1]]]-atom_position[[dir[0]]] + 0.5 < 0.0) || 
+                        if (atom_position[[dir[1]]]-atom_position[[dir[0]]] + 0.5 < 0.0) ||
                             (atom_position[[dir[0]]]-atom_position[[dir[1]]] + 0.5 < 0.0) ||
-                                (atom_position[[dir[1]]]+atom_position[[dir[0]]] < 0.5) || 
+                                (atom_position[[dir[1]]]+atom_position[[dir[0]]] < 0.5) ||
                                 (atom_position[[dir[1]]]-atom_position[[dir[0]]] > 0.5) {
                             a+=model_2.atom_list[i];
                         }else{
@@ -1344,7 +1336,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let mut a:usize=0;
                     for i in 0..model_2.natom{
                         let atom_position=model_2.atom.row(i).to_owned();
-                        if atom_position[[0]]> (num as f64)/(num as f64+1.0) 
+                        if atom_position[[0]]> (num as f64)/(num as f64+1.0)
                             || atom_position[[1]]> (num as f64)/(num as f64+1.0)  {
                             a+=model_2.atom_list[i];
                         }else{
@@ -1385,9 +1377,9 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let mut a:usize=0;
                     for i in 0..model_2.natom{
                         let atom_position=model_2.atom.row(i).to_owned();
-                        if (atom_position[[1]]-atom_position[[0]] + 0.5 < 0.0) || 
+                        if (atom_position[[1]]-atom_position[[0]] + 0.5 < 0.0) ||
                             (atom_position[[0]]-atom_position[[1]] + 0.5 < 0.0) ||
-                                (atom_position[[1]]+atom_position[[0]] < 0.5) || 
+                                (atom_position[[1]]+atom_position[[0]] < 0.5) ||
                                 (atom_position[[1]]-atom_position[[0]] > 0.5) {
                             a+=model_2.atom_list[i];
                         }else{
@@ -1512,7 +1504,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             while b>use_orb_list[0]{
                 self.atom_list[i]-=1;
                 let _=use_orb_list.remove(0);
-                
+
                 if self.atom_list[i]==0{
                     let A=self.atom.clone();
                     self.atom=remove_row(A,i);
@@ -1603,7 +1595,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
     //!
     //! 故我们可以在本征态下将格林函数写为 $$G(\og,\bm K)=\sum_{N}\f{\dyad{\psi_{N\bm K}}}{\og+i\eta-\ve_{N\bm K}}$$
     //!
-    //! 再利用普函数定理, 有 $A(\og,\bm K)=-\f{1}{\pi}\Im G(\og,\bm K)$, 对其求trace, 我们就能画超胞的能谱. 
+    //! 再利用普函数定理, 有 $A(\og,\bm K)=-\f{1}{\pi}\Im G(\og,\bm K)$, 对其求trace, 我们就能画超胞的能谱.
     //!
     //! 但是, 我们希望得到的是原胞的能谱, 所以我们需要得到原胞的基, 即 $\ket{n\bm k}$.
     //!
@@ -1836,7 +1828,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                                 atoms[[2]]=if atoms[[2]].abs()<1e-8{ 0.0}
                                     else if (atoms[[2]]-1.0).abs()<1e-8 {1.0} else {atoms[[2]]};
                                 if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
-                                    new_atom.push_row(atoms.view()); 
+                                    new_atom.push_row(atoms.view());
                                     new_atom_list.push(self.atom_list[n]);
                                     for n0 in use_atom_list[n]..use_atom_list[n]+self.atom_list[n]{
                                         //开始根据原子位置开始生成轨道
@@ -1866,7 +1858,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                                 else if (atoms[[1]]-1.0).abs()<1e-8 {1.0}
                                 else {atoms[[1]]};
                             if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
-                                new_atom.push_row(atoms.view()); 
+                                new_atom.push_row(atoms.view());
                                 new_atom_list.push(self.atom_list[n]);
                                 for n0 in use_atom_list[n]..use_atom_list[n]+self.atom_list[n]{
                                     //开始根据原子位置开始生成轨道
@@ -1886,7 +1878,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                         let mut atoms=use_atom.row(n).to_owned()+(i as f64)*U_inv.row(0).to_owned(); //原子的位置在新的坐标系下的坐标
                         atoms[[0]]=if atoms[[0]].abs()<1e-8{ 0.0}else if (atoms[[0]]-1.0).abs()<1e-8 {1.0}  else {atoms[[0]]};
                         if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
-                            new_atom.push_row(atoms.view()); 
+                            new_atom.push_row(atoms.view());
                             new_atom_list.push(self.atom_list[n]);
                             for n0 in use_atom_list[n]..use_atom_list[n]+self.atom_list[n]{
                                 //开始根据原子位置开始生成轨道
@@ -1925,7 +1917,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                 else {
                     x[[i]].abs()
                 };
-            }; 
+            };
             acc
         });
         let max_R=max_hamR.mapv(|x| (x.ceil() as isize)+1);
@@ -1995,7 +1987,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     for (int_j,use_j) in orb_list.iter().enumerate(){
                         //接下来计算超胞中的R在原胞中对应的hamR
                         let R0:Array1::<f64>=new_orb.row(int_j).to_owned()-new_orb.row(int_i).to_owned()+use_R.mapv(|x| x as f64); //超胞的 R 在原始原胞的 R
-                        let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(*use_j)+self.orb.row(*use_i)).mapv(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize}); 
+                        let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(*use_j)+self.orb.row(*use_i)).mapv(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize});
                         let R0_inv=-R0.clone();
                         let R0_exit=find_R(&self.hamR,&R0);
                         let R0_inv_exit=find_R(&self.hamR,&R0_inv);
@@ -2048,7 +2040,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     for (int_j,use_j) in orb_list.iter().enumerate(){
                         //接下来计算超胞中的R在原胞中对应的hamR
                         let R0:Array1::<f64>=new_orb.row(int_j).to_owned()-new_orb.row(int_i).to_owned()+use_R.mapv(|x| x as f64); //超胞的 R 在原始原胞的 R
-                        let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(*use_j)+self.orb.row(*use_i)).mapv(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize}); 
+                        let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(*use_j)+self.orb.row(*use_i)).mapv(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize});
                         let R0_inv=-R0.clone();
                         let R0_exit=find_R(&self.hamR,&R0);
                         let R0_inv_exit=find_R(&self.hamR,&R0_inv);
@@ -2088,8 +2080,8 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     for (int_j,use_j) in orb_list.iter().enumerate(){
                         //接下来计算超胞中的R在原胞中对应的hamR
                         let R0:Array1::<f64>=&new_orb.row(int_j)-&new_orb.row(int_i)+&use_R.map(|x| *x as f64); //超胞的 R 在原始原胞的 R
-                                                                                                                
-                        let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(*use_j)+self.orb.row(*use_i)).mapv(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize}); 
+
+                        let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(*use_j)+self.orb.row(*use_i)).mapv(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize});
                         let R0_inv=-R0.clone();
                         let R0_exit=find_R(&self.hamR,&R0);
                         let R0_inv_exit=find_R(&self.hamR,&R0_inv);
@@ -2111,7 +2103,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                             continue
                         }
                     }
-                } 
+                }
                 if add_R && R != 0{
                     new_ham.push(Axis(0),useham.view());
                     new_hamR.push_row(use_R.view());
@@ -2127,7 +2119,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     for (int_j,use_j) in orb_list.iter().enumerate(){
                         //接下来计算超胞中的R在原胞中对应的hamR
                         let R0:Array1::<f64>=new_orb.row(int_j).to_owned()-new_orb.row(int_i).to_owned()+use_R.mapv(|x| x as f64); //超胞的 R 在原始原胞的 R
-                        let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(*use_j)+self.orb.row(*use_i)).mapv(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize}); 
+                        let R0:Array1::<isize>=(R0.dot(U)-self.orb.row(*use_j)+self.orb.row(*use_i)).mapv(|x| if x.fract().abs()<1e-8 || x.fract().abs()>1.0-1e-8{x.round() as isize} else {x.floor() as isize});
                         let R0_inv=-R0.clone();
                         let R0_exit=find_R(&self.hamR,&R0);
                         let R0_inv_exit=find_R(&self.hamR,&R0_inv);
@@ -2183,7 +2175,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         let mut a:usize=0;
         for (i,atom) in self.atom.outer_iter().enumerate(){
             //let mut atom=atom.to_owned();
-            let atom=&atom.map(|x| if (x.fract()-1.0).abs() < 1e-8 || x.fract().abs()<1e-8{x.round()} else {*x}); 
+            let atom=&atom.map(|x| if (x.fract()-1.0).abs() < 1e-8 || x.fract().abs()<1e-8{x.round()} else {*x});
             // 这是先把原子中靠近整数晶格的原子移动到整数晶格上, 方便判断原子属于哪个原胞
             let R=atom.mapv(|x| x.trunc() as isize); //将原子位置得整数部分拿出来
             let use_atom=atom.map(|x| x.fract());
@@ -2434,7 +2426,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             show_ticks.push(Major(A,Fix(B)));
         }
         axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[Font("Times New Roman",24.0)]);
-        
+
         let k_node=k_node.to_vec();
         let mut pdf_name=name.clone();
         pdf_name.push_str("/plot.pdf");
@@ -2453,7 +2445,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         //!
         //! 这里 path 表示 文件的位置, 可以使用绝对路径, 即 "/" 开头的路径, 也可以使用相对路径, 即运行 cargo run 时候的文件夹作为起始路径.
         //!
-        //! file_name 就是 wannier90 中的 seedname, 文件可以读取 
+        //! file_name 就是 wannier90 中的 seedname, 文件可以读取
         //! seedname.win, seedname_centres.xyz, seedname_hr.dat, 以及可选的 seedname_r.dat.
         //!
         //! 这里 seedname_centres.xyz 需要在 wannier90 中设置 write_xyz=true, 而
@@ -2569,7 +2561,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                         let string=read_iter.next().unwrap();
                         if string.contains("end projections"){
                             break
-                        }else{ 
+                        }else{
                             let prj:Vec<&str>=string.split(|c| c==',' || c==';' || c==':').collect();
                             let mut atom_orb_number:usize=0;
                             for item in prj[1..].iter(){
@@ -2603,7 +2595,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                         let string=read_iter.next().unwrap();
                         if string.contains("end atoms_cart"){
                             break
-                        }else{       
+                        }else{
                             let prj:Vec<&str>=string.split_whitespace().collect();
                             atom_name.push(prj[0]);
                             let a1=prj[1].parse::<f64>().unwrap();
@@ -2741,4 +2733,3 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         model
     }
 }
-
