@@ -7,6 +7,7 @@ pub mod sparse_model;
 pub mod ndarray_lapack;
 pub mod generics;
 pub mod output;
+pub mod atom;
 use gnuplot::Major;
 use num_complex::Complex;
 use num_traits::identities::Zero;
@@ -62,18 +63,6 @@ pub struct Model_sparse<hop_element>{
     pub ham:Vec<hop_element>,
 }
 
-#[derive(Clone,Copy)]
-pub enum orb_projection{
-    s,
-    px,
-    py,
-    pz,
-    dxy,
-    dyz,
-    dxz,
-    dz2,
-    dx2y2,
-}
 
 
 ///这个是 tight-binding 模型的基本单位
@@ -91,42 +80,6 @@ pub struct Model{
     pub hamR:Array2::<isize>,
     /// - The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
     pub rmatrix:Array4::<Complex<f64>>,
-}
-struct orb{
-    position:Array1<f64>,
-    projection:orb_projection,
-}
-impl orb{
-
-    fn position(&self)->Array1<f64>{
-        self.position
-    }
-    fn projection(&self)->orb_projection{
-        self.projection
-    }
-    fn gen_orb(position:Array1<f64>,projection:orb_projection)->orb{
-        orb{position,projection}
-    }
-}
-
-pub struct atom{
-    position:Array1<f64>,
-    orb:Vec<orb>,
-}
-
-impl atom{
-    fn position(&self)->Array1<f64>{
-        self.position
-    }
-    fn push_orb(&self,orb:orb){
-        self.orb.push(orb);
-    }
-    fn norb(&self)->usize{
-        self.orb.len();
-    }
-    fn gen_atom(position:Array1<f64>,orb:&Vec<orb>)->atom{
-        atom{position,orb:orb.clone()}
-    }
 }
 
 
