@@ -144,7 +144,7 @@ fn main(){
     let mut fg = Figure::new();
     let x:Vec<f64>=kdist.to_vec();
     let axes=fg.axes2d();
-    for i in 0..model.nsta{
+    for i in 0..model.nsta(){
         let y:Vec<f64>=eval.slice(s![..,i]).to_owned().to_vec();
         axes.lines(&x, &y, &[Color("black")]);
     }
@@ -261,13 +261,13 @@ fn main(){
     let mut s=0;
     let (band,evec)=new_model.solve_onek(&arr1(&[0.0,0.0,0.0]));
     let show_evec=evec.to_owned().map(|x| x.norm_sqr());
-    let mut size=Array2::<f64>::zeros((new_model.nsta,new_model.natom));
-    let norb=new_model.norb;
-    for i in 0..new_model.nsta{
+    let mut size=Array2::<f64>::zeros((new_model.nsta(),new_model.natom()));
+    let norb=new_model.norb();
+    for i in 0..new_model.nsta(){
         let mut s=0;
-        for j in 0..new_model.natom{
+        for j in 0..new_model.natom(){
             for k in 0..new_model.atoms[j].norb(){
-                size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb]];
+                size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb()]];
                 s+=1;
             }
         }
@@ -275,7 +275,7 @@ fn main(){
 
     let show_str=new_model.atom_position().dot(&model.lat);
     let show_str=show_str.slice(s![..,0..2]).to_owned();
-    let show_size=size.row(new_model.norb).to_owned();
+    let show_size=size.row(new_model.norb()).to_owned();
 
     create_dir_all("examples/BiF_square/corner").expect("can't creat the file");
     write_txt_1(band,"examples/BiF_square/corner/band.txt");

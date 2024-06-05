@@ -191,7 +191,7 @@ fn conductivity_onek(model:&Model,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_
     let mut v:Array3::<Complex<f64>>=model.gen_v(k_vec);
     let mut J:Array3::<Complex<f64>>=v.clone();
     if model.spin {
-        let mut X:Array2::<Complex<f64>>=Array2::eye(model.nsta);
+        let mut X:Array2::<Complex<f64>>=Array2::eye(model.nsta());
         let pauli:Array2::<Complex<f64>>= match spin{
             0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
             1=> arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0,
@@ -199,7 +199,7 @@ fn conductivity_onek(model:&Model,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_
             3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
             _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
         };
-        X=kron(&pauli,&Array2::eye(model.norb));
+        X=kron(&pauli,&Array2::eye(model.norb()));
         for i in 0..model.dim_r{
             let j=J.slice(s![i,..,..]).to_owned();
             let j=anti_comm(&X,&j)/2.0; //这里做反对易
@@ -223,15 +223,15 @@ fn conductivity_onek(model:&Model,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_
     let A1=&evec_conj.dot(&A1);
     let A2=v.dot(&evec.reversed_axes());
     let A2=&evec_conj.dot(&A2);
-    let mut U0=Array2::<Complex<f64>>::zeros((model.nsta,model.nsta));
+    let mut U0=Array2::<Complex<f64>>::zeros((model.nsta(),model.nsta()));
     let eta0=eta.powi(2);
-    for i in 0..model.nsta{
-        for j in 0..model.nsta{
+    for i in 0..model.nsta(){
+        for j in 0..model.nsta(){
             U0[[i,j]]=1.0/(((mu-band[[i]]).powi(2)+eta0)*((mu-band[[j]]).powi(2)+eta0))+0.0*li;
         }
     }
     //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
-    //let mut omega_n=Array1::<f64>::zeros(model.nsta);
+    //let mut omega_n=Array1::<f64>::zeros(model.nsta());
     let A1=A1*U0;
     let A1=A1.axis_iter(Axis(0));
     let A2=A2.axis_iter(Axis(1));

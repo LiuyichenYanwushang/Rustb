@@ -61,21 +61,21 @@ fn main() {
     let model_1=model_1.make_supercell(&U1);
     let model_2=model_2.make_supercell(&U2);
     let orb= concatenate![Axis(0), model_1.orb, model_2.orb];
-    let mut atom= model_1.atoms;
-    let mut added_atom=model_2.atoms;
+    let mut atom= model_1.atoms.clone();
+    let mut added_atom=model_2.atoms.clone();
     atom.append(&mut added_atom);
 
     let U0=array![[(PI/4.0).cos(),-(PI/4.0).sin(),0.0],[(PI/4.0).sin(),(PI/4.0).cos(),0.0],[0.0,0.0,1.0]];
     let lat=U0.dot(&model_1.lat);
     let mut new_model=Model::tb_model(dim_r,lat.clone(),orb.clone(),true,Some(atom.clone()));
-    let mut onsite=Array1::zeros(new_model.norb);
-    for  i in 0..model_1.norb{
+    let mut onsite=Array1::zeros(new_model.norb());
+    for  i in 0..model_1.norb(){
         onsite[[i]]=J;
-        onsite[[i+model_1.norb]]=-J;
+        onsite[[i+model_1.norb()]]=-J;
     }
     new_model.set_onsite(&onsite,3);
-    for i in 0..model_1.norb{
-        for j in 0..model_1.norb{
+    for i in 0..model_1.norb(){
+        for j in 0..model_1.norb(){
             for (r1,R1) in model_1.hamR.axis_iter(Axis(0)).enumerate(){
                 if r1==0 && i>j{continue}
                 let t1=model_1.ham[[r1,i,j]];
@@ -84,7 +84,7 @@ fn main() {
             for (r2,R2) in model_2.hamR.axis_iter(Axis(0)).enumerate(){
                 if r2==0 && i>j{continue}
                 let t2=model_2.ham[[r2,i,j]];
-                new_model.add_hop(t2,i+model_1.norb,j+model_1.norb,&R2.to_owned(),0);
+                new_model.add_hop(t2,i+model_1.norb(),j+model_1.norb(),&R2.to_owned(),0);
             }
         }
     }
@@ -94,14 +94,14 @@ fn main() {
     println!("{}",evec);
     
     let mut model_up=Model::tb_model(dim_r,lat.clone(),orb.clone(),false,Some(atom.clone()));
-    let mut onsite=Array1::zeros(model_up.norb);
-    for  i in 0..model_1.norb{
+    let mut onsite=Array1::zeros(model_up.norb());
+    for  i in 0..model_1.norb(){
         onsite[[i]]=J;
-        onsite[[i+model_1.norb]]=-J;
+        onsite[[i+model_1.norb()]]=-J;
     }
     model_up.set_onsite(&onsite,0);
-    for i in 0..model_1.norb{
-        for j in 0..model_1.norb{
+    for i in 0..model_1.norb(){
+        for j in 0..model_1.norb(){
             for (r1,R1) in model_1.hamR.axis_iter(Axis(0)).enumerate(){
                 if r1==0 && i>j{continue}
                 let t1=model_1.ham[[r1,i,j]];
@@ -110,19 +110,19 @@ fn main() {
             for (r2,R2) in model_2.hamR.axis_iter(Axis(0)).enumerate(){
                 if r2==0 && i>j{continue}
                 let t2=model_2.ham[[r2,i,j]];
-                model_up.add_hop(t2,i+model_1.norb,j+model_1.norb,&R2.to_owned(),0);
+                model_up.add_hop(t2,i+model_1.norb(),j+model_1.norb(),&R2.to_owned(),0);
             }
         }
     }
     let mut model_dn=Model::tb_model(dim_r,lat,orb,false,Some(atom));
-    let mut onsite=Array1::zeros(model_dn.norb);
-    for  i in 0..model_1.norb{
+    let mut onsite=Array1::zeros(model_dn.norb());
+    for  i in 0..model_1.norb(){
         onsite[[i]]=J;
-        onsite[[i+model_1.norb]]=-J;
+        onsite[[i+model_1.norb()]]=-J;
     }
     model_dn.set_onsite(&(-onsite),0);
-    for i in 0..model_1.norb{
-        for j in 0..model_1.norb{
+    for i in 0..model_1.norb(){
+        for j in 0..model_1.norb(){
             for (r1,R1) in model_1.hamR.axis_iter(Axis(0)).enumerate(){
                 if r1==0 && i>j{continue}
                 let t1=model_1.ham[[r1,i,j]];
@@ -131,7 +131,7 @@ fn main() {
             for (r2,R2) in model_2.hamR.axis_iter(Axis(0)).enumerate(){
                 if r2==0 && i>j{continue}
                 let t2=model_2.ham[[r2,i,j]];
-                model_dn.add_hop(t2,i+model_1.norb,j+model_1.norb,&R2.to_owned(),0);
+                model_dn.add_hop(t2,i+model_1.norb(),j+model_1.norb(),&R2.to_owned(),0);
             }
         }
     }
@@ -143,12 +143,12 @@ fn main() {
     let mut fg = Figure::new();
     let x:Vec<f64>=k_dist.to_vec();
     let axes=fg.axes2d();
-    for i in 0..model_up.nsta{
+    for i in 0..model_up.nsta(){
         let y:Vec<f64>=band_up.slice(s![..,i]).to_owned().to_vec();
         axes.lines(&x, &y, &[Color("red"),LineStyle(Solid)]);
     }
 
-    for i in 0..model_up.nsta{
+    for i in 0..model_up.nsta(){
         let y:Vec<f64>=band_dn.slice(s![..,i]).to_owned().to_vec();
         axes.lines(&x, &y, &[Color("blue"),LineStyle(Solid)]);
     }
@@ -294,7 +294,7 @@ fn conductivity_onek(model:&Model,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_
     let mut v:Array3::<Complex<f64>>=model.gen_v(k_vec);
     let mut J:Array3::<Complex<f64>>=v.clone();
     if model.spin {
-        let mut X:Array2::<Complex<f64>>=Array2::eye(model.nsta);
+        let mut X:Array2::<Complex<f64>>=Array2::eye(model.nsta());
         let pauli:Array2::<Complex<f64>>= match spin{
             0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
             1=> arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0,
@@ -302,7 +302,7 @@ fn conductivity_onek(model:&Model,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_
             3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
             _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
         };
-        X=kron(&pauli,&Array2::eye(model.norb));
+        X=kron(&pauli,&Array2::eye(model.norb()));
         for i in 0..model.dim_r{
             let j=J.slice(s![i,..,..]).to_owned();
             let j=anti_comm(&X,&j)/2.0; //这里做反对易
@@ -326,9 +326,9 @@ fn conductivity_onek(model:&Model,k_vec:&Array1::<f64>,dir_1:&Array1::<f64>,dir_
     let A1=&evec_conj.dot(&A1);
     let A2=v.dot(&evec.reversed_axes());
     let A2=&evec_conj.dot(&A2);
-    let mut U0=Array2::<Complex<f64>>::zeros((model.nsta,model.nsta));
-    for i in 0..model.nsta{
-        for j in 0..model.nsta{
+    let mut U0=Array2::<Complex<f64>>::zeros((model.nsta(),model.nsta()));
+    for i in 0..model.nsta(){
+        for j in 0..model.nsta(){
             U0[[i,j]]=1.0/(((mu-band[[i]]).powi(2)+eta.powi(2))*((mu-band[[j]]).powi(2)+eta.powi(2)))+0.0*li;
         }
     }

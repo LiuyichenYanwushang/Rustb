@@ -77,10 +77,10 @@ fn main() {
     let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec=kvec.reversed_axes();
     let (berry_curv,band,_)=model.berry_connection_dipole(&kvec,&dir_1,&dir_2,&dir_3,0);
-    let berry_curv=berry_curv.into_shape((nk,nk,model.nsta)).unwrap();
+    let berry_curv=berry_curv.into_shape((nk,nk,model.nsta())).unwrap();
     let data=berry_curv.slice(s![..,..,0..2]).to_owned().sum_axis(Axis(2));
     draw_heatmap(&data.clone().reversed_axes(),"examples/Intrinsic_nonlinear/result/heat_map.pdf");
-    let band=band.into_shape((nk,nk,model.nsta)).unwrap();
+    let band=band.into_shape((nk,nk,model.nsta())).unwrap();
     let f:Array3::<f64>=1.0/(beta*(&band-mu0)).map(|x| x.exp()+1.0);
     let pf=&f*(1.0-&f)*beta;
     draw_heatmap(&pf.slice(s![..,..,0]).to_owned().reversed_axes(),"examples/Intrinsic_nonlinear/result/f_map.pdf");

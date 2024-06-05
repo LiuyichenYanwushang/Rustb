@@ -324,7 +324,7 @@ fn calculate_M(model:&Model){
         //开始计算三个方向的占据态的磁矩
         let kvec=gen_kmesh(&array![101,101,1]);
         let (band,evec)=model.solve_all_parallel(&kvec);
-        let I0=Array1::<Complex<f64>>::ones(model.norb);
+        let I0=Array1::<Complex<f64>>::ones(model.norb());
         let I0=Array2::from_diag(&I0);
         let sx=array![[0.0,1.0],[1.0,0.0]];
         let sx=sx.mapv(|x| Complex::new(x,0.0));
@@ -354,10 +354,10 @@ fn calculate_M(model:&Model){
             let tmp=x.dot(&y.t());
             let a=tmp.diag().to_owned();
             a}).collect();
-        let band_sx=Array2::<Complex<f64>>::from_shape_vec((nk,model.nsta),band_sx.into_iter().flatten().collect()).unwrap();
-        let band_sy=Array2::<Complex<f64>>::from_shape_vec((nk,model.nsta),band_sy.into_iter().flatten().collect()).unwrap();
-        let band_sz=Array2::<Complex<f64>>::from_shape_vec((nk,model.nsta),band_sz.into_iter().flatten().collect()).unwrap();
-        let band_s0=Array2::<Complex<f64>>::from_shape_vec((nk,model.nsta),band_s0.into_iter().flatten().collect()).unwrap();
+        let band_sx=Array2::<Complex<f64>>::from_shape_vec((nk,model.nsta()),band_sx.into_iter().flatten().collect()).unwrap();
+        let band_sy=Array2::<Complex<f64>>::from_shape_vec((nk,model.nsta()),band_sy.into_iter().flatten().collect()).unwrap();
+        let band_sz=Array2::<Complex<f64>>::from_shape_vec((nk,model.nsta()),band_sz.into_iter().flatten().collect()).unwrap();
+        let band_s0=Array2::<Complex<f64>>::from_shape_vec((nk,model.nsta()),band_s0.into_iter().flatten().collect()).unwrap();
         let band_sx=band_sx.slice(s![..,0..4]).to_owned();
         let band_sy=band_sy.slice(s![..,0..4]).to_owned();
         let band_sz=band_sz.slice(s![..,0..4]).to_owned();
@@ -412,13 +412,13 @@ fn cut(model:&Model,num:usize,cut_type:usize,name:&str){
     println!("solve_band_all took {} seconds", duration.as_secs_f64());   // 输出执行时间
     println!("{:?}",nresult);
     let show_evec=evec.to_owned().map(|x| x.norm_sqr());
-    let mut size=Array2::<f64>::zeros((new_model.nsta,new_model.natom));
-    let norb=new_model.norb;
+    let mut size=Array2::<f64>::zeros((new_model.nsta(),new_model.natom()));
+    let norb=new_model.norb();
     for i in 0..nresult[0]{
         let mut s=0;
-        for j in 0..new_model.natom{
+        for j in 0..new_model.natom(){
             for k in 0..new_model.atoms[j].norb(){
-                size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb]];
+                size[[i,j]]+=show_evec[[i,s]]+show_evec[[i,s+new_model.norb()]];
                 s+=1;
             }
         }
@@ -426,7 +426,7 @@ fn cut(model:&Model,num:usize,cut_type:usize,name:&str){
 
     let show_str=new_model.atom_position().dot(&model.lat);
     let show_str=show_str.slice(s![..,0..2]).to_owned();
-    let show_size=size.row(new_model.norb).to_owned();
+    let show_size=size.row(new_model.norb()).to_owned();
     let dir_name=match cut_type{
         0=>{ 
             let mut dir_name=String::new();
@@ -477,7 +477,7 @@ fn show_alter(model:&Model,name:&str){
     let mut fg = Figure::new();
     let x:Vec<f64>=kdist.to_vec();
     let axes=fg.axes2d();
-    for i in 0..model.nsta{
+    for i in 0..model.nsta(){
         let y:Vec<f64>=eval.slice(s![..,i]).to_owned().to_vec();
         axes.lines(&x, &y, &[Color("black")]);
     }
