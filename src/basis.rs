@@ -13,9 +13,9 @@ use ndarray_linalg::{Eigh, UPLO};
 use ndarray_linalg::conjugate;
 use rayon::prelude::*;
 use std::ops::AddAssign;
-use crate::ndarray_lapack::{eigh_r,eigvalsh_r};
+use crate::ndarray_lapack::{eigh_r,eigvalsh_r,eigvalsh_v};
 use crate::generics::hop_use;
-use crate::atom_struct::{orb_projection,atom,AtomType};
+use crate::atom_struct::{OrbProj,Atom,AtomType};
 
 
 pub fn find_R<A: Data<Elem = T>,B: Data<Elem = T>,T: std::cmp::PartialEq>(hamR:&ArrayBase<A, Ix2>,R:&ArrayBase<B, Ix1>)->bool{
@@ -138,7 +138,7 @@ impl Model{
     ///let mut graphene_model=Model::tb_model(2,lat,orb,spin,None);
     ///
     ///```
-    pub fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Vec<atom>>)->Model{
+    pub fn tb_model(dim_r:usize,lat:Array2::<f64>,orb:Array2::<f64>,spin:bool,atom:Option<Vec<Atom>>)->Model{
         /*
         //!这个函数是用来初始化一个 Model, 需要输入的变量意义为
         //!
@@ -198,10 +198,10 @@ impl Model{
                 //通过判断轨道是不是离得太近而判定是否属于一个原子,
                 //这种方法只适用于wannier90不开最局域化
                 let mut new_atom=Vec::new();
-                new_atom.push(atom::gen_atom(orb.row(0).to_owned(),1,AtomType::H));
+                new_atom.push(Atom::gen_atom(orb.row(0).to_owned(),1,AtomType::H));
                 for i in 1..norb{
                     if (orb.row(i).to_owned()-new_atom[new_atom.len()-1].position()).norm_l2()>1e-2{
-                        let use_atom=atom::gen_atom(orb.row(i).to_owned(),1,AtomType::H);
+                        let use_atom=Atom::gen_atom(orb.row(i).to_owned(),1,AtomType::H);
                         new_atom.push(use_atom);
                     }else{
                         new_atom[i].push_orb();
@@ -222,11 +222,13 @@ impl Model{
                 }
             }
         }
+        let orb_projection=vec![OrbProj::s;norb];
         let mut model=Model{
             dim_r,
             spin,
             lat,
             orb,
+            orb_projection,
             atoms:new_atom,
             ham,
             hamR,
@@ -537,8 +539,6 @@ impl Model{
         let U0=U0.mapv(|x| Complex::<f64>::new(0.0,2.0*PI*x));//take it in
         let mut U0=U0.mapv(Complex::exp);
         let U0=if self.spin{
-            //let UU=U0.clone();
-            //U0.append(Axis(0),UU.view()).unwrap();
             let U0=concatenate![Axis(0),U0,U0];
             U0
         }else{
@@ -604,7 +604,7 @@ impl Model{
         let Us=Us.mapv(Complex::exp); //Us 就是 exp(i k R)
         //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
         let mut UU=Array3::<f64>::zeros((self.dim_r,self.nsta(),self.nsta()));
-        let A=orb_real.clone().insert_axis(Axis(2));
+        let A=orb_real.view().insert_axis(Axis(2));
         let A=A.broadcast((self.nsta(),self.dim_r,self.nsta())).unwrap().permuted_axes([1,0,2]);
         let mut B=A.view().permuted_axes([0,2,1]);
         let UU=&B-&A;
@@ -660,7 +660,8 @@ impl Model{
             panic!("Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",kvec.len(),self.dim_r)
         }
         let hamk=self.gen_ham(kvec);
-        let eval = if let Ok(eigvals) = hamk.eigvalsh(UPLO::Lower) { eigvals } else { todo!() };
+        //let eval = if let Ok(eigvals) = hamk.eigvalsh(UPLO::Lower) { eigvals } else { todo!() };
+        let eval=eigvalsh_v(&hamk,UPLO::Upper);
         eval
     }
 
@@ -773,6 +774,7 @@ impl Model{
             panic!("Wrong, the dir is larger than dim_r");
         }
         let mut new_orb=Array2::<f64>::zeros((self.norb()*num,self.dim_r));//定义一个新的轨道
+        let mut new_orb_proj=Vec::new();
         let mut new_atom=Vec::new();//定义一个新的原子
         let new_norb=self.norb()*num;
         let new_nsta=self.nsta()*num;
@@ -785,12 +787,13 @@ impl Model{
                 use_orb[[dir]]+=i as f64;
                 use_orb[[dir]]=use_orb[[dir]]/(num as f64);
                 new_orb.row_mut(i*self.norb()+n).assign(&use_orb);
+                new_orb_proj.push(self.orb_projection[n]);
             }
             for n in 0..self.natom(){
                 let mut use_atom_position=self.atoms[n].position();
                 use_atom_position[[dir]]+=i as f64;
                 use_atom_position[[dir]]*=1.0/(num as f64);
-                let use_atom=atom::gen_atom(use_atom_position,self.atoms[n].norb(),self.atoms[n].atom_type());
+                let use_atom=Atom::gen_atom(use_atom_position,self.atoms[n].norb(),self.atoms[n].atom_type());
                 new_atom.push(use_atom);
             }
         }
@@ -1092,6 +1095,7 @@ impl Model{
             spin:self.spin,
             lat:new_lat,
             orb:new_orb,
+            orb_projection:new_orb_proj,
             atoms:new_atom,
             ham:new_ham,
             hamR:new_hamR,
@@ -1190,13 +1194,16 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             let norb=use_orb_item.len();
             let mut new_atom=Vec::new();
             let mut new_orb=Array2::<f64>::zeros((norb,self.dim_r));
+            let mut new_orb_proj=Vec::new();
             for (i,use_i) in use_atom_item.iter().enumerate(){
                 new_atom.push(old_model.atoms[*use_i].clone());
             }
             for (i,use_i) in use_orb_item.iter().enumerate(){
                 new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
+                new_orb_proj.push(old_model.orb_projection[*use_i])
             }
             let mut new_model=Model::tb_model(self.dim_r,old_model.lat.clone(),new_orb,self.spin,Some(new_atom));
+            new_model.orb_projection=new_orb_proj;
             let n_R=old_model.hamR.len_of(Axis(0));
             let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta(),new_model.nsta()));
             let mut new_hamR=Array2::<isize>::zeros((0,self.dim_r));
@@ -1356,13 +1363,16 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             let norb=use_orb_item.len();
             let mut new_atom=Vec::new();
             let mut new_orb=Array2::<f64>::zeros((norb,self.dim_r));
+            let mut new_orb_proj=Vec::new();
             for (i,use_i) in use_atom_item.iter().enumerate(){
                 new_atom.push(old_model.atoms[*use_i].clone());
             }
             for (i,use_i) in use_orb_item.iter().enumerate(){
                 new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
+                new_orb_proj.push(old_model.orb_projection[*use_i])
             }
             let mut new_model=Model::tb_model(self.dim_r,old_model.lat.clone(),new_orb,self.spin,Some(new_atom));
+            new_model.orb_projection=new_orb_proj;
             let n_R=new_model.hamR.len_of(Axis(0));
             let mut new_ham=Array3::<Complex<f64>>::zeros((n_R,new_model.nsta(),new_model.nsta()));
             let mut new_hamR=Array2::<isize>::zeros((1,self.dim_r));
@@ -1449,7 +1459,12 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         .filter(|&num| !use_orb_list.contains(&num))
         .collect();//要保留下来的元素
         let delete_n=orb_list.len();
-        self.orb=self.orb.clone().select(Axis(0),&index);
+        self.orb=self.orb.select(Axis(0),&index);
+        let mut new_orb_proj=Vec::new();
+        for i in index.iter(){
+            new_orb_proj.push(self.orb_projection[*i])
+        }
+        self.orb_projection=new_orb_proj;
 
         let mut b=0;
         for (i,a) in self.atoms.clone().iter().enumerate(){
@@ -1514,6 +1529,12 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         }
         let norb=self.norb();//保留之前的norb
         self.orb=self.orb.select(Axis(0),&orb_index);
+
+        let mut new_orb_proj=Vec::new();
+        for i in orb_index.iter(){
+            new_orb_proj.push(self.orb_projection[*i])
+        }
+        self.orb_projection=new_orb_proj;
         if self.spin{
             let index_add:Vec<_>=orb_index.iter().map(|x| *x+norb).collect();
             orb_index.extend(index_add);
@@ -1748,6 +1769,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         let mut use_atom_list:Vec<usize>=Vec::new();
         let mut orb_list:Vec<usize>=Vec::new();
         let mut new_orb=Array2::<f64>::zeros((0,self.dim_r));
+        let mut new_orb_proj=Vec::new();
         let mut new_atom=Vec::new();
         let mut a=0;
         for i in 0..self.natom(){
@@ -1772,13 +1794,13 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                                 atoms[[2]]=if atoms[[2]].abs()<1e-8{ 0.0}
                                     else if (atoms[[2]]-1.0).abs()<1e-8 {1.0} else {atoms[[2]]};
                                 if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
-                                    new_atom.push( atom::gen_atom(atoms,self.atoms[n].norb(),self.atoms[n].atom_type()));
+                                    new_atom.push( Atom::gen_atom(atoms,self.atoms[n].norb(),self.atoms[n].atom_type()));
                                     for n0 in use_atom_list[n]..use_atom_list[n]+self.atoms[n].norb(){
                                         //开始根据原子位置开始生成轨道
                                         let mut orbs=use_orb.row(n0).to_owned()+(i as f64)*U_inv.row(0).to_owned()+(j as f64)*U_inv.row(1).to_owned()+(k as f64)*U_inv.row(2).to_owned(); //新的轨道的坐标
                                         new_orb.push_row(orbs.view());
+                                        new_orb_proj.push(self.orb_projection[n0]);
                                         orb_list.push(n0);
-                                        //orb_list_R.push_row(&arr1(&[i,j,k]));
                                     }
                                 }
                             }
@@ -1801,11 +1823,12 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                                 else if (atoms[[1]]-1.0).abs()<1e-8 {1.0}
                                 else {atoms[[1]]};
                             if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
-                                new_atom.push( atom::gen_atom(atoms,self.atoms[n].norb(),self.atoms[n].atom_type()));
+                                new_atom.push( Atom::gen_atom(atoms,self.atoms[n].norb(),self.atoms[n].atom_type()));
                                 for n0 in use_atom_list[n]..use_atom_list[n]+self.atoms[n].norb(){
                                     //开始根据原子位置开始生成轨道
                                     let mut orbs=use_orb.row(n0).to_owned()+(i as f64)*U_inv.row(0).to_owned()+(j as f64)*U_inv.row(1).to_owned(); //新的轨道的坐标
                                     new_orb.push_row(orbs.view());
+                                    new_orb_proj.push(self.orb_projection[n0]);
                                     orb_list.push(n0);
                                     //orb_list_R.push_row(&arr1(&[i,j]));
                                 }
@@ -1820,11 +1843,12 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                         let mut atoms=use_atom_position.row(n).to_owned()+(i as f64)*U_inv.row(0).to_owned(); //原子的位置在新的坐标系下的坐标
                         atoms[[0]]=if atoms[[0]].abs()<1e-8{ 0.0}else if (atoms[[0]]-1.0).abs()<1e-8 {1.0}  else {atoms[[0]]};
                         if atoms.iter().all(|x| *x>=0.0 && *x < 1.0){ //判断是否在原胞内
-                            new_atom.push( atom::gen_atom(atoms,self.atoms[n].norb(),self.atoms[n].atom_type()));
+                            new_atom.push( Atom::gen_atom(atoms,self.atoms[n].norb(),self.atoms[n].atom_type()));
                             for n0 in use_atom_list[n]..use_atom_list[n]+self.atoms[n].norb(){
                                 //开始根据原子位置开始生成轨道
                                 let mut orbs=use_orb.row(n0).to_owned()+(i as f64)*U_inv.row(0).to_owned(); //新的轨道的坐标
                                 new_orb.push_row(orbs.view());
+                                new_orb_proj.push(self.orb_projection[n0]);
                                 orb_list.push(n0);
                                 //orb_list_R.push_row(&arr1(&[i]));
                             }
@@ -2090,6 +2114,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             spin:self.spin,
             lat:new_lat,
             orb:new_orb,
+            orb_projection:new_orb_proj,
             atoms:new_atom,
             ham:new_ham,
             hamR:new_hamR,
@@ -2284,12 +2309,6 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                 let f=(-&A*&A/2.0).mapv(|x| x.exp())*sigma0*pi0;
                 acc+&f
             }).reduce(|| Array1::<f64>::zeros(E_n), |acc, x| acc + x);
-        /*
-        for i in centre.iter(){
-            //dos.map(|x| x+pi0*sigma0*(-((x-i)*sigma0).powi(2)/2.0).exp());
-            dos=dos+E0.clone().map(|x| pi0*sigma0*(-((x-i)*sigma0).powi(2)/2.0).exp());
-        }
-        */
         let dos=dos/(nk as f64);
         (E,dos)
     }
@@ -2473,11 +2492,13 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         let mut spin:bool=false; //体系自旋初始化
         let mut natom:usize=0; //原子位置初始化
         let mut atom=Vec::new(); //原子位置坐标初始化
-        let mut proj_name:Vec<&str>=Vec::new();
+        let mut orb_proj=Vec::new();
+        let mut proj_name=Vec::new();
         let mut proj_list:Vec<usize>=Vec::new();
         let mut atom_list:Vec<usize>=Vec::new();
         let mut atom_name:Vec<&str>=Vec::new();
         let mut atom_pos=Array2::<f64>::zeros((0,3));
+        let mut atom_proj=Vec::new();
         loop{
             let a=read_iter.next();
             if a==None{
@@ -2501,32 +2522,37 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                         if string.contains("end projections"){
                             break
                         }else{
-                            let prj:Vec<&str>=string.split(|c| c==',' || c==';' || c==':').collect();
+                            let prj:Vec<&str>=string.split(|c| c==',' || c==';' || c==':').map(|x| x.trim()).collect();
                             let mut atom_orb_number:usize=0;
+                            let mut proj_orb=Vec::new();
                             for item in prj[1..].iter(){
-                                let aa:usize=match (*item).trim(){
-                                    "s"=>1,
-                                    "p"=>3,
-                                    "d"=>5,
-                                    "f"=>7,
-                                    "sp3"=>4,
-                                    "sp2"=>3,
-                                    "sp"=>2,
-                                    "sp3d2"=>6,
-                                    "px"=>1,
-                                    "py"=>1,
-                                    "pz"=>1,
-                                    "dxy"=>1,
-                                    "dxz"=>1,
-                                    "dyz"=>1,
-                                    "dz2"=>1,
-                                    "dx2-y2"=>1,
+                                let (aa,use_proj_orb):(usize,Vec<_>)=match (*item).trim(){
+                                    "s"=>(1,vec![OrbProj::s]),
+                                    "p"=>(3,vec![OrbProj::pz,OrbProj::px,OrbProj::py]),
+                                    "d"=>(5,vec![OrbProj::dz2,OrbProj::dxz,OrbProj::dyz,OrbProj::dx2y2,OrbProj::dxy]),
+                                    "f"=>(7,vec![OrbProj::fz3,OrbProj::fxz2,OrbProj::fyz2,OrbProj::fzx2y2,OrbProj::fxyz,OrbProj::fxx23y2,OrbProj::fy3x2y2]),
+                                    "sp3"=>(4,vec![OrbProj::sp3_1,OrbProj::sp3_2,OrbProj::sp3_3,OrbProj::sp3_4]),
+                                    "sp2"=>(3,vec![OrbProj::sp2_1,OrbProj::sp2_2,OrbProj::sp2_3]),
+                                    "sp"=>(2,vec![OrbProj::sp_1,OrbProj::sp_2]),
+                                    "sp3d"=>(5,vec![OrbProj::sp3d_1,OrbProj::sp3d_2,OrbProj::sp3d_3,OrbProj::sp3d_4,OrbProj::sp3d_5]),
+                                    "sp3d2"=>(6,vec![OrbProj::sp3d2_1,OrbProj::sp3d2_2,OrbProj::sp3d2_3,OrbProj::sp3d2_4,OrbProj::sp3d2_5,OrbProj::sp3d2_6]),
+                                    "px"=>(1,vec![OrbProj::px]),
+                                    "py"=>(1,vec![OrbProj::py]),
+                                    "pz"=>(1,vec![OrbProj::pz]),
+                                    "dxy"=>(1,vec![OrbProj::dxy]),
+                                    "dxz"=>(1,vec![OrbProj::dxz]),
+                                    "dyz"=>(1,vec![OrbProj::dyz]),
+                                    "dz2"=>(1,vec![OrbProj::dz2]),
+                                    "dx2-y2"=>(1,vec![OrbProj::dx2y2]),
                                     &_=>panic!("Wrong, no matching, please check the projection field in seedname.win. There are some projections that can not be identified"),
                                 };
                                 atom_orb_number+=aa;
+                                proj_orb.extend(use_proj_orb);
                             }
                             proj_list.push(atom_orb_number);
-                            proj_name.push(prj[0])
+                            atom_proj.push(proj_orb);
+                            let proj_type=AtomType::from_str(prj[0]);
+                            proj_name.push(proj_type)
                         }
                     }
                 }else if a.contains("begin atoms_cart"){
@@ -2577,16 +2603,17 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             new_atom_pos[[i,0]]=a[1].parse::<f64>().unwrap();
             new_atom_pos[[i,1]]=a[2].parse::<f64>().unwrap();
             new_atom_pos[[i,2]]=a[3].parse::<f64>().unwrap();
-            new_atom_name.push(a[0]);
+            new_atom_name.push(AtomType::from_str(a[0]));
         }
         //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
 
-        for (i,pos) in new_atom_pos.outer_iter().enumerate(){
-            for (j,j_pos) in atom_pos.outer_iter().enumerate(){
-                if (&j_pos-&pos).norm() < 1e-2{
-                    let use_type=AtomType::from_str(&new_atom_name[i]);
-                    let use_pos=pos.to_owned().dot(&lat.inv().unwrap());
-                    let use_atom=atom::gen_atom(use_pos,proj_list[j],use_type);
+        for (i,name) in new_atom_name.iter().enumerate(){
+            for (j,j_name) in proj_name.iter().enumerate(){
+                if name==j_name{
+                    let use_pos=new_atom_pos.row(i).dot(&lat.inv().unwrap());
+                    let use_atom=Atom::gen_atom(use_pos,proj_list[j],*name);
+                    atom.push(use_atom);
+                    orb_proj.extend(atom_proj[j].clone());
                 }
             }
         }
@@ -2658,6 +2685,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             spin,
             lat,
             orb,
+            orb_projection:orb_proj,
             atoms:atom,
             ham,
             hamR,

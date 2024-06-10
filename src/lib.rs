@@ -27,7 +27,7 @@ use std::ops::MulAssign;
 use std::ops::Deref;
 use std::time::Instant;
 use crate::generics::usefloat;
-use crate::atom_struct::atom;
+use crate::atom_struct::{Atom,OrbProj};
 #[doc(hidden)]
 pub use crate::surfgreen::surf_Green;
 
@@ -53,7 +53,9 @@ pub struct Model{
     /// - The position of the orbitals in the model. We use fractional coordinates uniformly.
     pub orb:Array2::<f64>,
     /// - The position of the atoms in the model, also in fractional coordinates.
-    pub atoms:Vec<atom>,
+    pub orb_projection:Vec<OrbProj>,
+    /// - The projection of the orbs, like px,py,pz, etc.
+    pub atoms:Vec<Atom>,
     /// - The number of orbitals in the atoms, in the same order as the atom positions.
     pub ham:Array3::<Complex<f64>>,
     /// - The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
@@ -639,8 +641,8 @@ mod tests {
         let E_n=1000;
         let mu=Array1::linspace(E_min,E_max,E_n);
         let beta:f64=1.0/T/(8.617e-5);
-        let f:Array1<f64>=1.0/((beta*mu.clone()).mapv(f64::exp)+1.0);
-        let par_f=beta*f.clone()*(1.0-f);
+        let f:Array1<f64>=1.0/((beta*&mu).mapv(f64::exp)+1.0);
+        let par_f=beta*&f*(1.0-&f);
         let mut fg = Figure::new();
         let x:Vec<f64>=mu.to_vec();
         let axes=fg.axes2d();
@@ -878,6 +880,7 @@ mod tests {
             model.add_hop(-rashba*li*r0[[0]],1,1,&R,2);
         }
         let nk:usize=101;
+        println!("aaa");
         let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
         let path=arr2(&path);
         let (k_vec,k_dist,k_node)=model.k_path(&path,nk);
@@ -896,7 +899,7 @@ mod tests {
         let green=surf_Green::from_Model(&model,0,1e-3,None);
         let E_min=-1.0;
         let E_max=1.0;
-        let E_n=nk.clone();
+        let E_n=nk;
         let path=[[0.0],[0.5],[1.0]];
         let path=arr2(&path);
         let label=vec!["G","M","G"];
@@ -1000,7 +1003,7 @@ mod tests {
         let green=surf_Green::from_Model(&model,0,1e-3,None);
         let E_min=-1.0;
         let E_max=1.0;
-        let E_n=nk.clone();
+        let E_n=nk;
         let path=[[0.0],[0.5],[1.0]];
         let path=arr2(&path);
         let label=vec!["G","M","G"];
@@ -1208,6 +1211,17 @@ mod tests {
         let (eval,evec)=super_model.solve_all_parallel(&k_vec);
         let label=vec!["G","M","G"];
         zig_model.show_band(&path,&label,nk,"tests/kagome_zig/");
+
+
+        let green=surf_Green::from_Model(&super_model,0,1e-3,None);
+        let E_min=-2.0;
+        let E_max=4.0;
+        let E_n=nk;
+        let path=[[0.0],[0.5],[1.0]];
+        let path=arr2(&path);
+        let label=vec!["G","M","G"];
+        green.show_surf_state("tests/kagome_zig",&path,&label,nk,E_min,E_max,E_n,0);
+
         //Starting to calculate the DOS of kagome
         let nk:usize=101;
         let kmesh=arr1(&[nk,nk]);
@@ -1356,7 +1370,7 @@ mod tests {
         let green=surf_Green::from_Model(&model,0,1e-3,None);
         let E_min=-2.0;
         let E_max=2.0;
-        let E_n=nk.clone();
+        let E_n=nk;
         let path=[[0.0],[0.5],[1.0]];
         let path=arr2(&path);
         let label=vec!["G","X","G"];
@@ -1367,9 +1381,6 @@ mod tests {
         let num=10;
         let model_1=model.cut_piece(num,0);
         let new_model=model_1.cut_piece(2*num,1);
-        /*
-        let new_model=model.cut_dot(num,4,None);
-        */
         let mut s=0;
         let start = Instant::now();
         let (band,evec)=new_model.solve_onek(&arr1(&[0.0,0.0]));

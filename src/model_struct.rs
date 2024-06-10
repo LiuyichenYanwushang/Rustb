@@ -1,6 +1,6 @@
 use ndarray::*;
 use num_complex::Complex;
-use crate::atom;
+use crate::Atom;
 use crate::Model;
 
 
@@ -41,4 +41,27 @@ impl Model{
             self.norb()
         }
     }
+    /*
+    pub fn orb_angular(&self)->Array3::<Complex<f64>>{
+        ///这个函数输出 $\bra{m,\bm k}L\ket{n,\bm k}$ 矩阵, 这里 $\ket{n,\bm k}$
+        ///是根据轨道的projection 得到这个基函下的表示
+        ///这个表示是依据每个原子来构造的, 所以是一个块对角的矩阵
+        let mut i=0;
+        let mut L=Array3::zeros((self.dim_r,self.norb(),self.norb()));
+        let mut Lx=Array2::zeros((self.norb(),self.norb()));
+        let mut Ly=Array2::zeros((self.norb(),self.norb()));
+        let mut Lz=Array2::zeros((self.norb(),self.norb()));
+        for r in 0..self.dim_r{
+            for a in self.atom.iter(){
+                let norb=atom.norb();
+                let mut proj=Array2::zeros((norb,norb));
+                for m in 0..norb{
+                    for n in 0..norb{
+                    }
+                }
+                i+=norb;
+            }
+        }
+    }
+    */
 }

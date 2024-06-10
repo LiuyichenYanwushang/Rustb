@@ -1,19 +1,146 @@
 use std::fmt;
 use ndarray::Array1;
-#[derive(Debug,Clone,Copy)]
-pub enum orb_projection{
+#[derive(Debug,Clone,Copy,PartialEq)]
+pub enum OrbProj{
+    ///This is the orbital projection
     s,
+    /// $$\ket{s}=\ket{0,0}$$
     px,
+    /// $$\ket{px}=\frac{1}{\sqrt{2}}\lt(\ket{1,-1}-\ket{1,1}\rt)$$
     py,
+    /// $$\ket{py}=\frac{i}{\sqrt{2}}\lt(\ket{1,-1}+\ket{1,1}\rt)$$
     pz,
+    /// $$\ket{pz}=\ket{1,0}$$
     dxy,
+    /// $$\ket{dxy}=
     dyz,
     dxz,
     dz2,
     dx2y2,
+    fz3,
+    fxz2,
+    fyz2,
+    fzx2y2,
+    fxyz,
+    fxx23y2,
+    fy3x2y2,
+    sp_1,
+    sp_2,
+    sp2_1,
+    sp2_2,
+    sp2_3,
+    sp3_1,
+    sp3_2,
+    sp3_3,
+    sp3_4,
+    sp3_5,
+    sp3d_1,
+    sp3d_2,
+    sp3d_3,
+    sp3d_4,
+    sp3d_5,
+    sp3d2_1,
+    sp3d2_2,
+    sp3d2_3,
+    sp3d2_4,
+    sp3d2_5,
+    sp3d2_6,
 }
+
+impl OrbProj{
+    pub fn from_str(s:&str)->Self{
+        match s{
+            "s" => OrbProj::s,
+            "px" => OrbProj::px,
+            "py" => OrbProj::py,
+            "pz" => OrbProj::pz,
+            "dxy" => OrbProj::dxy,
+            "dxz" => OrbProj::dxz,
+            "dyz" => OrbProj::dyz,
+            "dz2" => OrbProj::dz2,
+            "dx2-y2" => OrbProj::dx2y2,
+            "fz3" => OrbProj::fz3,
+            "fxz2" => OrbProj::fxz2,
+            "fyz2" => OrbProj::fyz2,
+            "fzx2y2" => OrbProj::fzx2y2,
+            "fxyz" => OrbProj::fxyz,
+            "fxx2-3y2" => OrbProj::fxx23y2,
+            "fy3x2-y2" => OrbProj::fy3x2y2,
+            "sp-1" => OrbProj::sp_1,
+            "sp-2" => OrbProj::sp_2,
+            "sp2-1" => OrbProj::sp2_1,
+            "sp2-2" => OrbProj::sp2_2,
+            "sp2-3" => OrbProj::sp2_3,
+            "sp3-1" => OrbProj::sp3_1,
+            "sp3-2" => OrbProj::sp3_2,
+            "sp3-3" => OrbProj::sp3_3,
+            "sp3-4" => OrbProj::sp3_4,
+            "sp3-5" => OrbProj::sp3_5,
+            "sp3d-1" => OrbProj::sp3d_1,
+            "sp3d-2" => OrbProj::sp3d_2,
+            "sp3d-3" => OrbProj::sp3d_3,
+            "sp3d-4" => OrbProj::sp3d_4,
+            "sp3d-5" => OrbProj::sp3d_5,
+            "sp3d2-1" => OrbProj::sp3d2_1,
+            "sp3d2-2" => OrbProj::sp3d2_2,
+            "sp3d2-3" => OrbProj::sp3d2_3,
+            "sp3d2-4" => OrbProj::sp3d2_4,
+            "sp3d2-5" => OrbProj::sp3d2_5,
+            "sp3d2-6" => OrbProj::sp3d2_6,
+            _=>panic!("Wrong, unrecognised projections {}",s),
+        }
+
+    }
+}
+
+impl fmt::Display for OrbProj {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            OrbProj::s => "s",
+            OrbProj::px => "px",
+            OrbProj::py => "py",
+            OrbProj::pz => "pz",
+            OrbProj::dxy => "dxy",
+            OrbProj::dxz => "dxz",
+            OrbProj::dyz => "dyz",
+            OrbProj::dz2 => "dz2",
+            OrbProj::dx2y2 => "dx2-y2",
+            OrbProj::fz3 => "fz3",
+            OrbProj::fxz2 => "fxz2",
+            OrbProj::fyz2 => "fyz2",
+            OrbProj::fzx2y2 => "fzx2y2",
+            OrbProj::fxyz => "fxyz",
+            OrbProj::fxx23y2 => "fxx2-3y2",
+            OrbProj::fy3x2y2 => "fy3x2-y2",
+            OrbProj::sp_1 => "sp-1",
+            OrbProj::sp_2 => "sp-2",
+            OrbProj::sp2_1 => "sp2-1",
+            OrbProj::sp2_2 => "sp2-2",
+            OrbProj::sp2_3 => "sp2-3",
+            OrbProj::sp3_1 => "sp3-1",
+            OrbProj::sp3_2 => "sp3-2",
+            OrbProj::sp3_3 => "sp3-3",
+            OrbProj::sp3_4 => "sp3-4",
+            OrbProj::sp3_5 => "sp3-5",
+            OrbProj::sp3d_1 => "sp3d-1",
+            OrbProj::sp3d_2 => "sp3d-2",
+            OrbProj::sp3d_3 => "sp3d-3",
+            OrbProj::sp3d_4 => "sp3d-4",
+            OrbProj::sp3d_5 => "sp3d-5",
+            OrbProj::sp3d2_1 => "sp3d2-1",
+            OrbProj::sp3d2_2 => "sp3d2-2",
+            OrbProj::sp3d2_3 => "sp3d2-3",
+            OrbProj::sp3d2_4 => "sp3d2-4",
+            OrbProj::sp3d2_5 => "sp3d2-5",
+            OrbProj::sp3d2_6 => "sp3d2-6",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 #[derive(Debug,Clone,Copy,PartialEq)]
 pub enum AtomType{
+    /// This is the type of the Atom
     H,
     He,
     Li,
@@ -197,6 +324,99 @@ impl AtomType{
             _ => panic!("unrecognized atom {}",s),
         }
     }
+    pub fn to_str(&self)->&str{
+        let symbol = match self {
+            AtomType::H => "H",
+            AtomType::He => "He",
+            AtomType::Li => "Li",
+            AtomType::Be => "Be",
+            AtomType::B => "B",
+            AtomType::C => "C",
+            AtomType::N => "N",
+            AtomType::O => "O",
+            AtomType::F => "F",
+            AtomType::Ne => "Ne",
+            AtomType::Na => "Na",
+            AtomType::Mg => "Mg",
+            AtomType::Al => "Al",
+            AtomType::Si => "Si",
+            AtomType::P => "P",
+            AtomType::S => "S",
+            AtomType::Cl => "Cl",
+            AtomType::Ar => "Ar",
+            AtomType::K => "K",
+            AtomType::Ca => "Ca",
+            AtomType::Sc => "Sc",
+            AtomType::Ti => "Ti",
+            AtomType::V => "V",
+            AtomType::Cr => "Cr",
+            AtomType::Mn => "Mn",
+            AtomType::Fe => "Fe",
+            AtomType::Co => "Co",
+            AtomType::Ni => "Ni",
+            AtomType::Cu => "Cu",
+            AtomType::Zn => "Zn",
+            AtomType::Ga => "Ga",
+            AtomType::Ge => "Ge",
+            AtomType::As => "As",
+            AtomType::Se => "Se",
+            AtomType::Br => "Br",
+            AtomType::Kr => "Kr",
+            AtomType::Rb => "Rb",
+            AtomType::Sr => "Sr",
+            AtomType::Y => "Y",
+            AtomType::Zr => "Zr",
+            AtomType::Nb => "Nb",
+            AtomType::Mo => "Mo",
+            AtomType::Tc => "Tc",
+            AtomType::Ru => "Ru",
+            AtomType::Rh => "Rh",
+            AtomType::Pd => "Pd",
+            AtomType::Ag => "Ag",
+            AtomType::Cd => "Cd",
+            AtomType::In => "In",
+            AtomType::Sn => "Sn",
+            AtomType::Sb => "Sb",
+            AtomType::Te => "Te",
+            AtomType::I => "I",
+            AtomType::Xe => "Xe",
+            AtomType::Cs => "Cs",
+            AtomType::Ba => "Ba",
+            AtomType::La => "La",
+            AtomType::Ce => "Ce",
+            AtomType::Pr => "Pr",
+            AtomType::Nd => "Nd",
+            AtomType::Pm => "Pm",
+            AtomType::Sm => "Sm",
+            AtomType::Eu => "Eu",
+            AtomType::Gd => "Gd",
+            AtomType::Tb => "Tb",
+            AtomType::Dy => "Dy",
+            AtomType::Ho => "Ho",
+            AtomType::Er => "Er",
+            AtomType::Tm => "Tm",
+            AtomType::Yb => "Yb",
+            AtomType::Lu => "Lu",
+            AtomType::Hf => "Hf",
+            AtomType::Ta => "Ta",
+            AtomType::W => "W",
+            AtomType::Re => "Re",
+            AtomType::Os => "Os",
+            AtomType::Ir => "Ir",
+            AtomType::Pt => "Pt",
+            AtomType::Au => "Au",
+            AtomType::Hg => "Hg",
+            AtomType::Tl => "Tl",
+            AtomType::Pb => "Pb",
+            AtomType::Bi => "Bi",
+            AtomType::Po => "Po",
+            AtomType::At => "At",
+            AtomType::Rn => "Rn",
+            AtomType::Fr => "Fr",
+            AtomType::Ra => "Ra",
+        };
+        symbol
+    }
 }
 
 impl fmt::Display for AtomType {
@@ -297,13 +517,13 @@ impl fmt::Display for AtomType {
 
 
 #[derive(Debug,Clone)]
-pub struct atom{
+pub struct Atom{
     position:Array1<f64>,
     name:AtomType,
     atom_list:usize
 }
 
-impl atom{
+impl Atom{
     pub fn position(&self)->Array1<f64>{
         self.position.clone()
     }
@@ -322,8 +542,17 @@ impl atom{
     pub fn change_type(&mut self,new_type:AtomType){
         self.name=new_type;
     }
-    pub fn gen_atom(position:Array1<f64>,atom_list:usize,name:AtomType)->atom{
-        atom{position,atom_list,name}
+    pub fn gen_atom(position:Array1<f64>,atom_list:usize,name:AtomType)->Atom{
+        Atom{position,atom_list,name}
     }
 }
 
+impl fmt::Display for Atom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Atom {{ name: {}, position: {:?}, atom_list: {} }}",
+            self.name, self.position, self.atom_list
+        )
+    }
+}
