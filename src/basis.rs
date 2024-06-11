@@ -199,12 +199,13 @@ impl Model{
                 //这种方法只适用于wannier90不开最局域化
                 let mut new_atom=Vec::new();
                 new_atom.push(Atom::gen_atom(orb.row(0).to_owned(),1,AtomType::H));
-                for i in 1..norb{
+                for i in 0..norb{
                     if (orb.row(i).to_owned()-new_atom[new_atom.len()-1].position()).norm_l2()>1e-2{
                         let use_atom=Atom::gen_atom(orb.row(i).to_owned(),1,AtomType::H);
                         new_atom.push(use_atom);
                     }else{
-                        new_atom[i].push_orb();
+                        let n=new_atom.len();
+                        new_atom[n-1].push_orb();
                     }
                 }
                 new_atom
@@ -235,6 +236,10 @@ impl Model{
             rmatrix,
         };
         model
+    }
+    pub fn set_projection(&mut self,proj:&Vec<OrbProj>){
+        //! 这个函数是用来设置tb模型的projection 的
+        self.orb_projection=proj.clone();
     }
     #[allow(non_snake_case)]
     pub fn set_hop<T:Data<Elem=isize>,U:hop_use>(&mut self,tmp:U,ind_i:usize,ind_j:usize,R:&ArrayBase<T,Ix1>,pauli:isize){

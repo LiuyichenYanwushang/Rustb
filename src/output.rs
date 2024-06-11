@@ -212,7 +212,7 @@ impl Model {
         name.push_str(seedname);
         name.push_str(".win");
         let mut file = File::create(name).expect("Wrong, can't create seedname.win");
-        writeln!(file, "begin unit_cell_cart");
+        writeln!(file, "begin atoms_cart");
         for at in self.atoms.iter(){
             let atom_position=at.position();
             match self.dim_r{
@@ -228,6 +228,9 @@ impl Model {
                 _=>panic!("Wrong, your model's dim_r is not 1,2 or 3"),
             }
         }
+        writeln!(file, "end atoms_cart");
+        writeln!(file,"\n");
+        writeln!(file, "begin unit_cell_cart");
         writeln!(file, "end unit_cell_cart");
     }
 }

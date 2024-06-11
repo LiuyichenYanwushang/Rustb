@@ -109,6 +109,7 @@ fn main(){
     show_wilson_loop(&model,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/wcc.pdf");
 
 
+    /*
     let nk:usize=501;
     let green=surf_Green::from_Model(&model,0,1e-3,None);
     let E_min=-0.5;
@@ -223,6 +224,7 @@ fn main(){
     let name="examples/Bi2F2_new/z_new";
     //cut(&model_z,num,1,name);
     //cut(&model_z,num,2,name);
+    */
 }
 
 

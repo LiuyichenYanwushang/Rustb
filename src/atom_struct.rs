@@ -1,49 +1,80 @@
 use std::fmt;
 use ndarray::Array1;
+use num_complex::Complex;
+///This is the orbital projection
 #[derive(Debug,Clone,Copy,PartialEq)]
 pub enum OrbProj{
-    ///This is the orbital projection
-    s,
     /// $$\ket{s}=\ket{0,0}$$
+    s,
+    /// $$\ket{p_x}=\frac{1}{\sqrt{2}}\lt(\ket{1,-1}-\ket{1,1}\rt)$$
     px,
-    /// $$\ket{px}=\frac{1}{\sqrt{2}}\lt(\ket{1,-1}-\ket{1,1}\rt)$$
+    /// $$\ket{p_y}=\frac{i}{\sqrt{2}}\lt(\ket{1,-1}+\ket{1,1}\rt)$$
     py,
-    /// $$\ket{py}=\frac{i}{\sqrt{2}}\lt(\ket{1,-1}+\ket{1,1}\rt)$$
+    /// $$\ket{p_z}=\ket{1,0}$$
     pz,
-    /// $$\ket{pz}=\ket{1,0}$$
+    /// $$\ket{d_{xy}}=-\f{i}{\sqrt{2}}\lt(\ket{2,2}-\ket{2,-2}\rt)$$
     dxy,
-    /// $$\ket{dxy}=
+    /// $$\ket{d_{yz}}=-\f{i}{\sqrt{2}}\lt(\ket{2,1}+\ket{2,-1}\rt)$$
     dyz,
+    /// $$\ket{d_{xz}}=-\f{1}{\sqrt{2}}\lt(\ket{2,1}-\ket{2,-1}\rt)$$
     dxz,
+    /// $$\ket{d_{z^2}}=\ket{2,0}$$
     dz2,
+    /// $$\ket{d_{x^2-y^2}}=\f{1}{\sqrt{2}}\lt(\ket{2,2}+\ket{2,-2}\rt)$$
     dx2y2,
+    /// $$\ket{f_{z^3}}=\ket{3,0}$$
     fz3,
+    /// $$\ket{f_{xz^2}}=\f{1}{\sqrt{2}}\lt(\ket{3,1}-\ket{3,-1}\rt)$$
     fxz2,
+    /// $$\ket{f_{yz^2}}=-\f{i}{\sqrt{2}}\lt(\ket{3,1}+\ket{3,-1}\rt)$$
     fyz2,
+    /// $$\ket{f_{z(x^2-y^2)}}=\f{1}{\sqrt{2}}\lt(\ket{3,2}+\ket{3,-2}\rt)$$
     fzx2y2,
+    /// $$\ket{f_{xyz}}=-\f{i}{\sqrt{2}}\lt(\ket{3,2}-\ket{3,-2}\rt)$$
     fxyz,
+    /// $$\ket{f_{x(x^2-3y^2)}}=\f{1}{\sqrt{2}}\lt(\ket{3,3}-\ket{3,-3}\rt)$$
     fxx23y2,
+    /// $$\ket{f_{y(3x^2-y^2)}}=-\f{i}{\sqrt{2}}\lt(\ket{3,3}+\ket{3,-3}\rt)$$
     fy3x2y2,
+    /// $$\ket{sp_{1}}=\frac{1}{\sqrt{2}}\lt(\ket{s}+\ket{p}\rt)$$
     sp_1,
+    /// $$\ket{sp_{2}}=\frac{1}{\sqrt{2}}\lt(\ket{s}-\ket{p}\rt)$$
     sp_2,
+    /// $$\ket{sp^2_{1}}=\f{1}{\sqrt{3}}\ket{s}-\f{1}{\sqrt{6}}\ket{p_x}+\f{1}{\sqrt{2}}\ket{p_y}$$
     sp2_1,
+    /// $$\ket{sp^2_{1}}=\f{1}{\sqrt{3}}\ket{s}-\f{1}{\sqrt{6}}\ket{p_x}-\f{1}{\sqrt{2}}\ket{p_y}$$
     sp2_2,
+    /// $$\ket{sp^2_{1}}=\f{1}{\sqrt{3}}\ket{s}+\f{2}{\sqrt{6}}\ket{p_x}$$
     sp2_3,
+    /// $$\ket{sp^3_{1}}=\frac{1}{2}\lt(\ket{s}+\ket{p_x}+\ket{p_y}+\ket{p_z}\rt)$$
     sp3_1,
+    /// $$\ket{sp^3_{2}}=\frac{1}{2}\lt(\ket{s}+\ket{p_x}-\ket{p_y}-\ket{p_z}\rt)$$
     sp3_2,
+    /// $$\ket{sp^3_{3}}=\frac{1}{2}\lt(\ket{s}-\ket{p_x}+\ket{p_y}-\ket{p_z}\rt)$$
     sp3_3,
+    /// $$\ket{sp^3_{4}}=\frac{1}{2}\lt(\ket{s}-\ket{p_x}-\ket{p_y}+\ket{p_z}\rt)$$
     sp3_4,
-    sp3_5,
+    /// $$\ket{sp^3d_{1}}=\f{1}{\sqrt{3}}\ket{s}-\f{1}{\sqrt{6}}\ket{p_x}+\f{1}{\sqrt{2}}\ket{p_y}$$
     sp3d_1,
+    /// $$\ket{sp^3d_{2}}=\f{1}{\sqrt{3}}\ket{s}-\f{1}{\sqrt{6}}\ket{p_x}-\f{1}{\sqrt{2}}\ket{p_y}$$
     sp3d_2,
+    /// $$\ket{sp^3d_{3}}=\f{1}{\sqrt{3}}\ket{s}+\f{2}{\sqrt{6}}\ket{p_x}$$
     sp3d_3,
+    /// $$\ket{sp^3d_{4}}=\f{1}{\sqrt{2}}\lt(\ket{p_z}+\ket{d_{z^2}}\rt)$$
     sp3d_4,
+    /// $$\ket{sp^3d_{5}}=-\f{1}{\sqrt{2}}\lt(\ket{p_z}-\ket{d_{z^2}}\rt)$$
     sp3d_5,
+    /// $$\ket{sp^3d^2_{1}}=\frac{1}{\sqrt{6}}\ket{s}-\f{1}{\sqrt{2}}\ket{p_x}-\f{1}{\sqrt{12}}\ket{d_{z^2}}+\f{1}{2}\ket{d_{x^2-y^2}}$$
     sp3d2_1,
+    /// $$\ket{sp^3d^2_{2}}=\frac{1}{\sqrt{6}}\ket{s}+\f{1}{\sqrt{2}}\ket{p_x}-\f{1}{\sqrt{12}}\ket{d_{z^2}}+\f{1}{2}\ket{d_{x^2-y^2}}$$
     sp3d2_2,
+    /// $$\ket{sp^3d^2_{3}}=\frac{1}{\sqrt{6}}\ket{s}-\f{1}{\sqrt{2}}\ket{p_x}-\f{1}{\sqrt{12}}\ket{d_{z^2}}-\f{1}{2}\ket{d_{x^2-y^2}}$$
     sp3d2_3,
+    /// $$\ket{sp^3d^2_{4}}=\frac{1}{\sqrt{6}}\ket{s}+\f{1}{\sqrt{2}}\ket{p_x}-\f{1}{\sqrt{12}}\ket{d_{z^2}}-\f{1}{2}\ket{d_{x^2-y^2}}$$
     sp3d2_4,
+    /// $$\ket{sp^3d^2_{5}}=\frac{1}{\sqrt{6}}\ket{s}-\f{1}{\sqrt{2}}\ket{p_z}+\f{1}{\sqrt{3}}\ket{d_{z^2}}$$
     sp3d2_5,
+    /// $$\ket{sp^3d^2_{6}}=\frac{1}{\sqrt{6}}\ket{s}+\f{1}{\sqrt{2}}\ket{p_z}+\f{1}{\sqrt{3}}\ket{d_{z^2}}$$
     sp3d2_6,
 }
 
@@ -75,7 +106,6 @@ impl OrbProj{
             "sp3-2" => OrbProj::sp3_2,
             "sp3-3" => OrbProj::sp3_3,
             "sp3-4" => OrbProj::sp3_4,
-            "sp3-5" => OrbProj::sp3_5,
             "sp3d-1" => OrbProj::sp3d_1,
             "sp3d-2" => OrbProj::sp3d_2,
             "sp3d-3" => OrbProj::sp3d_3,
@@ -90,6 +120,75 @@ impl OrbProj{
             _=>panic!("Wrong, unrecognised projections {}",s),
         }
 
+    }
+    /// 这个函数是将 \ket{px},\ket{py},\ket{pz} 等原子轨道基转化为以 l,m 为基的函数的.
+    /// 它输入一个原子轨道比如 $\ket{px}$, 输出一个 array![Complex<f64>;16], 表示
+    /// $$[\ket{0,0},\ket{1,-1},\ket{1,0},\ket{1,1},\ket{2,-2},\cdots,\ket{3,3}]$$
+    pub fn to_quantum_number(&self)->Array1<Complex<f64>>{
+        let s=match self{
+            OrbProj::s=>{[Complex::new(0.0,0.0);16]},
+            OrbProj::px => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[1]=Complex::new(1.0/2_f64.sqrt(),0.0);
+                s[3]=Complex::new(-1.0/2_f64.sqrt(),0.0);
+                s},
+            OrbProj::py => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[1]=Complex::new(0.0,1.0/2_f64.sqrt());
+                s[3]=Complex::new(0.0,1.0/2_f64.sqrt());
+                s},
+            OrbProj::pz => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[2]=Complex::new(1.0,0.0);
+                s},
+            OrbProj::dxy => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[4]=Complex::new(0.0,1.0/2_f64.sqrt());
+                s[8]=Complex::new(0.0,-1.0/2_f64.sqrt());
+                s},
+            OrbProj::dyz => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[5]=Complex::new(0.0,-1.0/2_f64.sqrt());
+                s[7]=Complex::new(0.0,-1.0/2_f64.sqrt());
+                s},
+            OrbProj::dxz => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[5]=Complex::new(1.0/2_f64.sqrt(),0.0);
+                s[7]=Complex::new(-1.0/2_f64.sqrt(),0.0);
+                s},
+            OrbProj::dz2 => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[6]=Complex::new(1.0,0.0);
+                s},
+            OrbProj::dx2y2 =>{let mut s=[Complex::new(0.0,0.0);16]; 
+                s[4]=Complex::new(1.0/2_f64.sqrt(),0.0);
+                s[8]=Complex::new(1.0/2_f64.sqrt(),0.0);
+                s},
+            OrbProj::fz3 => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[12]=Complex::new(1.0,0.0);
+                s},
+            OrbProj::fxz2 => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[11]=Complex::new(-1.0/2_f64.sqrt(),0.0);
+                s[13]=Complex::new(1.0/2_f64.sqrt(),0.0);
+                s},
+            OrbProj::fyz2 => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[11]=Complex::new(0.0,-1.0/2_f64.sqrt());
+                s[13]=Complex::new(0.0,-1.0/2_f64.sqrt());
+                s},
+            OrbProj::fzx2y2 => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[10]=Complex::new(1.0/2_f64.sqrt(),0.0);
+                s[14]=Complex::new(1.0/2_f64.sqrt(),0.0);
+                s},
+            OrbProj::fxyz => {let mut s=[Complex::new(0.0,0.0);16]; 
+                s[10]=Complex::new(0.0,1.0/2_f64.sqrt());
+                s[14]=Complex::new(0.0,-1.0/2_f64.sqrt());
+                s},
+            OrbProj::fxx23y2 => {let mut s=[Complex::new(0.0,0.0);16];
+                s[9]=Complex::new(-1.0/2_f64.sqrt(),0.0);
+                s[15]=Complex::new(1.0/2_f64.sqrt(),0.0);
+                s
+            }
+            OrbProj::fy3x2y2 => {let mut s=[Complex::new(0.0,0.0);16];
+                s[9]=Complex::new( 0.0,-1.0/2_f64.sqrt());
+                s[15]=Complex::new(0.0,-1.0/2_f64.sqrt());
+                s
+            }
+            _ => panic!("for sp,sp2,sp3 et.al is now not consideredZ"),
+        };
+        Array1::from(s.to_vec())
     }
 }
 
@@ -121,7 +220,6 @@ impl fmt::Display for OrbProj {
             OrbProj::sp3_2 => "sp3-2",
             OrbProj::sp3_3 => "sp3-3",
             OrbProj::sp3_4 => "sp3-4",
-            OrbProj::sp3_5 => "sp3-5",
             OrbProj::sp3d_1 => "sp3d-1",
             OrbProj::sp3d_2 => "sp3d-2",
             OrbProj::sp3d_3 => "sp3d-3",
