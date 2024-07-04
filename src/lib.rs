@@ -8,6 +8,8 @@ pub mod generics;
 pub mod output;
 pub mod atom_struct;
 pub mod model_struct;
+pub mod symm;
+pub mod phy_const;
 use gnuplot::Major;
 use num_complex::Complex;
 use num_traits::identities::Zero;
@@ -550,6 +552,7 @@ mod tests {
             let R=R.to_owned();
             model.add_hop(t2*li,1,1,&R,0);
         }
+        println!("{:?}",model.atom_list());
         let U=array![[3.0,0.0],[0.0,3.0]];
         let model=model.make_supercell(&U);
 
@@ -732,7 +735,7 @@ mod tests {
     fn graphene(){
         let li:Complex<f64>=1.0*Complex::i();
         let t1=1.0+0.0*li;
-        let t2=0.1+0.0*li;
+        let t2=0.0+0.0*li;
         let t3=0.0+0.0*li;
         let delta=0.0;
         let dim_r:usize=2;
@@ -760,6 +763,17 @@ mod tests {
         let (eval,evec)=model.solve_all_parallel(&k_vec);
         let label=vec!["G","K","M","G"];
         model.show_band(&path,&label,nk,"tests/graphene");
+
+        // 开始计算两个本征态
+        let k1=array![1.0/3.0-0.002,2.0/3.0];
+        let k2=array![1.0/3.0+0.001,2.0/3.0];
+        let (eval1,evec1)=model.solve_onek(&k1);
+        let (eval2,evec2)=model.solve_onek(&k2);
+        let evec1=evec1.reversed_axes();
+        let evec2=evec2.mapv(|x| x.conj());
+        println!("{},{}",eval1,eval2);
+        println!("{}",evec2.dot(&evec1).mapv(|x| x.norm().round()));
+
         /////开始计算体系的霍尔电导率//////
         let nk:usize=11;
         let T:f64=0.0;
@@ -789,7 +803,7 @@ mod tests {
         zig_model.show_band(&path,&label,nk,"tests/graphene_zig");
 
         //开始计算石墨烯的态密度
-        let nk:usize=101;
+        let nk:usize=201;
         let kmesh=arr1(&[nk,nk]);
         let E_min=-3.0;
         let E_max=3.0;

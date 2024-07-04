@@ -18,6 +18,9 @@ impl Model{
         );
         atom_position        
     }
+    pub fn dim_r(&self)->usize{
+        self.lat.nrows()
+    }
     #[inline(always)]
     pub fn atom_list(&self)->Vec<usize>{
         let mut atom_list=Vec::new();
@@ -57,7 +60,7 @@ impl Model{
         ///这个表示是依据每个原子来构造的, 所以是一个块对角的矩阵
         let li=Complex::i()*1.0;
         let mut i=0;
-        let mut L=Array3::<Complex<f64>>::zeros((self.dim_r,self.norb(),self.norb()));
+        let mut L=Array3::<Complex<f64>>::zeros((self.dim_r(),self.norb(),self.norb()));
         let mut Lx=Array2::<Complex<f64>>::zeros((self.norb(),self.norb()));
         let mut Ly=Array2::<Complex<f64>>::zeros((self.norb(),self.norb()));
         let mut Lz=Array2::<Complex<f64>>::zeros((self.norb(),self.norb()));

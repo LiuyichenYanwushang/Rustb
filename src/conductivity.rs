@@ -132,6 +132,8 @@ use std::ops::MulAssign;
 
 对于三维系统, 线性插值的结果为 $\Delta=S\sum_{i=1}^4 f_i/4!$
 */
+
+
 #[inline(always)]
 pub fn adapted_integrate_quick(f0:&dyn Fn(&Array1::<f64>)->f64,k_range:&Array2::<f64>,re_err:f64,ab_err:f64)->f64{
 
@@ -290,7 +292,7 @@ impl Model{
         let li:Complex<f64>=1.0*Complex::i();
         let (band,evec)=self.solve_onek(&k_vec);
         let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
-        let mut J:Array3::<Complex<f64>>=v.clone();
+        let mut J=v.view();
         let (J,v)=if self.spin {
             let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta());
             let pauli:Array2::<Complex<f64>>= match spin{
@@ -314,8 +316,8 @@ impl Model{
             (J,v)
         };
 
-        let evec_conj:Array2::<Complex<f64>>=evec.mapv(|x| x.conj());
-        let evec=evec.t();
+        let evec_conj:Array2::<Complex<f64>>=evec.map(|x| x.conj());
+        let evec=evec.reversed_axes();
         let A1=J.dot(&evec);
         let A1=&evec_conj.dot(&A1);
         let A2=v.dot(&evec);
@@ -330,7 +332,6 @@ impl Model{
             }
             U0[[i,i]]=Complex::new(0.0,0.0);
         }
-        //let omega_n:Array1::<f64>=(-Complex::new(2.0,0.0)*(A1*U0).dot(&A2)).diag().map(|x| x.im).to_owned();
         let mut omega_n=Array1::<f64>::zeros(self.nsta());
         let A1=A1*U0;
         let A1=A1.outer_iter();
@@ -369,8 +370,8 @@ impl Model{
     pub fn berry_curvature<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix2>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->Array1::<f64>{
     //!这个是用来并行计算大量k点的贝利曲率
     //!这个可以用来画能带上的贝利曲率, 或者画一个贝利曲率的热图
-        if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r{
-            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r,dir_1.len(),dir_2.len())
+        if dir_1.len() !=self.dim_r() || dir_2.len() != self.dim_r(){
+            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r(),dir_1.len(),dir_2.len())
         }
         let nk=k_vec.len_of(Axis(0));
         let omega:Vec<f64>=k_vec.axis_iter(Axis(0)).into_par_iter().map(|x| {
@@ -382,9 +383,9 @@ impl Model{
     }
     #[allow(non_snake_case)]
     pub fn Hall_conductivity(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->f64{
-    //!这个是用来计算霍尔电导的.
-    //!这里采用的是均匀撒点的方法, 利用 berry_curvature, 我们有
-    //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}(\bm k),$$ 其中 $N$ 是 k 点数目, 
+        //!这个是用来计算霍尔电导的.
+        //!这里采用的是均匀撒点的方法, 利用 berry_curvature, 我们有
+        //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}(\bm k),$$ 其中 $N$ 是 k 点数目, 
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let omega=self.berry_curvature(&kvec,&dir_1,&dir_2,mu,T,og,spin,eta);
@@ -460,7 +461,7 @@ impl Model{
     let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
     let mut J:Array3::<Complex<f64>>=v.clone();
     let mut v0=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));//这个是速度项, 对应的dir_3 的速度
-    for r in 0..self.dim_r{
+    for r in 0..self.dim_r(){
         v0=v0+v.slice(s![r,..,..]).to_owned()*dir_3[[r]];
     }
     if self.spin {
@@ -473,7 +474,7 @@ impl Model{
             _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
         };
         X=kron(&pauli,&Array2::eye(self.norb()));
-        for i in 0..self.dim_r{
+        for i in 0..self.dim_r(){
             let j=J.slice(s![i,..,..]).to_owned();
             let j=anti_comm(&X,&j)/2.0; //这里做反对易
             J.slice_mut(s![i,..,..]).assign(&(j*dir_1[[i]]));
@@ -483,7 +484,7 @@ impl Model{
         if spin !=0{
             println!("Warning, the model haven't got spin, so the spin input will be ignord");
         }
-        for i in 0..self.dim_r{
+        for i in 0..self.dim_r(){
             J.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_1[[i]],0.0));
             v.slice_mut(s![i,..,..]).mul_assign(Complex::new(dir_2[[i]],0.0));
         }
@@ -525,8 +526,8 @@ impl Model{
         //!This function performs parallel computation based on the onek function to obtain a series of Berry curvature dipoles at different k-points.
         //!这个方法用的是对费米分布的修正, 因为高阶的dipole 修正导致的非线性霍尔电导为 $$\sg_{\ap\bt\gm}=\tau\int\dd\bm k\sum_n\p_\gm\ve_{n\bm k}\Og_{n,\ap\bt}\lt\.\pdv{f_{\bm k}}{\ve}\rt\rvert_{E=\ve_{n\bm k}}.$$ 所以我们这里输出的是 
         //!$$\p_\gm\ve_{n\bm k}\Og_{n,\ap\bt}.$$ 
-        if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r || dir_3.len() != self.dim_r{
-            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r,dir_1.len(),dir_2.len())
+        if dir_1.len() !=self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r(){
+            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r(),dir_1.len(),dir_2.len())
         }
         let nk=k_vec.len_of(Axis(0));
         let (omega,band):(Vec<_>,Vec<_>)=k_vec.axis_iter(Axis(0)).into_par_iter().map(|x| {
@@ -550,8 +551,8 @@ impl Model{
         //! 对于 T!=0 的情况, 我们会采用类似 Dos 的方法来计算
 
 
-        if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r || dir_3.len() != self.dim_r{
-            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r,dir_1.len(),dir_2.len())
+        if dir_1.len() !=self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r(){
+            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r(),dir_1.len(),dir_2.len())
         }
         let kvec:Array2::<f64>=gen_kmesh(&k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
@@ -588,7 +589,7 @@ impl Model{
         let mut J=v.clone();
         let (band,evec)=self.solve_onek(&k_vec);//能带和本征值
         let evec_conj=evec.clone().mapv(|x| x.conj());//本征值的复共轭
-        for i in 0..self.dim_r{
+        for i in 0..self.dim_r(){
             let v_s=v.slice(s![i,..,..]).to_owned();
             let v_s=evec_conj.clone().dot(&(v_s.dot(&evec.clone().reversed_axes())));//变换到本征态基函数
             v.slice_mut(s![i,..,..]).assign(&v_s);//将 v 变换到以本征态为基底
@@ -597,7 +598,7 @@ impl Model{
         let mut v_1=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));//三个方向的速度算符
         let mut v_2=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
         let mut v_3=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
-        for i in 0..self.dim_r{
+        for i in 0..self.dim_r(){
             v_1=v_1.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_1[[i]],0.0);
             v_2=v_2.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_2[[i]],0.0);
             v_3=v_3.clone()+v.slice(s![i,..,..]).to_owned()*Complex::new(dir_3[[i]],0.0);
@@ -634,8 +635,8 @@ impl Model{
                 _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
             };
             let X=kron(&pauli,&Array2::eye(self.norb()));
-            let mut S=Array3::<Complex<f64>>::zeros((self.dim_r,self.nsta(),self.nsta()));
-            for i in 0..self.dim_r{
+            let mut S=Array3::<Complex<f64>>::zeros((self.dim_r(),self.nsta(),self.nsta()));
+            for i in 0..self.dim_r(){
                 let v0=J.slice(s![i,..,..]).to_owned();
                 let v0=anti_comm(&X,&v0)/2.0;
                 let v0=evec_conj.clone().dot(&(v0.dot(&evec.clone().reversed_axes())));//变换到本征态基函数
@@ -644,7 +645,7 @@ impl Model{
             let mut s_1=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));//三个方向的速度算符
             let mut s_2=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
             let mut s_3=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
-            for i in 0..self.dim_r{
+            for i in 0..self.dim_r(){
                 s_1=s_1.clone()+S.slice(s![i,..,..]).to_owned()*Complex::new(dir_1[[i]],0.0);
                 s_2=s_2.clone()+S.slice(s![i,..,..]).to_owned()*Complex::new(dir_2[[i]],0.0);
                 s_3=s_3.clone()+S.slice(s![i,..,..]).to_owned()*Complex::new(dir_3[[i]],0.0);
@@ -669,8 +670,8 @@ impl Model{
             let partial_s_1=s_1.clone().diag().map(|x| x.re);
             let partial_s_2=s_2.clone().diag().map(|x| x.re);
             let partial_s_3=s_3.clone().diag().map(|x| x.re);
-            let mut partial_s=Array2::<f64>::zeros((self.dim_r,self.nsta()));
-            for r in 0..self.dim_r{
+            let mut partial_s=Array2::<f64>::zeros((self.dim_r(),self.nsta()));
+            for r in 0..self.dim_r(){
                 let s0=S.slice(s![r,..,..]).to_owned();
                 partial_s.slice_mut(s![r,..]).assign(&s0.diag().map(|x| x.re));//\p_i s算符的对角项
             }
@@ -727,8 +728,8 @@ impl Model{
     }
     pub fn berry_connection_dipole(&self,k_vec:&Array2::<f64>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,dir_3:&Array1::<f64>,spin:usize)->(Array2<f64>,Array2<f64>,Option<Array2<f64>>){
         //! 这个是基于 onek 的, 进行关于 k 点并行求解
-        if dir_1.len() !=self.dim_r || dir_2.len() != self.dim_r || dir_3.len() != self.dim_r{
-            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r,dir_1.len(),dir_2.len())
+        if dir_1.len() !=self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r(){
+            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r(),dir_1.len(),dir_2.len())
         }
         let nk=k_vec.len_of(Axis(0));
         
@@ -859,7 +860,6 @@ impl Model {
         let li:Complex<f64>=1.0*Complex::i();
         let (band,evec)=self.solve_onek(&k_vec);
         let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
-        //let mut J:Array3::<Complex<f64>>=v.clone();
         let mut J=v.view();
         let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
         let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
@@ -897,8 +897,12 @@ impl Model {
                 let li_eta=a0+li*eta;
                 let UU=U0.mapv(|x| (x*x-li_eta*li_eta).finv());
                 let U1=&UU*&Us*li_eta;
-                omega.assign(&((&im*&(UU)).sum_axis(Axis(1))));
-                matric.assign(&((&re*&(U1)).sum_axis(Axis(1))));
+                let o=im.outer_iter().zip(UU.outer_iter()).map(|(a,b)| a.dot(&b)).collect();
+                let m=re.outer_iter().zip(U1.outer_iter()).map(|(a,b)| a.dot(&b)).collect();
+                let o=Array1::from_vec(o);
+                let m=Array1::from_vec(m);
+                omega.assign(&o);
+                matric.assign(&m);
             }
         );
         (matric_n,omega_n,band)

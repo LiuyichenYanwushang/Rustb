@@ -640,7 +640,7 @@ impl Atom{
     pub fn change_type(&mut self,new_type:AtomType){
         self.name=new_type;
     }
-    pub fn gen_atom(position:Array1<f64>,atom_list:usize,name:AtomType)->Atom{
+    pub fn new(position:Array1<f64>,atom_list:usize,name:AtomType)->Atom{
         Atom{position,atom_list,name}
     }
 }

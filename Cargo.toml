@@ -24,7 +24,7 @@ panic = 'abort'
 
 
 [dependencies]
-ndarray={ version = "0.15.6", features = ["rayon"] }
+ndarray={ version = "0.15.6", features = ["matrixmultiply-threading", "rayon"] }
 num-complex="0.4.4"
 ndarray-linalg={version="0.16.0",default-features=false}
 rayon="1.8.0"
@@ -33,6 +33,7 @@ lapack = "0.19.0"
 num-traits = "0.2.17"
 cblas-sys = "0.1.4"
 blas = "0.22.0"
+spglib = "1.15.1"
 
 
 [dependencies.intel-mkl-src]
@@ -52,6 +53,9 @@ optional = true
 default-features = false
 features = ["cblas"]
 
+[[package.metadata.docs.rs.artifacts]]
+src = "doc/dos_2D.svg"
+dst = "dos_2D.svg"
 
 [features]
 intel-mkl-static = ["ndarray-linalg/intel-mkl-static","intel-mkl-src/mkl-static-lp64-seq"]
