@@ -3,10 +3,10 @@ name = "Rustb"
 version = "0.2.2"
 edition = "2021"
 
-categories = ["Tight bind calculation","wannier function"]
+categories = ["science"]
 description = "A package for calculating band, angle state, linear and nonlinear conductivities based on tight-binding models"
 exclude = ["target/", "examples/", ".github/", "crate/","tests/"]
-keywords = ["physics","Rustb"]
+keywords = ["tight-binding","condensed matter physics","physics","Rustb"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/LiuyichenYanwushang/Rustb"
