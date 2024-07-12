@@ -520,7 +520,7 @@ mod tests {
         k_list.row_mut(8).assign(&(&k_vec+dk*&dir_1));
         let result2=model.berry_loop(&k_list,&vec![0]);
         let result2=result2[[0]]/(dk.powi(2))/4.0/(2.0*PI);
-        assert!((result2-result1).abs()<1e-4,"Wrong!, the berry_curvature or berry_flux mut be false")
+        assert!((result2-result1).abs()<1e-4,"Wrong!, the berry_curvature or berry_flux mut be false");
 
         
     }
@@ -677,6 +677,18 @@ mod tests {
         pdf_name.push_str("/omega_energy.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
+
+
+        //画一下表面态
+        let nk=1001;
+        let green=surf_Green::from_Model(&model,0,1e-3,None);
+        let E_min=-3.0;
+        let E_max=3.0;
+        let E_n=nk;
+        let path=[[0.0],[0.5],[1.0]];
+        let path=arr2(&path);
+        let label=vec!["G","M","G"];
+        green.show_surf_state("tests/Haldan/surf",&path,&label,nk,E_min,E_max,E_n,0);
 
 
         //开始算非线性霍尔电导

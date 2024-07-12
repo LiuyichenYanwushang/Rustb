@@ -226,7 +226,7 @@ impl surf_Green{
         let mut ap=hamRk.clone();
         let mut bt=hamRk_conj.clone();
 
-        for _ in 0..100{
+        for _ in 0..10{
             let g0=(&epsilon-&epi).inv().unwrap();
             let mat_1=&ap.dot(&g0);
             let mat_2=&bt.dot(&g0);
@@ -283,6 +283,7 @@ impl surf_Green{
             let g_LL=(&epsilon-eps).inv().unwrap();
             let g_RR=(&epsilon-eps_t).inv().unwrap();
             let g_B=(&epsilon-epi).inv().unwrap();
+            //求trace
             let N_R:f64=-1.0/(PI)*g_RR.into_diag().sum().im;
             let N_L:f64=-1.0/(PI)*g_LL.into_diag().sum().im;
             let N_B:f64=-1.0/(PI)*g_B.into_diag().sum().im;

@@ -40,7 +40,7 @@ impl Model{
         let diff=&kvec.row(n_k-1)-&kvec.row(0);
         for i in diff.iter(){
             if (i-i.round()).abs() >1e-5{
-                panic!("wrong, the end of this loop must differ from the beginning by an integer grid vector. yours {}",i.fract())
+                panic!("wrong, the end of this loop must differ from the beginning by an integer grid vector. yours {}\n",i.fract())
             }
         }
         let use_orb=if self.spin{
