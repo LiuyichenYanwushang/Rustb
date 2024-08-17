@@ -625,6 +625,34 @@ mod tests {
         assert!((conductivity*(2.0*PI)-1.0).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!");
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
 
+        
+        let mu=Array1::linspace(-2.0,2.0,1001);
+        let start = Instant::now();   // 开始计时
+        let conductivity_mu=model.Hall_conductivity_mu(&kmesh,&dir_1,&dir_2,&mu,T,og,spin,eta);
+        let end = Instant::now();    // 结束计时
+        let duration = end.duration_since(start); // 计算执行时间
+        println!("quantom_Hall_effect={}",conductivity_mu[[1]]*(2.0*PI));
+        assert!((conductivity_mu[[500]]-conductivity).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",conductivity_mu[[1000]],conductivity);
+        println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
+        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,-2.0,T,og,spin,eta);
+        assert!((conductivity_mu[[0]]-conductivity).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",conductivity_mu[[0]],conductivity);
+        let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,2.0,T,og,spin,eta);
+        assert!((conductivity_mu[[1000]]-conductivity).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",conductivity_mu[[1000]],conductivity);
+        //开始绘图
+        let mut fg = Figure::new();
+        let x:Vec<f64>=mu.to_vec();
+        let axes=fg.axes2d();
+        let y:Vec<f64>=(conductivity_mu*2.0*PI).to_vec();
+        axes.lines(&x, &y, &[Color("black")]);
+        let mut show_ticks=Vec::<String>::new();
+        let mut pdf_name=String::new();
+        pdf_name.push_str("tests/Haldan");
+        pdf_name.push_str("/hall_mu.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show();
+
+
+        let mu=0.0;
         let nk:usize=1000;
         let kmesh=arr1(&[nk,nk]);
         let start = Instant::now();   // 开始计时

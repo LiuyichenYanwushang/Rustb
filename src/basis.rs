@@ -560,7 +560,6 @@ impl Model{
         let mut rk0=rk.view().mapv(|x| x.conj());
         rk0.swap_axes(1,2);
         let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
-        //let U_dag=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&U);
         Zip::from(rk.outer_iter_mut())
             .apply(|mut x0| {
                 x0.assign(&U_dag.dot(&x0.dot(&U)));
@@ -590,9 +589,6 @@ impl Model{
     pub fn gen_v<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->Array3::<Complex<f64>>{
         assert_eq!(kvec.len(),self.dim_r(),"Wrong, the k-vector's length {} must equal to the dimension of model {}.",kvec.len(),self.dim_r());
         let orb_sta=if self.spin{
-            //let mut orb0=self.orb.to_owned();
-            //let orb1=self.orb.view();
-            //orb0.append(Axis(0),orb1).unwrap();
             let orb0=concatenate(Axis(0),&[self.orb.view(),self.orb.view()]).unwrap();
             orb0
         }else{
@@ -640,12 +636,7 @@ impl Model{
         //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
         //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
         if self.rmatrix.len_of(Axis(0))!=1 {
-            let r0=self.rmatrix.slice(s![0,..,..,..]);
-            let rk=Array3::<Complex<f64>>::zeros((self.dim_r(),self.nsta(),self.nsta()));
-            let rk=self.rmatrix.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(rk,|acc,(ham,us)|{acc+&ham**us});
-            let mut rk0=rk.view().mapv(|x| x.conj());
-            rk0.swap_axes(1,2);
-            let mut rk:Array3::<Complex<f64>>=&r0+&rk0+rk;
+            let mut rk=self.gen_r(kvec);
             for i in 0..3{
                 let mut r0=rk.slice_mut(s![i,..,..]);
                 let mut dig=r0.diag_mut();

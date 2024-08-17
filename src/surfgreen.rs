@@ -104,6 +104,7 @@ impl surf_Green{
             }
         }
         let new_lat=remove_row(model.lat.clone(),dir);
+        let new_lat=remove_col(new_lat.clone(),dir);
         let new_orb=remove_col(model.orb.clone(),dir);
         let new_atom=remove_col(model.atom_position(),dir);
         let new_hamR0=remove_col(hamR0,dir);
@@ -310,7 +311,7 @@ impl surf_Green{
         (N_L,N_R,N_B)
     }
     
-    pub fn show_arc_state(&self,name:&str,kmesh:&Array1::<usize>,nk:usize,energy:f64,spin:usize){
+    pub fn show_arc_state(&self,name:&str,kmesh:&Array1::<usize>,energy:f64,spin:usize){
         use std::io::{BufWriter, Write};
         use std::fs::create_dir_all;
         create_dir_all(name).expect("can't creat the file");
@@ -370,7 +371,78 @@ impl surf_Green{
         writer.write_all(s.as_bytes()).unwrap();
         let _=file;
 
+        let width:usize=kmesh[[0]];
+        let height:usize=kmesh[[1]];
+
+
+        let N_L: Array2<f64> = Array2::from_shape_vec((height, width), N_L.to_vec()).expect("Shape error");
+        let N_L = N_L.reversed_axes(); // 转置操作
+        let N_L=N_L.iter().cloned().collect::<Vec<f64>>();
+        let N_R: Array2<f64> = Array2::from_shape_vec((height, width), N_R.to_vec()).expect("Shape error");
+        let N_R = N_R.reversed_axes(); // 转置操作
+        let N_R=N_R.iter().cloned().collect::<Vec<f64>>();
+        let N_B: Array2<f64> = Array2::from_shape_vec((height, width), N_B.to_vec()).expect("Shape error");
+        let N_B = N_B.reversed_axes(); // 转置操作
+        let N_B=N_B.iter().cloned().collect::<Vec<f64>>();
+
+        //接下来我们绘制表面态 
+        let mut fg = Figure::new();
+        let mut heatmap_data = N_L;
+        let axes = fg.axes2d();
+        //axes.set_palette(RAINBOW);
+        axes.set_palette(Custom(&[(-1.0,0.0,0.0,0.0),(-0.9,65.0/255.0,9.0/255.0,103.0/255.0),(0.0,147.0/255.0,37.0/255.0,103.0/255.0),(0.2,220.0/255.0,80.0/255.0,57.0/255.0),(1.0,252.0/255.0,254.0/255.0,164.0/255.0)]));
+        axes.image(heatmap_data.iter(), width, height,Some((0.0,0.0,1.0,1.0)), &[]);
+        let axes=axes.set_x_range(Fix(0.0),Fix(1.0));
+        let axes=axes.set_y_range(Fix(0.0),Fix(1.0));
+        let axes=axes.set_aspect_ratio(Fix(1.0));
+        axes.set_x_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+        axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+        axes.set_cb_ticks_custom([Major(-10.0,Fix("low")),Major(0.0,Fix("0")),Major(10.0,Fix("high"))].into_iter(),&[],&[Font("Times New Roman",24.0)]);
+        let mut pdfname=String::new();
+        pdfname.push_str(&name.clone());
+        pdfname.push_str("/surf_state_l.pdf");
+        fg.set_terminal("pdfcairo",&pdfname);
+        fg.show().expect("Unable to draw heatmap");
+        let _=fg;
+
+
+        let mut fg = Figure::new();
+        let mut heatmap_data = N_R;
+        let axes = fg.axes2d();
+        //axes.set_palette(RAINBOW);
+        axes.set_palette(Custom(&[(-1.0,0.0,0.0,0.0),(-0.9,65.0/255.0,9.0/255.0,103.0/255.0),(0.0,147.0/255.0,37.0/255.0,103.0/255.0),(0.2,220.0/255.0,80.0/255.0,57.0/255.0),(1.0,252.0/255.0,254.0/255.0,164.0/255.0)]));
+        axes.image(heatmap_data.iter(), width, height,Some((0.0,0.0,1.0,1.0)), &[]);
+        let axes=axes.set_x_range(Fix(0.0),Fix(1.0));
+        let axes=axes.set_y_range(Fix(0.0),Fix(1.0));
+        let axes=axes.set_aspect_ratio(Fix(1.0));
+        axes.set_x_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+        axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+        axes.set_cb_ticks_custom([Major(-10.0,Fix("low")),Major(0.0,Fix("0")),Major(10.0,Fix("high"))].into_iter(),&[],&[Font("Times New Roman",24.0)]);
+        let mut pdfname=String::new();
+        pdfname.push_str(&name.clone());
+        pdfname.push_str("/surf_state_r.pdf");
+        fg.set_terminal("pdfcairo",&pdfname);
+        fg.show().expect("Unable to draw heatmap");
+        let _=fg;
         
+        let mut fg = Figure::new();
+        let mut heatmap_data = N_B;
+        let axes = fg.axes2d();
+        //axes.set_palette(RAINBOW);
+        axes.set_palette(Custom(&[(-1.0,0.0,0.0,0.0),(-0.9,65.0/255.0,9.0/255.0,103.0/255.0),(0.0,147.0/255.0,37.0/255.0,103.0/255.0),(0.2,220.0/255.0,80.0/255.0,57.0/255.0),(1.0,252.0/255.0,254.0/255.0,164.0/255.0)]));
+        axes.image(heatmap_data.iter(), width, height,Some((0.0,0.0,1.0,1.0)), &[]);
+        let axes=axes.set_x_range(Fix(0.0),Fix(1.0));
+        let axes=axes.set_y_range(Fix(0.0),Fix(1.0));
+        let axes=axes.set_aspect_ratio(Fix(1.0));
+        axes.set_x_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+        axes.set_y_ticks(Some((Auto,0)),&[],&[Font("Times New Roman",24.0)]);
+        axes.set_cb_ticks_custom([Major(-10.0,Fix("low")),Major(0.0,Fix("0")),Major(10.0,Fix("high"))].into_iter(),&[],&[Font("Times New Roman",24.0)]);
+        let mut pdfname=String::new();
+        pdfname.push_str(&name.clone());
+        pdfname.push_str("/surf_state_b.pdf");
+        fg.set_terminal("pdfcairo",&pdfname);
+        fg.show().expect("Unable to draw heatmap");
+        let _=fg;
     }
     pub fn show_surf_state(&self,name:&str,kpath:&Array2::<f64>,label:&Vec<&str>,nk:usize,E_min:f64,E_max:f64,E_n:usize,spin:usize){
         use std::io::{BufWriter, Write};

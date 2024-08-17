@@ -381,6 +381,7 @@ impl Model{
         let omega=arr1(&omega);
         omega
     }
+    ///这个是计算某个费米能级, 某个温度下的Hall conductivity 的, 输出的单位为 $e^2/\hbar/\AA$.
     #[allow(non_snake_case)]
     pub fn Hall_conductivity(&self,k_mesh:&Array1::<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,mu:f64,T:f64,og:f64,spin:usize,eta:f64)->f64{
         //!这个是用来计算霍尔电导的.

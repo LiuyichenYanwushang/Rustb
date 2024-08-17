@@ -38,6 +38,11 @@ impl Model{
         atom_type
     }
     #[inline(always)]
+    pub fn nR(&self)->usize{
+        self.hamR.nrows()
+    }
+    
+    #[inline(always)]
     pub fn natom(&self)->usize{
         self.atoms.len()
     }
