@@ -289,21 +289,40 @@ impl Model{
     #[allow(non_snake_case)]
     #[inline(always)]
     pub fn berry_curvature_n_onek<S:Data<Elem=f64>>(&self,k_vec:&ArrayBase<S,Ix1>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,og:f64,spin:usize,eta:f64)->(Array1::<f64>,Array1::<f64>){
+
         let li:Complex<f64>=1.0*Complex::i();
         let (band,evec)=self.solve_onek(&k_vec);
         let mut v:Array3::<Complex<f64>>=self.gen_v(k_vec);
         let mut J=v.view();
         let (J,v)=if self.spin {
-            let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta());
-            let pauli:Array2::<Complex<f64>>= match spin{
-                0=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,1.0+0.0*li]]),
-                1=> arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0,
-                2=> arr2(&[[0.0+0.0*li,0.0-1.0*li],[0.0+1.0*li,0.0+0.0*li]])/2.0,
-                3=> arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0,
+            let J= match spin{
+                0=> {
+                    let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
+                    J
+                },
+                1=> {
+                    let pauli=arr2(&[[0.0+0.0*li,1.0+0.0*li],[1.0+0.0*li,0.0+0.0*li]])/2.0;
+                    let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta());
+                    X=kron(&pauli,&Array2::eye(self.norb()));
+                    let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&anti_comm(&X,&x)*(*d*0.5+0.0*li)});
+                    J
+                },
+                2=> {
+                    let pauli=arr2(&[[0.0+0.0*li,0.0-1.0*li],[0.0+1.0*li,0.0+0.0*li]])/2.0;
+                    let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta());
+                    X=kron(&pauli,&Array2::eye(self.norb()));
+                    let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&anti_comm(&X,&x)*(*d*0.5+0.0*li)});
+                    J
+                },
+                3=> {
+                    let pauli=arr2(&[[1.0+0.0*li,0.0+0.0*li],[0.0+0.0*li,-1.0+0.0*li]])/2.0;
+                    let mut X:Array2::<Complex<f64>>=Array2::eye(self.nsta());
+                    X=kron(&pauli,&Array2::eye(self.norb()));
+                    let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&anti_comm(&X,&x)*(*d*0.5+0.0*li)});
+                    J
+                },
                 _=>panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}",spin),
             };
-            X=kron(&pauli,&Array2::eye(self.norb()));
-            let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&anti_comm(&X,&x)*(*d*0.5+0.0*li)});
             let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
             (J,v)
         }else{ 
@@ -316,28 +335,28 @@ impl Model{
             (J,v)
         };
 
-        let evec_conj:Array2::<Complex<f64>>=evec.map(|x| x.conj());
-        let evec=evec.reversed_axes();
+        let evec_conj:Array2::<Complex<f64>>=evec.mapv(|x| x.conj());
+        let evec=evec.t();
         let A1=J.dot(&evec);
         let A1=&evec_conj.dot(&A1);
         let A2=v.dot(&evec);
         let A2=evec_conj.dot(&A2);
         let A2=A2.reversed_axes();
-        let a0=(og+li*eta).powi(2);
+        let AA=A1*A2;
+        let Complex { re, im } = AA.view().split_complex();
+        let im=im.mapv(|x| Complex::new(-2.0*x,0.0));
         assert_eq!(band.len(),self.nsta(),"this is strange for band's length is not equal to self.nsta()");
         let mut U0=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
         for i in 0..self.nsta(){
             for j in 0..self.nsta(){
-                U0[[i,j]]=((band[[i]]-band[[j]]).powi(2)-a0).finv();
+                let a=band[[i]]-band[[j]];
+                U0[[i,j]]=Complex::new(a,0.0);
             }
-            U0[[i,i]]=Complex::new(0.0,0.0);
         }
-        let mut omega_n=Array1::<f64>::zeros(self.nsta());
-        let A1=A1*U0;
-        let A1=A1.outer_iter();
-        let A2=A2.outer_iter();
-        //Zip::from(omega_n.view_mut()).and(A1).and(A2).apply(|mut x,a,b|{*x=-2.0*(a.dot(&b)).im;});
-        omega_n.iter_mut().zip(A1.zip(A2)).for_each(|(mut x,(a,b))| {*x=-2.0*(a.dot(&b)).im;});
+        let li_eta=og+li*eta;
+        let UU=U0.mapv(|x| (x*x-li_eta*li_eta).finv());
+        let omega_n=im.outer_iter().zip(UU.outer_iter()).map(|(a,b)| a.dot(&b).re).collect();
+        let omega_n=Array1::from_vec(omega_n);
         (omega_n,band)
     }
 
@@ -352,18 +371,13 @@ impl Model{
         //! 其中 $J_\ap^\gm=\\{s_\gm,v_\ap\\}$
         let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
         let mut omega:f64=0.0;
-        if T==0.0{
-            /*
-            for (i,(e0,o0)) in band.iter().zip(omega_n.iter()).enumerate(){
-                omega+= if e0> &mu {0.0} else {*o0};
-            }
-            */
-            omega=omega_n.iter().zip(band.iter()).fold(0.0,|acc,(x,y)| {if *y> mu {acc} else {acc+*x}});
+        let fermi_dirac=if T==0.0{
+            band.mapv(|x| if x>mu {0.0} else {1.0})
         }else{
-            let beta=(T*8.617e-5).recip();
-            let fermi_dirac=band.mapv(|x| ((beta*(x-mu)).exp()+1.0).recip());
-            omega=(omega_n*fermi_dirac).sum();
-        }
+            let beta=1.0/T/8.617e-5;
+            band.mapv(|x| {((beta*(x-mu)).exp()+1.0).recip()})
+        };
+        let omega=omega_n.dot(&fermi_dirac);
         omega
     }
     #[allow(non_snake_case)]

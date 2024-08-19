@@ -178,7 +178,7 @@ where
     B: Data<Elem = T>,
     T: LinalgScalar, // 约束条件：T 必须实现 LinalgScalar trait
 {
-    //! 做 $\\\{A,B\\\}$ 反对易操作
+    //! 做 $\\\{A,B\\\}$ 对易操作
     A.dot(B)-B.dot(A)
 }
 #[allow(non_snake_case)]

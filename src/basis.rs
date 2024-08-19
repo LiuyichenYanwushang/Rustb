@@ -553,17 +553,20 @@ impl Model{
         let U_dag=Array2::from_diag(&U0.map(|x| x.conj()));
         let Us=(self.hamR.mapv(|x| x as f64)).dot(kvec).mapv(|x| Complex::<f64>::new(x,0.0));
         let Us=Us*Complex::new(0.0,2.0*PI);
-        let Us=Us.mapv(Complex::exp);
+        let Us=Us.mapv(Complex::exp);//Exp(2 pi K*R)
+        //现在我们存下来的是所有的rmatrix, 而不是只存下来一半, 所以这里要将 Us 翻一倍
+        let mut rk=Array3::<Complex<f64>>::zeros((self.dim_r(),self.nsta(),self.nsta()));
         let r0=self.rmatrix.slice(s![0,..,..,..]);
-        let rk=Array3::<Complex<f64>>::zeros((self.dim_r(),self.nsta(),self.nsta()));
-        let rk=self.rmatrix.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(rk,|acc,(ham,us)|{acc+&ham**us});
-        let mut rk0=rk.view().mapv(|x| x.conj());
+        let mut rk=self.rmatrix.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(rk,|acc,(ham,us)|{acc+&ham**us});
+        let mut rk0=rk.map(|x| x.conj());
         rk0.swap_axes(1,2);
-        let mut rk:Array3::<Complex<f64>>=&r0+&rk0+&rk;
-        Zip::from(rk.outer_iter_mut())
-            .apply(|mut x0| {
-                x0.assign(&U_dag.dot(&x0.dot(&U)));
-            });
+        let mut rk=rk+r0+rk0;
+        for i in 0..3{
+            let mut r0:ArrayViewMut2<Complex<f64>>=rk.slice_mut(s![i,..,..]);
+            let r_new=r0.dot(&U);
+            let r_new=U_dag.dot(&r_new);
+            r0.assign(&r_new);
+        }
         return rk
     }
     ///这个函数是用来生成速度算符的, 即 $\bra{m\bm k}\p_\ap H_{\bm k}\ket{n\bm k},$
@@ -636,11 +639,22 @@ impl Model{
         //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
         //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
         if self.rmatrix.len_of(Axis(0))!=1 {
-            let mut rk=self.gen_r(kvec);
+            let n_R=self.hamR.nrows();
+            let hamk=U_conj.dot(&hamk.dot(&U));//这一步别忘了把hamk 的相位加上
+                                               
+            let mut rk=Array3::<Complex<f64>>::zeros((self.dim_r(),self.nsta(),self.nsta()));
+            let r0=self.rmatrix.slice(s![0,..,..,..]);
+            let mut rk=self.rmatrix.axis_iter(Axis(0)).skip(1).zip(Us.iter().skip(1)).fold(rk,|acc,(ham,us)|{acc+&ham**us});
+            let mut rk0=rk.map(|x| x.conj());
+            rk0.swap_axes(1,2);
+            let mut rk=rk+r0+rk0;
             for i in 0..3{
-                let mut r0=rk.slice_mut(s![i,..,..]);
+                let mut r0:ArrayViewMut2<Complex<f64>>=rk.slice_mut(s![i,..,..]);
+                let r_new=r0.dot(&U);
+                let r_new=U_conj.dot(&r_new);
+                r0.assign(&r_new);
                 let mut dig=r0.diag_mut();
-                dig.assign(&Array1::zeros(self.nsta()));
+                dig.assign(&(&dig-&orb_real.column(i)));
                 let A=comm(&hamk,&r0)*Complex::i();
                 v.slice_mut(s![i,..,..]).add_assign(&A);
             }
@@ -648,6 +662,7 @@ impl Model{
         v
 
     }
+
     #[allow(non_snake_case)]
     #[inline(always)]
     pub fn solve_band_onek<S:Data<Elem=f64>>(&self,kvec:&ArrayBase<S,Ix1>)->Array1::<f64>{
@@ -2224,11 +2239,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         fg.show();
         Ok(())
     }
-    /*
-    pub fn show_3D_band<S:Data<Elem=f64>>(&self,start_k:Arraybase<S,Ix1>,dir_1:Arraybase<S,Ix1>,dir_2:Arraybase<S,Ix1>,nk1:<f64>,nk2:<f64>,name:&str){
-        let kvec
-    }
-    */
+
     #[allow(non_snake_case)]
     pub fn from_hr(path:&str,file_name:&str,zero_energy:f64)->Model{
         //! 这个函数是从 wannier90 中读取 TB 文件的
@@ -2261,7 +2272,6 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         let mut weights:Vec<usize>=Vec::new();
         let mut n_line:usize=0;
         for i in 3..reads.len(){
-            //if string.clone().count() !=15{
             if reads[i].contains("."){
                 n_line=i;
                 break
@@ -2472,14 +2482,15 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             orb
         };
         //开始尝试读取 _r.dat 文件
+        //这里需要注意, _r.dat 文件得到的数据不是厄密的, 即 r(-R)≠r(R)^\dag
+        //这里我们按照厄密的进行存储
         let mut reads:Vec<String>=Vec::new();
         let mut r_path=file_path.clone();
         r_path.push_str("_r.dat");
-        let mut rmatrix=Array4::<Complex<f64>>::zeros((1,3,nsta,nsta));
         let path=Path::new(&r_path);
         let hr=File::open(path);
         let mut have_r=false;
-        if hr.is_ok(){
+        let rmatrix=if hr.is_ok(){
             have_r=true;
             let hr=hr.unwrap();
             let reader = BufReader::new(hr);
@@ -2489,42 +2500,50 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                 reads.push(line.clone());
             }
             let n_R=reads[2].trim().parse::<usize>().unwrap();
+            let mut rmatrix=Array4::<Complex<f64>>::zeros((hamR.nrows(),3,nsta,nsta));
             for i in 0..n_R{
                 let mut string=reads[i*nsta*nsta+3].trim().split_whitespace();
                 let a=string.next().unwrap().parse::<isize>().unwrap();
                 let b=string.next().unwrap().parse::<isize>().unwrap();
                 let c=string.next().unwrap().parse::<isize>().unwrap();
                 if (c>0) || (c==0 && b>0) ||(c==0 && b==0 && a>=0){
-                    if a==0 && b==0 && c==0{
-                        for ind_i in 0..nsta{
-                            for ind_j in 0..nsta{
-                                let mut string=reads[i*nsta*nsta+ind_i*nsta+ind_j+3].trim().split_whitespace();
-                                string.nth(4);
-                                for r in 0..3{
-                                    let re=string.next().unwrap().parse::<f64>().unwrap();
-                                    let im=string.next().unwrap().parse::<f64>().unwrap();
-                                    rmatrix[[0,r,ind_j,ind_i]]=Complex::new(re,im);
-                                }
+                    let R0=array![a,b,c];
+                    let index=index_R(&hamR,&R0);
+                    for ind_i in 0..nsta{
+                        for ind_j in 0..nsta{
+                            let string=&reads[i*nsta*nsta+ind_i*nsta+ind_j+3];
+                            let mut string=string.trim().split_whitespace();
+                            string.nth(4);
+                            for r in 0..3{
+                                let re=string.next().unwrap().parse::<f64>().unwrap();
+                                let im=string.next().unwrap().parse::<f64>().unwrap();
+                                rmatrix[[index,r,ind_j,ind_i]]=Complex::new(re,im);
                             }
                         }
-                    }else{
-                        let mut matrix=Array4::<Complex<f64>>::zeros((1,3,nsta,nsta));
-                        for ind_i in 0..nsta{
-                            for ind_j in 0..nsta{
-                                let mut string=reads[i*nsta*nsta+ind_i*nsta+ind_j+3].trim().split_whitespace();
-                                string.nth(4);
-                                for r in 0..3{
-                                    let re=string.next().unwrap().parse::<f64>().unwrap();
-                                    let im=string.next().unwrap().parse::<f64>().unwrap();
-                                    matrix[[0,r,ind_j,ind_i]]=Complex::new(re,im);
-                                }
-                            }
-                        }
-                        rmatrix.append(Axis(0),matrix.view()).unwrap();
                     }
                 }
+                /*else{
+                    let R0=array![-a,-b,-c];
+                    let index=index_R(&hamR,&R0);
+                    for ind_i in 0..nsta{
+                        for ind_j in 0..nsta{
+                            let string=&reads[i*nsta*nsta+ind_i*nsta+ind_j+3];
+                            //println!("{},{},{},{}",&string,ind_j,ind_i,hamR.row(index),);
+                            let mut string=string.trim().split_whitespace();
+                            string.nth(4);
+                            for r in 0..3{
+                                let re=string.next().unwrap().parse::<f64>().unwrap();
+                                let im=string.next().unwrap().parse::<f64>().unwrap();
+                                rmatrix[[index+hamR.nrows()-1,r,ind_j,ind_i]]=Complex::new(re,im);
+                            }
+                        }
+                    }
+                }
+                */
             }
+            rmatrix
         }else{
+           let mut rmatrix=Array4::<Complex<f64>>::zeros((1,3,nsta,nsta));
            for i in 0..norb {
                 for r in 0..3{
                     rmatrix[[0,r,i,i]]=Complex::<f64>::from(orb[[i,r]]);
@@ -2533,7 +2552,8 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     }
                 }
             }
-        }
+           rmatrix
+        };
         let mut model=Model{
             dim_r:3,
             spin,
