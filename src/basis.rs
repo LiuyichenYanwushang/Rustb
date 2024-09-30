@@ -1457,6 +1457,16 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
 
 }
 
+    pub fn move_to_atom(&mut self){
+        ///This function moves the orbital position to the atomic position
+        let mut a=0;
+        for i in 0..self.natom(){
+            for j in 0..self.atoms[i].norb(){
+                self.orb.row_mut(a).assign(&self.atoms[i].position());
+                a+=1;
+            }
+        }
+    }
     pub fn remove_orb(&mut self,orb_list:&Vec<usize>){
         let mut use_orb_list=orb_list.clone();
         use_orb_list.sort_by(|a, b|a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -1519,24 +1529,28 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         .filter(|&num| !use_atom_list.contains(&num))
         .collect();//要保留下来的元素
         //--------------------------
-        self.atoms={
+
+        let new_atoms={
             let mut new_atoms=Vec::new();
             for i in atom_index.iter(){
                 new_atoms.push(self.atoms[*i].clone());
             }
             new_atoms
-        };//选出需要的原子
+        };//选出需要的原子以及需要的轨道
         //接下来选择需要的轨道
+
         let mut b=0;
-        let mut orb_index=Vec::new();
-        for (i,a) in self.atoms.iter().enumerate(){
-            let a0=a.norb();
-            if atom_index.contains(&i){
-                for j in 0..a0{
-                    orb_index.push(b+j);
-                }
+        let mut orb_index=Vec::new();//要保留下来的轨道
+        let atom_list=self.atom_list();
+        let mut int_atom_list=Array1::zeros(self.natom());
+        int_atom_list[[0]]=atom_list[0];
+        for i in 1..self.natom(){
+            int_atom_list[[i]]=int_atom_list[[i-1]]+atom_list[i];
+        }
+        for i in atom_index.iter(){
+            for j in 0..self.atoms[*i].norb(){
+                orb_index.push(int_atom_list[[*i]]+j);
             }
-            b+=a0;
         }
         let norb=self.norb();//保留之前的norb
         self.orb=self.orb.select(Axis(0),&orb_index);
@@ -2251,10 +2265,15 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         //!
         //! 这里 seedname_centres.xyz 需要在 wannier90 中设置 write_xyz=true, 而
         //! seedname_hr.dat 需要设置 write_hr=true.
+        //! 如果想要计算输运性质, 则需要 write_rmn=true, 能够给出一个seedname_r.dat.
+        //!
+        //! 此外, 对于高版本的wannier90, 如果想要保持较好的对称性, 建议将wannier90_wsvec.dat
+        //! 也给出, 这样能够得到较好的对称结果
         use std::io::BufReader;
         use std::io::BufRead;
         use std::fs::File;
         use std::path::Path;
+
         let mut file_path = path.to_string();
         file_path.push_str(file_name);
         let mut hr_path=file_path.clone();
@@ -2506,6 +2525,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                 let a=string.next().unwrap().parse::<isize>().unwrap();
                 let b=string.next().unwrap().parse::<isize>().unwrap();
                 let c=string.next().unwrap().parse::<isize>().unwrap();
+                let weight=weights[i] as f64;
                 if (c>0) || (c==0 && b>0) ||(c==0 && b==0 && a>=0){
                     let R0=array![a,b,c];
                     let index=index_R(&hamR,&R0);
@@ -2517,29 +2537,11 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                             for r in 0..3{
                                 let re=string.next().unwrap().parse::<f64>().unwrap();
                                 let im=string.next().unwrap().parse::<f64>().unwrap();
-                                rmatrix[[index,r,ind_j,ind_i]]=Complex::new(re,im);
+                                rmatrix[[index,r,ind_j,ind_i]]=Complex::new(re,im)/weight;
                             }
                         }
                     }
                 }
-                /*else{
-                    let R0=array![-a,-b,-c];
-                    let index=index_R(&hamR,&R0);
-                    for ind_i in 0..nsta{
-                        for ind_j in 0..nsta{
-                            let string=&reads[i*nsta*nsta+ind_i*nsta+ind_j+3];
-                            //println!("{},{},{},{}",&string,ind_j,ind_i,hamR.row(index),);
-                            let mut string=string.trim().split_whitespace();
-                            string.nth(4);
-                            for r in 0..3{
-                                let re=string.next().unwrap().parse::<f64>().unwrap();
-                                let im=string.next().unwrap().parse::<f64>().unwrap();
-                                rmatrix[[index+hamR.nrows()-1,r,ind_j,ind_i]]=Complex::new(re,im);
-                            }
-                        }
-                    }
-                }
-                */
             }
             rmatrix
         }else{
@@ -2554,6 +2556,67 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             }
            rmatrix
         };
+
+        /*
+        //最后判断有没有wannier90_wsvec.dat-----------------------------------
+        let mut file_path = path.to_string();
+        file_path.push_str(file_name);
+        let mut ws_path=file_path.clone();
+        ws_path.push_str("_wsvec.dat");
+        let ws=File::open(path);
+        let mut have_ws=false;
+        if ws.is_ok(){
+            have_ws=true;
+            let reader = BufReader::new(ws);
+            let mut reads:Vec<String>=Vec::new();
+            for line in reader.lines() {
+                let line = line.unwrap();
+                reads.push(line.clone());
+            }
+            //开始针对ham, hamR 以及 rmatrix 进行修改
+            //我们先考虑有rmatrix的情况
+            let mut R:<isize>=array![0,0,0];
+            let mut index_R=0;
+            if have_r{
+                let mut i=0;
+                while( i < reads.len()){
+                    let line=reads[i];
+                    let mut string=line.trim().split_whitespace();
+                    let a=string.next().unwrap().parse::<isize>().unwrap();
+                    let b=string.next().unwrap().parse::<isize>().unwrap();
+                    let c=string.next().unwrap().parse::<isize>().unwrap();
+                    let int_i=string.next().unwrap().parse::<usize>().unwrap();
+                    let int_j=string.next().unwrap().parse::<usize>().unwrap();
+                    //接下来判断是否在我们的hamR 中
+                    if a==R[[0]] && b== R[[1]] && c==R[[2]]{
+                        i+=1;
+                        let mut weight=reads[i].trim().split_whitespace().parse::<usize>().unwrap();
+                        if weight == 1{
+                            continue
+                        }else{
+                            for i0 in 0..weight{
+                                i+=1;
+                                let line=reads[i];
+                                let mut string=line.trim().split_whitespace();
+                                let a=string.next().unwrap().parse::<isize>().unwrap();
+                                let b=string.next().unwrap().parse::<isize>().unwrap();
+                                let c=string.next().unwrap().parse::<isize>().unwrap();
+                                let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
+                                if find_R(&new_R,&hamR){
+                                    let index=index_R(&new_R,&hamR)
+                                }
+
+                            }
+                        }
+                    }else if (c>0) || (c==0 && b>0) ||(c==0 && b==0 && a>=0){
+                    }
+                }
+            }else{
+            }
+        }
+        */
+
+
         let mut model=Model{
             dim_r:3,
             spin,

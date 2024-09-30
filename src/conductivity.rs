@@ -344,18 +344,20 @@ impl Model{
         let A2=A2.reversed_axes();
         let AA=A1*A2;
         let Complex { re, im } = AA.view().split_complex();
-        let im=im.mapv(|x| Complex::new(-2.0*x,0.0));
+        let im=im.mapv(|x| -2.0*x);
         assert_eq!(band.len(),self.nsta(),"this is strange for band's length is not equal to self.nsta()");
-        let mut U0=Array2::<Complex<f64>>::zeros((self.nsta(),self.nsta()));
+        let mut UU=Array2::<f64>::zeros((self.nsta(),self.nsta()));
         for i in 0..self.nsta(){
             for j in 0..self.nsta(){
                 let a=band[[i]]-band[[j]];
-                U0[[i,j]]=Complex::new(a,0.0);
+                if a.abs()<1e-8{
+                    UU[[i,j]]=0.0;
+                }else{
+                    UU[[i,j]]=1.0/a.powi(2);
+                }
             }
         }
-        let li_eta=og+li*eta;
-        let UU=U0.mapv(|x| (x*x-li_eta*li_eta).finv());
-        let omega_n=im.outer_iter().zip(UU.outer_iter()).map(|(a,b)| a.dot(&b).re).collect();
+        let omega_n=im.outer_iter().zip(UU.outer_iter()).map(|(a,b)| a.dot(&b)).collect();
         let omega_n=Array1::from_vec(omega_n);
         (omega_n,band)
     }
