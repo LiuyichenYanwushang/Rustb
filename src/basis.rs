@@ -1554,6 +1554,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         }
         let norb=self.norb();//保留之前的norb
         self.orb=self.orb.select(Axis(0),&orb_index);
+        self.atoms=new_atoms;
 
         let mut new_orb_proj=Vec::new();
         for i in orb_index.iter(){
