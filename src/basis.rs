@@ -1104,7 +1104,16 @@ impl Model{
         };
         model
     }
-
+pub fn shift_to_atom(&mut self){
+    //!这个是将轨道移动到原子位置上
+    let mut a=0;
+    for (i,atom) in self.atoms.iter().enumerate(){
+        for j in 0..atom.norb(){
+            self.orb.row_mut(a).assign(&atom.position());
+            a+=1;
+        }
+    }
+}
 pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
     //! 这个是用来且角态或者切棱态的
 
@@ -1535,7 +1544,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         let mut int_atom_list=Array1::zeros(self.natom());
         int_atom_list[[0]]=0;
         for i in 1..self.natom(){
-            int_atom_list[[i]]=int_atom_list[[i-1]]+atom_list[i];
+            int_atom_list[[i]]=int_atom_list[[i-1]]+atom_list[i-1];
         }
         for i in atom_index.iter(){
             for j in 0..self.atoms[*i].norb(){
