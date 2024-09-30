@@ -842,16 +842,6 @@ impl Model{
             });
             for n in 0..num{
                 for (i0,(ind_R,ham)) in using_hamR.outer_iter().zip(using_ham.outer_iter()).enumerate(){
-                    /*
-                    let mut ind_R:Array1::<isize>=self.hamR.row(i0).to_owned();
-                    let ham=if ind_R[[dir]]<0{//如果这个方向的ind_R 小于0, 将其变成大于0
-                        ind_R*=-1;
-                        let h0=self.ham.slice(s![i0,..,..]).map(|x| x.conj()).t().to_owned();
-                        h0
-                    }else{
-                        self.ham.slice(s![i0,..,..]).to_owned()
-                    };
-                    */
                     let ind:usize=(ind_R[[dir]]+(n as isize)) as usize;
                     let mut ind_R=ind_R.to_owned();
                     let ham=ham.to_owned();
@@ -1543,7 +1533,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         let mut orb_index=Vec::new();//要保留下来的轨道
         let atom_list=self.atom_list();
         let mut int_atom_list=Array1::zeros(self.natom());
-        int_atom_list[[0]]=atom_list[0];
+        int_atom_list[[0]]=0;
         for i in 1..self.natom(){
             int_atom_list[[i]]=int_atom_list[[i-1]]+atom_list[i];
         }
