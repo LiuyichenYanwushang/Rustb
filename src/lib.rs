@@ -1096,7 +1096,7 @@ mod tests {
 
         //开始计算角态
         let model=model.make_supercell(&array![[0.0,-1.0],[1.0,0.0]]);
-        let num=10;
+        let num=19;
         /*
         let model_1=model.cut_piece(num,0);
         let new_model=model_1.cut_piece(num,1);

@@ -1165,7 +1165,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     6=>{
                         for i in 0..model_2.natom(){
                             let atom_position=model_2.atoms[i].position();
-                            if (atom_position[[1]]-atom_position[[dir[0]]] + 0.5 < 0.0) || (atom_position[[dir[0]]]-atom_position[[1]] + 0.5 < 0.0) {
+                            if (atom_position[[0]]-atom_position[[dir[1]]] > 0.5) || (atom_position[[dir[0]]]-atom_position[[1]]  < -0.5) {
                                 a+=model_2.atoms[i].norb();
                             }else{
                                 use_atom_item.push(i);
@@ -2509,7 +2509,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
         let path=Path::new(&r_path);
         let hr=File::open(path);
         let mut have_r=false;
-        let rmatrix=if hr.is_ok(){
+        let mut rmatrix=if hr.is_ok(){
             have_r=true;
             let hr=hr.unwrap();
             let reader = BufReader::new(hr);
@@ -2557,16 +2557,15 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
            rmatrix
         };
 
-        /*
         //最后判断有没有wannier90_wsvec.dat-----------------------------------
-        let mut file_path = path.to_string();
-        file_path.push_str(file_name);
         let mut ws_path=file_path.clone();
         ws_path.push_str("_wsvec.dat");
+        let path=Path::new(&ws_path); //转化为路径格式
         let ws=File::open(path);
         let mut have_ws=false;
         if ws.is_ok(){
             have_ws=true;
+            let ws=ws.unwrap();
             let reader = BufReader::new(ws);
             let mut reads:Vec<String>=Vec::new();
             for line in reader.lines() {
@@ -2575,46 +2574,178 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             }
             //开始针对ham, hamR 以及 rmatrix 进行修改
             //我们先考虑有rmatrix的情况
-            let mut R:<isize>=array![0,0,0];
-            let mut index_R=0;
             if have_r{
                 let mut i=0;
-                while( i < reads.len()){
-                    let line=reads[i];
+                while( i < reads.len()-1){
+                    i+=1;
+                    let line=&reads[i];
                     let mut string=line.trim().split_whitespace();
                     let a=string.next().unwrap().parse::<isize>().unwrap();
                     let b=string.next().unwrap().parse::<isize>().unwrap();
                     let c=string.next().unwrap().parse::<isize>().unwrap();
-                    let int_i=string.next().unwrap().parse::<usize>().unwrap();
-                    let int_j=string.next().unwrap().parse::<usize>().unwrap();
+                    let int_i=string.next().unwrap().parse::<usize>().unwrap()-1;
+                    let int_j=string.next().unwrap().parse::<usize>().unwrap()-1;
                     //接下来判断是否在我们的hamR 中
-                    if a==R[[0]] && b== R[[1]] && c==R[[2]]{
-                        i+=1;
-                        let mut weight=reads[i].trim().split_whitespace().parse::<usize>().unwrap();
-                        if weight == 1{
-                            continue
-                        }else{
-                            for i0 in 0..weight{
-                                i+=1;
-                                let line=reads[i];
-                                let mut string=line.trim().split_whitespace();
-                                let a=string.next().unwrap().parse::<isize>().unwrap();
-                                let b=string.next().unwrap().parse::<isize>().unwrap();
-                                let c=string.next().unwrap().parse::<isize>().unwrap();
-                                let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
-                                if find_R(&new_R,&hamR){
-                                    let index=index_R(&new_R,&hamR)
-                                }
+                    i+=1;
+                    let mut weight=reads[i].trim().split_whitespace().next().unwrap().parse::<usize>().unwrap();
+                    let R=array![a,b,c];
+                    let R_inv=array![-a,-b,-c];
+                    if (c>0) || (c==0 && b>0) ||(c==0 && b==0 && a>=0){
+                        let index=index_R(&hamR,&R);
+                        let hop=ham[[index,int_i,int_j]];
+                        let hop_x=rmatrix[[index,0,int_i,int_j]]/(weight as f64);
+                        let hop_y=rmatrix[[index,1,int_i,int_j]]/(weight as f64);
+                        let hop_z=rmatrix[[index,2,int_i,int_j]]/(weight as f64);
+                        ham[[index,int_i,int_j]]=Complex::new(0.0,0.0);
+                        rmatrix[[index,0,int_i,int_j]]=Complex::new(0.0,0.0);
+                        rmatrix[[index,1,int_i,int_j]]=Complex::new(0.0,0.0);
+                        rmatrix[[index,2,int_i,int_j]]=Complex::new(0.0,0.0);
 
+                        for i0 in 0..weight{
+                            i+=1;
+                            let line=&reads[i];
+                            let mut string=line.trim().split_whitespace();
+                            let a=string.next().unwrap().parse::<isize>().unwrap();
+                            let b=string.next().unwrap().parse::<isize>().unwrap();
+                            let c=string.next().unwrap().parse::<isize>().unwrap();
+                            let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
+                            if weight!=1{
+                                println!("{},{},{},{}",weight,i0,R,new_R);
+                            }
+                            if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
+                                if find_R(&hamR,&new_R){
+                                    let index0=index_R(&hamR,&new_R);
+                                    ham[[index0,int_i,int_j]]=hop;
+                                    rmatrix[[index0,0,int_i,int_j]]=hop_x;
+                                    rmatrix[[index0,1,int_i,int_j]]=hop_y;
+                                    rmatrix[[index0,2,int_i,int_j]]=hop_z;
+                                }else{
+                                    let mut new_ham=Array2::zeros((nsta,nsta));
+                                    let mut new_rmatrix=Array3::zeros((3,nsta,nsta));
+                                    new_ham[[int_i,int_j]]=hop;
+                                    new_rmatrix[[0,int_i,int_j]]=hop_x;
+                                    new_rmatrix[[1,int_i,int_j]]=hop_y;
+                                    new_rmatrix[[2,int_i,int_j]]=hop_z;
+                                    hamR.push_row(new_R.view());
+                                    ham.push(Axis(0),new_ham.view());
+                                    rmatrix.push(Axis(0),new_rmatrix.view());
+                                }
                             }
                         }
-                    }else if (c>0) || (c==0 && b>0) ||(c==0 && b==0 && a>=0){
+                    }else{
+                        let index=index_R(&hamR,&R_inv);
+                        let hop=ham[[index,int_i,int_j]].conj();
+                        let hop_x=rmatrix[[index,0,int_i,int_j]].conj()/(weight as f64);
+                        let hop_y=rmatrix[[index,1,int_i,int_j]].conj()/(weight as f64);
+                        let hop_z=rmatrix[[index,2,int_i,int_j]].conj()/(weight as f64);
+                        ham[[index,int_i,int_j]]=Complex::new(0.0,0.0);
+                        rmatrix[[index,0,int_i,int_j]]=Complex::new(0.0,0.0);
+                        rmatrix[[index,1,int_i,int_j]]=Complex::new(0.0,0.0);
+                        rmatrix[[index,2,int_i,int_j]]=Complex::new(0.0,0.0);
+
+                        for i0 in 0..weight{
+                            i+=1;
+                            let line=&reads[i];
+                            let mut string=line.trim().split_whitespace();
+                            let a=string.next().unwrap().parse::<isize>().unwrap();
+                            let b=string.next().unwrap().parse::<isize>().unwrap();
+                            let c=string.next().unwrap().parse::<isize>().unwrap();
+                            let new_R=array![R_inv[[0]]+a,R_inv[[1]]+b,R_inv[[2]]+c];
+                            if weight!=1{
+                                println!("{},{},{},{}",weight,i0,R,new_R);
+                            }
+                            if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
+                                if find_R(&hamR,&new_R){
+                                    let index0=index_R(&hamR,&new_R);
+                                    ham[[index0,int_i,int_j]]=hop;
+                                    rmatrix[[index0,0,int_i,int_j]]=hop_x;
+                                    rmatrix[[index0,1,int_i,int_j]]=hop_y;
+                                    rmatrix[[index0,2,int_i,int_j]]=hop_z;
+                                }else{
+                                    let mut new_ham=Array2::zeros((nsta,nsta));
+                                    let mut new_rmatrix=Array3::zeros((3,nsta,nsta));
+                                    new_ham[[int_i,int_j]]=hop;
+                                    new_rmatrix[[0,int_i,int_j]]=hop_x;
+                                    new_rmatrix[[1,int_i,int_j]]=hop_y;
+                                    new_rmatrix[[2,int_i,int_j]]=hop_z;
+                                    hamR.push_row(new_R.view());
+                                    ham.push(Axis(0),new_ham.view());
+                                    rmatrix.push(Axis(0),new_rmatrix.view());
+                                }
+                            }
+                        }
                     }
                 }
             }else{
+                let mut i=0;
+                while( i < reads.len()-1){
+                    i+=1;
+                    let line=&reads[i];
+                    let mut string=line.trim().split_whitespace();
+                    let a=string.next().unwrap().parse::<isize>().unwrap();
+                    let b=string.next().unwrap().parse::<isize>().unwrap();
+                    let c=string.next().unwrap().parse::<isize>().unwrap();
+                    let int_i=string.next().unwrap().parse::<usize>().unwrap()-1;
+                    let int_j=string.next().unwrap().parse::<usize>().unwrap()-1;
+                    //接下来判断是否在我们的hamR 中
+                    i+=1;
+                    let mut weight=reads[i].trim().split_whitespace().next().unwrap().parse::<usize>().unwrap();
+                    let R=array![a,b,c];
+                    let R_inv=array![-a,-b,-c];
+                    if (c>0) || (c==0 && b>0) ||(c==0 && b==0 && a>=0){
+                        let index=index_R(&hamR,&R);
+                        let hop=ham[[index,int_i,int_j]];
+                        ham[[index,int_i,int_j]]=Complex::new(0.0,0.0);
+
+                        for i0 in 0..weight{
+                            i+=1;
+                            let line=&reads[i];
+                            let mut string=line.trim().split_whitespace();
+                            let a=string.next().unwrap().parse::<isize>().unwrap();
+                            let b=string.next().unwrap().parse::<isize>().unwrap();
+                            let c=string.next().unwrap().parse::<isize>().unwrap();
+                            let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
+                            if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
+                                if find_R(&hamR,&new_R){
+                                    let index0=index_R(&hamR,&new_R);
+                                    ham[[index0,int_i,int_j]]=hop;
+                                }else{
+                                    let mut new_ham=Array2::zeros((nsta,nsta));
+                                    new_ham[[int_i,int_j]]=hop;
+                                    hamR.push_row(new_R.view());
+                                    ham.push(Axis(0),new_ham.view());
+                                }
+                            }
+                        }
+                    }else{
+                        let index=index_R(&hamR,&R_inv);
+                        let hop=ham[[index,int_i,int_j]].conj();
+                        ham[[index,int_i,int_j]]=Complex::new(0.0,0.0);
+
+                        for i0 in 0..weight{
+                            i+=1;
+                            let line=&reads[i];
+                            let mut string=line.trim().split_whitespace();
+                            let a=string.next().unwrap().parse::<isize>().unwrap();
+                            let b=string.next().unwrap().parse::<isize>().unwrap();
+                            let c=string.next().unwrap().parse::<isize>().unwrap();
+                            let new_R=array![R_inv[[0]]+a,R_inv[[1]]+b,R_inv[[2]]+c];
+                            if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
+                                if find_R(&hamR,&new_R){
+                                    let index0=index_R(&hamR,&new_R);
+                                    ham[[index0,int_i,int_j]]=hop;
+                                }else{
+                                    let mut new_ham=Array2::zeros((nsta,nsta));
+                                    new_ham[[int_i,int_j]]=hop;
+                                    hamR.push_row(new_R.view());
+                                    ham.push(Axis(0),new_ham.view());
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-        */
 
 
         let mut model=Model{
