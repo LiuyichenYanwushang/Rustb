@@ -2609,9 +2609,6 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                             let b=string.next().unwrap().parse::<isize>().unwrap();
                             let c=string.next().unwrap().parse::<isize>().unwrap();
                             let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
-                            if weight!=1{
-                                println!("{},{},{},{}",weight,i0,R,new_R);
-                            }
                             if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
                                 if find_R(&hamR,&new_R){
                                     let index0=index_R(&hamR,&new_R);
@@ -2638,10 +2635,6 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                         let hop_x=rmatrix[[index,0,int_i,int_j]].conj()/(weight as f64);
                         let hop_y=rmatrix[[index,1,int_i,int_j]].conj()/(weight as f64);
                         let hop_z=rmatrix[[index,2,int_i,int_j]].conj()/(weight as f64);
-                        ham[[index,int_i,int_j]]=Complex::new(0.0,0.0);
-                        rmatrix[[index,0,int_i,int_j]]=Complex::new(0.0,0.0);
-                        rmatrix[[index,1,int_i,int_j]]=Complex::new(0.0,0.0);
-                        rmatrix[[index,2,int_i,int_j]]=Complex::new(0.0,0.0);
 
                         for i0 in 0..weight{
                             i+=1;
@@ -2650,10 +2643,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                             let a=string.next().unwrap().parse::<isize>().unwrap();
                             let b=string.next().unwrap().parse::<isize>().unwrap();
                             let c=string.next().unwrap().parse::<isize>().unwrap();
-                            let new_R=array![R_inv[[0]]+a,R_inv[[1]]+b,R_inv[[2]]+c];
-                            if weight!=1{
-                                println!("{},{},{},{}",weight,i0,R,new_R);
-                            }
+                            let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
                             if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
                                 if find_R(&hamR,&new_R){
                                     let index0=index_R(&hamR,&new_R);
@@ -2720,8 +2710,6 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     }else{
                         let index=index_R(&hamR,&R_inv);
                         let hop=ham[[index,int_i,int_j]].conj();
-                        ham[[index,int_i,int_j]]=Complex::new(0.0,0.0);
-
                         for i0 in 0..weight{
                             i+=1;
                             let line=&reads[i];
@@ -2729,7 +2717,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                             let a=string.next().unwrap().parse::<isize>().unwrap();
                             let b=string.next().unwrap().parse::<isize>().unwrap();
                             let c=string.next().unwrap().parse::<isize>().unwrap();
-                            let new_R=array![R_inv[[0]]+a,R_inv[[1]]+b,R_inv[[2]]+c];
+                            let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
                             if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
                                 if find_R(&hamR,&new_R){
                                     let index0=index_R(&hamR,&new_R);

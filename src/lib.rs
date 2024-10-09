@@ -505,7 +505,7 @@ mod tests {
         let og=0.0;
         let spin=0;
         let eta=1e-3;
-        let result1=model.berry_curvature_onek(&k_vec,&dir_1,&dir_2,mu,T,og,spin,eta)*(2.0*PI).powi(2)/3_f64.sqrt()/PI;
+        let result1=model.berry_curvature_onek(&k_vec,&dir_1,&dir_2,mu,T,og,spin,eta)*(2.0*PI);
 
         let mut k_list=Array2::zeros((9,2));
         let dk=0.0001;
@@ -519,7 +519,7 @@ mod tests {
         k_list.row_mut(7).assign(&(&k_vec+dk*&dir_1-dk*&dir_2));
         k_list.row_mut(8).assign(&(&k_vec+dk*&dir_1));
         let result2=model.berry_loop(&k_list,&vec![0]);
-        let result2=result2[[0]]/(dk.powi(2))/4.0/(2.0*PI);
+        let result2=result2[[0]]/(dk.powi(2))/4.0/(2.0*PI)*3_f64.sqrt()/2.0;
         assert!((result2-result1).abs()<1e-4,"Wrong!, the berry_curvature or berry_flux mut be false");
 
         
@@ -631,7 +631,7 @@ mod tests {
         let conductivity_mu=model.Hall_conductivity_mu(&kmesh,&dir_1,&dir_2,&mu,T,og,spin,eta);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
-        println!("quantom_Hall_effect={}",conductivity_mu[[1]]*(2.0*PI));
+        println!("quantom_Hall_effect={}",conductivity_mu[[500]]*(2.0*PI));
         assert!((conductivity_mu[[500]]-conductivity).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",conductivity_mu[[1000]],conductivity);
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
         let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,-2.0,T,og,spin,eta);
@@ -934,7 +934,6 @@ mod tests {
             model.add_hop(-rashba*li*r0[[0]],1,1,&R,2);
         }
         let nk:usize=101;
-        println!("aaa");
         let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[1.0/3.0,2.0/3.0],[0.0,0.0]];
         let path=arr2(&path);
         let (k_vec,k_dist,k_node)=model.k_path(&path,nk);
@@ -1006,7 +1005,7 @@ mod tests {
         let conductivity=model.Hall_conductivity(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
-        println!("{}",conductivity/(2.0*PI));
+        println!("{}",conductivity*(2.0*PI));
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
         let nk:usize=31;
         let kmesh=arr1(&[nk,nk]);
@@ -1014,7 +1013,7 @@ mod tests {
         let conductivity=model.Hall_conductivity_adapted(&kmesh,&dir_1,&dir_2,mu,T,og,spin,eta,0.01,0.01);
         let end = Instant::now();    // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
-        println!("{}",conductivity/(2.0*PI));
+        println!("{}",conductivity*(2.0*PI));
         println!("function_a took {} seconds", duration.as_secs_f64());   // 输出执行时间
 
         let (E0,dos)=model.dos(&kmesh,E_min,E_max,E_n,1e-2);
