@@ -958,13 +958,14 @@ impl Model {
                 }
                 );
         let matric_sum=li*matric_sum/self.lat.det().unwrap()/(nk as f64);
-        let omega_sum=li*omega_sum/self.lat.det().unwrap()/(nk as f64);
+        let omega_sum=omega_sum/self.lat.det().unwrap()/(nk as f64);
         (matric_sum, omega_sum)
     }
 
 
     pub fn optical_conductivity_T(&self,k_mesh:&Array1<usize>,dir_1:&Array1::<f64>,dir_2:&Array1::<f64>,T:&Array1<f64>,mu:f64,og:&Array1<f64>,eta:f64)->(Array2::<Complex<f64>>,Array2::<Complex<f64>>)
     {
+        let li:Complex<f64>=1.0*Complex::i();
         let kvec:Array2::<f64>=gen_kmesh(k_mesh);
         let nk:usize=kvec.len_of(Axis(0));
         let n_og=og.len();
@@ -995,7 +996,7 @@ impl Model {
                     (matric_acc+matric,omega_acc+omega)
                 }
                 );
-        let matric_sum=matric_sum/self.lat.det().unwrap()/(nk as f64);
+        let matric_sum=li*matric_sum/self.lat.det().unwrap()/(nk as f64);
         let omega_sum=omega_sum/self.lat.det().unwrap()/(nk as f64);
         (matric_sum, omega_sum)
     }
