@@ -880,7 +880,6 @@ impl Model {
         let mut J=v.view();
         let J=J.outer_iter().zip(dir_1.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
         let v=v.outer_iter().zip(dir_2.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(x,d)| {acc+&x*(*d+0.0*li)});
-
         let evec_conj:Array2::<Complex<f64>>=evec.mapv(|x| x.conj());
         let evec=evec.t();
         let A1=J.dot(&evec);
@@ -958,7 +957,7 @@ impl Model {
                 }
                 );
         let matric_sum=li*matric_sum/self.lat.det().unwrap()/(nk as f64);
-        let omega_sum=omega_sum/self.lat.det().unwrap()/(nk as f64);
+        let omega_sum=li*omega_sum/self.lat.det().unwrap()/(nk as f64);
         (matric_sum, omega_sum)
     }
 
@@ -997,7 +996,7 @@ impl Model {
                 }
                 );
         let matric_sum=li*matric_sum/self.lat.det().unwrap()/(nk as f64);
-        let omega_sum=omega_sum/self.lat.det().unwrap()/(nk as f64);
+        let omega_sum=li*omega_sum/self.lat.det().unwrap()/(nk as f64);
         (matric_sum, omega_sum)
     }
 
