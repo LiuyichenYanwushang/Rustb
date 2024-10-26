@@ -2576,6 +2576,9 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
             //我们先考虑有rmatrix的情况
             if have_r{
                 let mut i=0;
+                let mut new_hamR=Array2::zeros((1,3));
+                let mut new_ham=Array3::zeros((1,nsta,nsta));
+                let mut new_rmatrix=Array4::zeros((1,3,nsta,nsta));
                 while( i < reads.len()-1){
                     i+=1;
                     let line=&reads[i];
@@ -2592,14 +2595,10 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let R_inv=array![-a,-b,-c];
                     if (c>0) || (c==0 && b>0) ||(c==0 && b==0 && a>=0){
                         let index=index_R(&hamR,&R);
-                        let hop=ham[[index,int_i,int_j]];
+                        let hop=ham[[index,int_i,int_j]]/(weight as f64);
                         let hop_x=rmatrix[[index,0,int_i,int_j]]/(weight as f64);
                         let hop_y=rmatrix[[index,1,int_i,int_j]]/(weight as f64);
                         let hop_z=rmatrix[[index,2,int_i,int_j]]/(weight as f64);
-                        ham[[index,int_i,int_j]]=Complex::new(0.0,0.0);
-                        rmatrix[[index,0,int_i,int_j]]=Complex::new(0.0,0.0);
-                        rmatrix[[index,1,int_i,int_j]]=Complex::new(0.0,0.0);
-                        rmatrix[[index,2,int_i,int_j]]=Complex::new(0.0,0.0);
 
                         for i0 in 0..weight{
                             i+=1;
@@ -2610,28 +2609,28 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                             let c=string.next().unwrap().parse::<isize>().unwrap();
                             let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
                             if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
-                                if find_R(&hamR,&new_R){
-                                    let index0=index_R(&hamR,&new_R);
-                                    ham[[index0,int_i,int_j]]=hop;
-                                    rmatrix[[index0,0,int_i,int_j]]=hop_x;
-                                    rmatrix[[index0,1,int_i,int_j]]=hop_y;
-                                    rmatrix[[index0,2,int_i,int_j]]=hop_z;
+                                if find_R(&new_hamR,&new_R){
+                                    let index0=index_R(&new_hamR,&new_R);
+                                    new_ham[[index0,int_i,int_j]]+=hop;
+                                    new_rmatrix[[index0,0,int_i,int_j]]+=hop_x;
+                                    new_rmatrix[[index0,1,int_i,int_j]]+=hop_y;
+                                    new_rmatrix[[index0,2,int_i,int_j]]+=hop_z;
                                 }else{
-                                    let mut new_ham=Array2::zeros((nsta,nsta));
-                                    let mut new_rmatrix=Array3::zeros((3,nsta,nsta));
-                                    new_ham[[int_i,int_j]]=hop;
-                                    new_rmatrix[[0,int_i,int_j]]=hop_x;
-                                    new_rmatrix[[1,int_i,int_j]]=hop_y;
-                                    new_rmatrix[[2,int_i,int_j]]=hop_z;
-                                    hamR.push_row(new_R.view());
-                                    ham.push(Axis(0),new_ham.view());
-                                    rmatrix.push(Axis(0),new_rmatrix.view());
+                                    let mut use_ham=Array2::zeros((nsta,nsta));
+                                    let mut use_rmatrix=Array3::zeros((3,nsta,nsta));
+                                    use_ham[[int_i,int_j]]+=hop;
+                                    use_rmatrix[[0,int_i,int_j]]+=hop_x;
+                                    use_rmatrix[[1,int_i,int_j]]+=hop_y;
+                                    use_rmatrix[[2,int_i,int_j]]+=hop_z;
+                                    new_hamR.push_row(new_R.view());
+                                    new_ham.push(Axis(0),use_ham.view());
+                                    new_rmatrix.push(Axis(0),use_rmatrix.view());
                                 }
                             }
                         }
                     }else{
                         let index=index_R(&hamR,&R_inv);
-                        let hop=ham[[index,int_i,int_j]].conj();
+                        let hop=ham[[index,int_i,int_j]].conj()/(weight as f64);
                         let hop_x=rmatrix[[index,0,int_i,int_j]].conj()/(weight as f64);
                         let hop_y=rmatrix[[index,1,int_i,int_j]].conj()/(weight as f64);
                         let hop_z=rmatrix[[index,2,int_i,int_j]].conj()/(weight as f64);
@@ -2645,29 +2644,34 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                             let c=string.next().unwrap().parse::<isize>().unwrap();
                             let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
                             if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
-                                if find_R(&hamR,&new_R){
-                                    let index0=index_R(&hamR,&new_R);
-                                    ham[[index0,int_i,int_j]]=hop;
-                                    rmatrix[[index0,0,int_i,int_j]]=hop_x;
-                                    rmatrix[[index0,1,int_i,int_j]]=hop_y;
-                                    rmatrix[[index0,2,int_i,int_j]]=hop_z;
+                                if find_R(&new_hamR,&new_R){
+                                    let index0=index_R(&new_hamR,&new_R);
+                                    new_ham[[index0,int_i,int_j]]+=hop;
+                                    new_rmatrix[[index0,0,int_i,int_j]]+=hop_x;
+                                    new_rmatrix[[index0,1,int_i,int_j]]+=hop_y;
+                                    new_rmatrix[[index0,2,int_i,int_j]]+=hop_z;
                                 }else{
-                                    let mut new_ham=Array2::zeros((nsta,nsta));
-                                    let mut new_rmatrix=Array3::zeros((3,nsta,nsta));
-                                    new_ham[[int_i,int_j]]=hop;
-                                    new_rmatrix[[0,int_i,int_j]]=hop_x;
-                                    new_rmatrix[[1,int_i,int_j]]=hop_y;
-                                    new_rmatrix[[2,int_i,int_j]]=hop_z;
-                                    hamR.push_row(new_R.view());
-                                    ham.push(Axis(0),new_ham.view());
-                                    rmatrix.push(Axis(0),new_rmatrix.view());
+                                    let mut use_ham=Array2::zeros((nsta,nsta));
+                                    let mut use_rmatrix=Array3::zeros((3,nsta,nsta));
+                                    use_ham[[int_i,int_j]]+=hop;
+                                    use_rmatrix[[0,int_i,int_j]]+=hop_x;
+                                    use_rmatrix[[1,int_i,int_j]]+=hop_y;
+                                    use_rmatrix[[2,int_i,int_j]]+=hop_z;
+                                    new_hamR.push_row(new_R.view());
+                                    new_ham.push(Axis(0),use_ham.view());
+                                    new_rmatrix.push(Axis(0),use_rmatrix.view());
                                 }
                             }
                         }
                     }
                 }
+                hamR=new_hamR;
+                ham=new_ham;
+                rmatrix=new_rmatrix;
             }else{
                 let mut i=0;
+                let mut new_hamR=Array2::zeros((1,3));
+                let mut new_ham=Array3::zeros((1,nsta,nsta));
                 while( i < reads.len()-1){
                     i+=1;
                     let line=&reads[i];
@@ -2684,8 +2688,7 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                     let R_inv=array![-a,-b,-c];
                     if (c>0) || (c==0 && b>0) ||(c==0 && b==0 && a>=0){
                         let index=index_R(&hamR,&R);
-                        let hop=ham[[index,int_i,int_j]];
-                        ham[[index,int_i,int_j]]=Complex::new(0.0,0.0);
+                        let hop=ham[[index,int_i,int_j]]/(weight as f64);
 
                         for i0 in 0..weight{
                             i+=1;
@@ -2696,20 +2699,21 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                             let c=string.next().unwrap().parse::<isize>().unwrap();
                             let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
                             if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
-                                if find_R(&hamR,&new_R){
-                                    let index0=index_R(&hamR,&new_R);
-                                    ham[[index0,int_i,int_j]]=hop;
+                                if find_R(&new_hamR,&new_R){
+                                    let index0=index_R(&new_hamR,&new_R);
+                                    new_ham[[index0,int_i,int_j]]+=hop;
                                 }else{
-                                    let mut new_ham=Array2::zeros((nsta,nsta));
-                                    new_ham[[int_i,int_j]]=hop;
-                                    hamR.push_row(new_R.view());
-                                    ham.push(Axis(0),new_ham.view());
+                                    let mut use_ham=Array2::zeros((nsta,nsta));
+                                    use_ham[[int_i,int_j]]=hop;
+                                    new_hamR.push_row(new_R.view());
+                                    new_ham.push(Axis(0),use_ham.view());
                                 }
                             }
                         }
                     }else{
                         let index=index_R(&hamR,&R_inv);
-                        let hop=ham[[index,int_i,int_j]].conj();
+                        let hop=ham[[index,int_i,int_j]].conj()/(weight as f64);
+
                         for i0 in 0..weight{
                             i+=1;
                             let line=&reads[i];
@@ -2719,19 +2723,21 @@ pub fn cut_dot(&self,num:usize,shape:usize,dir:Option<Vec<usize>>)->Model{
                             let c=string.next().unwrap().parse::<isize>().unwrap();
                             let new_R=array![R[[0]]+a,R[[1]]+b,R[[2]]+c];
                             if (new_R[[2]]>0) || (new_R[[2]]==0 && new_R[[1]]>0) ||(new_R[[2]]==0 && new_R[[1]]==0 && new_R[[0]]>=0){
-                                if find_R(&hamR,&new_R){
-                                    let index0=index_R(&hamR,&new_R);
-                                    ham[[index0,int_i,int_j]]=hop;
+                                if find_R(&new_hamR,&new_R){
+                                    let index0=index_R(&new_hamR,&new_R);
+                                    new_ham[[index0,int_i,int_j]]+=hop;
                                 }else{
-                                    let mut new_ham=Array2::zeros((nsta,nsta));
-                                    new_ham[[int_i,int_j]]=hop;
-                                    hamR.push_row(new_R.view());
-                                    ham.push(Axis(0),new_ham.view());
+                                    let mut use_ham=Array2::zeros((nsta,nsta));
+                                    use_ham[[int_i,int_j]]=hop;
+                                    new_hamR.push_row(new_R.view());
+                                    new_ham.push(Axis(0),use_ham.view());
                                 }
                             }
                         }
                     }
                 }
+                hamR=new_hamR;
+                ham=new_ham;
             }
         }
 

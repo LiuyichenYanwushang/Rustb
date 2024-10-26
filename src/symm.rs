@@ -2,6 +2,7 @@ use crate::atom_struct::{OrbProj,Atom,AtomType};
 use crate::Model;
 
 
+//这个是重写一部分spglib, 因为C语言的spglib在有些地方会出问题, 这里我写一个没有std依赖的spglib
 impl From<AtomType> for i32 {
     fn from(atom: AtomType) -> Self {
         match atom {
