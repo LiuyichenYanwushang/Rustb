@@ -11,7 +11,7 @@
 //!POSCAR 格式
 use crate::basis::find_R;
 use crate::basis::index_R;
-use crate::{comm, gen_kmesh,Model};
+use crate::{comm, gen_kmesh, Model};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -213,23 +213,44 @@ impl Model {
         name.push_str(".win");
         let mut file = File::create(name).expect("Wrong, can't create seedname.win");
         writeln!(file, "begin atoms_cart");
-        for at in self.atoms.iter(){
-            let atom_position=at.position();
-            match self.dim_r{
-                3=>{
-                    writeln!(file,"{}{:5.6}{:5.6}{:5.6}",at.atom_type(),atom_position[0],atom_position[1],atom_position[1]);
-                },
-                2=>{
-                    writeln!(file,"{}{:5.6}{:5.6}{:5.6}",at.atom_type(),atom_position[0],atom_position[1],0.0);
-                },
-                1=>{
-                    writeln!(file,"{}{:5.6}{:5.6}{:5.6}",at.atom_type(),atom_position[0],0.0,0.0);
-                },
-                _=>panic!("Wrong, your model's dim_r is not 1,2 or 3"),
+        for at in self.atoms.iter() {
+            let atom_position = at.position();
+            match self.dim_r {
+                3 => {
+                    writeln!(
+                        file,
+                        "{}{:5.6}{:5.6}{:5.6}",
+                        at.atom_type(),
+                        atom_position[0],
+                        atom_position[1],
+                        atom_position[1]
+                    );
+                }
+                2 => {
+                    writeln!(
+                        file,
+                        "{}{:5.6}{:5.6}{:5.6}",
+                        at.atom_type(),
+                        atom_position[0],
+                        atom_position[1],
+                        0.0
+                    );
+                }
+                1 => {
+                    writeln!(
+                        file,
+                        "{}{:5.6}{:5.6}{:5.6}",
+                        at.atom_type(),
+                        atom_position[0],
+                        0.0,
+                        0.0
+                    );
+                }
+                _ => panic!("Wrong, your model's dim_r is not 1,2 or 3"),
             }
         }
         writeln!(file, "end atoms_cart");
-        writeln!(file,"\n");
+        writeln!(file, "\n");
         writeln!(file, "begin unit_cell_cart");
         writeln!(file, "end unit_cell_cart");
     }

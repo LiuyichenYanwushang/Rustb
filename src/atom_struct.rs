@@ -1,9 +1,9 @@
-use std::fmt;
 use ndarray::Array1;
 use num_complex::Complex;
+use std::fmt;
 ///This is the orbital projection
-#[derive(Debug,Clone,Copy,PartialEq)]
-pub enum OrbProj{
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OrbProj {
     /// $$\ket{s}=\ket{0,0}$$
     s,
     /// $$\ket{p_x}=\frac{1}{\sqrt{2}}\lt(\ket{1,-1}-\ket{1,1}\rt)$$
@@ -78,9 +78,9 @@ pub enum OrbProj{
     sp3d2_6,
 }
 
-impl OrbProj{
-    pub fn from_str(s:&str)->Self{
-        match s{
+impl OrbProj {
+    pub fn from_str(s: &str) -> Self {
+        match s {
             "s" => OrbProj::s,
             "px" => OrbProj::px,
             "py" => OrbProj::py,
@@ -117,73 +117,100 @@ impl OrbProj{
             "sp3d2-4" => OrbProj::sp3d2_4,
             "sp3d2-5" => OrbProj::sp3d2_5,
             "sp3d2-6" => OrbProj::sp3d2_6,
-            _=>panic!("Wrong, unrecognised projections {}",s),
+            _ => panic!("Wrong, unrecognised projections {}", s),
         }
-
     }
     /// 这个函数是将 \ket{px},\ket{py},\ket{pz} 等原子轨道基转化为以 l,m 为基的函数的.
     /// 它输入一个原子轨道比如 $\ket{px}$, 输出一个 array![Complex<f64>;16], 表示
     /// $$[\ket{0,0},\ket{1,-1},\ket{1,0},\ket{1,1},\ket{2,-2},\cdots,\ket{3,3}]$$
-    pub fn to_quantum_number(&self)->Array1<Complex<f64>>{
-        let s=match self{
-            OrbProj::s=>{[Complex::new(0.0,0.0);16]},
-            OrbProj::px => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[1]=Complex::new(1.0/2_f64.sqrt(),0.0);
-                s[3]=Complex::new(-1.0/2_f64.sqrt(),0.0);
-                s},
-            OrbProj::py => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[1]=Complex::new(0.0,1.0/2_f64.sqrt());
-                s[3]=Complex::new(0.0,1.0/2_f64.sqrt());
-                s},
-            OrbProj::pz => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[2]=Complex::new(1.0,0.0);
-                s},
-            OrbProj::dxy => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[4]=Complex::new(0.0,1.0/2_f64.sqrt());
-                s[8]=Complex::new(0.0,-1.0/2_f64.sqrt());
-                s},
-            OrbProj::dyz => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[5]=Complex::new(0.0,-1.0/2_f64.sqrt());
-                s[7]=Complex::new(0.0,-1.0/2_f64.sqrt());
-                s},
-            OrbProj::dxz => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[5]=Complex::new(1.0/2_f64.sqrt(),0.0);
-                s[7]=Complex::new(-1.0/2_f64.sqrt(),0.0);
-                s},
-            OrbProj::dz2 => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[6]=Complex::new(1.0,0.0);
-                s},
-            OrbProj::dx2y2 =>{let mut s=[Complex::new(0.0,0.0);16]; 
-                s[4]=Complex::new(1.0/2_f64.sqrt(),0.0);
-                s[8]=Complex::new(1.0/2_f64.sqrt(),0.0);
-                s},
-            OrbProj::fz3 => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[12]=Complex::new(1.0,0.0);
-                s},
-            OrbProj::fxz2 => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[11]=Complex::new(-1.0/2_f64.sqrt(),0.0);
-                s[13]=Complex::new(1.0/2_f64.sqrt(),0.0);
-                s},
-            OrbProj::fyz2 => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[11]=Complex::new(0.0,-1.0/2_f64.sqrt());
-                s[13]=Complex::new(0.0,-1.0/2_f64.sqrt());
-                s},
-            OrbProj::fzx2y2 => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[10]=Complex::new(1.0/2_f64.sqrt(),0.0);
-                s[14]=Complex::new(1.0/2_f64.sqrt(),0.0);
-                s},
-            OrbProj::fxyz => {let mut s=[Complex::new(0.0,0.0);16]; 
-                s[10]=Complex::new(0.0,1.0/2_f64.sqrt());
-                s[14]=Complex::new(0.0,-1.0/2_f64.sqrt());
-                s},
-            OrbProj::fxx23y2 => {let mut s=[Complex::new(0.0,0.0);16];
-                s[9]=Complex::new(-1.0/2_f64.sqrt(),0.0);
-                s[15]=Complex::new(1.0/2_f64.sqrt(),0.0);
+    pub fn to_quantum_number(&self) -> Array1<Complex<f64>> {
+        let s = match self {
+            OrbProj::s => [Complex::new(0.0, 0.0); 16],
+            OrbProj::px => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[1] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+                s[3] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
                 s
             }
-            OrbProj::fy3x2y2 => {let mut s=[Complex::new(0.0,0.0);16];
-                s[9]=Complex::new( 0.0,-1.0/2_f64.sqrt());
-                s[15]=Complex::new(0.0,-1.0/2_f64.sqrt());
+            OrbProj::py => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[1] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+                s[3] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+                s
+            }
+            OrbProj::pz => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[2] = Complex::new(1.0, 0.0);
+                s
+            }
+            OrbProj::dxy => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[4] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+                s[8] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+                s
+            }
+            OrbProj::dyz => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[5] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+                s[7] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+                s
+            }
+            OrbProj::dxz => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[5] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+                s[7] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
+                s
+            }
+            OrbProj::dz2 => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[6] = Complex::new(1.0, 0.0);
+                s
+            }
+            OrbProj::dx2y2 => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[4] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+                s[8] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+                s
+            }
+            OrbProj::fz3 => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[12] = Complex::new(1.0, 0.0);
+                s
+            }
+            OrbProj::fxz2 => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[11] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
+                s[13] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+                s
+            }
+            OrbProj::fyz2 => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[11] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+                s[13] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+                s
+            }
+            OrbProj::fzx2y2 => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[10] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+                s[14] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+                s
+            }
+            OrbProj::fxyz => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[10] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+                s[14] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+                s
+            }
+            OrbProj::fxx23y2 => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[9] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
+                s[15] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+                s
+            }
+            OrbProj::fy3x2y2 => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[9] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+                s[15] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
                 s
             }
             _ => panic!("for sp,sp2,sp3 et.al is now not consideredZ"),
@@ -236,8 +263,8 @@ impl fmt::Display for OrbProj {
     }
 }
 
-#[derive(Debug,Clone,Copy,PartialEq)]
-pub enum AtomType{
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AtomType {
     /// This is the type of the Atom
     H,
     He,
@@ -328,8 +355,8 @@ pub enum AtomType{
     Fr,
     Ra,
 }
-impl AtomType{
-      pub fn from_str(s: &str) -> Self {
+impl AtomType {
+    pub fn from_str(s: &str) -> Self {
         match s {
             "H" => AtomType::H,
             "He" => AtomType::He,
@@ -419,10 +446,10 @@ impl AtomType{
             "Rn" => AtomType::Rn,
             "Fr" => AtomType::Fr,
             "Ra" => AtomType::Ra,
-            _ => panic!("unrecognized atom {}",s),
+            _ => panic!("unrecognized atom {}", s),
         }
     }
-    pub fn to_str(&self)->&str{
+    pub fn to_str(&self) -> &str {
         let symbol = match self {
             AtomType::H => "H",
             AtomType::He => "He",
@@ -613,35 +640,38 @@ impl fmt::Display for AtomType {
     }
 }
 
-
-#[derive(Debug,Clone)]
-pub struct Atom{
-    position:Array1<f64>,
-    name:AtomType,
-    atom_list:usize
+#[derive(Debug, Clone)]
+pub struct Atom {
+    position: Array1<f64>,
+    name: AtomType,
+    atom_list: usize,
 }
 
-impl Atom{
-    pub fn position(&self)->Array1<f64>{
+impl Atom {
+    pub fn position(&self) -> Array1<f64> {
         self.position.clone()
     }
-    pub fn norb(&self)->usize{
+    pub fn norb(&self) -> usize {
         self.atom_list
     }
-    pub fn atom_type(&self)->AtomType{
+    pub fn atom_type(&self) -> AtomType {
         self.name
     }
-    pub fn push_orb(&mut self){
-        self.atom_list+=1;
+    pub fn push_orb(&mut self) {
+        self.atom_list += 1;
     }
-    pub fn remove_orb(&mut self){
-        self.atom_list-=1;
+    pub fn remove_orb(&mut self) {
+        self.atom_list -= 1;
     }
-    pub fn change_type(&mut self,new_type:AtomType){
-        self.name=new_type;
+    pub fn change_type(&mut self, new_type: AtomType) {
+        self.name = new_type;
     }
-    pub fn new(position:Array1<f64>,atom_list:usize,name:AtomType)->Atom{
-        Atom{position,atom_list,name}
+    pub fn new(position: Array1<f64>, atom_list: usize, name: AtomType) -> Atom {
+        Atom {
+            position,
+            atom_list,
+            name,
+        }
     }
 }
 
