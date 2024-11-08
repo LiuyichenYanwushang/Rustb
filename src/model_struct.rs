@@ -58,9 +58,13 @@ impl Model {
     }
     #[inline(always)]
     pub fn orb_angular(&self) -> Array3<Complex<f64>> {
-        ///这个函数输出 $\bra{m,\bm k}L\ket{n,\bm k}$ 矩阵, 这里 $\ket{n,\bm k}$
-        ///是根据轨道的projection 得到这个基函下的表示
-        ///这个表示是依据每个原子来构造的, 所以是一个块对角的矩阵
+        //!这个函数输出 $\bra{m,\bm k}L\ket{n,\bm k}$ 矩阵, 这里 $\ket{n,\bm k}$
+        //!是根据轨道的projection 得到这个基函下的表示
+        //!这个表示是依据每个原子来构造的, 所以是一个块对角的矩阵
+        //!
+        //!目前根据最新的轨道流公式, 这个已经废弃不使用了, 求轨道角动量见
+        //!
+        //!orbital_angular_momentom 函数
         let li = Complex::i() * 1.0;
         let mut i = 0;
         let mut L = Array3::<Complex<f64>>::zeros((self.dim_r(), self.norb(), self.norb()));

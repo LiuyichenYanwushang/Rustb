@@ -355,6 +355,7 @@ pub enum AtomType {
     Fr,
     Ra,
 }
+
 impl AtomType {
     pub fn from_str(s: &str) -> Self {
         match s {
