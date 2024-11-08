@@ -103,6 +103,7 @@
 //!也就是说, 我们能够最终得到 $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 
 use crate::{anti_comm, comm, gen_kmesh, gen_krange, Model};
+use crate::phy_const::{mu_B};
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
 use ndarray::*;
@@ -1243,8 +1244,37 @@ impl Model{
     //! This module calculates the orbital Hall conductivity
     //!
     //! The calculation using the orbial magnetism , refer to PHYSICAL REVIEW B 106, 104414 (2022).
-    pub fn orbital_magnetization_onek(&self,kvec:&Array1<f64>)->Array2<Complex<f64>>{
-        Array2::zeros((self.nsta(),self.nsta()))
+    //!
+    pub fn orbital_angular_momentum_onek(&self,kvec:&Array1<f64>)->Array3<Complex<f64>>{
+        //! 这个函数是用来计算单个 k 点的轨道角动量的
+        //! 轨道角动量的定义为 $$\bra{u_{m\bm k}}\bm L\ket{u_{n\bm k}}=\frac{1}{4i
+        //! g_L\mu_B}\sum_{\ell=\not m,n}\f{2\ve_{\ell\bm k}-\ve_{m\bm k}-\ve_{n\bm k}}{(\ve_{m\bm
+        //! k}-\ve_{\ell\bm k})(\ve_{n\bm k}-\ve_{\ell\bm k})}\bra{u_{m\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{\ell\bm k}}\times\bra{u_{\ell\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{n\bm k}}$$
+
+        let li = Complex::<f64>::new(0.0, 1.0);
+        let v=self.gen_v(kvec);
+        let evec=self.solve_band_onek(kvec);
+        let mut L=Array3::zeros((self.dim_r(),self.nsta(),self.nsta()));
+        // m,n,l
+        let mut U=Array3::zeros((self.nsta(),self.nsta(),self.nsta()));
+        for (i,e1) in evec.iter().enumerate(){
+            for (j,e2) in evec.iter().enumerate(){
+                for (k,e3) in evec.iter().enumerate(){
+                    U[[i,j,k]]=(2.0*e3-e1-e2)/(e1-e3)/(e2-e3);
+                }
+            }
+        }
+        //g_L 是朗德g因子, 这个朗德g因子也是随着轨道而变化的
+        let g_L=1.0;
+        for r in 0..self.dim_r(){
+            for i in 0..self.nsta(){
+                for j in 0..self.nsta(){
+                    L[[r,i,j]]=-li/4.0/g_L/mu_B;
+                }
+            }
+        }
+        L
+
     }
 }
 
@@ -1451,7 +1481,7 @@ impl Model {
         (matric_sum, omega_sum)
     }
 
-    ///直接计算 xx, yy, zz, xy, xz, yz 这六个量的光电导, 分为对称和反对称部分.
+    ///直接计算 xx, yy, zz, xy, yz, xz 这六个量的光电导, 分为对称和反对称部分.
     ///输出格式为 ($\sigma_{ab}^S$, $\sigma_{ab}^A), 这里 S 和 A 表示 symmetry and antisymmetry.
     ///$sigma_{ab}^S$ 是 $6\times n_\omega$
     ///如果是二维系统, 那么输出 xx yy xy 这三个分量
@@ -1471,13 +1501,12 @@ impl Model {
             .map(|k| {
                 let (band, evec) = self.solve_onek(&k);
                 let mut v:Array3::<Complex<f64>> = self.gen_v(&k);
-                let mut J = v.view();
                 let evec_conj: Array2::<Complex<f64>> = evec.mapv(|x| x.conj());
                 let evec = evec.t();
 
                 let mut A = Array3::zeros((self.dim_r(),self.nsta(),self.nsta()));
                 //transfrom the basis into bolch state
-                Zip::from(A.outer_iter_mut()).and(J.outer_iter()).apply(|mut a,v| a.assign(&evec_conj.dot(&v.dot(&evec))));
+                Zip::from(A.outer_iter_mut()).and(v.outer_iter()).apply(|mut a,v| a.assign(&evec_conj.dot(&v.dot(&evec))));
 
                 // Calculate the energy differences and their inverses
                 let mut U0=Array2::zeros((self.nsta(),self.nsta()));
@@ -1509,12 +1538,12 @@ impl Model {
                     3=>{
                         let mut matric_n=Array2::zeros((6,n_og));
                         let mut omega_n=Array2::zeros((3,n_og));
-                        let A_xx=&A.slice(s![0,..,..])*&A.slice(s![0,..,..]).reversed_axes();
-                        let A_yy=&A.slice(s![1,..,..])*&A.slice(s![1,..,..]).reversed_axes();
-                        let A_zz=&A.slice(s![2,..,..])*&A.slice(s![2,..,..]).reversed_axes();
-                        let A_xy=&A.slice(s![0,..,..])*&A.slice(s![1,..,..]).reversed_axes();
-                        let A_yz=&A.slice(s![1,..,..])*&A.slice(s![2,..,..]).reversed_axes();
-                        let A_xz=&A.slice(s![0,..,..])*&A.slice(s![2,..,..]).reversed_axes();
+                        let A_xx=&A.slice(s![0,..,..])*&A.slice(s![0,..,..]).t();
+                        let A_yy=&A.slice(s![1,..,..])*&A.slice(s![1,..,..]).t();
+                        let A_zz=&A.slice(s![2,..,..])*&A.slice(s![2,..,..]).t();
+                        let A_xy=&A.slice(s![0,..,..])*&A.slice(s![1,..,..]).t();
+                        let A_yz=&A.slice(s![1,..,..])*&A.slice(s![2,..,..]).t();
+                        let A_xz=&A.slice(s![0,..,..])*&A.slice(s![2,..,..]).t();
                         let re_xx:Array2<Complex<f64>> = Complex::new(2.0,0.0)*A_xx;
                         let re_yy:Array2<Complex<f64>> = Complex::new(2.0,0.0)*A_yy;
                         let re_zz:Array2<Complex<f64>> = Complex::new(2.0,0.0)*A_zz;
@@ -1611,7 +1640,20 @@ impl Model {
             3 => {
                 let omega = omega
                     .into_iter()
-                    .fold(Array2::zeros((6, n_og)), |omega_acc, omega| {
+                    .fold(Array2::zeros((3, n_og)), |omega_acc, omega| {
+                        omega_acc + omega
+                    });
+                let matric = matric
+                    .into_iter()
+                    .fold(Array2::zeros((6, n_og)), |matric_acc, matric| {
+                        matric_acc + matric
+                    });
+                ( matric, omega)
+            }
+            2 => {
+                let omega = omega
+                    .into_iter()
+                    .fold(Array2::zeros((1, n_og)), |omega_acc, omega| {
                         omega_acc + omega
                     });
                 let matric = matric
@@ -1619,20 +1661,7 @@ impl Model {
                     .fold(Array2::zeros((3, n_og)), |matric_acc, matric| {
                         matric_acc + matric
                     });
-                (omega, matric)
-            }
-            2 => {
-                let omega = omega
-                    .into_iter()
-                    .fold(Array2::zeros((3, n_og)), |omega_acc, omega| {
-                        omega_acc + omega
-                    });
-                let matric = matric
-                    .into_iter()
-                    .fold(Array2::zeros((1, n_og)), |matric_acc, matric| {
-                        matric_acc + matric
-                    });
-                (omega, matric)
+                (matric, omega)
             }
             _ => panic!(
                 "Wrong, self.dim_r must be 2 or 3 for using optical_conductivity_all_direction"
