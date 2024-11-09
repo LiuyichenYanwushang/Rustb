@@ -1560,7 +1560,7 @@ impl Model {
                         Zip::from(omega_n.axis_iter_mut(Axis(1)))
                             .and(matric_n.axis_iter_mut(Axis(1)))
                             .and(og.view())
-                            .apply(|mut omega, mut matric, a0| {
+                            .par_apply(|mut omega, mut matric, a0| {
                                 let li_eta = a0 + li * eta;
                                 let UU = U0.mapv(|x| (x*x - li_eta*li_eta).finv());
                                 let U1:Array2<Complex<f64>> = &UU * &Us * li_eta;
@@ -1611,7 +1611,7 @@ impl Model {
                         Zip::from(omega_n.axis_iter_mut(Axis(1)))
                             .and(matric_n.axis_iter_mut(Axis(1)))
                             .and(og.view())
-                            .apply(|mut omega, mut matric, a0| {
+                            .par_apply(|mut omega, mut matric, a0| {
                                 let li_eta = a0 + li * eta;
                                 let UU = U0.mapv(|x| (x*x - li_eta*li_eta).finv());
                                 let U1:Array2<Complex<f64>> = &UU * &Us * li_eta;
