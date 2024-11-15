@@ -440,7 +440,7 @@ mod tests {
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.add_hop(t, 0, 1, &R, 0);
+            model.set_hop(t, 0, 1, &R, 0);
         }
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -467,6 +467,7 @@ mod tests {
             [0.0 * li, -0.8137976813493737 - 0.2961981327260237 * li],
             [-0.8137976813493737 + 0.2961981327260237 * li, 0.0 * li]
         ];
+        println!("result={}",result);
         assert!(
             are_complex_arrays_close(&result.slice(s![0, .., ..]).to_owned(), &resultx, 1e-8),
             "Wrong! the gen_v is get wrong results! please check it!"
@@ -479,8 +480,6 @@ mod tests {
         let kvec = array![1.0 / 3.0, 1.0 / 3.0];
         let (band, evec) = model.solve_onek(&kvec);
         let ham = model.gen_ham(&kvec);
-        //let evec=evec.reversed_axes();
-        //let evec_conj=conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>,OwnedRepr<Complex<f64>>>(&evec);
         let evec_conj = evec.map(|x| x.conj());
         let evec = evec.t();
         let ham = ham.dot(&evec);
@@ -1218,7 +1217,7 @@ mod tests {
 
         //开始计算角态
         let model = model.make_supercell(&array![[0.0, -1.0], [1.0, 0.0]]);
-        let num = 19;
+        let num = 41;
         /*
         let model_1=model.cut_piece(num,0);
         let new_model=model_1.cut_piece(num,1);
@@ -1491,7 +1490,7 @@ mod tests {
         let path = array![[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.], [0.0, 0.0]];
         let label = vec!["G", "K", "M", "G"];
         let (kvec, kdist, knode) = model.k_path(&path, nk);
-        let U = array![[1.0, 1.0], [-5.0, 4.0]];
+        let U = array![[2.0, 0.0], [0.0, 2.0]];
 
         let start = Instant::now(); // 开始计时
         let super_model = model.make_supercell(&U);

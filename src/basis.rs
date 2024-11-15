@@ -318,10 +318,10 @@ impl Model {
 
         let R_exist = find_R(&self.hamR, &R);
         let negative_R = &(-R);
-        let negative_R_exist = find_R(&self.hamR, negative_R);
         let norb = self.norb();
         if R_exist {
             let index = index_R(&self.hamR, &R);
+            let index_inv = index_R(&self.hamR, &negative_R);
             if self.ham[[index, ind_i, ind_j]] != Complex::new(0.0, 0.0) {
                 eprintln!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_i,ind_j]])
             }
@@ -334,12 +334,12 @@ impl Model {
                 ind_j,
                 norb
             );
-            if negative_R_exist && ind_i != ind_j {
+            if index !=0 || ind_i != ind_j {
                 update_hamiltonian!(
                     self.spin,
                     pauli,
                     tmp.conj(),
-                    self.ham.slice_mut(s![0, .., ..]),
+                    self.ham.slice_mut(s![index_inv, .., ..]),
                     ind_j,
                     ind_i,
                     norb
@@ -350,26 +350,17 @@ impl Model {
                 "Wrong, the onsite hopping must be real, but here is {}",
                 tmp
             );
-        } else if negative_R_exist {
-            let index = index_R(&self.hamR, &negative_R);
-            if self.ham[[index, ind_j, ind_i]] != Complex::new(0.0, 0.0) {
-                eprintln!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_j,ind_i]])
-            }
-            update_hamiltonian!(
-                self.spin,
-                pauli,
-                tmp.conj(),
-                self.ham.slice_mut(s![index, .., ..]),
-                ind_j,
-                ind_i,
-                norb
-            );
         } else {
             let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
             let new_ham = update_hamiltonian!(self.spin, pauli, tmp, new_ham, ind_i, ind_j, norb);
             self.ham.push(Axis(0), new_ham.view()).unwrap();
             self.hamR.push(Axis(0), R.view()).unwrap();
+            let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+
+            let new_ham = update_hamiltonian!(self.spin, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
+            self.ham.push(Axis(0), new_ham.view()).unwrap();
+            self.hamR.push(Axis(0), negative_R.view()).unwrap();
         }
     }
 
@@ -394,10 +385,10 @@ impl Model {
         assert!(ind_i < self.norb() && ind_j < self.norb(), "Wrong, ind_i and ind_j must be less than norb, here norb is {}, but ind_i={} and ind_j={}", self.norb(), ind_i, ind_j);
         let R_exist = find_R(&self.hamR, &R);
         let negative_R = &(-R);
-        let negative_R_exist = find_R(&self.hamR, &negative_R);
         let norb = self.norb();
         if R_exist {
             let index = index_R(&self.hamR, &R);
+            let index_inv = index_R(&self.hamR, &negative_R);
             add_hamiltonian!(
                 self.spin,
                 pauli,
@@ -407,12 +398,12 @@ impl Model {
                 ind_j,
                 norb
             );
-            if negative_R_exist && ind_i != ind_j {
+            if index != 0 || ind_i != ind_j {
                 add_hamiltonian!(
                     self.spin,
                     pauli,
                     tmp.conj(),
-                    self.ham.slice_mut(s![0, .., ..]),
+                    self.ham.slice_mut(s![index_inv, .., ..]),
                     ind_j,
                     ind_i,
                     norb
@@ -423,22 +414,16 @@ impl Model {
                 "Wrong, the onsite hopping must be real, but here is {}",
                 tmp
             );
-        } else if negative_R_exist {
-            let index = index_R(&self.hamR, &negative_R);
-            add_hamiltonian!(
-                self.spin,
-                pauli,
-                tmp.conj(),
-                self.ham.slice_mut(s![index, .., ..]),
-                ind_j,
-                ind_i,
-                norb
-            );
         } else {
             let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
             let new_ham = add_hamiltonian!(self.spin, pauli, tmp, new_ham, ind_i, ind_j, norb);
             self.ham.push(Axis(0), new_ham.view()).unwrap();
             self.hamR.push(Axis(0), R.view()).unwrap();
+            let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+
+            let new_ham = add_hamiltonian!(self.spin, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
+            self.ham.push(Axis(0), new_ham.view()).unwrap();
+            self.hamR.push(Axis(0), negative_R.view()).unwrap();
         }
     }
 
@@ -459,12 +444,12 @@ impl Model {
         }
         let R_exist = find_R(&self.hamR, &R);
         let negative_R = (-R);
-        let negative_R_exist = find_R(&self.hamR, &negative_R);
         if R_exist {
             let index = index_R(&self.hamR, &R);
+            let index_inv = index_R(&self.hamR, &negative_R);
             self.ham[[index, ind_i, ind_j]] = tmp;
-            if negative_R_exist && ind_i != ind_j {
-                self.ham[[index, ind_j, ind_i]] = tmp.conj();
+            if index!=0 && ind_i != ind_j {
+                self.ham[[index_inv, ind_j, ind_i]] = tmp.conj();
             }
             if ind_i == ind_j && tmp.im != 0.0 && index == 0 {
                 panic!(
@@ -472,14 +457,16 @@ impl Model {
                     tmp
                 )
             }
-        } else if negative_R_exist {
-            let index = index_R(&self.hamR, &negative_R);
-            self.ham[[index, ind_j, ind_i]] = tmp.conj();
         } else {
             let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
             new_ham[[ind_i, ind_j]] = tmp;
             self.ham.push(Axis(0), new_ham.view()).unwrap();
             self.hamR.push(Axis(0), R.view()).unwrap();
+
+            let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+            new_ham[[ind_j, ind_i]] = tmp.conj();
+            self.ham.push(Axis(0), new_ham.view()).unwrap();
+            self.hamR.push(Axis(0), negative_R.view()).unwrap();
         }
     }
 
@@ -612,18 +599,7 @@ impl Model {
             .mapv(|x| Complex::<f64>::new(x, 0.0));
         let Us = Us * Complex::new(0.0, 2.0 * PI);
         let Us = Us.mapv(Complex::exp);
-        let n_R = Us.len();
-        let ham0 = self.ham.slice(s![0, .., ..]);
-        let ham1 = self.ham.slice(s![1..n_R, .., ..]);
-        let Us1 = Us
-            .slice(s![1..n_R])
-            .insert_axis(Axis(1))
-            .insert_axis(Axis(2));
-        let Us1 = Us1.broadcast((n_R - 1, self.nsta(), self.nsta())).unwrap();
-        let hamk: Array2<Complex<f64>> = (&ham1 * &Us1).sum_axis(Axis(0));
-        let hamk = &ham0
-            + &conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>, OwnedRepr<Complex<f64>>>(&hamk)
-            + &hamk;
+        let hamk: Array2<Complex<f64>> = self.ham.outer_iter().zip( Us.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(hm,u)| {acc+&hm**u});
         let hamk: Array2<Complex<f64>> = U_dag.dot(&hamk);
         let re_ham = hamk.dot(&U); //接下来两步填上轨道坐标导致的相位
         return re_ham;
@@ -644,7 +620,9 @@ impl Model {
         assert_eq!(
             kvec.len(),
             self.dim_r(),
-            "Wrong, the k-vector's length must equal to the dimension of model."
+            "Wrong, the k-vector's length {} must equal to the dimension of model {}.",
+            kvec.len(),
+            self.dim_r(),
         );
         let U0 = self.orb.dot(kvec); // get the r*k
         let U0 = U0.mapv(|x| Complex::<f64>::new(0.0, 2.0 * PI * x)); //take it in
@@ -662,18 +640,13 @@ impl Model {
             .mapv(|x| Complex::<f64>::new(x, 0.0));
         let Us = Us * Complex::new(0.0, 2.0 * PI);
         let Us = Us.mapv(Complex::exp); //Exp(2 pi K*R)
-                                        //现在我们存下来的是所有的rmatrix, 而不是只存下来一半, 所以这里要将 Us 翻一倍
+        //现在我们存下来的是所有的rmatrix, 而不是只存下来一半, 所以这里要将 Us 翻一倍
         let mut rk = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
-        let r0 = self.rmatrix.slice(s![0, .., .., ..]);
         let mut rk = self
             .rmatrix
             .axis_iter(Axis(0))
-            .skip(1)
-            .zip(Us.iter().skip(1))
+            .zip(Us.iter())
             .fold(rk, |acc, (ham, us)| acc + &ham * *us);
-        let mut rk0 = rk.map(|x| x.conj());
-        rk0.swap_axes(1, 2);
-        let mut rk = rk + r0 + rk0;
         for i in 0..3 {
             let mut r0: ArrayViewMut2<Complex<f64>> = rk.slice_mut(s![i, .., ..]);
             let r_new = r0.dot(&U);
@@ -728,7 +701,7 @@ impl Model {
             .mapv(|x| Complex::<f64>::new(x, 0.0));
         let Us = Us * Complex::new(0.0, 2.0 * PI);
         let Us = Us.mapv(Complex::exp); //Us 就是 exp(i k R)
-                                        //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
+        //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
         let mut UU = Array3::<f64>::zeros((self.dim_r(), self.nsta(), self.nsta()));
         let A = orb_real.view().insert_axis(Axis(2));
         let A = A
@@ -743,17 +716,7 @@ impl Model {
         let R0 = &self.hamR.mapv(|x| Complex::<f64>::new(x as f64, 0.0));
         let R0 = R0.dot(&self.lat.mapv(|x| Complex::new(x, 0.0)));
 
-        let hamk = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-        let hamk: Array2<Complex<f64>> = self
-            .ham
-            .outer_iter()
-            .skip(1)
-            .zip(Us.iter().skip(1))
-            .fold(hamk, |acc, (ham, us)| acc + &ham * *us); //这个是原胞间hopping得到的hamk
-        let ham0 = self.ham.slice(s![0, .., ..]);
-        let hamk: Array2<Complex<f64>> = &hamk
-            + &ham0
-            + &conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>, OwnedRepr<Complex<f64>>>(&hamk);
+        let hamk: Array2<Complex<f64>> = self.ham.outer_iter().zip( Us.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(hm,u)| {acc+&hm**u});
         Zip::from(v.outer_iter_mut())
             .and(R0.axis_iter(Axis(1)))
             .and(UU.outer_iter())
@@ -761,17 +724,12 @@ impl Model {
                 let vv: Array2<Complex<f64>> = self
                     .ham
                     .outer_iter()
-                    .skip(1)
-                    .zip(Us.iter().skip(1).zip(r.iter().skip(1)))
+                    .zip(Us.iter().zip(r.iter()))
                     .fold(
                         Array2::zeros((self.nsta(), self.nsta())),
                         |acc, (ham, (us, r0))| acc + &ham * *us * *r0 * Complex::i(),
                     );
-                let vv: Array2<Complex<f64>> = &vv
-                    + &conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>, OwnedRepr<Complex<f64>>>(
-                        &vv,
-                    )
-                    + &hamk * &det_tau;
+                let vv: Array2<Complex<f64>> = &vv + &hamk * &det_tau;
                 let vv = &U_conj.dot(&vv);
                 let vv = vv.dot(&U); //接下来两步填上轨道坐标导致的相位
                 v0.assign(&vv);
@@ -779,20 +737,14 @@ impl Model {
         //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
         //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
         if self.rmatrix.len_of(Axis(0)) != 1 {
-            let n_R = self.hamR.nrows();
-            let hamk = U_conj.dot(&hamk.dot(&U)); //这一步别忘了把hamk 的相位加上
 
+            let hamk = U_conj.dot(&hamk.dot(&U)); //这一步别忘了把hamk 的相位加上
             let mut rk = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
-            let r0 = self.rmatrix.slice(s![0, .., .., ..]);
             let mut rk = self
                 .rmatrix
                 .axis_iter(Axis(0))
-                .skip(1)
-                .zip(Us.iter().skip(1))
+                .zip(Us.iter())
                 .fold(rk, |acc, (ham, us)| acc + &ham * *us);
-            let mut rk0 = rk.map(|x| x.conj());
-            rk0.swap_axes(1, 2);
-            let mut rk = rk + r0 + rk0;
             for i in 0..3 {
                 let mut r0: ArrayViewMut2<Complex<f64>> = rk.slice_mut(s![i, .., ..]);
                 let r_new = r0.dot(&U);
@@ -1026,6 +978,7 @@ impl Model {
             let n_R = self.hamR.len_of(Axis(0));
             let mut using_ham = self.ham.clone();
             let mut using_hamR = self.hamR.clone();
+            /*
             Zip::from(using_ham.outer_iter_mut())
                 .and(using_hamR.outer_iter_mut())
                 .par_apply(|mut ham, mut R| {
@@ -1039,6 +992,7 @@ impl Model {
                         R.assign(&(-&R));
                     }
                 });
+            */
             for n in 0..num {
                 for (i0, (ind_R, ham)) in using_hamR
                     .outer_iter()
@@ -1052,8 +1006,6 @@ impl Model {
                     if ind < num {
                         //开始构建哈密顿量
                         let R_exist = find_R(&new_hamR, &ind_R);
-                        let negative_R = -ind_R.clone();
-                        let negative_R_exist = find_R(&new_hamR, &negative_R);
                         let mut use_ham = Array2::<Complex<f64>>::zeros((new_nsta, new_nsta));
                         if self.spin {
                             //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
@@ -1083,6 +1035,7 @@ impl Model {
                             let ham0 =
                                 ham.slice(s![self.norb()..self.nsta(), self.norb()..self.nsta()]);
                             s.assign(&ham0);
+                            /*
                             if R_exist {
                                 let index = index_R(&new_hamR, &ind_R);
                                 if index == 0 && ind != 0 {
@@ -1127,6 +1080,7 @@ impl Model {
                                     s.assign(&ham0);
                                 }
                             }
+                            */
                         } else {
                             let mut s = use_ham.slice_mut(s![
                                 n * self.norb()..(n + 1) * self.norb(),
@@ -1134,6 +1088,7 @@ impl Model {
                             ]);
                             let ham0 = ham.slice(s![0..self.norb(), 0..self.norb()]);
                             s.assign(&ham0);
+                            /*
                             if R_exist {
                                 let index = index_R(&new_hamR, &ind_R);
                                 if index == 0 && ind != 0 {
@@ -1150,15 +1105,18 @@ impl Model {
                                     s.assign(&ham0);
                                 }
                             }
+                            */
                         }
                         if R_exist {
                             let index = index_R(&new_hamR, &ind_R);
                             new_ham.slice_mut(s![index, .., ..]).add_assign(&use_ham);
+                            /*
                         } else if negative_R_exist {
                             let index = index_R(&new_hamR, &negative_R);
                             new_ham
                                 .slice_mut(s![index, .., ..])
                                 .add_assign(&use_ham.t().map(|x| x.conj()));
+                            */
                         } else {
                             new_ham.push(Axis(0), use_ham.view());
                             new_hamR.push(Axis(0), ind_R.view());
@@ -1198,22 +1156,6 @@ impl Model {
                     .zip(using_ham.outer_iter().zip(using_rmatrix.outer_iter()))
                     .enumerate()
                 {
-                    /*
-                    let mut ind_R:Array1::<isize>=self.hamR.row(i0).to_owned();
-                    let mut rmatrix=Array3::<Complex<f64>>::zeros((self.dim_r(),new_nsta,new_nsta));
-                    let ham=if ind_R[[dir]]<0{//如果这个方向的ind_R 小于0, 将其变成大于0
-                        ind_R*=-1;
-                        let h0=self.ham.slice(s![i0,..,..]).map(|x| x.conj()).t().to_owned();
-                        rmatrix=self.rmatrix.slice(s![i0,..,..,..]).map(|x| x.conj());
-                        rmatrix.swap_axes(1,2);
-                        h0
-                    }else{
-                        if exist_r{
-                            rmatrix=self.rmatrix.slice(s![i0,..,..,..]).to_owned();
-                        }
-                        self.ham.slice(s![i0,..,..]).to_owned()
-                    };
-                    */
                     let ind: usize = (ind_R[[dir]] + (n as isize)) as usize;
                     let mut ind_R = ind_R.to_owned();
                     let ham = ham.to_owned();
@@ -1253,6 +1195,7 @@ impl Model {
                             let ham0 =
                                 ham.slice(s![self.norb()..self.nsta(), self.norb()..self.nsta()]);
                             s.assign(&ham0);
+                            /*
                             if R_exist {
                                 let index = index_R(&new_hamR, &ind_R);
                                 if index == 0 && ind != 0 {
@@ -1297,6 +1240,7 @@ impl Model {
                                     s.assign(&ham0);
                                 }
                             }
+                            */
                         } else {
                             let mut s = use_ham.slice_mut(s![
                                 n * self.norb()..(n + 1) * self.norb(),
@@ -1304,6 +1248,7 @@ impl Model {
                             ]);
                             let ham0 = ham.slice(s![0..self.norb(), 0..self.norb()]);
                             s.assign(&ham0);
+                            /*
                             if R_exist {
                                 let index = index_R(&new_hamR, &ind_R);
                                 if index == 0 && ind != 0 {
@@ -1320,6 +1265,7 @@ impl Model {
                                     s.assign(&ham0);
                                 }
                             }
+                            */
                         }
                         //开始对 r_matrix 进行操作
                         let mut use_rmatrix =
@@ -1365,6 +1311,7 @@ impl Model {
                                     self.norb()..self.nsta()
                                 ]);
                                 s.assign(&rmatrix0);
+                                /*
                                 if R_exist {
                                     let index = index_R(&new_hamR, &ind_R);
                                     if index == 0 && ind != 0 {
@@ -1418,6 +1365,7 @@ impl Model {
                                         s.assign(&rmatrix0);
                                     }
                                 }
+                                */
                             } else {
                                 for i in 0..self.norb() {
                                     for j in 0..self.norb() {
@@ -1428,6 +1376,7 @@ impl Model {
                                         }
                                     }
                                 }
+                                /*
                                 if R_exist {
                                     let index = index_R(&new_hamR, &ind_R);
                                     if index == 0 && ind != 0 {
@@ -1444,6 +1393,7 @@ impl Model {
                                         }
                                     }
                                 }
+                                */
                             }
                         }
                         if R_exist {
@@ -1454,6 +1404,7 @@ impl Model {
                             new_rmatrix
                                 .slice_mut(s![index, .., .., ..])
                                 .add_assign(&use_rmatrix);
+                            /*
                         } else if negative_R_exist {
                             let index = index_R(&new_hamR, &negative_R);
                             //let addham=new_ham.slice(s![index,..,..]).to_owned();
@@ -1465,6 +1416,7 @@ impl Model {
                             new_rmatrix
                                 .slice_mut(s![index, .., .., ..])
                                 .add_assign(&use_rmatrix.map(|x| x.conj()));
+                            */
                         } else {
                             new_ham.push(Axis(0), use_ham.view());
                             new_hamR.push(Axis(0), ind_R.view());
@@ -2262,7 +2214,9 @@ impl Model {
         if self.dim_r() != U.len_of(Axis(0)) {
             panic!("Wrong, the imput U's dimension must equal to self.dim_r()")
         }
+        //新的lattice
         let new_lat = U.dot(&self.lat);
+        //体积的扩大倍数
         let U_det = U.det().unwrap() as isize;
         if U_det < 0 {
             panic!(
@@ -2288,8 +2242,11 @@ impl Model {
         }
 
         //开始构建新的轨道位置和原子位置
+        //新的轨道
         let mut use_orb = self.orb.dot(&U_inv);
+        //新的原子位置
         let use_atom_position = self.atom_position().dot(&U_inv);
+        //新的atom_list
         let mut use_atom_list: Vec<usize> = Vec::new();
         let mut orb_list: Vec<usize> = Vec::new();
         let mut new_orb = Array2::<f64>::zeros((0, self.dim_r()));
@@ -2443,8 +2400,9 @@ impl Model {
         let n_R = self.hamR.len_of(Axis(0));
         let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r())); //超胞准备用的hamR
         let mut use_hamR = Array2::<isize>::zeros((1, self.dim_r())); //超胞的hamR的可能, 如果这个hamR没有对应的hopping就会被删除
-        let mut new_ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta)); //超薄准备用的ham
-        let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), nsta, nsta)); //超薄准备用的rmatrix
+        let mut new_ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta)); //超胞准备用的ham
+        //超胞准备用的rmatrix
+        let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), nsta, nsta)); 
         let max_use_hamR = self.hamR.mapv(|x| x as f64);
         let max_use_hamR = max_use_hamR.dot(&U.inv().unwrap());
         let mut max_hamR =
@@ -2467,35 +2425,30 @@ impl Model {
         //用来产生可能的hamR
         match self.dim_r() {
             1 => {
-                for i in 1..max_R[[0]] + 1 {
-                    use_hamR.push_row(array![i].view());
+                for i in -max_R[[0]]..max_R[[0]] + 1 {
+                    if i !=0{
+                        use_hamR.push_row(array![i].view());
+                    }
                 }
             }
             2 => {
-                for j in 1..max_R[[1]] + 1 {
+                for j in -max_R[[1]]..max_R[[1]] + 1 {
                     for i in -max_R[[0]]..max_R[[0]] + 1 {
-                        use_hamR.push_row(array![i, j].view());
-                    }
-                }
-                for i in 1..max_R[[0]] + 1 {
-                    use_hamR.push_row(array![i, 0].view());
-                }
-            }
-            3 => {
-                for k in 1..max_R[[2]] + 1 {
-                    for i in -max_R[[0]]..max_R[[0]] + 1 {
-                        for j in -max_R[[1]]..max_R[[1]] + 1 {
-                            use_hamR.push_row(array![i, j, k].view());
+                        if i!=0 || j!=0{
+                            use_hamR.push_row(array![i, j].view());
                         }
                     }
                 }
-                for j in 1..max_R[[1]] + 1 {
+            }
+            3 => {
+                for k in -max_R[[2]]..max_R[[2]] + 1 {
                     for i in -max_R[[0]]..max_R[[0]] + 1 {
-                        use_hamR.push_row(array![i, j, 0].view());
+                        for j in -max_R[[1]]..max_R[[1]] + 1 {
+                            if i !=0 || j !=0 || k !=0{
+                                use_hamR.push_row(array![i, j, k].view());
+                            }
+                        }
                     }
-                }
-                for i in 1..max_R[[0]] + 1 {
-                    use_hamR.push_row(array![i, 0, 0].view());
                 }
             }
             _ => todo!(),
@@ -2538,9 +2491,7 @@ impl Model {
                                     x.floor() as isize
                                 }
                             });
-                        let R0_inv = -R0.clone();
                         let R0_exit = find_R(&self.hamR, &R0);
-                        let R0_inv_exit = find_R(&self.hamR, &R0_inv);
                         if R0_exit {
                             let index = index_R(&self.hamR, &R0);
                             add_R = true;
@@ -2560,28 +2511,6 @@ impl Model {
                                     self.rmatrix[[index, r, *use_i, *use_j + self.norb()]];
                                 use_rmatrix[[r, int_i + norb, int_j + norb]] = self.rmatrix
                                     [[index, r, *use_i + self.norb(), *use_j + self.norb()]];
-                            }
-                        } else if R0_inv_exit {
-                            let index = index_R(&self.hamR, &R0_inv);
-                            add_R = true;
-                            useham[[int_i, int_j]] = self.ham[[index, *use_j, *use_i]].conj();
-                            useham[[int_i + norb, int_j]] =
-                                self.ham[[index, *use_j, *use_i + self.norb()]].conj();
-                            useham[[int_i, int_j + norb]] =
-                                self.ham[[index, *use_j + self.norb(), *use_i]].conj();
-                            useham[[int_i + norb, int_j + norb]] = self.ham
-                                [[index, *use_j + self.norb(), *use_i + self.norb()]]
-                            .conj();
-                            for r in 0..self.dim_r() {
-                                use_rmatrix[[r, int_i, int_j]] =
-                                    self.rmatrix[[index, r, *use_j, *use_i]].conj();
-                                use_rmatrix[[r, int_i + norb, int_j]] =
-                                    self.rmatrix[[index, r, *use_j, *use_i + self.norb()]].conj();
-                                use_rmatrix[[r, int_i, int_j + norb]] =
-                                    self.rmatrix[[index, r, *use_j + self.norb(), *use_i]].conj();
-                                use_rmatrix[[r, int_i + norb, int_j + norb]] = self.rmatrix
-                                    [[index, r, *use_j + self.norb(), *use_i + self.norb()]]
-                                .conj();
                             }
                         } else {
                             continue;
@@ -2618,9 +2547,7 @@ impl Model {
                                     x.floor() as isize
                                 }
                             });
-                        let R0_inv = -R0.clone();
                         let R0_exit = find_R(&self.hamR, &R0);
-                        let R0_inv_exit = find_R(&self.hamR, &R0_inv);
                         if R0_exit {
                             let index = index_R(&self.hamR, &R0);
                             add_R = true;
@@ -2628,14 +2555,6 @@ impl Model {
                             for r in 0..self.dim_r() {
                                 use_rmatrix[[r, int_i, int_j]] =
                                     self.rmatrix[[index, r, *use_i, *use_j]]
-                            }
-                        } else if R0_inv_exit {
-                            let index = index_R(&self.hamR, &R0_inv);
-                            add_R = true;
-                            useham[[int_i, int_j]] = self.ham[[index, *use_j, *use_i]].conj();
-                            for r in 0..self.dim_r() {
-                                use_rmatrix[[r, int_i, int_j]] =
-                                    self.rmatrix[[index, r, *use_j, *use_i]].conj()
                             }
                         } else {
                             continue;
@@ -2671,10 +2590,8 @@ impl Model {
                                     x.floor() as isize
                                 }
                             });
-                        let R0_inv = -R0.clone();
-                        let R0_exit = find_R(&self.hamR, &R0);
-                        let R0_inv_exit = find_R(&self.hamR, &R0_inv);
-                        if R0_exit {
+                        let R0_exist = find_R(&self.hamR, &R0);
+                        if R0_exist {
                             let index = index_R(&self.hamR, &R0);
                             add_R = true;
                             useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
@@ -2684,17 +2601,6 @@ impl Model {
                                 self.ham[[index, *use_i, *use_j + self.norb()]];
                             useham[[int_i + norb, int_j + norb]] =
                                 self.ham[[index, *use_i + self.norb(), *use_j + self.norb()]];
-                        } else if R0_inv_exit {
-                            let index = index_R(&self.hamR, &R0_inv);
-                            add_R = true;
-                            useham[[int_i, int_j]] = self.ham[[index, *use_j, *use_i]].conj();
-                            useham[[int_i + norb, int_j]] =
-                                self.ham[[index, *use_j, *use_i + self.norb()]].conj();
-                            useham[[int_i, int_j + norb]] =
-                                self.ham[[index, *use_j + self.norb(), *use_i]].conj();
-                            useham[[int_i + norb, int_j + norb]] = self.ham
-                                [[index, *use_j + self.norb(), *use_i + self.norb()]]
-                            .conj();
                         } else {
                             continue;
                         }
@@ -2725,17 +2631,11 @@ impl Model {
                                     x.floor() as isize
                                 }
                             });
-                        let R0_inv = -R0.clone();
                         let R0_exit = find_R(&self.hamR, &R0);
-                        let R0_inv_exit = find_R(&self.hamR, &R0_inv);
                         if R0_exit {
                             let index = index_R(&self.hamR, &R0);
                             add_R = true;
                             useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
-                        } else if R0_inv_exit {
-                            let index = index_R(&self.hamR, &R0_inv);
-                            add_R = true;
-                            useham[[int_i, int_j]] = self.ham[[index, *use_j, *use_i]].conj();
                         } else {
                             continue;
                         }
@@ -2967,34 +2867,32 @@ impl Model {
             let b = string.next().unwrap().parse::<isize>().unwrap();
             let c = string.next().unwrap().parse::<isize>().unwrap();
 
-            if (c > 0) || (c == 0 && b > 0) || (c == 0 && b == 0 && a >= 0) {
-                if a == 0 && b == 0 && c == 0 {
-                    for ind_i in 0..nsta {
-                        for ind_j in 0..nsta {
-                            let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
-                                .trim()
-                                .split_whitespace();
-                            let re = string.nth(5).unwrap().parse::<f64>().unwrap();
-                            let im = string.next().unwrap().parse::<f64>().unwrap();
-                            ham[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
-                        }
+            if a == 0 && b == 0 && c == 0 {
+                for ind_i in 0..nsta {
+                    for ind_j in 0..nsta {
+                        let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
+                            .trim()
+                            .split_whitespace();
+                        let re = string.nth(5).unwrap().parse::<f64>().unwrap();
+                        let im = string.next().unwrap().parse::<f64>().unwrap();
+                        ham[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
                     }
-                } else {
-                    let mut matrix = Array3::<Complex<f64>>::zeros((1, nsta, nsta));
-                    for ind_i in 0..nsta {
-                        for ind_j in 0..nsta {
-                            let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
-                                .trim()
-                                .split_whitespace();
-                            let re = string.nth(5).unwrap().parse::<f64>().unwrap();
-                            let im = string.next().unwrap().parse::<f64>().unwrap();
-                            matrix[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
-                            // wannier90 里面是按照纵向排列的矩阵
-                        }
-                    }
-                    ham.append(Axis(0), matrix.view()).unwrap();
-                    hamR.append(Axis(0), arr2(&[[a, b, c]]).view()).unwrap();
                 }
+            } else {
+                let mut matrix = Array3::<Complex<f64>>::zeros((1, nsta, nsta));
+                for ind_i in 0..nsta {
+                    for ind_j in 0..nsta {
+                        let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
+                            .trim()
+                            .split_whitespace();
+                        let re = string.nth(5).unwrap().parse::<f64>().unwrap();
+                        let im = string.next().unwrap().parse::<f64>().unwrap();
+                        matrix[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
+                        // wannier90 里面是按照纵向排列的矩阵
+                    }
+                }
+                ham.append(Axis(0), matrix.view()).unwrap();
+                hamR.append(Axis(0), arr2(&[[a, b, c]]).view()).unwrap();
             }
         }
 
@@ -3190,20 +3088,17 @@ impl Model {
                 let a = string.next().unwrap().parse::<isize>().unwrap();
                 let b = string.next().unwrap().parse::<isize>().unwrap();
                 let c = string.next().unwrap().parse::<isize>().unwrap();
-                let weight = weights[i] as f64;
-                if (c > 0) || (c == 0 && b > 0) || (c == 0 && b == 0 && a >= 0) {
-                    let R0 = array![a, b, c];
-                    let index = index_R(&hamR, &R0);
-                    for ind_i in 0..nsta {
-                        for ind_j in 0..nsta {
-                            let string = &reads[i * nsta * nsta + ind_i * nsta + ind_j + 3];
-                            let mut string = string.trim().split_whitespace();
-                            string.nth(4);
-                            for r in 0..3 {
-                                let re = string.next().unwrap().parse::<f64>().unwrap();
-                                let im = string.next().unwrap().parse::<f64>().unwrap();
-                                rmatrix[[index, r, ind_j, ind_i]] = Complex::new(re, im) / weight;
-                            }
+                let R0 = array![a, b, c];
+                let index = index_R(&hamR, &R0);
+                for ind_i in 0..nsta {
+                    for ind_j in 0..nsta {
+                        let string = &reads[i * nsta * nsta + ind_i * nsta + ind_j + 3];
+                        let mut string = string.trim().split_whitespace();
+                        string.nth(4);
+                        for r in 0..3 {
+                            let re = string.next().unwrap().parse::<f64>().unwrap();
+                            let im = string.next().unwrap().parse::<f64>().unwrap();
+                            rmatrix[[index, r, ind_j, ind_i]] = Complex::new(re, im);
                         }
                     }
                 }
@@ -3263,81 +3158,40 @@ impl Model {
                         .parse::<usize>()
                         .unwrap();
                     let R = array![a, b, c];
-                    let R_inv = array![-a, -b, -c];
-                    if (c > 0) || (c == 0 && b > 0) || (c == 0 && b == 0 && a >= 0) {
-                        let index = index_R(&hamR, &R);
-                        let hop = ham[[index, int_i, int_j]] / (weight as f64);
-                        let hop_x = rmatrix[[index, 0, int_i, int_j]] / (weight as f64);
-                        let hop_y = rmatrix[[index, 1, int_i, int_j]] / (weight as f64);
-                        let hop_z = rmatrix[[index, 2, int_i, int_j]] / (weight as f64);
+                    let index = index_R(&hamR, &R);
+                    let hop = ham[[index, int_i, int_j]] / (weight as f64);
+                    let hop_x = rmatrix[[index, 0, int_i, int_j]] / (weight as f64);
+                    let hop_y = rmatrix[[index, 1, int_i, int_j]] / (weight as f64);
+                    let hop_z = rmatrix[[index, 2, int_i, int_j]] / (weight as f64);
 
-                        for i0 in 0..weight {
-                            i += 1;
-                            let line = &reads[i];
-                            let mut string = line.trim().split_whitespace();
-                            let a = string.next().unwrap().parse::<isize>().unwrap();
-                            let b = string.next().unwrap().parse::<isize>().unwrap();
-                            let c = string.next().unwrap().parse::<isize>().unwrap();
-                            let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                            if (new_R[[2]] > 0)
-                                || (new_R[[2]] == 0 && new_R[[1]] > 0)
-                                || (new_R[[2]] == 0 && new_R[[1]] == 0 && new_R[[0]] >= 0)
-                            {
-                                if find_R(&new_hamR, &new_R) {
-                                    let index0 = index_R(&new_hamR, &new_R);
-                                    new_ham[[index0, int_i, int_j]] += hop;
-                                    new_rmatrix[[index0, 0, int_i, int_j]] += hop_x;
-                                    new_rmatrix[[index0, 1, int_i, int_j]] += hop_y;
-                                    new_rmatrix[[index0, 2, int_i, int_j]] += hop_z;
-                                } else {
-                                    let mut use_ham = Array2::zeros((nsta, nsta));
-                                    let mut use_rmatrix = Array3::zeros((3, nsta, nsta));
-                                    use_ham[[int_i, int_j]] += hop;
-                                    use_rmatrix[[0, int_i, int_j]] += hop_x;
-                                    use_rmatrix[[1, int_i, int_j]] += hop_y;
-                                    use_rmatrix[[2, int_i, int_j]] += hop_z;
-                                    new_hamR.push_row(new_R.view());
-                                    new_ham.push(Axis(0), use_ham.view());
-                                    new_rmatrix.push(Axis(0), use_rmatrix.view());
-                                }
-                            }
-                        }
-                    } else {
-                        let index = index_R(&hamR, &R_inv);
-                        let hop = ham[[index, int_j, int_i]].conj() / (weight as f64);
-                        let hop_x = rmatrix[[index, 0, int_j, int_i]].conj() / (weight as f64);
-                        let hop_y = rmatrix[[index, 1, int_j, int_i]].conj() / (weight as f64);
-                        let hop_z = rmatrix[[index, 2, int_j, int_i]].conj() / (weight as f64);
-
-                        for i0 in 0..weight {
-                            i += 1;
-                            let line = &reads[i];
-                            let mut string = line.trim().split_whitespace();
-                            let a = string.next().unwrap().parse::<isize>().unwrap();
-                            let b = string.next().unwrap().parse::<isize>().unwrap();
-                            let c = string.next().unwrap().parse::<isize>().unwrap();
-                            let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                            if (new_R[[2]] > 0)
-                                || (new_R[[2]] == 0 && new_R[[1]] > 0)
-                                || (new_R[[2]] == 0 && new_R[[1]] == 0 && new_R[[0]] >= 0)
-                            {
-                                if find_R(&new_hamR, &new_R) {
-                                    let index0 = index_R(&new_hamR, &new_R);
-                                    new_ham[[index0, int_i, int_j]] += hop;
-                                    new_rmatrix[[index0, 0, int_i, int_j]] += hop_x;
-                                    new_rmatrix[[index0, 1, int_i, int_j]] += hop_y;
-                                    new_rmatrix[[index0, 2, int_i, int_j]] += hop_z;
-                                } else {
-                                    let mut use_ham = Array2::zeros((nsta, nsta));
-                                    let mut use_rmatrix = Array3::zeros((3, nsta, nsta));
-                                    use_ham[[int_i, int_j]] += hop;
-                                    use_rmatrix[[0, int_i, int_j]] += hop_x;
-                                    use_rmatrix[[1, int_i, int_j]] += hop_y;
-                                    use_rmatrix[[2, int_i, int_j]] += hop_z;
-                                    new_hamR.push_row(new_R.view());
-                                    new_ham.push(Axis(0), use_ham.view());
-                                    new_rmatrix.push(Axis(0), use_rmatrix.view());
-                                }
+                    for i0 in 0..weight {
+                        i += 1;
+                        let line = &reads[i];
+                        let mut string = line.trim().split_whitespace();
+                        let a = string.next().unwrap().parse::<isize>().unwrap();
+                        let b = string.next().unwrap().parse::<isize>().unwrap();
+                        let c = string.next().unwrap().parse::<isize>().unwrap();
+                        let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
+                        if (new_R[[2]] > 0)
+                            || (new_R[[2]] == 0 && new_R[[1]] > 0)
+                            || (new_R[[2]] == 0 && new_R[[1]] == 0 && new_R[[0]] >= 0)
+                        {
+                            if find_R(&new_hamR, &new_R) {
+                                let index0 = index_R(&new_hamR, &new_R);
+                                new_ham[[index0, int_i, int_j]] += hop;
+                                new_rmatrix[[index0, 0, int_i, int_j]] += hop_x;
+                                new_rmatrix[[index0, 1, int_i, int_j]] += hop_y;
+                                new_rmatrix[[index0, 2, int_i, int_j]] += hop_z;
+                            } else {
+                                let mut use_ham = Array2::zeros((nsta, nsta));
+                                let mut use_rmatrix = Array3::zeros((3, nsta, nsta));
+                                use_ham[[int_i, int_j]] += hop;
+                                use_rmatrix[[0, int_i, int_j]] += hop_x;
+                                use_rmatrix[[1, int_i, int_j]] += hop_y;
+                                use_rmatrix[[2, int_i, int_j]] += hop_z;
+                                new_hamR.push_row(new_R.view());
+                                new_ham.push(Axis(0), use_ham.view());
+                                new_rmatrix.push(Axis(0), use_rmatrix.view());
                             }
                         }
                     }
@@ -3368,58 +3222,29 @@ impl Model {
                         .parse::<usize>()
                         .unwrap();
                     let R = array![a, b, c];
-                    let R_inv = array![-a, -b, -c];
-                    if (c > 0) || (c == 0 && b > 0) || (c == 0 && b == 0 && a >= 0) {
-                        let index = index_R(&hamR, &R);
-                        let hop = ham[[index, int_i, int_j]] / (weight as f64);
+                    let index = index_R(&hamR, &R);
+                    let hop = ham[[index, int_i, int_j]] / (weight as f64);
 
-                        for i0 in 0..weight {
-                            i += 1;
-                            let line = &reads[i];
-                            let mut string = line.trim().split_whitespace();
-                            let a = string.next().unwrap().parse::<isize>().unwrap();
-                            let b = string.next().unwrap().parse::<isize>().unwrap();
-                            let c = string.next().unwrap().parse::<isize>().unwrap();
-                            let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                            if (new_R[[2]] > 0)
-                                || (new_R[[2]] == 0 && new_R[[1]] > 0)
-                                || (new_R[[2]] == 0 && new_R[[1]] == 0 && new_R[[0]] >= 0)
-                            {
-                                if find_R(&new_hamR, &new_R) {
-                                    let index0 = index_R(&new_hamR, &new_R);
-                                    new_ham[[index0, int_i, int_j]] += hop;
-                                } else {
-                                    let mut use_ham = Array2::zeros((nsta, nsta));
-                                    use_ham[[int_i, int_j]] = hop;
-                                    new_hamR.push_row(new_R.view());
-                                    new_ham.push(Axis(0), use_ham.view());
-                                }
-                            }
-                        }
-                    } else {
-                        let index = index_R(&hamR, &R_inv);
-                        let hop = ham[[index, int_j, int_i]].conj() / (weight as f64);
-                        for i0 in 0..weight {
-                            i += 1;
-                            let line = &reads[i];
-                            let mut string = line.trim().split_whitespace();
-                            let a = string.next().unwrap().parse::<isize>().unwrap();
-                            let b = string.next().unwrap().parse::<isize>().unwrap();
-                            let c = string.next().unwrap().parse::<isize>().unwrap();
-                            let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                            if (new_R[[2]] > 0)
-                                || (new_R[[2]] == 0 && new_R[[1]] > 0)
-                                || (new_R[[2]] == 0 && new_R[[1]] == 0 && new_R[[0]] >= 0)
-                            {
-                                if find_R(&new_hamR, &new_R) {
-                                    let index0 = index_R(&new_hamR, &new_R);
-                                    new_ham[[index0, int_i, int_j]] += hop;
-                                } else {
-                                    let mut use_ham = Array2::zeros((nsta, nsta));
-                                    use_ham[[int_i, int_j]] = hop;
-                                    new_hamR.push_row(new_R.view());
-                                    new_ham.push(Axis(0), use_ham.view());
-                                }
+                    for i0 in 0..weight {
+                        i += 1;
+                        let line = &reads[i];
+                        let mut string = line.trim().split_whitespace();
+                        let a = string.next().unwrap().parse::<isize>().unwrap();
+                        let b = string.next().unwrap().parse::<isize>().unwrap();
+                        let c = string.next().unwrap().parse::<isize>().unwrap();
+                        let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
+                        if (new_R[[2]] > 0)
+                            || (new_R[[2]] == 0 && new_R[[1]] > 0)
+                            || (new_R[[2]] == 0 && new_R[[1]] == 0 && new_R[[0]] >= 0)
+                        {
+                            if find_R(&new_hamR, &new_R) {
+                                let index0 = index_R(&new_hamR, &new_R);
+                                new_ham[[index0, int_i, int_j]] += hop;
+                            } else {
+                                let mut use_ham = Array2::zeros((nsta, nsta));
+                                use_ham[[int_i, int_j]] = hop;
+                                new_hamR.push_row(new_R.view());
+                                new_ham.push(Axis(0), use_ham.view());
                             }
                         }
                     }
