@@ -1,8 +1,9 @@
 use ndarray::Array1;
 use num_complex::Complex;
 use std::fmt;
+use serde::{Deserialize, Serialize};
 ///This is the orbital projection
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum OrbProj {
     /// $$\ket{s}=\ket{0,0}$$
     s,
@@ -263,7 +264,7 @@ impl fmt::Display for OrbProj {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum AtomType {
     /// This is the type of the Atom
     H,
@@ -641,7 +642,7 @@ impl fmt::Display for AtomType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Atom {
     position: Array1<f64>,
     name: AtomType,

@@ -2927,7 +2927,7 @@ impl Model {
 
         let path = Path::new(&hr_path);
         let hr = File::open(path).expect(&format!(
-            "Unable to open the file {:?}, please check if hr file is present",
+            "Unable to open the file {:?}, please check if hr file is present\n",
             path
         ));
         let reader = BufReader::new(hr);
@@ -3304,10 +3304,10 @@ impl Model {
                         }
                     } else {
                         let index = index_R(&hamR, &R_inv);
-                        let hop = ham[[index, int_i, int_j]].conj() / (weight as f64);
-                        let hop_x = rmatrix[[index, 0, int_i, int_j]].conj() / (weight as f64);
-                        let hop_y = rmatrix[[index, 1, int_i, int_j]].conj() / (weight as f64);
-                        let hop_z = rmatrix[[index, 2, int_i, int_j]].conj() / (weight as f64);
+                        let hop = ham[[index, int_j, int_i]].conj() / (weight as f64);
+                        let hop_x = rmatrix[[index, 0, int_j, int_i]].conj() / (weight as f64);
+                        let hop_y = rmatrix[[index, 1, int_j, int_i]].conj() / (weight as f64);
+                        let hop_z = rmatrix[[index, 2, int_j, int_i]].conj() / (weight as f64);
 
                         for i0 in 0..weight {
                             i += 1;
@@ -3398,8 +3398,7 @@ impl Model {
                         }
                     } else {
                         let index = index_R(&hamR, &R_inv);
-                        let hop = ham[[index, int_i, int_j]].conj() / (weight as f64);
-
+                        let hop = ham[[index, int_j, int_i]].conj() / (weight as f64);
                         for i0 in 0..weight {
                             i += 1;
                             let line = &reads[i];

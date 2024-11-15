@@ -14,6 +14,7 @@ use crate::atom_struct::{Atom, OrbProj};
 use crate::generics::usefloat;
 #[doc(hidden)]
 pub use crate::surfgreen::surf_Green;
+use serde::{Deserialize, Serialize};
 use gnuplot::Major;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
@@ -43,7 +44,7 @@ use std::time::Instant;
 ///
 
 ///这个是 tight-binding 模型的基本单位
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Model {
     /// - The real space dimension of the model.
     pub dim_r: usize,
