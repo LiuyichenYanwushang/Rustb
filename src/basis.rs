@@ -3172,27 +3172,22 @@ impl Model {
                         let b = string.next().unwrap().parse::<isize>().unwrap();
                         let c = string.next().unwrap().parse::<isize>().unwrap();
                         let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                        if (new_R[[2]] > 0)
-                            || (new_R[[2]] == 0 && new_R[[1]] > 0)
-                            || (new_R[[2]] == 0 && new_R[[1]] == 0 && new_R[[0]] >= 0)
-                        {
-                            if find_R(&new_hamR, &new_R) {
-                                let index0 = index_R(&new_hamR, &new_R);
-                                new_ham[[index0, int_i, int_j]] += hop;
-                                new_rmatrix[[index0, 0, int_i, int_j]] += hop_x;
-                                new_rmatrix[[index0, 1, int_i, int_j]] += hop_y;
-                                new_rmatrix[[index0, 2, int_i, int_j]] += hop_z;
-                            } else {
-                                let mut use_ham = Array2::zeros((nsta, nsta));
-                                let mut use_rmatrix = Array3::zeros((3, nsta, nsta));
-                                use_ham[[int_i, int_j]] += hop;
-                                use_rmatrix[[0, int_i, int_j]] += hop_x;
-                                use_rmatrix[[1, int_i, int_j]] += hop_y;
-                                use_rmatrix[[2, int_i, int_j]] += hop_z;
-                                new_hamR.push_row(new_R.view());
-                                new_ham.push(Axis(0), use_ham.view());
-                                new_rmatrix.push(Axis(0), use_rmatrix.view());
-                            }
+                        if find_R(&new_hamR, &new_R) {
+                            let index0 = index_R(&new_hamR, &new_R);
+                            new_ham[[index0, int_i, int_j]] += hop;
+                            new_rmatrix[[index0, 0, int_i, int_j]] += hop_x;
+                            new_rmatrix[[index0, 1, int_i, int_j]] += hop_y;
+                            new_rmatrix[[index0, 2, int_i, int_j]] += hop_z;
+                        } else {
+                            let mut use_ham = Array2::zeros((nsta, nsta));
+                            let mut use_rmatrix = Array3::zeros((3, nsta, nsta));
+                            use_ham[[int_i, int_j]] += hop;
+                            use_rmatrix[[0, int_i, int_j]] += hop_x;
+                            use_rmatrix[[1, int_i, int_j]] += hop_y;
+                            use_rmatrix[[2, int_i, int_j]] += hop_z;
+                            new_hamR.push_row(new_R.view());
+                            new_ham.push(Axis(0), use_ham.view());
+                            new_rmatrix.push(Axis(0), use_rmatrix.view());
                         }
                     }
                 }
@@ -3233,19 +3228,14 @@ impl Model {
                         let b = string.next().unwrap().parse::<isize>().unwrap();
                         let c = string.next().unwrap().parse::<isize>().unwrap();
                         let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                        if (new_R[[2]] > 0)
-                            || (new_R[[2]] == 0 && new_R[[1]] > 0)
-                            || (new_R[[2]] == 0 && new_R[[1]] == 0 && new_R[[0]] >= 0)
-                        {
-                            if find_R(&new_hamR, &new_R) {
-                                let index0 = index_R(&new_hamR, &new_R);
-                                new_ham[[index0, int_i, int_j]] += hop;
-                            } else {
-                                let mut use_ham = Array2::zeros((nsta, nsta));
-                                use_ham[[int_i, int_j]] = hop;
-                                new_hamR.push_row(new_R.view());
-                                new_ham.push(Axis(0), use_ham.view());
-                            }
+                        if find_R(&new_hamR, &new_R) {
+                            let index0 = index_R(&new_hamR, &new_R);
+                            new_ham[[index0, int_i, int_j]] += hop;
+                        } else {
+                            let mut use_ham = Array2::zeros((nsta, nsta));
+                            use_ham[[int_i, int_j]] = hop;
+                            new_hamR.push_row(new_R.view());
+                            new_ham.push(Axis(0), use_ham.view());
                         }
                     }
                 }
