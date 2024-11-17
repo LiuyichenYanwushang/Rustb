@@ -675,7 +675,8 @@ impl Model {
     ///在这里, 所有的 $\bm R$, $\bm r$, 以及 $\bm \tau$ 都是以实空间为坐标系.
     #[allow(non_snake_case)]
     #[inline(always)]
-    pub fn gen_v<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> Array3<Complex<f64>> {
+    pub fn gen_v<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> (Array3<Complex<f64>>,Array2<Complex<f64>>) {
+        //我们采用的不是原子规范, 而是晶格规范
         assert_eq!(
             kvec.len(),
             self.dim_r(),
@@ -711,7 +712,7 @@ impl Model {
         let mut B = A.view().permuted_axes([0, 2, 1]);
         let UU = &B - &A;
         let UU = UU.mapv(|x| Complex::<f64>::new(0.0, x)); //UU[i,j]=i(-tau[i]+tau[j])
-                                                           //-----------构建结束
+        //-----------构建结束
         let mut v = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta())); //定义一个初始化的速度矩阵
         let R0 = &self.hamR.mapv(|x| Complex::<f64>::new(x as f64, 0.0));
         let R0 = R0.dot(&self.lat.mapv(|x| Complex::new(x, 0.0)));
@@ -736,9 +737,8 @@ impl Model {
             });
         //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
         //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
+        let hamk = U_conj.dot(&hamk.dot(&U)); //这一步别忘了把hamk 的相位加上
         if self.rmatrix.len_of(Axis(0)) != 1 {
-
-            let hamk = U_conj.dot(&hamk.dot(&U)); //这一步别忘了把hamk 的相位加上
             let mut rk = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
             let mut rk = self
                 .rmatrix
@@ -751,12 +751,13 @@ impl Model {
                 let r_new = U_conj.dot(&r_new);
                 r0.assign(&r_new);
                 let mut dig = r0.diag_mut();
-                dig.assign(&(&dig - &orb_real.column(i)));
+                //dig.assign(&(&dig - &orb_real.column(i)));
+                dig.assign(&Array1::zeros(self.nsta()));
                 let A = comm(&hamk, &r0) * Complex::i();
                 v.slice_mut(s![i, .., ..]).add_assign(&A);
             }
         }
-        v
+        (v,hamk)
     }
 
     #[allow(non_snake_case)]
@@ -2905,7 +2906,7 @@ impl Model {
         let mut win_path = file_path.clone();
         win_path.push_str(".win"); //文件的位置
         let path = Path::new(&win_path); //转化为路径格式
-        let hr = File::open(path).expect("Unable open the file, please check if have hr file");
+        let hr = File::open(path).expect("Unable open the file, please check if have win file");
         let reader = BufReader::new(hr);
         let mut reads: Vec<String> = Vec::new();
         for line in reader.lines() {
@@ -3098,7 +3099,7 @@ impl Model {
                         for r in 0..3 {
                             let re = string.next().unwrap().parse::<f64>().unwrap();
                             let im = string.next().unwrap().parse::<f64>().unwrap();
-                            rmatrix[[index, r, ind_j, ind_i]] = Complex::new(re, im);
+                            rmatrix[[index, r, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
                         }
                     }
                 }

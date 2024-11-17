@@ -458,7 +458,7 @@ mod tests {
             are_arrays_close(&result, &array![0.0, 0.0], 1e-5),
             "wrong!, the solve_band_onek get wrong result! please check it!"
         );
-        let result = model.gen_v(&array![1.0 / 3.0, 1.0 / 3.0]);
+        let (result,_) = model.gen_v(&array![1.0 / 3.0, 1.0 / 3.0]);
         let resulty = array![
             [0.0 * li, -0.4698463103929542 - 0.17101007166283436 * li],
             [-0.4698463103929542 + 0.17101007166283436 * li, 0.0 * li]
@@ -597,7 +597,7 @@ mod tests {
             let A: Vec<_> = kvec
                 .outer_iter()
                 .into_par_iter()
-                .map(|x| model.gen_v(&x.to_owned()))
+                .map(|x| {let (a,_)=model.gen_v(&x.to_owned()); a})
                 .collect();
             let end = Instant::now(); // 结束计时
             let duration = end.duration_since(start); // 计算执行时间
@@ -1217,7 +1217,7 @@ mod tests {
 
         //开始计算角态
         let model = model.make_supercell(&array![[0.0, -1.0], [1.0, 0.0]]);
-        let num = 41;
+        let num = 19;
         /*
         let model_1=model.cut_piece(num,0);
         let new_model=model_1.cut_piece(num,1);

@@ -350,8 +350,13 @@ impl Model {
         eta: f64,
     ) -> (Array1<f64>, Array1<f64>) {
         let li: Complex<f64> = 1.0 * Complex::i();
-        let (band, evec) = self.solve_onek(&k_vec);
-        let mut v: Array3<Complex<f64>> = self.gen_v(k_vec);
+        //let (band, evec) = self.solve_onek(&k_vec);
+        let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
+        let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
+            (eigvals, eigvecs)
+        } else {
+            todo!()
+        };
         let mut J = v.view();
         let (J, v) = if self.spin {
             let J = match spin {
@@ -438,8 +443,8 @@ impl Model {
             (J, v)
         };
 
-        let evec_conj: Array2<Complex<f64>> = evec.mapv(|x| x.conj());
-        let evec = evec.t();
+        let evec_conj=evec.t();
+        let evec= evec.mapv(|x| x.conj());
         let A1 = J.dot(&evec);
         let A1 = &evec_conj.dot(&A1);
         let A2 = v.dot(&evec);
@@ -681,8 +686,8 @@ impl Model {
         //我们首先求解 omega_n 和 U^\dag j
 
         let li: Complex<f64> = 1.0 * Complex::i();
-        let (band, evec) = self.solve_onek(&k_vec);
-        let mut v: Array3<Complex<f64>> = self.gen_v(k_vec);
+        //let (band, evec) = self.solve_onek(&k_vec);
+        let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
         let mut J: Array3<Complex<f64>> = v.clone();
         let mut v0 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta())); //这个是速度项, 对应的dir_3 的速度
         for r in 0..self.dim_r() {
@@ -737,13 +742,23 @@ impl Model {
 
         let J: Array2<Complex<f64>> = J.sum_axis(Axis(0));
         let v: Array2<Complex<f64>> = v.sum_axis(Axis(0));
-        let evec_conj: Array2<Complex<f64>> = evec.clone().map(|x| x.conj()).to_owned();
-        let v0 = v0.dot(&evec.clone().reversed_axes());
+
+        let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
+            (eigvals, eigvecs)
+        } else {
+            todo!()
+        };
+        let evec_conj=evec.t();
+        let evec= evec.mapv(|x| x.conj());
+
+
+
+        let v0 = v0.dot(&evec.t());
         let v0 = &evec_conj.dot(&v0);
         let partial_ve = v0.diag().map(|x| x.re);
-        let A1 = J.dot(&evec.clone().reversed_axes());
+        let A1 = J.dot(&evec.t());
         let A1 = &evec_conj.dot(&A1);
-        let A2 = v.dot(&evec.reversed_axes());
+        let A2 = v.dot(&evec.t());
         let A2 = &evec_conj.dot(&A2);
         let mut U0 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
         for i in 0..self.nsta() {
@@ -880,10 +895,16 @@ impl Model {
         //!其中 $$ G_{ij}=-2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3} $$
         //!如果存在自旋, 即spin不等于0, 则还存在 $\p_{h_i} G_{jk}$ 项, 具体请看下面的非线性霍尔部分
         //!我们这里暂时不考虑磁场, 只考虑电场
-        let mut v: Array3<Complex<f64>> = self.gen_v(&k_vec); //这是速度算符
+        let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
         let mut J = v.clone();
-        let (band, evec) = self.solve_onek(&k_vec); //能带和本征值
-        let evec_conj = evec.clone().mapv(|x| x.conj()); //本征值的复共轭
+        //let (band, evec) = self.solve_onek(&k_vec); //能带和本征值
+        let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
+            (eigvals, eigvecs)
+        } else {
+            todo!()
+        };
+        let evec_conj=evec.t();
+        let evec= evec.mapv(|x| x.conj());
         for i in 0..self.dim_r() {
             let v_s = v.slice(s![i, .., ..]).to_owned();
             let v_s = evec_conj
@@ -1252,7 +1273,7 @@ impl Model{
         //! k}-\ve_{\ell\bm k})(\ve_{n\bm k}-\ve_{\ell\bm k})}\bra{u_{m\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{\ell\bm k}}\times\bra{u_{\ell\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{n\bm k}}$$
 
         let li = Complex::<f64>::new(0.0, 1.0);
-        let v=self.gen_v(kvec);
+        let (v,hamk)=self.gen_v(kvec);
         let evec=self.solve_band_onek(kvec);
         let mut L=Array3::zeros((self.dim_r(),self.nsta(),self.nsta()));
         // m,n,l
@@ -1306,9 +1327,9 @@ impl Model {
         //! `eta` is a small quantity
 
         let li: Complex<f64> = 1.0 * Complex::i();
-        let (band, evec) = self.solve_onek(&k_vec);
+        //let (band, evec) = self.solve_onek(&k_vec);
 
-        let mut v: Array3<Complex<f64>> = self.gen_v(k_vec);
+        let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
         let mut J = v.view();
 
         // Project the velocity operator onto the direction dir_1
@@ -1327,8 +1348,14 @@ impl Model {
                 acc + &x * (*d + 0.0 * li)
             });
 
-        let evec_conj: Array2<Complex<f64>> = evec.mapv(|x| x.conj());
-        let evec = evec.t();
+        let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
+            (eigvals, eigvecs)
+        } else {
+            todo!()
+        };
+        let evec_conj=evec.t();
+        let evec= evec.mapv(|x| x.conj());
+
         let A1 = J.dot(&evec);
         let A1 = &evec_conj.dot(&A1);
         let A2 = v.dot(&evec);
@@ -1499,10 +1526,15 @@ impl Model {
         let n_og = og.len();
         let (matric,omega):(Vec<_>,Vec<_>)=kvec.outer_iter().into_par_iter()
             .map(|k| {
-                let (band, evec) = self.solve_onek(&k);
-                let mut v:Array3::<Complex<f64>> = self.gen_v(&k);
-                let evec_conj: Array2::<Complex<f64>> = evec.mapv(|x| x.conj());
-                let evec = evec.t();
+                //let (band, evec) = self.solve_onek(&k);
+                let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k); //这是速度算符
+                let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
+                    (eigvals, eigvecs)
+                } else {
+                    todo!()
+                };
+                let evec_conj=evec.t();
+                let evec= evec.mapv(|x| x.conj());
 
                 let mut A = Array3::zeros((self.dim_r(),self.nsta(),self.nsta()));
                 //transfrom the basis into bolch state
