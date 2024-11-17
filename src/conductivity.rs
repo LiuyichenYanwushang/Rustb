@@ -1631,9 +1631,9 @@ impl Model {
                     2=>{
                         let mut matric_n=Array2::zeros((3,n_og));
                         let mut omega_n=Array2::zeros((1,n_og));
-                        let A_xx=&A.slice(s![0,..,..])*&A.slice(s![0,..,..]).reversed_axes();
-                        let A_yy=&A.slice(s![1,..,..])*&A.slice(s![1,..,..]).reversed_axes();
-                        let A_xy=&A.slice(s![0,..,..])*&A.slice(s![1,..,..]).reversed_axes();
+                        let A_xx=&A.slice(s![0,..,..])*&(A.slice(s![0,..,..]).reversed_axes());
+                        let A_yy=&A.slice(s![1,..,..])*&(A.slice(s![1,..,..]).reversed_axes());
+                        let A_xy=&A.slice(s![0,..,..])*&(A.slice(s![1,..,..]).reversed_axes());
                         let re_xx:Array2<Complex<f64>> = Complex::new(2.0,0.0)*A_xx;
                         let re_yy:Array2<Complex<f64>> = Complex::new(2.0,0.0)*A_yy;
                         let Complex { re, im } = A_xy.view().split_complex();
