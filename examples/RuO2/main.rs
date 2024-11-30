@@ -222,7 +222,7 @@ fn conductivity_onek(
     //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
     let li: Complex<f64> = 1.0 * Complex::i();
     let (band, evec) = model.solve_onek(&k_vec);
-    let mut v: Array3<Complex<f64>> = model.gen_v(k_vec);
+    let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = model.gen_v(k_vec);
     let mut J: Array3<Complex<f64>> = v.clone();
     if model.spin {
         let mut X: Array2<Complex<f64>> = Array2::eye(model.nsta());
