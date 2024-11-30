@@ -95,9 +95,6 @@ impl surf_Green {
             } else if R[[dir]] > 0 {
                 hamR.push(Axis(0), ham.view());
                 hamRR.push_row(R.view());
-            } else {
-                hamR.push(Axis(0), ham.mapv(|x| x.conj()).t().view());
-                hamRR.push_row(R.map(|x| -x).view());
             }
         }
         let new_lat = remove_row(model.lat.clone(), dir);
@@ -201,18 +198,20 @@ impl surf_Green {
         let UR = (self.ham_hopR.map(|x| *x as f64))
             .dot(kvec)
             .map(|x| Complex::<f64>::new(0.0, *x * 2.0 * PI).exp());
+        let ham0k=self.ham_bulk.outer_iter().zip(U0.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(ham,u)| {acc+&ham**u});
+        let hamRk=self.ham_hop.outer_iter().zip(UR.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(ham,u)| {acc+&ham**u});
         //先对 ham_bulk 中的 [0,0] 提取出来
-        let ham0 = self.ham_bulk.slice(s![0, .., ..]);
-        let U0 = U0.slice(s![1..nR]);
-        let U0 = U0.into_shape((nR - 1, 1, 1)).unwrap();
-        let U0 = U0.broadcast((nR - 1, self.nsta, self.nsta)).unwrap();
-        let ham0k = (&self.ham_bulk.slice(s![1..nR, .., ..]) * &U0).sum_axis(Axis(0));
-        let UR = UR.into_shape((nRR, 1, 1)).unwrap();
-        let UR = UR.broadcast((nRR, self.nsta, self.nsta)).unwrap();
-        let hamRk = (&self.ham_hop * &UR).sum_axis(Axis(0));
-        let ham0k: Array2<Complex<f64>> = &ham0
-            + &conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>, OwnedRepr<Complex<f64>>>(&ham0k)
-            + &ham0k;
+        //let ham0 = self.ham_bulk.slice(s![0, .., ..]);
+        //let U0 = U0.slice(s![1..nR]);
+        //let U0 = U0.into_shape((nR - 1, 1, 1)).unwrap();
+        //let U0 = U0.broadcast((nR - 1, self.nsta, self.nsta)).unwrap();
+        //let ham0k = (&self.ham_bulk.slice(s![1..nR, .., ..]) * &U0).sum_axis(Axis(0));
+        //let UR = UR.into_shape((nRR, 1, 1)).unwrap();
+        //let UR = UR.broadcast((nRR, self.nsta, self.nsta)).unwrap();
+        //let hamRk = (&self.ham_hop * &UR).sum_axis(Axis(0));
+        //let ham0k: Array2<Complex<f64>> = &ham0
+        //    + &conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>, OwnedRepr<Complex<f64>>>(&ham0k)
+        //    + &ham0k;
         //作规范变换
         let ham0k = ham0k.dot(&U);
         let ham0k = U_conj.dot(&ham0k);

@@ -647,6 +647,7 @@ pub struct Atom {
     position: Array1<f64>,
     name: AtomType,
     atom_list: usize,
+    magnetic:[f64;3],
 }
 
 impl Atom {
@@ -673,6 +674,7 @@ impl Atom {
             position,
             atom_list,
             name,
+            magnetic:[0.0,0.0,0.0],
         }
     }
 }
@@ -681,8 +683,8 @@ impl fmt::Display for Atom {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Atom {{ name: {}, position: {:?}, atom_list: {} }}",
-            self.name, self.position, self.atom_list
+            "Atom {{ name: {}, position: {:?}, atom_list: {}, magnetic moment:{:?}}}",
+            self.name, self.position, self.atom_list, self.magnetic
         )
     }
 }
