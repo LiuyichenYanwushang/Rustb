@@ -1,6 +1,6 @@
 [package]
 name = "Rustb"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 
 categories = ["science"]
@@ -25,14 +25,14 @@ panic = 'abort'
 
 [dependencies]
 num-complex="0.4.4"
-ndarray-linalg={version="0.16.0",default-features=false}
+ndarray-linalg={version="0.17.0",default-features=false}
 rayon="1.8.0"
 gnuplot="0.0.39"
 lapack = "0.19.0"
 num-traits = "0.2.17"
 cblas-sys = "0.1.4"
 blas = "0.22.0"
-ndarray = { version = "0.15.6", features = ["rayon", "serde"] }
+ndarray = { version = "0.16.1", features = ["rayon", "serde"] }
 serde = { version = "1.0.215", features = ["derive"] }
 
 

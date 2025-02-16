@@ -1,7 +1,7 @@
 use ndarray::Array1;
 use num_complex::Complex;
-use std::fmt;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 ///This is the orbital projection
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum OrbProj {
@@ -647,7 +647,7 @@ pub struct Atom {
     position: Array1<f64>,
     name: AtomType,
     atom_list: usize,
-    magnetic:[f64;3],
+    magnetic: [f64; 3],
 }
 
 impl Atom {
@@ -674,7 +674,7 @@ impl Atom {
             position,
             atom_list,
             name,
-            magnetic:[0.0,0.0,0.0],
+            magnetic: [0.0, 0.0, 0.0],
         }
     }
 }

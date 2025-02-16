@@ -56,7 +56,7 @@ impl Model {
         let mut end_evec = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
         Zip::from(end_evec.outer_iter_mut())
             .and(first_evec.outer_iter())
-            .apply(|mut A, B| A.assign(&(&B * &add_phase)));
+            .for_each(|mut A, B| A.assign(&(&B * &add_phase)));
         evec.slice_mut(s![n_k - 1, .., ..]).assign(&end_evec);
         let evec = evec.select(Axis(1), occ);
         let n_occ = occ.len();
@@ -67,14 +67,14 @@ impl Model {
         Zip::from(ovr.outer_iter_mut())
             .and(evec.outer_iter())
             .and(evec_conj.outer_iter())
-            .apply(|mut O, e, e_j| {
+            .for_each(|mut O, e, e_j| {
                 for (i, a) in e_j.outer_iter().enumerate() {
                     for (j, b) in e.outer_iter().enumerate() {
                         O[[i, j]] = a.dot(&b);
                     }
                 }
             });
-        Zip::from(ovr.outer_iter_mut()).apply(|mut O| {
+        Zip::from(ovr.outer_iter_mut()).for_each(|mut O| {
             let (U, S, V) = O.svd(true, true).unwrap();
             let U = U.unwrap();
             let V = V.unwrap();
@@ -170,7 +170,7 @@ impl Model {
         let mut wcc = Array2::zeros((nk1, nocc));
         Zip::from(wcc.outer_iter_mut())
             .and(kvec.outer_iter())
-            .par_apply(|mut w, k| {
+            .par_for_each(|mut w, k| {
                 w.assign(&self.berry_loop(&k.to_owned(), occ));
             });
         for mut row in wcc.outer_iter_mut() {
@@ -225,7 +225,7 @@ impl Model {
         let mut wcc = Array2::zeros((nk1, nocc));
         Zip::from(wcc.outer_iter_mut())
             .and(kvec.outer_iter())
-            .par_apply(|mut w, k| {
+            .par_for_each(|mut w, k| {
                 w.assign(&self.berry_loop(&k.to_owned(), occ));
             });
         for mut row in wcc.outer_iter_mut() {

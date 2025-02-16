@@ -14,7 +14,6 @@ use crate::atom_struct::{Atom, OrbProj};
 use crate::generics::usefloat;
 #[doc(hidden)]
 pub use crate::surfgreen::surf_Green;
-use serde::{Deserialize, Serialize};
 use gnuplot::Major;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
@@ -26,6 +25,7 @@ use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex;
 use num_traits::identities::Zero;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::fs::File;
 use std::io::Write;
@@ -458,7 +458,7 @@ mod tests {
             are_arrays_close(&result, &array![0.0, 0.0], 1e-5),
             "wrong!, the solve_band_onek get wrong result! please check it!"
         );
-        let (result,_) = model.gen_v(&array![1.0 / 3.0, 1.0 / 3.0]);
+        let (result, _) = model.gen_v(&array![1.0 / 3.0, 1.0 / 3.0]);
         let resulty = array![
             [0.0 * li, -0.4698463103929542 - 0.17101007166283436 * li],
             [-0.4698463103929542 + 0.17101007166283436 * li, 0.0 * li]
@@ -467,7 +467,7 @@ mod tests {
             [0.0 * li, -0.8137976813493737 - 0.2961981327260237 * li],
             [-0.8137976813493737 + 0.2961981327260237 * li, 0.0 * li]
         ];
-        println!("result={}",result);
+        println!("result={}", result);
         assert!(
             are_complex_arrays_close(&result.slice(s![0, .., ..]).to_owned(), &resultx, 1e-8),
             "Wrong! the gen_v is get wrong results! please check it!"
@@ -597,7 +597,10 @@ mod tests {
             let A: Vec<_> = kvec
                 .outer_iter()
                 .into_par_iter()
-                .map(|x| {let (a,_)=model.gen_v(&x.to_owned()); a})
+                .map(|x| {
+                    let (a, _) = model.gen_v(&x.to_owned());
+                    a
+                })
                 .collect();
             let end = Instant::now(); // 结束计时
             let duration = end.duration_since(start); // 计算执行时间

@@ -102,8 +102,8 @@
 //!根据上面的式子, 我们很容易得到当 $m=\not n$ 时 $$\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}=\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 //!也就是说, 我们能够最终得到 $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 
+use crate::phy_const::mu_B;
 use crate::{anti_comm, comm, gen_kmesh, gen_krange, Model};
-use crate::phy_const::{mu_B};
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
 use ndarray::*;
@@ -351,7 +351,7 @@ impl Model {
     ) -> (Array1<f64>, Array1<f64>) {
         let li: Complex<f64> = 1.0 * Complex::i();
         //let (band, evec) = self.solve_onek(&k_vec);
-        let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
+        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)
         } else {
@@ -443,8 +443,8 @@ impl Model {
             (J, v)
         };
 
-        let evec_conj=evec.t();
-        let evec= evec.mapv(|x| x.conj());
+        let evec_conj = evec.t();
+        let evec = evec.mapv(|x| x.conj());
         let A1 = J.dot(&evec);
         let A1 = &evec_conj.dot(&A1);
         let A2 = v.dot(&evec);
@@ -687,7 +687,7 @@ impl Model {
 
         let li: Complex<f64> = 1.0 * Complex::i();
         //let (band, evec) = self.solve_onek(&k_vec);
-        let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
+        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
         let mut J: Array3<Complex<f64>> = v.clone();
         let mut v0 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta())); //这个是速度项, 对应的dir_3 的速度
         for r in 0..self.dim_r() {
@@ -748,10 +748,8 @@ impl Model {
         } else {
             todo!()
         };
-        let evec_conj=evec.t();
-        let evec= evec.mapv(|x| x.conj());
-
-
+        let evec_conj = evec.t();
+        let evec = evec.mapv(|x| x.conj());
 
         let v0 = v0.dot(&evec.t());
         let v0 = &evec_conj.dot(&v0);
@@ -895,7 +893,7 @@ impl Model {
         //!其中 $$ G_{ij}=-2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3} $$
         //!如果存在自旋, 即spin不等于0, 则还存在 $\p_{h_i} G_{jk}$ 项, 具体请看下面的非线性霍尔部分
         //!我们这里暂时不考虑磁场, 只考虑电场
-        let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
+        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
         let mut J = v.clone();
         //let (band, evec) = self.solve_onek(&k_vec); //能带和本征值
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
@@ -903,8 +901,8 @@ impl Model {
         } else {
             todo!()
         };
-        let evec_conj=evec.t();
-        let evec= evec.mapv(|x| x.conj());
+        let evec_conj = evec.t();
+        let evec = evec.mapv(|x| x.conj());
         for i in 0..self.dim_r() {
             let v_s = v.slice(s![i, .., ..]).to_owned();
             let v_s = evec_conj
@@ -1261,41 +1259,40 @@ impl Model {
         return conductivity;
     }
 }
-impl Model{
+impl Model {
     //! This module calculates the orbital Hall conductivity
     //!
     //! The calculation using the orbial magnetism , refer to PHYSICAL REVIEW B 106, 104414 (2022).
     //!
-    pub fn orbital_angular_momentum_onek(&self,kvec:&Array1<f64>)->Array3<Complex<f64>>{
+    pub fn orbital_angular_momentum_onek(&self, kvec: &Array1<f64>) -> Array3<Complex<f64>> {
         //! 这个函数是用来计算单个 k 点的轨道角动量的
         //! 轨道角动量的定义为 $$\bra{u_{m\bm k}}\bm L\ket{u_{n\bm k}}=\frac{1}{4i
         //! g_L\mu_B}\sum_{\ell=\not m,n}\f{2\ve_{\ell\bm k}-\ve_{m\bm k}-\ve_{n\bm k}}{(\ve_{m\bm
         //! k}-\ve_{\ell\bm k})(\ve_{n\bm k}-\ve_{\ell\bm k})}\bra{u_{m\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{\ell\bm k}}\times\bra{u_{\ell\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{n\bm k}}$$
 
         let li = Complex::<f64>::new(0.0, 1.0);
-        let (v,hamk)=self.gen_v(kvec);
-        let evec=self.solve_band_onek(kvec);
-        let mut L=Array3::zeros((self.dim_r(),self.nsta(),self.nsta()));
+        let (v, hamk) = self.gen_v(kvec);
+        let evec = self.solve_band_onek(kvec);
+        let mut L = Array3::zeros((self.dim_r(), self.nsta(), self.nsta()));
         // m,n,l
-        let mut U=Array3::zeros((self.nsta(),self.nsta(),self.nsta()));
-        for (i,e1) in evec.iter().enumerate(){
-            for (j,e2) in evec.iter().enumerate(){
-                for (k,e3) in evec.iter().enumerate(){
-                    U[[i,j,k]]=(2.0*e3-e1-e2)/(e1-e3)/(e2-e3);
+        let mut U = Array3::zeros((self.nsta(), self.nsta(), self.nsta()));
+        for (i, e1) in evec.iter().enumerate() {
+            for (j, e2) in evec.iter().enumerate() {
+                for (k, e3) in evec.iter().enumerate() {
+                    U[[i, j, k]] = (2.0 * e3 - e1 - e2) / (e1 - e3) / (e2 - e3);
                 }
             }
         }
         //g_L 是朗德g因子, 这个朗德g因子也是随着轨道而变化的
-        let g_L=1.0;
-        for r in 0..self.dim_r(){
-            for i in 0..self.nsta(){
-                for j in 0..self.nsta(){
-                    L[[r,i,j]]=-li/4.0/g_L/mu_B;
+        let g_L = 1.0;
+        for r in 0..self.dim_r() {
+            for i in 0..self.nsta() {
+                for j in 0..self.nsta() {
+                    L[[r, i, j]] = -li / 4.0 / g_L / mu_B;
                 }
             }
         }
         L
-
     }
 }
 
@@ -1329,7 +1326,7 @@ impl Model {
         let li: Complex<f64> = 1.0 * Complex::i();
         //let (band, evec) = self.solve_onek(&k_vec);
 
-        let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
+        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
         let mut J = v.view();
 
         // Project the velocity operator onto the direction dir_1
@@ -1353,8 +1350,8 @@ impl Model {
         } else {
             todo!()
         };
-        let evec_conj=evec.t();
-        let evec= evec.mapv(|x| x.conj());
+        let evec_conj = evec.t();
+        let evec = evec.mapv(|x| x.conj());
 
         let A1 = J.dot(&evec);
         let A1 = &evec_conj.dot(&A1);
@@ -1397,7 +1394,7 @@ impl Model {
         Zip::from(omega_n.outer_iter_mut())
             .and(matric_n.outer_iter_mut())
             .and(og.view())
-            .apply(|mut omega, mut matric, a0| {
+            .for_each(|mut omega, mut matric, a0| {
                 let li_eta = a0 + li * eta;
                 let UU = U0.mapv(|x| (x * x - li_eta * li_eta).finv());
                 let U1 = &UU * &Us * li_eta;
@@ -1490,7 +1487,7 @@ impl Model {
                 let mut fermi_dirac: Array2<Complex<f64>> = Array2::zeros((nsta, n_T));
                 Zip::from(fermi_dirac.outer_iter_mut())
                     .and(band.view())
-                    .apply(|mut f0, e0| {
+                    .for_each(|mut f0, e0| {
                         let a = beta
                             .map(|x0| Complex::new(((x0 * (e0 - mu)).exp() + 1.0).recip(), 0.0));
                         f0.assign(&a);
@@ -1538,7 +1535,7 @@ impl Model {
 
                 let mut A = Array3::zeros((self.dim_r(),self.nsta(),self.nsta()));
                 //transfrom the basis into bolch state
-                Zip::from(A.outer_iter_mut()).and(v.outer_iter()).apply(|mut a,v| a.assign(&evec_conj.dot(&v.dot(&evec))));
+                Zip::from(A.outer_iter_mut()).and(v.outer_iter()).for_each(|mut a,v| a.assign(&evec_conj.dot(&v.dot(&evec))));
 
                 // Calculate the energy differences and their inverses
                 let mut U0=Array2::zeros((self.nsta(),self.nsta()));
@@ -1592,7 +1589,7 @@ impl Model {
                         Zip::from(omega_n.axis_iter_mut(Axis(1)))
                             .and(matric_n.axis_iter_mut(Axis(1)))
                             .and(og.view())
-                            .par_apply(|mut omega, mut matric, a0| {
+                            .par_for_each(|mut omega, mut matric, a0| {
                                 let li_eta = a0 + li * eta;
                                 let UU = U0.mapv(|x| (x*x - li_eta*li_eta).finv());
                                 let U1:Array2<Complex<f64>> = &UU * &Us * li_eta;
@@ -1643,7 +1640,7 @@ impl Model {
                         Zip::from(omega_n.axis_iter_mut(Axis(1)))
                             .and(matric_n.axis_iter_mut(Axis(1)))
                             .and(og.view())
-                            .par_apply(|mut omega, mut matric, a0| {
+                            .par_for_each(|mut omega, mut matric, a0| {
                                 let li_eta = a0 + li * eta;
                                 let UU = U0.mapv(|x| (x*x - li_eta*li_eta).finv());
                                 let U1:Array2<Complex<f64>> = &UU * &Us * li_eta;
@@ -1680,7 +1677,7 @@ impl Model {
                     .fold(Array2::zeros((6, n_og)), |matric_acc, matric| {
                         matric_acc + matric
                     });
-                ( matric, omega)
+                (matric, omega)
             }
             2 => {
                 let omega = omega

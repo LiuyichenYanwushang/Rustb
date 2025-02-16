@@ -198,8 +198,20 @@ impl surf_Green {
         let UR = (self.ham_hopR.map(|x| *x as f64))
             .dot(kvec)
             .map(|x| Complex::<f64>::new(0.0, *x * 2.0 * PI).exp());
-        let ham0k=self.ham_bulk.outer_iter().zip(U0.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(ham,u)| {acc+&ham**u});
-        let hamRk=self.ham_hop.outer_iter().zip(UR.iter()).fold(Array2::zeros((self.nsta,self.nsta)),|acc,(ham,u)| {acc+&ham**u});
+        let ham0k = self
+            .ham_bulk
+            .outer_iter()
+            .zip(U0.iter())
+            .fold(Array2::zeros((self.nsta, self.nsta)), |acc, (ham, u)| {
+                acc + &ham * *u
+            });
+        let hamRk = self
+            .ham_hop
+            .outer_iter()
+            .zip(UR.iter())
+            .fold(Array2::zeros((self.nsta, self.nsta)), |acc, (ham, u)| {
+                acc + &ham * *u
+            });
         //先对 ham_bulk 中的 [0,0] 提取出来
         //let ham0 = self.ham_bulk.slice(s![0, .., ..]);
         //let U0 = U0.slice(s![1..nR]);
@@ -331,7 +343,7 @@ impl surf_Green {
             .and(N_L.outer_iter_mut())
             .and(N_B.outer_iter_mut())
             .and(kvec.outer_iter())
-            .par_apply(|mut nr, mut nl, mut nb, k| {
+            .par_for_each(|mut nr, mut nl, mut nb, k| {
                 let (NR, NL, NB) = self.surf_green_onek(&k, &Energy);
                 nr.assign(&NR);
                 nl.assign(&NL);
@@ -354,7 +366,7 @@ impl surf_Green {
             .and(N_L.view_mut())
             .and(N_B.view_mut())
             .and(kvec.outer_iter())
-            .par_apply(|mut nr, mut nl, mut nb, k| {
+            .par_for_each(|mut nr, mut nl, mut nb, k| {
                 let (NR, NL, NB) = self.surf_green_one(&k, energy);
                 *nr = NR;
                 *nl = NL;

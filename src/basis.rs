@@ -334,7 +334,7 @@ impl Model {
                 ind_j,
                 norb
             );
-            if index !=0 || ind_i != ind_j {
+            if index != 0 || ind_i != ind_j {
                 update_hamiltonian!(
                     self.spin,
                     pauli,
@@ -358,7 +358,8 @@ impl Model {
             self.hamR.push(Axis(0), R.view()).unwrap();
             let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
-            let new_ham = update_hamiltonian!(self.spin, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
+            let new_ham =
+                update_hamiltonian!(self.spin, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
             self.ham.push(Axis(0), new_ham.view()).unwrap();
             self.hamR.push(Axis(0), negative_R.view()).unwrap();
         }
@@ -421,7 +422,8 @@ impl Model {
             self.hamR.push(Axis(0), R.view()).unwrap();
             let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
-            let new_ham = add_hamiltonian!(self.spin, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
+            let new_ham =
+                add_hamiltonian!(self.spin, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
             self.ham.push(Axis(0), new_ham.view()).unwrap();
             self.hamR.push(Axis(0), negative_R.view()).unwrap();
         }
@@ -448,7 +450,7 @@ impl Model {
             let index = index_R(&self.hamR, &R);
             let index_inv = index_R(&self.hamR, &negative_R);
             self.ham[[index, ind_i, ind_j]] = tmp;
-            if index!=0 && ind_i != ind_j {
+            if index != 0 && ind_i != ind_j {
                 self.ham[[index_inv, ind_j, ind_i]] = tmp.conj();
             }
             if ind_i == ind_j && tmp.im != 0.0 && index == 0 {
@@ -599,7 +601,13 @@ impl Model {
             .mapv(|x| Complex::<f64>::new(x, 0.0));
         let Us = Us * Complex::new(0.0, 2.0 * PI);
         let Us = Us.mapv(Complex::exp);
-        let hamk: Array2<Complex<f64>> = self.ham.outer_iter().zip( Us.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(hm,u)| {acc+&hm**u});
+        let hamk: Array2<Complex<f64>> = self
+            .ham
+            .outer_iter()
+            .zip(Us.iter())
+            .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (hm, u)| {
+                acc + &hm * *u
+            });
         let hamk: Array2<Complex<f64>> = U_dag.dot(&hamk);
         let re_ham = hamk.dot(&U); //接下来两步填上轨道坐标导致的相位
         return re_ham;
@@ -640,7 +648,7 @@ impl Model {
             .mapv(|x| Complex::<f64>::new(x, 0.0));
         let Us = Us * Complex::new(0.0, 2.0 * PI);
         let Us = Us.mapv(Complex::exp); //Exp(2 pi K*R)
-        //现在我们存下来的是所有的rmatrix, 而不是只存下来一半, 所以这里要将 Us 翻一倍
+                                        //现在我们存下来的是所有的rmatrix, 而不是只存下来一半, 所以这里要将 Us 翻一倍
         let mut rk = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
         let mut rk = self
             .rmatrix
@@ -675,7 +683,10 @@ impl Model {
     ///在这里, 所有的 $\bm R$, $\bm r$, 以及 $\bm \tau$ 都是以实空间为坐标系.
     #[allow(non_snake_case)]
     #[inline(always)]
-    pub fn gen_v<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> (Array3<Complex<f64>>,Array2<Complex<f64>>) {
+    pub fn gen_v<S: Data<Elem = f64>>(
+        &self,
+        kvec: &ArrayBase<S, Ix1>,
+    ) -> (Array3<Complex<f64>>, Array2<Complex<f64>>) {
         //我们采用的不是原子规范, 而是晶格规范
         assert_eq!(
             kvec.len(),
@@ -702,7 +713,7 @@ impl Model {
             .mapv(|x| Complex::<f64>::new(x, 0.0));
         let Us = Us * Complex::new(0.0, 2.0 * PI);
         let Us = Us.mapv(Complex::exp); //Us 就是 exp(i k R)
-        //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
+                                        //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
         let mut UU = Array3::<f64>::zeros((self.dim_r(), self.nsta(), self.nsta()));
         let A = orb_real.view().insert_axis(Axis(2));
         let A = A
@@ -712,21 +723,24 @@ impl Model {
         let mut B = A.view().permuted_axes([0, 2, 1]);
         let UU = &B - &A;
         let UU = UU.mapv(|x| Complex::<f64>::new(0.0, x)); //UU[i,j]=i(-tau[i]+tau[j])
-        //-----------构建结束
+                                                           //-----------构建结束
         let mut v = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta())); //定义一个初始化的速度矩阵
         let R0 = &self.hamR.mapv(|x| Complex::<f64>::new(x as f64, 0.0));
         let R0 = R0.dot(&self.lat.mapv(|x| Complex::new(x, 0.0)));
 
-        let hamk: Array2<Complex<f64>> = self.ham.outer_iter().zip( Us.iter()).fold(Array2::zeros((self.nsta(),self.nsta())),|acc,(hm,u)| {acc+&hm**u});
+        let hamk: Array2<Complex<f64>> = self
+            .ham
+            .outer_iter()
+            .zip(Us.iter())
+            .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (hm, u)| {
+                acc + &hm * *u
+            });
         Zip::from(v.outer_iter_mut())
             .and(R0.axis_iter(Axis(1)))
             .and(UU.outer_iter())
-            .apply(|mut v0, r, det_tau| {
-                let vv: Array2<Complex<f64>> = self
-                    .ham
-                    .outer_iter()
-                    .zip(Us.iter().zip(r.iter()))
-                    .fold(
+            .for_each(|mut v0, r, det_tau| {
+                let vv: Array2<Complex<f64>> =
+                    self.ham.outer_iter().zip(Us.iter().zip(r.iter())).fold(
                         Array2::zeros((self.nsta(), self.nsta())),
                         |acc, (ham, (us, r0))| acc + &ham * *us * *r0 * Complex::i(),
                     );
@@ -757,7 +771,7 @@ impl Model {
                 v.slice_mut(s![i, .., ..]).add_assign(&A);
             }
         }
-        (v,hamk)
+        (v, hamk)
     }
 
     #[allow(non_snake_case)]
@@ -801,7 +815,7 @@ impl Model {
         let mut band = Array2::<f64>::zeros((nk, self.nsta()));
         Zip::from(kvec.outer_iter())
             .and(band.outer_iter_mut())
-            .apply(|x, mut a| {
+            .for_each(|x, mut a| {
                 let eval = self.solve_band_onek(&x);
                 a.assign(&eval);
             });
@@ -817,7 +831,7 @@ impl Model {
         let mut band = Array2::<f64>::zeros((nk, self.nsta()));
         Zip::from(kvec.outer_iter())
             .and(band.outer_iter_mut())
-            .par_apply(|x, mut a| {
+            .par_for_each(|x, mut a| {
                 let eval = self.solve_band_onek(&x);
                 a.assign(&eval);
             });
@@ -877,7 +891,7 @@ impl Model {
         Zip::from(kvec.outer_iter())
             .and(band.outer_iter_mut())
             .and(vectors.outer_iter_mut())
-            .apply(|x, mut a, mut b| {
+            .for_each(|x, mut a, mut b| {
                 let (eval, evec) = self.solve_onek(&x);
                 a.assign(&eval);
                 b.assign(&evec);
@@ -895,7 +909,7 @@ impl Model {
         Zip::from(kvec.outer_iter())
             .and(band.outer_iter_mut())
             .and(vectors.outer_iter_mut())
-            .par_apply(|x, mut a, mut b| {
+            .par_for_each(|x, mut a, mut b| {
                 let (eval, evec) = self.solve_onek(&x);
                 a.assign(&eval);
                 b.assign(&evec);
@@ -982,7 +996,7 @@ impl Model {
             /*
             Zip::from(using_ham.outer_iter_mut())
                 .and(using_hamR.outer_iter_mut())
-                .par_apply(|mut ham, mut R| {
+                .par_for_each(|mut ham, mut R| {
                     if R[[dir]] < 0 {
                         let h0 = conjugate::<
                             Complex<f64>,
@@ -1112,12 +1126,12 @@ impl Model {
                             let index = index_R(&new_hamR, &ind_R);
                             new_ham.slice_mut(s![index, .., ..]).add_assign(&use_ham);
                             /*
-                        } else if negative_R_exist {
-                            let index = index_R(&new_hamR, &negative_R);
-                            new_ham
-                                .slice_mut(s![index, .., ..])
-                                .add_assign(&use_ham.t().map(|x| x.conj()));
-                            */
+                            } else if negative_R_exist {
+                                let index = index_R(&new_hamR, &negative_R);
+                                new_ham
+                                    .slice_mut(s![index, .., ..])
+                                    .add_assign(&use_ham.t().map(|x| x.conj()));
+                                */
                         } else {
                             new_ham.push(Axis(0), use_ham.view());
                             new_hamR.push(Axis(0), ind_R.view());
@@ -1137,7 +1151,7 @@ impl Model {
             Zip::from(using_ham.outer_iter_mut())
                 .and(using_hamR.outer_iter_mut())
                 .and(using_rmatrix.outer_iter_mut())
-                .par_apply(|mut ham, mut R, mut rmatrix| {
+                .par_for_each(|mut ham, mut R, mut rmatrix| {
                     if R[[dir]] < 0 {
                         let h0 = conjugate::<
                             Complex<f64>,
@@ -1406,18 +1420,18 @@ impl Model {
                                 .slice_mut(s![index, .., .., ..])
                                 .add_assign(&use_rmatrix);
                             /*
-                        } else if negative_R_exist {
-                            let index = index_R(&new_hamR, &negative_R);
-                            //let addham=new_ham.slice(s![index,..,..]).to_owned();
-                            new_ham
-                                .slice_mut(s![index, .., ..])
-                                .add_assign(&use_ham.t().map(|x| x.conj()));
-                            //let mut addr=new_rmatrix.slice(s![index,..,..,..]).to_owned();
-                            use_rmatrix.swap_axes(1, 2);
-                            new_rmatrix
-                                .slice_mut(s![index, .., .., ..])
-                                .add_assign(&use_rmatrix.map(|x| x.conj()));
-                            */
+                            } else if negative_R_exist {
+                                let index = index_R(&new_hamR, &negative_R);
+                                //let addham=new_ham.slice(s![index,..,..]).to_owned();
+                                new_ham
+                                    .slice_mut(s![index, .., ..])
+                                    .add_assign(&use_ham.t().map(|x| x.conj()));
+                                //let mut addr=new_rmatrix.slice(s![index,..,..,..]).to_owned();
+                                use_rmatrix.swap_axes(1, 2);
+                                new_rmatrix
+                                    .slice_mut(s![index, .., .., ..])
+                                    .add_assign(&use_rmatrix.map(|x| x.conj()));
+                                */
                         } else {
                             new_ham.push(Axis(0), use_ham.view());
                             new_hamR.push(Axis(0), ind_R.view());
@@ -2059,7 +2073,7 @@ impl Model {
         let (eval, evec) = self.solve_all_parallel(&fold_k); //开始求解本征态和本征值
         let eval = eval.mapv(|x| Complex::new(x, 0.0));
         let mut G = Array3::<Complex<f64>>::zeros((E_n, nk, self.nsta()));
-        //Zip::from(G.outer_iter_mut()).and(E.view()).par_apply(|mut g,og| {g.assign(&(Complex::new(1.0,0.0)/(*og+li*eta-&eval)));});
+        //Zip::from(G.outer_iter_mut()).and(E.view()).par_for_each(|mut g,og| {g.assign(&(Complex::new(1.0,0.0)/(*og+li*eta-&eval)));});
         for (e, og) in E.iter().enumerate() {
             for (k, vec) in eval.outer_iter().enumerate() {
                 for i in 0..self.nsta() {
@@ -2156,7 +2170,7 @@ impl Model {
                 .and(G.outer_iter())
                 .and(weight.outer_iter())
                 .and(evec.outer_iter())
-                .par_apply(|mut b, g, w, vec| {
+                .par_for_each(|mut b, g, w, vec| {
                     for (i0, mut b0) in b.axis_iter_mut(Axis(1)).enumerate() {
                         let mut A = Array1::<Complex<f64>>::zeros(self.nsta());
                         A = match_orb_list
@@ -2186,7 +2200,7 @@ impl Model {
                 .and(G.outer_iter())
                 .and(weight.outer_iter())
                 .and(evec.outer_iter())
-                .par_apply(|mut b, g, w, vec| {
+                .par_for_each(|mut b, g, w, vec| {
                     for (i0, mut b0) in b.axis_iter_mut(Axis(1)).enumerate() {
                         let mut A = Array1::<Complex<f64>>::zeros(self.nsta());
                         A = match_orb_list
@@ -2402,8 +2416,8 @@ impl Model {
         let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r())); //超胞准备用的hamR
         let mut use_hamR = Array2::<isize>::zeros((1, self.dim_r())); //超胞的hamR的可能, 如果这个hamR没有对应的hopping就会被删除
         let mut new_ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta)); //超胞准备用的ham
-        //超胞准备用的rmatrix
-        let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), nsta, nsta)); 
+                                                                          //超胞准备用的rmatrix
+        let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), nsta, nsta));
         let max_use_hamR = self.hamR.mapv(|x| x as f64);
         let max_use_hamR = max_use_hamR.dot(&U.inv().unwrap());
         let mut max_hamR =
@@ -2427,7 +2441,7 @@ impl Model {
         match self.dim_r() {
             1 => {
                 for i in -max_R[[0]]..max_R[[0]] + 1 {
-                    if i !=0{
+                    if i != 0 {
                         use_hamR.push_row(array![i].view());
                     }
                 }
@@ -2435,7 +2449,7 @@ impl Model {
             2 => {
                 for j in -max_R[[1]]..max_R[[1]] + 1 {
                     for i in -max_R[[0]]..max_R[[0]] + 1 {
-                        if i!=0 || j!=0{
+                        if i != 0 || j != 0 {
                             use_hamR.push_row(array![i, j].view());
                         }
                     }
@@ -2445,7 +2459,7 @@ impl Model {
                 for k in -max_R[[2]]..max_R[[2]] + 1 {
                     for i in -max_R[[0]]..max_R[[0]] + 1 {
                         for j in -max_R[[1]]..max_R[[1]] + 1 {
-                            if i !=0 || j !=0 || k !=0{
+                            if i != 0 || j != 0 || k != 0 {
                                 use_hamR.push_row(array![i, j, k].view());
                             }
                         }
@@ -3099,7 +3113,8 @@ impl Model {
                         for r in 0..3 {
                             let re = string.next().unwrap().parse::<f64>().unwrap();
                             let im = string.next().unwrap().parse::<f64>().unwrap();
-                            rmatrix[[index, r, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
+                            rmatrix[[index, r, ind_j, ind_i]] =
+                                Complex::new(re, im) / (weights[i] as f64);
                         }
                     }
                 }
@@ -3246,23 +3261,26 @@ impl Model {
         }
         //最后一步, 将rmatrix 变成厄密的
 
-        if have_r{
-            for r in 0..hamR.nrows()-1{
-                let R=hamR.row(r);
-                let R_inv=-&R;
-                if find_R(&hamR,&R_inv){
-                    let index=index_R(&hamR,&R_inv);
-                    for i in 0..nsta{
-                        for j in 0..nsta{
-                            rmatrix[[r,0,i,j]]=(rmatrix[[r,0,i,j]]+rmatrix[[index,0,j,i]].conj())/2.0;
-                            rmatrix[[r,1,i,j]]=(rmatrix[[r,1,i,j]]+rmatrix[[index,1,j,i]].conj())/2.0;
-                            rmatrix[[r,2,i,j]]=(rmatrix[[r,2,i,j]]+rmatrix[[index,2,j,i]].conj())/2.0;
-                            rmatrix[[index,0,j,i]]=rmatrix[[r,0,i,j]].conj();
-                            rmatrix[[index,1,j,i]]=rmatrix[[r,1,i,j]].conj();
-                            rmatrix[[index,2,j,i]]=rmatrix[[r,2,i,j]].conj();
+        if have_r {
+            for r in 0..hamR.nrows() - 1 {
+                let R = hamR.row(r);
+                let R_inv = -&R;
+                if find_R(&hamR, &R_inv) {
+                    let index = index_R(&hamR, &R_inv);
+                    for i in 0..nsta {
+                        for j in 0..nsta {
+                            rmatrix[[r, 0, i, j]] =
+                                (rmatrix[[r, 0, i, j]] + rmatrix[[index, 0, j, i]].conj()) / 2.0;
+                            rmatrix[[r, 1, i, j]] =
+                                (rmatrix[[r, 1, i, j]] + rmatrix[[index, 1, j, i]].conj()) / 2.0;
+                            rmatrix[[r, 2, i, j]] =
+                                (rmatrix[[r, 2, i, j]] + rmatrix[[index, 2, j, i]].conj()) / 2.0;
+                            rmatrix[[index, 0, j, i]] = rmatrix[[r, 0, i, j]].conj();
+                            rmatrix[[index, 1, j, i]] = rmatrix[[r, 1, i, j]].conj();
+                            rmatrix[[index, 2, j, i]] = rmatrix[[r, 2, i, j]].conj();
                         }
                     }
-                }else{
+                } else {
                     panic!("Wrong!, the R has no -R, it's strange");
                 }
             }
@@ -3281,8 +3299,6 @@ impl Model {
         };
         model
     }
-
-
 
     #[allow(non_snake_case)]
     pub fn from_tb(path: &str, file_name: &str, zero_energy: f64) -> Model {
@@ -3584,7 +3600,8 @@ impl Model {
                         for r in 0..3 {
                             let re = string.next().unwrap().parse::<f64>().unwrap();
                             let im = string.next().unwrap().parse::<f64>().unwrap();
-                            rmatrix[[index, r, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
+                            rmatrix[[index, r, ind_j, ind_i]] =
+                                Complex::new(re, im) / (weights[i] as f64);
                         }
                     }
                 }
@@ -3731,23 +3748,26 @@ impl Model {
         }
         //最后一步, 将rmatrix 变成厄密的
 
-        if have_r{
-            for r in 0..hamR.nrows()-1{
-                let R=hamR.row(r);
-                let R_inv=-&R;
-                if find_R(&hamR,&R_inv){
-                    let index=index_R(&hamR,&R_inv);
-                    for i in 0..nsta{
-                        for j in 0..nsta{
-                            rmatrix[[r,0,i,j]]=(rmatrix[[r,0,i,j]]+rmatrix[[index,0,j,i]].conj())/2.0;
-                            rmatrix[[r,1,i,j]]=(rmatrix[[r,1,i,j]]+rmatrix[[index,1,j,i]].conj())/2.0;
-                            rmatrix[[r,2,i,j]]=(rmatrix[[r,2,i,j]]+rmatrix[[index,2,j,i]].conj())/2.0;
-                            rmatrix[[index,0,j,i]]=rmatrix[[r,0,i,j]].conj();
-                            rmatrix[[index,1,j,i]]=rmatrix[[r,1,i,j]].conj();
-                            rmatrix[[index,2,j,i]]=rmatrix[[r,2,i,j]].conj();
+        if have_r {
+            for r in 0..hamR.nrows() - 1 {
+                let R = hamR.row(r);
+                let R_inv = -&R;
+                if find_R(&hamR, &R_inv) {
+                    let index = index_R(&hamR, &R_inv);
+                    for i in 0..nsta {
+                        for j in 0..nsta {
+                            rmatrix[[r, 0, i, j]] =
+                                (rmatrix[[r, 0, i, j]] + rmatrix[[index, 0, j, i]].conj()) / 2.0;
+                            rmatrix[[r, 1, i, j]] =
+                                (rmatrix[[r, 1, i, j]] + rmatrix[[index, 1, j, i]].conj()) / 2.0;
+                            rmatrix[[r, 2, i, j]] =
+                                (rmatrix[[r, 2, i, j]] + rmatrix[[index, 2, j, i]].conj()) / 2.0;
+                            rmatrix[[index, 0, j, i]] = rmatrix[[r, 0, i, j]].conj();
+                            rmatrix[[index, 1, j, i]] = rmatrix[[r, 1, i, j]].conj();
+                            rmatrix[[index, 2, j, i]] = rmatrix[[r, 2, i, j]].conj();
                         }
                     }
-                }else{
+                } else {
                     panic!("Wrong!, the R has no -R, it's strange");
                 }
             }
@@ -3768,11 +3788,10 @@ impl Model {
     }
 }
 
-
-pub fn gauss(x:f64,eta:f64)-> f64{
+pub fn gauss(x: f64, eta: f64) -> f64 {
     //高斯函数
-    let a=(x/eta);
-    let g=(-a*a/2.0).exp();
-    let g=1.0/(2.0*PI).sqrt()/eta *g;
+    let a = (x / eta);
+    let g = (-a * a / 2.0).exp();
+    let g = 1.0 / (2.0 * PI).sqrt() / eta * g;
     g
 }
