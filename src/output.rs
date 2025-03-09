@@ -11,7 +11,7 @@
 //!POSCAR 格式
 use crate::basis::find_R;
 use crate::basis::index_R;
-use crate::{comm, gen_kmesh, Model};
+use crate::{Model, comm, gen_kmesh};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;

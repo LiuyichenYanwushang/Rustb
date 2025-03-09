@@ -1,6 +1,6 @@
-use crate::atom_struct::AtomType;
 use crate::Atom;
 use crate::Model;
+use crate::atom_struct::AtomType;
 use ndarray::*;
 use num_complex::Complex;
 

@@ -2,7 +2,7 @@
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::generics::hop_use;
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
-use crate::{comm, gen_kmesh, Model};
+use crate::{Model, comm, gen_kmesh, Gauge};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -16,6 +16,7 @@ use std::f64::consts::PI;
 use std::fs::File;
 use std::io::Write;
 use std::ops::AddAssign;
+
 
 pub fn find_R<A: Data<Elem = T>, B: Data<Elem = T>, T: std::cmp::PartialEq>(
     hamR: &ArrayBase<A, Ix2>,
@@ -199,7 +200,9 @@ impl Model {
             panic!("Wrong, the lat's second dimension's length must equal to dim_r")
         }
         if lat.len_of(Axis(0)) != lat.len_of(Axis(1)) {
-            panic!("Wrong, the lat's second dimension's length must less than first dimension's length")
+            panic!(
+                "Wrong, the lat's second dimension's length must less than first dimension's length"
+            )
         }
         let new_atom = match atom {
             Some(atom0) => atom0,
@@ -314,7 +317,13 @@ impl Model {
             R.len() == self.dim_r(),
             "Wrong, the R length should equal to dim_r"
         );
-        assert!(ind_i < self.norb() && ind_j < self.norb(), "Wrong, ind_i and ind_j must be less than norb, here norb is {}, but ind_i={} and ind_j={}", self.norb(), ind_i, ind_j);
+        assert!(
+            ind_i < self.norb() && ind_j < self.norb(),
+            "Wrong, ind_i and ind_j must be less than norb, here norb is {}, but ind_i={} and ind_j={}",
+            self.norb(),
+            ind_i,
+            ind_j
+        );
 
         let R_exist = find_R(&self.hamR, &R);
         let negative_R = &(-R);
@@ -323,7 +332,10 @@ impl Model {
             let index = index_R(&self.hamR, &R);
             let index_inv = index_R(&self.hamR, &negative_R);
             if self.ham[[index, ind_i, ind_j]] != Complex::new(0.0, 0.0) {
-                eprintln!("Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",self.ham[[index,ind_i,ind_j]])
+                eprintln!(
+                    "Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",
+                    self.ham[[index, ind_i, ind_j]]
+                )
             }
             update_hamiltonian!(
                 self.spin,
@@ -383,7 +395,13 @@ impl Model {
             R.len() == self.dim_r(),
             "Wrong, the R length should equal to dim_r"
         );
-        assert!(ind_i < self.norb() && ind_j < self.norb(), "Wrong, ind_i and ind_j must be less than norb, here norb is {}, but ind_i={} and ind_j={}", self.norb(), ind_i, ind_j);
+        assert!(
+            ind_i < self.norb() && ind_j < self.norb(),
+            "Wrong, ind_i and ind_j must be less than norb, here norb is {}, but ind_i={} and ind_j={}",
+            self.norb(),
+            ind_i,
+            ind_j
+        );
         let R_exist = find_R(&self.hamR, &R);
         let negative_R = &(-R);
         let norb = self.norb();
@@ -442,7 +460,12 @@ impl Model {
             panic!("Wrong, the R length should equal to dim_r")
         }
         if ind_i >= self.nsta() || ind_j >= self.nsta() {
-            panic!("Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",self.norb(),ind_i,ind_j)
+            panic!(
+                "Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",
+                self.norb(),
+                ind_i,
+                ind_j
+            )
         }
         let R_exist = find_R(&self.hamR, &R);
         let negative_R = (-R);
@@ -515,7 +538,12 @@ impl Model {
             panic!("Wrong, the R length should equal to dim_r")
         }
         if ind_i >= self.norb() || ind_j >= self.norb() {
-            panic!("Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",self.norb(),ind_i,ind_j)
+            panic!(
+                "Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",
+                self.norb(),
+                ind_i,
+                ind_j
+            )
         }
         self.set_hop(Complex::new(0.0, 0.0), ind_i, ind_j, &R, pauli);
     }
@@ -569,7 +597,7 @@ impl Model {
     }
     #[allow(non_snake_case)]
     #[inline(always)]
-    pub fn gen_ham<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> Array2<Complex<f64>> {
+    pub fn gen_ham<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>,gauge:Gauge) -> Array2<Complex<f64>> {
         //!这个是做傅里叶变换, 将实空间的哈密顿量变换到倒空间的哈密顿量
         //!
         //!具体来说, 就是
@@ -584,18 +612,7 @@ impl Model {
             kvec.len() == self.dim_r(),
             "Wrong, the k-vector's length must equal to the dimension of model."
         );
-        let U0: Array1<f64> = self.orb.dot(kvec);
-        let U0: Array1<Complex<f64>> = U0.mapv(|x| Complex::<f64>::new(x, 0.0));
-        let U0 = U0 * Complex::new(0.0, 2.0 * PI);
-        let mut U0: Array1<Complex<f64>> = U0.mapv(Complex::exp);
-        let U0 = if self.spin {
-            let U0 = concatenate![Axis(0), U0, U0];
-            U0
-        } else {
-            U0
-        };
-        let U = Array2::from_diag(&U0);
-        let U_dag = Array2::from_diag(&U0.map(|x| x.conj()));
+
         let Us = (self.hamR.mapv(|x| x as f64))
             .dot(kvec)
             .mapv(|x| Complex::<f64>::new(x, 0.0));
@@ -608,60 +625,29 @@ impl Model {
             .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (hm, u)| {
                 acc + &hm * *u
             });
-        let hamk: Array2<Complex<f64>> = U_dag.dot(&hamk);
-        let re_ham = hamk.dot(&U); //接下来两步填上轨道坐标导致的相位
-        return re_ham;
-    }
-    #[allow(non_snake_case)]
-    #[inline(always)]
-    pub fn gen_r<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> Array3<Complex<f64>> {
-        //!和 gen_ham 类似, 将 $\hat{\bm r}$ 进行傅里叶变换
-        //!
-        //!使用这个函数需要wannier90 中设置 warite_rmn=true, 在拟合的时候得到 seedname_r.dat 文件.
-        //!
-        //!$$\bm r_{mn,\bm k}=\bra{m\bm k}\hat{\bm r}\ket{n\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat{\bm r}\ket{n\bm R}e^{i(\bm R-\bm\tau_i+\bm \tau_j)\cdot\bm k}$$
-        //!
-        //!注意, 这里采用的都是笛卡尔坐标系的结果
-        if self.rmatrix.len_of(Axis(0)) == 1 {
-            return self.rmatrix.slice(s![0, .., .., ..]).to_owned();
-        }
-        assert_eq!(
-            kvec.len(),
-            self.dim_r(),
-            "Wrong, the k-vector's length {} must equal to the dimension of model {}.",
-            kvec.len(),
-            self.dim_r(),
-        );
-        let U0 = self.orb.dot(kvec); // get the r*k
-        let U0 = U0.mapv(|x| Complex::<f64>::new(0.0, 2.0 * PI * x)); //take it in
-        let mut U0 = U0.mapv(Complex::exp);
-        let U0 = if self.spin {
-            let U0 = concatenate![Axis(0), U0, U0];
-            U0
-        } else {
-            U0
+
+        let hamk=match gauge{
+            Gauge::Lattice => hamk,
+            Gauge::Atom => {
+                let U0: Array1<f64> = self.orb.dot(kvec);
+                let U0: Array1<Complex<f64>> = U0.mapv(|x| Complex::<f64>::new(x, 0.0));
+                let U0 = U0 * Complex::new(0.0, 2.0 * PI);
+                let mut U0: Array1<Complex<f64>> = U0.mapv(Complex::exp);
+                let U0 = if self.spin {
+                    let U0 = concatenate![Axis(0), U0, U0];
+                    U0
+                } else {
+                    U0
+                };
+                let U = Array2::from_diag(&U0);
+                let U_dag = Array2::from_diag(&U0.map(|x| x.conj()));
+                //接下来两步填上轨道坐标导致的相位
+                let hamk: Array2<Complex<f64>> = U_dag.dot(&hamk);
+                let re_ham = hamk.dot(&U); 
+                re_ham
+            },
         };
-        let U = Array2::from_diag(&U0);
-        let U_dag = Array2::from_diag(&U0.map(|x| x.conj()));
-        let Us = (self.hamR.mapv(|x| x as f64))
-            .dot(kvec)
-            .mapv(|x| Complex::<f64>::new(x, 0.0));
-        let Us = Us * Complex::new(0.0, 2.0 * PI);
-        let Us = Us.mapv(Complex::exp); //Exp(2 pi K*R)
-                                        //现在我们存下来的是所有的rmatrix, 而不是只存下来一半, 所以这里要将 Us 翻一倍
-        let mut rk = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
-        let mut rk = self
-            .rmatrix
-            .axis_iter(Axis(0))
-            .zip(Us.iter())
-            .fold(rk, |acc, (ham, us)| acc + &ham * *us);
-        for i in 0..3 {
-            let mut r0: ArrayViewMut2<Complex<f64>> = rk.slice_mut(s![i, .., ..]);
-            let r_new = r0.dot(&U);
-            let r_new = U_dag.dot(&r_new);
-            r0.assign(&r_new);
-        }
-        return rk;
+        hamk
     }
     ///这个函数是用来生成速度算符的, 即 $\bra{m\bm k}\p_\ap H_{\bm k}\ket{n\bm k},$
     ///这里的基函数是布洛赫波函数
@@ -686,7 +672,7 @@ impl Model {
     pub fn gen_v<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-    ) -> (Array3<Complex<f64>>, Array2<Complex<f64>>) {
+    gauge:Gauge) -> (Array3<Complex<f64>>, Array2<Complex<f64>>) {
         //我们采用的不是原子规范, 而是晶格规范
         assert_eq!(
             kvec.len(),
@@ -695,39 +681,17 @@ impl Model {
             kvec.len(),
             self.dim_r()
         );
-        let orb_sta = if self.spin {
-            let orb0 = concatenate(Axis(0), &[self.orb.view(), self.orb.view()]).unwrap();
-            orb0
-        } else {
-            self.orb.to_owned()
-        };
-        let U0 = orb_sta.dot(kvec);
-        let U0 = U0.mapv(|x| Complex::<f64>::new(x, 0.0));
-        let U0 = U0 * Complex::new(0.0, 2.0 * PI);
-        let mut U0 = U0.mapv(Complex::exp);
-        let U = Array2::from_diag(&U0);
-        let U_conj = Array2::from_diag(&U0.mapv(|x| x.conj()));
-        let orb_real = orb_sta.dot(&self.lat);
+
         let Us = (self.hamR.mapv(|x| x as f64))
             .dot(kvec)
             .mapv(|x| Complex::<f64>::new(x, 0.0));
         let Us = Us * Complex::new(0.0, 2.0 * PI);
         let Us = Us.mapv(Complex::exp); //Us 就是 exp(i k R)
-                                        //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
-        let mut UU = Array3::<f64>::zeros((self.dim_r(), self.nsta(), self.nsta()));
-        let A = orb_real.view().insert_axis(Axis(2));
-        let A = A
-            .broadcast((self.nsta(), self.dim_r(), self.nsta()))
-            .unwrap()
-            .permuted_axes([1, 0, 2]);
-        let mut B = A.view().permuted_axes([0, 2, 1]);
-        let UU = &B - &A;
-        let UU = UU.mapv(|x| Complex::<f64>::new(0.0, x)); //UU[i,j]=i(-tau[i]+tau[j])
-                                                           //-----------构建结束
-        let mut v = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta())); //定义一个初始化的速度矩阵
+        //定义一个初始化的速度矩阵
+        let mut v = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta())); 
         let R0 = &self.hamR.mapv(|x| Complex::<f64>::new(x as f64, 0.0));
+        //R0 是实空间的 hamR
         let R0 = R0.dot(&self.lat.mapv(|x| Complex::new(x, 0.0)));
-
         let hamk: Array2<Complex<f64>> = self
             .ham
             .outer_iter()
@@ -735,43 +699,99 @@ impl Model {
             .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (hm, u)| {
                 acc + &hm * *u
             });
-        Zip::from(v.outer_iter_mut())
-            .and(R0.axis_iter(Axis(1)))
-            .and(UU.outer_iter())
-            .for_each(|mut v0, r, det_tau| {
-                let vv: Array2<Complex<f64>> =
-                    self.ham.outer_iter().zip(Us.iter().zip(r.iter())).fold(
-                        Array2::zeros((self.nsta(), self.nsta())),
-                        |acc, (ham, (us, r0))| acc + &ham * *us * *r0 * Complex::i(),
-                    );
-                let vv: Array2<Complex<f64>> = &vv + &hamk * &det_tau;
-                let vv = &U_conj.dot(&vv);
-                let vv = vv.dot(&U); //接下来两步填上轨道坐标导致的相位
-                v0.assign(&vv);
-            });
-        //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
-        //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
-        let hamk = U_conj.dot(&hamk.dot(&U)); //这一步别忘了把hamk 的相位加上
-        if self.rmatrix.len_of(Axis(0)) != 1 {
-            let mut rk = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
-            let mut rk = self
-                .rmatrix
-                .axis_iter(Axis(0))
-                .zip(Us.iter())
-                .fold(rk, |acc, (ham, us)| acc + &ham * *us);
-            for i in 0..3 {
-                let mut r0: ArrayViewMut2<Complex<f64>> = rk.slice_mut(s![i, .., ..]);
-                let r_new = r0.dot(&U);
-                let r_new = U_conj.dot(&r_new);
-                r0.assign(&r_new);
-                let mut dig = r0.diag_mut();
-                //dig.assign(&(&dig - &orb_real.column(i)));
-                dig.assign(&Array1::zeros(self.nsta()));
-                let A = comm(&hamk, &r0) * Complex::i();
-                v.slice_mut(s![i, .., ..]).add_assign(&A);
-            }
-        }
-        (v, hamk)
+        let (v,hamk)=match gauge{
+            Gauge::Atom =>{
+                let orb_sta = if self.spin {
+                    let orb0 = concatenate(Axis(0), &[self.orb.view(), self.orb.view()]).unwrap();
+                    orb0
+                } else {
+                    self.orb.to_owned()
+                };
+                let U0 = orb_sta.dot(kvec);
+                let U0 = U0.mapv(|x| Complex::<f64>::new(x, 0.0));
+                let U0 = U0 * Complex::new(0.0, 2.0 * PI);
+                let mut U0 = U0.mapv(Complex::exp);
+                //U0 是相位因子
+                let U = Array2::from_diag(&U0);
+                let U_conj = Array2::from_diag(&U0.mapv(|x| x.conj()));
+                let orb_real = orb_sta.dot(&self.lat);
+                //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
+                let mut UU = Array3::<f64>::zeros((self.dim_r(), self.nsta(), self.nsta()));
+                let A = orb_real.view().insert_axis(Axis(2));
+                let A = A
+                    .broadcast((self.nsta(), self.dim_r(), self.nsta()))
+                    .unwrap()
+                    .permuted_axes([1, 0, 2]);
+                let mut B = A.view().permuted_axes([0, 2, 1]);
+                let UU = &B - &A;
+                let UU = UU.mapv(|x| Complex::<f64>::new(0.0, x)); //UU[i,j]=i(-tau[i]+tau[j])
+                //定义一个初始化的速度矩阵
+                Zip::from(v.outer_iter_mut())
+                    .and(R0.axis_iter(Axis(1)))
+                    .and(UU.outer_iter())
+                    .for_each(|mut v0, r, det_tau| {
+                        let vv: Array2<Complex<f64>> =
+                            self.ham.outer_iter().zip(Us.iter().zip(r.iter())).fold(
+                                Array2::zeros((self.nsta(), self.nsta())),
+                                |acc, (ham, (us, r0))| acc + &ham * *us * *r0 * Complex::i(),
+                            );
+                        let vv: Array2<Complex<f64>> = &vv + &hamk * &det_tau;
+                        let vv = &U_conj.dot(&vv);
+                        let vv = vv.dot(&U); //接下来两步填上轨道坐标导致的相位
+                        v0.assign(&vv);
+                    });
+                //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
+                //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
+                let hamk = U_conj.dot(&hamk.dot(&U)); //这一步别忘了把hamk 的相位加上
+                if self.rmatrix.len_of(Axis(0)) != 1 {
+                    let mut rk = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
+                    let mut rk = self
+                        .rmatrix
+                        .axis_iter(Axis(0))
+                        .zip(Us.iter())
+                        .fold(rk, |acc, (ham, us)| acc + &ham * *us);
+                    for i in 0..3 {
+                        let mut r0: ArrayViewMut2<Complex<f64>> = rk.slice_mut(s![i, .., ..]);
+                        let r_new = r0.dot(&U);
+                        let r_new = U_conj.dot(&r_new);
+                        r0.assign(&r_new);
+                        let mut dig = r0.diag_mut();
+                        //dig.assign(&(&dig - &orb_real.column(i)));
+                        dig.assign(&Array1::zeros(self.nsta()));
+                        let A = comm(&hamk, &r0) * Complex::i();
+                        v.slice_mut(s![i, .., ..]).add_assign(&A);
+                    }
+                }
+                (v, hamk)
+            },
+            Gauge::Lattice =>{
+                Zip::from(v.outer_iter_mut())
+                    .and(R0.axis_iter(Axis(1)))
+                    .for_each(|mut v0, r| {
+                        let vv: Array2<Complex<f64>> =
+                            self.ham.outer_iter().zip(Us.iter().zip(r.iter())).fold(
+                                Array2::zeros((self.nsta(), self.nsta())),
+                                |acc, (ham, (us, r0))| acc + &ham * *us * *r0 * Complex::i(),
+                            );
+                        v0.assign(&vv);
+                    });
+                //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
+                //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
+                if self.rmatrix.len_of(Axis(0)) != 1 {
+                    let mut rk = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
+                    let mut rk = self .rmatrix .axis_iter(Axis(0)) .zip(Us.iter()) .fold(rk, |acc, (ham, us)| acc + &ham * *us);
+                    for i in 0..3 {
+                        let mut r0: ArrayViewMut2<Complex<f64>> = rk.slice_mut(s![i, .., ..]);
+                        let mut dig=r0.diag_mut();
+                        dig.assign(&Array1::zeros(self.nsta()));
+                        let A = comm(&hamk, &r0) * Complex::i();
+                        v.slice_mut(s![i, .., ..]).add_assign(&A);
+                    }
+                }
+                (v, hamk)
+            },
+        };
+        (v,hamk)
     }
 
     #[allow(non_snake_case)]
@@ -785,7 +805,7 @@ impl Model {
             kvec.len(),
             self.dim_r()
         );
-        let hamk = self.gen_ham(kvec);
+        let hamk = self.gen_ham(kvec,Gauge::Atom);
         //let eval = if let Ok(eigvals) = hamk.eigvalsh(UPLO::Lower) { eigvals } else { todo!() };
         let eval = eigvalsh_v(&hamk, UPLO::Upper);
         eval
@@ -805,7 +825,7 @@ impl Model {
             kvec.len(),
             self.dim_r()
         );
-        let hamk = self.gen_ham(&kvec);
+        let hamk = self.gen_ham(&kvec,Gauge::Atom);
         let eval = eigvalsh_r(&hamk, range, epsilon, UPLO::Upper);
         eval
     }
@@ -850,7 +870,7 @@ impl Model {
             kvec.len(),
             self.dim_r()
         );
-        let hamk = self.gen_ham(&kvec);
+        let hamk = self.gen_ham(&kvec,Gauge::Atom);
         let (eval, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)
         } else {
@@ -874,7 +894,7 @@ impl Model {
             kvec.len(),
             self.dim_r()
         );
-        let hamk = self.gen_ham(&kvec);
+        let hamk = self.gen_ham(&kvec,Gauge::Atom);
         let (eval, evec) = eigh_r(&hamk, range, epsilon, UPLO::Upper);
         let evec = evec.mapv(|x| x.conj());
         (eval, evec)
@@ -1472,7 +1492,9 @@ impl Model {
         match self.dim_r() {
             3 => {
                 let dir = if dir == None {
-                    eprintln!("Wrong!, the dir is None, but model's dimension is 3, here we use defult 0,1 direction");
+                    eprintln!(
+                        "Wrong!, the dir is None, but model's dimension is 3, here we use defult 0,1 direction"
+                    );
                     let dir = vec![0, 1];
                     dir
                 } else {
@@ -1675,7 +1697,9 @@ impl Model {
             }
             2 => {
                 if dir != None {
-                    eprintln!("Wrong!, the dimension of model is 2, but the dir is not None, you should give None!, here we use 0,1 direction");
+                    eprintln!(
+                        "Wrong!, the dimension of model is 2, but the dir is not None, you should give None!, here we use 0,1 direction"
+                    );
                 }
 
                 let (old_model, use_orb_item, use_atom_item) = {
@@ -1936,7 +1960,6 @@ impl Model {
         let mut atom_index: Vec<_> = (0..=self.natom() - 1)
             .filter(|&num| !use_atom_list.contains(&num))
             .collect(); //要保留下来的元素
-                        //--------------------------
 
         let new_atoms = {
             let mut new_atoms = Vec::new();
@@ -1945,7 +1968,7 @@ impl Model {
             }
             new_atoms
         }; //选出需要的原子以及需要的轨道
-           //接下来选择需要的轨道
+        //接下来选择需要的轨道
 
         let mut b = 0;
         let mut orb_index = Vec::new(); //要保留下来的轨道
@@ -2108,7 +2131,7 @@ impl Model {
         let mut match_atom_list = Array1::<usize>::zeros(self.natom());
         let mut match_orb_list = Array1::<usize>::zeros(self.norb());
         let mut unit_atom_orb_match = Vec::<usize>::new(); //这个是原胞中, 原子的第一个轨道对应的轨道list中的位置
-                                                           //接下来我们计算原胞内存在哪些原子, 然后给出原胞和超胞的对应关系, 以及原胞轨道和超胞轨道的对应关系
+        //接下来我们计算原胞内存在哪些原子, 然后给出原胞和超胞的对应关系, 以及原胞轨道和超胞轨道的对应关系
         let mut a = 0;
         let mut b = 0;
         let mut orb_index = 0;
@@ -2416,7 +2439,7 @@ impl Model {
         let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r())); //超胞准备用的hamR
         let mut use_hamR = Array2::<isize>::zeros((1, self.dim_r())); //超胞的hamR的可能, 如果这个hamR没有对应的hopping就会被删除
         let mut new_ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta)); //超胞准备用的ham
-                                                                          //超胞准备用的rmatrix
+        //超胞准备用的rmatrix
         let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), nsta, nsta));
         let max_use_hamR = self.hamR.mapv(|x| x as f64);
         let max_use_hamR = max_use_hamR.dot(&U.inv().unwrap());
@@ -2782,7 +2805,10 @@ impl Model {
         py_name.push_str("/print.py");
         let py_name = Path::new(&py_name);
         let mut file = File::create(py_name).expect("Unable to create print.py");
-        writeln!(file,"import numpy as np\nimport matplotlib.pyplot as plt\ndata=np.loadtxt('BAND.dat')\nk_nodes=[]\nlabel=[]\nf=open('KLABELS')\nfor i in f.readlines():\n    k_nodes.append(float(i.split()[0]))\n    label.append(i.split()[1])\nfig,ax=plt.subplots()\nax.plot(data[:,0],data[:,1:],c='b')\nfor x in k_nodes:\n    ax.axvline(x,c='k')\nax.set_xticks(k_nodes)\nax.set_xticklabels(label)\nax.set_xlim([0,k_nodes[-1]])\nfig.savefig('band.pdf')");
+        writeln!(
+            file,
+            "import numpy as np\nimport matplotlib.pyplot as plt\ndata=np.loadtxt('BAND.dat')\nk_nodes=[]\nlabel=[]\nf=open('KLABELS')\nfor i in f.readlines():\n    k_nodes.append(float(i.split()[0]))\n    label.append(i.split()[1])\nfig,ax=plt.subplots()\nax.plot(data[:,0],data[:,1:],c='b')\nfor x in k_nodes:\n    ax.axvline(x,c='k')\nax.set_xticks(k_nodes)\nax.set_xticklabels(label)\nax.set_xlim([0,k_nodes[-1]])\nfig.savefig('band.pdf')"
+        );
         //开始绘制pdf图片
         let mut fg = Figure::new();
         let x: Vec<f64> = k_dist.to_vec();
@@ -2970,25 +2996,76 @@ impl Model {
                             let mut atom_orb_number: usize = 0;
                             let mut proj_orb = Vec::new();
                             for item in prj[1..].iter() {
-                                let (aa,use_proj_orb):(usize,Vec<_>)=match (*item).trim(){
-                                    "s"=>(1,vec![OrbProj::s]),
-                                    "p"=>(3,vec![OrbProj::pz,OrbProj::px,OrbProj::py]),
-                                    "d"=>(5,vec![OrbProj::dz2,OrbProj::dxz,OrbProj::dyz,OrbProj::dx2y2,OrbProj::dxy]),
-                                    "f"=>(7,vec![OrbProj::fz3,OrbProj::fxz2,OrbProj::fyz2,OrbProj::fzx2y2,OrbProj::fxyz,OrbProj::fxx23y2,OrbProj::fy3x2y2]),
-                                    "sp3"=>(4,vec![OrbProj::sp3_1,OrbProj::sp3_2,OrbProj::sp3_3,OrbProj::sp3_4]),
-                                    "sp2"=>(3,vec![OrbProj::sp2_1,OrbProj::sp2_2,OrbProj::sp2_3]),
-                                    "sp"=>(2,vec![OrbProj::sp_1,OrbProj::sp_2]),
-                                    "sp3d"=>(5,vec![OrbProj::sp3d_1,OrbProj::sp3d_2,OrbProj::sp3d_3,OrbProj::sp3d_4,OrbProj::sp3d_5]),
-                                    "sp3d2"=>(6,vec![OrbProj::sp3d2_1,OrbProj::sp3d2_2,OrbProj::sp3d2_3,OrbProj::sp3d2_4,OrbProj::sp3d2_5,OrbProj::sp3d2_6]),
-                                    "px"=>(1,vec![OrbProj::px]),
-                                    "py"=>(1,vec![OrbProj::py]),
-                                    "pz"=>(1,vec![OrbProj::pz]),
-                                    "dxy"=>(1,vec![OrbProj::dxy]),
-                                    "dxz"=>(1,vec![OrbProj::dxz]),
-                                    "dyz"=>(1,vec![OrbProj::dyz]),
-                                    "dz2"=>(1,vec![OrbProj::dz2]),
-                                    "dx2-y2"=>(1,vec![OrbProj::dx2y2]),
-                                    &_=>panic!("Wrong, no matching, please check the projection field in seedname.win. There are some projections that can not be identified"),
+                                let (aa, use_proj_orb): (usize, Vec<_>) = match (*item).trim() {
+                                    "s" => (1, vec![OrbProj::s]),
+                                    "p" => (3, vec![OrbProj::pz, OrbProj::px, OrbProj::py]),
+                                    "d" => (
+                                        5,
+                                        vec![
+                                            OrbProj::dz2,
+                                            OrbProj::dxz,
+                                            OrbProj::dyz,
+                                            OrbProj::dx2y2,
+                                            OrbProj::dxy,
+                                        ],
+                                    ),
+                                    "f" => (
+                                        7,
+                                        vec![
+                                            OrbProj::fz3,
+                                            OrbProj::fxz2,
+                                            OrbProj::fyz2,
+                                            OrbProj::fzx2y2,
+                                            OrbProj::fxyz,
+                                            OrbProj::fxx23y2,
+                                            OrbProj::fy3x2y2,
+                                        ],
+                                    ),
+                                    "sp3" => (
+                                        4,
+                                        vec![
+                                            OrbProj::sp3_1,
+                                            OrbProj::sp3_2,
+                                            OrbProj::sp3_3,
+                                            OrbProj::sp3_4,
+                                        ],
+                                    ),
+                                    "sp2" => {
+                                        (3, vec![OrbProj::sp2_1, OrbProj::sp2_2, OrbProj::sp2_3])
+                                    }
+                                    "sp" => (2, vec![OrbProj::sp_1, OrbProj::sp_2]),
+                                    "sp3d" => (
+                                        5,
+                                        vec![
+                                            OrbProj::sp3d_1,
+                                            OrbProj::sp3d_2,
+                                            OrbProj::sp3d_3,
+                                            OrbProj::sp3d_4,
+                                            OrbProj::sp3d_5,
+                                        ],
+                                    ),
+                                    "sp3d2" => (
+                                        6,
+                                        vec![
+                                            OrbProj::sp3d2_1,
+                                            OrbProj::sp3d2_2,
+                                            OrbProj::sp3d2_3,
+                                            OrbProj::sp3d2_4,
+                                            OrbProj::sp3d2_5,
+                                            OrbProj::sp3d2_6,
+                                        ],
+                                    ),
+                                    "px" => (1, vec![OrbProj::px]),
+                                    "py" => (1, vec![OrbProj::py]),
+                                    "pz" => (1, vec![OrbProj::pz]),
+                                    "dxy" => (1, vec![OrbProj::dxy]),
+                                    "dxz" => (1, vec![OrbProj::dxz]),
+                                    "dyz" => (1, vec![OrbProj::dyz]),
+                                    "dz2" => (1, vec![OrbProj::dz2]),
+                                    "dx2-y2" => (1, vec![OrbProj::dx2y2]),
+                                    &_ => panic!(
+                                        "Wrong, no matching, please check the projection field in seedname.win. There are some projections that can not be identified"
+                                    ),
                                 };
                                 atom_orb_number += aa;
                                 proj_orb.extend(use_proj_orb);
@@ -3457,25 +3534,76 @@ impl Model {
                             let mut atom_orb_number: usize = 0;
                             let mut proj_orb = Vec::new();
                             for item in prj[1..].iter() {
-                                let (aa,use_proj_orb):(usize,Vec<_>)=match (*item).trim(){
-                                    "s"=>(1,vec![OrbProj::s]),
-                                    "p"=>(3,vec![OrbProj::pz,OrbProj::px,OrbProj::py]),
-                                    "d"=>(5,vec![OrbProj::dz2,OrbProj::dxz,OrbProj::dyz,OrbProj::dx2y2,OrbProj::dxy]),
-                                    "f"=>(7,vec![OrbProj::fz3,OrbProj::fxz2,OrbProj::fyz2,OrbProj::fzx2y2,OrbProj::fxyz,OrbProj::fxx23y2,OrbProj::fy3x2y2]),
-                                    "sp3"=>(4,vec![OrbProj::sp3_1,OrbProj::sp3_2,OrbProj::sp3_3,OrbProj::sp3_4]),
-                                    "sp2"=>(3,vec![OrbProj::sp2_1,OrbProj::sp2_2,OrbProj::sp2_3]),
-                                    "sp"=>(2,vec![OrbProj::sp_1,OrbProj::sp_2]),
-                                    "sp3d"=>(5,vec![OrbProj::sp3d_1,OrbProj::sp3d_2,OrbProj::sp3d_3,OrbProj::sp3d_4,OrbProj::sp3d_5]),
-                                    "sp3d2"=>(6,vec![OrbProj::sp3d2_1,OrbProj::sp3d2_2,OrbProj::sp3d2_3,OrbProj::sp3d2_4,OrbProj::sp3d2_5,OrbProj::sp3d2_6]),
-                                    "px"=>(1,vec![OrbProj::px]),
-                                    "py"=>(1,vec![OrbProj::py]),
-                                    "pz"=>(1,vec![OrbProj::pz]),
-                                    "dxy"=>(1,vec![OrbProj::dxy]),
-                                    "dxz"=>(1,vec![OrbProj::dxz]),
-                                    "dyz"=>(1,vec![OrbProj::dyz]),
-                                    "dz2"=>(1,vec![OrbProj::dz2]),
-                                    "dx2-y2"=>(1,vec![OrbProj::dx2y2]),
-                                    &_=>panic!("Wrong, no matching, please check the projection field in seedname.win. There are some projections that can not be identified"),
+                                let (aa, use_proj_orb): (usize, Vec<_>) = match (*item).trim() {
+                                    "s" => (1, vec![OrbProj::s]),
+                                    "p" => (3, vec![OrbProj::pz, OrbProj::px, OrbProj::py]),
+                                    "d" => (
+                                        5,
+                                        vec![
+                                            OrbProj::dz2,
+                                            OrbProj::dxz,
+                                            OrbProj::dyz,
+                                            OrbProj::dx2y2,
+                                            OrbProj::dxy,
+                                        ],
+                                    ),
+                                    "f" => (
+                                        7,
+                                        vec![
+                                            OrbProj::fz3,
+                                            OrbProj::fxz2,
+                                            OrbProj::fyz2,
+                                            OrbProj::fzx2y2,
+                                            OrbProj::fxyz,
+                                            OrbProj::fxx23y2,
+                                            OrbProj::fy3x2y2,
+                                        ],
+                                    ),
+                                    "sp3" => (
+                                        4,
+                                        vec![
+                                            OrbProj::sp3_1,
+                                            OrbProj::sp3_2,
+                                            OrbProj::sp3_3,
+                                            OrbProj::sp3_4,
+                                        ],
+                                    ),
+                                    "sp2" => {
+                                        (3, vec![OrbProj::sp2_1, OrbProj::sp2_2, OrbProj::sp2_3])
+                                    }
+                                    "sp" => (2, vec![OrbProj::sp_1, OrbProj::sp_2]),
+                                    "sp3d" => (
+                                        5,
+                                        vec![
+                                            OrbProj::sp3d_1,
+                                            OrbProj::sp3d_2,
+                                            OrbProj::sp3d_3,
+                                            OrbProj::sp3d_4,
+                                            OrbProj::sp3d_5,
+                                        ],
+                                    ),
+                                    "sp3d2" => (
+                                        6,
+                                        vec![
+                                            OrbProj::sp3d2_1,
+                                            OrbProj::sp3d2_2,
+                                            OrbProj::sp3d2_3,
+                                            OrbProj::sp3d2_4,
+                                            OrbProj::sp3d2_5,
+                                            OrbProj::sp3d2_6,
+                                        ],
+                                    ),
+                                    "px" => (1, vec![OrbProj::px]),
+                                    "py" => (1, vec![OrbProj::py]),
+                                    "pz" => (1, vec![OrbProj::pz]),
+                                    "dxy" => (1, vec![OrbProj::dxy]),
+                                    "dxz" => (1, vec![OrbProj::dxz]),
+                                    "dyz" => (1, vec![OrbProj::dyz]),
+                                    "dz2" => (1, vec![OrbProj::dz2]),
+                                    "dx2-y2" => (1, vec![OrbProj::dx2y2]),
+                                    &_ => panic!(
+                                        "Wrong, no matching, please check the projection field in seedname.win. There are some projections that can not be identified"
+                                    ),
                                 };
                                 atom_orb_number += aa;
                                 proj_orb.extend(use_proj_orb);

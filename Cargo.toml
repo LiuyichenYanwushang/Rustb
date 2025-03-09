@@ -1,7 +1,7 @@
 [package]
 name = "Rustb"
 version = "0.3.1"
-edition = "2021"
+edition = "2024"
 
 categories = ["science"]
 description = "A package for calculating band, angle state, linear and nonlinear conductivities based on tight-binding models"
@@ -10,7 +10,7 @@ keywords = ["tight-binding","physics","Rustb"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/LiuyichenYanwushang/Rustb"
-rust-version = "1.77.0"
+rust-version = "1.85.0"
 
 [package.metadata.docs.rs]
 rustdoc-args = [ "--html-in-header", "./docs-header.html" ]

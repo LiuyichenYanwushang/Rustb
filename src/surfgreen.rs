@@ -1,5 +1,5 @@
 //!这个模块是用来求解表面格林函数的一个模块.
-use crate::{gen_kmesh, remove_col, remove_row, Model};
+use crate::{Model, gen_kmesh, remove_col, remove_row};
 use gnuplot::Major;
 use gnuplot::{Auto, AutoOption::Fix, AxesCommon, Custom, Figure, Font, HOT, RAINBOW};
 use ndarray::concatenate;
@@ -356,7 +356,12 @@ impl surf_Green {
         use std::fs::create_dir_all;
         use std::io::{BufWriter, Write};
         create_dir_all(name).expect("can't creat the file");
-        assert_eq!(kmesh.len(),2,"show_arc_state can only calculated the three dimension system, so the kmesh need to be [m,n], but you give {}",kmesh);
+        assert_eq!(
+            kmesh.len(),
+            2,
+            "show_arc_state can only calculated the three dimension system, so the kmesh need to be [m,n], but you give {}",
+            kmesh
+        );
         let kvec = gen_kmesh(kmesh);
         let nk = kvec.nrows();
         let mut N_R = Array1::<f64>::zeros(nk);

@@ -9,7 +9,6 @@ pub mod ndarray_lapack;
 pub mod output;
 pub mod phy_const;
 pub mod surfgreen;
-pub mod symm;
 use crate::atom_struct::{Atom, OrbProj};
 use crate::generics::usefloat;
 #[doc(hidden)]
@@ -64,6 +63,12 @@ pub struct Model {
     pub hamR: Array2<isize>,
     /// - The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
     pub rmatrix: Array4<Complex<f64>>,
+}
+
+
+pub enum Gauge{
+    Lattice,
+    Atom,
 }
 
 #[inline(always)]
@@ -684,12 +689,27 @@ mod tests {
             "quantom_Hall_effect={}",
             conductivity_mu[[500]] * (2.0 * PI)
         );
-        assert!((conductivity_mu[[500]]-conductivity).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",conductivity_mu[[1000]],conductivity);
+        assert!(
+            (conductivity_mu[[500]] - conductivity).abs() < 1e-3,
+            "Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",
+            conductivity_mu[[1000]],
+            conductivity
+        );
         println!("function_a took {} seconds", duration.as_secs_f64()); // 输出执行时间
         let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, -2.0, T, og, spin, eta);
-        assert!((conductivity_mu[[0]]-conductivity).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",conductivity_mu[[0]],conductivity);
+        assert!(
+            (conductivity_mu[[0]] - conductivity).abs() < 1e-3,
+            "Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",
+            conductivity_mu[[0]],
+            conductivity
+        );
         let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, 2.0, T, og, spin, eta);
-        assert!((conductivity_mu[[1000]]-conductivity).abs()<1e-3,"Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",conductivity_mu[[1000]],conductivity);
+        assert!(
+            (conductivity_mu[[1000]] - conductivity).abs() < 1e-3,
+            "Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",
+            conductivity_mu[[1000]],
+            conductivity
+        );
         //开始绘图
         let mut fg = Figure::new();
         let x: Vec<f64> = mu.to_vec();
@@ -717,7 +737,7 @@ mod tests {
             "Wrong!, the Hall conductivity is wrong!"
         );
         println!("function_a took {} seconds", duration.as_secs_f64()); // 输出执行时间
-                                                                        //画一下3000k的时候的费米导数分布
+        //画一下3000k的时候的费米导数分布
         let T = 100.0;
         let nk: usize = 101;
         let kmesh = arr1(&[nk, nk]);

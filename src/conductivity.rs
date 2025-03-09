@@ -103,7 +103,7 @@
 //!也就是说, 我们能够最终得到 $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 
 use crate::phy_const::mu_B;
-use crate::{anti_comm, comm, gen_kmesh, gen_krange, Model};
+use crate::{Model, anti_comm, comm, gen_kmesh, gen_krange, Gauge};
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
 use ndarray::*;
@@ -351,7 +351,7 @@ impl Model {
     ) -> (Array1<f64>, Array1<f64>) {
         let li: Complex<f64> = 1.0 * Complex::i();
         //let (band, evec) = self.solve_onek(&k_vec);
-        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
+        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec,Gauge::Atom); //这是速度算符
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)
         } else {
@@ -523,7 +523,12 @@ impl Model {
         //!这个是用来并行计算大量k点的贝利曲率
         //!这个可以用来画能带上的贝利曲率, 或者画一个贝利曲率的热图
         if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() {
-            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r(),dir_1.len(),dir_2.len())
+            panic!(
+                "Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",
+                self.dim_r(),
+                dir_1.len(),
+                dir_2.len()
+            )
         }
         let nk = k_vec.len_of(Axis(0));
         let omega: Vec<f64> = k_vec
@@ -687,7 +692,7 @@ impl Model {
 
         let li: Complex<f64> = 1.0 * Complex::i();
         //let (band, evec) = self.solve_onek(&k_vec);
-        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
+        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec,Gauge::Atom); //这是速度算符
         let mut J: Array3<Complex<f64>> = v.clone();
         let mut v0 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta())); //这个是速度项, 对应的dir_3 的速度
         for r in 0..self.dim_r() {
@@ -795,7 +800,12 @@ impl Model {
         //!$$\p_\gm\ve_{n\bm k}\Og_{n,\ap\bt}.$$
         if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
         {
-            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r(),dir_1.len(),dir_2.len())
+            panic!(
+                "Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",
+                self.dim_r(),
+                dir_1.len(),
+                dir_2.len()
+            )
         }
         let nk = k_vec.len_of(Axis(0));
         let (omega, band): (Vec<_>, Vec<_>) = k_vec
@@ -847,7 +857,12 @@ impl Model {
 
         if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
         {
-            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r(),dir_1.len(),dir_2.len())
+            panic!(
+                "Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",
+                self.dim_r(),
+                dir_1.len(),
+                dir_2.len()
+            )
         }
         let kvec: Array2<f64> = gen_kmesh(&k_mesh);
         let nk: usize = kvec.len_of(Axis(0));
@@ -893,7 +908,7 @@ impl Model {
         //!其中 $$ G_{ij}=-2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3} $$
         //!如果存在自旋, 即spin不等于0, 则还存在 $\p_{h_i} G_{jk}$ 项, 具体请看下面的非线性霍尔部分
         //!我们这里暂时不考虑磁场, 只考虑电场
-        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
+        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec,Gauge::Atom); //这是速度算符
         let mut J = v.clone();
         //let (band, evec) = self.solve_onek(&k_vec); //能带和本征值
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
@@ -1094,7 +1109,12 @@ impl Model {
         //! 这个是基于 onek 的, 进行关于 k 点并行求解
         if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
         {
-            panic!("Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",self.dim_r(),dir_1.len(),dir_2.len())
+            panic!(
+                "Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",
+                self.dim_r(),
+                dir_1.len(),
+                dir_2.len()
+            )
         }
         let nk = k_vec.len_of(Axis(0));
 
@@ -1271,8 +1291,12 @@ impl Model {
         //! k}-\ve_{\ell\bm k})(\ve_{n\bm k}-\ve_{\ell\bm k})}\bra{u_{m\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{\ell\bm k}}\times\bra{u_{\ell\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{n\bm k}}$$
 
         let li = Complex::<f64>::new(0.0, 1.0);
-        let (v, hamk) = self.gen_v(kvec);
-        let evec = self.solve_band_onek(kvec);
+        let (v, hamk) = self.gen_v(kvec,Gauge::Atom);
+        let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
+            (eigvals, eigvecs)
+        } else {
+            todo!()
+        };
         let mut L = Array3::zeros((self.dim_r(), self.nsta(), self.nsta()));
         // m,n,l
         let mut U = Array3::zeros((self.nsta(), self.nsta(), self.nsta()));
@@ -1326,7 +1350,7 @@ impl Model {
         let li: Complex<f64> = 1.0 * Complex::i();
         //let (band, evec) = self.solve_onek(&k_vec);
 
-        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec); //这是速度算符
+        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = self.gen_v(&k_vec,Gauge::Atom); //这是速度算符
         let mut J = v.view();
 
         // Project the velocity operator onto the direction dir_1
@@ -1524,7 +1548,7 @@ impl Model {
         let (matric,omega):(Vec<_>,Vec<_>)=kvec.outer_iter().into_par_iter()
             .map(|k| {
                 //let (band, evec) = self.solve_onek(&k);
-                let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k); //这是速度算符
+                let (mut v, hamk): (Array3<Complex<f64>>,Array2<Complex<f64>>) = self.gen_v(&k,Gauge::Atom); //这是速度算符
                 let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
                     (eigvals, eigvecs)
                 } else {
