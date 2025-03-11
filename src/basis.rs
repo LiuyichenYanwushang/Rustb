@@ -2,7 +2,7 @@
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::generics::hop_use;
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
-use crate::{Model, comm, gen_kmesh, Gauge};
+use crate::{Gauge, Model, comm, gen_kmesh, spin_direction};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -16,7 +16,6 @@ use std::f64::consts::PI;
 use std::fs::File;
 use std::io::Write;
 use std::ops::AddAssign;
-
 
 pub fn find_R<A: Data<Elem = T>, B: Data<Elem = T>, T: std::cmp::PartialEq>(
     hamR: &ArrayBase<A, Ix2>,
@@ -73,23 +72,22 @@ macro_rules! update_hamiltonian {
     ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {{
         if $spin {
             match $pauli {
-                0 => {
+                spin_direction::None => {
                     $new_ham[[$ind_i, $ind_j]] = $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] = $tmp;
                 }
-                1 => {
+                spin_direction::x => {
                     $new_ham[[$ind_i + $norb, $ind_j]] = $tmp;
                     $new_ham[[$ind_i, $ind_j + $norb]] = $tmp;
                 }
-                2 => {
+                spin_direction::y => {
                     $new_ham[[$ind_i + $norb, $ind_j]] = $tmp * Complex::<f64>::i();
                     $new_ham[[$ind_i, $ind_j + $norb]] = -$tmp * Complex::<f64>::i();
                 }
-                3 => {
+                spin_direction::z => {
                     $new_ham[[$ind_i, $ind_j]] = $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] = -$tmp;
                 }
-                _ => todo!(),
             }
         } else {
             $new_ham[[$ind_i, $ind_j]] = $tmp;
@@ -104,23 +102,22 @@ macro_rules! add_hamiltonian {
     ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {{
         if $spin {
             match $pauli {
-                0 => {
+                spin_direction::None => {
                     $new_ham[[$ind_i, $ind_j]] += $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] += $tmp;
                 }
-                1 => {
+                spin_direction::x => {
                     $new_ham[[$ind_i + $norb, $ind_j]] += $tmp;
                     $new_ham[[$ind_i, $ind_j + $norb]] += $tmp;
                 }
-                2 => {
+                spin_direction::y => {
                     $new_ham[[$ind_i + $norb, $ind_j]] += $tmp * Complex::<f64>::i();
                     $new_ham[[$ind_i, $ind_j + $norb]] -= $tmp * Complex::<f64>::i();
                 }
-                3 => {
+                spin_direction::z => {
                     $new_ham[[$ind_i, $ind_j]] += $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] -= $tmp;
                 }
-                _ => todo!(),
             }
         } else {
             $new_ham[[$ind_i, $ind_j]] += $tmp;
@@ -262,7 +259,7 @@ impl Model {
         ind_i: usize,
         ind_j: usize,
         R: &ArrayBase<T, Ix1>,
-        pauli: isize,
+        pauli: spin_direction,
     ) {
         /*
         //! 这个是用来给模型添加 hopping 的, "set" 表示可以用来覆盖之前的hopping
@@ -302,15 +299,15 @@ impl Model {
         //!let spin=false;
         //!let mut graphene_model=Model::tb_model(2,lat,orb,spin,None);
         //! let t=1.0; //the nearst hopping
-        //! graphene_model.set_hop(t,0,1,&array![0,0],0);
+        //! graphene_model.set_hop(t,0,1,&array![0,0],spin_direction::None);
         //! // t is the hopping, 0, 1 is the orbital ,array![0,0] is the unit cell
-        //! graphene_model.set_hop(t,0,1,&arr1(&[1,0]),0);
-        //! graphene_model.set_hop(t,0,1,&arr1(&vec![0,-1]),0);
+        //! graphene_model.set_hop(t,0,1,&arr1(&[1,0]),spin_direction::None);
+        //! graphene_model.set_hop(t,0,1,&arr1(&vec![0,-1]),spin_direction::None);
         //!
         //! ```
 
         let tmp: Complex<f64> = tmp.to_complex();
-        if pauli != 0 && self.spin == false {
+        if pauli != spin_direction::None && self.spin == false {
             eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
         }
         assert!(
@@ -358,7 +355,7 @@ impl Model {
                 );
             }
             assert!(
-                !(ind_i == ind_j && tmp.im != 0.0 && (pauli == 0 || pauli == 3) && index == 0),
+                !(ind_i == ind_j && tmp.im != 0.0 && index == 0),
                 "Wrong, the onsite hopping must be real, but here is {}",
                 tmp
             );
@@ -384,11 +381,11 @@ impl Model {
         ind_i: usize,
         ind_j: usize,
         R: &ArrayBase<T, Ix1>,
-        pauli: isize,
+        pauli: spin_direction,
     ) {
         //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp
         let tmp: Complex<f64> = tmp.to_complex();
-        if pauli != 0 && self.spin == false {
+        if pauli != spin_direction::None && self.spin == false {
             eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
         }
         assert!(
@@ -429,7 +426,7 @@ impl Model {
                 );
             }
             assert!(
-                !(ind_i == ind_j && tmp.im != 0.0 && (pauli == 0 || pauli == 3) && index == 0),
+                !(ind_i == ind_j && tmp.im != 0.0 && index == 0),
                 "Wrong, the onsite hopping must be real, but here is {}",
                 tmp
             );
@@ -496,7 +493,7 @@ impl Model {
     }
 
     #[allow(non_snake_case)]
-    pub fn set_onsite(&mut self, tmp: &Array1<f64>, pauli: isize) {
+    pub fn set_onsite(&mut self, tmp: &Array1<f64>, pauli: spin_direction) {
         //! 直接对对角项进行设置
         if tmp.len() != self.norb() {
             panic!(
@@ -511,7 +508,7 @@ impl Model {
     }
 
     #[allow(non_snake_case)]
-    pub fn add_onsite(&mut self, tmp: &Array1<f64>, pauli: isize) {
+    pub fn add_onsite(&mut self, tmp: &Array1<f64>, pauli: spin_direction) {
         //! 直接对对角项进行设置
         if tmp.len() != self.norb() {
             panic!(
@@ -527,12 +524,18 @@ impl Model {
         }
     }
     #[allow(non_snake_case)]
-    pub fn set_onsite_one(&mut self, tmp: f64, ind: usize, pauli: isize) {
+    pub fn set_onsite_one(&mut self, tmp: f64, ind: usize, pauli: spin_direction) {
         //!对  $\bra{i\bm 0}\hat H\ket{i\bm 0}$ 进行设置
         let R = Array1::<isize>::zeros(self.dim_r());
         self.set_hop(Complex::new(tmp, 0.0), ind, ind, &R, pauli)
     }
-    pub fn del_hop(&mut self, ind_i: usize, ind_j: usize, R: &Array1<isize>, pauli: isize) {
+    pub fn del_hop(
+        &mut self,
+        ind_i: usize,
+        ind_j: usize,
+        R: &Array1<isize>,
+        pauli: spin_direction,
+    ) {
         //! 删除 $\bra{i\bm 0}\hat H\ket{j\bm R}$
         if R.len() != self.dim_r() {
             panic!("Wrong, the R length should equal to dim_r")
@@ -597,7 +600,11 @@ impl Model {
     }
     #[allow(non_snake_case)]
     #[inline(always)]
-    pub fn gen_ham<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>,gauge:Gauge) -> Array2<Complex<f64>> {
+    pub fn gen_ham<S: Data<Elem = f64>>(
+        &self,
+        kvec: &ArrayBase<S, Ix1>,
+        gauge: Gauge,
+    ) -> Array2<Complex<f64>> {
         //!这个是做傅里叶变换, 将实空间的哈密顿量变换到倒空间的哈密顿量
         //!
         //!具体来说, 就是
@@ -626,7 +633,7 @@ impl Model {
                 acc + &hm * *u
             });
 
-        let hamk=match gauge{
+        let hamk = match gauge {
             Gauge::Lattice => hamk,
             Gauge::Atom => {
                 let U0: Array1<f64> = self.orb.dot(kvec);
@@ -643,9 +650,9 @@ impl Model {
                 let U_dag = Array2::from_diag(&U0.map(|x| x.conj()));
                 //接下来两步填上轨道坐标导致的相位
                 let hamk: Array2<Complex<f64>> = U_dag.dot(&hamk);
-                let re_ham = hamk.dot(&U); 
+                let re_ham = hamk.dot(&U);
                 re_ham
-            },
+            }
         };
         hamk
     }
@@ -672,7 +679,8 @@ impl Model {
     pub fn gen_v<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-    gauge:Gauge) -> (Array3<Complex<f64>>, Array2<Complex<f64>>) {
+        gauge: Gauge,
+    ) -> (Array3<Complex<f64>>, Array2<Complex<f64>>) {
         //我们采用的不是原子规范, 而是晶格规范
         assert_eq!(
             kvec.len(),
@@ -688,7 +696,7 @@ impl Model {
         let Us = Us * Complex::new(0.0, 2.0 * PI);
         let Us = Us.mapv(Complex::exp); //Us 就是 exp(i k R)
         //定义一个初始化的速度矩阵
-        let mut v = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta())); 
+        let mut v = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
         let R0 = &self.hamR.mapv(|x| Complex::<f64>::new(x as f64, 0.0));
         //R0 是实空间的 hamR
         let R0 = R0.dot(&self.lat.mapv(|x| Complex::new(x, 0.0)));
@@ -699,8 +707,8 @@ impl Model {
             .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (hm, u)| {
                 acc + &hm * *u
             });
-        let (v,hamk)=match gauge{
-            Gauge::Atom =>{
+        let (v, hamk) = match gauge {
+            Gauge::Atom => {
                 let orb_sta = if self.spin {
                     let orb0 = concatenate(Axis(0), &[self.orb.view(), self.orb.view()]).unwrap();
                     orb0
@@ -744,7 +752,8 @@ impl Model {
                 //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
                 let hamk = U_conj.dot(&hamk.dot(&U)); //这一步别忘了把hamk 的相位加上
                 if self.rmatrix.len_of(Axis(0)) != 1 {
-                    let mut rk = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
+                    let mut rk =
+                        Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
                     let mut rk = self
                         .rmatrix
                         .axis_iter(Axis(0))
@@ -763,8 +772,8 @@ impl Model {
                     }
                 }
                 (v, hamk)
-            },
-            Gauge::Lattice =>{
+            }
+            Gauge::Lattice => {
                 Zip::from(v.outer_iter_mut())
                     .and(R0.axis_iter(Axis(1)))
                     .for_each(|mut v0, r| {
@@ -778,20 +787,25 @@ impl Model {
                 //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
                 //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
                 if self.rmatrix.len_of(Axis(0)) != 1 {
-                    let mut rk = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
-                    let mut rk = self .rmatrix .axis_iter(Axis(0)) .zip(Us.iter()) .fold(rk, |acc, (ham, us)| acc + &ham * *us);
+                    let mut rk =
+                        Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
+                    let mut rk = self
+                        .rmatrix
+                        .axis_iter(Axis(0))
+                        .zip(Us.iter())
+                        .fold(rk, |acc, (ham, us)| acc + &ham * *us);
                     for i in 0..3 {
                         let mut r0: ArrayViewMut2<Complex<f64>> = rk.slice_mut(s![i, .., ..]);
-                        let mut dig=r0.diag_mut();
+                        let mut dig = r0.diag_mut();
                         dig.assign(&Array1::zeros(self.nsta()));
                         let A = comm(&hamk, &r0) * Complex::i();
                         v.slice_mut(s![i, .., ..]).add_assign(&A);
                     }
                 }
                 (v, hamk)
-            },
+            }
         };
-        (v,hamk)
+        (v, hamk)
     }
 
     #[allow(non_snake_case)]
@@ -805,8 +819,7 @@ impl Model {
             kvec.len(),
             self.dim_r()
         );
-        let hamk = self.gen_ham(kvec,Gauge::Atom);
-        //let eval = if let Ok(eigvals) = hamk.eigvalsh(UPLO::Lower) { eigvals } else { todo!() };
+        let hamk = self.gen_ham(kvec, Gauge::Atom);
         let eval = eigvalsh_v(&hamk, UPLO::Upper);
         eval
     }
@@ -825,7 +838,7 @@ impl Model {
             kvec.len(),
             self.dim_r()
         );
-        let hamk = self.gen_ham(&kvec,Gauge::Atom);
+        let hamk = self.gen_ham(&kvec, Gauge::Atom);
         let eval = eigvalsh_r(&hamk, range, epsilon, UPLO::Upper);
         eval
     }
@@ -870,7 +883,7 @@ impl Model {
             kvec.len(),
             self.dim_r()
         );
-        let hamk = self.gen_ham(&kvec,Gauge::Atom);
+        let hamk = self.gen_ham(&kvec, Gauge::Atom);
         let (eval, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)
         } else {
@@ -894,7 +907,7 @@ impl Model {
             kvec.len(),
             self.dim_r()
         );
-        let hamk = self.gen_ham(&kvec,Gauge::Atom);
+        let hamk = self.gen_ham(&kvec, Gauge::Atom);
         let (eval, evec) = eigh_r(&hamk, range, epsilon, UPLO::Upper);
         let evec = evec.mapv(|x| x.conj());
         (eval, evec)

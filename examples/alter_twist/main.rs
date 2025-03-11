@@ -1,4 +1,5 @@
 #![allow(warnings)]
+use Rustb::*;
 use gnuplot::AxesCommon;
 use gnuplot::{Auto, Caption, Color, Dash, Figure, Fix, LineStyle, Major, Solid};
 use ndarray::linalg::kron;
@@ -9,14 +10,13 @@ use num_complex::Complex;
 use rayon::prelude::*;
 use std::arch::x86_64::*;
 use std::f64::consts::PI;
-use std::fs::create_dir_all;
 use std::fs::File;
+use std::fs::create_dir_all;
 use std::io::{BufWriter, Write};
 use std::ops::AddAssign;
 use std::ops::MulAssign;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use Rustb::*;
 fn main() {
     let li = Complex::i();
     let zero_energy: f64 = 0.;
@@ -31,8 +31,8 @@ fn main() {
     let t2 = -1.5 + 0.0 * li;
     let J = 1.0;
     //model.set_onsite(&array![J],3);
-    model_1.add_hop(t1, 0, 0, &array![-1, 0, 0], 0);
-    model_1.add_hop(t2, 0, 0, &array![0, -1, 0], 0);
+    model_1.add_hop(t1, 0, 0, &array![-1, 0, 0], spin_direction::None);
+    model_1.add_hop(t2, 0, 0, &array![0, -1, 0], spin_direction::None);
 
     let lat = array![[4.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 40.0]];
     let orb = array![[0.0, 0.0, 0.5]];
@@ -44,8 +44,8 @@ fn main() {
     let t2 = -1.5 + 0.0 * li;
     let J = 1.0;
     //model.set_onsite(&array![J],3);
-    model_2.add_hop(t2, 0, 0, &array![-1, 0, 0], 0);
-    model_2.add_hop(t1, 0, 0, &array![0, -1, 0], 0);
+    model_2.add_hop(t2, 0, 0, &array![-1, 0, 0], spin_direction::None);
+    model_2.add_hop(t1, 0, 0, &array![0, -1, 0], spin_direction::None);
 
     let path = [
         [0.0, 0.0, 0.0],
@@ -81,7 +81,7 @@ fn main() {
         onsite[[i]] = J;
         onsite[[i + model_1.norb()]] = -J;
     }
-    new_model.set_onsite(&onsite, 3);
+    new_model.set_onsite(&onsite, spin_direction::z);
     for i in 0..model_1.norb() {
         for j in 0..model_1.norb() {
             for (r1, R1) in model_1.hamR.axis_iter(Axis(0)).enumerate() {
@@ -89,20 +89,14 @@ fn main() {
                     continue;
                 }
                 let t1 = model_1.ham[[r1, i, j]];
-                new_model.add_hop(t1, i, j, &R1.to_owned(), 0);
+                new_model.add_hop(t1, i, j, &R1.to_owned(), spin_direction::None);
             }
             for (r2, R2) in model_2.hamR.axis_iter(Axis(0)).enumerate() {
                 if r2 == 0 && i > j {
                     continue;
                 }
                 let t2 = model_2.ham[[r2, i, j]];
-                new_model.add_hop(
-                    t2,
-                    i + model_1.norb(),
-                    j + model_1.norb(),
-                    &R2.to_owned(),
-                    0,
-                );
+                new_model.add_hop( t2, i + model_1.norb(), j + model_1.norb(), &R2.to_owned(), spin_direction::None);
             }
         }
     }
@@ -117,7 +111,7 @@ fn main() {
         onsite[[i]] = J;
         onsite[[i + model_1.norb()]] = -J;
     }
-    model_up.set_onsite(&onsite, 0);
+    model_up.set_onsite(&onsite, spin_direction::None);
     for i in 0..model_1.norb() {
         for j in 0..model_1.norb() {
             for (r1, R1) in model_1.hamR.axis_iter(Axis(0)).enumerate() {
@@ -125,20 +119,14 @@ fn main() {
                     continue;
                 }
                 let t1 = model_1.ham[[r1, i, j]];
-                model_up.add_hop(t1, i, j, &R1.to_owned(), 0);
+                model_up.add_hop(t1, i, j, &R1.to_owned(), spin_direction::None);
             }
             for (r2, R2) in model_2.hamR.axis_iter(Axis(0)).enumerate() {
                 if r2 == 0 && i > j {
                     continue;
                 }
                 let t2 = model_2.ham[[r2, i, j]];
-                model_up.add_hop(
-                    t2,
-                    i + model_1.norb(),
-                    j + model_1.norb(),
-                    &R2.to_owned(),
-                    0,
-                );
+                model_up.add_hop( t2, i + model_1.norb(), j + model_1.norb(), &R2.to_owned(), spin_direction::None);
             }
         }
     }
@@ -148,7 +136,7 @@ fn main() {
         onsite[[i]] = J;
         onsite[[i + model_1.norb()]] = -J;
     }
-    model_dn.set_onsite(&(-onsite), 0);
+    model_dn.set_onsite(&(-onsite), spin_direction::None);
     for i in 0..model_1.norb() {
         for j in 0..model_1.norb() {
             for (r1, R1) in model_1.hamR.axis_iter(Axis(0)).enumerate() {
@@ -156,20 +144,14 @@ fn main() {
                     continue;
                 }
                 let t1 = model_1.ham[[r1, i, j]];
-                model_dn.add_hop(t1, i, j, &R1.to_owned(), 0);
+                model_dn.add_hop(t1, i, j, &R1.to_owned(), spin_direction::None);
             }
             for (r2, R2) in model_2.hamR.axis_iter(Axis(0)).enumerate() {
                 if r2 == 0 && i > j {
                     continue;
                 }
                 let t2 = model_2.ham[[r2, i, j]];
-                model_dn.add_hop(
-                    t2,
-                    i + model_1.norb(),
-                    j + model_1.norb(),
-                    &R2.to_owned(),
-                    0,
-                );
+                model_dn.add_hop( t2, i + model_1.norb(), j + model_1.norb(), &R2.to_owned(), spin_direction::None);
             }
         }
     }
@@ -387,7 +369,7 @@ fn conductivity_onek(
     //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
     let li: Complex<f64> = 1.0 * Complex::i();
     let (band, evec) = model.solve_onek(&k_vec);
-    let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = model.gen_v(k_vec);
+    let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = model.gen_v(k_vec,Gauge::Atom);
     let mut J: Array3<Complex<f64>> = v.clone();
     if model.spin {
         let mut X: Array2<Complex<f64>> = Array2::eye(model.nsta());

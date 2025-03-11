@@ -1,4 +1,5 @@
 #![allow(warnings)]
+use Rustb::*;
 use gnuplot::AxesCommon;
 use gnuplot::{Auto, Caption, Color, Figure, Fix, LineStyle, Solid};
 use ndarray::linalg::kron;
@@ -9,7 +10,6 @@ use rayon::prelude::*;
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
-use Rustb::*;
 fn main() {
     //!来自 PHYSICAL REVIEW X 12, 031042 (2022) 的 RuO2 模型
     //! $$\\mathcal{H}=t(\cos k_x+\cos k_y)\pm \Delta(\cos k_x-\cos k_y)\pm J\sigma_z\tau_z$$
@@ -23,18 +23,18 @@ fn main() {
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]) * a0;
     let orb = arr2(&[[0.0, 0.0], [0.0, 0.0]]);
     let mut model = Model::tb_model(dim_r, lat, orb, true, None);
-    model.add_hop(t1, 0, 0, &array![1, 0], 0);
-    model.add_hop(t1, 0, 0, &array![0, 1], 0);
-    model.add_hop(t1, 1, 1, &array![1, 0], 0);
-    model.add_hop(t1, 1, 1, &array![0, 1], 0);
+    model.add_hop(t1, 0, 0, &array![1, 0], spin_direction::None);
+    model.add_hop(t1, 0, 0, &array![0, 1], spin_direction::None);
+    model.add_hop(t1, 1, 1, &array![1, 0], spin_direction::None);
+    model.add_hop(t1, 1, 1, &array![0, 1], spin_direction::None);
 
-    model.add_hop(delta, 0, 0, &array![1, 0], 0);
-    model.add_hop(-delta, 0, 0, &array![0, 1], 0);
-    model.add_hop(-delta, 1, 1, &array![1, 0], 0);
-    model.add_hop(delta, 1, 1, &array![0, 1], 0);
+    model.add_hop(delta, 0, 0, &array![1, 0], spin_direction::None);
+    model.add_hop(-delta, 0, 0, &array![0, 1], spin_direction::None);
+    model.add_hop(-delta, 1, 1, &array![1, 0], spin_direction::None);
+    model.add_hop(delta, 1, 1, &array![0, 1], spin_direction::None);
 
-    model.add_hop(J, 0, 0, &array![0, 0], 3);
-    model.add_hop(-J, 1, 1, &array![0, 0], 3);
+    model.add_hop(J, 0, 0, &array![0, 0], spin_direction::z);
+    model.add_hop(-J, 1, 1, &array![0, 0], spin_direction::z);
 
     let nk: usize = 1001;
     let path = array![[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5], [0.0, 0.0]];
@@ -222,7 +222,8 @@ fn conductivity_onek(
     //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
     let li: Complex<f64> = 1.0 * Complex::i();
     let (band, evec) = model.solve_onek(&k_vec);
-    let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) = model.gen_v(k_vec);
+    let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
+        model.gen_v(k_vec, Gauge::Atom);
     let mut J: Array3<Complex<f64>> = v.clone();
     if model.spin {
         let mut X: Array2<Complex<f64>> = Array2::eye(model.nsta());

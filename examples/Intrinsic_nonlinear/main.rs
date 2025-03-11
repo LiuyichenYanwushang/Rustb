@@ -1,4 +1,5 @@
 #![allow(warnings)]
+use Rustb::*;
 use gnuplot::{AxesCommon, Color, Figure, Fix};
 use ndarray::linalg::kron;
 use ndarray::parallel::prelude::IntoParallelRefIterator;
@@ -8,7 +9,6 @@ use ndarray_linalg::*;
 use num_complex::Complex;
 use std::f64::consts::PI;
 use std::ops::AddAssign;
-use Rustb::*;
 ///主要参考这篇文章 10.1103/PhysRevLett.127.277202
 ///
 ///kp模型为
@@ -135,20 +135,20 @@ fn gen_model(w: f64, vx: f64, vy: f64, m: f64) -> Model {
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
     let orb = arr2(&[[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
     let mut model = Model::tb_model(dim_r, lat, orb, false, None);
-    model.set_onsite(&array![m, m, -m, -m], 0);
+    model.set_onsite(&array![m, m, -m, -m], spin_direction::None);
     let w = Complex::new(w, 0.0);
     let vx = Complex::new(vx, 0.0);
     let vy = Complex::new(vy, 0.0);
     for i in 0..4 {
-        model.set_hop(-w * li / 2.0, i, i, &array![1, 0], 0);
+        model.set_hop(-w * li / 2.0, i, i, &array![1, 0], spin_direction::None);
     }
-    model.add_hop(-vx * li / 2.0, 0, 2, &array![1, 0], 0);
-    model.add_hop(vx * li / 2.0, 0, 2, &array![-1, 0], 0);
-    model.add_hop(-vx * li / 2.0, 1, 3, &array![1, 0], 0);
-    model.add_hop(vx * li / 2.0, 1, 3, &array![-1, 0], 0);
-    model.add_hop(vy / 2.0, 0, 3, &array![0, 1], 0);
-    model.add_hop(-vy / 2.0, 0, 3, &array![0, -1], 0);
-    model.add_hop(vy / 2.0, 2, 1, &array![0, -1], 0);
-    model.add_hop(-vy / 2.0, 2, 1, &array![0, 1], 0);
+    model.add_hop(-vx * li / 2.0, 0, 2, &array![1, 0], spin_direction::None);
+    model.add_hop(vx * li / 2.0, 0, 2, &array![-1, 0], spin_direction::None);
+    model.add_hop(-vx * li / 2.0, 1, 3, &array![1, 0], spin_direction::None);
+    model.add_hop(vx * li / 2.0, 1, 3, &array![-1, 0], spin_direction::None);
+    model.add_hop(vy / 2.0, 0, 3, &array![0, 1], spin_direction::None);
+    model.add_hop(-vy / 2.0, 0, 3, &array![0, -1], spin_direction::None);
+    model.add_hop(vy / 2.0, 2, 1, &array![0, -1], spin_direction::None);
+    model.add_hop(-vy / 2.0, 2, 1, &array![0, 1], spin_direction::None);
     model
 }
