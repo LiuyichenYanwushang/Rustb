@@ -3,6 +3,7 @@ use num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 ///This is the orbital projection
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum OrbProj {
     /// $$\ket{s}=\ket{0,0}$$
@@ -264,6 +265,7 @@ impl fmt::Display for OrbProj {
     }
 }
 
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum AtomType {
     /// This is the type of the Atom

@@ -2,7 +2,7 @@
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::generics::hop_use;
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
-use crate::{Gauge, Model, comm, gen_kmesh, spin_direction};
+use crate::{Gauge, Model, comm, gen_kmesh, SpinDirection};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -72,19 +72,19 @@ macro_rules! update_hamiltonian {
     ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {{
         if $spin {
             match $pauli {
-                spin_direction::None => {
+                SpinDirection::None => {
                     $new_ham[[$ind_i, $ind_j]] = $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] = $tmp;
                 }
-                spin_direction::x => {
+                SpinDirection::x => {
                     $new_ham[[$ind_i + $norb, $ind_j]] = $tmp;
                     $new_ham[[$ind_i, $ind_j + $norb]] = $tmp;
                 }
-                spin_direction::y => {
+                SpinDirection::y => {
                     $new_ham[[$ind_i + $norb, $ind_j]] = $tmp * Complex::<f64>::i();
                     $new_ham[[$ind_i, $ind_j + $norb]] = -$tmp * Complex::<f64>::i();
                 }
-                spin_direction::z => {
+                SpinDirection::z => {
                     $new_ham[[$ind_i, $ind_j]] = $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] = -$tmp;
                 }
@@ -102,19 +102,19 @@ macro_rules! add_hamiltonian {
     ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {{
         if $spin {
             match $pauli {
-                spin_direction::None => {
+                SpinDirection::None => {
                     $new_ham[[$ind_i, $ind_j]] += $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] += $tmp;
                 }
-                spin_direction::x => {
+                SpinDirection::x => {
                     $new_ham[[$ind_i + $norb, $ind_j]] += $tmp;
                     $new_ham[[$ind_i, $ind_j + $norb]] += $tmp;
                 }
-                spin_direction::y => {
+                SpinDirection::y => {
                     $new_ham[[$ind_i + $norb, $ind_j]] += $tmp * Complex::<f64>::i();
                     $new_ham[[$ind_i, $ind_j + $norb]] -= $tmp * Complex::<f64>::i();
                 }
-                spin_direction::z => {
+                SpinDirection::z => {
                     $new_ham[[$ind_i, $ind_j]] += $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] -= $tmp;
                 }
@@ -259,7 +259,7 @@ impl Model {
         ind_i: usize,
         ind_j: usize,
         R: &ArrayBase<T, Ix1>,
-        pauli: spin_direction,
+        pauli: impl Into<SpinDirection>,
     ) {
         /*
         //! 这个是用来给模型添加 hopping 的, "set" 表示可以用来覆盖之前的hopping
@@ -299,15 +299,16 @@ impl Model {
         //!let spin=false;
         //!let mut graphene_model=Model::tb_model(2,lat,orb,spin,None);
         //! let t=1.0; //the nearst hopping
-        //! graphene_model.set_hop(t,0,1,&array![0,0],spin_direction::None);
+        //! graphene_model.set_hop(t,0,1,&array![0,0],SpinDirection::None);
         //! // t is the hopping, 0, 1 is the orbital ,array![0,0] is the unit cell
-        //! graphene_model.set_hop(t,0,1,&arr1(&[1,0]),spin_direction::None);
-        //! graphene_model.set_hop(t,0,1,&arr1(&vec![0,-1]),spin_direction::None);
+        //! graphene_model.set_hop(t,0,1,&arr1(&[1,0]),SpinDirection::None);
+        //! graphene_model.set_hop(t,0,1,&arr1(&vec![0,-1]),SpinDirection::None);
         //!
         //! ```
 
+        let pauli:SpinDirection = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
-        if pauli != spin_direction::None && self.spin == false {
+        if pauli != SpinDirection::None && self.spin == false {
             eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
         }
         assert!(
@@ -381,11 +382,12 @@ impl Model {
         ind_i: usize,
         ind_j: usize,
         R: &ArrayBase<T, Ix1>,
-        pauli: spin_direction,
+        pauli: impl Into<SpinDirection>,
     ) {
         //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp
+        let pauli:SpinDirection = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
-        if pauli != spin_direction::None && self.spin == false {
+        if pauli != SpinDirection::None && self.spin == false {
             eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
         }
         assert!(
@@ -493,8 +495,9 @@ impl Model {
     }
 
     #[allow(non_snake_case)]
-    pub fn set_onsite(&mut self, tmp: &Array1<f64>, pauli: spin_direction) {
+    pub fn set_onsite(&mut self, tmp: &Array1<f64>, pauli: impl Into<SpinDirection>) {
         //! 直接对对角项进行设置
+        let pauli = pauli.into();
         if tmp.len() != self.norb() {
             panic!(
                 "Wrong, the norb is {}, however, the onsite input's length is {}",
@@ -508,8 +511,9 @@ impl Model {
     }
 
     #[allow(non_snake_case)]
-    pub fn add_onsite(&mut self, tmp: &Array1<f64>, pauli: spin_direction) {
+    pub fn add_onsite(&mut self, tmp: &Array1<f64>, pauli: impl Into<SpinDirection>) {
         //! 直接对对角项进行设置
+        let pauli = pauli.into();
         if tmp.len() != self.norb() {
             panic!(
                 "Wrong, the norb is {}, however, the onsite input's length is {}",
@@ -524,8 +528,9 @@ impl Model {
         }
     }
     #[allow(non_snake_case)]
-    pub fn set_onsite_one(&mut self, tmp: f64, ind: usize, pauli: spin_direction) {
+    pub fn set_onsite_one(&mut self, tmp: f64, ind: usize, pauli: impl Into<SpinDirection>) {
         //!对  $\bra{i\bm 0}\hat H\ket{i\bm 0}$ 进行设置
+        let pauli = pauli.into();
         let R = Array1::<isize>::zeros(self.dim_r());
         self.set_hop(Complex::new(tmp, 0.0), ind, ind, &R, pauli)
     }
@@ -534,9 +539,10 @@ impl Model {
         ind_i: usize,
         ind_j: usize,
         R: &Array1<isize>,
-        pauli: spin_direction,
+        pauli: impl Into<SpinDirection>
     ) {
         //! 删除 $\bra{i\bm 0}\hat H\ket{j\bm R}$
+        let pauli = pauli.into();
         if R.len() != self.dim_r() {
             panic!("Wrong, the R length should equal to dim_r")
         }

@@ -1,6 +1,8 @@
 //!这个是给程序提供泛型支持的模块
 use num_complex::Complex64;
 use num_traits::identities::Zero;
+use crate::{SpinDirection};
+
 pub trait ToFloat {
     fn to_float(self) -> f64;
 }
@@ -56,5 +58,48 @@ impl hop_use for f64 {
 impl hop_use for Complex64 {
     fn to_complex(&self) -> Complex64 {
         *self
+    }
+}
+
+
+
+
+// 实现从u8到SpinDirection的转换
+impl From<u8> for SpinDirection {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => SpinDirection::None,
+            1 => SpinDirection::x,
+            2 => SpinDirection::y,
+            3 => SpinDirection::z,
+            _ => panic!("Invalid value for SpinDirection"),
+        }
+    }
+}
+
+// 实现从usize到SpinDirection的转换
+impl From<usize> for SpinDirection {
+    fn from(value: usize) -> Self {
+        match value {
+            0 => SpinDirection::None,
+            1 => SpinDirection::x,
+            2 => SpinDirection::y,
+            3 => SpinDirection::z,
+            _ => panic!("Invalid value for SpinDirection"),
+        }
+    }
+}
+
+
+// 实现从i32到SpinDirection的转换
+impl From<i32> for SpinDirection {
+    fn from(value: i32) -> Self {
+        match value {
+            0 => SpinDirection::None,
+            1 => SpinDirection::x,
+            2 => SpinDirection::y,
+            3 => SpinDirection::z,
+            _ => panic!("Invalid value for SpinDirection"),
+        }
     }
 }

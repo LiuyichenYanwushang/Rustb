@@ -103,7 +103,7 @@ impl surf_Green {
         let new_atom = remove_col(model.atom_position(), dir);
         let new_hamR0 = remove_col(hamR0, dir);
         let new_hamRR = remove_col(hamRR, dir);
-        let mut green: surf_Green = surf_Green {
+        let green: surf_Green = surf_Green {
             dim_r: model.dim_r - 1,
             norb: model.norb(),
             nsta: model.nsta(),

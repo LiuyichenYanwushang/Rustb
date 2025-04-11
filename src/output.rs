@@ -31,7 +31,7 @@ impl Model {
     pub fn output_hr(&self, path: &str, seedname: &str) {
         //! 这个函数是用来将 tight-binding 模型输出到 wannier90_hr.dat 格式的
 
-        let n_R = self.hamR.len(); //length of hamR
+        let n_R = self.hamR.nrows(); //length of hamR
         let mut hr_name = String::new();
         hr_name.push_str(path);
         hr_name.push_str(seedname);
@@ -44,11 +44,11 @@ impl Model {
         let last_lines = n_R % 15;
         if lines != 0 {
             for i in 0..lines {
-                weight.push_str("1 1 1 1 1 1 1 1 1 1 1 1 1 1 1\n");
+                weight.push_str("    1    1    1    1    1    1    1    1    1    1    1    1    1    1    1\n");
             }
         }
         for i in 0..last_lines {
-            weight.push_str("1 ");
+            weight.push_str("    1");
         }
         writeln!(file, "{}", weight);
         //接下来我们进行数据的写入
@@ -78,8 +78,10 @@ impl Model {
                         for orb_1 in 0..self.nsta() {
                             for orb_2 in 0..self.nsta() {
                                 s.push_str(&format!(
-                                    "{}    0    0    {:11.8}    {:11.8}\n",
+                                    "{:>3}    0    0    {:>3}    {:>3}    {:>11.8}    {:>11.8}\n",
                                     i,
+                                    orb_1,
+                                    orb_2,
                                     ham[[orb_1, orb_2]].re,
                                     ham[[orb_1, orb_2]].im
                                 ));
@@ -91,8 +93,10 @@ impl Model {
                         for orb_1 in 0..self.nsta() {
                             for orb_2 in 0..self.nsta() {
                                 s.push_str(&format!(
-                                    "{}    0    0    {:>11.8}    {:>11.8}\n",
+                                    "{:>3}    0    0    {:>3}    {:>3}    {:>11.8}    {:>11.8}\n",
                                     i,
+                                    orb_1,
+                                    orb_2,
                                     ham[[orb_1, orb_2]].re,
                                     -ham[[orb_1, orb_2]].im
                                 ));
@@ -119,9 +123,11 @@ impl Model {
                             for orb_1 in 0..self.nsta() {
                                 for orb_2 in 0..self.nsta() {
                                     s.push_str(&format!(
-                                        "{:>3}  {:>3}    0    {:>11.8}    {:>11.8}\n",
+                                        "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>11.8}    {:>11.8}\n",
                                         R1,
                                         R2,
+                                        orb_1,
+                                        orb_2,
                                         ham[[orb_1, orb_2]].re,
                                         ham[[orb_1, orb_2]].im
                                     ));
@@ -133,9 +139,11 @@ impl Model {
                             for orb_1 in 0..self.nsta() {
                                 for orb_2 in 0..self.nsta() {
                                     s.push_str(&format!(
-                                        "{:>3}  {:>3}    0    {:>11.8}    {:>11.8}\n",
+                                        "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>11.8}    {:>11.8}\n",
                                         R1,
                                         R2,
+                                        orb_1,
+                                        orb_2,
                                         ham[[orb_1, orb_2]].re,
                                         -ham[[orb_1, orb_2]].im
                                     ));
@@ -168,10 +176,12 @@ impl Model {
                                 for orb_1 in 0..self.nsta() {
                                     for orb_2 in 0..self.nsta() {
                                         s.push_str(&format!(
-                                            "{:3}  {:3}  {:3}    {:11.8}    {:11.8}\n",
+                                            "{:>3}  {:>3}  {:>3}  {:>3}  {:>3}    {:>11.8}    {:>11.8}\n",
                                             R1,
                                             R2,
                                             R3,
+                                            orb_1,
+                                            orb_2,
                                             ham[[orb_1, orb_2]].re,
                                             ham[[orb_1, orb_2]].im
                                         ));
@@ -186,12 +196,14 @@ impl Model {
                                 for orb_1 in 0..self.nsta() {
                                     for orb_2 in 0..self.nsta() {
                                         s.push_str(&format!(
-                                            "{:3}  {:3}  {:3}    {:11.8}    {:11.8}\n",
+                                            "{:>3}  {:>3}  {:>3}  {:>3}  {:>3}    {:>11.8}    {:>11.8}\n",
                                             R1,
                                             R2,
                                             R3,
+                                            orb_1,
+                                            orb_2,
                                             ham[[orb_1, orb_2]].re,
-                                            -ham[[orb_1, orb_2]].im
+                                           -ham[[orb_1, orb_2]].im
                                         ));
                                     }
                                 }
@@ -203,6 +215,14 @@ impl Model {
             }
             _ => todo!(),
         }
+    }
+
+    pub fn output_POSCAR(&self, path:&str){
+        let mut name = String::new();
+        name.push_str(path);
+        name.push_str("POSCAR");
+        let mut file = File::create(name).expect("Wrong, can't create seedname.win");
+        writeln!(file, "generate by Rustb");
     }
 
     pub fn output_win(&self, path: &str, seedname: &str) {
@@ -219,7 +239,7 @@ impl Model {
                 3 => {
                     writeln!(
                         file,
-                        "{}{:5.6}{:5.6}{:5.6}",
+                        "{}  {:>5.6}  {:>5.6}  {:>5.6}",
                         at.atom_type(),
                         atom_position[0],
                         atom_position[1],
@@ -229,7 +249,7 @@ impl Model {
                 2 => {
                     writeln!(
                         file,
-                        "{}{:5.6}{:5.6}{:5.6}",
+                        "{}  {:>5.6}  {:>5.6}  {:>5.6}",
                         at.atom_type(),
                         atom_position[0],
                         atom_position[1],
@@ -239,7 +259,7 @@ impl Model {
                 1 => {
                     writeln!(
                         file,
-                        "{}{:5.6}{:5.6}{:5.6}",
+                        "{}  {:>5.6}  {:>5.6}  {:>5.6}",
                         at.atom_type(),
                         atom_position[0],
                         0.0,

@@ -20,7 +20,6 @@ rustdoc-args = [ "--html-in-header", "./docs-header.html" ]
 codegen-units = 1
 lto = "fat"
 opt_level=3
-panic = 'abort'
 
 
 [dependencies]
@@ -30,10 +29,10 @@ rayon="1.8.0"
 gnuplot="0.0.39"
 lapack = "0.19.0"
 num-traits = "0.2.17"
-cblas-sys = "0.1.4"
-blas = "0.22.0"
 ndarray = { version = "0.16.1", features = ["rayon", "serde"] }
 serde = { version = "1.0.215", features = ["derive"] }
+blas = "0.23.0"
+cblas-sys = "0.2.0"
 
 
 [dependencies.intel-mkl-src]
@@ -60,6 +59,14 @@ dst = "dos_2D.svg"
 [features]
 intel-mkl-static = ["ndarray-linalg/intel-mkl-static","intel-mkl-src/mkl-static-lp64-seq"]
 intel-mkl-system = ["ndarray-linalg/intel-mkl-system","intel-mkl-src/mkl-dynamic-lp64-seq"]
+
+netlib-static   = ["ndarray-linalg/netlib-static","netlib-src/static"]
+netlib-system   = ["ndarray-linalg/netlib-system","netlib-src/system"]
+
+openblas-static = ["ndarray-linalg/openblas-static","openblas-src/static"]
+openblas-system = ["ndarray-linalg/openblas-system","openblas-src/system"]
+openblas-src = ["dep:openblas-src"]
+netlib-src = ["dep:netlib-src"]
 
 [[example]]
 name = "WTe2_kp"

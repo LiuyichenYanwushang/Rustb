@@ -21,7 +21,7 @@ impl Model {
     where
         S: Data<Elem = f64>,
     {
-        //! 这个函数是计算某一个闭合路径上的 berry phase, 用的是wilson loop 方法.l
+        //! 这个函数是计算某一个闭合路径上的 berry phase, 用的是wilson loop 方法.
         //!
         //! 其算法如下: 我们首先将末端的k点的波函数相位统一. 如果闭合回路沿着布里渊区两端,
         //! 那么因为布洛赫函数在布里渊区存在一个相位差 $e^{-2\pi i \bm \tau_i}$, 我们有
@@ -125,7 +125,7 @@ impl Model {
             self.dim_r()
         );
         //开始构造loop
-        let mut k_loop = Array3::<f64>::zeros((nk1 * nk2, 9, self.dim_r()));
+        let mut k_loop = Array3::<f64>::zeros((nk1 * nk2, 5, self.dim_r()));
         for i in 0..nk1 {
             for j in 0..nk2 {
                 let i0 = (i as f64) / (nk1 as f64);
@@ -133,23 +133,15 @@ impl Model {
                 let dx = 1.0 / (nk1 as f64);
                 let dy = 1.0 / (nk2 as f64);
                 let mut s = k_loop.slice_mut(s![i * nk2 + j, 0, ..]);
-                s.assign(&(k_start + (i0 + dx) * dir_1 + j0 * dir_2));
+                s.assign(&(k_start + (i0) * dir_1 + (j0) * dir_2));
                 let mut s = k_loop.slice_mut(s![i * nk2 + j, 1, ..]);
-                s.assign(&(k_start + (i0 + dx) * dir_1 + (j0 + dy) * dir_2));
+                s.assign(&(k_start + (i0 + dx) * dir_1 + j0 * dir_2));
                 let mut s = k_loop.slice_mut(s![i * nk2 + j, 2, ..]);
-                s.assign(&(k_start + (i0) * dir_1 + (j0 + dy) * dir_2));
+                s.assign(&(k_start + (i0 + dx) * dir_1 + (j0 + dy) * dir_2));
                 let mut s = k_loop.slice_mut(s![i * nk2 + j, 3, ..]);
-                s.assign(&(k_start + (i0 - dx) * dir_1 + (j0 + dy) * dir_2));
+                s.assign(&(k_start + (i0) * dir_1 + (j0 + dy) * dir_2));
                 let mut s = k_loop.slice_mut(s![i * nk2 + j, 4, ..]);
-                s.assign(&(k_start + (i0 - dx) * dir_1 + (j0) * dir_2));
-                let mut s = k_loop.slice_mut(s![i * nk2 + j, 5, ..]);
-                s.assign(&(k_start + (i0 - dx) * dir_1 + (j0 - dy) * dir_2));
-                let mut s = k_loop.slice_mut(s![i * nk2 + j, 6, ..]);
-                s.assign(&(k_start + (i0) * dir_1 + (j0 - dy) * dir_2));
-                let mut s = k_loop.slice_mut(s![i * nk2 + j, 7, ..]);
-                s.assign(&(k_start + (i0 + dx) * dir_1 + (j0 - dy) * dir_2));
-                let mut s = k_loop.slice_mut(s![i * nk2 + j, 8, ..]);
-                s.assign(&(k_start + (i0 + dx) * dir_1 + (j0) * dir_2));
+                s.assign(&(k_start + (i0) * dir_1 + (j0) * dir_2));
             }
         }
         let berry_flux: Vec<_> = k_loop
