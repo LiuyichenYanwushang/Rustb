@@ -74,11 +74,11 @@ pub enum Gauge {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
-pub enum Dimention{
+pub enum Dimention {
     zero = 0,
-    one  = 1,
-    two  = 2,
-    three= 3,
+    one = 1,
+    two = 2,
+    three = 3,
 }
 
 #[repr(u8)]
@@ -574,7 +574,7 @@ mod tests {
         k_list.row_mut(8).assign(&(&k_vec + dk * &dir_1));
         let result2 = model.berry_loop(&k_list, &vec![0]);
         let result2 = result2[[0]] / (dk.powi(2)) / 4.0 / (2.0 * PI) * 3_f64.sqrt() / 2.0;
-        println!("result2={},result1={}",result2,result1);
+        println!("result2={},result1={}", result2, result1);
         assert!(
             (result2 - result1).abs() < 1e-4,
             "Wrong!, the berry_curvature or berry_flux mut be false"
@@ -828,7 +828,7 @@ mod tests {
         let x: Vec<f64> = Array1::<f64>::linspace(0.0, 1.0, 101).to_vec();
         let axes = fg.axes2d();
         for j in -1..2 {
-            for i in 0..nocc{
+            for i in 0..nocc {
                 let a = wcc.row(i).to_owned() + (j as f64) * 2.0 * PI;
                 let y: Vec<f64> = a.to_vec();
                 axes.points(
@@ -881,8 +881,19 @@ mod tests {
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
         //-----------用 berry_flux 算一下
-        let C=model.berry_flux(&occ, &array![0.0,0.0], &array![1.0,0.0], &array![0.0,1.0], 101, 101).sum()/PI/2.0;
-        println!("The Chern number of Haldan model is {}",C);
+        let C = model
+            .berry_flux(
+                &occ,
+                &array![0.0, 0.0],
+                &array![1.0, 0.0],
+                &array![0.0, 1.0],
+                101,
+                101,
+            )
+            .sum()
+            / PI
+            / 2.0;
+        println!("The Chern number of Haldan model is {}", C);
     }
     #[test]
     fn graphene() {

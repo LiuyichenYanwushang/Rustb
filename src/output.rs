@@ -44,7 +44,9 @@ impl Model {
         let last_lines = n_R % 15;
         if lines != 0 {
             for i in 0..lines {
-                weight.push_str("    1    1    1    1    1    1    1    1    1    1    1    1    1    1    1\n");
+                weight.push_str(
+                    "    1    1    1    1    1    1    1    1    1    1    1    1    1    1    1\n",
+                );
             }
         }
         for i in 0..last_lines {
@@ -59,7 +61,7 @@ impl Model {
                 for orb_1 in 0..self.nsta() {
                     for orb_2 in 0..self.nsta() {
                         s.push_str(&format!(
-                            "0    0    0    {:11.8}    {:11.8}\n",
+                            "0    0    0    {:15.8}    {:15.8}\n",
                             ham[[orb_1, orb_2]].re,
                             ham[[orb_1, orb_2]].im
                         ));
@@ -78,7 +80,7 @@ impl Model {
                         for orb_1 in 0..self.nsta() {
                             for orb_2 in 0..self.nsta() {
                                 s.push_str(&format!(
-                                    "{:>3}    0    0    {:>3}    {:>3}    {:>11.8}    {:>11.8}\n",
+                                    "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                     i,
                                     orb_1,
                                     orb_2,
@@ -93,7 +95,7 @@ impl Model {
                         for orb_1 in 0..self.nsta() {
                             for orb_2 in 0..self.nsta() {
                                 s.push_str(&format!(
-                                    "{:>3}    0    0    {:>3}    {:>3}    {:>11.8}    {:>11.8}\n",
+                                    "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                     i,
                                     orb_1,
                                     orb_2,
@@ -123,7 +125,7 @@ impl Model {
                             for orb_1 in 0..self.nsta() {
                                 for orb_2 in 0..self.nsta() {
                                     s.push_str(&format!(
-                                        "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>11.8}    {:>11.8}\n",
+                                        "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                         R1,
                                         R2,
                                         orb_1,
@@ -139,7 +141,7 @@ impl Model {
                             for orb_1 in 0..self.nsta() {
                                 for orb_2 in 0..self.nsta() {
                                     s.push_str(&format!(
-                                        "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>11.8}    {:>11.8}\n",
+                                        "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                         R1,
                                         R2,
                                         orb_1,
@@ -176,12 +178,12 @@ impl Model {
                                 for orb_1 in 0..self.nsta() {
                                     for orb_2 in 0..self.nsta() {
                                         s.push_str(&format!(
-                                            "{:>3}  {:>3}  {:>3}  {:>3}  {:>3}    {:>11.8}    {:>11.8}\n",
+                                            "{:>3}  {:>3}  {:>3}  {:>3}  {:>3}    {:>15.8}    {:>15.8}\n",
                                             R1,
                                             R2,
                                             R3,
-                                            orb_1,
-                                            orb_2,
+                                            orb_1+1,
+                                            orb_2+1,
                                             ham[[orb_1, orb_2]].re,
                                             ham[[orb_1, orb_2]].im
                                         ));
@@ -196,12 +198,12 @@ impl Model {
                                 for orb_1 in 0..self.nsta() {
                                     for orb_2 in 0..self.nsta() {
                                         s.push_str(&format!(
-                                            "{:>3}  {:>3}  {:>3}  {:>3}  {:>3}    {:>11.8}    {:>11.8}\n",
+                                            "{:>3}  {:>3}  {:>3}  {:>3}  {:>3}    {:>15.8}    {:>15.8}\n",
                                             R1,
                                             R2,
                                             R3,
-                                            orb_1,
-                                            orb_2,
+                                            orb_1+1,
+                                            orb_2+1,
                                             ham[[orb_1, orb_2]].re,
                                            -ham[[orb_1, orb_2]].im
                                         ));
@@ -217,12 +219,91 @@ impl Model {
         }
     }
 
-    pub fn output_POSCAR(&self, path:&str){
+    pub fn output_POSCAR(&self, path: &str) {
         let mut name = String::new();
         name.push_str(path);
         name.push_str("POSCAR");
-        let mut file = File::create(name).expect("Wrong, can't create seedname.win");
-        writeln!(file, "generate by Rustb");
+        let mut file = File::create(&name).expect("Unable to BAND.dat");
+        writeln!(file, "Generate by Rustb");
+        writeln!(file, "1.0");
+        let s=match self.dim_r{
+            3=>{
+                let mut s = String::new();
+                s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],self.lat[[0,1]],self.lat[[0,2]],self.lat[[1,0]],self.lat[[1,1]],self.lat[[1,2]],self.lat[[2,0]],self.lat[[2,1]],self.lat[[2,2]]));
+                s
+            },
+            2=>{
+                let mut s = String::new();
+                s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],self.lat[[0,1]],0.0,self.lat[[1,0]],self.lat[[1,1]],0.0,0.0,0.0,10.0));
+                s
+            },
+            1=>{
+                let mut s = String::new();
+                s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],0.0,0.0,0.0,10.0,0.0,0.0,0.0,10.0));
+                s
+            },
+            _=>{
+                panic!("Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours {}",self.dim_r);
+            }
+        };
+        writeln!(file,"{}",s);
+        //开始弄atom
+        let mut atom_type=vec![];
+        let mut atom_num=vec![];
+        let mut new_atom_position:Vec<Vec<Array1<f64>>>=Vec::new();
+        for i in 0..self.natom(){
+            let mut have_atom=false;
+            for j in 0..atom_type.len(){
+                if self.atoms[i].atom_type()==atom_type[j]{
+                    have_atom=true;
+                    atom_num[j]+=1;
+                    new_atom_position[j].push(self.atom_position().row(i).to_owned());
+                }
+            }
+            if have_atom==false{
+                atom_num.push(1);
+                atom_type.push(self.atoms[i].atom_type());
+                new_atom_position.push(vec![self.atom_position().row(i).to_owned()]);
+            }
+
+        }
+        let mut s=String::new();
+        for i in 0..atom_type.len(){
+            s.push_str(&format!("   {}",atom_type[i]));
+        }
+        writeln!(file,"{}",s);
+        let mut s=String::new();
+        for i in 0..atom_type.len(){
+            s.push_str(&format!("{:>4}",atom_num[i]));
+        }
+        writeln!(file,"{}",s);
+        writeln!(file, "Direct");
+        let mut s = String::new();
+        for i in 0..atom_type.len(){
+            for j in 0..new_atom_position[i].len(){
+                let s=match self.dim_r{
+                    3=>{
+                        let mut s=String::new();
+                        s.push_str(&format!("{:>15.8}   {:>15.8}   {:>15.8}", new_atom_position[i][j][[0]],new_atom_position[i][j][[1]],new_atom_position[i][j][[2]]));
+                        s
+                    },
+                    2=>{
+                        let mut s=String::new();
+                        s.push_str(&format!("{:>15.8}   {:>15.8}   {:>15.8}", new_atom_position[i][j][[0]],new_atom_position[i][j][[1]],0.0));
+                        s
+                    },
+                    1=>{
+                        let mut s=String::new();
+                        s.push_str(&format!("{:>15.8}   {:>15.8}   {:>15.8}", new_atom_position[i][j][[0]],0.0,0.0));
+                        s
+                    },
+                    _=>{
+                        panic!("Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours {}",self.dim_r);
+                    }
+                };
+                writeln!(file,"{}",s);
+            }
+        }
     }
 
     pub fn output_win(&self, path: &str, seedname: &str) {
@@ -239,7 +320,7 @@ impl Model {
                 3 => {
                     writeln!(
                         file,
-                        "{}  {:>5.6}  {:>5.6}  {:>5.6}",
+                        "{}  {:>10.6}  {:>10.6}  {:>10.6}",
                         at.atom_type(),
                         atom_position[0],
                         atom_position[1],
@@ -249,7 +330,7 @@ impl Model {
                 2 => {
                     writeln!(
                         file,
-                        "{}  {:>5.6}  {:>5.6}  {:>5.6}",
+                        "{}  {:>10.6}  {:>10.6}  {:>10.6}",
                         at.atom_type(),
                         atom_position[0],
                         atom_position[1],
@@ -259,7 +340,7 @@ impl Model {
                 1 => {
                     writeln!(
                         file,
-                        "{}  {:>5.6}  {:>5.6}  {:>5.6}",
+                        "{}  {:>10.6}  {:>10.6}  {:>10.6}",
                         at.atom_type(),
                         atom_position[0],
                         0.0,
@@ -272,6 +353,44 @@ impl Model {
         writeln!(file, "end atoms_cart");
         writeln!(file, "\n");
         writeln!(file, "begin unit_cell_cart");
+        match self.dim_r {
+            3 => {
+                let mut s = String::new();
+                for i in 0..3 {
+                    for j in 0..3 {
+                        s.push_str(&format!("{:>10.6}  ", self.lat[[i, j]]));
+                    }
+                    writeln!(file, "{}", s);
+                }
+            }
+            2 => {
+                let mut s = String::new();
+                for i in 0..2 {
+                    for j in 0..2 {
+                        s.push_str(&format!("{:>10.6}  ", self.lat[[i, j]]));
+                    }
+                    s.push_str("   0.000000");
+                    writeln!(file, "{}", s);
+                }
+                writeln!(file, "   0.000000     0.000000     1.000000");
+            }
+            1 => {
+                let mut s = String::new();
+                s.push_str(&format!("{:>10.6}  ", self.lat[[0, 0]]));
+                s.push_str("   0.000000     0.000000");
+                writeln!(file, "{}", s);
+                writeln!(file, "   0.000000     0.000000     1.000000");
+                writeln!(file, "   0.000000     0.000000     1.000000");
+            }
+            _ => {
+                panic!(
+                    "Wrong! Using output win file, the dim_r of model mut be 1, 2, or 3, but yours {}",
+                    self.dim_r
+                )
+            }
+        }
         writeln!(file, "end unit_cell_cart");
+        writeln!(file, "\n");
+        //还差投影轨道
     }
 }

@@ -2,7 +2,7 @@
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::generics::hop_use;
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
-use crate::{Gauge, Model, comm, gen_kmesh, SpinDirection};
+use crate::{Gauge, Model, SpinDirection, comm, gen_kmesh};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -306,7 +306,7 @@ impl Model {
         //!
         //! ```
 
-        let pauli:SpinDirection = pauli.into();
+        let pauli: SpinDirection = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
         if pauli != SpinDirection::None && self.spin == false {
             eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
@@ -385,7 +385,7 @@ impl Model {
         pauli: impl Into<SpinDirection>,
     ) {
         //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp
-        let pauli:SpinDirection = pauli.into();
+        let pauli: SpinDirection = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
         if pauli != SpinDirection::None && self.spin == false {
             eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
@@ -539,7 +539,7 @@ impl Model {
         ind_i: usize,
         ind_j: usize,
         R: &Array1<isize>,
-        pauli: impl Into<SpinDirection>
+        pauli: impl Into<SpinDirection>,
     ) {
         //! 删除 $\bra{i\bm 0}\hat H\ket{j\bm R}$
         let pauli = pauli.into();
