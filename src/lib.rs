@@ -452,8 +452,7 @@ mod tests {
                 .all(|(&x, &y)| (x.re - y.re).abs() < tolerance && (x.im - y.im).abs() < tolerance)
         }
         let li: Complex<f64> = 1.0 * Complex::i();
-        let t = 1.0 + 0.0 * li;
-        let t2 = -0.0 + 0.0 * li;
+        let t = 1.0;
         let delta = 0.0;
         let dim_r: usize = 2;
         let norb: usize = 2;
@@ -465,16 +464,6 @@ mod tests {
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.set_hop(t, 0, 1, &R, SpinDirection::None);
-        }
-        let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
-            let R = R.to_owned();
-            model.add_hop(t2 * li, 0, 0, &R, SpinDirection::None);
-        }
-        let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
-            let R = R.to_owned();
-            model.add_hop(t2 * li, 1, 1, &R, SpinDirection::None);
         }
         assert_eq!(model.solve_band_onek(&array![0.0, 0.0]), array![-3.0, 3.0]);
         let result = model.solve_band_onek(&array![1.0 / 3.0, 2.0 / 3.0]);
@@ -501,6 +490,15 @@ mod tests {
             "Wrong! the gen_v is get wrong results! please check it!"
         );
 
+
+        let (result, _) = model.gen_v(&array![1.0 / 3.0, 1.0 / 3.0], Gauge::Lattice);
+        let resultx=array![[0.0*li,-3.0*3.0_f64.sqrt()/4.0*t+3.0/4.0*t*li],[-3.0*3.0_f64.sqrt()/4.0*t-3.0/4.0*t*li,0.0*li]];
+        println!("result={}", &result-&resultx);
+        assert!(
+            are_complex_arrays_close(&result.slice(s![0, .., ..]).to_owned(), &resultx, 1e-8),
+            "Wrong! the gen_v is get wrong results! please check it!"
+        );
+
         let kvec = array![1.0 / 3.0, 1.0 / 3.0];
         let (band, evec) = model.solve_onek(&kvec);
         let ham = model.gen_ham(&kvec, Gauge::Atom);
@@ -513,6 +511,8 @@ mod tests {
             are_arrays_close(&new_band, &band, 1e-5),
             "wrong!, the solve_onek get wrong result! please check it!"
         );
+
+
     }
     #[test]
     fn conductivity_test() {

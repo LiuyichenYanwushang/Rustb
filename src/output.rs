@@ -58,8 +58,8 @@ impl Model {
             0 => {
                 let mut s = String::new();
                 let ham = self.ham.slice(s![0, .., ..]);
-                for orb_1 in 0..self.nsta() {
-                    for orb_2 in 0..self.nsta() {
+                for orb_2 in 0..self.nsta() {
+                    for orb_1 in 0..self.nsta() {
                         s.push_str(&format!(
                             "0    0    0    {:15.8}    {:15.8}\n",
                             ham[[orb_1, orb_2]].re,
@@ -77,8 +77,8 @@ impl Model {
                     if R_exist {
                         let r0 = index_R(&self.hamR, &array![i as isize]);
                         let ham = self.ham.slice(s![r0, .., ..]);
-                        for orb_1 in 0..self.nsta() {
-                            for orb_2 in 0..self.nsta() {
+                        for orb_2 in 0..self.nsta() {
+                            for orb_1 in 0..self.nsta() {
                                 s.push_str(&format!(
                                     "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                     i,
@@ -92,8 +92,8 @@ impl Model {
                     } else if R_inv_exist {
                         let r0 = index_R(&self.hamR, &(-array![i as isize]));
                         let ham = self.ham.slice(s![r0, .., ..]);
-                        for orb_1 in 0..self.nsta() {
-                            for orb_2 in 0..self.nsta() {
+                        for orb_2 in 0..self.nsta() {
+                            for orb_1 in 0..self.nsta() {
                                 s.push_str(&format!(
                                     "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                     i,
@@ -122,8 +122,8 @@ impl Model {
                         if R_exist {
                             let r0 = index_R(&self.hamR, &array![R1 as isize, R2 as isize]);
                             let ham = self.ham.slice(s![r0, .., ..]);
-                            for orb_1 in 0..self.nsta() {
-                                for orb_2 in 0..self.nsta() {
+                            for orb_2 in 0..self.nsta() {
+                                for orb_1 in 0..self.nsta() {
                                     s.push_str(&format!(
                                         "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                         R1,
@@ -138,8 +138,8 @@ impl Model {
                         } else if R_inv_exist {
                             let r0 = index_R(&self.hamR, &(-array![R1 as isize, R2 as isize]));
                             let ham = self.ham.slice(s![r0, .., ..]);
-                            for orb_1 in 0..self.nsta() {
-                                for orb_2 in 0..self.nsta() {
+                            for orb_2 in 0..self.nsta() {
+                                for orb_1 in 0..self.nsta() {
                                     s.push_str(&format!(
                                         "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                         R1,
@@ -175,8 +175,8 @@ impl Model {
                             if R_exist {
                                 let r0 = index_R(&self.hamR, &array![R1 as isize, R2 as isize]);
                                 let ham = self.ham.slice(s![r0, .., ..]);
-                                for orb_1 in 0..self.nsta() {
-                                    for orb_2 in 0..self.nsta() {
+                                for orb_2 in 0..self.nsta() {
+                                    for orb_1 in 0..self.nsta() {
                                         s.push_str(&format!(
                                             "{:>3}  {:>3}  {:>3}  {:>3}  {:>3}    {:>15.8}    {:>15.8}\n",
                                             R1,
@@ -195,8 +195,8 @@ impl Model {
                                     &(-array![R1 as isize, R2 as isize, R3 as isize]),
                                 );
                                 let ham = self.ham.slice(s![r0, .., ..]);
-                                for orb_1 in 0..self.nsta() {
-                                    for orb_2 in 0..self.nsta() {
+                                for orb_2 in 0..self.nsta() {
+                                    for orb_1 in 0..self.nsta() {
                                         s.push_str(&format!(
                                             "{:>3}  {:>3}  {:>3}  {:>3}  {:>3}    {:>15.8}    {:>15.8}\n",
                                             R1,
@@ -226,82 +226,102 @@ impl Model {
         let mut file = File::create(&name).expect("Unable to BAND.dat");
         writeln!(file, "Generate by Rustb");
         writeln!(file, "1.0");
-        let s=match self.dim_r{
-            3=>{
+        let s = match self.dim_r {
+            3 => {
                 let mut s = String::new();
                 s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],self.lat[[0,1]],self.lat[[0,2]],self.lat[[1,0]],self.lat[[1,1]],self.lat[[1,2]],self.lat[[2,0]],self.lat[[2,1]],self.lat[[2,2]]));
                 s
-            },
-            2=>{
+            }
+            2 => {
                 let mut s = String::new();
                 s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],self.lat[[0,1]],0.0,self.lat[[1,0]],self.lat[[1,1]],0.0,0.0,0.0,10.0));
                 s
-            },
-            1=>{
+            }
+            1 => {
                 let mut s = String::new();
                 s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],0.0,0.0,0.0,10.0,0.0,0.0,0.0,10.0));
                 s
-            },
-            _=>{
-                panic!("Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours {}",self.dim_r);
+            }
+            _ => {
+                panic!(
+                    "Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours {}",
+                    self.dim_r
+                );
             }
         };
-        writeln!(file,"{}",s);
+        writeln!(file, "{}", s);
         //开始弄atom
-        let mut atom_type=vec![];
-        let mut atom_num=vec![];
-        let mut new_atom_position:Vec<Vec<Array1<f64>>>=Vec::new();
-        for i in 0..self.natom(){
-            let mut have_atom=false;
-            for j in 0..atom_type.len(){
-                if self.atoms[i].atom_type()==atom_type[j]{
-                    have_atom=true;
-                    atom_num[j]+=1;
+        let mut atom_type = vec![];
+        let mut atom_num = vec![];
+        let mut new_atom_position: Vec<Vec<Array1<f64>>> = Vec::new();
+        for i in 0..self.natom() {
+            let mut have_atom = false;
+            for j in 0..atom_type.len() {
+                if self.atoms[i].atom_type() == atom_type[j] {
+                    have_atom = true;
+                    atom_num[j] += 1;
                     new_atom_position[j].push(self.atom_position().row(i).to_owned());
                 }
             }
-            if have_atom==false{
+            if have_atom == false {
                 atom_num.push(1);
                 atom_type.push(self.atoms[i].atom_type());
                 new_atom_position.push(vec![self.atom_position().row(i).to_owned()]);
             }
-
         }
-        let mut s=String::new();
-        for i in 0..atom_type.len(){
-            s.push_str(&format!("   {}",atom_type[i]));
+        let mut s = String::new();
+        for i in 0..atom_type.len() {
+            s.push_str(&format!("   {}", atom_type[i]));
         }
-        writeln!(file,"{}",s);
-        let mut s=String::new();
-        for i in 0..atom_type.len(){
-            s.push_str(&format!("{:>4}",atom_num[i]));
+        writeln!(file, "{}", s);
+        let mut s = String::new();
+        for i in 0..atom_type.len() {
+            s.push_str(&format!("{:>4}", atom_num[i]));
         }
-        writeln!(file,"{}",s);
+        writeln!(file, "{}", s);
         writeln!(file, "Direct");
         let mut s = String::new();
-        for i in 0..atom_type.len(){
-            for j in 0..new_atom_position[i].len(){
-                let s=match self.dim_r{
-                    3=>{
-                        let mut s=String::new();
-                        s.push_str(&format!("{:>15.8}   {:>15.8}   {:>15.8}", new_atom_position[i][j][[0]],new_atom_position[i][j][[1]],new_atom_position[i][j][[2]]));
+        for i in 0..atom_type.len() {
+            for j in 0..new_atom_position[i].len() {
+                let s = match self.dim_r {
+                    3 => {
+                        let mut s = String::new();
+                        s.push_str(&format!(
+                            "{:>15.8}   {:>15.8}   {:>15.8}",
+                            new_atom_position[i][j][[0]],
+                            new_atom_position[i][j][[1]],
+                            new_atom_position[i][j][[2]]
+                        ));
                         s
-                    },
-                    2=>{
-                        let mut s=String::new();
-                        s.push_str(&format!("{:>15.8}   {:>15.8}   {:>15.8}", new_atom_position[i][j][[0]],new_atom_position[i][j][[1]],0.0));
+                    }
+                    2 => {
+                        let mut s = String::new();
+                        s.push_str(&format!(
+                            "{:>15.8}   {:>15.8}   {:>15.8}",
+                            new_atom_position[i][j][[0]],
+                            new_atom_position[i][j][[1]],
+                            0.0
+                        ));
                         s
-                    },
-                    1=>{
-                        let mut s=String::new();
-                        s.push_str(&format!("{:>15.8}   {:>15.8}   {:>15.8}", new_atom_position[i][j][[0]],0.0,0.0));
+                    }
+                    1 => {
+                        let mut s = String::new();
+                        s.push_str(&format!(
+                            "{:>15.8}   {:>15.8}   {:>15.8}",
+                            new_atom_position[i][j][[0]],
+                            0.0,
+                            0.0
+                        ));
                         s
-                    },
-                    _=>{
-                        panic!("Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours {}",self.dim_r);
+                    }
+                    _ => {
+                        panic!(
+                            "Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours {}",
+                            self.dim_r
+                        );
                     }
                 };
-                writeln!(file,"{}",s);
+                writeln!(file, "{}", s);
             }
         }
     }
@@ -392,5 +412,134 @@ impl Model {
         writeln!(file, "end unit_cell_cart");
         writeln!(file, "\n");
         //还差投影轨道
+        writeln!(file, "begin projections");
+        writeln!(file, "end projections");
+    }
+    pub fn output_xyz(&self, path: &str, seedname: &str) {
+        //!这个是用来输出 xyz 文件的. 这里projection 需要人为添加, 因为没有保存相关的projection 数据
+        let mut name = String::new();
+        name.push_str(path);
+        name.push_str(seedname);
+        name.push_str("_centres.xyz");
+        let mut file = File::create(name).expect("Wrong, can't create seedname.win");
+        let number = self.nsta() + self.natom();
+        let orb_real = self.orb.dot(&self.lat);
+        let atom_position_real = self.atom_position().dot(&self.lat);
+        writeln!(file, "{}", number);
+        writeln!(file, "Wannier centres, written by Rustb");
+        let mut s = match self.dim_r {
+            3 => {
+                let mut s = String::new();
+                for i in 0..self.norb() {
+                    s.push_str(&format!(
+                        "X{:>20.8}{:>17.8}{:>17.8}\n",
+                        orb_real[[i, 0]],
+                        orb_real[[i, 1]],
+                        orb_real[[i, 2]]
+                    ));
+                }
+                if self.spin {
+                    for i in 0..self.norb() {
+                        s.push_str(&format!(
+                            "X{:>20.8}{:>17.8}{:>17.8}\n",
+                            orb_real[[i, 0]],
+                            orb_real[[i, 1]],
+                            orb_real[[i, 2]]
+                        ));
+                    }
+                }
+                for i in 0..self.natom() - 1 {
+                    s.push_str(&format!(
+                        "{}{:>19.8}{:>17.8}{:>17.8}\n",
+                        self.atoms[i].atom_type(),
+                        atom_position_real[[i, 0]],
+                        atom_position_real[[i, 1]],
+                        atom_position_real[[i, 2]]
+                    ));
+                }
+                let i = self.natom() - 1;
+                s.push_str(&format!(
+                    "{}{:>19.8}{:>17.8}{:>17.8}",
+                    self.atoms[i].atom_type(),
+                    atom_position_real[[i, 0]],
+                    atom_position_real[[i, 1]],
+                    atom_position_real[[i, 2]]
+                ));
+                s
+            }
+            2 => {
+                let mut s = String::new();
+                for i in 0..self.norb() {
+                    s.push_str(&format!(
+                        "X{:>20.8}{:>17.8}       0.00000000\n",
+                        orb_real[[i, 0]],
+                        orb_real[[i, 1]]
+                    ));
+                }
+                if self.spin {
+                    for i in 0..self.norb() {
+                        s.push_str(&format!(
+                            "X{:>20.8}{:>17.8}       0.00000000\n",
+                            orb_real[[i, 0]],
+                            orb_real[[i, 1]]
+                        ));
+                    }
+                }
+                for i in 0..self.natom() - 1 {
+                    s.push_str(&format!(
+                        "{}{:>19.8}{:>17.8}       0.00000000\n",
+                        self.atoms[i].atom_type(),
+                        atom_position_real[[i, 0]],
+                        atom_position_real[[i, 1]]
+                    ));
+                }
+                let i = self.natom() - 1;
+                s.push_str(&format!(
+                    "{}{:>19.8}{:>17.8}       0.00000000",
+                    self.atoms[i].atom_type(),
+                    atom_position_real[[i, 0]],
+                    atom_position_real[[i, 1]]
+                ));
+                s
+            }
+            1 => {
+                let mut s = String::new();
+                for i in 0..self.norb() {
+                    s.push_str(&format!(
+                        "X{:>20.8}       0.00000000       0.00000000\n",
+                        orb_real[[i, 0]]
+                    ));
+                }
+                if self.spin {
+                    for i in 0..self.norb() {
+                        s.push_str(&format!(
+                            "X{:>20.8}       0.00000000       0.00000000\n",
+                            orb_real[[i, 0]]
+                        ));
+                    }
+                }
+                for i in 0..self.natom() - 1 {
+                    s.push_str(&format!(
+                        "{}{:>19.8}       0.00000000       0.00000000\n",
+                        self.atoms[i].atom_type(),
+                        atom_position_real[[i, 0]]
+                    ));
+                }
+                let i = self.natom() - 1;
+                s.push_str(&format!(
+                    "{}{:>19.8}       0.00000000       0.00000000",
+                    self.atoms[i].atom_type(),
+                    atom_position_real[[i, 0]]
+                ));
+                s
+            }
+            _ => {
+                panic!(
+                    "Wrong!, the dim_r must be 1,2 or 3, but yours {}",
+                    self.dim_r
+                );
+            }
+        };
+        writeln!(file, "{}", s);
     }
 }

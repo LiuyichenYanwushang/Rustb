@@ -780,6 +780,7 @@ impl Model {
                 (v, hamk)
             }
             Gauge::Lattice => {
+                //采用晶格规范
                 Zip::from(v.outer_iter_mut())
                     .and(R0.axis_iter(Axis(1)))
                     .for_each(|mut v0, r| {
@@ -802,8 +803,8 @@ impl Model {
                         .fold(rk, |acc, (ham, us)| acc + &ham * *us);
                     for i in 0..3 {
                         let mut r0: ArrayViewMut2<Complex<f64>> = rk.slice_mut(s![i, .., ..]);
-                        let mut dig = r0.diag_mut();
-                        dig.assign(&Array1::zeros(self.nsta()));
+                        //let mut dig = r0.diag_mut();
+                        //dig.assign(&Array1::zeros(self.nsta()));
                         let A = comm(&hamk, &r0) * Complex::i();
                         v.slice_mut(s![i, .., ..]).add_assign(&A);
                     }
@@ -2025,6 +2026,61 @@ impl Model {
         self.rmatrix = new_rmatrix;
     }
 
+    pub fn reorder_atom(&mut self, order: &Vec<usize>) {
+        ///这个函数是用来调整模型的原子顺序的, 主要用来检查某些模型
+        if order.len() != self.natom() {
+            panic!(
+                "Wrong! when you using reorder_atom, the order's length {} must equal to the num of atoms {}.",
+                order.len(),
+                self.natom()
+            );
+        };
+        //首先我们根据原子顺序得到轨道顺序
+        let mut new_orb_order = Vec::new();
+        //第n个原子的最开始的轨道数
+        let mut orb_atom_map = Vec::new();
+        let mut a = 0;
+        for atom in self.atoms.iter() {
+            orb_atom_map.push(a);
+            a += atom.norb();
+        }
+        for i in order.iter() {
+            let mut s = String::new();
+            for j in 0..self.atoms[*i].norb() {
+                new_orb_order.push(orb_atom_map[*i] + j);
+            }
+        }
+        //重排轨道顺序
+        self.orb = self.orb.select(Axis(0), &new_orb_order);
+        let mut new_atom = Vec::new();
+        //重排轨道projection顺序
+        let mut new_orb_proj = Vec::new();
+        for i in new_orb_order.iter() {
+            new_orb_proj.push(self.orb_projection[*i]);
+        }
+        self.orb_projection = new_orb_proj;
+        //重排原子顺序
+        for i in 0..self.natom() {
+            new_atom.push(self.atoms[order[i]].clone());
+        }
+        self.atoms = new_atom;
+        //开始重排哈密顿量
+        let new_state_order = if self.spin {
+            //如果有自旋
+            let mut new_state_order = new_orb_order.clone();
+            for i in new_orb_order.iter() {
+                new_state_order.push(*i + self.norb());
+            }
+            new_state_order
+        } else {
+            new_orb_order
+        };
+        self.ham = self.ham.select(Axis(1), &new_state_order);
+        self.ham = self.ham.select(Axis(2), &new_state_order);
+        self.rmatrix = self.rmatrix.select(Axis(2), &new_state_order);
+        self.rmatrix = self.rmatrix.select(Axis(3), &new_state_order);
+    }
+
     pub fn unfold(
         &self,
         U: &Array2<f64>,
@@ -2553,21 +2609,14 @@ impl Model {
                             let index = index_R(&self.hamR, &R0);
                             add_R = true;
                             useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
-                            useham[[int_i + norb, int_j]] =
-                                self.ham[[index, *use_i + self.norb(), *use_j]];
-                            useham[[int_i, int_j + norb]] =
-                                self.ham[[index, *use_i, *use_j + self.norb()]];
-                            useham[[int_i + norb, int_j + norb]] =
-                                self.ham[[index, *use_i + self.norb(), *use_j + self.norb()]];
+                            useham[[int_i + norb, int_j]] = self.ham[[index, *use_i + self.norb(), *use_j]];
+                            useham[[int_i, int_j + norb]] = self.ham[[index, *use_i, *use_j + self.norb()]];
+                            useham[[int_i + norb, int_j + norb]] = self.ham[[index, *use_i + self.norb(), *use_j + self.norb()]];
                             for r in 0..self.dim_r() {
-                                use_rmatrix[[r, int_i, int_j]] =
-                                    self.rmatrix[[index, r, *use_i, *use_j]];
-                                use_rmatrix[[r, int_i + norb, int_j]] =
-                                    self.rmatrix[[index, r, *use_i + self.norb(), *use_j]];
-                                use_rmatrix[[r, int_i, int_j + norb]] =
-                                    self.rmatrix[[index, r, *use_i, *use_j + self.norb()]];
-                                use_rmatrix[[r, int_i + norb, int_j + norb]] = self.rmatrix
-                                    [[index, r, *use_i + self.norb(), *use_j + self.norb()]];
+                                use_rmatrix[[r, int_i, int_j]] = self.rmatrix[[index, r, *use_i, *use_j]];
+                                use_rmatrix[[r, int_i + norb, int_j]] = self.rmatrix[[index, r, *use_i + self.norb(), *use_j]];
+                                use_rmatrix[[r, int_i, int_j + norb]] = self.rmatrix[[index, r, *use_i, *use_j + self.norb()]];
+                                use_rmatrix[[r, int_i + norb, int_j + norb]] = self.rmatrix [[index, r, *use_i + self.norb(), *use_j + self.norb()]];
                             }
                         } else {
                             continue;
