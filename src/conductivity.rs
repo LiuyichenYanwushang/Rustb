@@ -103,7 +103,8 @@
 //!也就是说, 我们能够最终得到 $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 
 use crate::phy_const::mu_B;
-use crate::{Gauge, Model, anti_comm, comm, gen_kmesh, gen_krange};
+use crate::{Gauge, Model, anti_comm, comm};
+use crate::kpoints::{gen_kmesh,gen_krange};
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
 use ndarray::*;

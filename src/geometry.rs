@@ -25,7 +25,7 @@ impl Model {
         //!
         //! 其算法如下: 我们首先将末端的k点的波函数相位统一. 如果闭合回路沿着布里渊区两端,
         //! 那么因为布洛赫函数在布里渊区存在一个相位差 $e^{-2\pi i \bm \tau_i}$, 我们有
-        //! $\ket{\psi_{n,\bm k_\text{end}}}=e^{-2\pi i \bm \tau_i}\ket{\psi_{n,\bm k_\text{first}}}$
+        //! $\ket{u_{n,\bm k_\text{end}}}=e^{-2\pi i \bm \tau_i}\ket{u_{n,\bm k_\text{first}}}$
         //!
         //! 我们定义交叠矩阵 $F_{mn,\bm k}=\braket{\psi_{m,\bm k}}{\psi_{n,\bm k+\dd\bm k}}$
         //!
@@ -181,8 +181,8 @@ impl Model {
         &self,
         occ: &Vec<usize>,
         k_start: &Array1<f64>,
-        dir_1: &Array1<f64>,
-        dir_2: &Array1<f64>,
+        dir_1: &Array1<f64>,//第一个方向遍历
+        dir_2: &Array1<f64>,//第二个方向积分
         nk1: usize,
         nk2: usize,
     ) -> Array2<f64> {

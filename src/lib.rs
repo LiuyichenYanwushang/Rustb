@@ -9,7 +9,11 @@ pub mod ndarray_lapack;
 pub mod output;
 pub mod phy_const;
 pub mod surfgreen;
-use crate::atom_struct::{Atom, OrbProj};
+pub mod kpoints;
+pub mod error;
+pub use crate::error::{TbError,Result};
+pub use crate::kpoints::{gen_kmesh,gen_krange};
+pub use crate::atom_struct::{Atom, OrbProj};
 use crate::generics::usefloat;
 #[doc(hidden)]
 pub use crate::surfgreen::surf_Green;
@@ -99,101 +103,6 @@ fn remove_row<T: Copy>(array: Array2<T>, row_to_remove: usize) -> Array2<T> {
 fn remove_col<T: Copy>(array: Array2<T>, col_to_remove: usize) -> Array2<T> {
     let indices: Vec<_> = (0..array.ncols()).filter(|&r| r != col_to_remove).collect();
     array.select(Axis(1), &indices)
-}
-#[allow(non_snake_case)]
-#[inline(always)]
-pub fn gen_kmesh<T>(k_mesh: &Array1<usize>) -> Array2<T>
-where
-    T: usefloat + std::ops::Div<Output = T>,
-{
-    let dim: usize = k_mesh.len();
-    let mut nk: usize = 1;
-    for i in 0..dim {
-        nk *= k_mesh[[i]];
-    }
-    fn gen_kmesh_arr<T>(k_mesh: &Array1<usize>, r0: usize, mut usek: Array1<T>) -> Array2<T>
-    where
-        T: usefloat + std::ops::Div<Output = T>,
-    {
-        let dim: usize = k_mesh.len();
-        let mut kvec = Array2::<T>::zeros((0, dim));
-        if r0 == 0 {
-            for i in 0..(k_mesh[[r0]]) {
-                let mut usek = Array1::<T>::zeros(dim);
-                usek[[r0]] = T::from(i) / T::from(k_mesh[[r0]]);
-                let k0: Array2<T> = gen_kmesh_arr(&k_mesh, r0 + 1, usek);
-                kvec.append(Axis(0), k0.view()).unwrap();
-            }
-            return kvec;
-        } else if r0 < k_mesh.len() - 1 {
-            for i in 0..(k_mesh[[r0]]) {
-                let mut kk = usek.clone();
-                kk[[r0]] = T::from(i) / T::from(k_mesh[[r0]]);
-                let k0: Array2<T> = gen_kmesh_arr(&k_mesh, r0 + 1, kk);
-                kvec.append(Axis(0), k0.view()).unwrap();
-            }
-            return kvec;
-        } else {
-            for i in 0..(k_mesh[[r0]]) {
-                usek[[r0]] = T::from(i) / T::from(k_mesh[[r0]]);
-                kvec.push_row(usek.view()).unwrap();
-            }
-            return kvec;
-        }
-    }
-    let mut usek = Array1::<T>::zeros(dim);
-    gen_kmesh_arr(&k_mesh, 0, usek)
-}
-#[allow(non_snake_case)]
-#[inline(always)]
-pub fn gen_krange<T>(k_mesh: &Array1<usize>) -> Array3<T>
-where
-    T: usefloat + std::ops::Div<Output = T>,
-{
-    let dim_r = k_mesh.len();
-    let mut k_range = Array3::<T>::zeros((0, dim_r, 2));
-    match dim_r {
-        1 => {
-            for i in 0..k_mesh[[0]] {
-                let mut k = Array2::<T>::zeros((dim_r, 2));
-                k[[0, 0]] = T::from(i) / T::from(k_mesh[[0]]);
-                k[[0, 1]] = T::from(i + 1) / T::from(k_mesh[[0]]);
-                k_range.push(Axis(0), k.view()).unwrap();
-            }
-        }
-        2 => {
-            for i in 0..k_mesh[[0]] {
-                for j in 0..k_mesh[[1]] {
-                    let mut k = Array2::<T>::zeros((dim_r, 2));
-                    k[[0, 0]] = T::from(i) / T::from(k_mesh[[0]]);
-                    k[[0, 1]] = T::from(i + 1) / T::from(k_mesh[[0]]);
-                    k[[1, 0]] = T::from(j) / T::from(k_mesh[[1]]);
-                    k[[1, 1]] = T::from(j + 1) / T::from(k_mesh[[1]]);
-                    k_range.push(Axis(0), k.view()).unwrap();
-                }
-            }
-        }
-        3 => {
-            for i in 0..k_mesh[[0]] {
-                for j in 0..k_mesh[[1]] {
-                    for ks in 0..k_mesh[[2]] {
-                        let mut k = Array2::<T>::zeros((dim_r, 2));
-                        k[[0, 0]] = T::from(i) / T::from(k_mesh[[0]]);
-                        k[[0, 1]] = T::from(i + 1) / T::from(k_mesh[[0]]);
-                        k[[1, 0]] = T::from(j) / T::from(k_mesh[[1]]);
-                        k[[1, 1]] = T::from(j + 1) / T::from(k_mesh[[1]]);
-                        k[[2, 0]] = T::from(ks) / T::from(k_mesh[[2]]);
-                        k[[2, 1]] = T::from(ks + 1) / T::from(k_mesh[[2]]);
-                        k_range.push(Axis(0), k.view()).unwrap();
-                    }
-                }
-            }
-        }
-        _ => {
-            panic!("Wrong, the dim should be 1,2 or 3, but you give {}", dim_r);
-        }
-    };
-    k_range
 }
 
 #[allow(non_snake_case)]
@@ -490,10 +399,18 @@ mod tests {
             "Wrong! the gen_v is get wrong results! please check it!"
         );
 
-
         let (result, _) = model.gen_v(&array![1.0 / 3.0, 1.0 / 3.0], Gauge::Lattice);
-        let resultx=array![[0.0*li,-3.0*3.0_f64.sqrt()/4.0*t+3.0/4.0*t*li],[-3.0*3.0_f64.sqrt()/4.0*t-3.0/4.0*t*li,0.0*li]];
-        println!("result={}", &result-&resultx);
+        let resultx = array![
+            [
+                0.0 * li,
+                -3.0 * 3.0_f64.sqrt() / 4.0 * t + 3.0 / 4.0 * t * li
+            ],
+            [
+                -3.0 * 3.0_f64.sqrt() / 4.0 * t - 3.0 / 4.0 * t * li,
+                0.0 * li
+            ]
+        ];
+        println!("result={}", &result - &resultx);
         assert!(
             are_complex_arrays_close(&result.slice(s![0, .., ..]).to_owned(), &resultx, 1e-8),
             "Wrong! the gen_v is get wrong results! please check it!"
@@ -511,8 +428,6 @@ mod tests {
             are_arrays_close(&new_band, &band, 1e-5),
             "wrong!, the solve_onek get wrong result! please check it!"
         );
-
-
     }
     #[test]
     fn conductivity_test() {
@@ -1320,6 +1235,7 @@ mod tests {
         write_txt_1(band, "tests/kane/magnetic/band.txt");
         write_txt(size, "tests/kane/magnetic/evec.txt");
         write_txt(show_str, "tests/kane/magnetic/structure.txt");
+        //开始绘制角态
     }
 
     #[test]
@@ -1506,25 +1422,17 @@ mod tests {
     #[test]
     fn SSH() {
         let li: Complex<f64> = 1.0 * Complex::i();
-        let t1 = 0.1 + 0.0 * li;
-        let t2 = 1.0 + 0.0 * li;
+        let t1 = 1.0 + 0.0 * li;
+        let t2 = 0.5 + 0.0 * li;
+        let Delta= 0.0;
         let dim_r: usize = 1;
         let norb: usize = 2;
         let lat = arr2(&[[1.0]]);
-        let orb = arr2(&[[0.0], [0.5], [0.0], [0.5]]);
+        let orb = arr2(&[[0.3], [0.5]]);
         let mut model = Model::tb_model(dim_r, lat, orb, false, None);
         model.add_hop(t1, 0, 1, &array![0], SpinDirection::None);
         model.add_hop(t2, 0, 1, &array![-1], SpinDirection::None);
-        model.add_hop(t1, 2, 3, &array![0], SpinDirection::None);
-        model.add_hop(t2, 2, 3, &array![-1], SpinDirection::None);
-        let t_hop_1 = 0.0 + 0.0 * li;
-        let t_hop_2 = 0.0 + 0.0 * li;
-        model.add_hop(t_hop_1, 0, 2, &array![0], SpinDirection::None);
-        model.add_hop(t_hop_1, 1, 3, &array![0], SpinDirection::None);
-        /*
-        model.add_hop(t_hop_1,0,3,array![0],SpinDirection::None);
-        model.add_hop(t_hop_1,1,2,array![0],SpinDirection::None);
-        */
+        model.add_onsite(&array![Delta,-Delta],0);
 
         let nk: usize = 1001;
         let path = [[0.0], [0.5], [1.0]];

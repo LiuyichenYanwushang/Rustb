@@ -1052,9 +1052,6 @@ impl Model {
                 }
             }
 
-            //接下来, 我们创建一个新的哈密顿量, 如果 hamR[[dir]]<0, 那么就将哈密顿量反号,
-            //保证沿着切的方向的哈密顿量是正方向hopping的
-            let n_R = self.hamR.len_of(Axis(0));
             let mut using_ham = self.ham.clone();
             let mut using_hamR = self.hamR.clone();
             for n in 0..num {
@@ -1118,29 +1115,9 @@ impl Model {
                 }
             }
         } else {
-            //接下来, 我们创建一个新的哈密顿量, 如果 hamR[[dir]]<0, 那么就将哈密顿量反号,
-            //保证沿着切的方向的哈密顿量是正方向hopping的
-            let n_R = self.hamR.len_of(Axis(0));
             let mut using_ham = self.ham.clone();
             let mut using_hamR = self.hamR.clone();
             let mut using_rmatrix = self.rmatrix.clone();
-            Zip::from(using_ham.outer_iter_mut())
-                .and(using_hamR.outer_iter_mut())
-                .and(using_rmatrix.outer_iter_mut())
-                .par_for_each(|mut ham, mut R, mut rmatrix| {
-                    if R[[dir]] < 0 {
-                        let h0 = conjugate::<
-                            Complex<f64>,
-                            OwnedRepr<Complex<f64>>,
-                            OwnedRepr<Complex<f64>>,
-                        >(&ham.to_owned());
-                        ham.assign(&h0);
-                        R.assign(&(-&R));
-                        let mut r0 = rmatrix.map(|x| x.conj());
-                        r0.to_owned().swap_axes(1, 2);
-                        rmatrix.assign(&r0);
-                    }
-                });
             for n in 0..num {
                 for (i0, (ind_R, (ham, rmatrix))) in using_hamR
                     .outer_iter()
@@ -1312,7 +1289,7 @@ impl Model {
                             for i in 0..model_2.natom() {
                                 let atom_position = model_2.atoms[i].position();
                                 if atom_position[[dir[0]]] + atom_position[[dir[1]]]
-                                    > num0 / (num0 + 1.0)
+                                    > num0 / (num0 + 1.0)+1e-5
                                 {
                                     a += model_2.atoms[i].norb();
                                 } else {
@@ -2157,9 +2134,9 @@ impl Model {
 
         match self.dim_r() {
             3 => {
-                for i in -U_det..U_det {
-                    for j in -U_det..U_det {
-                        for k in -U_det..U_det {
+                for i in -U_det-1..U_det+1 {
+                    for j in -U_det-1..U_det+1 {
+                        for k in -U_det-1..U_det+1 {
                             for n in 0..self.natom() {
                                 let mut atoms = use_atom_position.row(n).to_owned()
                                     + (i as f64) * U_inv.row(0).to_owned()
@@ -2212,9 +2189,8 @@ impl Model {
                 }
             }
             2 => {
-                let U_det = U_det * 2;
-                for i in -U_det..U_det {
-                    for j in -U_det..U_det {
+                for i in -U_det-1..U_det+1 {
+                    for j in -U_det-1..U_det+1 {
                         for n in 0..self.natom() {
                             let mut atoms = use_atom_position.row(n).to_owned()
                                 + (i as f64) * U_inv.row(0).to_owned()
@@ -2257,7 +2233,7 @@ impl Model {
                 }
             }
             1 => {
-                for i in -U_det..U_det {
+                for i in -U_det-1..U_det+1 {
                     for n in 0..self.natom() {
                         let mut atoms = use_atom_position.row(n).to_owned()
                             + (i as f64) * U_inv.row(0).to_owned(); //原子的位置在新的坐标系下的坐标

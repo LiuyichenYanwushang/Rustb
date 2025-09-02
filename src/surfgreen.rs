@@ -1,5 +1,6 @@
 //!这个模块是用来求解表面格林函数的一个模块.
-use crate::{Model, gen_kmesh, remove_col, remove_row};
+use crate::{Model, remove_col, remove_row};
+use crate::kpoints::gen_kmesh;
 use gnuplot::Major;
 use gnuplot::{Auto, AutoOption::Fix, AxesCommon, Custom, Figure, Font, HOT, RAINBOW};
 use ndarray::concatenate;

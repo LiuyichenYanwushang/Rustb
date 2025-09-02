@@ -2,6 +2,7 @@ use ndarray::Array1;
 use num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use crate::{TbError,Result};
 ///This is the orbital projection
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
@@ -81,45 +82,47 @@ pub enum OrbProj {
 }
 
 impl OrbProj {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_str(s: &str) -> Result<Self> {
+        type Err = TbError;
         match s {
-            "s" => OrbProj::s,
-            "px" => OrbProj::px,
-            "py" => OrbProj::py,
-            "pz" => OrbProj::pz,
-            "dxy" => OrbProj::dxy,
-            "dxz" => OrbProj::dxz,
-            "dyz" => OrbProj::dyz,
-            "dz2" => OrbProj::dz2,
-            "dx2-y2" => OrbProj::dx2y2,
-            "fz3" => OrbProj::fz3,
-            "fxz2" => OrbProj::fxz2,
-            "fyz2" => OrbProj::fyz2,
-            "fzx2y2" => OrbProj::fzx2y2,
-            "fxyz" => OrbProj::fxyz,
-            "fxx2-3y2" => OrbProj::fxx23y2,
-            "fy3x2-y2" => OrbProj::fy3x2y2,
-            "sp-1" => OrbProj::sp_1,
-            "sp-2" => OrbProj::sp_2,
-            "sp2-1" => OrbProj::sp2_1,
-            "sp2-2" => OrbProj::sp2_2,
-            "sp2-3" => OrbProj::sp2_3,
-            "sp3-1" => OrbProj::sp3_1,
-            "sp3-2" => OrbProj::sp3_2,
-            "sp3-3" => OrbProj::sp3_3,
-            "sp3-4" => OrbProj::sp3_4,
-            "sp3d-1" => OrbProj::sp3d_1,
-            "sp3d-2" => OrbProj::sp3d_2,
-            "sp3d-3" => OrbProj::sp3d_3,
-            "sp3d-4" => OrbProj::sp3d_4,
-            "sp3d-5" => OrbProj::sp3d_5,
-            "sp3d2-1" => OrbProj::sp3d2_1,
-            "sp3d2-2" => OrbProj::sp3d2_2,
-            "sp3d2-3" => OrbProj::sp3d2_3,
-            "sp3d2-4" => OrbProj::sp3d2_4,
-            "sp3d2-5" => OrbProj::sp3d2_5,
-            "sp3d2-6" => OrbProj::sp3d2_6,
-            _ => panic!("Wrong, unrecognised projections {}", s),
+            "s" => Ok(OrbProj::s),
+            "px" => Ok(OrbProj::px),
+            "py" => Ok(OrbProj::py),
+            "pz" => Ok(OrbProj::pz),
+            "dxy" => Ok(OrbProj::dxy),
+            "dxz" => Ok(OrbProj::dxz),
+            "dyz" => Ok(OrbProj::dyz),
+            "dz2" => Ok(OrbProj::dz2),
+            "dx2-y2" => Ok(OrbProj::dx2y2),
+            "fz3" => Ok(OrbProj::fz3),
+            "fxz2" => Ok(OrbProj::fxz2),
+            "fyz2" => Ok(OrbProj::fyz2),
+            "fzx2y2" => Ok(OrbProj::fzx2y2),
+            "fxyz" => Ok(OrbProj::fxyz),
+            "fxx2-3y2" => Ok(OrbProj::fxx23y2),
+            "fy3x2-y2" => Ok(OrbProj::fy3x2y2),
+            "sp-1" => Ok(OrbProj::sp_1),
+            "sp-2" => Ok(OrbProj::sp_2),
+            "sp2-1" => Ok(OrbProj::sp2_1),
+            "sp2-2" => Ok(OrbProj::sp2_2),
+            "sp2-3" => Ok(OrbProj::sp2_3),
+            "sp3-1" => Ok(OrbProj::sp3_1),
+            "sp3-2" => Ok(OrbProj::sp3_2),
+            "sp3-3" => Ok(OrbProj::sp3_3),
+            "sp3-4" => Ok(OrbProj::sp3_4),
+            "sp3d-1" => Ok(OrbProj::sp3d_1),
+            "sp3d-2" => Ok(OrbProj::sp3d_2),
+            "sp3d-3" => Ok(OrbProj::sp3d_3),
+            "sp3d-4" => Ok(OrbProj::sp3d_4),
+            "sp3d-5" => Ok(OrbProj::sp3d_5),
+            "sp3d2-1" => Ok(OrbProj::sp3d2_1),
+            "sp3d2-2" => Ok(OrbProj::sp3d2_2),
+            "sp3d2-3" => Ok(OrbProj::sp3d2_3),
+            "sp3d2-4" => Ok(OrbProj::sp3d2_4),
+            "sp3d2-5" => Ok(OrbProj::sp3d2_5),
+            "sp3d2-6" => Ok(OrbProj::sp3d2_6),
+            //_ => panic!("Wrong, unrecognised projections {}", s),
+            _=>Err(TbError::InvalidOrbitalProjection(s.to_string())),
         }
     }
     /// 这个函数是将 \ket{px},\ket{py},\ket{pz} 等原子轨道基转化为以 l,m 为基的函数的.

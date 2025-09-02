@@ -10,8 +10,8 @@
 //!
 //!POSCAR 格式
 use crate::basis::find_R;
-use crate::basis::index_R;
-use crate::{Model, comm, gen_kmesh};
+use crate::{Model, comm};
+use crate::kpoints::gen_kmesh;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -72,38 +72,38 @@ impl Model {
                 let max_R1 = self.hamR.outer_iter().map(|x| x[[0]].abs()).max().unwrap();
                 let mut s = String::new();
                 for i in -max_R1..max_R1 {
-                    let R_exist = find_R(&self.hamR, &array![i as isize]);
-                    let R_inv_exist = find_R(&self.hamR, &(-array![i as isize]));
-                    if R_exist {
-                        let r0 = index_R(&self.hamR, &array![i as isize]);
-                        let ham = self.ham.slice(s![r0, .., ..]);
-                        for orb_2 in 0..self.nsta() {
-                            for orb_1 in 0..self.nsta() {
-                                s.push_str(&format!(
-                                    "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
-                                    i,
-                                    orb_1,
-                                    orb_2,
-                                    ham[[orb_1, orb_2]].re,
-                                    ham[[orb_1, orb_2]].im
-                                ));
+                    match (find_R(&self.hamR, &array![i as isize]),find_R(&self.hamR, &(-array![i as isize]))){
+                        (Some(r0),_)=>{
+                            let ham = self.ham.slice(s![r0, .., ..]);
+                            for orb_2 in 0..self.nsta() {
+                                for orb_1 in 0..self.nsta() {
+                                    s.push_str(&format!(
+                                        "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
+                                        i,
+                                        orb_1,
+                                        orb_2,
+                                        ham[[orb_1, orb_2]].re,
+                                        ham[[orb_1, orb_2]].im
+                                    ));
+                                }
                             }
-                        }
-                    } else if R_inv_exist {
-                        let r0 = index_R(&self.hamR, &(-array![i as isize]));
-                        let ham = self.ham.slice(s![r0, .., ..]);
-                        for orb_2 in 0..self.nsta() {
-                            for orb_1 in 0..self.nsta() {
-                                s.push_str(&format!(
-                                    "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
-                                    i,
-                                    orb_1,
-                                    orb_2,
-                                    ham[[orb_1, orb_2]].re,
-                                    -ham[[orb_1, orb_2]].im
-                                ));
+                        },
+                        (None,Some(r0))=>{
+                            let ham = self.ham.slice(s![r0, .., ..]);
+                            for orb_2 in 0..self.nsta() {
+                                for orb_1 in 0..self.nsta() {
+                                    s.push_str(&format!(
+                                        "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
+                                        i,
+                                        orb_1,
+                                        orb_2,
+                                        ham[[orb_1, orb_2]].re,
+                                        -ham[[orb_1, orb_2]].im
+                                    ));
+                                }
                             }
-                        }
+                        },
+                        (None,None)=>{},
                     }
                 }
                 writeln!(file, "{}", s);
@@ -117,40 +117,42 @@ impl Model {
                 let mut s = String::new();
                 for R1 in -max_values[[0]]..max_values[[0]] {
                     for R2 in -max_values[[1]]..max_values[[1]] {
-                        let R_exist = find_R(&self.hamR, &array![R1 as isize, R2 as isize]);
-                        let R_inv_exist = find_R(&self.hamR, &(-array![R1 as isize, R2 as isize]));
-                        if R_exist {
-                            let r0 = index_R(&self.hamR, &array![R1 as isize, R2 as isize]);
-                            let ham = self.ham.slice(s![r0, .., ..]);
-                            for orb_2 in 0..self.nsta() {
-                                for orb_1 in 0..self.nsta() {
-                                    s.push_str(&format!(
-                                        "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
-                                        R1,
-                                        R2,
-                                        orb_1,
-                                        orb_2,
-                                        ham[[orb_1, orb_2]].re,
-                                        ham[[orb_1, orb_2]].im
-                                    ));
+                        let R0=array![R1 as isize,R2 as isize];
+                        let R0_inv=-array![R1 as isize,R2 as isize];
+                        match (find_R(&self.hamR, &R0),find_R(&self.hamR, &R0_inv)){
+                            (Some(r0),_)=>{
+                                let ham = self.ham.slice(s![r0, .., ..]);
+                                for orb_2 in 0..self.nsta() {
+                                    for orb_1 in 0..self.nsta() {
+                                        s.push_str(&format!(
+                                            "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
+                                            R1,
+                                            R2,
+                                            orb_1,
+                                            orb_2,
+                                            ham[[orb_1, orb_2]].re,
+                                            ham[[orb_1, orb_2]].im
+                                        ));
+                                    }
                                 }
-                            }
-                        } else if R_inv_exist {
-                            let r0 = index_R(&self.hamR, &(-array![R1 as isize, R2 as isize]));
-                            let ham = self.ham.slice(s![r0, .., ..]);
-                            for orb_2 in 0..self.nsta() {
-                                for orb_1 in 0..self.nsta() {
-                                    s.push_str(&format!(
-                                        "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
-                                        R1,
-                                        R2,
-                                        orb_1,
-                                        orb_2,
-                                        ham[[orb_1, orb_2]].re,
-                                        -ham[[orb_1, orb_2]].im
-                                    ));
+                            },
+                            (None,Some(r0))=>{
+                                let ham = self.ham.slice(s![r0, .., ..]);
+                                for orb_2 in 0..self.nsta() {
+                                    for orb_1 in 0..self.nsta() {
+                                        s.push_str(&format!(
+                                            "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
+                                            R1,
+                                            R2,
+                                            orb_1,
+                                            orb_2,
+                                            ham[[orb_1, orb_2]].re,
+                                            -ham[[orb_1, orb_2]].im
+                                        ));
+                                    }
                                 }
-                            }
+                            },
+                            (None,None)=>{},
                         }
                     }
                 }
@@ -166,49 +168,44 @@ impl Model {
                 for R1 in -max_values[[0]]..max_values[[0]] {
                     for R2 in -max_values[[1]]..max_values[[1]] {
                         for R3 in -max_values[[2]]..max_values[[2]] {
-                            let R_exist =
-                                find_R(&self.hamR, &array![R1 as isize, R2 as isize, R3 as isize]);
-                            let R_inv_exist = find_R(
-                                &self.hamR,
-                                &(-array![R1 as isize, R2 as isize, R3 as isize]),
-                            );
-                            if R_exist {
-                                let r0 = index_R(&self.hamR, &array![R1 as isize, R2 as isize]);
-                                let ham = self.ham.slice(s![r0, .., ..]);
-                                for orb_2 in 0..self.nsta() {
-                                    for orb_1 in 0..self.nsta() {
-                                        s.push_str(&format!(
-                                            "{:>3}  {:>3}  {:>3}  {:>3}  {:>3}    {:>15.8}    {:>15.8}\n",
-                                            R1,
-                                            R2,
-                                            R3,
-                                            orb_1+1,
-                                            orb_2+1,
-                                            ham[[orb_1, orb_2]].re,
-                                            ham[[orb_1, orb_2]].im
-                                        ));
+                            let R0=array![R1 as isize,R2 as isize,R3 as isize];
+                            let R0_inv=-array![R1 as isize,R2 as isize,R3 as isize];
+                            match (find_R(&self.hamR, &R0),find_R(&self.hamR, &R0_inv)){
+                                (Some(r0),_)=>{
+                                    let ham = self.ham.slice(s![r0, .., ..]);
+                                    for orb_2 in 0..self.nsta() {
+                                        for orb_1 in 0..self.nsta() {
+                                            s.push_str(&format!(
+                                                "{:>3}  {:>3}  {:>3}    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
+                                                R1,
+                                                R2,
+                                                R3,
+                                                orb_1,
+                                                orb_2,
+                                                ham[[orb_1, orb_2]].re,
+                                                ham[[orb_1, orb_2]].im
+                                            ));
+                                        }
                                     }
-                                }
-                            } else if R_inv_exist {
-                                let r0 = index_R(
-                                    &self.hamR,
-                                    &(-array![R1 as isize, R2 as isize, R3 as isize]),
-                                );
-                                let ham = self.ham.slice(s![r0, .., ..]);
-                                for orb_2 in 0..self.nsta() {
-                                    for orb_1 in 0..self.nsta() {
-                                        s.push_str(&format!(
-                                            "{:>3}  {:>3}  {:>3}  {:>3}  {:>3}    {:>15.8}    {:>15.8}\n",
-                                            R1,
-                                            R2,
-                                            R3,
-                                            orb_1+1,
-                                            orb_2+1,
-                                            ham[[orb_1, orb_2]].re,
-                                           -ham[[orb_1, orb_2]].im
-                                        ));
+                                },
+                                (None,Some(r0))=>{
+                                    let ham = self.ham.slice(s![r0, .., ..]);
+                                    for orb_2 in 0..self.nsta() {
+                                        for orb_1 in 0..self.nsta() {
+                                            s.push_str(&format!(
+                                                "{:>3}  {:>3}  {:>3}    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
+                                                R1,
+                                                R2,
+                                                R3,
+                                                orb_1,
+                                                orb_2,
+                                                ham[[orb_1, orb_2]].re,
+                                                -ham[[orb_1, orb_2]].im
+                                            ));
+                                        }
                                     }
-                                }
+                                },
+                                (None,None)=>{},
                             }
                         }
                     }
