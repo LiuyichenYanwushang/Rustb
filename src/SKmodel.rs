@@ -5,44 +5,71 @@ use crate::{Model, SpinDirection, TbError, Result};
 use crate::atom_struct::{AtomType, OrbProj};
 use ndarray_linalg::Norm;
 
-/// 描述 Slater-Koster 模型中单个原子的结构信息。
+/// Atom structure for Slater-Koster parameterized tight-binding models.
+///
+/// Represents an atom with its position, type, and orbital projections for
+/// constructing Slater-Koster two-center integrals.
 #[derive(Debug, Clone)]
 pub struct SkAtom {
-    /// 原子在晶胞中的分数坐标。
+    /// Fractional coordinates of the atom within the unit cell
     pub position: Array1<f64>,
-    /// 原子类型 (例如 H, C, Si)。
+    /// Chemical element type (e.g., H, C, Si)
     pub atom_type: AtomType,
-    /// 该原子包含的轨道类型列表，决定了原子的轨道数量和种类。
+    /// List of orbital projections (s, p, d orbitals) for this atom
     pub projections: Vec<OrbProj>,
 }
 
-/// 包含一对原子在特定近邻壳层上的 Slater-Koster 两中心积分参数。
+/// Slater-Koster two-center integral parameters for a pair of atoms.
+///
+/// Contains the hopping parameters $V_{ll'm}$ where $l,l'$ are orbital angular momenta
+/// and $m$ is the magnetic quantum number. The parameters follow the standard
+/// Slater-Koster notation:
+/// - $V_{ss\sigma}$: s-s sigma bond
+/// - $V_{sp\sigma}$: s-p sigma bond  
+/// - $V_{pp\sigma}$, $V_{pp\pi}$: p-p sigma and pi bonds
+/// - $V_{sd\sigma}$: s-d sigma bond
+/// - $V_{pd\sigma}$, $V_{pd\pi}$: p-d sigma and pi bonds
+/// - $V_{dd\sigma}$, $V_{dd\pi}$, $V_{dd\delta}$: d-d bonds
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SkParams {
+    /// $V_{ss\sigma}$ - s-s sigma bond integral
     pub v_ss_sigma: Option<f64>,
+    /// $V_{sp\sigma}$ - s-p sigma bond integral
     pub v_sp_sigma: Option<f64>,
+    /// $V_{pp\sigma}$ - p-p sigma bond integral
     pub v_pp_sigma: Option<f64>,
+    /// $V_{pp\pi}$ - p-p pi bond integral
     pub v_pp_pi: Option<f64>,
+    /// $V_{sd\sigma}$ - s-d sigma bond integral
     pub v_sd_sigma: Option<f64>,
+    /// $V_{pd\sigma}$ - p-d sigma bond integral
     pub v_pd_sigma: Option<f64>,
+    /// $V_{pd\pi}$ - p-d pi bond integral
     pub v_pd_pi: Option<f64>,
+    /// $V_{dd\sigma}$ - d-d sigma bond integral
     pub v_dd_sigma: Option<f64>,
+    /// $V_{dd\pi}$ - d-d pi bond integral
     pub v_dd_pi: Option<f64>,
+    /// $V_{dd\delta}$ - d-d delta bond integral
     pub v_dd_delta: Option<f64>,
 }
 
-/// 仅保存晶体结构信息的 Slater-Koster 模型前体。
+/// Slater-Koster model precursor containing only crystal structure information.
+///
+/// This struct holds the geometric information needed to construct a tight-binding model
+/// using Slater-Koster parameters. The actual hopping integrals are added later through
+/// the `build_model` method with specific parameter values.
 #[derive(Debug, Clone)]
 pub struct SlaterKosterModel {
-    /// 模型的实空间维度 (1, 2, 或 3)。
+    /// Real space dimensionality (1, 2, or 3)
     pub dim_r: usize,
-    /// 晶格矢量，`lat.row(i)` 是第 i 个基矢。
+    /// Lattice vectors where `lat.row(i)` is the i-th basis vector $\mathbf{a}_i$
     pub lat: Array2<f64>,
-    /// 晶胞中的原子列表。
+    /// List of atoms in the unit cell with positions and orbital information
     pub atoms: Vec<SkAtom>,
-    /// 是否考虑自旋。
+    /// Whether the model includes spin degrees of freedom
     pub spin: bool,
-    /// 搜索近邻的最大晶格矢量范围
+    /// Maximum lattice vector range for neighbor search
     pub neighbor_search_range: i32,
 }
 
@@ -60,7 +87,18 @@ impl Default for SlaterKosterModel {
 
 /// 一个 Trait，定义了如何将一个结构模型转化为一个包含哈密顿量的、可计算的 `Model`。
 pub trait ToTbModel {
-    /// 根据 Slater-Koster 参数构建一个完整的 `Model` 实例。
+    /// Build a complete tight-binding `Model` from Slater-Koster parameters.
+    ///
+    /// This method constructs the Hamiltonian matrix elements $H_{mn}(\mathbf{R})$
+    /// using Slater-Koster two-center integrals and the geometric relationships
+    /// between atomic orbitals.
+    ///
+    /// # Arguments
+    /// * `n_neighbors` - Number of neighbor shells to include
+    /// * `params` - HashMap of Slater-Koster parameters keyed by (atom1, atom2, shell)
+    ///
+    /// # Returns
+    /// A `Result<Model>` containing the constructed tight-binding model
     fn build_model(
         &self,
         n_neighbors: usize,
@@ -70,6 +108,16 @@ pub trait ToTbModel {
 
 impl SlaterKosterModel {
     /// 创建一个新的 Slater-Koster 模型
+    /// Create a new Slater-Koster model with the given crystal structure.
+    ///
+    /// # Arguments
+    /// * `dim_r` - Real space dimensionality (1, 2, or 3)
+    /// * `lat` - Lattice vectors as a $d \times d$ matrix
+    /// * `atoms` - List of atoms with positions and orbital projections
+    /// * `spin` - Whether to include spin degrees of freedom
+    ///
+    /// # Returns
+    /// A `SlaterKosterModel` instance with default neighbor search range
     pub fn new(dim_r: usize, lat: Array2<f64>, atoms: Vec<SkAtom>, spin: bool) -> Self {
         Self {
             dim_r,
@@ -80,7 +128,16 @@ impl SlaterKosterModel {
         }
     }
     
-    /// 设置近邻搜索范围
+    /// Set the maximum neighbor search range for finding hopping terms.
+    ///
+    /// # Arguments
+    /// * `range` - Maximum lattice vector range to search for neighbors
+    ///
+    /// # Returns
+    /// `Result<Self>` with updated search range, or error if range is invalid
+    ///
+    /// # Errors
+    /// Returns `TbError::InvalidSearchRange` if range ≤ 0
     pub fn with_search_range(mut self, range: i32) -> Result<Self> {
         if range <= 0 {
             return Err(TbError::InvalidSearchRange(range));
@@ -237,6 +294,19 @@ fn sk_element(
 }
 
 impl ToTbModel for SlaterKosterModel {
+    /// Implementation of the tight-binding model construction using Slater-Koster formalism.
+    ///
+    /// This method:
+    /// 1. Flattens all orbitals from all atoms into a single list
+    /// 2. Finds neighbor shells up to the specified order
+    /// 3. Computes hopping integrals using directional cosines and SK parameters
+    /// 4. Constructs the Hamiltonian matrix in real space
+    ///
+    /// The hopping integrals are computed using the formula:
+    /// $$
+    /// V_{ll'm} = \sum_{\mu} V_{ll'\mu} \cdot f_\mu(\cos\theta)
+    /// $$
+    /// where $f_\mu$ are the angular dependence functions for sigma, pi, delta bonds.
     fn build_model(
         &self,
         n_neighbors: usize,

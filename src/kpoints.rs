@@ -1,7 +1,39 @@
+//! k-point generation and Brillouin zone sampling utilities.
+//!
+//! This module provides functions for generating k-point meshes in the Brillouin zone
+//! for numerical integration and band structure calculations. The k-points are
+//! uniformly distributed in reciprocal space.
+//!
+//! # Examples
+//! ```
+//! use ndarray::array;
+//! use Rustb::kpoints::gen_kmesh;
+//!
+//! // Generate a 10×10 k-mesh for a 2D system
+//! let kmesh = gen_kmesh(&array![10, 10]).unwrap();
+//! ```
+
 use ndarray::{Array1,Array2,Array3,Axis};
 use crate::generics::usefloat;
 use crate::error::{TbError, Result};
 
+/// Generate a uniform k-point mesh in the Brillouin zone.
+///
+/// The k-points are distributed uniformly with coordinates in the range [0, 1]
+/// in fractional reciprocal space coordinates. For a 2D system with mesh [Nx, Ny],
+/// the k-points are arranged as:
+/// $$
+/// \mathbf{k} = \left(\frac{i}{N_x}, \frac{j}{N_y}\right) \quad \text{for } i=0,\ldots,N_x-1, j=0,\ldots,N_y-1
+/// $$
+///
+/// # Arguments
+/// * `k_mesh` - Array specifying the number of points along each reciprocal lattice direction
+///
+/// # Returns
+/// `Result<Array2<T>>` where each row is a k-point in fractional coordinates
+///
+/// # Errors
+/// Returns `TbError` if the mesh dimensions are invalid
 #[allow(non_snake_case)]
 #[inline(always)]
 pub fn gen_kmesh<T>(k_mesh: &Array1<usize>) -> Result<Array2<T>>

@@ -1,4 +1,13 @@
-//! 这个 impl 是给 tight-binding 模型提供基础的函数.
+//! Core implementation of tight-binding model operations and Hamiltonian construction.
+//!
+//! This module provides the fundamental methods for working with tight-binding models,
+//! including Hamiltonian construction, eigenvalue solving, and various physical
+//! property calculations. The main `Model` struct implements methods for:
+//! - Setting hopping parameters and on-site energies
+//! - Solving the eigenvalue problem $H(\mathbf{k}) \psi_n = E_n \psi_n$
+//! - Computing velocity operators $\mathbf{v} = \frac{1}{\hbar} \nabla_\mathbf{k} H(\mathbf{k})$
+//! - Calculating Berry curvature and topological invariants
+//! - Constructing surface Green's functions
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{TbError, Result};
 use crate::generics::hop_use;
@@ -25,7 +34,17 @@ pub fn find_R<A: Data<Elem = T>, B: Data<Elem = T>, T: std::cmp::PartialEq>(
     hamR: &ArrayBase<A, Ix2>,
     R: &ArrayBase<B, Ix1>,
 ) -> Option<usize> {
-    //!用来寻找 R 在hamR 中是否存在, 如果存在, 返回在哪一行, 用usize
+    //! Find the index of lattice vector $\mathbf{R}$ in the `hamR` array.
+    //!
+    //! This utility function searches for a specific lattice vector in the array
+    //! of all hopping vectors and returns its index if found.
+    //!
+    //! # Arguments
+    //! * `hamR` - Array of all lattice vectors $\mathbf{R}$ for hoppings
+    //! * `R` - Target lattice vector to search for
+    //!
+    //! # Returns
+    //! `Option<usize>` containing the index if found, `None` otherwise
     let n_R: usize = hamR.len_of(Axis(0));
     let dim_R: usize = hamR.len_of(Axis(1));
     for i in 0..(n_R) {
@@ -113,20 +132,34 @@ macro_rules! add_hamiltonian {
 }
 
 impl Model {
-    //! 这个 impl 是给 tight-binding 模型提供基础的函数.
-    /// #Examples
-    /// ```
-    ///use ndarray::*;
-    ///use ndarray::prelude::*;
-    ///use num_complex::Complex;
-    ///use Rustb::*;
-    /// //set the graphene model
-    ///let lat=array![[1.0,0.0],[-1.0/2.0,3_f64.sqrt()/2.0]];
-    ///let orb=array![[1.0/3.0,2.0/3.0],[2.0/3.0,1.0/3.0]];
-    ///let spin=false;
-    ///let mut graphene_model=Model::tb_model(2,lat,orb,spin,None);
+    /// Create a new tight-binding model with the given crystal structure.
     ///
-    ///```
+    /// This constructor initializes a `Model` with the specified lattice and orbital
+    /// positions. The Hamiltonian and position matrices are initially empty and can
+    /// be populated using `set_hop`, `set_onsite`, and related methods.
+    ///
+    /// # Arguments
+    /// * `dim_r` - Real space dimensionality (1, 2, or 3)
+    /// * `lat` - Lattice vectors as a $d \times d$ matrix
+    /// * `orb` - Orbital positions in fractional coordinates
+    /// * `spin` - Whether to include spin degrees of freedom
+    /// * `atom` - Optional list of atoms with orbital information
+    ///
+    /// # Returns
+    /// `Result<Model>` containing the initialized tight-binding model
+    ///
+    /// # Examples
+    /// ```
+    /// use ndarray::*;
+    /// use num_complex::Complex;
+    /// use Rustb::*;
+    /// 
+    /// // Create graphene model
+    /// let lat = array![[1.0, 0.0], [-0.5, 3_f64.sqrt() / 2.0]];
+    /// let orb = array![[1.0 / 3.0, 2.0 / 3.0], [2.0 / 3.0, 1.0 / 3.0]];
+    /// let spin = false;
+    /// let mut graphene_model = Model::tb_model(2, lat, orb, spin, None).unwrap();
+    /// ```
     pub fn tb_model(
         dim_r: usize,
         lat: Array2<f64>,

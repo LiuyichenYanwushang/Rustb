@@ -1,4 +1,13 @@
-//!这个模块提供了计算各种线性和非线性的霍尔和自旋霍尔电导率的模块
+//! Calculation of linear and nonlinear conductivity tensors using Kubo formalism.
+//!
+//! This module implements various conductivity calculations including:
+//! - Anomalous Hall conductivity
+//! - Spin Hall conductivity  
+//! - Nonlinear Hall conductivity
+//! - Berry curvature and orbital magnetization
+//!
+//! The implementations are based on the Kubo formula and semiclassical wave-packet
+//! dynamics, providing both intrinsic and extrinsic contributions to transport.
 
 //!# Niu qian 方程推导非线性霍尔效应
 //!以下是用niuqian 方程来推导各阶线性和非线性霍尔效应的公式过程

@@ -39,35 +39,69 @@ use std::ops::Deref;
 use std::ops::MulAssign;
 use std::time::Instant;
 
-/// This cate is used to perform various calculations on the TB model, currently including:
-///
-/// - Calculate the band structure
-///
-/// - Expand the cell and calculate the surface state
-///
-/// - Calculate the first-order anomalous Hall conductivity and spin Hall conductivity
+//! # Rustb - Tight-Binding Model Library
+//!
+//! A comprehensive Rust library for tight-binding model calculations with support for:
+//! - Band structure calculations
+//! - Surface state computations using Green's functions
+//! - Linear and nonlinear transport properties
+//! - Berry phase and curvature calculations
+//! - Slater-Koster parameterized models
+//!
+//! ## Key Features
+//!
+//! - **Band Structure**: Solve eigenvalue problems $H(\mathbf{k}) \psi_n(\mathbf{k}) = E_n(\mathbf{k}) \psi_n(\mathbf{k})$
+//! - **Surface States**: Compute surface Green's functions $G^s(\omega, \mathbf{k}_\parallel)$
+//! - **Transport Properties**:
+//!   - Anomalous Hall conductivity $\sigma_{xy} = \frac{e^2}{\hbar} \int \frac{d^2k}{(2\pi)^2} \Omega_z(\mathbf{k})$
+//!   - Spin Hall conductivity
+//!   - Nonlinear conductivity tensors
+//! - **Topological Invariants**: Chern numbers, Wilson loops, and Wannier centers
+//! - **Slater-Koster Models**: Parameterized tight-binding models with two-center integrals
+//!
+//! ## Mathematical Foundation
+//!
+//! The library implements the tight-binding Hamiltonian:
+//! $$
+//! H = \sum_{i,j} t_{ij} c_i^\dagger c_j + \sum_i \epsilon_i c_i^\dagger c_i
+//! $$
+//! where $t_{ij}$ are hopping parameters and $\epsilon_i$ are on-site energies.
+//!
+//! For transport calculations, we compute the Berry curvature:
+//! $$
+//! \Omega_n(\mathbf{k}) = -2\,\text{Im}\sum_{m\neq n} \frac{\bra{n}\partial_{k_x} H\ket{m}\bra{m}\partial_{k_y} H\ket{n}}{(E_n - E_m)^2}
+//! $$
 ///
 
-///这个是 tight-binding 模型的基本单位
+/// Tight-binding model structure representing the Hamiltonian $H(\mathbf{k})$ and related properties.
+///
+/// The model is defined by its real-space hopping parameters $t_{ij}(\mathbf{R})$ where $\mathbf{R}$
+/// is the lattice vector connecting unit cells. The Bloch Hamiltonian is given by:
+/// $$
+/// H(\mathbf{k}) = \sum_{\mathbf{R}} t(\mathbf{R}) e^{i\mathbf{k}\cdot\mathbf{R}}
+/// $$
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Model {
-    /// - The real space dimension of the model.
+    /// Real space dimension $d$ of the model (2D or 3D systems)
     pub dim_r: usize,
-    /// - The number of orbitals in the model.
+    /// Whether the model includes spin degrees of freedom
     pub spin: bool,
-    /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
+    /// Lattice vectors $\mathbf{a}_1, \mathbf{a}_2, \mathbf{a}_3$ as a $d \times d$ matrix
+    /// where each row represents a lattice vector
     pub lat: Array2<f64>,
-    /// - The position of the orbitals in the model. We use fractional coordinates uniformly.
+    /// Orbital positions in fractional coordinates within the unit cell
     pub orb: Array2<f64>,
-    /// - The position of the atoms in the model, also in fractional coordinates.
+    /// Orbital projection information (s, p, d orbitals etc.)
     pub orb_projection: Vec<OrbProj>,
-    /// - The projection of the orbs, like px,py,pz, etc.
+    /// Atomic positions and information
     pub atoms: Vec<Atom>,
-    /// - The number of orbitals in the atoms, in the same order as the atom positions.
+    /// Hamiltonian matrix elements $H_{mn}(\mathbf{R}) = \bra{m\mathbf{0}} H \ket{n\mathbf{R}}$
+    /// stored as a 3D array: [orbital_m, orbital_n, R_index]
     pub ham: Array3<Complex<f64>>,
-    /// - The distance between the unit cell hoppings, i.e. R in $\bra{m0}\hat H\ket{nR}$.
+    /// Lattice vectors $\mathbf{R}$ corresponding to the hoppings in `ham`
     pub hamR: Array2<isize>,
-    /// - The position matrix, i.e. $\bra{m0}\hat{\bm r}\ket{nR}$.
+    /// Position matrix elements $\mathbf{r}_{mn}(\mathbf{R}) = \bra{m\mathbf{0}} \mathbf{\hat{r}} \ket{n\mathbf{R}}$
+    /// used for velocity operator calculations
     pub rmatrix: Array4<Complex<f64>>,
 }
 

@@ -1,4 +1,12 @@
-//!这个模块是用来求解表面格林函数的一个模块.
+//! Surface Green's function calculations for semi-infinite systems.
+//!
+//! This module implements algorithms for computing the surface Green's function
+//! $G^s(\omega, \mathbf{k}_\parallel)$ of semi-infinite tight-binding systems.
+//! The surface Green's function is defined as:
+//! $$
+//! G^s(\omega, \mathbf{k}_\parallel) = [\omega - H_{00}(\mathbf{k}_\parallel) - \Sigma(\omega, \mathbf{k}_\parallel)]^{-1}
+//! $$
+//! where $\Sigma$ is the self-energy due to the semi-infinite bulk.
 use crate::error::{TbError, Result};
 use crate::{Model, remove_col, remove_row};
 use crate::kpoints::gen_kmesh;
