@@ -6,11 +6,11 @@
 //!
 //! # Examples
 //! ```
-//! use ndarray::array;
+//! use ndarray::{array,Array2};
 //! use Rustb::kpoints::gen_kmesh;
 //!
 //! // Generate a 10×10 k-mesh for a 2D system
-//! let kmesh = gen_kmesh(&array![10, 10]).unwrap();
+//! let kmesh:Array2<f64> = gen_kmesh(&array![10, 10]).unwrap();
 //! ```
 
 use ndarray::{Array1,Array2,Array3,Axis};
