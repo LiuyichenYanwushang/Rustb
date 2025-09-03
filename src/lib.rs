@@ -39,38 +39,38 @@ use std::ops::Deref;
 use std::ops::MulAssign;
 use std::time::Instant;
 
-//! # Rustb - Tight-Binding Model Library
-//!
-//! A comprehensive Rust library for tight-binding model calculations with support for:
-//! - Band structure calculations
-//! - Surface state computations using Green's functions
-//! - Linear and nonlinear transport properties
-//! - Berry phase and curvature calculations
-//! - Slater-Koster parameterized models
-//!
-//! ## Key Features
-//!
-//! - **Band Structure**: Solve eigenvalue problems $H(\mathbf{k}) \psi_n(\mathbf{k}) = E_n(\mathbf{k}) \psi_n(\mathbf{k})$
-//! - **Surface States**: Compute surface Green's functions $G^s(\omega, \mathbf{k}_\parallel)$
-//! - **Transport Properties**:
-//!   - Anomalous Hall conductivity $\sigma_{xy} = \frac{e^2}{\hbar} \int \frac{d^2k}{(2\pi)^2} \Omega_z(\mathbf{k})$
-//!   - Spin Hall conductivity
-//!   - Nonlinear conductivity tensors
-//! - **Topological Invariants**: Chern numbers, Wilson loops, and Wannier centers
-//! - **Slater-Koster Models**: Parameterized tight-binding models with two-center integrals
-//!
-//! ## Mathematical Foundation
-//!
-//! The library implements the tight-binding Hamiltonian:
-//! $$
-//! H = \sum_{i,j} t_{ij} c_i^\dagger c_j + \sum_i \epsilon_i c_i^\dagger c_i
-//! $$
-//! where $t_{ij}$ are hopping parameters and $\epsilon_i$ are on-site energies.
-//!
-//! For transport calculations, we compute the Berry curvature:
-//! $$
-//! \Omega_n(\mathbf{k}) = -2\,\text{Im}\sum_{m\neq n} \frac{\bra{n}\partial_{k_x} H\ket{m}\bra{m}\partial_{k_y} H\ket{n}}{(E_n - E_m)^2}
-//! $$
+/// # Rustb - Tight-Binding Model Library
+///
+/// A comprehensive Rust library for tight-binding model calculations with support for:
+/// - Band structure calculations
+/// - Surface state computations using Green's functions
+/// - Linear and nonlinear transport properties
+/// - Berry phase and curvature calculations
+/// - Slater-Koster parameterized models
+///
+/// ## Key Features
+///
+/// - **Band Structure**: Solve eigenvalue problems $H(\mathbf{k}) \psi_n(\mathbf{k}) = E_n(\mathbf{k}) \psi_n(\mathbf{k})$
+/// - **Surface States**: Compute surface Green's functions $G^s(\omega, \mathbf{k}_\parallel)$
+/// - **Transport Properties**:
+///   - Anomalous Hall conductivity $\sigma_{xy} = \frac{e^2}{\hbar} \int \frac{d^2k}{(2\pi)^2} \Omega_z(\mathbf{k})$
+///   - Spin Hall conductivity
+///   - Nonlinear conductivity tensors
+/// - **Topological Invariants**: Chern numbers, Wilson loops, and Wannier centers
+/// - **Slater-Koster Models**: Parameterized tight-binding models with two-center integrals
+///
+/// ## Mathematical Foundation
+///
+/// The library implements the tight-binding Hamiltonian:
+/// $$
+/// H = \sum_{i,j} t_{ij} c_i^\dagger c_j + \sum_i \epsilon_i c_i^\dagger c_i
+/// $$
+/// where $t_{ij}$ are hopping parameters and $\epsilon_i$ are on-site energies.
+///
+/// For transport calculations, we compute the Berry curvature:
+/// $$
+/// \Omega_n(\mathbf{k}) = -2\,\text{Im}\sum_{m\neq n} \frac{\bra{n}\partial_{k_x} H\ket{m}\bra{m}\partial_{k_y} H\ket{n}}{(E_n - E_m)^2}
+/// $$
 ///
 
 /// Tight-binding model structure representing the Hamiltonian $H(\mathbf{k})$ and related properties.
