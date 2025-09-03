@@ -17,18 +17,18 @@ fn main() {
     let a0 = 1.0;
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]) * a0; //正方晶格
     let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
-    let mut model = Model::tb_model(dim_r, lat, orb, true, None);
-    model.set_onsite(&arr1(&[J, -J]), spin_direction::z);
+    let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
+    model.set_onsite(&arr1(&[J, -J]), SpinDirection::z);
     //底层最近邻hopping
-    model.add_hop(t + delta, 0, 0, &array![-1, 0], spin_direction::None);
-    model.add_hop(t - delta, 0, 0, &array![0, -1], spin_direction::None);
-    model.add_hop(t - delta, 1, 1, &array![-1, 0], spin_direction::None);
-    model.add_hop(t + delta, 1, 1, &array![0, -1], spin_direction::None);
+    model.add_hop(t + delta, 0, 0, &array![-1, 0], SpinDirection::None);
+    model.add_hop(t - delta, 0, 0, &array![0, -1], SpinDirection::None);
+    model.add_hop(t - delta, 1, 1, &array![-1, 0], SpinDirection::None);
+    model.add_hop(t + delta, 1, 1, &array![0, -1], SpinDirection::None);
     //添加SOC项
-    model.add_hop(lm_so, 0, 1, &array![0, 0], spin_direction::z);
-    model.add_hop(lm_so, 0, 1, &array![0, -1], spin_direction::z);
-    model.add_hop(lm_so, 0, 1, &array![-1, 0], spin_direction::z);
-    model.add_hop(lm_so, 0, 1, &array![-1, -1], spin_direction::z);
+    model.add_hop(lm_so, 0, 1, &array![0, 0], SpinDirection::z);
+    model.add_hop(lm_so, 0, 1, &array![0, -1], SpinDirection::z);
+    model.add_hop(lm_so, 0, 1, &array![-1, 0], SpinDirection::z);
+    model.add_hop(lm_so, 0, 1, &array![-1, -1], SpinDirection::z);
 
     let nk: usize = 1001;
     let path = array![[0.0, 0.0], [0.0, 0.5], [0.5, 0.5], [0.0, 0.5], [0.0, 0.0]];
@@ -42,7 +42,7 @@ fn main() {
     let T = 100.0;
     let nk: usize = 1000;
     let kmesh = arr1(&[nk, nk]);
-    let kvec = gen_kmesh(&kmesh);
+    let kvec = gen_kmesh(&kmesh).unwrap();
     let lat_inv = model.lat.inv().unwrap();
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
@@ -60,7 +60,7 @@ fn main() {
     //画一下贝利曲率的分布
     let nk: usize = 1000;
     let kmesh = arr1(&[nk, nk]);
-    let kvec = gen_kmesh(&kmesh);
+    let kvec = gen_kmesh(&kmesh).unwrap();
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
@@ -77,7 +77,7 @@ fn main() {
         }),
         "./examples/chern_alter/heat_map.pdf",
     );
-    let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, 0.0, 0, 1e-3);
+    let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, 0.0, 0, 1e-3).unwrap();
     println!("{}", conductivity / (2.0 * PI));
 
     let E_min = -1.0;
@@ -86,7 +86,7 @@ fn main() {
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let sigma: Array1<f64> = model
-        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5);
+        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5).unwrap();
     //开始绘制非线性电导
     let mut fg = Figure::new();
     let x: Vec<f64> = mu.to_vec();
@@ -106,7 +106,7 @@ fn main() {
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let sigma: Array1<f64> =
-        model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, 0);
+        model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, 0).unwrap();
     //开始绘制非线性电导
     let mut fg = Figure::new();
     let x: Vec<f64> = mu.to_vec();

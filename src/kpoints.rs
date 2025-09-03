@@ -1,9 +1,10 @@
 use ndarray::{Array1,Array2,Array3,Axis};
 use crate::generics::usefloat;
+use crate::error::{TbError, Result};
 
 #[allow(non_snake_case)]
 #[inline(always)]
-pub fn gen_kmesh<T>(k_mesh: &Array1<usize>) -> Array2<T>
+pub fn gen_kmesh<T>(k_mesh: &Array1<usize>) -> Result<Array2<T>>
 where
     T: usefloat + std::ops::Div<Output = T>,
 {
@@ -43,11 +44,11 @@ where
         }
     }
     let mut usek = Array1::<T>::zeros(dim);
-    gen_kmesh_arr(&k_mesh, 0, usek)
+    Ok(gen_kmesh_arr(&k_mesh, 0, usek))
 }
 #[allow(non_snake_case)]
 #[inline(always)]
-pub fn gen_krange<T>(k_mesh: &Array1<usize>) -> Array3<T>
+pub fn gen_krange<T>(k_mesh: &Array1<usize>) -> Result<Array3<T>>
 where
     T: usefloat + std::ops::Div<Output = T>,
 {
@@ -91,10 +92,13 @@ where
             }
         }
         _ => {
-            panic!("Wrong, the dim should be 1,2 or 3, but you give {}", dim_r);
+            return Err(TbError::InvalidDimension {
+                dim: dim_r,
+                supported: vec![1, 2, 3],
+            });
         }
     };
-    k_range
+    Ok(k_range)
 }
 
 #[cfg(test)]
@@ -105,7 +109,7 @@ mod tests {
     #[test]
     fn test_gen_kmesh() {
         // Test basic 2x2 kmesh generation
-        let kmesh:Array2<f64> = gen_kmesh(&array![2, 2]);
+        let kmesh:Array2<f64> = gen_kmesh(&array![2, 2]).unwrap();
         assert_eq!(kmesh.shape(), &[4, 2]); // 4 points in 2D
         // Add more assertions based on expected output
     }

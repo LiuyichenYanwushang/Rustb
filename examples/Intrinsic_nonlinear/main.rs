@@ -72,7 +72,7 @@ fn main() {
     println!("{}", (omega_one * pf).sum());
     //let sigma:Array1<f64>=model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh,&dir_1,&dir_2,&dir_3,&array![mu0],T,0);
     //println!("{}",sigma);
-    let kvec = gen_kmesh(&kmesh);
+    let kvec = gen_kmesh(&kmesh).unwrap();
     let ratio = 0.1;
     let kvec = (kvec - 0.5) * ratio;
     let kvec = model.lat.dot(&(kvec.reversed_axes()));
@@ -134,21 +134,21 @@ fn gen_model(w: f64, vx: f64, vy: f64, m: f64) -> Model {
     let norb: usize = 2;
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
     let orb = arr2(&[[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
-    let mut model = Model::tb_model(dim_r, lat, orb, false, None);
-    model.set_onsite(&array![m, m, -m, -m], spin_direction::None);
+    let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+    model.set_onsite(&array![m, m, -m, -m], SpinDirection::None);
     let w = Complex::new(w, 0.0);
     let vx = Complex::new(vx, 0.0);
     let vy = Complex::new(vy, 0.0);
     for i in 0..4 {
-        model.set_hop(-w * li / 2.0, i, i, &array![1, 0], spin_direction::None);
+        model.set_hop(-w * li / 2.0, i, i, &array![1, 0], SpinDirection::None);
     }
-    model.add_hop(-vx * li / 2.0, 0, 2, &array![1, 0], spin_direction::None);
-    model.add_hop(vx * li / 2.0, 0, 2, &array![-1, 0], spin_direction::None);
-    model.add_hop(-vx * li / 2.0, 1, 3, &array![1, 0], spin_direction::None);
-    model.add_hop(vx * li / 2.0, 1, 3, &array![-1, 0], spin_direction::None);
-    model.add_hop(vy / 2.0, 0, 3, &array![0, 1], spin_direction::None);
-    model.add_hop(-vy / 2.0, 0, 3, &array![0, -1], spin_direction::None);
-    model.add_hop(vy / 2.0, 2, 1, &array![0, -1], spin_direction::None);
-    model.add_hop(-vy / 2.0, 2, 1, &array![0, 1], spin_direction::None);
+    model.add_hop(-vx * li / 2.0, 0, 2, &array![1, 0], SpinDirection::None);
+    model.add_hop(vx * li / 2.0, 0, 2, &array![-1, 0], SpinDirection::None);
+    model.add_hop(-vx * li / 2.0, 1, 3, &array![1, 0], SpinDirection::None);
+    model.add_hop(vx * li / 2.0, 1, 3, &array![-1, 0], SpinDirection::None);
+    model.add_hop(vy / 2.0, 0, 3, &array![0, 1], SpinDirection::None);
+    model.add_hop(-vy / 2.0, 0, 3, &array![0, -1], SpinDirection::None);
+    model.add_hop(vy / 2.0, 2, 1, &array![0, -1], SpinDirection::None);
+    model.add_hop(-vy / 2.0, 2, 1, &array![0, 1], SpinDirection::None);
     model
 }

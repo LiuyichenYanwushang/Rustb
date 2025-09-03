@@ -1,30 +1,9 @@
 use ndarray::{Array1, Array2, ArrayView1, arr1, s, Axis, array};
 use std::collections::{HashMap, BTreeSet};
 use num_complex::Complex;
-use thiserror::Error;
-use crate::{Model, SpinDirection, TbError};
+use crate::{Model, SpinDirection, TbError, Result};
 use crate::atom_struct::{AtomType, OrbProj};
-use std::result::Result;
 use ndarray_linalg::Norm;
-
-/// Slater-Koster 模型相关错误
-#[derive(Error, Debug)]
-pub enum SkError {
-    #[error("Missing parameter '{0}' for atom pair {1:?}-{2:?} at shell {3}")]
-    ParameterMissing(String, AtomType, AtomType, usize),
-    
-    #[error("Unsupported orbital combination: {0:?} - {1:?}")]
-    UnsupportedOrbitalCombination(OrbProj, OrbProj),
-    
-    #[error("Invalid neighbor search range: {0}")]
-    InvalidSearchRange(i32),
-    
-    #[error("No neighbor shells found")]
-    NoShellsFound,
-    
-    #[error("Model building error: {0}")]
-    ModelError(#[from] TbError),
-}
 
 /// 描述 Slater-Koster 模型中单个原子的结构信息。
 #[derive(Debug, Clone)]
@@ -86,7 +65,7 @@ pub trait ToTbModel {
         &self,
         n_neighbors: usize,
         params: &HashMap<(AtomType, AtomType, usize), SkParams>,
-    ) -> Result<Model, SkError>;
+    ) -> Result<Model>;
 }
 
 impl SlaterKosterModel {
@@ -102,16 +81,16 @@ impl SlaterKosterModel {
     }
     
     /// 设置近邻搜索范围
-    pub fn with_search_range(mut self, range: i32) -> Result<Self, SkError> {
+    pub fn with_search_range(mut self, range: i32) -> Result<Self> {
         if range <= 0 {
-            return Err(SkError::InvalidSearchRange(range));
+            return Err(TbError::InvalidSearchRange(range));
         }
         self.neighbor_search_range = range;
         Ok(self)
     }
     
     /// 自动查找并返回前 `n` 个最近邻壳层的距离。
-    fn find_shell_distances(&self, n: usize) -> Result<Vec<f64>, SkError> {
+    fn find_shell_distances(&self, n: usize) -> Result<Vec<f64>> {
         let mut dists = BTreeSet::new();
         let search = self.neighbor_search_range;
 
@@ -127,7 +106,7 @@ impl SlaterKosterModel {
                 .flat_map(|i| (-search..=search)
                     .flat_map(move |j| (-search..=search).map(move |k| arr1(&[i as isize, j as isize, k as isize]))))
                 .collect(),
-            _ => return Err(SkError::InvalidSearchRange(search)),
+            _ => return Err(TbError::InvalidSearchRange(search)),
         };
 
         for (ia, atoma) in self.atoms.iter().enumerate() {
@@ -150,7 +129,7 @@ impl SlaterKosterModel {
         }
         
         if dists.is_empty() {
-            return Err(SkError::NoShellsFound);
+            return Err(TbError::NoShellsFound);
         }
         
         Ok(dists.into_iter().map(|x| x as f64 / 1e6).take(n).collect())
@@ -179,12 +158,12 @@ impl SlaterKosterModel {
 /// 宏用于简化参数获取和错误处理
 macro_rules! get_param {
     ($param:expr, $field:ident, $name:expr, $pair:expr, $shell:expr) => {
-        $param.$field.ok_or_else(|| SkError::ParameterMissing(
-            $name.to_string(), 
-            $pair.0, 
-            $pair.1, 
-            $shell
-        ))?
+        $param.$field.ok_or_else(|| TbError::SkParameterMissing {
+            param: $name.to_string(), 
+            atom1: $pair.0, 
+            atom2: $pair.1, 
+            shell: $shell
+        })?
     };
 }
 
@@ -198,7 +177,7 @@ fn sk_element(
     param: &SkParams,
     pair: (AtomType, AtomType),
     shell: usize,
-) -> Result<f64, SkError> {
+) -> Result<f64> {
     use OrbProj::*;
     
     let result = match (oi, oj) {
@@ -251,7 +230,7 @@ fn sk_element(
         // 实际实现中需要完整列出所有组合
 
         // 其他未实现的轨道组合
-        _ => return Err(SkError::UnsupportedOrbitalCombination(oi, oj)),
+        _ => return Err(TbError::UnsupportedOrbitalCombination(oi, oj)),
     };
     
     Ok(result)
@@ -262,7 +241,7 @@ impl ToTbModel for SlaterKosterModel {
         &self,
         n_neighbors: usize,
         params: &HashMap<(AtomType, AtomType, usize), SkParams>,
-    ) -> Result<Model, SkError> {
+    ) -> Result<Model> {
         // 将所有原子的所有轨道平铺成一个列表
         let orb_pos_vec: Vec<f64> = self
             .atoms
@@ -281,7 +260,7 @@ impl ToTbModel for SlaterKosterModel {
             .flat_map(|a| a.projections.clone())
             .collect();
 
-        let mut model = Model::tb_model(self.dim_r, self.lat.clone(), orb_array, self.spin, None);
+        let mut model = Model::tb_model(self.dim_r, self.lat.clone(), orb_array, self.spin, None)?;
         model.set_projection(&projections);
 
         if n_neighbors == 0 {
@@ -358,7 +337,7 @@ impl ToTbModel for SlaterKosterModel {
                                         Ok(hop) if hop.abs() > 1e-12 => {
                                             model.add_hop(hop, io, jo, R, SpinDirection::None);
                                         }
-                                        Err(SkError::UnsupportedOrbitalCombination(_, _)) => {
+                                        Err(TbError::UnsupportedOrbitalCombination(_, _)) => {
                                             // 跳过不支持的轨道组合
                                         }
                                         Err(e) => return Err(e),
@@ -377,14 +356,14 @@ impl ToTbModel for SlaterKosterModel {
 }
 
 /// 从文件读取 Slater-Koster 参数的辅助函数
-pub fn read_sk_params_from_file(path: &str) -> Result<HashMap<(AtomType, AtomType, usize), SkParams>, std::io::Error> {
+pub fn read_sk_params_from_file(path: &str) -> Result<HashMap<(AtomType, AtomType, usize), SkParams>> {
     // 这里应该是实际的文件读取逻辑
     // 简化为返回空HashMap
     Ok(HashMap::new())
 }
 
 /// 使用示例：构建石墨烯模型
-pub fn example_graphene() -> Result<Model, SkError> {
+pub fn example_graphene() -> Result<Model> {
     let lat = array![
         [1.0, 0.0],
         [-0.5, 3.0f64.sqrt() / 2.0]
@@ -459,7 +438,7 @@ mod tests {
             Err(e) => {
                 // If it fails due to missing parameters, that's acceptable for testing
                 // as long as it's not some other error
-                assert!(format!("{}", e).contains("Missing parameter"), 
+                assert!(format!("{}", e).contains("Missing Slater-Koster parameter"), 
                     "Unexpected error: {}", e);
             }
         }

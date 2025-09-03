@@ -1,4 +1,5 @@
 //!这个模块是用来求解表面格林函数的一个模块.
+use crate::error::{TbError, Result};
 use crate::{Model, remove_col, remove_row};
 use crate::kpoints::gen_kmesh;
 use gnuplot::Major;
@@ -57,9 +58,12 @@ impl surf_Green {
     ///eta表示小虚数得取值
     ///
     ///对于非晶格矢量得方向, 需要用 model.make_supercell 先扩胞
-    pub fn from_Model(model: &Model, dir: usize, eta: f64, Np: Option<usize>) -> surf_Green {
-        if dir > model.dim_r {
-            panic!("Wrong, the dir must smaller than model's dim_r")
+    pub fn from_Model(model: &Model, dir: usize, eta: f64, Np: Option<usize>) -> Result<surf_Green> {
+        if dir >= model.dim_r {
+            return Err(TbError::InvalidDirection {
+                index: dir,
+                dim: model.dim_r,
+            });
         }
         let mut R_max: usize = 0;
         for R0 in model.hamR.rows() {
@@ -80,7 +84,7 @@ impl surf_Green {
 
         let mut U = Array2::<f64>::eye(model.dim_r);
         U[[dir, dir]] = R_max as f64;
-        let model = model.make_supercell(&U);
+        let model = model.make_supercell(&U)?;
         let mut ham0 = Array3::<Complex<f64>>::zeros((0, model.nsta(), model.nsta()));
         let mut hamR0 = Array2::<isize>::zeros((0, model.dim_r));
         let mut hamR = Array3::<Complex<f64>>::zeros((0, model.nsta(), model.nsta()));
@@ -120,16 +124,19 @@ impl surf_Green {
             ham_hopR: new_hamRR,
             eta,
         };
-        green
+        Ok(green)
     }
-    pub fn k_path(&self, path: &Array2<f64>, nk: usize) -> (Array2<f64>, Array1<f64>, Array1<f64>) {
+    pub fn k_path(&self, path: &Array2<f64>, nk: usize) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
         //!根据高对称点来生成高对称路径, 画能带图
         if self.dim_r == 0 {
-            panic!("the k dimension of the model is 0, do not use k_path")
+            return Err(TbError::ZeroDimKPathError);
         }
         let n_node: usize = path.len_of(Axis(0));
         if self.dim_r != path.len_of(Axis(1)) {
-            panic!("Wrong, the path's length along 1 dimension must equal to the model's dimension")
+            return Err(TbError::PathLengthMismatch {
+                expected: self.dim_r,
+                actual: path.len_of(Axis(1)),
+            });
         }
         let k_metric = (self.lat.dot(&self.lat.t())).inv().unwrap();
         let mut k_node = Array1::<f64>::zeros(n_node);
@@ -165,7 +172,7 @@ impl surf_Green {
                     .assign(&((1.0 - frac) * &k_i + frac * &k_f));
             }
         }
-        (k_vec, k_dist, k_node)
+        Ok((k_vec, k_dist, k_node))
     }
 
     #[inline(always)]
@@ -363,7 +370,7 @@ impl surf_Green {
             "show_arc_state can only calculated the three dimension system, so the kmesh need to be [m,n], but you give {}",
             kmesh
         );
-        let kvec = gen_kmesh(kmesh);
+        let kvec = gen_kmesh(kmesh).expect("Failed to generate k-mesh");
         let nk = kvec.nrows();
         let mut N_R = Array1::<f64>::zeros(nk);
         let mut N_L = Array1::<f64>::zeros(nk);
@@ -573,7 +580,7 @@ impl surf_Green {
         use std::fs::create_dir_all;
         use std::io::{BufWriter, Write};
         create_dir_all(name).expect("can't creat the file");
-        let (kvec, kdist, knode) = self.k_path(kpath, nk);
+        let (kvec, kdist, knode) = self.k_path(kpath, nk).expect("Failed to generate k-path");
         let Energy = Array1::<f64>::linspace(E_min, E_max, E_n);
         let (N_L, N_R, N_B) = self.surf_green_path(&kvec, E_min, E_max, E_n, spin);
         //let N_L=N_L.mapv(|x| if x > 0.0 {x.ln()} else if  x< 0.0 {-x.abs().ln()} else {0.0});

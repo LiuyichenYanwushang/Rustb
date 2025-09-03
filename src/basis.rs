@@ -1,5 +1,6 @@
 //! 这个 impl 是给 tight-binding 模型提供基础的函数.
 use crate::atom_struct::{Atom, AtomType, OrbProj};
+use crate::error::{TbError, Result};
 use crate::generics::hop_use;
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
 use crate::{Gauge, Model, SpinDirection, comm};
@@ -132,7 +133,7 @@ impl Model {
         orb: Array2<f64>,
         spin: bool,
         atom: Option<Vec<Atom>>,
-    ) -> Model {
+    ) -> Result<Model> {
         /*
         //!这个函数是用来初始化一个 Model, 需要输入的变量意义为
         //!
@@ -179,12 +180,16 @@ impl Model {
         let mut new_atom_list: Vec<usize> = vec![1];
         let mut new_atom = Array2::<f64>::zeros((0, dim_r));
         if lat.len_of(Axis(1)) != dim_r {
-            panic!("Wrong, the lat's second dimension's length must equal to dim_r")
+            return Err(TbError::LatticeDimensionError {
+                expected: dim_r,
+                actual: lat.len_of(Axis(1)),
+            });
         }
         if lat.len_of(Axis(0)) != lat.len_of(Axis(1)) {
-            panic!(
-                "Wrong, the lat's second dimension's length must less than first dimension's length"
-            )
+            return Err(TbError::LatticeDimensionError {
+                expected: lat.len_of(Axis(1)),
+                actual: lat.len_of(Axis(0)),
+            });
         }
         let new_atom = match atom {
             Some(atom0) => atom0,
@@ -231,7 +236,7 @@ impl Model {
             hamR,
             rmatrix,
         };
-        model
+        Ok(model)
     }
     pub fn set_projection(&mut self, proj: &Vec<OrbProj>) {
         //! 这个函数是用来设置tb模型的projection 的
@@ -282,7 +287,7 @@ impl Model {
         //!let lat=array![[1.0,0.0],[-1.0/2.0,3_f64.sqrt()/2.0]];
         //!let orb=array![[1.0/3.0,2.0/3.0],[2.0/3.0,1.0/3.0]];
         //!let spin=false;
-        //!let mut graphene_model=Model::tb_model(2,lat,orb,spin,None);
+        //!let mut graphene_model=Model::tb_model(2,lat,orb,spin,None).unwrap();
         //! let t=1.0; //the nearst hopping
         //! graphene_model.set_hop(t,0,1,&array![0,0],SpinDirection::None);
         //! // t is the hopping, 0, 1 is the orbital ,array![0,0] is the unit cell
@@ -465,18 +470,20 @@ impl Model {
         ind_i: usize,
         ind_j: usize,
         R: &Array1<isize>,
-    ) {
+    ) -> Result<()> {
         //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp , 不考虑自旋, 直接添加参数
         if R.len() != self.dim_r() {
-            panic!("Wrong, the R length should equal to dim_r")
+            return Err(TbError::RVectorLengthError {
+                expected: self.dim_r(),
+                actual: R.len(),
+            });
         }
         if ind_i >= self.nsta() || ind_j >= self.nsta() {
-            panic!(
-                "Wrong, ind_i and ind_j must less than norb, here norb is {}, but ind_i={} and ind_j={}",
-                self.norb(),
-                ind_i,
-                ind_j
-            )
+            return Err(TbError::DimensionMismatch {
+                context: "orbital indices".to_string(),
+                expected: self.nsta(),
+                found: std::cmp::max(ind_i, ind_j),
+            });
         }
         if let Some(index)=find_R(&self.hamR, &R) {
             let index_inv = find_R(&self.hamR, &(-R)).expect("Negative R not found in hamR");
@@ -485,10 +492,7 @@ impl Model {
                 self.ham[[index_inv, ind_j, ind_i]] = tmp.conj();
             }
             if ind_i == ind_j && tmp.im != 0.0 && index == 0 {
-                panic!(
-                    "Wrong, the onsite hopping must be real, but here is {}",
-                    tmp
-                )
+                return Err(TbError::OnsiteHoppingMustBeReal(tmp));
             }
         } else {
             let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
@@ -501,6 +505,7 @@ impl Model {
             self.ham.push(Axis(0), new_ham.view()).unwrap();
             self.hamR.push(Axis(0), (-R).view()).unwrap();
         }
+        Ok(())
     }
 
     #[allow(non_snake_case)]
@@ -567,14 +572,17 @@ impl Model {
     }
 
     #[allow(non_snake_case)]
-    pub fn k_path(&self, path: &Array2<f64>, nk: usize) -> (Array2<f64>, Array1<f64>, Array1<f64>) {
+    pub fn k_path(&self, path: &Array2<f64>, nk: usize) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
         //!根据高对称点来生成高对称路径, 画能带图
         if self.dim_r() == 0 {
-            panic!("the k dimension of the model is 0, do not use k_path")
+            return Err(TbError::ZeroDimKPathError);
         }
         let n_node: usize = path.len_of(Axis(0));
         if self.dim_r() != path.len_of(Axis(1)) {
-            panic!("Wrong, the path's length along 1 dimension must equal to the model's dimension")
+            return Err(TbError::PathLengthMismatch {
+                expected: self.dim_r(),
+                actual: path.len_of(Axis(1)),
+            });
         }
         let k_metric = (self.lat.dot(&self.lat.t())).inv().unwrap();
         let mut k_node = Array1::<f64>::zeros(n_node);
@@ -611,7 +619,7 @@ impl Model {
                     .assign(&((1.0 - frac) * k_i.to_owned() + frac * k_f.to_owned()));
             }
         }
-        (k_vec, k_dist, k_node)
+        Ok((k_vec, k_dist, k_node))
     }
     #[allow(non_snake_case)]
     #[inline(always)]
@@ -989,7 +997,7 @@ impl Model {
     ///dir:方向
     ///
     ///返回一个model, 其中 dir 和输入的model是一致的, 但是轨道数目和原子数目都会扩大num倍, 沿着dir方向没有胞间hopping.
-    pub fn cut_piece(&self, num: usize, dir: usize) -> Model {
+    pub fn cut_piece(&self, num: usize, dir: usize) -> Result<Model> {
         //! This function is used to truncate a certain direction of a model.
         //!
         //! Parameters:
@@ -998,10 +1006,13 @@ impl Model {
         //!
         //! Returns a new model with the same direction as the input model, but with the number of orbitals and atoms increased by a factor of "num". There is no inter-cell hopping along the "dir" direction.
         if num < 1 {
-            panic!("Wrong, the num={} is less than 1", num);
+            return Err(TbError::InvalidSupercellSize(num));
         }
-        if dir > self.dim_r() {
-            panic!("Wrong, the dir is larger than dim_r");
+        if dir >= self.dim_r() {
+            return Err(TbError::InvalidDirection {
+                index: dir,
+                dim: self.dim_r(),
+            });
         }
         let mut new_orb = Array2::<f64>::zeros((self.norb() * num, self.dim_r())); //定义一个新的轨道
         let mut new_orb_proj = Vec::new();
@@ -1251,7 +1262,7 @@ impl Model {
             hamR: new_hamR,
             rmatrix: new_rmatrix,
         };
-        model
+        Ok(model)
     }
     pub fn shift_to_atom(&mut self) {
         //!这个是将轨道移动到原子位置上
@@ -1263,7 +1274,7 @@ impl Model {
             }
         }
     }
-    pub fn cut_dot(&self, num: usize, shape: usize, dir: Option<Vec<usize>>) -> Model {
+    pub fn cut_dot(&self, num: usize, shape: usize, dir: Option<Vec<usize>>) -> Result<Model> {
         //! 这个是用来且角态或者切棱态的
 
         match self.dim_r() {
@@ -1278,8 +1289,8 @@ impl Model {
                     dir.unwrap()
                 };
                 let (old_model, use_orb_item, use_atom_item) = {
-                    let model_1 = self.cut_piece(num + 1, dir[0]);
-                    let model_2 = model_1.cut_piece(num + 1, dir[1]);
+                    let model_1 = self.cut_piece(num + 1, dir[0])?;
+                    let model_2 = model_1.cut_piece(num + 1, dir[1])?;
                     let mut use_atom_item = Vec::<usize>::new();
                     let mut use_orb_item = Vec::<usize>::new(); //这个是确定要保留哪些轨道
                     let mut a: usize = 0;
@@ -1357,8 +1368,10 @@ impl Model {
                             }
                         }
                         _ => {
-                            panic!("Wrong, the shape only can be 3,4, 6,8");
-                            todo!();
+                            return Err(TbError::InvalidShape {
+                                shape,
+                                supported: vec![3, 4, 6, 8],
+                            });
                         }
                     };
                     (model_2, use_orb_item, use_atom_item)
@@ -1381,7 +1394,7 @@ impl Model {
                     new_orb,
                     self.spin,
                     Some(new_atom),
-                );
+                )?;
                 new_model.orb_projection = new_orb_proj;
                 let n_R = old_model.hamR.len_of(Axis(0));
                 let mut new_ham =
@@ -1474,7 +1487,7 @@ impl Model {
                     }
                     new_model.rmatrix = new_rmatrix;
                 }
-                return new_model;
+                return Ok(new_model);
             }
             2 => {
                 if dir != None {
@@ -1484,8 +1497,8 @@ impl Model {
                 }
 
                 let (old_model, use_orb_item, use_atom_item) = {
-                    let model_1 = self.cut_piece(num + 1, 0);
-                    let model_2 = model_1.cut_piece(num + 1, 1);
+                    let model_1 = self.cut_piece(num + 1, 0)?;
+                    let model_2 = model_1.cut_piece(num + 1, 1)?;
                     let mut use_atom_item = Vec::<usize>::new();
                     let mut use_orb_item = Vec::<usize>::new(); //这个是确定要保留哪些轨道
                     let mut a: usize = 0;
@@ -1558,8 +1571,10 @@ impl Model {
                             }
                         }
                         _ => {
-                            panic!("Wrong, the shape only can be 3,4, 6,8");
-                            todo!();
+                            return Err(TbError::InvalidShape {
+                                shape,
+                                supported: vec![3, 4, 6, 8],
+                            });
                         }
                     };
                     (model_2, use_orb_item, use_atom_item)
@@ -1582,7 +1597,7 @@ impl Model {
                     new_orb,
                     self.spin,
                     Some(new_atom),
-                );
+                )?;
                 new_model.orb_projection = new_orb_proj;
                 let n_R = new_model.hamR.len_of(Axis(0));
                 let mut new_ham =
@@ -1663,11 +1678,13 @@ impl Model {
                     }
                     new_model.rmatrix = new_rmatrix;
                 }
-                return new_model;
+                return Ok(new_model);
             }
             _ => {
-                panic!("Wrong, only dim_r=2,3 can using this function!");
-                todo!();
+                return Err(TbError::InvalidDimension {
+                    dim: self.dim_r(),
+                    supported: vec![2, 3],
+                });
             }
         }
     }
@@ -1852,7 +1869,7 @@ impl Model {
         E_n: usize,
         eta: f64,
         precision: f64,
-    ) -> Array2<f64> {
+    ) -> Result<Array2<f64>> {
         //! 能带反折叠算法, 用来计算能带反折叠后的能带. 可以用来计算合金以及一些超胞
         //! 算法参考
         //!
@@ -1884,7 +1901,7 @@ impl Model {
         let unfold_V = unfold_lat.det().unwrap();
         let U_det = U.det().unwrap();
         if U_det <= 1.0 {
-            panic!("wrong!, the det(U) must larger than 1");
+            return Err(TbError::InvalidSupercellDet { det: U_det });
         }
         //我们先根据path计算一下k点
         let (kvec, kdist, knode) = {
@@ -2009,7 +2026,7 @@ impl Model {
             }
         }
         if unit_atom.nrows() != self.natom() / (U_det as usize) {
-            panic!("Wrong, the unit cell's atoms number is wrong! please check your atom position");
+            return Err(TbError::InvalidAtomConfiguration);
         }
         //好了, 接下来让我们计算权重
         let mut weight = Array2::<Complex<f64>>::zeros((nk, self.nsta()));
@@ -2079,38 +2096,33 @@ impl Model {
                 });
         }
         A0 = B.sum_axis(Axis(2));
-        A0.reversed_axes()
+        Ok(A0.reversed_axes())
     }
 
-    pub fn make_supercell(&self, U: &Array2<f64>) -> Model {
+    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model> {
         //这个函数是用来对模型做变换的, 变换前后模型的基矢 $L'=UL$.
         //!This function is used to transform the model, where the new basis after transformation is given by $L' = UL$.
         if self.dim_r() != U.len_of(Axis(0)) {
-            panic!("Wrong, the imput U's dimension must equal to self.dim_r()")
+            return Err(TbError::TransformationMatrixDimMismatch {
+                expected: self.dim_r(),
+                actual: U.len_of(Axis(0)),
+            });
         }
         //新的lattice
         let new_lat = U.dot(&self.lat);
         //体积的扩大倍数
         let U_det = U.det().unwrap() as isize;
         if U_det < 0 {
-            panic!(
-                "Wrong, the U_det is {}, you should using right hand axis",
-                U_det
-            );
+            return Err(TbError::InvalidSupercellDet { det: U_det as f64 });
         } else if U_det == 0 {
-            panic!("Wrong, the U_det is {}", U_det);
+            return Err(TbError::InvalidSupercellDet { det: 0.0 });
         }
         let U_inv = U.inv().unwrap();
         //开始判断是否存在小数
         for i in 0..U.len_of(Axis(0)) {
             for j in 0..U.len_of(Axis(1)) {
                 if U[[i, j]].fract() > 1e-8 {
-                    panic!(
-                        "Wrong, the U's element must be integer, but your given is {} at [{},{}]",
-                        U[[i, j]],
-                        i,
-                        j
-                    );
+                    return Err(TbError::InvalidSupercellMatrix);
                 }
             }
         }
@@ -2526,7 +2538,7 @@ impl Model {
             hamR: new_hamR,
             rmatrix: new_rmatrix,
         };
-        model
+        Ok(model)
     }
     #[allow(non_snake_case)]
     pub fn dos(
@@ -2536,7 +2548,7 @@ impl Model {
         E_max: f64,
         E_n: usize,
         sigma: f64,
-    ) -> (Array1<f64>, Array1<f64>) {
+    ) -> Result<(Array1<f64>, Array1<f64>)> {
         //! 我这里用的算法是高斯算法, 其算法过程如下
         //!
         //! 首先, 根据 k_mesh 算出所有的能量 $\ve_n$, 然后, 按照定义
@@ -2546,7 +2558,7 @@ impl Model {
         //! 然后, 计算方法是先算出所有的能量, 再将能量乘以高斯分布, 就能得到态密度.
         //!
         //! 态密度的光滑程度和k点密度以及高斯分布的展宽有关
-        let kvec: Array2<f64> = gen_kmesh(&k_mesh);
+        let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk = kvec.len_of(Axis(0));
         let band = self.solve_band_all_parallel(&kvec);
         let E = Array1::linspace(E_min, E_max, E_n);
@@ -2567,12 +2579,12 @@ impl Model {
             )
             .reduce(|| Array1::<f64>::zeros(E_n), |acc, x| acc + x);
         let dos = dos / (nk as f64);
-        (E, dos)
+        Ok((E, dos))
     }
 
     ///这个函数是用来给模型添加磁场的
-    pub fn add_magnetic_field(&self) -> Model {
-        self.clone()
+    pub fn add_magnetic_field(&self) -> Result<Model> {
+        Ok(self.clone())
     }
 
     ///这个函数是用来快速画能带图的, 用python画图, 因为Rust画图不太方便.
@@ -2583,7 +2595,7 @@ impl Model {
         label: &Vec<&str>,
         nk: usize,
         name: &str,
-    ) -> std::io::Result<()> {
+    ) -> Result<()> {
         use gnuplot::AutoOption::*;
         use gnuplot::AxesCommon;
         use gnuplot::Tick::*;
@@ -2597,9 +2609,12 @@ impl Model {
                 label.len()
             )
         }
-        let (k_vec, k_dist, k_node) = self.k_path(&path, nk);
+        let (k_vec, k_dist, k_node) = self.k_path(&path, nk)?;
         let eval = self.solve_band_all_parallel(&k_vec);
-        create_dir_all(name).expect("can't creat the file");
+        create_dir_all(name).map_err(|e| TbError::DirectoryCreation {
+            path: name.to_string(),
+            message: e.to_string(),
+        })?;
         let mut name0 = String::new();
         name0.push_str("./");
         name0.push_str(&name);
@@ -2674,7 +2689,7 @@ impl Model {
     }
 
     #[allow(non_snake_case)]
-    pub fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Model {
+    pub fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Model> {
         //! 这个函数是从 wannier90 中读取 TB 文件的
         //!
         //! 这里 path 表示 文件的位置, 可以使用绝对路径, 即 "/" 开头的路径, 也可以使用相对路径, 即运行 cargo run 时
@@ -2701,22 +2716,24 @@ impl Model {
         hr_path.push_str("_hr.dat");
 
         let path = Path::new(&hr_path);
-        let hr = File::open(path).expect(&format!(
-            "Unable to open the file {:?}, please check if hr file is present\n",
-            path
-        ));
+        let hr = File::open(path).map_err(|e| TbError::FileCreation {
+            path: hr_path.clone(),
+            message: format!("Unable to open HR file: {}", e),
+        })?;
         let reader = BufReader::new(hr);
         let mut reads: Vec<String> = Vec::new();
 
         // 读取文件行
         for line in reader.lines() {
-            let line = line.unwrap();
+            let line = line.map_err(|e| TbError::Io(e))?;
             reads.push(line.clone());
         }
 
         // 获取轨道数和R点数
-        let nsta = reads[1].trim().parse::<usize>().unwrap();
-        let n_R = reads[2].trim().parse::<usize>().unwrap();
+        let nsta = reads[1].trim().parse::<usize>()
+            .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse nsta: {}", e) })?;
+        let n_R = reads[2].trim().parse::<usize>()
+            .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse n_R: {}", e) })?;
         let mut weights: Vec<usize> = Vec::new();
         let mut n_line: usize = 0;
 
@@ -2727,7 +2744,9 @@ impl Model {
                 break;
             }
             let string = reads[i].trim().split_whitespace();
-            let string: Vec<_> = string.map(|x| x.parse::<usize>().unwrap()).collect();
+            let string: Vec<_> = string.map(|x| x.parse::<usize>()
+                .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse weight: {}", e) }))
+                .collect::<Result<Vec<_>>>()?;
             weights.extend(string.clone());
         }
 
@@ -2738,9 +2757,12 @@ impl Model {
         // 遍历每个R点并填充哈密顿量
         for i in 0..n_R {
             let mut string = reads[i * nsta * nsta + n_line].trim().split_whitespace();
-            let a = string.next().unwrap().parse::<isize>().unwrap();
-            let b = string.next().unwrap().parse::<isize>().unwrap();
-            let c = string.next().unwrap().parse::<isize>().unwrap();
+            let a = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
+                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+            let b = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
+                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+            let c = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
+                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
 
             if a == 0 && b == 0 && c == 0 {
                 for ind_i in 0..nsta {
@@ -2748,8 +2770,10 @@ impl Model {
                         let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
                             .trim()
                             .split_whitespace();
-                        let re = string.nth(5).unwrap().parse::<f64>().unwrap();
-                        let im = string.next().unwrap().parse::<f64>().unwrap();
+                        let re = string.nth(5).ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian real part".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian real part: {}", e) })?;
+                        let im = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian imaginary part".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian imaginary part: {}", e) })?;
                         ham[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
                     }
                 }
@@ -2760,14 +2784,18 @@ impl Model {
                         let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
                             .trim()
                             .split_whitespace();
-                        let re = string.nth(5).unwrap().parse::<f64>().unwrap();
-                        let im = string.next().unwrap().parse::<f64>().unwrap();
+                        let re = string.nth(5).ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian real part".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian real part: {}", e) })?;
+                        let im = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian imaginary part".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian imaginary part: {}", e) })?;
                         matrix[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
                         // wannier90 里面是按照纵向排列的矩阵
                     }
                 }
-                ham.append(Axis(0), matrix.view()).unwrap();
-                hamR.append(Axis(0), arr2(&[[a, b, c]]).view()).unwrap();
+                ham.append(Axis(0), matrix.view())
+                    .map_err(|e| TbError::Linalg(ndarray_linalg::error::LinalgError::Shape(e)))?;
+                hamR.append(Axis(0), arr2(&[[a, b, c]]).view())
+                    .map_err(|e| TbError::Linalg(ndarray_linalg::error::LinalgError::Shape(e)))?;
             }
         }
 
@@ -2780,11 +2808,14 @@ impl Model {
         let mut win_path = file_path.clone();
         win_path.push_str(".win"); //文件的位置
         let path = Path::new(&win_path); //转化为路径格式
-        let hr = File::open(path).expect("Unable open the file, please check if have win file");
+        let hr = File::open(path).map_err(|e| TbError::FileCreation {
+            path: win_path.clone(),
+            message: format!("Unable to open win file: {}", e),
+        })?;
         let reader = BufReader::new(hr);
         let mut reads: Vec<String> = Vec::new();
         for line in reader.lines() {
-            let line = line.unwrap();
+            let line = line.map_err(|e| TbError::Io(e))?;
             reads.push(line.clone());
         }
         let mut read_iter = reads.iter();
@@ -2805,21 +2836,24 @@ impl Model {
             if a == None {
                 break;
             } else {
-                let a = a.unwrap();
+                let a = a.ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
                 if a.contains("begin unit_cell_cart") {
-                    let mut lat1 = read_iter.next().unwrap().trim().split_whitespace(); //将数字放到
-                    let mut lat2 = read_iter.next().unwrap().trim().split_whitespace();
-                    let mut lat3 = read_iter.next().unwrap().trim().split_whitespace();
+                    let mut lat1 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace(); //将数字放到
+                    let mut lat2 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace();
+                    let mut lat3 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace();
                     for i in 0..3 {
-                        lat[[0, i]] = lat1.next().unwrap().parse::<f64>().unwrap();
-                        lat[[1, i]] = lat2.next().unwrap().parse::<f64>().unwrap();
-                        lat[[2, i]] = lat3.next().unwrap().parse::<f64>().unwrap();
+                        lat[[0, i]] = lat1.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
+                        lat[[1, i]] = lat2.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
+                        lat[[2, i]] = lat3.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
                     }
                 } else if a.contains("spinors") && (a.contains("T") || a.contains("t")) {
                     spin = true;
                 } else if a.contains("begin projections") {
                     loop {
-                        let string = read_iter.next().unwrap();
+                        let string = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
                         if string.contains("end projections") {
                             break;
                         } else {
@@ -2897,9 +2931,9 @@ impl Model {
                                     "dyz" => (1, vec![OrbProj::dyz]),
                                     "dz2" => (1, vec![OrbProj::dz2]),
                                     "dx2-y2" => (1, vec![OrbProj::dx2y2]),
-                                    &_ => panic!(
-                                        "Wrong, no matching, please check the projection field in seedname.win. There are some projections that can not be identified"
-                                    ),
+                                    &_ => return Err(TbError::InvalidOrbitalProjection(
+                                        format!("Unrecognized projection '{}' in seedname.win", item)
+                                    )),
                                 };
                                 atom_orb_number += aa;
                                 proj_orb.extend(use_proj_orb);
@@ -2912,15 +2946,18 @@ impl Model {
                     }
                 } else if a.contains("begin atoms_cart") {
                     loop {
-                        let string = read_iter.next().unwrap();
+                        let string = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
                         if string.contains("end atoms_cart") {
                             break;
                         } else {
                             let prj: Vec<&str> = string.split_whitespace().collect();
                             atom_name.push(prj[0]);
-                            let a1 = prj[1].parse::<f64>().unwrap();
-                            let a2 = prj[2].parse::<f64>().unwrap();
-                            let a3 = prj[3].parse::<f64>().unwrap();
+                            let a1 = prj[1].parse::<f64>()
+                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                            let a2 = prj[2].parse::<f64>()
+                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                            let a3 = prj[3].parse::<f64>()
+                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
                             let a = array![a1, a2, a3];
                             atom_pos.push_row(a.view()); //这里我们不用win 里面的, 因为这个和orb没法对应, 如果没有xyz文件才考虑用这个
                         }
@@ -2938,7 +2975,7 @@ impl Model {
             let reader = BufReader::new(hr);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.unwrap();
+                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
                 reads.push(line.clone());
             }
             //let nsta=reads[0].trim().parse::<usize>().unwrap()-natom;
@@ -2946,27 +2983,33 @@ impl Model {
             let mut orb = Array2::<f64>::zeros((norb, 3));
             for i in 0..norb {
                 let a: Vec<&str> = reads[i + 2].trim().split_whitespace().collect();
-                orb[[i, 0]] = a[1].parse::<f64>().unwrap();
-                orb[[i, 1]] = a[2].parse::<f64>().unwrap();
-                orb[[i, 2]] = a[3].parse::<f64>().unwrap();
+                orb[[i, 0]] = a[1].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?;
+                orb[[i, 1]] = a[2].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?;
+                orb[[i, 2]] = a[3].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?
             }
-            orb = orb.dot(&lat.inv().unwrap());
+            orb = orb.dot(&lat.inv().map_err(TbError::Linalg)?);
             let mut new_atom_pos = Array2::<f64>::zeros((reads.len() - 2 - nsta, 3));
             let mut new_atom_name = Vec::new();
             for i in 0..reads.len() - 2 - nsta {
                 let a: Vec<&str> = reads[i + 2 + nsta].trim().split_whitespace().collect();
-                new_atom_pos[[i, 0]] = a[1].parse::<f64>().unwrap();
-                new_atom_pos[[i, 1]] = a[2].parse::<f64>().unwrap();
-                new_atom_pos[[i, 2]] = a[3].parse::<f64>().unwrap();
+                new_atom_pos[[i, 0]] = a[1].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                new_atom_pos[[i, 1]] = a[2].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                new_atom_pos[[i, 2]] = a[3].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
                 new_atom_name.push(AtomType::from_str(a[0]));
             }
             //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
 
             for (i, name) in new_atom_name.iter().enumerate() {
                 for (j, j_name) in proj_name.iter().enumerate() {
-                    if name == j_name {
-                        let use_pos = new_atom_pos.row(i).dot(&lat.inv().unwrap());
-                        let use_atom = Atom::new(use_pos, proj_list[j], *name);
+                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok() {
+                        let use_pos = new_atom_pos.row(i).dot(&lat.inv().map_err(TbError::Linalg)?);
+                        let use_atom = Atom::new(use_pos, proj_list[j], name.as_ref().unwrap().clone());
                         atom.push(use_atom);
                         orb_proj.extend(atom_proj[j].clone());
                     }
@@ -2975,12 +3018,12 @@ impl Model {
             orb
         } else {
             let mut orb = Array2::<f64>::zeros((0, 3));
-            let atom_pos = atom_pos.dot(&lat.inv().unwrap());
+            let atom_pos = atom_pos.dot(&lat.inv().map_err(TbError::Linalg)?);
             for (i, name) in atom_name.iter().enumerate() {
                 for (j, j_name) in proj_name.iter().enumerate() {
                     let name = AtomType::from_str(name);
-                    if name == *j_name {
-                        let use_atom = Atom::new(atom_pos.row(i).to_owned(), proj_list[j], name);
+                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok() {
+                        let use_atom = Atom::new(atom_pos.row(i).to_owned(), proj_list[j], name.unwrap().clone());
                         orb_proj.extend(atom_proj[j].clone());
                         atom.push(use_atom.clone());
                         for _ in 0..proj_list[j] {
@@ -2998,32 +3041,38 @@ impl Model {
         let path = Path::new(&r_path);
         let hr = File::open(path);
         let mut have_r = false;
-        let mut rmatrix = if hr.is_ok() {
+        let mut rmatrix = if let Ok(hr) = hr {
             have_r = true;
-            let hr = hr.unwrap();
             let reader = BufReader::new(hr);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.unwrap();
+                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
                 reads.push(line.clone());
             }
-            let n_R = reads[2].trim().parse::<usize>().unwrap();
+            let n_R = reads[2].trim().parse::<usize>()
+                .map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse n_R: {}", e) })?;
             let mut rmatrix = Array4::<Complex<f64>>::zeros((hamR.nrows(), 3, nsta, nsta));
             for i in 0..n_R {
                 let mut string = reads[i * nsta * nsta + 3].trim().split_whitespace();
-                let a = string.next().unwrap().parse::<isize>().unwrap();
-                let b = string.next().unwrap().parse::<isize>().unwrap();
-                let c = string.next().unwrap().parse::<isize>().unwrap();
+                let a = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
+                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                let b = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
+                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                let c = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
+                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
                 let R0 = array![a, b, c];
-                let index = find_R(&hamR, &R0).unwrap();
+                let index = find_R(&hamR, &R0)
+                    .ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R0) })?;
                 for ind_i in 0..nsta {
                     for ind_j in 0..nsta {
                         let string = &reads[i * nsta * nsta + ind_i * nsta + ind_j + 3];
                         let mut string = string.trim().split_whitespace();
                         string.nth(4);
                         for r in 0..3 {
-                            let re = string.next().unwrap().parse::<f64>().unwrap();
-                            let im = string.next().unwrap().parse::<f64>().unwrap();
+                            let re = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R matrix real part".to_string() })?
+                                .parse::<f64>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R matrix real part: {}", e) })?;
+                            let im = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R matrix imaginary part".to_string() })?
+                                .parse::<f64>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R matrix imaginary part: {}", e) })?;
                             rmatrix[[index, r, ind_j, ind_i]] =
                                 Complex::new(re, im) / (weights[i] as f64);
                         }
@@ -3050,13 +3099,12 @@ impl Model {
         let path = Path::new(&ws_path); //转化为路径格式
         let ws = File::open(path);
         let mut have_ws = false;
-        if ws.is_ok() {
+        if let Ok(ws) = ws {
             have_ws = true;
-            let ws = ws.unwrap();
             let reader = BufReader::new(ws);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.unwrap();
+                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
                 reads.push(line.clone());
             }
             //开始针对ham, hamR 以及 rmatrix 进行修改
@@ -3070,22 +3118,28 @@ impl Model {
                     i += 1;
                     let line = &reads[i];
                     let mut string = line.trim().split_whitespace();
-                    let a = string.next().unwrap().parse::<isize>().unwrap();
-                    let b = string.next().unwrap().parse::<isize>().unwrap();
-                    let c = string.next().unwrap().parse::<isize>().unwrap();
-                    let int_i = string.next().unwrap().parse::<usize>().unwrap() - 1;
-                    let int_j = string.next().unwrap().parse::<usize>().unwrap() - 1;
+                    let a = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let b = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let c = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let int_i = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
+                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
+                    let int_j = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
+                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
                     //接下来判断是否在我们的hamR 中
                     i += 1;
                     let mut weight = reads[i]
                         .trim()
                         .split_whitespace()
                         .next()
-                        .unwrap()
+                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing weight value".to_string() })?
                         .parse::<usize>()
-                        .unwrap();
+                        .map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse weight: {}", e) })?;
                     let R = array![a, b, c];
-                    let index = find_R(&hamR, &R).unwrap();
+                    let index = find_R(&hamR, &R)
+                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R) })?;
                     let hop = ham[[index, int_i, int_j]] / (weight as f64);
                     let hop_x = rmatrix[[index, 0, int_i, int_j]] / (weight as f64);
                     let hop_y = rmatrix[[index, 1, int_i, int_j]] / (weight as f64);
@@ -3128,22 +3182,28 @@ impl Model {
                     i += 1;
                     let line = &reads[i];
                     let mut string = line.trim().split_whitespace();
-                    let a = string.next().unwrap().parse::<isize>().unwrap();
-                    let b = string.next().unwrap().parse::<isize>().unwrap();
-                    let c = string.next().unwrap().parse::<isize>().unwrap();
-                    let int_i = string.next().unwrap().parse::<usize>().unwrap() - 1;
-                    let int_j = string.next().unwrap().parse::<usize>().unwrap() - 1;
+                    let a = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let b = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let c = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let int_i = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
+                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
+                    let int_j = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
+                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
                     //接下来判断是否在我们的hamR 中
                     i += 1;
                     let mut weight = reads[i]
                         .trim()
                         .split_whitespace()
                         .next()
-                        .unwrap()
+                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing weight value".to_string() })?
                         .parse::<usize>()
-                        .unwrap();
+                        .map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse weight: {}", e) })?;
                     let R = array![a, b, c];
-                    let index = find_R(&hamR, &R).unwrap();
+                    let index = find_R(&hamR, &R)
+                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R) })?;
                     let hop = ham[[index, int_i, int_j]] / (weight as f64);
 
                     for i0 in 0..weight {
@@ -3189,7 +3249,7 @@ impl Model {
                         }
                     }
                 } else {
-                    panic!("Wrong!, the R has no -R, it's strange");
+                    return Err(TbError::MissingHermitianConjugate { r: R.to_owned() });
                 }
             }
         }
@@ -3205,11 +3265,11 @@ impl Model {
             hamR,
             rmatrix,
         };
-        model
+        Ok(model)
     }
 
     #[allow(non_snake_case)]
-    pub fn from_tb(path: &str, file_name: &str, zero_energy: f64) -> Model {
+    pub fn from_tb(path: &str, file_name: &str, zero_energy: f64) -> Result<Model> {
         //! 这个函数是从 wannier90 中读取 TB 文件的
         //!
         //! 这里 path 表示 文件的位置, 可以使用绝对路径, 即 "/" 开头的路径, 也可以使用相对路径, 即运行 cargo run 时
@@ -3236,22 +3296,24 @@ impl Model {
         hr_path.push_str("_hr.dat");
 
         let path = Path::new(&hr_path);
-        let hr = File::open(path).expect(&format!(
-            "Unable to open the file {:?}, please check if hr file is present\n",
-            path
-        ));
+        let hr = File::open(path).map_err(|e| TbError::FileCreation {
+            path: hr_path.clone(),
+            message: format!("Unable to open HR file: {}", e),
+        })?;
         let reader = BufReader::new(hr);
         let mut reads: Vec<String> = Vec::new();
 
         // 读取文件行
         for line in reader.lines() {
-            let line = line.unwrap();
+            let line = line.map_err(|e| TbError::Io(e))?;
             reads.push(line.clone());
         }
 
         // 获取轨道数和R点数
-        let nsta = reads[1].trim().parse::<usize>().unwrap();
-        let n_R = reads[2].trim().parse::<usize>().unwrap();
+        let nsta = reads[1].trim().parse::<usize>()
+            .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse nsta: {}", e) })?;
+        let n_R = reads[2].trim().parse::<usize>()
+            .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse n_R: {}", e) })?;
         let mut weights: Vec<usize> = Vec::new();
         let mut n_line: usize = 0;
 
@@ -3262,7 +3324,9 @@ impl Model {
                 break;
             }
             let string = reads[i].trim().split_whitespace();
-            let string: Vec<_> = string.map(|x| x.parse::<usize>().unwrap()).collect();
+            let string: Vec<_> = string.map(|x| x.parse::<usize>()
+                .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse weight: {}", e) }))
+                .collect::<Result<Vec<_>>>()?;
             weights.extend(string.clone());
         }
 
@@ -3273,9 +3337,12 @@ impl Model {
         // 遍历每个R点并填充哈密顿量
         for i in 0..n_R {
             let mut string = reads[i * nsta * nsta + n_line].trim().split_whitespace();
-            let a = string.next().unwrap().parse::<isize>().unwrap();
-            let b = string.next().unwrap().parse::<isize>().unwrap();
-            let c = string.next().unwrap().parse::<isize>().unwrap();
+            let a = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
+                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+            let b = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
+                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+            let c = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
+                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
 
             if a == 0 && b == 0 && c == 0 {
                 for ind_i in 0..nsta {
@@ -3283,8 +3350,10 @@ impl Model {
                         let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
                             .trim()
                             .split_whitespace();
-                        let re = string.nth(5).unwrap().parse::<f64>().unwrap();
-                        let im = string.next().unwrap().parse::<f64>().unwrap();
+                        let re = string.nth(5).ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian real part".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian real part: {}", e) })?;
+                        let im = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian imaginary part".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian imaginary part: {}", e) })?;
                         ham[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
                     }
                 }
@@ -3295,14 +3364,18 @@ impl Model {
                         let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
                             .trim()
                             .split_whitespace();
-                        let re = string.nth(5).unwrap().parse::<f64>().unwrap();
-                        let im = string.next().unwrap().parse::<f64>().unwrap();
+                        let re = string.nth(5).ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian real part".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian real part: {}", e) })?;
+                        let im = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian imaginary part".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian imaginary part: {}", e) })?;
                         matrix[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
                         // wannier90 里面是按照纵向排列的矩阵
                     }
                 }
-                ham.append(Axis(0), matrix.view()).unwrap();
-                hamR.append(Axis(0), arr2(&[[a, b, c]]).view()).unwrap();
+                ham.append(Axis(0), matrix.view())
+                    .map_err(|e| TbError::Linalg(ndarray_linalg::error::LinalgError::Shape(e)))?;
+                hamR.append(Axis(0), arr2(&[[a, b, c]]).view())
+                    .map_err(|e| TbError::Linalg(ndarray_linalg::error::LinalgError::Shape(e)))?;
             }
         }
 
@@ -3315,11 +3388,14 @@ impl Model {
         let mut win_path = file_path.clone();
         win_path.push_str(".win"); //文件的位置
         let path = Path::new(&win_path); //转化为路径格式
-        let hr = File::open(path).expect("Unable open the file, please check if have win file");
+        let hr = File::open(path).map_err(|e| TbError::FileCreation {
+            path: win_path.clone(),
+            message: format!("Unable to open win file: {}", e),
+        })?;
         let reader = BufReader::new(hr);
         let mut reads: Vec<String> = Vec::new();
         for line in reader.lines() {
-            let line = line.unwrap();
+            let line = line.map_err(|e| TbError::Io(e))?;
             reads.push(line.clone());
         }
         let mut read_iter = reads.iter();
@@ -3340,21 +3416,24 @@ impl Model {
             if a == None {
                 break;
             } else {
-                let a = a.unwrap();
+                let a = a.ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
                 if a.contains("begin unit_cell_cart") {
-                    let mut lat1 = read_iter.next().unwrap().trim().split_whitespace(); //将数字放到
-                    let mut lat2 = read_iter.next().unwrap().trim().split_whitespace();
-                    let mut lat3 = read_iter.next().unwrap().trim().split_whitespace();
+                    let mut lat1 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace(); //将数字放到
+                    let mut lat2 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace();
+                    let mut lat3 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace();
                     for i in 0..3 {
-                        lat[[0, i]] = lat1.next().unwrap().parse::<f64>().unwrap();
-                        lat[[1, i]] = lat2.next().unwrap().parse::<f64>().unwrap();
-                        lat[[2, i]] = lat3.next().unwrap().parse::<f64>().unwrap();
+                        lat[[0, i]] = lat1.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
+                        lat[[1, i]] = lat2.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
+                        lat[[2, i]] = lat3.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
+                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
                     }
                 } else if a.contains("spinors") && (a.contains("T") || a.contains("t")) {
                     spin = true;
                 } else if a.contains("begin projections") {
                     loop {
-                        let string = read_iter.next().unwrap();
+                        let string = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
                         if string.contains("end projections") {
                             break;
                         } else {
@@ -3432,9 +3511,9 @@ impl Model {
                                     "dyz" => (1, vec![OrbProj::dyz]),
                                     "dz2" => (1, vec![OrbProj::dz2]),
                                     "dx2-y2" => (1, vec![OrbProj::dx2y2]),
-                                    &_ => panic!(
-                                        "Wrong, no matching, please check the projection field in seedname.win. There are some projections that can not be identified"
-                                    ),
+                                    &_ => return Err(TbError::InvalidOrbitalProjection(
+                                        format!("Unrecognized projection '{}' in seedname.win", item)
+                                    )),
                                 };
                                 atom_orb_number += aa;
                                 proj_orb.extend(use_proj_orb);
@@ -3447,15 +3526,18 @@ impl Model {
                     }
                 } else if a.contains("begin atoms_cart") {
                     loop {
-                        let string = read_iter.next().unwrap();
+                        let string = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
                         if string.contains("end atoms_cart") {
                             break;
                         } else {
                             let prj: Vec<&str> = string.split_whitespace().collect();
                             atom_name.push(prj[0]);
-                            let a1 = prj[1].parse::<f64>().unwrap();
-                            let a2 = prj[2].parse::<f64>().unwrap();
-                            let a3 = prj[3].parse::<f64>().unwrap();
+                            let a1 = prj[1].parse::<f64>()
+                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                            let a2 = prj[2].parse::<f64>()
+                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                            let a3 = prj[3].parse::<f64>()
+                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
                             let a = array![a1, a2, a3];
                             atom_pos.push_row(a.view()); //这里我们不用win 里面的, 因为这个和orb没法对应, 如果没有xyz文件才考虑用这个
                         }
@@ -3473,7 +3555,7 @@ impl Model {
             let reader = BufReader::new(hr);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.unwrap();
+                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
                 reads.push(line.clone());
             }
             //let nsta=reads[0].trim().parse::<usize>().unwrap()-natom;
@@ -3481,27 +3563,33 @@ impl Model {
             let mut orb = Array2::<f64>::zeros((norb, 3));
             for i in 0..norb {
                 let a: Vec<&str> = reads[i + 2].trim().split_whitespace().collect();
-                orb[[i, 0]] = a[1].parse::<f64>().unwrap();
-                orb[[i, 1]] = a[2].parse::<f64>().unwrap();
-                orb[[i, 2]] = a[3].parse::<f64>().unwrap();
+                orb[[i, 0]] = a[1].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?;
+                orb[[i, 1]] = a[2].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?;
+                orb[[i, 2]] = a[3].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?
             }
-            orb = orb.dot(&lat.inv().unwrap());
+            orb = orb.dot(&lat.inv().map_err(TbError::Linalg)?);
             let mut new_atom_pos = Array2::<f64>::zeros((reads.len() - 2 - nsta, 3));
             let mut new_atom_name = Vec::new();
             for i in 0..reads.len() - 2 - nsta {
                 let a: Vec<&str> = reads[i + 2 + nsta].trim().split_whitespace().collect();
-                new_atom_pos[[i, 0]] = a[1].parse::<f64>().unwrap();
-                new_atom_pos[[i, 1]] = a[2].parse::<f64>().unwrap();
-                new_atom_pos[[i, 2]] = a[3].parse::<f64>().unwrap();
+                new_atom_pos[[i, 0]] = a[1].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                new_atom_pos[[i, 1]] = a[2].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                new_atom_pos[[i, 2]] = a[3].parse::<f64>()
+                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
                 new_atom_name.push(AtomType::from_str(a[0]));
             }
             //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
 
             for (i, name) in new_atom_name.iter().enumerate() {
                 for (j, j_name) in proj_name.iter().enumerate() {
-                    if name == j_name {
-                        let use_pos = new_atom_pos.row(i).dot(&lat.inv().unwrap());
-                        let use_atom = Atom::new(use_pos, proj_list[j], *name);
+                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok() {
+                        let use_pos = new_atom_pos.row(i).dot(&lat.inv().map_err(TbError::Linalg)?);
+                        let use_atom = Atom::new(use_pos, proj_list[j], name.as_ref().unwrap().clone());
                         atom.push(use_atom);
                         orb_proj.extend(atom_proj[j].clone());
                     }
@@ -3510,12 +3598,12 @@ impl Model {
             orb
         } else {
             let mut orb = Array2::<f64>::zeros((0, 3));
-            let atom_pos = atom_pos.dot(&lat.inv().unwrap());
+            let atom_pos = atom_pos.dot(&lat.inv().map_err(TbError::Linalg)?);
             for (i, name) in atom_name.iter().enumerate() {
                 for (j, j_name) in proj_name.iter().enumerate() {
                     let name = AtomType::from_str(name);
-                    if name == *j_name {
-                        let use_atom = Atom::new(atom_pos.row(i).to_owned(), proj_list[j], name);
+                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok() {
+                        let use_atom = Atom::new(atom_pos.row(i).to_owned(), proj_list[j], name.unwrap().clone());
                         orb_proj.extend(atom_proj[j].clone());
                         atom.push(use_atom.clone());
                         for _ in 0..proj_list[j] {
@@ -3533,32 +3621,38 @@ impl Model {
         let path = Path::new(&r_path);
         let hr = File::open(path);
         let mut have_r = false;
-        let mut rmatrix = if hr.is_ok() {
+        let mut rmatrix = if let Ok(hr) = hr {
             have_r = true;
-            let hr = hr.unwrap();
             let reader = BufReader::new(hr);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.unwrap();
+                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
                 reads.push(line.clone());
             }
-            let n_R = reads[2].trim().parse::<usize>().unwrap();
+            let n_R = reads[2].trim().parse::<usize>()
+                .map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse n_R: {}", e) })?;
             let mut rmatrix = Array4::<Complex<f64>>::zeros((hamR.nrows(), 3, nsta, nsta));
             for i in 0..n_R {
                 let mut string = reads[i * nsta * nsta + 3].trim().split_whitespace();
-                let a = string.next().unwrap().parse::<isize>().unwrap();
-                let b = string.next().unwrap().parse::<isize>().unwrap();
-                let c = string.next().unwrap().parse::<isize>().unwrap();
+                let a = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
+                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                let b = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
+                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                let c = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
+                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
                 let R0 = array![a, b, c];
-                let index = find_R(&hamR, &R0).unwrap();
+                let index = find_R(&hamR, &R0)
+                    .ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R0) })?;
                 for ind_i in 0..nsta {
                     for ind_j in 0..nsta {
                         let string = &reads[i * nsta * nsta + ind_i * nsta + ind_j + 3];
                         let mut string = string.trim().split_whitespace();
                         string.nth(4);
                         for r in 0..3 {
-                            let re = string.next().unwrap().parse::<f64>().unwrap();
-                            let im = string.next().unwrap().parse::<f64>().unwrap();
+                            let re = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R matrix real part".to_string() })?
+                                .parse::<f64>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R matrix real part: {}", e) })?;
+                            let im = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R matrix imaginary part".to_string() })?
+                                .parse::<f64>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R matrix imaginary part: {}", e) })?;
                             rmatrix[[index, r, ind_j, ind_i]] =
                                 Complex::new(re, im) / (weights[i] as f64);
                         }
@@ -3585,13 +3679,12 @@ impl Model {
         let path = Path::new(&ws_path); //转化为路径格式
         let ws = File::open(path);
         let mut have_ws = false;
-        if ws.is_ok() {
+        if let Ok(ws) = ws {
             have_ws = true;
-            let ws = ws.unwrap();
             let reader = BufReader::new(ws);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.unwrap();
+                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
                 reads.push(line.clone());
             }
             //开始针对ham, hamR 以及 rmatrix 进行修改
@@ -3605,22 +3698,28 @@ impl Model {
                     i += 1;
                     let line = &reads[i];
                     let mut string = line.trim().split_whitespace();
-                    let a = string.next().unwrap().parse::<isize>().unwrap();
-                    let b = string.next().unwrap().parse::<isize>().unwrap();
-                    let c = string.next().unwrap().parse::<isize>().unwrap();
-                    let int_i = string.next().unwrap().parse::<usize>().unwrap() - 1;
-                    let int_j = string.next().unwrap().parse::<usize>().unwrap() - 1;
+                    let a = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let b = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let c = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let int_i = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
+                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
+                    let int_j = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
+                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
                     //接下来判断是否在我们的hamR 中
                     i += 1;
                     let mut weight = reads[i]
                         .trim()
                         .split_whitespace()
                         .next()
-                        .unwrap()
+                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing weight value".to_string() })?
                         .parse::<usize>()
-                        .unwrap();
+                        .map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse weight: {}", e) })?;
                     let R = array![a, b, c];
-                    let index = find_R(&hamR, &R).unwrap();
+                    let index = find_R(&hamR, &R)
+                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R) })?;
                     let hop = ham[[index, int_i, int_j]] / (weight as f64);
                     let hop_x = rmatrix[[index, 0, int_i, int_j]] / (weight as f64);
                     let hop_y = rmatrix[[index, 1, int_i, int_j]] / (weight as f64);
@@ -3663,22 +3762,28 @@ impl Model {
                     i += 1;
                     let line = &reads[i];
                     let mut string = line.trim().split_whitespace();
-                    let a = string.next().unwrap().parse::<isize>().unwrap();
-                    let b = string.next().unwrap().parse::<isize>().unwrap();
-                    let c = string.next().unwrap().parse::<isize>().unwrap();
-                    let int_i = string.next().unwrap().parse::<usize>().unwrap() - 1;
-                    let int_j = string.next().unwrap().parse::<usize>().unwrap() - 1;
+                    let a = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let b = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let c = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
+                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                    let int_i = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
+                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
+                    let int_j = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
+                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
                     //接下来判断是否在我们的hamR 中
                     i += 1;
                     let mut weight = reads[i]
                         .trim()
                         .split_whitespace()
                         .next()
-                        .unwrap()
+                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing weight value".to_string() })?
                         .parse::<usize>()
-                        .unwrap();
+                        .map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse weight: {}", e) })?;
                     let R = array![a, b, c];
-                    let index = find_R(&hamR, &R).unwrap();
+                    let index = find_R(&hamR, &R)
+                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R) })?;
                     let hop = ham[[index, int_i, int_j]] / (weight as f64);
 
                     for i0 in 0..weight {
@@ -3724,7 +3829,7 @@ impl Model {
                         }
                     }
                 } else {
-                    panic!("Wrong!, the R has no -R, it's strange");
+                    return Err(TbError::MissingHermitianConjugate { r: R.to_owned() });
                 }
             }
         }
@@ -3740,7 +3845,7 @@ impl Model {
             hamR,
             rmatrix,
         };
-        model
+        Ok(model)
     }
 }
 

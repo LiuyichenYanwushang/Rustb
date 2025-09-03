@@ -27,7 +27,7 @@ fn main() {
         [0.0, 0.5, 0.0],
         [0.0, 0.5, 0.0],
     ]);
-    let mut model = Model::tb_model(dim_r, lat, orb, true, None);
+    let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
     let R0: Array2<isize> = arr2(&[[0, 0, 0], [1, 0, 0], [0, -1, 0], [1, -1, 0]]);
     //------开始添加hopping----------------
     let lm = 1.0 + 0.0 * li;
@@ -38,67 +38,67 @@ fn main() {
     let r2 = 0.3 + 0.0 * li;
 
     //SOC 项
-    model.set_hop(li * lm, 0, 1, &R0.row(0).to_owned(), spin_direction::z);
-    model.set_hop(li * lm, 2, 3, &R0.row(0).to_owned(), spin_direction::z);
+    model.set_hop(li * lm, 0, 1, &R0.row(0).to_owned(), SpinDirection::z);
+    model.set_hop(li * lm, 2, 3, &R0.row(0).to_owned(), SpinDirection::z);
     //hopping 项
-    model.add_hop(t2, 0, 2, &R0.row(0), spin_direction::None);
-    model.add_hop(t2, 0, 2, &R0.row(3), spin_direction::None);
-    model.add_hop(t2, 1, 3, &R0.row(1), spin_direction::None);
-    model.add_hop(t2, 1, 3, &R0.row(2), spin_direction::None);
+    model.add_hop(t2, 0, 2, &R0.row(0), SpinDirection::None);
+    model.add_hop(t2, 0, 2, &R0.row(3), SpinDirection::None);
+    model.add_hop(t2, 1, 3, &R0.row(1), SpinDirection::None);
+    model.add_hop(t2, 1, 3, &R0.row(2), SpinDirection::None);
 
-    model.add_hop(t1, 1, 3, &R0.row(0), spin_direction::None);
-    model.add_hop(t1, 1, 3, &R0.row(3), spin_direction::None);
-    model.add_hop(t1, 0, 2, &R0.row(1), spin_direction::None);
-    model.add_hop(t1, 0, 2, &R0.row(2), spin_direction::None);
+    model.add_hop(t1, 1, 3, &R0.row(0), SpinDirection::None);
+    model.add_hop(t1, 1, 3, &R0.row(3), SpinDirection::None);
+    model.add_hop(t1, 0, 2, &R0.row(1), SpinDirection::None);
+    model.add_hop(t1, 0, 2, &R0.row(2), SpinDirection::None);
     //还有一个hopping 项  \tau_y \sigma_y  (s_x\sin kx/2\cos ky/2+s_y\cos kx/2\sin ky/2)
-    model.add_hop(li * t3, 0, 3, &R0.row(1), spin_direction::x);
-    model.add_hop(-li * t3, 1, 2, &R0.row(1), spin_direction::x);
-    model.add_hop(-li * t3, 0, 3, &R0.row(2), spin_direction::x);
-    model.add_hop(li * t3, 1, 2, &R0.row(2), spin_direction::x);
-    model.add_hop(-li * t3, 0, 3, &R0.row(0), spin_direction::x);
-    model.add_hop(li * t3, 1, 2, &R0.row(0), spin_direction::x);
-    model.add_hop(li * t3, 0, 3, &R0.row(3), spin_direction::x);
-    model.add_hop(-li * t3, 1, 2, &R0.row(3), spin_direction::x);
+    model.add_hop(li * t3, 0, 3, &R0.row(1), SpinDirection::x);
+    model.add_hop(-li * t3, 1, 2, &R0.row(1), SpinDirection::x);
+    model.add_hop(-li * t3, 0, 3, &R0.row(2), SpinDirection::x);
+    model.add_hop(li * t3, 1, 2, &R0.row(2), SpinDirection::x);
+    model.add_hop(-li * t3, 0, 3, &R0.row(0), SpinDirection::x);
+    model.add_hop(li * t3, 1, 2, &R0.row(0), SpinDirection::x);
+    model.add_hop(li * t3, 0, 3, &R0.row(3), SpinDirection::x);
+    model.add_hop(-li * t3, 1, 2, &R0.row(3), SpinDirection::x);
 
-    model.add_hop(li * t3, 0, 3, &R0.row(1), spin_direction::y);
-    model.add_hop(-li * t3, 1, 2, &R0.row(1), spin_direction::y);
-    model.add_hop(-li * t3, 0, 3, &R0.row(2), spin_direction::y);
-    model.add_hop(li * t3, 1, 2, &R0.row(2), spin_direction::y);
-    model.add_hop(li * t3, 0, 3, &R0.row(0), spin_direction::y);
-    model.add_hop(-li * t3, 1, 2, &R0.row(0), spin_direction::y);
-    model.add_hop(-li * t3, 0, 3, &R0.row(3), spin_direction::y);
-    model.add_hop(li * t3, 1, 2, &R0.row(3), spin_direction::y);
+    model.add_hop(li * t3, 0, 3, &R0.row(1), SpinDirection::y);
+    model.add_hop(-li * t3, 1, 2, &R0.row(1), SpinDirection::y);
+    model.add_hop(-li * t3, 0, 3, &R0.row(2), SpinDirection::y);
+    model.add_hop(li * t3, 1, 2, &R0.row(2), SpinDirection::y);
+    model.add_hop(li * t3, 0, 3, &R0.row(0), SpinDirection::y);
+    model.add_hop(-li * t3, 1, 2, &R0.row(0), SpinDirection::y);
+    model.add_hop(-li * t3, 0, 3, &R0.row(3), SpinDirection::y);
+    model.add_hop(li * t3, 1, 2, &R0.row(3), SpinDirection::y);
     /*
-    model.set_hop(li*(1.0-1.0*li)*t3,0,3,&R0.row(0),spin_direction::y);
-    model.set_hop(-li*(1.0-1.0*li)*t3,1,2,&R0.row(0),spin_direction::y);
-    model.set_hop(-li*(1.0-1.0*li)*t3,0,3,&R0.row(3),spin_direction::y);
-    model.set_hop(li*(1.0-1.0*li)*t3,1,2,&R0.row(3),spin_direction::y);
-    model.set_hop(li*(1.0+1.0*li)*t3,0,3,&R0.row(1),spin_direction::y);
-    model.set_hop(-li*(1.0+1.0*li)*t3,1,2,&R0.row(1),spin_direction::y);
-    model.set_hop(-li*(1.0+1.0*li)*t3,0,3,&R0.row(2),spin_direction::y);
-    model.set_hop(li*(1.0+1.0*li)*t3,1,2,&R0.row(2),spin_direction::y);
+    model.set_hop(li*(1.0-1.0*li)*t3,0,3,&R0.row(0),SpinDirection::y);
+    model.set_hop(-li*(1.0-1.0*li)*t3,1,2,&R0.row(0),SpinDirection::y);
+    model.set_hop(-li*(1.0-1.0*li)*t3,0,3,&R0.row(3),SpinDirection::y);
+    model.set_hop(li*(1.0-1.0*li)*t3,1,2,&R0.row(3),SpinDirection::y);
+    model.set_hop(li*(1.0+1.0*li)*t3,0,3,&R0.row(1),SpinDirection::y);
+    model.set_hop(-li*(1.0+1.0*li)*t3,1,2,&R0.row(1),SpinDirection::y);
+    model.set_hop(-li*(1.0+1.0*li)*t3,0,3,&R0.row(2),SpinDirection::y);
+    model.set_hop(li*(1.0+1.0*li)*t3,1,2,&R0.row(2),SpinDirection::y);
     */
 
     //Rashba 项
     // r1 \tau_z\sigma_z(sin kx\tau_z s_x-sin ky s_y)+r2\tau_z(sin kx sy-sin ky sx)
     let R0: Array2<isize> = arr2(&[[1, 0, 0], [0, -1, 0], [1, -1, 0]]);
-    model.add_hop(-r1 * li, 0, 0, &R0.row(0).to_owned(), spin_direction::x);
-    model.add_hop(r1 * li, 1, 1, &R0.row(0).to_owned(), spin_direction::x);
-    model.add_hop(r1 * li, 2, 2, &R0.row(0).to_owned(), spin_direction::x);
-    model.add_hop(-r1 * li, 3, 3, &R0.row(0).to_owned(), spin_direction::x);
-    model.add_hop(-r1 * li, 0, 0, &R0.row(1).to_owned(), spin_direction::y);
-    model.add_hop(r1 * li, 1, 1, &R0.row(1).to_owned(), spin_direction::y);
-    model.add_hop(r1 * li, 2, 2, &R0.row(1).to_owned(), spin_direction::y);
-    model.add_hop(-r1 * li, 3, 3, &R0.row(1).to_owned(), spin_direction::y);
+    model.add_hop(-r1 * li, 0, 0, &R0.row(0).to_owned(), SpinDirection::x);
+    model.add_hop(r1 * li, 1, 1, &R0.row(0).to_owned(), SpinDirection::x);
+    model.add_hop(r1 * li, 2, 2, &R0.row(0).to_owned(), SpinDirection::x);
+    model.add_hop(-r1 * li, 3, 3, &R0.row(0).to_owned(), SpinDirection::x);
+    model.add_hop(-r1 * li, 0, 0, &R0.row(1).to_owned(), SpinDirection::y);
+    model.add_hop(r1 * li, 1, 1, &R0.row(1).to_owned(), SpinDirection::y);
+    model.add_hop(r1 * li, 2, 2, &R0.row(1).to_owned(), SpinDirection::y);
+    model.add_hop(-r1 * li, 3, 3, &R0.row(1).to_owned(), SpinDirection::y);
 
-    model.add_hop(r2 * li, 0, 0, &R0.row(0).to_owned(), spin_direction::y);
-    model.add_hop(r2 * li, 1, 1, &R0.row(0).to_owned(), spin_direction::y);
-    model.add_hop(-r2 * li, 2, 2, &R0.row(0).to_owned(), spin_direction::y);
-    model.add_hop(-r2 * li, 3, 3, &R0.row(0).to_owned(), spin_direction::y);
-    model.add_hop(r2 * li, 0, 0, &R0.row(1).to_owned(), spin_direction::x);
-    model.add_hop(r2 * li, 1, 1, &R0.row(1).to_owned(), spin_direction::x);
-    model.add_hop(-r2 * li, 2, 2, &R0.row(1).to_owned(), spin_direction::x);
-    model.add_hop(-r2 * li, 3, 3, &R0.row(1).to_owned(), spin_direction::x);
+    model.add_hop(r2 * li, 0, 0, &R0.row(0).to_owned(), SpinDirection::y);
+    model.add_hop(r2 * li, 1, 1, &R0.row(0).to_owned(), SpinDirection::y);
+    model.add_hop(-r2 * li, 2, 2, &R0.row(0).to_owned(), SpinDirection::y);
+    model.add_hop(-r2 * li, 3, 3, &R0.row(0).to_owned(), SpinDirection::y);
+    model.add_hop(r2 * li, 0, 0, &R0.row(1).to_owned(), SpinDirection::x);
+    model.add_hop(r2 * li, 1, 1, &R0.row(1).to_owned(), SpinDirection::x);
+    model.add_hop(-r2 * li, 2, 2, &R0.row(1).to_owned(), SpinDirection::x);
+    model.add_hop(-r2 * li, 3, 3, &R0.row(1).to_owned(), SpinDirection::x);
     let mut model_bar_xy = model.clone();
 
     //开始计算体能带
@@ -110,7 +110,7 @@ fn main() {
     ];
     let label = vec!["G", "X", "M", "G"];
     let nk = 1001;
-    model.show_band(&path, &label, nk, "examples/Bi2F2_new/band");
+    model.show_band(&path, &label, nk, "examples/Bi2F2_new/band").unwrap();
 
     //-----算一下wilson loop 的结果-----------------------
     let n = 1001;
@@ -288,25 +288,25 @@ fn write_txt_1(data: Array1<f64>, output: &str) -> std::io::Result<()> {
 fn add_altermagnetism_0(mut model: Model, J: f64, m: f64, direction: &[f64; 3]) -> Model {
     let m = Complex::new(m, 0.0);
     let J = Complex::new(J, 0.0);
-    model.add_hop(m, 0, 0, &array![0, 0, 0], spin_direction::None);
-    model.add_hop(-m, 1, 1, &array![0, 0, 0], spin_direction::None);
-    model.add_hop(-m, 2, 2, &array![0, 0, 0], spin_direction::None);
-    model.add_hop(m, 3, 3, &array![0, 0, 0], spin_direction::None);
+    model.add_hop(m, 0, 0, &array![0, 0, 0], SpinDirection::None);
+    model.add_hop(-m, 1, 1, &array![0, 0, 0], SpinDirection::None);
+    model.add_hop(-m, 2, 2, &array![0, 0, 0], SpinDirection::None);
+    model.add_hop(m, 3, 3, &array![0, 0, 0], SpinDirection::None);
 
-    model.add_hop(J * direction[0], 0, 0, &array![0, 0, 0], spin_direction::x);
-    model.add_hop(J * direction[0], 1, 1, &array![0, 0, 0], spin_direction::x);
-    model.add_hop(-J * direction[0], 2, 2, &array![0, 0, 0], spin_direction::x);
-    model.add_hop(-J * direction[0], 3, 3, &array![0, 0, 0], spin_direction::x);
+    model.add_hop(J * direction[0], 0, 0, &array![0, 0, 0], SpinDirection::x);
+    model.add_hop(J * direction[0], 1, 1, &array![0, 0, 0], SpinDirection::x);
+    model.add_hop(-J * direction[0], 2, 2, &array![0, 0, 0], SpinDirection::x);
+    model.add_hop(-J * direction[0], 3, 3, &array![0, 0, 0], SpinDirection::x);
 
-    model.add_hop(J * direction[1], 0, 0, &array![0, 0, 0], spin_direction::y);
-    model.add_hop(J * direction[1], 1, 1, &array![0, 0, 0], spin_direction::y);
-    model.add_hop(-J * direction[1], 2, 2, &array![0, 0, 0], spin_direction::y);
-    model.add_hop(-J * direction[1], 3, 3, &array![0, 0, 0], spin_direction::y);
+    model.add_hop(J * direction[1], 0, 0, &array![0, 0, 0], SpinDirection::y);
+    model.add_hop(J * direction[1], 1, 1, &array![0, 0, 0], SpinDirection::y);
+    model.add_hop(-J * direction[1], 2, 2, &array![0, 0, 0], SpinDirection::y);
+    model.add_hop(-J * direction[1], 3, 3, &array![0, 0, 0], SpinDirection::y);
 
-    model.add_hop(J * direction[2], 0, 0, &array![0, 0, 0], spin_direction::z);
-    model.add_hop(J * direction[2], 1, 1, &array![0, 0, 0], spin_direction::z);
-    model.add_hop(-J * direction[2], 2, 2, &array![0, 0, 0], spin_direction::z);
-    model.add_hop(-J * direction[2], 3, 3, &array![0, 0, 0], spin_direction::z);
+    model.add_hop(J * direction[2], 0, 0, &array![0, 0, 0], SpinDirection::z);
+    model.add_hop(J * direction[2], 1, 1, &array![0, 0, 0], SpinDirection::z);
+    model.add_hop(-J * direction[2], 2, 2, &array![0, 0, 0], SpinDirection::z);
+    model.add_hop(-J * direction[2], 3, 3, &array![0, 0, 0], SpinDirection::z);
     return model;
 }
 
@@ -381,7 +381,7 @@ fn show_wilson_loop(
 
 fn calculate_M(model: &Model) {
     //开始计算三个方向的占据态的磁矩
-    let kvec = gen_kmesh(&array![101, 101, 1]);
+    let kvec = gen_kmesh(&array![101, 101, 1]).unwrap();
     let (band, evec) = model.solve_all_parallel(&kvec);
     let I0 = Array1::<Complex<f64>>::ones(model.norb());
     let I0 = Array2::from_diag(&I0);
@@ -482,12 +482,12 @@ fn cut(model: &Model, num: usize, cut_type: usize, name: &str) {
     //普通的切法
     let new_model = match cut_type {
         0 => {
-            let model_1 = model.cut_piece(num, 0);
-            let new_model = model_1.cut_piece(num, 1);
+            let model_1 = model.cut_piece(num, 0).unwrap();
+            let new_model = model_1.cut_piece(num, 1).unwrap();
             new_model
         }
         1 => {
-            let mut new_model = model.cut_dot(num, 4, Some(vec![0, 1]));
+            let mut new_model = model.cut_dot(num, 4, Some(vec![0, 1])).unwrap();
             let mut del_atom = Vec::new();
             let num0 = num as f64;
             for (i, a) in new_model.atom_position().outer_iter().enumerate() {
@@ -501,7 +501,7 @@ fn cut(model: &Model, num: usize, cut_type: usize, name: &str) {
             new_model
         }
         2 => {
-            let mut new_model = model.cut_dot(num, 4, Some(vec![0, 1]));
+            let mut new_model = model.cut_dot(num, 4, Some(vec![0, 1])).unwrap();
             new_model
         }
         _ => todo!(),
@@ -573,7 +573,7 @@ fn show_alter(model: &Model, name: &str) {
     let nk = 1001;
     let path = array![[-0.5, 0.25, 0.0], [0.5, 0.25, 0.0]];
     //let path=array![[0.5,0.0,0.0],[0.0,0.5,0.0]];
-    let (kvec, kdist, knode) = model.k_path(&path, nk);
+    let (kvec, kdist, knode) = model.k_path(&path, nk).unwrap();
     let (eval, evec): (Array2<f64>, Array3<Complex<f64>>) = model.solve_all_parallel(&kvec);
     let label = vec!["X1", "X2"];
     let evec: Array3<f64> = evec.map(|x| x.norm_sqr());

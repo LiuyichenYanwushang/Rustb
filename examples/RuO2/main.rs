@@ -22,19 +22,19 @@ fn main() {
     let a0 = 1.0;
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]) * a0;
     let orb = arr2(&[[0.0, 0.0], [0.0, 0.0]]);
-    let mut model = Model::tb_model(dim_r, lat, orb, true, None);
-    model.add_hop(t1, 0, 0, &array![1, 0], spin_direction::None);
-    model.add_hop(t1, 0, 0, &array![0, 1], spin_direction::None);
-    model.add_hop(t1, 1, 1, &array![1, 0], spin_direction::None);
-    model.add_hop(t1, 1, 1, &array![0, 1], spin_direction::None);
+    let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
+    model.add_hop(t1, 0, 0, &array![1, 0], SpinDirection::None);
+    model.add_hop(t1, 0, 0, &array![0, 1], SpinDirection::None);
+    model.add_hop(t1, 1, 1, &array![1, 0], SpinDirection::None);
+    model.add_hop(t1, 1, 1, &array![0, 1], SpinDirection::None);
 
-    model.add_hop(delta, 0, 0, &array![1, 0], spin_direction::None);
-    model.add_hop(-delta, 0, 0, &array![0, 1], spin_direction::None);
-    model.add_hop(-delta, 1, 1, &array![1, 0], spin_direction::None);
-    model.add_hop(delta, 1, 1, &array![0, 1], spin_direction::None);
+    model.add_hop(delta, 0, 0, &array![1, 0], SpinDirection::None);
+    model.add_hop(-delta, 0, 0, &array![0, 1], SpinDirection::None);
+    model.add_hop(-delta, 1, 1, &array![1, 0], SpinDirection::None);
+    model.add_hop(delta, 1, 1, &array![0, 1], SpinDirection::None);
 
-    model.add_hop(J, 0, 0, &array![0, 0], spin_direction::z);
-    model.add_hop(-J, 1, 1, &array![0, 0], spin_direction::z);
+    model.add_hop(J, 0, 0, &array![0, 0], SpinDirection::z);
+    model.add_hop(-J, 1, 1, &array![0, 0], SpinDirection::z);
 
     let nk: usize = 1001;
     let path = array![[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5], [0.0, 0.0]];
@@ -49,7 +49,7 @@ fn main() {
         let T=100.0;
         let nk:usize=1000;
         let kmesh=arr1(&[nk,nk]);
-        let kvec=gen_kmesh(&kmesh);
+        let kvec=gen_kmesh(&kmesh).unwrap();
         let lat_inv=model.lat.inv().unwrap();
         let kvec=PI*model.lat.dot(&(kvec.reversed_axes()));
         let kvec=kvec.reversed_axes();
@@ -71,7 +71,7 @@ fn main() {
         let mu=Array1::linspace(E_min,E_max,E_n);
         let nk:usize=1000;
         let kmesh=arr1(&[nk,nk]);
-        let kvec=gen_kmesh(&kmesh);
+        let kvec=gen_kmesh(&kmesh).unwrap();
         let kvec=PI*model.lat.dot(&(kvec.reversed_axes()));
         //let kvec=model.lat.dot(&(kvec.reversed_axes()));
         let kvec=kvec.reversed_axes();
@@ -179,7 +179,7 @@ fn main() {
     let x = PI / 4.0;
     let dir_1 = arr1(&[x.cos(), x.sin(), 0.0]);
     let dir_2 = arr1(&[-x.sin(), x.cos(), 0.0]);
-    let k_vec = gen_kmesh(&k_mesh);
+    let k_vec = gen_kmesh(&k_mesh).unwrap();
     let omega: Vec<f64> = k_vec
         .axis_iter(Axis(0))
         .into_par_iter()
@@ -305,7 +305,7 @@ fn conductivity_all(
     spin: usize,
     eta: f64,
 ) -> f64 {
-    let k_vec = gen_kmesh(&k_mesh);
+    let k_vec = gen_kmesh(&k_mesh).unwrap();
     let nk = k_vec.len_of(Axis(0));
     let omega: Vec<f64> = k_vec
         .axis_iter(Axis(0))

@@ -1,6 +1,7 @@
 use crate::Atom;
 use crate::Model;
 use crate::atom_struct::AtomType;
+use crate::error::{TbError, Result};
 use ndarray::*;
 use num_complex::Complex;
 
@@ -57,7 +58,7 @@ impl Model {
         }
     }
     #[inline(always)]
-    pub fn orb_angular(&self) -> Array3<Complex<f64>> {
+    pub fn orb_angular(&self) -> Result<Array3<Complex<f64>>> {
         //!这个函数输出 $\bra{m,\bm k}L\ket{n,\bm k}$ 矩阵, 这里 $\ket{n,\bm k}$
         //!是根据轨道的projection 得到这个基函下的表示
         //!这个表示是依据每个原子来构造的, 所以是一个块对角的矩阵
@@ -120,10 +121,10 @@ impl Model {
         for atom0 in self.atoms.iter() {
             for i in a..a + atom0.norb() {
                 let proj_i: Array1<Complex<f64>> = self.orb_projection[i]
-                    .to_quantum_number()
+                    .to_quantum_number()?
                     .mapv(|x: Complex<f64>| x.conj());
                 for j in a..a + atom0.norb() {
-                    let proj_j: Array1<Complex<f64>> = self.orb_projection[j].to_quantum_number();
+                    let proj_j: Array1<Complex<f64>> = self.orb_projection[j].to_quantum_number()?;
                     L[[0, i, j]] = proj_i.dot(&Lx_orig.dot(&proj_j));
                     L[[1, i, j]] = proj_i.dot(&Ly_orig.dot(&proj_j));
                     L[[2, i, j]] = proj_i.dot(&Lz_orig.dot(&proj_j));
@@ -131,6 +132,6 @@ impl Model {
             }
             a += atom0.norb();
         }
-        L
+        Ok(L)
     }
 }

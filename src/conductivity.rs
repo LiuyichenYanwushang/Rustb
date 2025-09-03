@@ -104,6 +104,7 @@
 
 use crate::phy_const::mu_B;
 use crate::{Gauge, Model, anti_comm, comm};
+use crate::error::{TbError, Result};
 use crate::kpoints::{gen_kmesh,gen_krange};
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -557,18 +558,18 @@ impl Model {
         og: f64,
         spin: usize,
         eta: f64,
-    ) -> f64 {
+    ) -> Result<f64> {
         //!这个是用来计算霍尔电导的.
         //!这里采用的是均匀撒点的方法, 利用 berry_curvature, 我们有
         //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}(\bm k),$$ 其中 $N$ 是 k 点数目,
-        let kvec: Array2<f64> = gen_kmesh(&k_mesh);
+        let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         let omega = self.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, og, spin, eta);
         //目前求积分的方法上, 还是直接求和最有用, 其他的典型积分方法, 如gauss 法等,
         //都因为存在间断点而效率不高.
         //对于非零温的, 使用梯形法应该效果能好一些.
         let conductivity: f64 = omega.sum() / (nk as f64) / self.lat.det().unwrap();
-        conductivity
+        Ok(conductivity)
     }
     #[allow(non_snake_case)]
     ///这个是采用自适应积分算法来计算霍尔电导的, 一般来说, 我们建议 re_err 设置为 1, 而 ab_err 设置为 0.01
@@ -584,8 +585,8 @@ impl Model {
         eta: f64,
         re_err: f64,
         ab_err: f64,
-    ) -> f64 {
-        let mut k_range = gen_krange(k_mesh); //将要计算的区域分成小块
+    ) -> Result<f64> {
+        let mut k_range = gen_krange(k_mesh)?; //将要计算的区域分成小块
         let n_range = k_range.len_of(Axis(0));
         let ab_err = ab_err / (n_range as f64);
         let use_fn =
@@ -598,7 +599,7 @@ impl Model {
             .collect();
         let omega: Array1<f64> = arr1(&omega);
         let conductivity: f64 = omega.sum() / self.lat.det().unwrap();
-        conductivity
+        Ok(conductivity)
     }
     ///用来计算多个 $\mu$ 值的, 这个函数是先求出 $\Omega_n$, 然后再分别用不同的费米能级来求和, 这样速度更快, 因为避免了重复求解 $\Omega_n$, 但是相对来说更耗内存, 而且不能做到自适应积分算法.
     pub fn Hall_conductivity_mu(
@@ -611,8 +612,8 @@ impl Model {
         og: f64,
         spin: usize,
         eta: f64,
-    ) -> Array1<f64> {
-        let kvec: Array2<f64> = gen_kmesh(&k_mesh);
+    ) -> Result<Array1<f64>> {
+        let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         let (omega_n, band): (Vec<_>, Vec<_>) = kvec
             .axis_iter(Axis(0))
@@ -667,7 +668,7 @@ impl Model {
                 .collect();
             Array1::<f64>::from_vec(conductivity_new)
         };
-        conductivity
+        Ok(conductivity)
     }
 
     pub fn berry_curvature_dipole_n_onek(
@@ -846,7 +847,7 @@ impl Model {
         og: f64,
         spin: usize,
         eta: f64,
-    ) -> Array1<f64> {
+    ) -> Result<Array1<f64>> {
         //这个是用 berry curvature dipole 对整个布里渊去做积分得到非线性霍尔电导, 是extrinsic 的
         //!This function calculates the extrinsic nonlinear Hall conductivity by integrating the Berry curvature dipole over the entire Brillouin zone. The Berry curvature dipole is first computed at a series of k-points using parallel computation based on the onek function.
 
@@ -867,7 +868,7 @@ impl Model {
                 dir_2.len()
             )
         }
-        let kvec: Array2<f64> = gen_kmesh(&k_mesh);
+        let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         //为了节省内存, 本来是可以直接算完求和, 但是为了方便, 我是先存下来再算, 让程序结构更合理
         let (omega, band) =
@@ -895,7 +896,7 @@ impl Model {
             //以及费米面上的数, 最后, 通过积分算出来结果
             panic!("When T=0, the algorithm have not been writed, please wait for next version");
         }
-        return conductivity;
+        Ok(conductivity)
     }
 
     pub fn berry_connection_dipole_onek(
@@ -1193,7 +1194,7 @@ impl Model {
         mu: &Array1<f64>,
         T: f64,
         spin: usize,
-    ) -> Array1<f64> {
+    ) -> Result<Array1<f64>> {
         //! The Intrinsic Nonlinear Hall Conductivity arises from the correction of the Berry connection by the electric and magnetic fields [PRL 112, 166601 (2014)]. The formula employed is:
         //!$$\tilde\bm\Og_{\bm k}=\nb_{\bm k}\times\lt(\bm A_{\bm k}+\bm A_{\bm k}^\prime\rt)$$
         //!and the $\bm A_{i,\bm k}^\prime=F_{ij}B_j+G_{ij}E_j$, where
@@ -1234,7 +1235,7 @@ impl Model {
         //!这里 $s^i_{\ap,mn}$ 的具体形式, 原文中没有明确给出, 但是我根据霍尔效应的类比, 我猜是
         //!$\\\{\hat s^i,v_\ap\\\}$
 
-        let kvec: Array2<f64> = gen_kmesh(&k_mesh);
+        let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         let (omega, band, mut partial_G): (Array2<f64>, Array2<f64>, Option<Array2<f64>>) =
             self.berry_connection_dipole(&kvec, &dir_1, &dir_2, &dir_3, spin);
@@ -1280,7 +1281,7 @@ impl Model {
             //以及费米面上的数, 最后, 通过积分算出来结果
             panic!("the code can not support for T=0");
         }
-        return conductivity;
+        Ok(conductivity)
     }
 }
 impl Model {
@@ -1456,11 +1457,11 @@ impl Model {
         mu: f64,
         og: &Array1<f64>,
         eta: f64,
-    ) -> (Array1<Complex<f64>>, Array1<Complex<f64>>)
+    ) -> Result<(Array1<Complex<f64>>, Array1<Complex<f64>>)>
 //针对单个的
     {
         let li: Complex<f64> = 1.0 * Complex::i();
-        let kvec: Array2<f64> = gen_kmesh(k_mesh);
+        let kvec: Array2<f64> = gen_kmesh(k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         let n_og = og.len();
         let (matric_sum, omega_sum) = kvec
@@ -1486,7 +1487,7 @@ impl Model {
             );
         let matric_sum = li * matric_sum / self.lat.det().unwrap() / (nk as f64);
         let omega_sum = li * omega_sum / self.lat.det().unwrap() / (nk as f64);
-        (matric_sum, omega_sum)
+        Ok((matric_sum, omega_sum))
     }
 
     pub fn optical_conductivity_T(
@@ -1498,9 +1499,9 @@ impl Model {
         mu: f64,
         og: &Array1<f64>,
         eta: f64,
-    ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>) {
+    ) -> Result<(Array2<Complex<f64>>, Array2<Complex<f64>>)> {
         let li: Complex<f64> = 1.0 * Complex::i();
-        let kvec: Array2<f64> = gen_kmesh(k_mesh);
+        let kvec: Array2<f64> = gen_kmesh(k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         let n_og = og.len();
         let n_T = T.len();
@@ -1531,7 +1532,7 @@ impl Model {
             );
         let matric_sum = li * matric_sum / self.lat.det().unwrap() / (nk as f64);
         let omega_sum = li * omega_sum / self.lat.det().unwrap() / (nk as f64);
-        (matric_sum, omega_sum)
+        Ok((matric_sum, omega_sum))
     }
 
     ///直接计算 xx, yy, zz, xy, yz, xz 这六个量的光电导, 分为对称和反对称部分.
@@ -1545,9 +1546,9 @@ impl Model {
         mu: f64,
         og: &Array1<f64>,
         eta: f64,
-    ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>) {
+    ) -> Result<(Array2<Complex<f64>>, Array2<Complex<f64>>)> {
         let li: Complex<f64> = 1.0 * Complex::i();
-        let kvec: Array2<f64> = gen_kmesh(k_mesh);
+        let kvec: Array2<f64> = gen_kmesh(k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         let n_og = og.len();
         let (matric,omega):(Vec<_>,Vec<_>)=kvec.outer_iter().into_par_iter()
@@ -1727,6 +1728,6 @@ impl Model {
         };
         let matric_sum = li * matric_sum / self.lat.det().unwrap() / (nk as f64);
         let omega_sum = li * omega_sum / self.lat.det().unwrap() / (nk as f64);
-        (matric_sum, omega_sum)
+        Ok((matric_sum, omega_sum))
     }
 }

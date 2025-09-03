@@ -28,58 +28,58 @@ fn main() {
         [0.0, 0.5, 0.5 - h],
         [0.0, 0.5, 0.5 - h],
     ]);
-    let mut model = Model::tb_model(dim_r, lat, orb, true, None);
+    let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
     let R0: Array2<isize> = arr2(&[[0, 0, 0], [1, 0, 0], [0, -1, 0], [1, -1, 0]]);
     let cos_t2 = 1.0 - h.powi(2) / 2.0;
     let t_sg = t_sg * cos_t2;
     //我们只考虑最近邻
-    model.add_hop(-t_sg, 0, 2, &R0.row(0).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 0, 2, &R0.row(0).to_owned(), spin_direction::None);
-    model.add_hop(t_sg, 0, 3, &R0.row(0).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 0, 3, &R0.row(0).to_owned(), spin_direction::None);
-    model.add_hop(t_sg, 1, 2, &R0.row(0).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 1, 2, &R0.row(0).to_owned(), spin_direction::None);
-    model.add_hop(-t_sg, 1, 3, &R0.row(0).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 1, 3, &R0.row(0).to_owned(), spin_direction::None);
+    model.add_hop(-t_sg, 0, 2, &R0.row(0).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 0, 2, &R0.row(0).to_owned(), SpinDirection::None);
+    model.add_hop(t_sg, 0, 3, &R0.row(0).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 0, 3, &R0.row(0).to_owned(), SpinDirection::None);
+    model.add_hop(t_sg, 1, 2, &R0.row(0).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 1, 2, &R0.row(0).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 1, 3, &R0.row(0).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 1, 3, &R0.row(0).to_owned(), SpinDirection::None);
     //第二个
-    model.add_hop(-t_sg, 0, 2, &R0.row(1).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 0, 2, &R0.row(1).to_owned(), spin_direction::None);
-    model.add_hop(-t_sg, 0, 3, &R0.row(1).to_owned(), spin_direction::None);
-    model.add_hop(-t_pi, 0, 3, &R0.row(1).to_owned(), spin_direction::None);
-    model.add_hop(-t_sg, 1, 2, &R0.row(1).to_owned(), spin_direction::None);
-    model.add_hop(-t_pi, 1, 2, &R0.row(1).to_owned(), spin_direction::None);
-    model.add_hop(-t_sg, 1, 3, &R0.row(1).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 1, 3, &R0.row(1).to_owned(), spin_direction::None);
+    model.add_hop(-t_sg, 0, 2, &R0.row(1).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 0, 2, &R0.row(1).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 0, 3, &R0.row(1).to_owned(), SpinDirection::None);
+    model.add_hop(-t_pi, 0, 3, &R0.row(1).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 1, 2, &R0.row(1).to_owned(), SpinDirection::None);
+    model.add_hop(-t_pi, 1, 2, &R0.row(1).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 1, 3, &R0.row(1).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 1, 3, &R0.row(1).to_owned(), SpinDirection::None);
     //第三个
-    model.add_hop(-t_sg, 0, 2, &R0.row(2).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 0, 2, &R0.row(2).to_owned(), spin_direction::None);
-    model.add_hop(-t_sg, 0, 3, &R0.row(2).to_owned(), spin_direction::None);
-    model.add_hop(-t_pi, 0, 3, &R0.row(2).to_owned(), spin_direction::None);
-    model.add_hop(-t_sg, 1, 2, &R0.row(2).to_owned(), spin_direction::None);
-    model.add_hop(-t_pi, 1, 2, &R0.row(2).to_owned(), spin_direction::None);
-    model.add_hop(-t_sg, 1, 3, &R0.row(2).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 1, 3, &R0.row(2).to_owned(), spin_direction::None);
+    model.add_hop(-t_sg, 0, 2, &R0.row(2).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 0, 2, &R0.row(2).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 0, 3, &R0.row(2).to_owned(), SpinDirection::None);
+    model.add_hop(-t_pi, 0, 3, &R0.row(2).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 1, 2, &R0.row(2).to_owned(), SpinDirection::None);
+    model.add_hop(-t_pi, 1, 2, &R0.row(2).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 1, 3, &R0.row(2).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 1, 3, &R0.row(2).to_owned(), SpinDirection::None);
     //第四个
-    model.add_hop(-t_sg, 0, 2, &R0.row(3).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 0, 2, &R0.row(3).to_owned(), spin_direction::None);
-    model.add_hop(t_sg, 0, 3, &R0.row(3).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 0, 3, &R0.row(3).to_owned(), spin_direction::None);
-    model.add_hop(t_sg, 1, 2, &R0.row(3).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 1, 2, &R0.row(3).to_owned(), spin_direction::None);
-    model.add_hop(-t_sg, 1, 3, &R0.row(3).to_owned(), spin_direction::None);
-    model.add_hop(t_pi, 1, 3, &R0.row(3).to_owned(), spin_direction::None);
+    model.add_hop(-t_sg, 0, 2, &R0.row(3).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 0, 2, &R0.row(3).to_owned(), SpinDirection::None);
+    model.add_hop(t_sg, 0, 3, &R0.row(3).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 0, 3, &R0.row(3).to_owned(), SpinDirection::None);
+    model.add_hop(t_sg, 1, 2, &R0.row(3).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 1, 2, &R0.row(3).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 1, 3, &R0.row(3).to_owned(), SpinDirection::None);
+    model.add_hop(t_pi, 1, 3, &R0.row(3).to_owned(), SpinDirection::None);
     //开始加上自旋轨道耦合
-    model.add_hop(lm * li, 0, 1, &array![0, 0, 0], spin_direction::z);
-    model.add_hop(lm * li, 2, 3, &array![0, 0, 0], spin_direction::z);
+    model.add_hop(lm * li, 0, 1, &array![0, 0, 0], SpinDirection::z);
+    model.add_hop(lm * li, 2, 3, &array![0, 0, 0], SpinDirection::z);
     //最后一项
-    model.add_hop(li * t_eff, 0, 3, &R0.row(0).to_owned(), spin_direction::y);
-    model.add_hop(-li * t_eff, 1, 2, &R0.row(0).to_owned(), spin_direction::y);
-    model.add_hop(li * t_eff, 0, 3, &R0.row(1).to_owned(), spin_direction::x);
-    model.add_hop(-li * t_eff, 1, 2, &R0.row(1).to_owned(), spin_direction::x);
-    model.add_hop(-li * t_eff, 0, 3, &R0.row(2).to_owned(), spin_direction::x);
-    model.add_hop(li * t_eff, 1, 2, &R0.row(2).to_owned(), spin_direction::x);
-    model.add_hop(-li * t_eff, 0, 3, &R0.row(3).to_owned(), spin_direction::y);
-    model.add_hop(li * t_eff, 1, 2, &R0.row(3).to_owned(), spin_direction::y);
+    model.add_hop(li * t_eff, 0, 3, &R0.row(0).to_owned(), SpinDirection::y);
+    model.add_hop(-li * t_eff, 1, 2, &R0.row(0).to_owned(), SpinDirection::y);
+    model.add_hop(li * t_eff, 0, 3, &R0.row(1).to_owned(), SpinDirection::x);
+    model.add_hop(-li * t_eff, 1, 2, &R0.row(1).to_owned(), SpinDirection::x);
+    model.add_hop(-li * t_eff, 0, 3, &R0.row(2).to_owned(), SpinDirection::x);
+    model.add_hop(li * t_eff, 1, 2, &R0.row(2).to_owned(), SpinDirection::x);
+    model.add_hop(-li * t_eff, 0, 3, &R0.row(3).to_owned(), SpinDirection::y);
+    model.add_hop(li * t_eff, 1, 2, &R0.row(3).to_owned(), SpinDirection::y);
     //开始计算体能带
     let path = array![
         [0.0, 0.0, 0.0],
@@ -128,27 +128,27 @@ fn main() {
     //首先, 我们设定磁矩为 J, 加在 onsite 项上, 看能否得到altermagnetism
 
     let J = 0.1 + 0.0 * li;
-    model.add_hop(J, 0, 0, &array![1, 0, 0], spin_direction::x);
-    model.add_hop(J, 1, 1, &array![1, 0, 0], spin_direction::x);
-    model.add_hop(J, 2, 2, &array![1, 0, 0], spin_direction::x);
-    model.add_hop(J, 3, 3, &array![1, 0, 0], spin_direction::x);
-    model.add_hop(-J, 0, 0, &array![0, 1, 0], spin_direction::x);
-    model.add_hop(-J, 1, 1, &array![0, 1, 0], spin_direction::x);
-    model.add_hop(-J, 2, 2, &array![0, 1, 0], spin_direction::x);
-    model.add_hop(-J, 3, 3, &array![0, 1, 0], spin_direction::x);
+    model.add_hop(J, 0, 0, &array![1, 0, 0], SpinDirection::x);
+    model.add_hop(J, 1, 1, &array![1, 0, 0], SpinDirection::x);
+    model.add_hop(J, 2, 2, &array![1, 0, 0], SpinDirection::x);
+    model.add_hop(J, 3, 3, &array![1, 0, 0], SpinDirection::x);
+    model.add_hop(-J, 0, 0, &array![0, 1, 0], SpinDirection::x);
+    model.add_hop(-J, 1, 1, &array![0, 1, 0], SpinDirection::x);
+    model.add_hop(-J, 2, 2, &array![0, 1, 0], SpinDirection::x);
+    model.add_hop(-J, 3, 3, &array![0, 1, 0], SpinDirection::x);
 
     let J = 0.1 + 0.0 * li;
-    model.add_hop(J, 0, 0, &array![1, 0, 0], spin_direction::y);
-    model.add_hop(J, 1, 1, &array![1, 0, 0], spin_direction::y);
-    model.add_hop(J, 2, 2, &array![1, 0, 0], spin_direction::y);
-    model.add_hop(J, 3, 3, &array![1, 0, 0], spin_direction::y);
-    model.add_hop(-J, 0, 0, &array![0, 1, 0], spin_direction::y);
-    model.add_hop(-J, 1, 1, &array![0, 1, 0], spin_direction::y);
-    model.add_hop(-J, 2, 2, &array![0, 1, 0], spin_direction::y);
-    model.add_hop(-J, 3, 3, &array![0, 1, 0], spin_direction::y);
+    model.add_hop(J, 0, 0, &array![1, 0, 0], SpinDirection::y);
+    model.add_hop(J, 1, 1, &array![1, 0, 0], SpinDirection::y);
+    model.add_hop(J, 2, 2, &array![1, 0, 0], SpinDirection::y);
+    model.add_hop(J, 3, 3, &array![1, 0, 0], SpinDirection::y);
+    model.add_hop(-J, 0, 0, &array![0, 1, 0], SpinDirection::y);
+    model.add_hop(-J, 1, 1, &array![0, 1, 0], SpinDirection::y);
+    model.add_hop(-J, 2, 2, &array![0, 1, 0], SpinDirection::y);
+    model.add_hop(-J, 3, 3, &array![0, 1, 0], SpinDirection::y);
 
     let path = array![[0.5, 0.0, 0.0], [0.0, 0.5, 0.0]];
-    let (kvec, kdist, knode) = model.k_path(&path, nk);
+    let (kvec, kdist, knode) = model.k_path(&path, nk).unwrap();
     let (eval, evec): (Array2<f64>, Array3<Complex<f64>>) = model.solve_all(&kvec);
     let label = vec!["X", "Y"];
     let nk = 1001;
@@ -188,7 +188,7 @@ fn main() {
     let spin: usize = 3;
     let kmesh = arr1(&[nk, nk, 1]);
     let start = Instant::now(); // 开始计时
-    let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, og, spin, eta);
+    let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, og, spin, eta).unwrap();
     let end = Instant::now(); // 结束计时
     let duration = end.duration_since(start); // 计算执行时间
     println!(
@@ -198,12 +198,12 @@ fn main() {
     ); // 输出执行时间
 
     let mu = Array1::<f64>::linspace(-1.0, 1.0, 1001);
-    let conductivity = model.Hall_conductivity_mu(&kmesh, &dir_1, &dir_2, &mu, T, og, spin, eta);
+    let conductivity = model.Hall_conductivity_mu(&kmesh, &dir_1, &dir_2, &mu, T, og, spin, eta).unwrap();
 
     let mu: f64 = 0.0;
 
     let nk: usize = 1001;
-    let green = surf_Green::from_Model(&model, 0, 1e-3, None);
+    let green = surf_Green::from_Model(&model, 0, 1e-3, None).unwrap();
     let E_min = -1.0;
     let E_max = 1.0;
     let E_n = nk.clone();
@@ -221,7 +221,7 @@ fn main() {
         0,
     );
 
-    let super_model = model.cut_piece(20, 0);
+    let super_model = model.cut_piece(20, 0).unwrap();
     let path = [[0.0, -0.5, 0.0], [0.0, 0.0, 0.0], [0.0, 0.5, 0.0]];
     let path = arr2(&path);
     let label = vec!["M", "G", "M"];
@@ -230,7 +230,7 @@ fn main() {
     //画一下贝利曲率的分布
     let nk: usize = 1000;
     let kmesh = arr1(&[nk, nk, 1]);
-    let kvec = gen_kmesh(&kmesh);
+    let kvec = gen_kmesh(&kmesh).unwrap();
     //let kvec=kvec-0.5;
     let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, og, spin, eta);
     let data = berry_curv.into_shape((nk, nk)).unwrap();
@@ -246,7 +246,7 @@ fn main() {
         [0.0, 0.0, 0.0]
     ];
     let label = vec!["G", "X", "M", "G"];
-    let (k_vec, k_dist, k_node) = model.k_path(&path, nk);
+    let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
     let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, og, spin, eta);
 
     let mut fg = Figure::new();
@@ -274,8 +274,8 @@ fn main() {
     let show_str = model.atom_position().clone().dot(&model.lat);
     let show_str = show_str.slice(s![.., 0..2]).to_owned();
     let num = 30;
-    let model_1 = model.cut_piece(num, 0);
-    let new_model = model_1.cut_piece(num, 1);
+    let model_1 = model.cut_piece(num, 0).unwrap();
+    let new_model = model_1.cut_piece(num, 1).unwrap();
     /*
     let mut new_model=model.cut_dot(num,4,Some(vec![0,1]));
     let mut del_atom=Vec::new();
@@ -305,7 +305,7 @@ fn main() {
         }
     }
 
-    let show_str = new_model.atom_position().dot(&model.lat);
+    let show_str = new_model.atom_position().dot(&new_model.lat);
     let show_str = show_str.slice(s![.., 0..2]).to_owned();
     let show_size = size.row(new_model.norb()).to_owned();
 
