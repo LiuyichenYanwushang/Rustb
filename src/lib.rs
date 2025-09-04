@@ -12,10 +12,13 @@ pub mod surfgreen;
 pub mod kpoints;
 pub mod error;
 pub mod SKmodel;
+pub mod math;
+pub mod wannier90;
 pub use crate::error::{TbError,Result};
 pub use crate::kpoints::{gen_kmesh,gen_krange};
 pub use crate::atom_struct::{Atom, OrbProj};
 pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
+pub use crate::wannier90::*;
 use crate::generics::usefloat;
 #[doc(hidden)]
 pub use crate::surfgreen::surf_Green;
