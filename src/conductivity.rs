@@ -112,7 +112,8 @@
 //!也就是说, 我们能够最终得到 $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 
 use crate::phy_const::mu_B;
-use crate::{Gauge, Model, anti_comm, comm};
+use crate::{Gauge, Model};
+use crate::math::*;
 use crate::error::{TbError, Result};
 use crate::kpoints::{gen_kmesh,gen_krange};
 use ndarray::linalg::kron;
@@ -125,6 +126,10 @@ use rayon::prelude::*;
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
+
+
+
+
 
 /**
 这个函数是用来做自适应积分算法的

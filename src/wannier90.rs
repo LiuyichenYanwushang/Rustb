@@ -1,6 +1,7 @@
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{TbError, Result};
-use crate::{Gauge, Model, SpinDirection, comm};
+use crate::{Gauge, Model, SpinDirection};
+use crate::math::comm;
 use crate::basis::find_R;
 use ndarray::prelude::*;
 use ndarray_linalg::conjugate;

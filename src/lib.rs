@@ -14,11 +14,16 @@ pub mod error;
 pub mod SKmodel;
 pub mod math;
 pub mod wannier90;
+pub mod io;
 pub use crate::error::{TbError,Result};
 pub use crate::kpoints::{gen_kmesh,gen_krange};
 pub use crate::atom_struct::{Atom, OrbProj};
 pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
 pub use crate::wannier90::*;
+pub use crate::basis::*;
+pub use crate::conductivity::*;
+pub use crate::io::*;
+pub use crate::math::*;
 use crate::generics::usefloat;
 #[doc(hidden)]
 pub use crate::surfgreen::surf_Green;
@@ -33,7 +38,6 @@ use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex;
 use num_traits::identities::Zero;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::fs::File;
 use std::io::Write;
@@ -61,6 +65,7 @@ use std::time::Instant;
 ///   - Nonlinear conductivity tensors
 /// - **Topological Invariants**: Chern numbers, Wilson loops, and Wannier centers
 /// - **Slater-Koster Models**: Parameterized tight-binding models with two-center integrals
+/// - **File I/O**: Utilities for writing calculation results to text files
 ///
 /// ## Mathematical Foundation
 ///
@@ -75,161 +80,16 @@ use std::time::Instant;
 /// \Omega_n(\mathbf{k}) = -2\,\text{Im}\sum_{m\neq n} \frac{\bra{n}\partial_{k_x} H\ket{m}\bra{m}\partial_{k_y} H\ket{n}}{(E_n - E_m)^2}
 /// $$
 ///
-
-/// Tight-binding model structure representing the Hamiltonian $H(\mathbf{k})$ and related properties.
+/// ## File I/O Utilities
 ///
-/// The model is defined by its real-space hopping parameters $t_{ij}(\mathbf{R})$ where $\mathbf{R}$
-/// is the lattice vector connecting unit cells. The Bloch Hamiltonian is given by:
-/// $$
-/// H(\mathbf{k}) = \sum_{\mathbf{R}} t(\mathbf{R}) e^{i\mathbf{k}\cdot\mathbf{R}}
-/// $$
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Model {
-    /// Real space dimension $d$ of the model (2D or 3D systems)
-    pub dim_r: usize,
-    /// Whether the model includes spin degrees of freedom
-    pub spin: bool,
-    /// Lattice vectors $\mathbf{a}_1, \mathbf{a}_2, \mathbf{a}_3$ as a $d \times d$ matrix
-    /// where each row represents a lattice vector
-    pub lat: Array2<f64>,
-    /// Orbital positions in fractional coordinates within the unit cell
-    pub orb: Array2<f64>,
-    /// Orbital projection information (s, p, d orbitals etc.)
-    pub orb_projection: Vec<OrbProj>,
-    /// Atomic positions and information
-    pub atoms: Vec<Atom>,
-    /// Hamiltonian matrix elements $H_{mn}(\mathbf{R}) = \bra{m\mathbf{0}} H \ket{n\mathbf{R}}$
-    /// stored as a 3D array: [orbital_m, orbital_n, R_index]
-    pub ham: Array3<Complex<f64>>,
-    /// Lattice vectors $\mathbf{R}$ corresponding to the hoppings in `ham`
-    pub hamR: Array2<isize>,
-    /// Position matrix elements $\mathbf{r}_{mn}(\mathbf{R}) = \bra{m\mathbf{0}} \mathbf{\hat{r}} \ket{n\mathbf{R}}$
-    /// used for velocity operator calculations
-    pub rmatrix: Array4<Complex<f64>>,
-}
+/// The library provides file output utilities through the `io` module:
+/// - `write_txt`: Write 2D arrays to text files with formatted output
+/// - `write_txt_1`: Write 1D arrays to text files with formatted output
+///
+/// These functions automatically handle number formatting and spacing for scientific data.
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
-pub enum Gauge {
-    Lattice = 0,
-    Atom = 1,
-}
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
-pub enum Dimention {
-    zero = 0,
-    one = 1,
-    two = 2,
-    three = 3,
-}
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
-pub enum SpinDirection {
-    None = 0,
-    x = 1,
-    y = 2,
-    z = 3,
-}
-
-#[inline(always)]
-fn remove_row<T: Copy>(array: Array2<T>, row_to_remove: usize) -> Array2<T> {
-    let indices: Vec<_> = (0..array.nrows()).filter(|&r| r != row_to_remove).collect();
-    array.select(Axis(0), &indices)
-}
-#[inline(always)]
-fn remove_col<T: Copy>(array: Array2<T>, col_to_remove: usize) -> Array2<T> {
-    let indices: Vec<_> = (0..array.ncols()).filter(|&r| r != col_to_remove).collect();
-    array.select(Axis(1), &indices)
-}
-
-#[allow(non_snake_case)]
-#[inline(always)]
-pub fn comm<A, B, T>(A: &ArrayBase<A, Ix2>, B: &ArrayBase<B, Ix2>) -> Array2<T>
-where
-    A: Data<Elem = T>,
-    B: Data<Elem = T>,
-    T: LinalgScalar, // 约束条件：T 必须实现 LinalgScalar trait
-{
-    //! 做 $\\\{A,B\\\}$ 对易操作
-    A.dot(B) - B.dot(A)
-}
-#[allow(non_snake_case)]
-#[inline(always)]
-pub fn anti_comm<A, B, T>(A: &ArrayBase<A, Ix2>, B: &ArrayBase<B, Ix2>) -> Array2<T>
-where
-    A: Data<Elem = T>,
-    B: Data<Elem = T>,
-    T: LinalgScalar, // 约束条件：T 必须实现 LinalgScalar trait
-{
-    //! 做 $\\\{A,B\\\}$ 反对易操作
-    A.dot(B) + B.dot(A)
-}
-pub fn draw_heatmap<A: Data<Elem = f64>>(data: &ArrayBase<A, Ix2>, name: &str) {
-    //!这个函数是用来画热图的, 给定一个二维矩阵, 会输出一个像素图片
-    use gnuplot::{AutoOption::Fix, AxesCommon, Figure, HOT, RAINBOW};
-    let mut fg = Figure::new();
-    let (height, width): (usize, usize) = (data.shape()[0], data.shape()[1]);
-    let mut heatmap_data = vec![];
-
-    for j in 0..width {
-        for i in 0..height {
-            heatmap_data.push(data[(i, j)]);
-        }
-    }
-    let axes = fg.axes2d();
-    axes.set_title("Heatmap", &[]);
-    axes.set_cb_label("Values", &[]);
-    axes.set_palette(RAINBOW);
-    axes.image(heatmap_data.iter(), width, height, None, &[]);
-    let size = data.shape();
-    let axes = axes.set_x_range(Fix(0.0), Fix((size[0] - 1) as f64));
-    let axes = axes.set_y_range(Fix(0.0), Fix((size[1] - 1) as f64));
-    let axes = axes.set_aspect_ratio(Fix(1.0));
-    fg.set_terminal("pdfcairo", name);
-    fg.show().expect("Unable to draw heatmap");
-}
-
-pub fn write_txt<T: usefloat>(data: &Array2<T>, output: &str) -> std::io::Result<()> {
-    use std::fs::File;
-    use std::io::Write;
-    let mut file = File::create(output).expect("Unable to BAND.dat");
-    let n = data.len_of(Axis(0));
-    let s = data.len_of(Axis(1));
-    let mut s0 = String::new();
-    for i in 0..n {
-        for j in 0..s {
-            if data[[i, j]] >= T::from(0.0) {
-                s0.push_str("     ");
-            } else {
-                s0.push_str("    ");
-            }
-            let aa = format!("{:.6}", data[[i, j]]);
-            s0.push_str(&aa);
-        }
-        s0.push_str("\n");
-    }
-    writeln!(file, "{}", s0)?;
-    Ok(())
-}
-
-pub fn write_txt_1<T: usefloat>(data: &Array1<T>, output: &str) -> std::io::Result<()> {
-    use std::fs::File;
-    use std::io::Write;
-    let mut file = File::create(output).expect("Unable to BAND.dat");
-    let n = data.len_of(Axis(0));
-    let mut s0 = String::new();
-    for i in 0..n {
-        if data[[i]] >= T::from(0.0) {
-            s0.push_str(" ");
-        }
-        let aa = format!("{:.6}\n", data[[i]]);
-        s0.push_str(&aa);
-    }
-    writeln!(file, "{}", s0)?;
-    Ok(())
-}
 
 ///An example
 ///

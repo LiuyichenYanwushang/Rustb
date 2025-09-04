@@ -12,9 +12,8 @@ use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{TbError, Result};
 use crate::generics::hop_use;
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
-use crate::{Gauge, Model, SpinDirection, comm};
 use crate::kpoints::gen_kmesh;
-use crate::math::gauss;
+use crate::math::{gauss,comm};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -28,6 +27,66 @@ use std::f64::consts::PI;
 use std::fs::File;
 use std::io::Write;
 use std::ops::AddAssign;
+use serde::{Deserialize, Serialize};
+
+
+/// Tight-binding model structure representing the Hamiltonian $H(\mathbf{k})$ and related properties.
+///
+/// The model is defined by its real-space hopping parameters $t_{ij}(\mathbf{R})$ where $\mathbf{R}$
+/// is the lattice vector connecting unit cells. The Bloch Hamiltonian is given by:
+/// $$
+/// H(\mathbf{k}) = \sum_{\mathbf{R}} t(\mathbf{R}) e^{i\mathbf{k}\cdot\mathbf{R}}
+/// $$
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Model {
+    /// Real space dimension $d$ of the model (2D or 3D systems)
+    pub dim_r: usize,
+    /// Whether the model includes spin degrees of freedom
+    pub spin: bool,
+    /// Lattice vectors $\mathbf{a}_1, \mathbf{a}_2, \mathbf{a}_3$ as a $d \times d$ matrix
+    /// where each row represents a lattice vector
+    pub lat: Array2<f64>,
+    /// Orbital positions in fractional coordinates within the unit cell
+    pub orb: Array2<f64>,
+    /// Orbital projection information (s, p, d orbitals etc.)
+    pub orb_projection: Vec<OrbProj>,
+    /// Atomic positions and information
+    pub atoms: Vec<Atom>,
+    /// Hamiltonian matrix elements $H_{mn}(\mathbf{R}) = \bra{m\mathbf{0}} H \ket{n\mathbf{R}}$
+    /// stored as a 3D array: [orbital_m, orbital_n, R_index]
+    pub ham: Array3<Complex<f64>>,
+    /// Lattice vectors $\mathbf{R}$ corresponding to the hoppings in `ham`
+    pub hamR: Array2<isize>,
+    /// Position matrix elements $\mathbf{r}_{mn}(\mathbf{R}) = \bra{m\mathbf{0}} \mathbf{\hat{r}} \ket{n\mathbf{R}}$
+    /// used for velocity operator calculations
+    pub rmatrix: Array4<Complex<f64>>,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+pub enum Gauge {
+    Lattice = 0,
+    Atom = 1,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+pub enum Dimention {
+    zero = 0,
+    one = 1,
+    two = 2,
+    three = 3,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+pub enum SpinDirection {
+    None = 0,
+    x = 1,
+    y = 2,
+    z = 3,
+}
+
 
 #[allow(non_snake_case)]
 #[inline(always)]
@@ -442,13 +501,6 @@ impl Model {
                 // 获取负 R 的索引（必须存在，否则 panic）
                 let index_inv = find_R(&self.hamR, &negative_R)
                     .expect("Negative R not found in hamR");
-
-                if self.ham[[index, ind_i, ind_j]] != Complex::new(0.0, 0.0) {
-                    eprintln!(
-                        "Warning, the data of ham you input is {}, not zero, I hope you know what you are doing. If you want to eliminate this warning, use del_add to remove hopping.",
-                        self.ham[[index, ind_i, ind_j]]
-                    );
-                }
 
                 // 更新 R 位置的矩阵元
                 add_hamiltonian!(
@@ -2621,104 +2673,4 @@ impl Model {
         Ok(self.clone())
     }
 
-    ///这个函数是用来快速画能带图的, 用python画图, 因为Rust画图不太方便.
-    #[allow(non_snake_case)]
-    pub fn show_band(
-        &self,
-        path: &Array2<f64>,
-        label: &Vec<&str>,
-        nk: usize,
-        name: &str,
-    ) -> Result<()> {
-        use gnuplot::AutoOption::*;
-        use gnuplot::AxesCommon;
-        use gnuplot::Tick::*;
-        use gnuplot::{Caption, Color, Figure, Font, LineStyle, Solid};
-        use std::fs::create_dir_all;
-        use std::path::Path;
-        if path.len_of(Axis(0)) != label.len() {
-            panic!(
-                "Error, the path's length {} and label's length {} must be equal!",
-                path.len_of(Axis(0)),
-                label.len()
-            )
-        }
-        let (k_vec, k_dist, k_node) = self.k_path(&path, nk)?;
-        let eval = self.solve_band_all_parallel(&k_vec);
-        create_dir_all(name).map_err(|e| TbError::DirectoryCreation {
-            path: name.to_string(),
-            message: e.to_string(),
-        })?;
-        let mut name0 = String::new();
-        name0.push_str("./");
-        name0.push_str(&name);
-        let name = name0;
-        let mut band_name = name.clone();
-        band_name.push_str("/BAND.dat");
-        let band_name = Path::new(&band_name);
-        let mut file = File::create(band_name).expect("Unable to BAND.dat");
-        for i in 0..nk {
-            let mut s = String::new();
-            let aa = format!("{:.6}", k_dist[[i]]);
-            s.push_str(&aa);
-            for j in 0..self.nsta() {
-                if eval[[i, j]] >= 0.0 {
-                    s.push_str("     ");
-                } else {
-                    s.push_str("    ");
-                }
-                let aa = format!("{:.6}", eval[[i, j]]);
-                s.push_str(&aa);
-            }
-            writeln!(file, "{}", s)?;
-        }
-        let mut k_name = name.clone();
-        k_name.push_str("/KLABELS");
-        let k_name = Path::new(&k_name);
-        let mut file = File::create(k_name).expect("Unable to create KLBAELS"); //写下高对称点的位置
-        for i in 0..path.len_of(Axis(0)) {
-            let mut s = String::new();
-            let aa = format!("{:.6}", k_node[[i]]);
-            s.push_str(&aa);
-            s.push_str("      ");
-            s.push_str(&label[i]);
-            writeln!(file, "{}", s)?;
-        }
-        let mut py_name = name.clone();
-        py_name.push_str("/print.py");
-        let py_name = Path::new(&py_name);
-        let mut file = File::create(py_name).expect("Unable to create print.py");
-        writeln!(
-            file,
-            "import numpy as np\nimport matplotlib.pyplot as plt\ndata=np.loadtxt('BAND.dat')\nk_nodes=[]\nlabel=[]\nf=open('KLABELS')\nfor i in f.readlines():\n    k_nodes.append(float(i.split()[0]))\n    label.append(i.split()[1])\nfig,ax=plt.subplots()\nax.plot(data[:,0],data[:,1:],c='b')\nfor x in k_nodes:\n    ax.axvline(x,c='k')\nax.set_xticks(k_nodes)\nax.set_xticklabels(label)\nax.set_xlim([0,k_nodes[-1]])\nfig.savefig('band.pdf')"
-        );
-        //开始绘制pdf图片
-        let mut fg = Figure::new();
-        let x: Vec<f64> = k_dist.to_vec();
-        let axes = fg.axes2d();
-        for i in 0..self.nsta() {
-            let y: Vec<f64> = eval.slice(s![.., i]).to_owned().to_vec();
-            axes.lines(&x, &y, &[Color("black"), LineStyle(Solid)]);
-        }
-        let axes = axes.set_x_range(Fix(0.0), Fix(k_node[[k_node.len() - 1]]));
-        let label = label.clone();
-        let mut show_ticks = Vec::new();
-        for i in 0..k_node.len() {
-            let A = k_node[[i]];
-            let B = label[i];
-            show_ticks.push(Major(A, Fix(B)));
-        }
-        axes.set_x_ticks_custom(
-            show_ticks.into_iter(),
-            &[],
-            &[Font("Times New Roman", 24.0)],
-        );
-
-        let k_node = k_node.to_vec();
-        let mut pdf_name = name.clone();
-        pdf_name.push_str("/plot.pdf");
-        fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
-        Ok(())
-    }
 }

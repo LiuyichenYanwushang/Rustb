@@ -8,7 +8,7 @@
 //! $$
 //! where $\Sigma$ is the self-energy due to the semi-infinite bulk.
 use crate::error::{TbError, Result};
-use crate::{Model, remove_col, remove_row};
+use crate::{Model};
 use crate::kpoints::gen_kmesh;
 use gnuplot::Major;
 use gnuplot::{Auto, AutoOption::Fix, AxesCommon, Custom, Figure, Font, HOT, RAINBOW};
@@ -57,6 +57,19 @@ pub struct surf_Green {
     pub ham_hop: Array3<Complex<f64>>,
     pub ham_hopR: Array2<isize>,
 }
+
+
+#[inline(always)]
+fn remove_row<T: Copy>(array: Array2<T>, row_to_remove: usize) -> Array2<T> {
+    let indices: Vec<_> = (0..array.nrows()).filter(|&r| r != row_to_remove).collect();
+    array.select(Axis(0), &indices)
+}
+#[inline(always)]
+fn remove_col<T: Copy>(array: Array2<T>, col_to_remove: usize) -> Array2<T> {
+    let indices: Vec<_> = (0..array.ncols()).filter(|&r| r != col_to_remove).collect();
+    array.select(Axis(1), &indices)
+}
+
 
 impl surf_Green {
     ///从 Model 中构建一个 surf_green 的结构体

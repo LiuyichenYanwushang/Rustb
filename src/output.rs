@@ -10,8 +10,10 @@
 //!
 //!POSCAR 格式
 use crate::basis::find_R;
-use crate::{Model, comm};
+use crate::Model;
+use crate::math::comm;
 use crate::kpoints::gen_kmesh;
+use crate::error::{TbError, Result};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -539,4 +541,131 @@ impl Model {
         };
         writeln!(file, "{}", s);
     }
+
+    ///这个函数是用来快速画能带图的, 用python画图, 因为Rust画图不太方便.
+    #[allow(non_snake_case)]
+    pub fn show_band(
+        &self,
+        path: &Array2<f64>,
+        label: &Vec<&str>,
+        nk: usize,
+        name: &str,
+    ) -> Result<()> {
+        use gnuplot::AutoOption::*;
+        use gnuplot::AxesCommon;
+        use gnuplot::Tick::*;
+        use gnuplot::{Caption, Color, Figure, Font, LineStyle, Solid};
+        use std::fs::create_dir_all;
+        use std::path::Path;
+        if path.len_of(Axis(0)) != label.len() {
+            panic!(
+                "Error, the path's length {} and label's length {} must be equal!",
+                path.len_of(Axis(0)),
+                label.len()
+            )
+        }
+        let (k_vec, k_dist, k_node) = self.k_path(&path, nk)?;
+        let eval = self.solve_band_all_parallel(&k_vec);
+        create_dir_all(name).map_err(|e| TbError::DirectoryCreation {
+            path: name.to_string(),
+            message: e.to_string(),
+        })?;
+        let mut name0 = String::new();
+        name0.push_str("./");
+        name0.push_str(&name);
+        let name = name0;
+        let mut band_name = name.clone();
+        band_name.push_str("/BAND.dat");
+        let band_name = Path::new(&band_name);
+        let mut file = File::create(band_name).expect("Unable to BAND.dat");
+        for i in 0..nk {
+            let mut s = String::new();
+            let aa = format!("{:.6}", k_dist[[i]]);
+            s.push_str(&aa);
+            for j in 0..self.nsta() {
+                if eval[[i, j]] >= 0.0 {
+                    s.push_str("     ");
+                } else {
+                    s.push_str("    ");
+                }
+                let aa = format!("{:.6}", eval[[i, j]]);
+                s.push_str(&aa);
+            }
+            writeln!(file, "{}", s)?;
+        }
+        let mut k_name = name.clone();
+        k_name.push_str("/KLABELS");
+        let k_name = Path::new(&k_name);
+        let mut file = File::create(k_name).expect("Unable to create KLBAELS"); //写下高对称点的位置
+        for i in 0..path.len_of(Axis(0)) {
+            let mut s = String::new();
+            let aa = format!("{:.6}", k_node[[i]]);
+            s.push_str(&aa);
+            s.push_str("      ");
+            s.push_str(&label[i]);
+            writeln!(file, "{}", s)?;
+        }
+        let mut py_name = name.clone();
+        py_name.push_str("/print.py");
+        let py_name = Path::new(&py_name);
+        let mut file = File::create(py_name).expect("Unable to create print.py");
+        writeln!(
+            file,
+            "import numpy as np\nimport matplotlib.pyplot as plt\ndata=np.loadtxt('BAND.dat')\nk_nodes=[]\nlabel=[]\nf=open('KLABELS')\nfor i in f.readlines():\n    k_nodes.append(float(i.split()[0]))\n    label.append(i.split()[1])\nfig,ax=plt.subplots()\nax.plot(data[:,0],data[:,1:],c='b')\nfor x in k_nodes:\n    ax.axvline(x,c='k')\nax.set_xticks(k_nodes)\nax.set_xticklabels(label)\nax.set_xlim([0,k_nodes[-1]])\nfig.savefig('band.pdf')"
+        );
+        //开始绘制pdf图片
+        let mut fg = Figure::new();
+        let x: Vec<f64> = k_dist.to_vec();
+        let axes = fg.axes2d();
+        for i in 0..self.nsta() {
+            let y: Vec<f64> = eval.slice(s![.., i]).to_owned().to_vec();
+            axes.lines(&x, &y, &[Color("black"), LineStyle(Solid)]);
+        }
+        let axes = axes.set_x_range(Fix(0.0), Fix(k_node[[k_node.len() - 1]]));
+        let label = label.clone();
+        let mut show_ticks = Vec::new();
+        for i in 0..k_node.len() {
+            let A = k_node[[i]];
+            let B = label[i];
+            show_ticks.push(Major(A, Fix(B)));
+        }
+        axes.set_x_ticks_custom(
+            show_ticks.into_iter(),
+            &[],
+            &[Font("Times New Roman", 24.0)],
+        );
+
+        let k_node = k_node.to_vec();
+        let mut pdf_name = name.clone();
+        pdf_name.push_str("/plot.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show();
+        Ok(())
+    }
+}
+
+
+pub fn draw_heatmap<A: Data<Elem = f64>>(data: &ArrayBase<A, Ix2>, name: &str) {
+    //!这个函数是用来画热图的, 给定一个二维矩阵, 会输出一个像素图片
+    use gnuplot::{AutoOption::Fix, AxesCommon, Figure, HOT, RAINBOW};
+    let mut fg = Figure::new();
+    let (height, width): (usize, usize) = (data.shape()[0], data.shape()[1]);
+    let mut heatmap_data = vec![];
+
+    for j in 0..width {
+        for i in 0..height {
+            heatmap_data.push(data[(i, j)]);
+        }
+    }
+    let axes = fg.axes2d();
+    axes.set_title("Heatmap", &[]);
+    axes.set_cb_label("Values", &[]);
+    axes.set_palette(RAINBOW);
+    axes.image(heatmap_data.iter(), width, height, None, &[]);
+    let size = data.shape();
+    let axes = axes.set_x_range(Fix(0.0), Fix((size[0] - 1) as f64));
+    let axes = axes.set_y_range(Fix(0.0), Fix((size[1] - 1) as f64));
+    let axes = axes.set_aspect_ratio(Fix(1.0));
+    fg.set_terminal("pdfcairo", name);
+    fg.show().expect("Unable to draw heatmap");
 }
