@@ -14,6 +14,7 @@ Rustb is a Rust library for calculating band structures, edge states, linear and
 - **rayon**: Parallel computation
 - **gnuplot**: Plotting and visualization
 - **serde**: Serialization/deserialization
+- **thiserror**: Custom error types
 
 ## BLAS/LAPACK Backend Configuration
 
@@ -28,6 +29,9 @@ cargo build --features openblas-static
 
 # Netlib (static linking)
 cargo build --features netlib-static
+
+# Intel MKL (system linking)
+cargo build --features intel-mkl-system
 ```
 
 ## Build Commands
@@ -44,6 +48,9 @@ cargo build --features openblas-static
 
 # Build documentation
 cargo doc --open
+
+# Build documentation without dependencies
+cargo mydoc
 ```
 
 ## Test Commands
@@ -69,25 +76,14 @@ cargo testall --quiet
 
 # Run specific example as test
 cargo runexample graphene
+
+# Run tests for specific module
+cargo test --lib -- SKmodel
 ```
 
 ## Cargo Aliases Configuration
 
 Check `.cargo/config.toml` for custom aliases:
-
-```bash
-# View cargo configuration
-cat .cargo/config.toml
-
-# Available aliases:
-# testall: Run tests with Intel MKL system backend
-# runexample: Run examples with Intel MKL system backend
-# mydoc: Build documentation without dependencies
-```
-
-## Cargo Configuration Details
-
-The `.cargo/config.toml` contains essential configuration:
 
 ```toml
 [build]
@@ -130,7 +126,9 @@ Available examples include:
 - `WTe2_kp`: WTe2 k·p model calculations
 - `RuO2`: Rutile structure calculations
 - `Intrinsic_nonlinear`: Nonlinear conductivity examples
-- Various topological insulator models (BHZ, Haldane, etc.)
+- `BHZ`: Bernevig-Hughes-Zhang model
+- `Haldane`: Haldane model for quantum Hall effect
+- Various topological insulator models
 
 ## Code Architecture
 
@@ -143,24 +141,42 @@ Available examples include:
 - **surfgreen.rs**: Surface Green's function calculations
 - **kpoints.rs**: k-point generation and Brillouin zone sampling
 - **SKmodel.rs**: Slater-Koster parameterized tight-binding models
+- **error.rs**: Custom error types and error handling
+- **wannier90.rs**: Wannier90 file format support
+- **io.rs**: File I/O utilities for data export
 
 ### Key Data Structures
-- **Model**: Main tight-binding model container
-- **Atom**: Atomic position and orbital information
+- **Model**: Main tight-binding model container (model_struct.rs:8)
+- **Atom**: Atomic position and orbital information (atom_struct.rs)
 - **OrbProj**: Orbital projection data
-- **SlaterKosterModel**: Slater-Koster parameterized model builder
+- **SlaterKosterModel**: Slater-Koster parameterized model builder (SKmodel.rs)
 - **SkParams**: Slater-Koster two-center integral parameters
+- **TbError**: Centralized error type for all fallible operations (error.rs:14)
 
 ### Physics Capabilities
 - Band structure calculation
-- Surface state computation
+- Surface state computation using Green's functions
 - Anomalous Hall conductivity
 - Spin Hall conductivity
 - Nonlinear conductivity
 - Wilson loop calculations
-- Berry curvature
+- Berry curvature and Berry phase
 - Density of states
 - Slater-Koster parameterized models
+- Wannier90 model import/export
+
+## Mathematical Foundation
+
+The library implements the tight-binding Hamiltonian:
+$$
+H = \sum_{i,j} t_{ij} c_i^\dagger c_j + \sum_i \epsilon_i c_i^\dagger c_i
+$$
+where $t_{ij}$ are hopping parameters and $\epsilon_i$ are on-site energies.
+
+For transport calculations, we compute the Berry curvature:
+$$
+\Omega_n(\mathbf{k}) = -2\,\text{Im}\sum_{m\neq n} \frac{\bra{n}\partial_{k_x} H\ket{m}\bra{m}\partial_{k_y} H\ket{n}}{(E_n - E_m)^2}
+$$
 
 ## Development Notes
 
@@ -169,17 +185,15 @@ Available examples include:
    - OpenBLAS
    - Netlib
 
-2. **Parallel Computation**: Uses Rayon for parallel k-point calculations
+2. **Parallel Computation**: Uses Rayon for parallel k-point calculations (lib.rs:40)
 
 3. **Visualization**: Generates plots using gnuplot backend
 
 4. **Performance**: Enable release optimizations for large calculations
 
-5. **Testing**: Extensive test suite covering various physical models
+5. **Error Handling**: Many functions return `Result<T, TbError>` - always handle Result types properly with `.unwrap()`, `.expect()`, or proper error handling
 
-6. **Error Handling**: Many functions return `Result<T, TbError>` - always handle Result types properly with `.unwrap()`, `.expect()`, or proper error handling
-
-7. **Testing Strategy**: 
+6. **Testing Strategy**: 
    - Unit tests are located within each module using `#[cfg(test)]`
    - Integration tests use examples that serve as functional tests
    - Test data files are stored in `tests/` directory
@@ -193,6 +207,7 @@ Available examples include:
 - Adding visualization capabilities
 - Extending k-point sampling methods
 - Adding new Slater-Koster parameter sets
+- Improving error handling and documentation
 
 ## Development Workflow
 
@@ -219,6 +234,8 @@ Available examples include:
    cargo doc --open --no-deps
    ```
 
+4. **Error Handling**: Follow the pattern in error.rs for consistent error reporting
+
 ## Slater-Koster Model Usage
 
 The `SKmodel.rs` module provides Slater-Koster parameterized model building:
@@ -241,3 +258,60 @@ Supported orbital interactions include:
 - s-s, s-p, p-p interactions
 - s-d, p-d, d-d interactions (partial implementation)
 - All standard Slater-Koster two-center integrals
+
+## File I/O Utilities
+
+The `io.rs` module provides file output functions:
+- `write_txt`: Export 2D arrays to formatted text files
+- `write_txt_1`: Export 1D arrays to formatted text files
+
+These utilities handle proper number formatting and spacing for scientific data analysis.
+
+## Error Handling Patterns
+
+All fallible functions return `Result<T, TbError>`. Common error handling patterns:
+
+```rust
+// Using unwrap for development (panic on error)
+let model = Model::tb_model(dim, lat, orb, false, None).unwrap();
+
+// Using expect with custom message
+let model = Model::tb_model(dim, lat, orb, false, None)
+    .expect("Failed to create TB model");
+
+// Proper error handling with match
+match Model::tb_model(dim, lat, orb, false, None) {
+    Ok(model) => { /* success */ },
+    Err(TbError::Io(e)) => { /* handle IO error */ },
+    Err(e) => { /* handle other errors */ },
+}
+```
+
+## Performance Optimization Tips
+
+1. Use release builds for production calculations
+2. Enable appropriate BLAS backend for your system
+3. Leverage Rayon parallelism for k-point calculations
+4. Precompute values where possible to avoid redundant calculations
+5. Use appropriate k-point mesh sizes for the required precision
+
+## Testing Patterns
+
+The codebase uses extensive testing with both unit tests and integration tests:
+
+```rust
+#[test]
+fn test_function_name() {
+    // Test setup
+    let model = create_test_model();
+    
+    // Test execution
+    let result = model.some_function();
+    
+    // Assertions
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), expected_value);
+}
+```
+
+Integration tests are implemented as examples that serve dual purpose as both documentation and functional tests.
