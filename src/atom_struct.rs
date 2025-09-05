@@ -269,7 +269,7 @@ impl fmt::Display for OrbProj {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Ord, PartialOrd)]
 pub enum AtomType {
     /// This is the type of the Atom
     H,

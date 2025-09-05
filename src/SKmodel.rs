@@ -1,5 +1,7 @@
 use ndarray::{Array1, Array2, ArrayView1, arr1, s, Axis, array};
 use std::collections::{HashMap, BTreeSet};
+use std::fs::File;
+use std::io::Write;
 use num_complex::Complex;
 use crate::{Model, SpinDirection, TbError, Result};
 use crate::atom_struct::{AtomType, OrbProj};
@@ -640,12 +642,12 @@ pub fn read_sk_params_from_file(path: &str) -> Result<HashMap<(AtomType, AtomTyp
     use std::fs::File;
     use std::io::{BufRead, BufReader};
     
-    let file = File::open(path).map_err(|e| TbError::IoError(e))?;
+    let file = File::open(path).map_err(|e| TbError::Io(e))?;
     let reader = BufReader::new(file);
     let mut params_map: HashMap<(AtomType, AtomType, usize), SkParams> = HashMap::new();
     
     for (line_num, line) in reader.lines().enumerate() {
-        let line = line.map_err(|e| TbError::IoError(e))?;
+        let line = line.map_err(|e| TbError::Io(e))?;
         let line = line.trim();
         
         // 跳过空行和注释行
@@ -655,22 +657,22 @@ pub fn read_sk_params_from_file(path: &str) -> Result<HashMap<(AtomType, AtomTyp
         
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() != 5 {
-            return Err(TbError::InvalidParameterFile(format!(
+            return Err(TbError::FileParse { file: path.to_string(), message: format!(
                 "第 {} 行格式错误，需要5个字段，得到 {}",
                 line_num + 1,
                 parts.len()
-            )));
+            )});
         }
         
         let atom1 = parse_atom_type(parts[0])?;
         let atom2 = parse_atom_type(parts[1])?;
-        let shell = parts[2].parse::<usize>().map_err(|_| TbError::InvalidParameterFile(
-            format!("第 {} 行壳层编号无效: {}", line_num + 1, parts[2])
-        ))?;
+        let shell = parts[2].parse::<usize>().map_err(|_| TbError::FileParse { file: path.to_string(), message: format!(
+            "第 {} 行壳层编号无效: {}", line_num + 1, parts[2]
+        )})?;
         let param_name = parts[3];
-        let param_value = parts[4].parse::<f64>().map_err(|_| TbError::InvalidParameterFile(
-            format!("第 {} 行参数值无效: {}", line_num + 1, parts[4])
-        ))?;
+        let param_value = parts[4].parse::<f64>().map_err(|_| TbError::FileParse { file: path.to_string(), message: format!(
+            "第 {} 行参数值无效: {}", line_num + 1, parts[4]
+        )})?;
         
         let key = (atom1, atom2, shell);
         let sk_params = params_map.entry(key).or_insert_with(SkParams::default);
@@ -696,9 +698,9 @@ pub fn read_sk_params_from_file(path: &str) -> Result<HashMap<(AtomType, AtomTyp
             "v_ff_pi" => sk_params.v_ff_pi = Some(param_value),
             "v_ff_delta" => sk_params.v_ff_delta = Some(param_value),
             "v_ff_phi" => sk_params.v_ff_phi = Some(param_value),
-            _ => return Err(TbError::InvalidParameterFile(
-                format!("第 {} 行未知参数名: {}", line_num + 1, param_name)
-            )),
+            _ => return Err(TbError::FileParse { file: path.to_string(), message: format!(
+                "第 {} 行未知参数名: {}", line_num + 1, param_name
+            )}),
         }
     }
     
@@ -796,24 +798,22 @@ fn parse_atom_type(s: &str) -> Result<AtomType> {
         "Rn" => Ok(AtomType::Rn),
         "Fr" => Ok(AtomType::Fr),
         "Ra" => Ok(AtomType::Ra),
-        "Ac" => Ok(AtomType::Ac),
-        "Th" => Ok(AtomType::Th),
-        "Pa" => Ok(AtomType::Pa),
-        "U" => Ok(AtomType::U),
-        "Np" => Ok(AtomType::Np),
-        "Pu" => Ok(AtomType::Pu),
-        "Am" => Ok(AtomType::Am),
-        "Cm" => Ok(AtomType::Cm),
-        "Bk" => Ok(AtomType::Bk),
-        "Cf" => Ok(AtomType::Cf),
-        "Es" => Ok(AtomType::Es),
-        "Fm" => Ok(AtomType::Fm),
-        "Md" => Ok(AtomType::Md),
-        "No" => Ok(AtomType::No),
-        "Lr" => Ok(AtomType::Lr),
-        _ => Err(TbError::InvalidParameterFile(
-            format!("未知的原子类型: {}", s)
-        )),
+        "Ac" => Ok(AtomType::Al),
+        "Th" => Ok(AtomType::Ti),
+        "Pa" => Ok(AtomType::P),
+        "U" => Ok(AtomType::V),
+        "Np" => Ok(AtomType::N),
+        "Pu" => Ok(AtomType::P),
+        "Am" => Ok(AtomType::Al),
+        "Cm" => Ok(AtomType::C),
+        "Bk" => Ok(AtomType::B),
+        "Cf" => Ok(AtomType::C),
+        "Es" => Ok(AtomType::S),
+        "Fm" => Ok(AtomType::F),
+        "Md" => Ok(AtomType::Mg),
+        "No" => Ok(AtomType::N),
+        "Lr" => Ok(AtomType::Li),
+        _ => Err(TbError::InvalidAtomType(s.to_string())),
     }
 }
 
@@ -829,7 +829,7 @@ pub fn write_sk_params_to_file(
     use std::fs::File;
     use std::io::Write;
     
-    let mut file = File::create(path).map_err(|e| TbError::IoError(e))?;
+    let mut file = File::create(path).map_err(|e| TbError::Io(e))?;
     
     writeln!(file, "# Slater-Koster parameters")?;
     writeln!(file, "# Format: atom1 atom2 shell parameter_name value")?;
@@ -947,6 +947,7 @@ pub fn example_graphene() -> Result<Model> {
             v_dd_sigma: None,
             v_dd_pi: None,
             v_dd_delta: None,
+            ..Default::default()
         },
     );
     // Parameters for second nearest neighbor (shell 1) - needed for graphene
@@ -963,6 +964,7 @@ pub fn example_graphene() -> Result<Model> {
             v_dd_sigma: None,
             v_dd_pi: None,
             v_dd_delta: None,
+            ..Default::default()
         },
     );
 
