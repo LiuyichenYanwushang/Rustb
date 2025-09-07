@@ -8,7 +8,7 @@ use num_complex::Complex;
 impl Model {
     #[inline(always)]
     pub fn atom_position(&self) -> Array2<f64> {
-        let mut atom_position = Array2::zeros((self.natom(), self.dim_r));
+        let mut atom_position = Array2::zeros((self.natom(), self.dim_r as usize));
         atom_position
             .outer_iter_mut()
             .zip(self.atoms.iter())

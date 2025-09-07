@@ -24,6 +24,7 @@ pub use crate::basis::*;
 pub use crate::conductivity::*;
 pub use crate::io::*;
 pub use crate::math::*;
+pub use crate::output::*;
 use crate::generics::usefloat;
 #[doc(hidden)]
 pub use crate::surfgreen::surf_Green;

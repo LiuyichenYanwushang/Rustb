@@ -479,10 +479,12 @@ impl Model {
         for i in 0..self.nsta() {
             for j in 0..self.nsta() {
                 let a = band[[i]] - band[[j]];
+                //这里用gauss函数代替
+                //UU[[i,j]]=gauss(a,eta)*PI;
                 if a.abs() < 1e-8 {
                     UU[[i, j]] = 0.0;
                 } else {
-                    UU[[i, j]] = 1.0 / a.powi(2);
+                    UU[[i, j]] = 1.0 / (a.powi(2)+(og+eta*li).powi(2).re);
                 }
             }
         }

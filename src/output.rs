@@ -9,7 +9,7 @@
 //!整合的 wannier90 格式
 //!
 //!POSCAR 格式
-use crate::basis::find_R;
+use crate::basis::{find_R,Dimension};
 use crate::Model;
 use crate::math::comm;
 use crate::kpoints::gen_kmesh;
@@ -57,7 +57,7 @@ impl Model {
         writeln!(file, "{}", weight);
         //接下来我们进行数据的写入
         match self.dim_r {
-            0 => {
+            Dimension::zero => {
                 let mut s = String::new();
                 let ham = self.ham.slice(s![0, .., ..]);
                 for orb_2 in 0..self.nsta() {
@@ -70,7 +70,7 @@ impl Model {
                     }
                 }
             }
-            1 => {
+            Dimension::one => {
                 let max_R1 = self.hamR.outer_iter().map(|x| x[[0]].abs()).max().unwrap();
                 let mut s = String::new();
                 for i in -max_R1..max_R1 {
@@ -110,7 +110,7 @@ impl Model {
                 }
                 writeln!(file, "{}", s);
             }
-            2 => {
+            Dimension::two => {
                 let max_values = self
                     .hamR
                     .fold_axis(Axis(0), isize::min_value(), |max, &value| {
@@ -160,7 +160,7 @@ impl Model {
                 }
                 writeln!(file, "{}", s);
             }
-            3 => {
+            Dimension::three => {
                 let max_values = self
                     .hamR
                     .fold_axis(Axis(0), isize::min_value(), |max, &value| {
@@ -214,7 +214,6 @@ impl Model {
                 }
                 writeln!(file, "{}", s);
             }
-            _ => todo!(),
         }
     }
 
@@ -226,25 +225,24 @@ impl Model {
         writeln!(file, "Generate by Rustb");
         writeln!(file, "1.0");
         let s = match self.dim_r {
-            3 => {
+            Dimension::three => {
                 let mut s = String::new();
                 s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],self.lat[[0,1]],self.lat[[0,2]],self.lat[[1,0]],self.lat[[1,1]],self.lat[[1,2]],self.lat[[2,0]],self.lat[[2,1]],self.lat[[2,2]]));
                 s
             }
-            2 => {
+            Dimension::two => {
                 let mut s = String::new();
                 s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],self.lat[[0,1]],0.0,self.lat[[1,0]],self.lat[[1,1]],0.0,0.0,0.0,10.0));
                 s
             }
-            1 => {
+            Dimension::one => {
                 let mut s = String::new();
                 s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],0.0,0.0,0.0,10.0,0.0,0.0,0.0,10.0));
                 s
             }
-            _ => {
+            Dimension::zero => {
                 panic!(
-                    "Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours {}",
-                    self.dim_r
+                    "Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours zero"
                 );
             }
         };
@@ -283,7 +281,7 @@ impl Model {
         for i in 0..atom_type.len() {
             for j in 0..new_atom_position[i].len() {
                 let s = match self.dim_r {
-                    3 => {
+                    Dimension::three => {
                         let mut s = String::new();
                         s.push_str(&format!(
                             "{:>15.8}   {:>15.8}   {:>15.8}",
@@ -293,7 +291,7 @@ impl Model {
                         ));
                         s
                     }
-                    2 => {
+                    Dimension::two => {
                         let mut s = String::new();
                         s.push_str(&format!(
                             "{:>15.8}   {:>15.8}   {:>15.8}",
@@ -303,7 +301,7 @@ impl Model {
                         ));
                         s
                     }
-                    1 => {
+                    Dimension::one => {
                         let mut s = String::new();
                         s.push_str(&format!(
                             "{:>15.8}   {:>15.8}   {:>15.8}",
@@ -313,10 +311,9 @@ impl Model {
                         ));
                         s
                     }
-                    _ => {
+                    Dimension::zero => {
                         panic!(
-                            "Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours {}",
-                            self.dim_r
+                            "Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours zero"
                         );
                     }
                 };
@@ -336,7 +333,7 @@ impl Model {
         for at in self.atoms.iter() {
             let atom_position = at.position();
             match self.dim_r {
-                3 => {
+                Dimension::three => {
                     writeln!(
                         file,
                         "{}  {:>10.6}  {:>10.6}  {:>10.6}",
@@ -346,7 +343,7 @@ impl Model {
                         atom_position[1]
                     );
                 }
-                2 => {
+                Dimension::two => {
                     writeln!(
                         file,
                         "{}  {:>10.6}  {:>10.6}  {:>10.6}",
@@ -356,7 +353,7 @@ impl Model {
                         0.0
                     );
                 }
-                1 => {
+                Dimension::one => {
                     writeln!(
                         file,
                         "{}  {:>10.6}  {:>10.6}  {:>10.6}",
@@ -366,14 +363,14 @@ impl Model {
                         0.0
                     );
                 }
-                _ => panic!("Wrong, your model's dim_r is not 1,2 or 3"),
+                Dimension::zero => panic!("Wrong, your model's dim_r is 0, not 1,2 or 3"),
             }
         }
         writeln!(file, "end atoms_cart");
         writeln!(file, "\n");
         writeln!(file, "begin unit_cell_cart");
         match self.dim_r {
-            3 => {
+            Dimension::three => {
                 let mut s = String::new();
                 for i in 0..3 {
                     for j in 0..3 {
@@ -382,7 +379,7 @@ impl Model {
                     writeln!(file, "{}", s);
                 }
             }
-            2 => {
+            Dimension::two => {
                 let mut s = String::new();
                 for i in 0..2 {
                     for j in 0..2 {
@@ -393,7 +390,7 @@ impl Model {
                 }
                 writeln!(file, "   0.000000     0.000000     1.000000");
             }
-            1 => {
+            Dimension::one => {
                 let mut s = String::new();
                 s.push_str(&format!("{:>10.6}  ", self.lat[[0, 0]]));
                 s.push_str("   0.000000     0.000000");
@@ -401,10 +398,9 @@ impl Model {
                 writeln!(file, "   0.000000     0.000000     1.000000");
                 writeln!(file, "   0.000000     0.000000     1.000000");
             }
-            _ => {
+            Dimension::zero => {
                 panic!(
-                    "Wrong! Using output win file, the dim_r of model mut be 1, 2, or 3, but yours {}",
-                    self.dim_r
+                    "Wrong! Using output win file, the dim_r of model mut be 1, 2, or 3, but yours 0"
                 )
             }
         }
@@ -427,7 +423,7 @@ impl Model {
         writeln!(file, "{}", number);
         writeln!(file, "Wannier centres, written by Rustb");
         let mut s = match self.dim_r {
-            3 => {
+            Dimension::three => {
                 let mut s = String::new();
                 for i in 0..self.norb() {
                     s.push_str(&format!(
@@ -466,7 +462,7 @@ impl Model {
                 ));
                 s
             }
-            2 => {
+            Dimension::two => {
                 let mut s = String::new();
                 for i in 0..self.norb() {
                     s.push_str(&format!(
@@ -501,7 +497,7 @@ impl Model {
                 ));
                 s
             }
-            1 => {
+            Dimension::one => {
                 let mut s = String::new();
                 for i in 0..self.norb() {
                     s.push_str(&format!(
@@ -532,11 +528,9 @@ impl Model {
                 ));
                 s
             }
-            _ => {
+            Dimension::zero => {
                 panic!(
-                    "Wrong!, the dim_r must be 1,2 or 3, but yours {}",
-                    self.dim_r
-                );
+                    "Wrong!, the dim_r must be 1,2 or 3, but yours 0");
             }
         };
         writeln!(file, "{}", s);

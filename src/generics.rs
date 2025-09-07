@@ -2,6 +2,8 @@
 use crate::SpinDirection;
 use num_complex::Complex64;
 use num_traits::identities::Zero;
+use crate::basis::Dimension;
+use crate::TbError;
 
 pub trait ToFloat {
     fn to_float(self) -> f64;
@@ -96,6 +98,30 @@ impl From<i32> for SpinDirection {
             2 => SpinDirection::y,
             3 => SpinDirection::z,
             _ => panic!("Invalid value for SpinDirection"),
+        }
+    }
+}
+
+
+impl From<Dimension> for usize {
+    fn from(d: Dimension) -> Self {
+        d as usize
+    }
+}
+
+impl TryFrom<usize> for Dimension {
+    type Error = TbError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Dimension::zero),
+            1 => Ok(Dimension::one),
+            2 => Ok(Dimension::two),
+            3 => Ok(Dimension::three),
+            _ => Err(TbError::InvalidDimension {
+                    dim: value,
+                    supported: vec![0, 1, 2, 3],
+                }),
         }
     }
 }

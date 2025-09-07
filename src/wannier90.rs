@@ -2,7 +2,7 @@ use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{TbError, Result};
 use crate::{Gauge, Model, SpinDirection};
 use crate::math::comm;
-use crate::basis::find_R;
+use crate::basis::{find_R,Dimension};
 use ndarray::prelude::*;
 use ndarray_linalg::conjugate;
 use ndarray_linalg::*;
@@ -577,7 +577,7 @@ impl Model{
         }
 
         let mut model = Model {
-            dim_r: 3,
+            dim_r: Dimension::three,
             spin,
             lat,
             orb,
@@ -1157,7 +1157,7 @@ impl Model{
         }
 
         let mut model = Model {
-            dim_r: 3,
+            dim_r: Dimension::three,
             spin,
             lat,
             orb,

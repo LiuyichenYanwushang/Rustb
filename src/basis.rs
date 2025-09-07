@@ -13,7 +13,7 @@ use crate::error::{TbError, Result};
 use crate::generics::hop_use;
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
 use crate::kpoints::gen_kmesh;
-use crate::math::{gauss,comm};
+use crate::math::{comm};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Model {
     /// Real space dimension $d$ of the model (2D or 3D systems)
-    pub dim_r: usize,
+    pub dim_r: Dimension,
     /// Whether the model includes spin degrees of freedom
     pub spin: bool,
     /// Lattice vectors $\mathbf{a}_1, \mathbf{a}_2, \mathbf{a}_3$ as a $d \times d$ matrix
@@ -71,7 +71,7 @@ pub enum Gauge {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
-pub enum Dimention {
+pub enum Dimension {
     zero = 0,
     one = 1,
     two = 2,
@@ -86,6 +86,8 @@ pub enum SpinDirection {
     y = 2,
     z = 3,
 }
+
+
 
 
 #[allow(non_snake_case)]
@@ -319,7 +321,7 @@ impl Model {
         }
         let orb_projection = vec![OrbProj::s; norb];
         let mut model = Model {
-            dim_r,
+            dim_r:Dimension::try_from(dim_r)?,
             spin,
             lat,
             orb,
@@ -1338,7 +1340,7 @@ impl Model {
             }
         }
         let mut model = Model {
-            dim_r: self.dim_r(),
+            dim_r: Dimension::try_from(self.dim_r())?,
             spin: self.spin,
             lat: new_lat,
             orb: new_orb,
@@ -2614,7 +2616,7 @@ impl Model {
             }
         }
         let mut model = Model {
-            dim_r: self.dim_r(),
+            dim_r: Dimension::try_from(self.dim_r())?,
             spin: self.spin,
             lat: new_lat,
             orb: new_orb,
