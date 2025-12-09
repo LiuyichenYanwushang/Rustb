@@ -1,9 +1,9 @@
 //!这个是给程序提供泛型支持的模块
 use crate::SpinDirection;
+use crate::TbError;
+use crate::basis::Dimension;
 use num_complex::Complex64;
 use num_traits::identities::Zero;
-use crate::basis::Dimension;
-use crate::TbError;
 
 pub trait ToFloat {
     fn to_float(self) -> f64;
@@ -102,7 +102,6 @@ impl From<i32> for SpinDirection {
     }
 }
 
-
 impl From<Dimension> for usize {
     fn from(d: Dimension) -> Self {
         d as usize
@@ -119,9 +118,9 @@ impl TryFrom<usize> for Dimension {
             2 => Ok(Dimension::two),
             3 => Ok(Dimension::three),
             _ => Err(TbError::InvalidDimension {
-                    dim: value,
-                    supported: vec![0, 1, 2, 3],
-                }),
+                dim: value,
+                supported: vec![0, 1, 2, 3],
+            }),
         }
     }
 }

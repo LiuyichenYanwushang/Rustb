@@ -1,11 +1,11 @@
-use ndarray::{Array1, Array2, ArrayView1, arr1, s, Axis, array};
-use std::collections::{HashMap, BTreeSet};
+use crate::atom_struct::{AtomType, OrbProj};
+use crate::{Model, Result, SpinDirection, TbError};
+use ndarray::{Array1, Array2, ArrayView1, Axis, arr1, array, s};
+use ndarray_linalg::Norm;
+use num_complex::Complex;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::Write;
-use num_complex::Complex;
-use crate::{Model, SpinDirection, TbError, Result};
-use crate::atom_struct::{AtomType, OrbProj};
-use ndarray_linalg::Norm;
 
 /// Atom structure for Slater-Koster parameterized tight-binding models.
 ///
@@ -149,7 +149,7 @@ impl SlaterKosterModel {
             neighbor_search_range: 3,
         }
     }
-    
+
     /// Set the maximum neighbor search range for finding hopping terms.
     ///
     /// # Arguments
@@ -167,7 +167,7 @@ impl SlaterKosterModel {
         self.neighbor_search_range = range;
         Ok(self)
     }
-    
+
     /// 自动查找并返回前 `n` 个最近邻壳层的距离。
     fn find_shell_distances(&self, n: usize) -> Result<Vec<f64>> {
         let mut dists = BTreeSet::new();
@@ -175,15 +175,16 @@ impl SlaterKosterModel {
 
         // 生成所有可能的晶格矢量
         let neighbor_R: Vec<Array1<isize>> = match self.dim_r {
-            1 => (-search..=search)
-                .map(|i| arr1(&[i as isize]))
-                .collect(),
+            1 => (-search..=search).map(|i| arr1(&[i as isize])).collect(),
             2 => (-search..=search)
                 .flat_map(|i| (-search..=search).map(move |j| arr1(&[i as isize, j as isize])))
                 .collect(),
             3 => (-search..=search)
-                .flat_map(|i| (-search..=search)
-                    .flat_map(move |j| (-search..=search).map(move |k| arr1(&[i as isize, j as isize, k as isize]))))
+                .flat_map(|i| {
+                    (-search..=search).flat_map(move |j| {
+                        (-search..=search).map(move |k| arr1(&[i as isize, j as isize, k as isize]))
+                    })
+                })
                 .collect(),
             _ => return Err(TbError::InvalidSearchRange(search)),
         };
@@ -197,7 +198,9 @@ impl SlaterKosterModel {
                     }
 
                     let da = self.lat.dot(&atoma.position);
-                    let db = self.lat.dot(&(atomb.position.clone() + R.mapv(|x| x as f64)));
+                    let db = self
+                        .lat
+                        .dot(&(atomb.position.clone() + R.mapv(|x| x as f64)));
                     let dist = (&db - &da).norm_l2();
 
                     if dist > 1e-8 {
@@ -206,28 +209,29 @@ impl SlaterKosterModel {
                 }
             }
         }
-        
+
         if dists.is_empty() {
             return Err(TbError::NoShellsFound);
         }
-        
+
         Ok(dists.into_iter().map(|x| x as f64 / 1e6).take(n).collect())
     }
-    
+
     /// 生成所有可能的近邻晶格矢量
     fn generate_neighbor_vectors(&self) -> Vec<Array1<isize>> {
         let search = self.neighbor_search_range;
-        
+
         match self.dim_r {
-            1 => (-search..=search)
-                .map(|i| arr1(&[i as isize]))
-                .collect(),
+            1 => (-search..=search).map(|i| arr1(&[i as isize])).collect(),
             2 => (-search..=search)
                 .flat_map(|i| (-search..=search).map(move |j| arr1(&[i as isize, j as isize])))
                 .collect(),
             3 => (-search..=search)
-                .flat_map(|i| (-search..=search)
-                    .flat_map(move |j| (-search..=search).map(move |k| arr1(&[i as isize, j as isize, k as isize]))))
+                .flat_map(|i| {
+                    (-search..=search).flat_map(move |j| {
+                        (-search..=search).map(move |k| arr1(&[i as isize, j as isize, k as isize]))
+                    })
+                })
                 .collect(),
             _ => Vec::new(),
         }
@@ -238,10 +242,10 @@ impl SlaterKosterModel {
 macro_rules! get_param {
     ($param:expr, $field:ident, $name:expr, $pair:expr, $shell:expr) => {
         $param.$field.ok_or_else(|| TbError::SkParameterMissing {
-            param: $name.to_string(), 
-            atom1: $pair.0, 
-            atom2: $pair.1, 
-            shell: $shell
+            param: $name.to_string(),
+            atom1: $pair.0,
+            atom2: $pair.1,
+            shell: $shell,
         })?
     };
 }
@@ -258,7 +262,7 @@ fn sk_element(
     shell: usize,
 ) -> Result<f64> {
     use OrbProj::*;
-    
+
     let result = match (oi, oj) {
         // s-s and s-p/p-s interactions
         (s, s) => get_param!(param, v_ss_sigma, "Vssσ", pair, shell),
@@ -270,175 +274,264 @@ fn sk_element(
         (pz, s) => n * get_param!(param, v_sp_sigma, "Vspσ", pair, shell),
 
         // p-p interactions
-        (px, px) => l * l * get_param!(param, v_pp_sigma, "Vppσ", pair, shell) + 
-                    (1.0 - l * l) * get_param!(param, v_pp_pi, "Vppπ", pair, shell),
-        (py, py) => m * m * get_param!(param, v_pp_sigma, "Vppσ", pair, shell) + 
-                    (1.0 - m * m) * get_param!(param, v_pp_pi, "Vppπ", pair, shell),
-        (pz, pz) => n * n * get_param!(param, v_pp_sigma, "Vppσ", pair, shell) + 
-                    (1.0 - n * n) * get_param!(param, v_pp_pi, "Vppπ", pair, shell),
-        (px, py) | (py, px) => l * m * (
-            get_param!(param, v_pp_sigma, "Vppσ", pair, shell) - 
-            get_param!(param, v_pp_pi, "Vppπ", pair, shell)
-        ),
-        (px, pz) | (pz, px) => l * n * (
-            get_param!(param, v_pp_sigma, "Vppσ", pair, shell) - 
-            get_param!(param, v_pp_pi, "Vppπ", pair, shell)
-        ),
-        (py, pz) | (pz, py) => m * n * (
-            get_param!(param, v_pp_sigma, "Vppσ", pair, shell) - 
-            get_param!(param, v_pp_pi, "Vppπ", pair, shell)
-        ),
+        (px, px) => {
+            l * l * get_param!(param, v_pp_sigma, "Vppσ", pair, shell)
+                + (1.0 - l * l) * get_param!(param, v_pp_pi, "Vppπ", pair, shell)
+        }
+        (py, py) => {
+            m * m * get_param!(param, v_pp_sigma, "Vppσ", pair, shell)
+                + (1.0 - m * m) * get_param!(param, v_pp_pi, "Vppπ", pair, shell)
+        }
+        (pz, pz) => {
+            n * n * get_param!(param, v_pp_sigma, "Vppσ", pair, shell)
+                + (1.0 - n * n) * get_param!(param, v_pp_pi, "Vppπ", pair, shell)
+        }
+        (px, py) | (py, px) => {
+            l * m
+                * (get_param!(param, v_pp_sigma, "Vppσ", pair, shell)
+                    - get_param!(param, v_pp_pi, "Vppπ", pair, shell))
+        }
+        (px, pz) | (pz, px) => {
+            l * n
+                * (get_param!(param, v_pp_sigma, "Vppσ", pair, shell)
+                    - get_param!(param, v_pp_pi, "Vppπ", pair, shell))
+        }
+        (py, pz) | (pz, py) => {
+            m * n
+                * (get_param!(param, v_pp_sigma, "Vppσ", pair, shell)
+                    - get_param!(param, v_pp_pi, "Vppπ", pair, shell))
+        }
 
         // s-d and d-s interactions
-        (s, dxy) | (dxy, s) => 3_f64.sqrt() * l * m * get_param!(param, v_sd_sigma, "Vsdσ", pair, shell),
-        (s, dyz) | (dyz, s) => 3_f64.sqrt() * m * n * get_param!(param, v_sd_sigma, "Vsdσ", pair, shell),
-        (s, dxz) | (dxz, s) => 3_f64.sqrt() * l * n * get_param!(param, v_sd_sigma, "Vsdσ", pair, shell),
-        (s, dz2) | (dz2, s) => (3.0 * n * n - 1.0) / 2.0 * get_param!(param, v_sd_sigma, "Vsdσ", pair, shell),
-        (s, dx2y2) | (dx2y2, s) => 3_f64.sqrt() / 2.0 * (l * l - m * m) * get_param!(param, v_sd_sigma, "Vsdσ", pair, shell),
+        (s, dxy) | (dxy, s) => {
+            3_f64.sqrt() * l * m * get_param!(param, v_sd_sigma, "Vsdσ", pair, shell)
+        }
+        (s, dyz) | (dyz, s) => {
+            3_f64.sqrt() * m * n * get_param!(param, v_sd_sigma, "Vsdσ", pair, shell)
+        }
+        (s, dxz) | (dxz, s) => {
+            3_f64.sqrt() * l * n * get_param!(param, v_sd_sigma, "Vsdσ", pair, shell)
+        }
+        (s, dz2) | (dz2, s) => {
+            (3.0 * n * n - 1.0) / 2.0 * get_param!(param, v_sd_sigma, "Vsdσ", pair, shell)
+        }
+        (s, dx2y2) | (dx2y2, s) => {
+            3_f64.sqrt() / 2.0
+                * (l * l - m * m)
+                * get_param!(param, v_sd_sigma, "Vsdσ", pair, shell)
+        }
 
         // p-d and d-p interactions
         (px, dxy) | (dxy, px) => {
-            3_f64.sqrt() * l * l * m * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) +
-            m * (1.0 - 2.0 * l * l) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() * l * l * m * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                + m * (1.0 - 2.0 * l * l) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (px, dyz) | (dyz, px) => {
-            3_f64.sqrt() * l * m * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) -
-            2.0 * l * m * n * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() * l * m * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                - 2.0 * l * m * n * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (px, dxz) | (dxz, px) => {
-            3_f64.sqrt() * l * l * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) +
-            n * (1.0 - 2.0 * l * l) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() * l * l * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                + n * (1.0 - 2.0 * l * l) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (px, dz2) | (dz2, px) => {
-            l * (n * n - 0.5 * (l * l + m * m)) * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) -
-            3_f64.sqrt() * l * n * n * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            l * (n * n - 0.5 * (l * l + m * m)) * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                - 3_f64.sqrt() * l * n * n * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (px, dx2y2) | (dx2y2, px) => {
-            3_f64.sqrt() / 2.0 * l * (l * l - m * m) * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) +
-            l * (1.0 - l * l + m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() / 2.0
+                * l
+                * (l * l - m * m)
+                * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                + l * (1.0 - l * l + m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
-        
+
         (py, dxy) | (dxy, py) => {
-            3_f64.sqrt() * l * m * m * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) +
-            l * (1.0 - 2.0 * m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() * l * m * m * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                + l * (1.0 - 2.0 * m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (py, dyz) | (dyz, py) => {
-            3_f64.sqrt() * m * m * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) +
-            n * (1.0 - 2.0 * m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() * m * m * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                + n * (1.0 - 2.0 * m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (py, dxz) | (dxz, py) => {
-            3_f64.sqrt() * l * m * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) -
-            2.0 * l * m * n * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() * l * m * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                - 2.0 * l * m * n * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (py, dz2) | (dz2, py) => {
-            m * (n * n - 0.5 * (l * l + m * m)) * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) -
-            3_f64.sqrt() * m * n * n * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            m * (n * n - 0.5 * (l * l + m * m)) * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                - 3_f64.sqrt() * m * n * n * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (py, dx2y2) | (dx2y2, py) => {
-            3_f64.sqrt() / 2.0 * m * (l * l - m * m) * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) -
-            m * (1.0 + l * l - m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() / 2.0
+                * m
+                * (l * l - m * m)
+                * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                - m * (1.0 + l * l - m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
-        
+
         (pz, dxy) | (dxy, pz) => {
-            3_f64.sqrt() * l * m * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) -
-            2.0 * l * m * n * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() * l * m * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                - 2.0 * l * m * n * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (pz, dyz) | (dyz, pz) => {
-            3_f64.sqrt() * m * n * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) +
-            m * (1.0 - 2.0 * n * n) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() * m * n * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                + m * (1.0 - 2.0 * n * n) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (pz, dxz) | (dxz, pz) => {
-            3_f64.sqrt() * l * n * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) +
-            l * (1.0 - 2.0 * n * n) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() * l * n * n * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                + l * (1.0 - 2.0 * n * n) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (pz, dz2) | (dz2, pz) => {
-            n * (n * n - 0.5 * (l * l + m * m)) * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) +
-            3_f64.sqrt() * n * (l * l + m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            n * (n * n - 0.5 * (l * l + m * m)) * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                + 3_f64.sqrt()
+                    * n
+                    * (l * l + m * m)
+                    * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
         (pz, dx2y2) | (dx2y2, pz) => {
-            3_f64.sqrt() / 2.0 * n * (l * l - m * m) * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell) -
-            n * (l * l - m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
+            3_f64.sqrt() / 2.0
+                * n
+                * (l * l - m * m)
+                * get_param!(param, v_pd_sigma, "Vpdσ", pair, shell)
+                - n * (l * l - m * m) * get_param!(param, v_pd_pi, "Vpdπ", pair, shell)
         }
 
         // d-d interactions
         (dxy, dxy) => {
-            3.0 * l * l * m * m * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            (l * l + m * m - 4.0 * l * l * m * m) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            (n * n + l * l * m * m) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3.0 * l * l * m * m * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + (l * l + m * m - 4.0 * l * l * m * m)
+                    * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + (n * n + l * l * m * m) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
         (dxy, dyz) | (dyz, dxy) => {
-            3.0 * l * m * m * n * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            l * n * (1.0 - 4.0 * m * m) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            l * n * (m * m - 1.0) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3.0 * l * m * m * n * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + l * n * (1.0 - 4.0 * m * m) * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + l * n * (m * m - 1.0) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
         (dxy, dxz) | (dxz, dxy) => {
-            3.0 * l * l * m * n * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            m * n * (1.0 - 4.0 * l * l) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            m * n * (l * l - 1.0) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3.0 * l * l * m * n * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + m * n * (1.0 - 4.0 * l * l) * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + m * n * (l * l - 1.0) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
         (dxy, dz2) | (dz2, dxy) => {
-            3_f64.sqrt() * l * m * (l * l - m * m) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            2.0 * l * m * (m * m - l * l) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            0.5 * l * m * (l * l - m * m) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3_f64.sqrt()
+                * l
+                * m
+                * (l * l - m * m)
+                * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + 2.0 * l * m * (m * m - l * l) * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + 0.5 * l * m * (l * l - m * m) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
         (dxy, dx2y2) | (dx2y2, dxy) => {
-            3.0 / 2.0 * l * m * (l * l - m * m) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            l * m * (l * l + m * m - 2.0 * (l * l - m * m)) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) -
-            l * m * (l * l + m * m) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3.0 / 2.0 * l * m * (l * l - m * m) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + l * m
+                    * (l * l + m * m - 2.0 * (l * l - m * m))
+                    * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                - l * m * (l * l + m * m) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
-        
+
         (dyz, dyz) => {
-            3.0 * m * m * n * n * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            (m * m + n * n - 4.0 * m * m * n * n) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            (l * l + m * m * n * n) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3.0 * m * m * n * n * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + (m * m + n * n - 4.0 * m * m * n * n)
+                    * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + (l * l + m * m * n * n) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
         (dyz, dxz) | (dxz, dyz) => {
-            3.0 * l * m * n * n * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            l * m * (1.0 - 4.0 * n * n) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            l * m * (n * n - 1.0) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3.0 * l * m * n * n * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + l * m * (1.0 - 4.0 * n * n) * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + l * m * (n * n - 1.0) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
         (dyz, dz2) | (dz2, dyz) => {
-            3_f64.sqrt() * m * n * (m * m - n * n) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            m * n * (1.0 - 2.0 * (m * m - n * n)) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) -
-            0.5 * m * n * (1.0 + 2.0 * (m * m - n * n)) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3_f64.sqrt()
+                * m
+                * n
+                * (m * m - n * n)
+                * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + m * n
+                    * (1.0 - 2.0 * (m * m - n * n))
+                    * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                - 0.5
+                    * m
+                    * n
+                    * (1.0 + 2.0 * (m * m - n * n))
+                    * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
         (dyz, dx2y2) | (dx2y2, dyz) => {
-            3_f64.sqrt() * m * n * (l * l - m * m) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) -
-            2.0 * m * n * (l * l - m * m) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            0.5 * m * n * (1.0 + l * l - m * m) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3_f64.sqrt()
+                * m
+                * n
+                * (l * l - m * m)
+                * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                - 2.0 * m * n * (l * l - m * m) * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + 0.5
+                    * m
+                    * n
+                    * (1.0 + l * l - m * m)
+                    * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
-        
+
         (dxz, dxz) => {
-            3.0 * l * l * n * n * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            (l * l + n * n - 4.0 * l * l * n * n) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            (m * m + l * l * n * n) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3.0 * l * l * n * n * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + (l * l + n * n - 4.0 * l * l * n * n)
+                    * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + (m * m + l * l * n * n) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
         (dxz, dz2) | (dz2, dxz) => {
-            3_f64.sqrt() * l * n * (l * l - n * n) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            l * n * (1.0 - 2.0 * (l * l - n * n)) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) -
-            0.5 * l * n * (1.0 + 2.0 * (l * l - n * n)) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3_f64.sqrt()
+                * l
+                * n
+                * (l * l - n * n)
+                * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + l * n
+                    * (1.0 - 2.0 * (l * l - n * n))
+                    * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                - 0.5
+                    * l
+                    * n
+                    * (1.0 + 2.0 * (l * l - n * n))
+                    * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
         (dxz, dx2y2) | (dx2y2, dxz) => {
-            3_f64.sqrt() * l * n * (l * l - m * m) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) -
-            2.0 * l * n * (l * l - m * m) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            0.5 * l * n * (1.0 + l * l - m * m) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3_f64.sqrt()
+                * l
+                * n
+                * (l * l - m * m)
+                * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                - 2.0 * l * n * (l * l - m * m) * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + 0.5
+                    * l
+                    * n
+                    * (1.0 + l * l - m * m)
+                    * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
-        
+
         (dz2, dz2) => {
-            (n * n - 0.5 * (l * l + m * m)).powi(2) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            3.0 * n * n * (l * l + m * m) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            0.75 * (l * l + m * m).powi(2) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            (n * n - 0.5 * (l * l + m * m)).powi(2)
+                * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + 3.0 * n * n * (l * l + m * m) * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + 0.75
+                    * (l * l + m * m).powi(2)
+                    * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
         (dz2, dx2y2) | (dx2y2, dz2) => {
-            3_f64.sqrt() / 2.0 * (n * n - 0.5 * (l * l + m * m)) * (l * l - m * m) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            n * n * (m * m - l * l) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            0.25 * (1.0 + n * n) * (l * l - m * m) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            3_f64.sqrt() / 2.0
+                * (n * n - 0.5 * (l * l + m * m))
+                * (l * l - m * m)
+                * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + n * n * (m * m - l * l) * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + 0.25
+                    * (1.0 + n * n)
+                    * (l * l - m * m)
+                    * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
-        
+
         (dx2y2, dx2y2) => {
-            0.75 * (l * l - m * m).powi(2) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell) +
-            (l * l + m * m - (l * l - m * m).powi(2)) * get_param!(param, v_dd_pi, "Vddπ", pair, shell) +
-            (n * n + 0.25 * (l * l + m * m).powi(2)) * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
+            0.75 * (l * l - m * m).powi(2) * get_param!(param, v_dd_sigma, "Vddσ", pair, shell)
+                + (l * l + m * m - (l * l - m * m).powi(2))
+                    * get_param!(param, v_dd_pi, "Vddπ", pair, shell)
+                + (n * n + 0.25 * (l * l + m * m).powi(2))
+                    * get_param!(param, v_dd_delta, "Vddδ", pair, shell)
         }
 
         // s-f and f-s interactions
@@ -446,52 +539,75 @@ fn sk_element(
             (5.0 * n * n - 3.0) * n / 2.0 * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
         }
         (s, fxz2) | (fxz2, s) => {
-            3_f64.sqrt() / 2.0 * l * (5.0 * n * n - 1.0) * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
+            3_f64.sqrt() / 2.0
+                * l
+                * (5.0 * n * n - 1.0)
+                * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
         }
         (s, fyz2) | (fyz2, s) => {
-            3_f64.sqrt() / 2.0 * m * (5.0 * n * n - 1.0) * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
+            3_f64.sqrt() / 2.0
+                * m
+                * (5.0 * n * n - 1.0)
+                * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
         }
         (s, fzx2y2) | (fzx2y2, s) => {
-            3_f64.sqrt() / 2.0 * n * (l * l - m * m) * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
+            3_f64.sqrt() / 2.0
+                * n
+                * (l * l - m * m)
+                * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
         }
         (s, fxyz) | (fxyz, s) => {
             3_f64.sqrt() * l * m * n * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
         }
         (s, fxx23y2) | (fxx23y2, s) => {
-            3_f64.sqrt() / 2.0 * l * (l * l - 3.0 * m * m) * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
+            3_f64.sqrt() / 2.0
+                * l
+                * (l * l - 3.0 * m * m)
+                * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
         }
         (s, fy3x2y2) | (fy3x2y2, s) => {
-            3_f64.sqrt() / 2.0 * m * (3.0 * l * l - m * m) * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
+            3_f64.sqrt() / 2.0
+                * m
+                * (3.0 * l * l - m * m)
+                * get_param!(param, v_sf_sigma, "Vsfσ", pair, shell)
         }
 
         // p-f and f-p interactions (这里只实现部分作为示例)
         (px, fz3) | (fz3, px) => {
-            l * (5.0 * n * n - 1.0) / 2.0 * get_param!(param, v_pf_sigma, "Vpfσ", pair, shell) +
-            3_f64.sqrt() * l * (1.0 - n * n) * get_param!(param, v_pf_pi, "Vpfπ", pair, shell)
+            l * (5.0 * n * n - 1.0) / 2.0 * get_param!(param, v_pf_sigma, "Vpfσ", pair, shell)
+                + 3_f64.sqrt() * l * (1.0 - n * n) * get_param!(param, v_pf_pi, "Vpfπ", pair, shell)
         }
         // 其他 p-f 和 f-p 相互作用需要类似地实现
 
         // d-f and f-d interactions (这里只实现部分作为示例)
         (dxy, fz3) | (fz3, dxy) => {
-            3_f64.sqrt() * l * m * n * get_param!(param, v_df_sigma, "Vdfσ", pair, shell) +
-            l * m * (2.0 * n * n - l * l - m * m) * get_param!(param, v_df_pi, "Vdfπ", pair, shell) +
-            l * m * n * n * get_param!(param, v_df_delta, "Vdfδ", pair, shell)
+            3_f64.sqrt() * l * m * n * get_param!(param, v_df_sigma, "Vdfσ", pair, shell)
+                + l * m
+                    * (2.0 * n * n - l * l - m * m)
+                    * get_param!(param, v_df_pi, "Vdfπ", pair, shell)
+                + l * m * n * n * get_param!(param, v_df_delta, "Vdfδ", pair, shell)
         }
         // 其他 d-f 和 f-d 相互作用需要类似地实现
 
         // f-f interactions (这里只实现部分作为示例)
         (fz3, fz3) => {
-            (5.0 * n * n - 3.0).powi(2) / 4.0 * get_param!(param, v_ff_sigma, "Vffσ", pair, shell) +
-            15.0 * n * n * (1.0 - n * n) * get_param!(param, v_ff_pi, "Vffπ", pair, shell) +
-            15.0 / 4.0 * (1.0 - n * n).powi(2) * get_param!(param, v_ff_delta, "Vffδ", pair, shell) +
-            5.0 / 4.0 * n * n * (1.0 - n * n) * get_param!(param, v_ff_phi, "Vffφ", pair, shell)
+            (5.0 * n * n - 3.0).powi(2) / 4.0 * get_param!(param, v_ff_sigma, "Vffσ", pair, shell)
+                + 15.0 * n * n * (1.0 - n * n) * get_param!(param, v_ff_pi, "Vffπ", pair, shell)
+                + 15.0 / 4.0
+                    * (1.0 - n * n).powi(2)
+                    * get_param!(param, v_ff_delta, "Vffδ", pair, shell)
+                + 5.0 / 4.0
+                    * n
+                    * n
+                    * (1.0 - n * n)
+                    * get_param!(param, v_ff_phi, "Vffφ", pair, shell)
         }
         // 其他 f-f 相互作用需要类似地实现
 
         // 其他未实现的轨道组合
         _ => return Err(TbError::UnsupportedOrbitalCombination(oi, oj)),
     };
-    
+
     Ok(result)
 }
 
@@ -525,7 +641,7 @@ impl ToTbModel for SlaterKosterModel {
         let norb = self.atoms.iter().map(|a| a.projections.len()).sum();
         let orb_array = Array2::from_shape_vec((norb, self.dim_r), orb_pos_vec)
             .map_err(|e| TbError::Linalg(ndarray_linalg::error::LinalgError::from(e)))?;
-        
+
         let projections: Vec<OrbProj> = self
             .atoms
             .iter()
@@ -551,7 +667,7 @@ impl ToTbModel for SlaterKosterModel {
         let neighbor_R = self.generate_neighbor_vectors();
         let mut orbital_index = 0;
         let mut orbital_offsets = Vec::new();
-        
+
         // 预计算每个原子的轨道偏移量
         for atom in &self.atoms {
             orbital_offsets.push(orbital_index);
@@ -559,27 +675,29 @@ impl ToTbModel for SlaterKosterModel {
         }
 
         // 预计算所有原子位置的实际坐标
-        let real_positions: Vec<Array1<f64>> = self.atoms
+        let real_positions: Vec<Array1<f64>> = self
+            .atoms
             .iter()
             .map(|a| self.lat.dot(&a.position))
             .collect();
 
         for (i, atom_i) in self.atoms.iter().enumerate() {
             let offset_i = orbital_offsets[i];
-            
+
             for (j, atom_j) in self.atoms.iter().enumerate() {
                 let offset_j = orbital_offsets[j];
-                
+
                 for R in &neighbor_R {
                     // 跳过同一原子且R=0的情况
                     if R.iter().all(|&x| x == 0) && i >= j {
                         continue;
                     }
 
-                    let d_vec_frac = atom_j.position.clone() + R.mapv(|x| x as f64) - &atom_i.position;
+                    let d_vec_frac =
+                        atom_j.position.clone() + R.mapv(|x| x as f64) - &atom_i.position;
                     let dvec = self.lat.dot(&d_vec_frac);
                     let dist = dvec.norm_l2();
-                    
+
                     if dist < 1e-8 {
                         continue;
                     }
@@ -599,13 +717,22 @@ impl ToTbModel for SlaterKosterModel {
                                 for (pj_idx, pj) in atom_j.projections.iter().enumerate() {
                                     let io = offset_i + pi_idx;
                                     let jo = offset_j + pj_idx;
-                                    
+
                                     // 跳过对角元（已经在onsite项中处理）
                                     if R.iter().all(|&x| x == 0) && io == jo {
                                         continue;
                                     }
 
-                                    match sk_element(*pi, *pj, l, m, n, p, (atom_i.atom_type, atom_j.atom_type), shell_idx + 1) {
+                                    match sk_element(
+                                        *pi,
+                                        *pj,
+                                        l,
+                                        m,
+                                        n,
+                                        p,
+                                        (atom_i.atom_type, atom_j.atom_type),
+                                        shell_idx + 1,
+                                    ) {
                                         Ok(hop) if hop.abs() > 1e-12 => {
                                             model.add_hop(hop, io, jo, R, SpinDirection::None);
                                         }
@@ -622,7 +749,7 @@ impl ToTbModel for SlaterKosterModel {
                 }
             }
         }
-        
+
         Ok(model)
     }
 }
@@ -638,45 +765,52 @@ impl ToTbModel for SlaterKosterModel {
 ///
 /// # Returns
 /// 包含所有参数的 HashMap，键为 (原子类型1, 原子类型2, 壳层)
-pub fn read_sk_params_from_file(path: &str) -> Result<HashMap<(AtomType, AtomType, usize), SkParams>> {
+pub fn read_sk_params_from_file(
+    path: &str,
+) -> Result<HashMap<(AtomType, AtomType, usize), SkParams>> {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
-    
+
     let file = File::open(path).map_err(|e| TbError::Io(e))?;
     let reader = BufReader::new(file);
     let mut params_map: HashMap<(AtomType, AtomType, usize), SkParams> = HashMap::new();
-    
+
     for (line_num, line) in reader.lines().enumerate() {
         let line = line.map_err(|e| TbError::Io(e))?;
         let line = line.trim();
-        
+
         // 跳过空行和注释行
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        
+
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() != 5 {
-            return Err(TbError::FileParse { file: path.to_string(), message: format!(
-                "第 {} 行格式错误，需要5个字段，得到 {}",
-                line_num + 1,
-                parts.len()
-            )});
+            return Err(TbError::FileParse {
+                file: path.to_string(),
+                message: format!(
+                    "第 {} 行格式错误，需要5个字段，得到 {}",
+                    line_num + 1,
+                    parts.len()
+                ),
+            });
         }
-        
+
         let atom1 = parse_atom_type(parts[0])?;
         let atom2 = parse_atom_type(parts[1])?;
-        let shell = parts[2].parse::<usize>().map_err(|_| TbError::FileParse { file: path.to_string(), message: format!(
-            "第 {} 行壳层编号无效: {}", line_num + 1, parts[2]
-        )})?;
+        let shell = parts[2].parse::<usize>().map_err(|_| TbError::FileParse {
+            file: path.to_string(),
+            message: format!("第 {} 行壳层编号无效: {}", line_num + 1, parts[2]),
+        })?;
         let param_name = parts[3];
-        let param_value = parts[4].parse::<f64>().map_err(|_| TbError::FileParse { file: path.to_string(), message: format!(
-            "第 {} 行参数值无效: {}", line_num + 1, parts[4]
-        )})?;
-        
+        let param_value = parts[4].parse::<f64>().map_err(|_| TbError::FileParse {
+            file: path.to_string(),
+            message: format!("第 {} 行参数值无效: {}", line_num + 1, parts[4]),
+        })?;
+
         let key = (atom1, atom2, shell);
         let sk_params = params_map.entry(key).or_insert_with(SkParams::default);
-        
+
         match param_name {
             "v_ss_sigma" => sk_params.v_ss_sigma = Some(param_value),
             "v_sp_sigma" => sk_params.v_sp_sigma = Some(param_value),
@@ -698,12 +832,15 @@ pub fn read_sk_params_from_file(path: &str) -> Result<HashMap<(AtomType, AtomTyp
             "v_ff_pi" => sk_params.v_ff_pi = Some(param_value),
             "v_ff_delta" => sk_params.v_ff_delta = Some(param_value),
             "v_ff_phi" => sk_params.v_ff_phi = Some(param_value),
-            _ => return Err(TbError::FileParse { file: path.to_string(), message: format!(
-                "第 {} 行未知参数名: {}", line_num + 1, param_name
-            )}),
+            _ => {
+                return Err(TbError::FileParse {
+                    file: path.to_string(),
+                    message: format!("第 {} 行未知参数名: {}", line_num + 1, param_name),
+                });
+            }
         }
     }
-    
+
     Ok(params_map)
 }
 
@@ -824,26 +961,26 @@ fn parse_atom_type(s: &str) -> Result<AtomType> {
 /// * `params` - 要写入的参数 HashMap
 pub fn write_sk_params_to_file(
     path: &str,
-    params: &HashMap<(AtomType, AtomType, usize), SkParams>
+    params: &HashMap<(AtomType, AtomType, usize), SkParams>,
 ) -> Result<()> {
     use std::fs::File;
     use std::io::Write;
-    
+
     let mut file = File::create(path).map_err(|e| TbError::Io(e))?;
-    
+
     writeln!(file, "# Slater-Koster parameters")?;
     writeln!(file, "# Format: atom1 atom2 shell parameter_name value")?;
     writeln!(file, "#")?;
-    
+
     let mut keys: Vec<_> = params.keys().collect();
     keys.sort();
-    
+
     for &(atom1, atom2, shell) in keys {
         if let Some(sk_params) = params.get(&(atom1, atom2, shell)) {
             write_params_for_pair(&mut file, atom1, atom2, shell, sk_params)?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -858,17 +995,19 @@ fn write_params_for_pair(
     macro_rules! write_param {
         ($field:ident, $name:expr) => {
             if let Some(value) = params.$field {
-                writeln!(file, "{} {} {} {} {:.6}", 
-                    atom_to_str(atom1), 
-                    atom_to_str(atom2), 
-                    shell, 
-                    $name, 
+                writeln!(
+                    file,
+                    "{} {} {} {} {:.6}",
+                    atom_to_str(atom1),
+                    atom_to_str(atom2),
+                    shell,
+                    $name,
                     value
                 )?;
             }
         };
     }
-    
+
     write_param!(v_ss_sigma, "v_ss_sigma");
     write_param!(v_sp_sigma, "v_sp_sigma");
     write_param!(v_pp_sigma, "v_pp_sigma");
@@ -889,7 +1028,7 @@ fn write_params_for_pair(
     write_param!(v_ff_pi, "v_ff_pi");
     write_param!(v_ff_delta, "v_ff_delta");
     write_param!(v_ff_phi, "v_ff_phi");
-    
+
     Ok(())
 }
 
@@ -909,14 +1048,11 @@ fn atom_to_str(atom: AtomType) -> &'static str {
 
 /// 使用示例：构建石墨烯模型
 pub fn example_graphene() -> Result<Model> {
-    let lat = array![
-        [1.0, 0.0],
-        [-0.5, 3.0f64.sqrt() / 2.0]
-    ];
+    let lat = array![[1.0, 0.0], [-0.5, 3.0f64.sqrt() / 2.0]];
 
     let pos_a = array![1.0 / 3.0, 2.0 / 3.0];
     let pos_b = array![2.0 / 3.0, 1.0 / 3.0];
-    
+
     let atoms = vec![
         SkAtom {
             position: pos_a,
@@ -927,7 +1063,7 @@ pub fn example_graphene() -> Result<Model> {
             position: pos_b,
             atom_type: AtomType::C,
             projections: vec![OrbProj::pz],
-        }
+        },
     ];
 
     let sk_model = SlaterKosterModel::new(2, lat, atoms, false);
@@ -956,8 +1092,8 @@ pub fn example_graphene() -> Result<Model> {
         SkParams {
             v_ss_sigma: None,
             v_sp_sigma: None,
-            v_pp_sigma: Some(-0.1),  // Small value for second neighbor
-            v_pp_pi: Some(-0.05),     // Small value for second neighbor
+            v_pp_sigma: Some(-0.1), // Small value for second neighbor
+            v_pp_pi: Some(-0.05),   // Small value for second neighbor
             v_sd_sigma: None,
             v_pd_sigma: None,
             v_pd_pi: None,
@@ -974,7 +1110,7 @@ pub fn example_graphene() -> Result<Model> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_graphene_model() {
         match example_graphene() {
@@ -985,12 +1121,15 @@ mod tests {
             Err(e) => {
                 // If it fails due to missing parameters, that's acceptable for testing
                 // as long as it's not some other error
-                assert!(format!("{}", e).contains("Missing Slater-Koster parameter"), 
-                    "Unexpected error: {}", e);
+                assert!(
+                    format!("{}", e).contains("Missing Slater-Koster parameter"),
+                    "Unexpected error: {}",
+                    e
+                );
             }
         }
     }
-    
+
     #[test]
     fn test_invalid_search_range() {
         let sk_model = SlaterKosterModel::default();
@@ -1004,16 +1143,18 @@ mod tests {
             v_ss_sigma: Some(1.0),
             ..Default::default()
         };
-        
+
         let result = sk_element(
-            OrbProj::s, 
-            OrbProj::s, 
-            1.0, 0.0, 0.0, 
-            &params, 
-            (AtomType::C, AtomType::C), 
-            0
+            OrbProj::s,
+            OrbProj::s,
+            1.0,
+            0.0,
+            0.0,
+            &params,
+            (AtomType::C, AtomType::C),
+            0,
         );
-        
+
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 1.0);
     }
@@ -1024,16 +1165,18 @@ mod tests {
             v_sp_sigma: Some(2.0),
             ..Default::default()
         };
-        
+
         let result = sk_element(
-            OrbProj::s, 
-            OrbProj::px, 
-            1.0, 0.0, 0.0, 
-            &params, 
-            (AtomType::C, AtomType::C), 
-            0
+            OrbProj::s,
+            OrbProj::px,
+            1.0,
+            0.0,
+            0.0,
+            &params,
+            (AtomType::C, AtomType::C),
+            0,
         );
-        
+
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 2.0);
     }
@@ -1045,16 +1188,18 @@ mod tests {
             v_pp_pi: Some(1.0),
             ..Default::default()
         };
-        
+
         let result = sk_element(
-            OrbProj::px, 
-            OrbProj::px, 
-            1.0, 0.0, 0.0, 
-            &params, 
-            (AtomType::C, AtomType::C), 
-            0
+            OrbProj::px,
+            OrbProj::px,
+            1.0,
+            0.0,
+            0.0,
+            &params,
+            (AtomType::C, AtomType::C),
+            0,
         );
-        
+
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 3.0);
     }
@@ -1062,39 +1207,43 @@ mod tests {
     #[test]
     fn test_sk_element_missing_parameter() {
         let params = SkParams::default();
-        
+
         let result = sk_element(
-            OrbProj::s, 
-            OrbProj::s, 
-            1.0, 0.0, 0.0, 
-            &params, 
-            (AtomType::C, AtomType::C), 
-            0
+            OrbProj::s,
+            OrbProj::s,
+            1.0,
+            0.0,
+            0.0,
+            &params,
+            (AtomType::C, AtomType::C),
+            0,
         );
-        
+
         assert!(result.is_err());
     }
 
     #[test]
     fn test_sk_element_unsupported_combination() {
         let params = SkParams::default();
-        
+
         let result = sk_element(
-            OrbProj::dxy, 
-            OrbProj::fz3, 
-            1.0, 0.0, 0.0, 
-            &params, 
-            (AtomType::C, AtomType::C), 
-            0
+            OrbProj::dxy,
+            OrbProj::fz3,
+            1.0,
+            0.0,
+            0.0,
+            &params,
+            (AtomType::C, AtomType::C),
+            0,
         );
-        
+
         assert!(result.is_err());
     }
 
     #[test]
     fn test_simple_diatomic_model() {
         let lat = array![[2.0, 0.0], [0.0, 2.0]];
-        
+
         let atoms = vec![
             SkAtom {
                 position: array![0.0, 0.0],
@@ -1105,11 +1254,11 @@ mod tests {
                 position: array![1.0, 0.0],
                 atom_type: AtomType::C,
                 projections: vec![OrbProj::s],
-            }
+            },
         ];
-        
+
         let sk_model = SlaterKosterModel::new(2, lat, atoms, false);
-        
+
         let mut params = HashMap::new();
         params.insert(
             (AtomType::C, AtomType::C, 0),
@@ -1118,7 +1267,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        
+
         let model = sk_model.build_model(1, &params).unwrap();
         assert_eq!(model.norb(), 2);
         assert_eq!(model.nsta(), 2);
@@ -1127,7 +1276,7 @@ mod tests {
     #[test]
     fn test_find_shell_distances() {
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
-        
+
         let atoms = vec![
             SkAtom {
                 position: array![0.0, 0.0],
@@ -1138,12 +1287,12 @@ mod tests {
                 position: array![0.5, 0.5],
                 atom_type: AtomType::C,
                 projections: vec![OrbProj::s],
-            }
+            },
         ];
-        
+
         let sk_model = SlaterKosterModel::new(2, lat, atoms, false);
         let distances = sk_model.find_shell_distances(2).unwrap();
-        
+
         assert!(distances.len() > 0);
         assert!(distances[0] > 0.0);
     }
@@ -1152,14 +1301,14 @@ mod tests {
     fn test_generate_neighbor_vectors() {
         let sk_model = SlaterKosterModel::default();
         let vectors = sk_model.generate_neighbor_vectors();
-        
+
         assert!(vectors.len() > 0);
     }
 
     #[test]
     fn test_sk_params_default() {
         let params = SkParams::default();
-        
+
         assert!(params.v_ss_sigma.is_none());
         assert!(params.v_sp_sigma.is_none());
         assert!(params.v_pp_sigma.is_none());
@@ -1173,7 +1322,7 @@ mod tests {
             atom_type: AtomType::C,
             projections: vec![OrbProj::s, OrbProj::px, OrbProj::py, OrbProj::pz],
         };
-        
+
         assert_eq!(atom.position.len(), 3);
         assert_eq!(atom.projections.len(), 4);
         assert_eq!(atom.atom_type, AtomType::C);

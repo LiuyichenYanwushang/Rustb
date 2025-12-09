@@ -1,15 +1,14 @@
 use crate::atom_struct::{Atom, AtomType, OrbProj};
-use crate::error::{TbError, Result};
-use crate::{Gauge, Model, SpinDirection};
+use crate::basis::{Dimension, find_R};
+use crate::error::{Result, TbError};
 use crate::math::comm;
-use crate::basis::{find_R,Dimension};
+use crate::{Gauge, Model, SpinDirection};
 use ndarray::prelude::*;
 use ndarray_linalg::conjugate;
 use ndarray_linalg::*;
 use num_complex::{Complex, Complex64};
 
-
-impl Model{
+impl Model {
     #[allow(non_snake_case)]
     pub fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Model> {
         //! 这个函数是从 wannier90 中读取 TB 文件的
@@ -52,10 +51,20 @@ impl Model{
         }
 
         // 获取轨道数和R点数
-        let nsta = reads[1].trim().parse::<usize>()
-            .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse nsta: {}", e) })?;
-        let n_R = reads[2].trim().parse::<usize>()
-            .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse n_R: {}", e) })?;
+        let nsta = reads[1]
+            .trim()
+            .parse::<usize>()
+            .map_err(|e| TbError::FileParse {
+                file: hr_path.clone(),
+                message: format!("Failed to parse nsta: {}", e),
+            })?;
+        let n_R = reads[2]
+            .trim()
+            .parse::<usize>()
+            .map_err(|e| TbError::FileParse {
+                file: hr_path.clone(),
+                message: format!("Failed to parse n_R: {}", e),
+            })?;
         let mut weights: Vec<usize> = Vec::new();
         let mut n_line: usize = 0;
 
@@ -66,8 +75,13 @@ impl Model{
                 break;
             }
             let string = reads[i].trim().split_whitespace();
-            let string: Vec<_> = string.map(|x| x.parse::<usize>()
-                .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse weight: {}", e) }))
+            let string: Vec<_> = string
+                .map(|x| {
+                    x.parse::<usize>().map_err(|e| TbError::FileParse {
+                        file: hr_path.clone(),
+                        message: format!("Failed to parse weight: {}", e),
+                    })
+                })
                 .collect::<Result<Vec<_>>>()?;
             weights.extend(string.clone());
         }
@@ -79,12 +93,39 @@ impl Model{
         // 遍历每个R点并填充哈密顿量
         for i in 0..n_R {
             let mut string = reads[i * nsta * nsta + n_line].trim().split_whitespace();
-            let a = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
-                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-            let b = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
-                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-            let c = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
-                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+            let a = string
+                .next()
+                .ok_or_else(|| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: "Missing R vector component".to_string(),
+                })?
+                .parse::<isize>()
+                .map_err(|e| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: format!("Failed to parse R vector: {}", e),
+                })?;
+            let b = string
+                .next()
+                .ok_or_else(|| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: "Missing R vector component".to_string(),
+                })?
+                .parse::<isize>()
+                .map_err(|e| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: format!("Failed to parse R vector: {}", e),
+                })?;
+            let c = string
+                .next()
+                .ok_or_else(|| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: "Missing R vector component".to_string(),
+                })?
+                .parse::<isize>()
+                .map_err(|e| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: format!("Failed to parse R vector: {}", e),
+                })?;
 
             if a == 0 && b == 0 && c == 0 {
                 for ind_i in 0..nsta {
@@ -92,10 +133,31 @@ impl Model{
                         let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
                             .trim()
                             .split_whitespace();
-                        let re = string.nth(5).ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian real part".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian real part: {}", e) })?;
-                        let im = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian imaginary part".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian imaginary part: {}", e) })?;
+                        let re = string
+                            .nth(5)
+                            .ok_or_else(|| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: "Missing Hamiltonian real part".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: format!("Failed to parse Hamiltonian real part: {}", e),
+                            })?;
+                        let im = string
+                            .next()
+                            .ok_or_else(|| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: "Missing Hamiltonian imaginary part".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: format!(
+                                    "Failed to parse Hamiltonian imaginary part: {}",
+                                    e
+                                ),
+                            })?;
                         ham[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
                     }
                 }
@@ -106,10 +168,31 @@ impl Model{
                         let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
                             .trim()
                             .split_whitespace();
-                        let re = string.nth(5).ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian real part".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian real part: {}", e) })?;
-                        let im = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian imaginary part".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian imaginary part: {}", e) })?;
+                        let re = string
+                            .nth(5)
+                            .ok_or_else(|| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: "Missing Hamiltonian real part".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: format!("Failed to parse Hamiltonian real part: {}", e),
+                            })?;
+                        let im = string
+                            .next()
+                            .ok_or_else(|| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: "Missing Hamiltonian imaginary part".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: format!(
+                                    "Failed to parse Hamiltonian imaginary part: {}",
+                                    e
+                                ),
+                            })?;
                         matrix[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
                         // wannier90 里面是按照纵向排列的矩阵
                     }
@@ -158,24 +241,78 @@ impl Model{
             if a == None {
                 break;
             } else {
-                let a = a.ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
+                let a = a.ok_or_else(|| TbError::FileParse {
+                    file: win_path.clone(),
+                    message: "Unexpected end of file".to_string(),
+                })?;
                 if a.contains("begin unit_cell_cart") {
-                    let mut lat1 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace(); //将数字放到
-                    let mut lat2 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace();
-                    let mut lat3 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace();
+                    let mut lat1 = read_iter
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Missing lattice vector line".to_string(),
+                        })?
+                        .trim()
+                        .split_whitespace(); //将数字放到
+                    let mut lat2 = read_iter
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Missing lattice vector line".to_string(),
+                        })?
+                        .trim()
+                        .split_whitespace();
+                    let mut lat3 = read_iter
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Missing lattice vector line".to_string(),
+                        })?
+                        .trim()
+                        .split_whitespace();
                     for i in 0..3 {
-                        lat[[0, i]] = lat1.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
-                        lat[[1, i]] = lat2.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
-                        lat[[2, i]] = lat3.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
+                        lat[[0, i]] = lat1
+                            .next()
+                            .ok_or_else(|| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: "Missing lattice vector component".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse lattice vector: {}", e),
+                            })?;
+                        lat[[1, i]] = lat2
+                            .next()
+                            .ok_or_else(|| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: "Missing lattice vector component".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse lattice vector: {}", e),
+                            })?;
+                        lat[[2, i]] = lat3
+                            .next()
+                            .ok_or_else(|| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: "Missing lattice vector component".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse lattice vector: {}", e),
+                            })?;
                     }
                 } else if a.contains("spinors") && (a.contains("T") || a.contains("t")) {
                     spin = true;
                 } else if a.contains("begin projections") {
                     loop {
-                        let string = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
+                        let string = read_iter.next().ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Unexpected end of file".to_string(),
+                        })?;
                         if string.contains("end projections") {
                             break;
                         } else {
@@ -253,9 +390,12 @@ impl Model{
                                     "dyz" => (1, vec![OrbProj::dyz]),
                                     "dz2" => (1, vec![OrbProj::dz2]),
                                     "dx2-y2" => (1, vec![OrbProj::dx2y2]),
-                                    &_ => return Err(TbError::InvalidOrbitalProjection(
-                                        format!("Unrecognized projection '{}' in seedname.win", item)
-                                    )),
+                                    &_ => {
+                                        return Err(TbError::InvalidOrbitalProjection(format!(
+                                            "Unrecognized projection '{}' in seedname.win",
+                                            item
+                                        )));
+                                    }
                                 };
                                 atom_orb_number += aa;
                                 proj_orb.extend(use_proj_orb);
@@ -268,18 +408,27 @@ impl Model{
                     }
                 } else if a.contains("begin atoms_cart") {
                     loop {
-                        let string = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
+                        let string = read_iter.next().ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Unexpected end of file".to_string(),
+                        })?;
                         if string.contains("end atoms_cart") {
                             break;
                         } else {
                             let prj: Vec<&str> = string.split_whitespace().collect();
                             atom_name.push(prj[0]);
-                            let a1 = prj[1].parse::<f64>()
-                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
-                            let a2 = prj[2].parse::<f64>()
-                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
-                            let a3 = prj[3].parse::<f64>()
-                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                            let a1 = prj[1].parse::<f64>().map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse atom position: {}", e),
+                            })?;
+                            let a2 = prj[2].parse::<f64>().map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse atom position: {}", e),
+                            })?;
+                            let a3 = prj[3].parse::<f64>().map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse atom position: {}", e),
+                            })?;
                             let a = array![a1, a2, a3];
                             atom_pos.push_row(a.view()); //这里我们不用win 里面的, 因为这个和orb没法对应, 如果没有xyz文件才考虑用这个
                         }
@@ -297,7 +446,10 @@ impl Model{
             let reader = BufReader::new(hr);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
+                let line = line.map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to read line: {}", e),
+                })?;
                 reads.push(line.clone());
             }
             //let nsta=reads[0].trim().parse::<usize>().unwrap()-natom;
@@ -305,33 +457,49 @@ impl Model{
             let mut orb = Array2::<f64>::zeros((norb, 3));
             for i in 0..norb {
                 let a: Vec<&str> = reads[i + 2].trim().split_whitespace().collect();
-                orb[[i, 0]] = a[1].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?;
-                orb[[i, 1]] = a[2].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?;
-                orb[[i, 2]] = a[3].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?
+                orb[[i, 0]] = a[1].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse orbital position: {}", e),
+                })?;
+                orb[[i, 1]] = a[2].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse orbital position: {}", e),
+                })?;
+                orb[[i, 2]] = a[3].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse orbital position: {}", e),
+                })?
             }
             orb = orb.dot(&lat.inv().map_err(TbError::Linalg)?);
             let mut new_atom_pos = Array2::<f64>::zeros((reads.len() - 2 - nsta, 3));
             let mut new_atom_name = Vec::new();
             for i in 0..reads.len() - 2 - nsta {
                 let a: Vec<&str> = reads[i + 2 + nsta].trim().split_whitespace().collect();
-                new_atom_pos[[i, 0]] = a[1].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
-                new_atom_pos[[i, 1]] = a[2].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
-                new_atom_pos[[i, 2]] = a[3].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                new_atom_pos[[i, 0]] = a[1].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse atom position: {}", e),
+                })?;
+                new_atom_pos[[i, 1]] = a[2].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse atom position: {}", e),
+                })?;
+                new_atom_pos[[i, 2]] = a[3].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse atom position: {}", e),
+                })?;
                 new_atom_name.push(AtomType::from_str(a[0]));
             }
             //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
 
             for (i, name) in new_atom_name.iter().enumerate() {
                 for (j, j_name) in proj_name.iter().enumerate() {
-                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok() {
-                        let use_pos = new_atom_pos.row(i).dot(&lat.inv().map_err(TbError::Linalg)?);
-                        let use_atom = Atom::new(use_pos, proj_list[j], name.as_ref().unwrap().clone());
+                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok()
+                    {
+                        let use_pos = new_atom_pos
+                            .row(i)
+                            .dot(&lat.inv().map_err(TbError::Linalg)?);
+                        let use_atom =
+                            Atom::new(use_pos, proj_list[j], name.as_ref().unwrap().clone());
                         atom.push(use_atom);
                         orb_proj.extend(atom_proj[j].clone());
                     }
@@ -344,8 +512,13 @@ impl Model{
             for (i, name) in atom_name.iter().enumerate() {
                 for (j, j_name) in proj_name.iter().enumerate() {
                     let name = AtomType::from_str(name);
-                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok() {
-                        let use_atom = Atom::new(atom_pos.row(i).to_owned(), proj_list[j], name.unwrap().clone());
+                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok()
+                    {
+                        let use_atom = Atom::new(
+                            atom_pos.row(i).to_owned(),
+                            proj_list[j],
+                            name.unwrap().clone(),
+                        );
                         orb_proj.extend(atom_proj[j].clone());
                         atom.push(use_atom.clone());
                         for _ in 0..proj_list[j] {
@@ -368,33 +541,91 @@ impl Model{
             let reader = BufReader::new(hr);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
+                let line = line.map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to read line: {}", e),
+                })?;
                 reads.push(line.clone());
             }
-            let n_R = reads[2].trim().parse::<usize>()
-                .map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse n_R: {}", e) })?;
+            let n_R = reads[2]
+                .trim()
+                .parse::<usize>()
+                .map_err(|e| TbError::FileParse {
+                    file: r_path.clone(),
+                    message: format!("Failed to parse n_R: {}", e),
+                })?;
             let mut rmatrix = Array4::<Complex<f64>>::zeros((hamR.nrows(), 3, nsta, nsta));
             for i in 0..n_R {
                 let mut string = reads[i * nsta * nsta + 3].trim().split_whitespace();
-                let a = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
-                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                let b = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
-                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                let c = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
-                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                let a = string
+                    .next()
+                    .ok_or_else(|| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: "Missing R vector component".to_string(),
+                    })?
+                    .parse::<isize>()
+                    .map_err(|e| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: format!("Failed to parse R vector: {}", e),
+                    })?;
+                let b = string
+                    .next()
+                    .ok_or_else(|| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: "Missing R vector component".to_string(),
+                    })?
+                    .parse::<isize>()
+                    .map_err(|e| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: format!("Failed to parse R vector: {}", e),
+                    })?;
+                let c = string
+                    .next()
+                    .ok_or_else(|| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: "Missing R vector component".to_string(),
+                    })?
+                    .parse::<isize>()
+                    .map_err(|e| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: format!("Failed to parse R vector: {}", e),
+                    })?;
                 let R0 = array![a, b, c];
-                let index = find_R(&hamR, &R0)
-                    .ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R0) })?;
+                let index = find_R(&hamR, &R0).ok_or_else(|| TbError::FileParse {
+                    file: r_path.clone(),
+                    message: format!("R vector {:?} not found in Hamiltonian", R0),
+                })?;
                 for ind_i in 0..nsta {
                     for ind_j in 0..nsta {
                         let string = &reads[i * nsta * nsta + ind_i * nsta + ind_j + 3];
                         let mut string = string.trim().split_whitespace();
                         string.nth(4);
                         for r in 0..3 {
-                            let re = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R matrix real part".to_string() })?
-                                .parse::<f64>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R matrix real part: {}", e) })?;
-                            let im = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R matrix imaginary part".to_string() })?
-                                .parse::<f64>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R matrix imaginary part: {}", e) })?;
+                            let re = string
+                                .next()
+                                .ok_or_else(|| TbError::FileParse {
+                                    file: r_path.clone(),
+                                    message: "Missing R matrix real part".to_string(),
+                                })?
+                                .parse::<f64>()
+                                .map_err(|e| TbError::FileParse {
+                                    file: r_path.clone(),
+                                    message: format!("Failed to parse R matrix real part: {}", e),
+                                })?;
+                            let im = string
+                                .next()
+                                .ok_or_else(|| TbError::FileParse {
+                                    file: r_path.clone(),
+                                    message: "Missing R matrix imaginary part".to_string(),
+                                })?
+                                .parse::<f64>()
+                                .map_err(|e| TbError::FileParse {
+                                    file: r_path.clone(),
+                                    message: format!(
+                                        "Failed to parse R matrix imaginary part: {}",
+                                        e
+                                    ),
+                                })?;
                             rmatrix[[index, r, ind_j, ind_i]] =
                                 Complex::new(re, im) / (weights[i] as f64);
                         }
@@ -426,7 +657,10 @@ impl Model{
             let reader = BufReader::new(ws);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
+                let line = line.map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to read line: {}", e),
+                })?;
                 reads.push(line.clone());
             }
             //开始针对ham, hamR 以及 rmatrix 进行修改
@@ -440,28 +674,83 @@ impl Model{
                     i += 1;
                     let line = &reads[i];
                     let mut string = line.trim().split_whitespace();
-                    let a = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let b = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let c = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let int_i = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
-                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
-                    let int_j = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
-                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
+                    let a = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let b = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let c = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let int_i = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing orbital index".to_string(),
+                        })?
+                        .parse::<usize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse orbital index: {}", e),
+                        })?
+                        - 1;
+                    let int_j = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing orbital index".to_string(),
+                        })?
+                        .parse::<usize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse orbital index: {}", e),
+                        })?
+                        - 1;
                     //接下来判断是否在我们的hamR 中
                     i += 1;
                     let mut weight = reads[i]
                         .trim()
                         .split_whitespace()
                         .next()
-                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing weight value".to_string() })?
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing weight value".to_string(),
+                        })?
                         .parse::<usize>()
-                        .map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse weight: {}", e) })?;
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse weight: {}", e),
+                        })?;
                     let R = array![a, b, c];
-                    let index = find_R(&hamR, &R)
-                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R) })?;
+                    let index = find_R(&hamR, &R).ok_or_else(|| TbError::FileParse {
+                        file: ws_path.clone(),
+                        message: format!("R vector {:?} not found in Hamiltonian", R),
+                    })?;
                     let hop = ham[[index, int_i, int_j]] / (weight as f64);
                     let hop_x = rmatrix[[index, 0, int_i, int_j]] / (weight as f64);
                     let hop_y = rmatrix[[index, 1, int_i, int_j]] / (weight as f64);
@@ -475,7 +764,7 @@ impl Model{
                         let b = string.next().unwrap().parse::<isize>().unwrap();
                         let c = string.next().unwrap().parse::<isize>().unwrap();
                         let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                        if let Some(index0)= find_R(&new_hamR, &new_R) {
+                        if let Some(index0) = find_R(&new_hamR, &new_R) {
                             new_ham[[index0, int_i, int_j]] += hop;
                             new_rmatrix[[index0, 0, int_i, int_j]] += hop_x;
                             new_rmatrix[[index0, 1, int_i, int_j]] += hop_y;
@@ -504,28 +793,83 @@ impl Model{
                     i += 1;
                     let line = &reads[i];
                     let mut string = line.trim().split_whitespace();
-                    let a = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let b = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let c = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let int_i = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
-                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
-                    let int_j = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
-                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
+                    let a = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let b = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let c = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let int_i = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing orbital index".to_string(),
+                        })?
+                        .parse::<usize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse orbital index: {}", e),
+                        })?
+                        - 1;
+                    let int_j = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing orbital index".to_string(),
+                        })?
+                        .parse::<usize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse orbital index: {}", e),
+                        })?
+                        - 1;
                     //接下来判断是否在我们的hamR 中
                     i += 1;
                     let mut weight = reads[i]
                         .trim()
                         .split_whitespace()
                         .next()
-                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing weight value".to_string() })?
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing weight value".to_string(),
+                        })?
                         .parse::<usize>()
-                        .map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse weight: {}", e) })?;
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse weight: {}", e),
+                        })?;
                     let R = array![a, b, c];
-                    let index = find_R(&hamR, &R)
-                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R) })?;
+                    let index = find_R(&hamR, &R).ok_or_else(|| TbError::FileParse {
+                        file: ws_path.clone(),
+                        message: format!("R vector {:?} not found in Hamiltonian", R),
+                    })?;
                     let hop = ham[[index, int_i, int_j]] / (weight as f64);
 
                     for i0 in 0..weight {
@@ -536,7 +880,7 @@ impl Model{
                         let b = string.next().unwrap().parse::<isize>().unwrap();
                         let c = string.next().unwrap().parse::<isize>().unwrap();
                         let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                        if let Some(index0)=find_R(&new_hamR, &new_R) {
+                        if let Some(index0) = find_R(&new_hamR, &new_R) {
                             new_ham[[index0, int_i, int_j]] += hop;
                         } else {
                             let mut use_ham = Array2::zeros((nsta, nsta));
@@ -556,7 +900,7 @@ impl Model{
             for r in 0..hamR.nrows() - 1 {
                 let R = hamR.row(r);
                 let R_inv = -&R;
-                if let Some(index)=find_R(&hamR, &R_inv) {
+                if let Some(index) = find_R(&hamR, &R_inv) {
                     for i in 0..nsta {
                         for j in 0..nsta {
                             rmatrix[[r, 0, i, j]] =
@@ -632,10 +976,20 @@ impl Model{
         }
 
         // 获取轨道数和R点数
-        let nsta = reads[1].trim().parse::<usize>()
-            .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse nsta: {}", e) })?;
-        let n_R = reads[2].trim().parse::<usize>()
-            .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse n_R: {}", e) })?;
+        let nsta = reads[1]
+            .trim()
+            .parse::<usize>()
+            .map_err(|e| TbError::FileParse {
+                file: hr_path.clone(),
+                message: format!("Failed to parse nsta: {}", e),
+            })?;
+        let n_R = reads[2]
+            .trim()
+            .parse::<usize>()
+            .map_err(|e| TbError::FileParse {
+                file: hr_path.clone(),
+                message: format!("Failed to parse n_R: {}", e),
+            })?;
         let mut weights: Vec<usize> = Vec::new();
         let mut n_line: usize = 0;
 
@@ -646,8 +1000,13 @@ impl Model{
                 break;
             }
             let string = reads[i].trim().split_whitespace();
-            let string: Vec<_> = string.map(|x| x.parse::<usize>()
-                .map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse weight: {}", e) }))
+            let string: Vec<_> = string
+                .map(|x| {
+                    x.parse::<usize>().map_err(|e| TbError::FileParse {
+                        file: hr_path.clone(),
+                        message: format!("Failed to parse weight: {}", e),
+                    })
+                })
                 .collect::<Result<Vec<_>>>()?;
             weights.extend(string.clone());
         }
@@ -659,12 +1018,39 @@ impl Model{
         // 遍历每个R点并填充哈密顿量
         for i in 0..n_R {
             let mut string = reads[i * nsta * nsta + n_line].trim().split_whitespace();
-            let a = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
-                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-            let b = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
-                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-            let c = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing R vector component".to_string() })?
-                .parse::<isize>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+            let a = string
+                .next()
+                .ok_or_else(|| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: "Missing R vector component".to_string(),
+                })?
+                .parse::<isize>()
+                .map_err(|e| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: format!("Failed to parse R vector: {}", e),
+                })?;
+            let b = string
+                .next()
+                .ok_or_else(|| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: "Missing R vector component".to_string(),
+                })?
+                .parse::<isize>()
+                .map_err(|e| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: format!("Failed to parse R vector: {}", e),
+                })?;
+            let c = string
+                .next()
+                .ok_or_else(|| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: "Missing R vector component".to_string(),
+                })?
+                .parse::<isize>()
+                .map_err(|e| TbError::FileParse {
+                    file: hr_path.clone(),
+                    message: format!("Failed to parse R vector: {}", e),
+                })?;
 
             if a == 0 && b == 0 && c == 0 {
                 for ind_i in 0..nsta {
@@ -672,10 +1058,31 @@ impl Model{
                         let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
                             .trim()
                             .split_whitespace();
-                        let re = string.nth(5).ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian real part".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian real part: {}", e) })?;
-                        let im = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian imaginary part".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian imaginary part: {}", e) })?;
+                        let re = string
+                            .nth(5)
+                            .ok_or_else(|| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: "Missing Hamiltonian real part".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: format!("Failed to parse Hamiltonian real part: {}", e),
+                            })?;
+                        let im = string
+                            .next()
+                            .ok_or_else(|| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: "Missing Hamiltonian imaginary part".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: format!(
+                                    "Failed to parse Hamiltonian imaginary part: {}",
+                                    e
+                                ),
+                            })?;
                         ham[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
                     }
                 }
@@ -686,10 +1093,31 @@ impl Model{
                         let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
                             .trim()
                             .split_whitespace();
-                        let re = string.nth(5).ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian real part".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian real part: {}", e) })?;
-                        let im = string.next().ok_or_else(|| TbError::FileParse { file: hr_path.clone(), message: "Missing Hamiltonian imaginary part".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: hr_path.clone(), message: format!("Failed to parse Hamiltonian imaginary part: {}", e) })?;
+                        let re = string
+                            .nth(5)
+                            .ok_or_else(|| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: "Missing Hamiltonian real part".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: format!("Failed to parse Hamiltonian real part: {}", e),
+                            })?;
+                        let im = string
+                            .next()
+                            .ok_or_else(|| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: "Missing Hamiltonian imaginary part".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: hr_path.clone(),
+                                message: format!(
+                                    "Failed to parse Hamiltonian imaginary part: {}",
+                                    e
+                                ),
+                            })?;
                         matrix[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
                         // wannier90 里面是按照纵向排列的矩阵
                     }
@@ -738,24 +1166,78 @@ impl Model{
             if a == None {
                 break;
             } else {
-                let a = a.ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
+                let a = a.ok_or_else(|| TbError::FileParse {
+                    file: win_path.clone(),
+                    message: "Unexpected end of file".to_string(),
+                })?;
                 if a.contains("begin unit_cell_cart") {
-                    let mut lat1 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace(); //将数字放到
-                    let mut lat2 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace();
-                    let mut lat3 = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector line".to_string() })?.trim().split_whitespace();
+                    let mut lat1 = read_iter
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Missing lattice vector line".to_string(),
+                        })?
+                        .trim()
+                        .split_whitespace(); //将数字放到
+                    let mut lat2 = read_iter
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Missing lattice vector line".to_string(),
+                        })?
+                        .trim()
+                        .split_whitespace();
+                    let mut lat3 = read_iter
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Missing lattice vector line".to_string(),
+                        })?
+                        .trim()
+                        .split_whitespace();
                     for i in 0..3 {
-                        lat[[0, i]] = lat1.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
-                        lat[[1, i]] = lat2.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
-                        lat[[2, i]] = lat3.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Missing lattice vector component".to_string() })?
-                            .parse::<f64>().map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse lattice vector: {}", e) })?;
+                        lat[[0, i]] = lat1
+                            .next()
+                            .ok_or_else(|| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: "Missing lattice vector component".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse lattice vector: {}", e),
+                            })?;
+                        lat[[1, i]] = lat2
+                            .next()
+                            .ok_or_else(|| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: "Missing lattice vector component".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse lattice vector: {}", e),
+                            })?;
+                        lat[[2, i]] = lat3
+                            .next()
+                            .ok_or_else(|| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: "Missing lattice vector component".to_string(),
+                            })?
+                            .parse::<f64>()
+                            .map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse lattice vector: {}", e),
+                            })?;
                     }
                 } else if a.contains("spinors") && (a.contains("T") || a.contains("t")) {
                     spin = true;
                 } else if a.contains("begin projections") {
                     loop {
-                        let string = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
+                        let string = read_iter.next().ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Unexpected end of file".to_string(),
+                        })?;
                         if string.contains("end projections") {
                             break;
                         } else {
@@ -833,9 +1315,12 @@ impl Model{
                                     "dyz" => (1, vec![OrbProj::dyz]),
                                     "dz2" => (1, vec![OrbProj::dz2]),
                                     "dx2-y2" => (1, vec![OrbProj::dx2y2]),
-                                    &_ => return Err(TbError::InvalidOrbitalProjection(
-                                        format!("Unrecognized projection '{}' in seedname.win", item)
-                                    )),
+                                    &_ => {
+                                        return Err(TbError::InvalidOrbitalProjection(format!(
+                                            "Unrecognized projection '{}' in seedname.win",
+                                            item
+                                        )));
+                                    }
                                 };
                                 atom_orb_number += aa;
                                 proj_orb.extend(use_proj_orb);
@@ -848,18 +1333,27 @@ impl Model{
                     }
                 } else if a.contains("begin atoms_cart") {
                     loop {
-                        let string = read_iter.next().ok_or_else(|| TbError::FileParse { file: win_path.clone(), message: "Unexpected end of file".to_string() })?;
+                        let string = read_iter.next().ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Unexpected end of file".to_string(),
+                        })?;
                         if string.contains("end atoms_cart") {
                             break;
                         } else {
                             let prj: Vec<&str> = string.split_whitespace().collect();
                             atom_name.push(prj[0]);
-                            let a1 = prj[1].parse::<f64>()
-                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
-                            let a2 = prj[2].parse::<f64>()
-                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
-                            let a3 = prj[3].parse::<f64>()
-                                .map_err(|e| TbError::FileParse { file: win_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                            let a1 = prj[1].parse::<f64>().map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse atom position: {}", e),
+                            })?;
+                            let a2 = prj[2].parse::<f64>().map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse atom position: {}", e),
+                            })?;
+                            let a3 = prj[3].parse::<f64>().map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse atom position: {}", e),
+                            })?;
                             let a = array![a1, a2, a3];
                             atom_pos.push_row(a.view()); //这里我们不用win 里面的, 因为这个和orb没法对应, 如果没有xyz文件才考虑用这个
                         }
@@ -877,7 +1371,10 @@ impl Model{
             let reader = BufReader::new(hr);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
+                let line = line.map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to read line: {}", e),
+                })?;
                 reads.push(line.clone());
             }
             //let nsta=reads[0].trim().parse::<usize>().unwrap()-natom;
@@ -885,33 +1382,49 @@ impl Model{
             let mut orb = Array2::<f64>::zeros((norb, 3));
             for i in 0..norb {
                 let a: Vec<&str> = reads[i + 2].trim().split_whitespace().collect();
-                orb[[i, 0]] = a[1].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?;
-                orb[[i, 1]] = a[2].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?;
-                orb[[i, 2]] = a[3].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse orbital position: {}", e) })?
+                orb[[i, 0]] = a[1].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse orbital position: {}", e),
+                })?;
+                orb[[i, 1]] = a[2].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse orbital position: {}", e),
+                })?;
+                orb[[i, 2]] = a[3].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse orbital position: {}", e),
+                })?
             }
             orb = orb.dot(&lat.inv().map_err(TbError::Linalg)?);
             let mut new_atom_pos = Array2::<f64>::zeros((reads.len() - 2 - nsta, 3));
             let mut new_atom_name = Vec::new();
             for i in 0..reads.len() - 2 - nsta {
                 let a: Vec<&str> = reads[i + 2 + nsta].trim().split_whitespace().collect();
-                new_atom_pos[[i, 0]] = a[1].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
-                new_atom_pos[[i, 1]] = a[2].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
-                new_atom_pos[[i, 2]] = a[3].parse::<f64>()
-                    .map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to parse atom position: {}", e) })?;
+                new_atom_pos[[i, 0]] = a[1].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse atom position: {}", e),
+                })?;
+                new_atom_pos[[i, 1]] = a[2].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse atom position: {}", e),
+                })?;
+                new_atom_pos[[i, 2]] = a[3].parse::<f64>().map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to parse atom position: {}", e),
+                })?;
                 new_atom_name.push(AtomType::from_str(a[0]));
             }
             //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
 
             for (i, name) in new_atom_name.iter().enumerate() {
                 for (j, j_name) in proj_name.iter().enumerate() {
-                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok() {
-                        let use_pos = new_atom_pos.row(i).dot(&lat.inv().map_err(TbError::Linalg)?);
-                        let use_atom = Atom::new(use_pos, proj_list[j], name.as_ref().unwrap().clone());
+                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok()
+                    {
+                        let use_pos = new_atom_pos
+                            .row(i)
+                            .dot(&lat.inv().map_err(TbError::Linalg)?);
+                        let use_atom =
+                            Atom::new(use_pos, proj_list[j], name.as_ref().unwrap().clone());
                         atom.push(use_atom);
                         orb_proj.extend(atom_proj[j].clone());
                     }
@@ -924,8 +1437,13 @@ impl Model{
             for (i, name) in atom_name.iter().enumerate() {
                 for (j, j_name) in proj_name.iter().enumerate() {
                     let name = AtomType::from_str(name);
-                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok() {
-                        let use_atom = Atom::new(atom_pos.row(i).to_owned(), proj_list[j], name.unwrap().clone());
+                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok()
+                    {
+                        let use_atom = Atom::new(
+                            atom_pos.row(i).to_owned(),
+                            proj_list[j],
+                            name.unwrap().clone(),
+                        );
                         orb_proj.extend(atom_proj[j].clone());
                         atom.push(use_atom.clone());
                         for _ in 0..proj_list[j] {
@@ -948,33 +1466,91 @@ impl Model{
             let reader = BufReader::new(hr);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
+                let line = line.map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to read line: {}", e),
+                })?;
                 reads.push(line.clone());
             }
-            let n_R = reads[2].trim().parse::<usize>()
-                .map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse n_R: {}", e) })?;
+            let n_R = reads[2]
+                .trim()
+                .parse::<usize>()
+                .map_err(|e| TbError::FileParse {
+                    file: r_path.clone(),
+                    message: format!("Failed to parse n_R: {}", e),
+                })?;
             let mut rmatrix = Array4::<Complex<f64>>::zeros((hamR.nrows(), 3, nsta, nsta));
             for i in 0..n_R {
                 let mut string = reads[i * nsta * nsta + 3].trim().split_whitespace();
-                let a = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
-                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                let b = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
-                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                let c = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R vector component".to_string() })?
-                    .parse::<isize>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
+                let a = string
+                    .next()
+                    .ok_or_else(|| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: "Missing R vector component".to_string(),
+                    })?
+                    .parse::<isize>()
+                    .map_err(|e| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: format!("Failed to parse R vector: {}", e),
+                    })?;
+                let b = string
+                    .next()
+                    .ok_or_else(|| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: "Missing R vector component".to_string(),
+                    })?
+                    .parse::<isize>()
+                    .map_err(|e| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: format!("Failed to parse R vector: {}", e),
+                    })?;
+                let c = string
+                    .next()
+                    .ok_or_else(|| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: "Missing R vector component".to_string(),
+                    })?
+                    .parse::<isize>()
+                    .map_err(|e| TbError::FileParse {
+                        file: r_path.clone(),
+                        message: format!("Failed to parse R vector: {}", e),
+                    })?;
                 let R0 = array![a, b, c];
-                let index = find_R(&hamR, &R0)
-                    .ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R0) })?;
+                let index = find_R(&hamR, &R0).ok_or_else(|| TbError::FileParse {
+                    file: r_path.clone(),
+                    message: format!("R vector {:?} not found in Hamiltonian", R0),
+                })?;
                 for ind_i in 0..nsta {
                     for ind_j in 0..nsta {
                         let string = &reads[i * nsta * nsta + ind_i * nsta + ind_j + 3];
                         let mut string = string.trim().split_whitespace();
                         string.nth(4);
                         for r in 0..3 {
-                            let re = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R matrix real part".to_string() })?
-                                .parse::<f64>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R matrix real part: {}", e) })?;
-                            let im = string.next().ok_or_else(|| TbError::FileParse { file: r_path.clone(), message: "Missing R matrix imaginary part".to_string() })?
-                                .parse::<f64>().map_err(|e| TbError::FileParse { file: r_path.clone(), message: format!("Failed to parse R matrix imaginary part: {}", e) })?;
+                            let re = string
+                                .next()
+                                .ok_or_else(|| TbError::FileParse {
+                                    file: r_path.clone(),
+                                    message: "Missing R matrix real part".to_string(),
+                                })?
+                                .parse::<f64>()
+                                .map_err(|e| TbError::FileParse {
+                                    file: r_path.clone(),
+                                    message: format!("Failed to parse R matrix real part: {}", e),
+                                })?;
+                            let im = string
+                                .next()
+                                .ok_or_else(|| TbError::FileParse {
+                                    file: r_path.clone(),
+                                    message: "Missing R matrix imaginary part".to_string(),
+                                })?
+                                .parse::<f64>()
+                                .map_err(|e| TbError::FileParse {
+                                    file: r_path.clone(),
+                                    message: format!(
+                                        "Failed to parse R matrix imaginary part: {}",
+                                        e
+                                    ),
+                                })?;
                             rmatrix[[index, r, ind_j, ind_i]] =
                                 Complex::new(re, im) / (weights[i] as f64);
                         }
@@ -1006,7 +1582,10 @@ impl Model{
             let reader = BufReader::new(ws);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
-                let line = line.map_err(|e| TbError::FileParse { file: xyz_path.clone(), message: format!("Failed to read line: {}", e) })?;
+                let line = line.map_err(|e| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!("Failed to read line: {}", e),
+                })?;
                 reads.push(line.clone());
             }
             //开始针对ham, hamR 以及 rmatrix 进行修改
@@ -1020,28 +1599,83 @@ impl Model{
                     i += 1;
                     let line = &reads[i];
                     let mut string = line.trim().split_whitespace();
-                    let a = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let b = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let c = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let int_i = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
-                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
-                    let int_j = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
-                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
+                    let a = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let b = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let c = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let int_i = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing orbital index".to_string(),
+                        })?
+                        .parse::<usize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse orbital index: {}", e),
+                        })?
+                        - 1;
+                    let int_j = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing orbital index".to_string(),
+                        })?
+                        .parse::<usize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse orbital index: {}", e),
+                        })?
+                        - 1;
                     //接下来判断是否在我们的hamR 中
                     i += 1;
                     let mut weight = reads[i]
                         .trim()
                         .split_whitespace()
                         .next()
-                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing weight value".to_string() })?
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing weight value".to_string(),
+                        })?
                         .parse::<usize>()
-                        .map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse weight: {}", e) })?;
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse weight: {}", e),
+                        })?;
                     let R = array![a, b, c];
-                    let index = find_R(&hamR, &R)
-                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R) })?;
+                    let index = find_R(&hamR, &R).ok_or_else(|| TbError::FileParse {
+                        file: ws_path.clone(),
+                        message: format!("R vector {:?} not found in Hamiltonian", R),
+                    })?;
                     let hop = ham[[index, int_i, int_j]] / (weight as f64);
                     let hop_x = rmatrix[[index, 0, int_i, int_j]] / (weight as f64);
                     let hop_y = rmatrix[[index, 1, int_i, int_j]] / (weight as f64);
@@ -1055,7 +1689,7 @@ impl Model{
                         let b = string.next().unwrap().parse::<isize>().unwrap();
                         let c = string.next().unwrap().parse::<isize>().unwrap();
                         let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                        if let Some(index0)=find_R(&new_hamR, &new_R) {
+                        if let Some(index0) = find_R(&new_hamR, &new_R) {
                             new_ham[[index0, int_i, int_j]] += hop;
                             new_rmatrix[[index0, 0, int_i, int_j]] += hop_x;
                             new_rmatrix[[index0, 1, int_i, int_j]] += hop_y;
@@ -1084,28 +1718,83 @@ impl Model{
                     i += 1;
                     let line = &reads[i];
                     let mut string = line.trim().split_whitespace();
-                    let a = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let b = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let c = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing R vector component".to_string() })?
-                        .parse::<isize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse R vector: {}", e) })?;
-                    let int_i = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
-                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
-                    let int_j = string.next().ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing orbital index".to_string() })?
-                        .parse::<usize>().map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse orbital index: {}", e) })? - 1;
+                    let a = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let b = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let c = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let int_i = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing orbital index".to_string(),
+                        })?
+                        .parse::<usize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse orbital index: {}", e),
+                        })?
+                        - 1;
+                    let int_j = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing orbital index".to_string(),
+                        })?
+                        .parse::<usize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse orbital index: {}", e),
+                        })?
+                        - 1;
                     //接下来判断是否在我们的hamR 中
                     i += 1;
                     let mut weight = reads[i]
                         .trim()
                         .split_whitespace()
                         .next()
-                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: "Missing weight value".to_string() })?
+                        .ok_or_else(|| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: "Missing weight value".to_string(),
+                        })?
                         .parse::<usize>()
-                        .map_err(|e| TbError::FileParse { file: ws_path.clone(), message: format!("Failed to parse weight: {}", e) })?;
+                        .map_err(|e| TbError::FileParse {
+                            file: ws_path.clone(),
+                            message: format!("Failed to parse weight: {}", e),
+                        })?;
                     let R = array![a, b, c];
-                    let index = find_R(&hamR, &R)
-                        .ok_or_else(|| TbError::FileParse { file: ws_path.clone(), message: format!("R vector {:?} not found in Hamiltonian", R) })?;
+                    let index = find_R(&hamR, &R).ok_or_else(|| TbError::FileParse {
+                        file: ws_path.clone(),
+                        message: format!("R vector {:?} not found in Hamiltonian", R),
+                    })?;
                     let hop = ham[[index, int_i, int_j]] / (weight as f64);
 
                     for i0 in 0..weight {
@@ -1116,7 +1805,7 @@ impl Model{
                         let b = string.next().unwrap().parse::<isize>().unwrap();
                         let c = string.next().unwrap().parse::<isize>().unwrap();
                         let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                        if let Some(index0)=find_R(&new_hamR, &new_R) {
+                        if let Some(index0) = find_R(&new_hamR, &new_R) {
                             new_ham[[index0, int_i, int_j]] += hop;
                         } else {
                             let mut use_ham = Array2::zeros((nsta, nsta));
@@ -1136,7 +1825,7 @@ impl Model{
             for r in 0..hamR.nrows() - 1 {
                 let R = hamR.row(r);
                 let R_inv = -&R;
-                if let Some(index)=find_R(&hamR, &R_inv) {
+                if let Some(index) = find_R(&hamR, &R_inv) {
                     for i in 0..nsta {
                         for j in 0..nsta {
                             rmatrix[[r, 0, i, j]] =

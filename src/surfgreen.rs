@@ -7,10 +7,10 @@
 //! G^s(\omega, \mathbf{k}_\parallel) = [\omega - H_{00}(\mathbf{k}_\parallel) - \Sigma(\omega, \mathbf{k}_\parallel)]^{-1}
 //! $$
 //! where $\Sigma$ is the self-energy due to the semi-infinite bulk.
-use crate::error::{TbError, Result};
-use crate::{Model};
-use crate::kpoints::gen_kmesh;
+use crate::Model;
 use crate::basis::Dimension;
+use crate::error::{Result, TbError};
+use crate::kpoints::gen_kmesh;
 use gnuplot::Major;
 use gnuplot::{Auto, AutoOption::Fix, AxesCommon, Custom, Figure, Font, HOT, RAINBOW};
 use ndarray::concatenate;
@@ -59,7 +59,6 @@ pub struct surf_Green {
     pub ham_hopR: Array2<isize>,
 }
 
-
 #[inline(always)]
 fn remove_row<T: Copy>(array: Array2<T>, row_to_remove: usize) -> Array2<T> {
     let indices: Vec<_> = (0..array.nrows()).filter(|&r| r != row_to_remove).collect();
@@ -71,7 +70,6 @@ fn remove_col<T: Copy>(array: Array2<T>, col_to_remove: usize) -> Array2<T> {
     array.select(Axis(1), &indices)
 }
 
-
 impl surf_Green {
     ///从 Model 中构建一个 surf_green 的结构体
     ///
@@ -80,7 +78,12 @@ impl surf_Green {
     ///eta表示小虚数得取值
     ///
     ///对于非晶格矢量得方向, 需要用 model.make_supercell 先扩胞
-    pub fn from_Model(model: &Model, dir: usize, eta: f64, Np: Option<usize>) -> Result<surf_Green> {
+    pub fn from_Model(
+        model: &Model,
+        dir: usize,
+        eta: f64,
+        Np: Option<usize>,
+    ) -> Result<surf_Green> {
         if dir >= model.dim_r as usize {
             return Err(TbError::InvalidDirection {
                 index: dir,
@@ -148,7 +151,11 @@ impl surf_Green {
         };
         Ok(green)
     }
-    pub fn k_path(&self, path: &Array2<f64>, nk: usize) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
+    pub fn k_path(
+        &self,
+        path: &Array2<f64>,
+        nk: usize,
+    ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
         //!根据高对称点来生成高对称路径, 画能带图
         if self.dim_r == 0 {
             return Err(TbError::ZeroDimKPathError);

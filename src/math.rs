@@ -1,5 +1,5 @@
+use ndarray::{Array2, ArrayBase, Data, Ix2, LinalgScalar};
 use std::f64::consts::PI;
-use ndarray::{ArrayBase,Array2,Ix2,Data,LinalgScalar};
 pub fn gauss(x: f64, eta: f64) -> f64 {
     //高斯函数
     let a = (x / eta);

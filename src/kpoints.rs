@@ -13,9 +13,9 @@
 //! let kmesh:Array2<f64> = gen_kmesh(&array![10, 10]).unwrap();
 //! ```
 
-use ndarray::{Array1,Array2,Array3,Axis};
+use crate::error::{Result, TbError};
 use crate::generics::usefloat;
-use crate::error::{TbError, Result};
+use ndarray::{Array1, Array2, Array3, Axis};
 
 /// Generate a uniform k-point mesh in the Brillouin zone.
 ///
@@ -136,14 +136,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::{array,Array2};
+    use ndarray::{Array2, array};
 
     #[test]
     fn test_gen_kmesh() {
         // Test basic 2x2 kmesh generation
-        let kmesh:Array2<f64> = gen_kmesh(&array![2, 2]).unwrap();
+        let kmesh: Array2<f64> = gen_kmesh(&array![2, 2]).unwrap();
         assert_eq!(kmesh.shape(), &[4, 2]); // 4 points in 2D
         // Add more assertions based on expected output
     }
-
 }

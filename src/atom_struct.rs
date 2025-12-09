@@ -1,8 +1,8 @@
+use crate::{Result, TbError};
 use ndarray::Array1;
 use num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use crate::{TbError,Result};
 ///This is the orbital projection
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
@@ -122,7 +122,7 @@ impl OrbProj {
             "sp3d2-5" => Ok(OrbProj::sp3d2_5),
             "sp3d2-6" => Ok(OrbProj::sp3d2_6),
             //_ => panic!("Wrong, unrecognised projections {}", s),
-            _=>Err(TbError::InvalidOrbitalProjection(s.to_string())),
+            _ => Err(TbError::InvalidOrbitalProjection(s.to_string())),
         }
     }
     /// 这个函数是将 \ket{px},\ket{py},\ket{pz} 等原子轨道基转化为以 l,m 为基的函数的.

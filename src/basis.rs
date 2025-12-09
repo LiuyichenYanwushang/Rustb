@@ -9,11 +9,11 @@
 //! - Calculating Berry curvature and topological invariants
 //! - Constructing surface Green's functions
 use crate::atom_struct::{Atom, AtomType, OrbProj};
-use crate::error::{TbError, Result};
+use crate::error::{Result, TbError};
 use crate::generics::hop_use;
-use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
 use crate::kpoints::gen_kmesh;
-use crate::math::{comm};
+use crate::math::comm;
+use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -23,12 +23,11 @@ use ndarray_linalg::*;
 use ndarray_linalg::{Eigh, UPLO};
 use num_complex::{Complex, Complex64};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::fs::File;
 use std::io::Write;
 use std::ops::AddAssign;
-use serde::{Deserialize, Serialize};
-
 
 /// Tight-binding model structure representing the Hamiltonian $H(\mathbf{k})$ and related properties.
 ///
@@ -87,9 +86,6 @@ pub enum SpinDirection {
     z = 3,
 }
 
-
-
-
 #[allow(non_snake_case)]
 #[inline(always)]
 pub fn find_R<A: Data<Elem = T>, B: Data<Elem = T>, T: std::cmp::PartialEq>(
@@ -120,7 +116,6 @@ pub fn find_R<A: Data<Elem = T>, B: Data<Elem = T>, T: std::cmp::PartialEq>(
     }
     None
 }
-
 
 #[inline(always)]
 fn remove_row<T: Copy>(array: Array2<T>, row_to_remove: usize) -> Array2<T> {
@@ -215,7 +210,7 @@ impl Model {
     /// use ndarray::*;
     /// use num_complex::Complex;
     /// use Rustb::*;
-    /// 
+    ///
     /// // Create graphene model
     /// let lat = array![[1.0, 0.0], [-0.5, 3_f64.sqrt() / 2.0]];
     /// let orb = array![[1.0 / 3.0, 2.0 / 3.0], [2.0 / 3.0, 1.0 / 3.0]];
@@ -321,7 +316,7 @@ impl Model {
         }
         let orb_projection = vec![OrbProj::s; norb];
         let mut model = Model {
-            dim_r:Dimension::try_from(dim_r)?,
+            dim_r: Dimension::try_from(dim_r)?,
             spin,
             lat,
             orb,
@@ -408,13 +403,13 @@ impl Model {
             ind_j
         );
 
-        let norb=self.norb();
-        let negative_R=&(-R);
-        match find_R(&self.hamR,&R) {
-            Some(index)=>{
+        let norb = self.norb();
+        let negative_R = &(-R);
+        match find_R(&self.hamR, &R) {
+            Some(index) => {
                 // 获取负 R 的索引（必须存在，否则 panic）
-                let index_inv = find_R(&self.hamR, &negative_R)
-                    .expect("Negative R not found in hamR");
+                let index_inv =
+                    find_R(&self.hamR, &negative_R).expect("Negative R not found in hamR");
 
                 if self.ham[[index, ind_i, ind_j]] != Complex::new(0.0, 0.0) {
                     eprintln!(
@@ -453,11 +448,12 @@ impl Model {
                     "Wrong, the onsite hopping must be real, but here is {}",
                     tmp
                 )
-            },
+            }
             None => {
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
-                let new_ham = update_hamiltonian!(self.spin, pauli, tmp, new_ham, ind_i, ind_j, norb);
+                let new_ham =
+                    update_hamiltonian!(self.spin, pauli, tmp, new_ham, ind_i, ind_j, norb);
                 self.ham.push(Axis(0), new_ham.view()).unwrap();
                 self.hamR.push(Axis(0), R.view()).unwrap();
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
@@ -496,13 +492,13 @@ impl Model {
             ind_i,
             ind_j
         );
-        let norb=self.norb();
-        let negative_R=&(-R);
-        match find_R(&self.hamR,&R) {
-            Some(index)=>{
+        let norb = self.norb();
+        let negative_R = &(-R);
+        match find_R(&self.hamR, &R) {
+            Some(index) => {
                 // 获取负 R 的索引（必须存在，否则 panic）
-                let index_inv = find_R(&self.hamR, &negative_R)
-                    .expect("Negative R not found in hamR");
+                let index_inv =
+                    find_R(&self.hamR, &negative_R).expect("Negative R not found in hamR");
 
                 // 更新 R 位置的矩阵元
                 add_hamiltonian!(
@@ -534,11 +530,12 @@ impl Model {
                     "Wrong, the onsite hopping must be real, but here is {}",
                     tmp
                 )
-            },
+            }
             None => {
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
-                let new_ham = update_hamiltonian!(self.spin, pauli, tmp, new_ham, ind_i, ind_j, norb);
+                let new_ham =
+                    update_hamiltonian!(self.spin, pauli, tmp, new_ham, ind_i, ind_j, norb);
                 self.ham.push(Axis(0), new_ham.view()).unwrap();
                 self.hamR.push(Axis(0), R.view()).unwrap();
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
@@ -573,7 +570,7 @@ impl Model {
                 found: std::cmp::max(ind_i, ind_j),
             });
         }
-        if let Some(index)=find_R(&self.hamR, &R) {
+        if let Some(index) = find_R(&self.hamR, &R) {
             let index_inv = find_R(&self.hamR, &(-R)).expect("Negative R not found in hamR");
             self.ham[[index, ind_i, ind_j]] = tmp;
             if index != 0 && ind_i != ind_j {
@@ -660,7 +657,11 @@ impl Model {
     }
 
     #[allow(non_snake_case)]
-    pub fn k_path(&self, path: &Array2<f64>, nk: usize) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
+    pub fn k_path(
+        &self,
+        path: &Array2<f64>,
+        nk: usize,
+    ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
         //!根据高对称点来生成高对称路径, 画能带图
         if self.dim_r() == 0 {
             return Err(TbError::ZeroDimKPathError);
@@ -1163,7 +1164,7 @@ impl Model {
                     let mut ind_R = ind_R.to_owned();
                     let ham = ham.to_owned();
                     ind_R[[dir]] = 0;
-                    if ind < num && ind >=0{
+                    if ind < num {
                         //开始构建哈密顿量
                         let mut use_ham = Array2::<Complex<f64>>::zeros((new_nsta, new_nsta));
                         if self.spin {
@@ -1202,7 +1203,7 @@ impl Model {
                             let ham0 = ham.slice(s![0..self.norb(), 0..self.norb()]);
                             s.assign(&ham0);
                         }
-                        if let Some(index)=find_R(&new_hamR, &ind_R) {
+                        if let Some(index) = find_R(&new_hamR, &ind_R) {
                             new_ham.slice_mut(s![index, .., ..]).add_assign(&use_ham);
                         } else {
                             new_ham.push(Axis(0), use_ham.view());
@@ -1228,7 +1229,7 @@ impl Model {
                     let ham = ham.to_owned();
                     let rmatrix = rmatrix.to_owned();
                     ind_R[[dir]] = 0;
-                    if ind < num && ind >=0 {
+                    if ind < num {
                         //开始构建哈密顿量
                         let mut use_ham = Array2::<Complex<f64>>::zeros((new_nsta, new_nsta));
                         if self.spin {
@@ -1323,7 +1324,7 @@ impl Model {
                                 }
                             }
                         }
-                        if let Some(index)=find_R(&new_hamR, &ind_R) {
+                        if let Some(index) = find_R(&new_hamR, &ind_R) {
                             new_ham.slice_mut(s![index, .., ..]).add_assign(&use_ham);
                             new_rmatrix
                                 .slice_mut(s![index, .., .., ..])
@@ -1388,7 +1389,7 @@ impl Model {
                             for i in 0..model_2.natom() {
                                 let atom_position = model_2.atoms[i].position();
                                 if atom_position[[dir[0]]] + atom_position[[dir[1]]]
-                                    > num0 / (num0 + 1.0)+1e-5
+                                    > num0 / (num0 + 1.0) + 1e-5
                                 {
                                     a += model_2.atoms[i].norb();
                                 } else {
@@ -1421,8 +1422,10 @@ impl Model {
                             let num0 = num as f64;
                             for i in 0..model_2.natom() {
                                 let atom_position = model_2.atoms[i].position();
-                                if (atom_position[[dir[0]]] - atom_position[[dir[1]]] > 0.5*num0/(num0+1.0)+1e-5)
-                                    || (atom_position[[dir[0]]] - atom_position[[1]] < -0.5*num0/(num0+1.0)-1e-5)
+                                if (atom_position[[dir[0]]] - atom_position[[dir[1]]]
+                                    > 0.5 * num0 / (num0 + 1.0) + 1e-5)
+                                    || (atom_position[[dir[0]]] - atom_position[[1]]
+                                        < -0.5 * num0 / (num0 + 1.0) - 1e-5)
                                     || (atom_position[[dir[0]]] * (num0 + 1.0) / num0 > 1.0 + 1e-5)
                                     || (atom_position[[dir[1]]] * (num0 + 1.0) / num0 > 1.0 + 1e-5)
                                 {
@@ -2234,9 +2237,9 @@ impl Model {
 
         match self.dim_r() {
             3 => {
-                for i in -U_det-1..U_det+1 {
-                    for j in -U_det-1..U_det+1 {
-                        for k in -U_det-1..U_det+1 {
+                for i in -U_det - 1..U_det + 1 {
+                    for j in -U_det - 1..U_det + 1 {
+                        for k in -U_det - 1..U_det + 1 {
                             for n in 0..self.natom() {
                                 let mut atoms = use_atom_position.row(n).to_owned()
                                     + (i as f64) * U_inv.row(0).to_owned()
@@ -2289,8 +2292,8 @@ impl Model {
                 }
             }
             2 => {
-                for i in -U_det-1..U_det+1 {
-                    for j in -U_det-1..U_det+1 {
+                for i in -U_det - 1..U_det + 1 {
+                    for j in -U_det - 1..U_det + 1 {
                         for n in 0..self.natom() {
                             let mut atoms = use_atom_position.row(n).to_owned()
                                 + (i as f64) * U_inv.row(0).to_owned()
@@ -2333,7 +2336,7 @@ impl Model {
                 }
             }
             1 => {
-                for i in -U_det-1..U_det+1 {
+                for i in -U_det - 1..U_det + 1 {
                     for n in 0..self.natom() {
                         let mut atoms = use_atom_position.row(n).to_owned()
                             + (i as f64) * U_inv.row(0).to_owned(); //原子的位置在新的坐标系下的坐标
@@ -2464,7 +2467,7 @@ impl Model {
                                     x.floor() as isize
                                 }
                             });
-                        if let Some(index)=find_R(&self.hamR, &R0) {
+                        if let Some(index) = find_R(&self.hamR, &R0) {
                             add_R = true;
                             useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
                             useham[[int_i + norb, int_j]] =
@@ -2518,7 +2521,7 @@ impl Model {
                                     x.floor() as isize
                                 }
                             });
-                        if let Some(index)=find_R(&self.hamR, &R0) {
+                        if let Some(index) = find_R(&self.hamR, &R0) {
                             add_R = true;
                             useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
                             for r in 0..self.dim_r() {
@@ -2559,7 +2562,7 @@ impl Model {
                                     x.floor() as isize
                                 }
                             });
-                        
+
                         if let Some(index) = find_R(&self.hamR, &R0) {
                             add_R = true;
                             useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
@@ -2674,5 +2677,4 @@ impl Model {
     pub fn add_magnetic_field(&self) -> Result<Model> {
         Ok(self.clone())
     }
-
 }

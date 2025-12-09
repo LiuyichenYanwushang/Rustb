@@ -1,5 +1,5 @@
-use ndarray::*;
 use crate::usefloat;
+use ndarray::*;
 pub fn write_txt<T: usefloat>(data: &Array2<T>, output: &str) -> std::io::Result<()> {
     use std::fs::File;
     use std::io::Write;

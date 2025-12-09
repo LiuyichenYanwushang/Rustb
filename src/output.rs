@@ -9,11 +9,11 @@
 //!整合的 wannier90 格式
 //!
 //!POSCAR 格式
-use crate::basis::{find_R,Dimension};
 use crate::Model;
-use crate::math::comm;
+use crate::basis::{Dimension, find_R};
+use crate::error::{Result, TbError};
 use crate::kpoints::gen_kmesh;
-use crate::error::{TbError, Result};
+use crate::math::comm;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -74,8 +74,11 @@ impl Model {
                 let max_R1 = self.hamR.outer_iter().map(|x| x[[0]].abs()).max().unwrap();
                 let mut s = String::new();
                 for i in -max_R1..max_R1 {
-                    match (find_R(&self.hamR, &array![i as isize]),find_R(&self.hamR, &(-array![i as isize]))){
-                        (Some(r0),_)=>{
+                    match (
+                        find_R(&self.hamR, &array![i as isize]),
+                        find_R(&self.hamR, &(-array![i as isize])),
+                    ) {
+                        (Some(r0), _) => {
                             let ham = self.ham.slice(s![r0, .., ..]);
                             for orb_2 in 0..self.nsta() {
                                 for orb_1 in 0..self.nsta() {
@@ -89,8 +92,8 @@ impl Model {
                                     ));
                                 }
                             }
-                        },
-                        (None,Some(r0))=>{
+                        }
+                        (None, Some(r0)) => {
                             let ham = self.ham.slice(s![r0, .., ..]);
                             for orb_2 in 0..self.nsta() {
                                 for orb_1 in 0..self.nsta() {
@@ -104,8 +107,8 @@ impl Model {
                                     ));
                                 }
                             }
-                        },
-                        (None,None)=>{},
+                        }
+                        (None, None) => {}
                     }
                 }
                 writeln!(file, "{}", s);
@@ -119,10 +122,10 @@ impl Model {
                 let mut s = String::new();
                 for R1 in -max_values[[0]]..max_values[[0]] {
                     for R2 in -max_values[[1]]..max_values[[1]] {
-                        let R0=array![R1 as isize,R2 as isize];
-                        let R0_inv=-array![R1 as isize,R2 as isize];
-                        match (find_R(&self.hamR, &R0),find_R(&self.hamR, &R0_inv)){
-                            (Some(r0),_)=>{
+                        let R0 = array![R1 as isize, R2 as isize];
+                        let R0_inv = -array![R1 as isize, R2 as isize];
+                        match (find_R(&self.hamR, &R0), find_R(&self.hamR, &R0_inv)) {
+                            (Some(r0), _) => {
                                 let ham = self.ham.slice(s![r0, .., ..]);
                                 for orb_2 in 0..self.nsta() {
                                     for orb_1 in 0..self.nsta() {
@@ -137,8 +140,8 @@ impl Model {
                                         ));
                                     }
                                 }
-                            },
-                            (None,Some(r0))=>{
+                            }
+                            (None, Some(r0)) => {
                                 let ham = self.ham.slice(s![r0, .., ..]);
                                 for orb_2 in 0..self.nsta() {
                                     for orb_1 in 0..self.nsta() {
@@ -153,8 +156,8 @@ impl Model {
                                         ));
                                     }
                                 }
-                            },
-                            (None,None)=>{},
+                            }
+                            (None, None) => {}
                         }
                     }
                 }
@@ -170,10 +173,10 @@ impl Model {
                 for R1 in -max_values[[0]]..max_values[[0]] {
                     for R2 in -max_values[[1]]..max_values[[1]] {
                         for R3 in -max_values[[2]]..max_values[[2]] {
-                            let R0=array![R1 as isize,R2 as isize,R3 as isize];
-                            let R0_inv=-array![R1 as isize,R2 as isize,R3 as isize];
-                            match (find_R(&self.hamR, &R0),find_R(&self.hamR, &R0_inv)){
-                                (Some(r0),_)=>{
+                            let R0 = array![R1 as isize, R2 as isize, R3 as isize];
+                            let R0_inv = -array![R1 as isize, R2 as isize, R3 as isize];
+                            match (find_R(&self.hamR, &R0), find_R(&self.hamR, &R0_inv)) {
+                                (Some(r0), _) => {
                                     let ham = self.ham.slice(s![r0, .., ..]);
                                     for orb_2 in 0..self.nsta() {
                                         for orb_1 in 0..self.nsta() {
@@ -189,8 +192,8 @@ impl Model {
                                             ));
                                         }
                                     }
-                                },
-                                (None,Some(r0))=>{
+                                }
+                                (None, Some(r0)) => {
                                     let ham = self.ham.slice(s![r0, .., ..]);
                                     for orb_2 in 0..self.nsta() {
                                         for orb_1 in 0..self.nsta() {
@@ -206,8 +209,8 @@ impl Model {
                                             ));
                                         }
                                     }
-                                },
-                                (None,None)=>{},
+                                }
+                                (None, None) => {}
                             }
                         }
                     }
@@ -529,8 +532,7 @@ impl Model {
                 s
             }
             Dimension::zero => {
-                panic!(
-                    "Wrong!, the dim_r must be 1,2 or 3, but yours 0");
+                panic!("Wrong!, the dim_r must be 1,2 or 3, but yours 0");
             }
         };
         writeln!(file, "{}", s);
@@ -637,7 +639,6 @@ impl Model {
         Ok(())
     }
 }
-
 
 pub fn draw_heatmap<A: Data<Elem = f64>>(data: &ArrayBase<A, Ix2>, name: &str) {
     //!这个函数是用来画热图的, 给定一个二维矩阵, 会输出一个像素图片

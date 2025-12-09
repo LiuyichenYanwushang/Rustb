@@ -1,6 +1,6 @@
 //!这个模块是用wilson loop 的方法来计算各种几何量.
-use crate::{Model, gen_kmesh};
 use crate::math::comm;
+use crate::{Model, gen_kmesh};
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -182,8 +182,8 @@ impl Model {
         &self,
         occ: &Vec<usize>,
         k_start: &Array1<f64>,
-        dir_1: &Array1<f64>,//第一个方向遍历
-        dir_2: &Array1<f64>,//第二个方向积分
+        dir_1: &Array1<f64>, //第一个方向遍历
+        dir_2: &Array1<f64>, //第二个方向积分
         nk1: usize,
         nk2: usize,
     ) -> Array2<f64> {

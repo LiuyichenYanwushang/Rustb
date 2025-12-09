@@ -111,11 +111,11 @@
 //!根据上面的式子, 我们很容易得到当 $m=\not n$ 时 $$\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}=\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 //!也就是说, 我们能够最终得到 $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 
+use crate::error::{Result, TbError};
+use crate::kpoints::{gen_kmesh, gen_krange};
+use crate::math::*;
 use crate::phy_const::mu_B;
 use crate::{Gauge, Model};
-use crate::math::*;
-use crate::error::{TbError, Result};
-use crate::kpoints::{gen_kmesh,gen_krange};
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
 use ndarray::*;
@@ -126,10 +126,6 @@ use rayon::prelude::*;
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
-
-
-
-
 
 /**
 这个函数是用来做自适应积分算法的
@@ -361,7 +357,6 @@ impl Model {
         k_vec: &ArrayBase<S, Ix1>,
         dir_1: &Array1<f64>,
         dir_2: &Array1<f64>,
-        og: f64,
         spin: usize,
         eta: f64,
     ) -> (Array1<f64>, Array1<f64>) {
@@ -479,13 +474,15 @@ impl Model {
         for i in 0..self.nsta() {
             for j in 0..self.nsta() {
                 let a = band[[i]] - band[[j]];
-                //这里用gauss函数代替
-                //UU[[i,j]]=gauss(a,eta)*PI;
+                //这里用η进行展宽
+                UU[[i, j]] = 1.0 / (a.powi(2) + eta.powi(2));
+                /*
                 if a.abs() < 1e-8 {
                     UU[[i, j]] = 0.0;
                 } else {
-                    UU[[i, j]] = 1.0 / (a.powi(2)+(og+eta*li).powi(2).re);
+                    UU[[i, j]] = 1.0 / (a.powi(2)+eta.powi(2));
                 }
+                */
             }
         }
         let omega_n = im
@@ -505,7 +502,6 @@ impl Model {
         dir_2: &Array1<f64>,
         mu: f64,
         T: f64,
-        og: f64,
         spin: usize,
         eta: f64,
     ) -> f64 {
@@ -516,7 +512,7 @@ impl Model {
         //! 这个函数返回的是
         //! $$ \sum_n f_n\Omega_{n,\ap\bt}^\gm(\bm k)=\sum_n \f{1}{e^{(\ve_{n\bm k}-\mu)/T/k_B}+1} \sum_{m=\not n}\f{J_{\ap,nm}^\gm v_{\bt,mn}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og+i\eta)^2}$$
         //! 其中 $J_\ap^\gm=\\{s_\gm,v_\ap\\}$
-        let (omega_n, band) = self.berry_curvature_n_onek(&k_vec, &dir_1, &dir_2, og, spin, eta);
+        let (omega_n, band) = self.berry_curvature_n_onek(&k_vec, &dir_1, &dir_2, spin, eta);
         let mut omega: f64 = 0.0;
         let fermi_dirac = if T == 0.0 {
             band.mapv(|x| if x > mu { 0.0 } else { 1.0 })
@@ -535,7 +531,6 @@ impl Model {
         dir_2: &Array1<f64>,
         mu: f64,
         T: f64,
-        og: f64,
         spin: usize,
         eta: f64,
     ) -> Array1<f64> {
@@ -555,7 +550,7 @@ impl Model {
             .into_par_iter()
             .map(|x| {
                 let omega_one =
-                    self.berry_curvature_onek(&x.to_owned(), &dir_1, &dir_2, mu, T, og, spin, eta);
+                    self.berry_curvature_onek(&x.to_owned(), &dir_1, &dir_2, mu, T, spin, eta);
                 omega_one
             })
             .collect();
@@ -571,7 +566,6 @@ impl Model {
         dir_2: &Array1<f64>,
         mu: f64,
         T: f64,
-        og: f64,
         spin: usize,
         eta: f64,
     ) -> Result<f64> {
@@ -580,7 +574,7 @@ impl Model {
         //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}(\bm k),$$ 其中 $N$ 是 k 点数目,
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
-        let omega = self.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, og, spin, eta);
+        let omega = self.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, spin, eta);
         //目前求积分的方法上, 还是直接求和最有用, 其他的典型积分方法, 如gauss 法等,
         //都因为存在间断点而效率不高.
         //对于非零温的, 使用梯形法应该效果能好一些.
@@ -596,7 +590,6 @@ impl Model {
         dir_2: &Array1<f64>,
         mu: f64,
         T: f64,
-        og: f64,
         spin: usize,
         eta: f64,
         re_err: f64,
@@ -606,7 +599,7 @@ impl Model {
         let n_range = k_range.len_of(Axis(0));
         let ab_err = ab_err / (n_range as f64);
         let use_fn =
-            |k0: &Array1<f64>| self.berry_curvature_onek(k0, &dir_1, &dir_2, mu, T, og, spin, eta);
+            |k0: &Array1<f64>| self.berry_curvature_onek(k0, &dir_1, &dir_2, mu, T, spin, eta);
         let inte = |k_range| adapted_integrate_quick(&use_fn, &k_range, re_err, ab_err);
         let omega: Vec<f64> = k_range
             .axis_iter(Axis(0))
@@ -625,7 +618,6 @@ impl Model {
         dir_2: &Array1<f64>,
         mu: &Array1<f64>,
         T: f64,
-        og: f64,
         spin: usize,
         eta: f64,
     ) -> Result<Array1<f64>> {
@@ -636,7 +628,7 @@ impl Model {
             .into_par_iter()
             .map(|x| {
                 let (omega_n, band) =
-                    self.berry_curvature_n_onek(&x.to_owned(), &dir_1, &dir_2, og, spin, eta);
+                    self.berry_curvature_n_onek(&x.to_owned(), &dir_1, &dir_2, spin, eta);
                 (omega_n, band)
             })
             .collect();

@@ -3,11 +3,11 @@
 //! By using a centralized error enum, we can replace all panics with recoverable
 //! Results, making the library safer and more robust for consumers.
 
+use crate::atom_struct::AtomType;
+use crate::{OrbProj, SpinDirection};
 use ndarray::{Array1, Array2, ShapeError};
 use num_complex::Complex;
 use thiserror::Error;
-use crate::{SpinDirection, OrbProj};
-use crate::atom_struct::AtomType;
 
 /// The primary error type for all fallible operations in this library.
 #[derive(Error, Debug)]
@@ -36,10 +36,7 @@ pub enum TbError {
     Linalg(#[from] ndarray_linalg::error::LinalgError),
 
     #[error("LAPACK routine '{routine}' failed with non-zero info code: {info}")]
-    Lapack {
-        routine: &'static str,
-        info: i32,
-    },
+    Lapack { routine: &'static str, info: i32 },
 
     #[error("Matrix inversion failed: matrix is singular or ill-conditioned")]
     MatrixInversionFailed,
@@ -72,13 +69,15 @@ pub enum TbError {
 
     #[error("Invalid supercell size 'num' for cut_piece: {0}. Must be >= 1.")]
     InvalidSupercellSize(usize),
-    
+
     #[error("Invalid shape identifier for cut_dot: {0}. Supported shapes are 3, 4, 6, 8.")]
     InvalidShapeIdentifier(usize),
 
-    #[error("The supercell transformation matrix U must have integer elements and a non-zero determinant.")]
+    #[error(
+        "The supercell transformation matrix U must have integer elements and a non-zero determinant."
+    )]
     InvalidSupercellMatrix,
-    
+
     #[error("Spin direction '{0:?}' is invalid for a model without spin.")]
     SpinNotAllowed(SpinDirection),
 
@@ -92,9 +91,11 @@ pub enum TbError {
     #[error("On-site hopping energy must be a real number, but got {0}")]
     OnsiteHoppingMustBeReal(Complex<f64>),
 
-    #[error("Internal model inconsistency: Hopping for vector R={r:?} exists, but its Hermitian conjugate for -R does not.")]
+    #[error(
+        "Internal model inconsistency: Hopping for vector R={r:?} exists, but its Hermitian conjugate for -R does not."
+    )]
     MissingHermitianConjugateHopping { r: Array1<isize> },
-    
+
     #[error("Invalid operation for a zero-dimensional model.")]
     InvalidOperationForZeroDimension,
 
@@ -108,7 +109,9 @@ pub enum TbError {
     ConvergenceFailed { iterations: usize },
 
     // --- Slater-Koster Specific Errors ---
-    #[error("Missing Slater-Koster parameter '{param}' for atom pair {atom1:?}-{atom2:?} at shell {shell}")]
+    #[error(
+        "Missing Slater-Koster parameter '{param}' for atom pair {atom1:?}-{atom2:?} at shell {shell}"
+    )]
     SkParameterMissing {
         param: String,
         atom1: AtomType,
@@ -133,7 +136,9 @@ pub enum TbError {
     NotImplemented(String),
 
     // --- New error variants to replace panics ---
-    #[error("Lattice matrix dimension error: second dimension length must equal dim_r, but got {actual} (expected {expected})")]
+    #[error(
+        "Lattice matrix dimension error: second dimension length must equal dim_r, but got {actual} (expected {expected})"
+    )]
     LatticeDimensionError { expected: usize, actual: usize },
 
     #[error("R vector length error: expected {expected}, got {actual}")]
@@ -188,4 +193,3 @@ pub enum TbError {
 
 /// A specialized `Result` type for this library's operations.
 pub type Result<T> = std::result::Result<T, TbError>;
-

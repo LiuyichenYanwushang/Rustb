@@ -1,7 +1,7 @@
 use crate::Atom;
 use crate::Model;
 use crate::atom_struct::AtomType;
-use crate::error::{TbError, Result};
+use crate::error::{Result, TbError};
 use ndarray::*;
 use num_complex::Complex;
 
@@ -124,7 +124,8 @@ impl Model {
                     .to_quantum_number()?
                     .mapv(|x: Complex<f64>| x.conj());
                 for j in a..a + atom0.norb() {
-                    let proj_j: Array1<Complex<f64>> = self.orb_projection[j].to_quantum_number()?;
+                    let proj_j: Array1<Complex<f64>> =
+                        self.orb_projection[j].to_quantum_number()?;
                     L[[0, i, j]] = proj_i.dot(&Lx_orig.dot(&proj_j));
                     L[[1, i, j]] = proj_i.dot(&Ly_orig.dot(&proj_j));
                     L[[2, i, j]] = proj_i.dot(&Lz_orig.dot(&proj_j));

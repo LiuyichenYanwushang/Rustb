@@ -1,33 +1,33 @@
 #![allow(warnings)]
+pub mod SKmodel;
 pub mod atom_struct;
 pub mod basis;
 pub mod conductivity;
+pub mod error;
 pub mod generics;
 pub mod geometry;
+pub mod io;
+pub mod kpoints;
+pub mod math;
 pub mod model_struct;
 pub mod ndarray_lapack;
 pub mod output;
 pub mod phy_const;
 pub mod surfgreen;
-pub mod kpoints;
-pub mod error;
-pub mod SKmodel;
-pub mod math;
 pub mod wannier90;
-pub mod io;
-pub use crate::error::{TbError,Result};
-pub use crate::kpoints::{gen_kmesh,gen_krange};
-pub use crate::atom_struct::{Atom, OrbProj};
 pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
-pub use crate::wannier90::*;
+pub use crate::atom_struct::{Atom, OrbProj};
 pub use crate::basis::*;
 pub use crate::conductivity::*;
+pub use crate::error::{Result, TbError};
+use crate::generics::usefloat;
 pub use crate::io::*;
+pub use crate::kpoints::{gen_kmesh, gen_krange};
 pub use crate::math::*;
 pub use crate::output::*;
-use crate::generics::usefloat;
 #[doc(hidden)]
 pub use crate::surfgreen::surf_Green;
+pub use crate::wannier90::*;
 use gnuplot::Major;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
@@ -88,9 +88,6 @@ use std::time::Instant;
 /// - `write_txt_1`: Write 1D arrays to text files with formatted output
 ///
 /// These functions automatically handle number formatting and spacing for scientific data.
-
-
-
 
 ///An example
 ///
@@ -366,7 +363,7 @@ mod tests {
         let spin = 0;
         let eta = 1e-3;
         let result1 =
-            model.berry_curvature_onek(&k_vec, &dir_1, &dir_2, mu, T, og, spin, eta) * (2.0 * PI);
+            model.berry_curvature_onek(&k_vec, &dir_1, &dir_2, mu, T, spin, eta) * (2.0 * PI);
 
         let mut k_list = Array2::zeros((9, 2));
         let dk = 0.0001;
@@ -504,7 +501,9 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
 
         let start = Instant::now(); // 开始计时
-        let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, og, spin, eta).unwrap();
+        let conductivity = model
+            .Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta)
+            .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("quantom_Hall_effect={}", conductivity * (2.0 * PI));
@@ -516,14 +515,12 @@ mod tests {
 
         let mu = Array1::linspace(-2.0, 2.0, 101);
         let start = Instant::now(); // 开始计时
-        let conductivity_mu =
-            model.Hall_conductivity_mu(&kmesh, &dir_1, &dir_2, &mu, T, og, spin, eta).unwrap();
+        let conductivity_mu = model
+            .Hall_conductivity_mu(&kmesh, &dir_1, &dir_2, &mu, T, spin, eta)
+            .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
-        println!(
-            "quantom_Hall_effect={}",
-            conductivity_mu[[50]] * (2.0 * PI)
-        );
+        println!("quantom_Hall_effect={}", conductivity_mu[[50]] * (2.0 * PI));
         assert!(
             (conductivity_mu[[50]] - conductivity).abs() < 1e-3,
             "Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",
@@ -531,14 +528,18 @@ mod tests {
             conductivity
         );
         println!("function_a took {} seconds", duration.as_secs_f64()); // 输出执行时间
-        let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, -2.0, T, og, spin, eta).unwrap();
+        let conductivity = model
+            .Hall_conductivity(&kmesh, &dir_1, &dir_2, -2.0, T, spin, eta)
+            .unwrap();
         assert!(
             (conductivity_mu[[0]] - conductivity).abs() < 1e-3,
             "Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",
             conductivity_mu[[0]],
             conductivity
         );
-        let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, 2.0, T, og, spin, eta).unwrap();
+        let conductivity = model
+            .Hall_conductivity(&kmesh, &dir_1, &dir_2, 2.0, T, spin, eta)
+            .unwrap();
         assert!(
             (conductivity_mu[[100]] - conductivity).abs() < 1e-3,
             "Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",
@@ -563,7 +564,8 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
         let conductivity = model
-            .Hall_conductivity_adapted(&kmesh, &dir_1, &dir_2, mu, T, og, spin, eta, 0.01, 0.0001).unwrap();
+            .Hall_conductivity_adapted(&kmesh, &dir_1, &dir_2, mu, T, spin, eta, 0.01, 0.0001)
+            .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("霍尔电导率{}", conductivity * (2.0 * PI));
@@ -741,7 +743,9 @@ mod tests {
         let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
         let (eval, evec) = model.solve_all_parallel(&k_vec);
         let label = vec!["G", "K", "M", "G"];
-        model.show_band(&path, &label, nk, "tests/graphene").unwrap();
+        model
+            .show_band(&path, &label, nk, "tests/graphene")
+            .unwrap();
 
         // 开始计算两个本征态
         let k1 = array![1.0 / 3.0 - 0.002, 2.0 / 3.0];
@@ -764,7 +768,7 @@ mod tests {
         let spin: usize = 0;
         let kmesh = arr1(&[nk, nk]);
         let (eval, evec) = model.solve_onek(&arr1(&[0.3, 0.5]));
-        let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, og, spin, eta);
+        let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta);
         //println!("{}",conductivity/(2.0*PI));
         //开始计算边缘态, 首先是zigsag态
         let nk: usize = 501;
@@ -808,9 +812,11 @@ mod tests {
         let og = 0.0;
         let mu = Array1::linspace(E_min, E_max, E_n);
         let T = 300.0;
-        let sigma: Array1<f64> = model.Nonlinear_Hall_conductivity_Extrinsic(
-            &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5,
-        ).unwrap();
+        let sigma: Array1<f64> = model
+            .Nonlinear_Hall_conductivity_Extrinsic(
+                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5,
+            )
+            .unwrap();
 
         //开始绘制非线性电导
         let mut fg = Figure::new();
@@ -890,7 +896,9 @@ mod tests {
         let path = [[0.0, 0.0], [0.0, 0.5], [0.0, 1.0]];
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
-        super_model.show_band(&path, &label, nk, "tests/kane_super").unwrap();
+        super_model
+            .show_band(&path, &label, nk, "tests/kane_super")
+            .unwrap();
         //开始计算表面态
         let nk = 101;
         let green = surf_Green::from_Model(&model, 0, 1e-3, None).unwrap();
@@ -970,7 +978,9 @@ mod tests {
         let spin: usize = 3;
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
-        let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, og, spin, eta).unwrap();
+        let conductivity = model
+            .Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta)
+            .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}", conductivity * (2.0 * PI));
@@ -979,7 +989,8 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
         let conductivity = model
-            .Hall_conductivity_adapted(&kmesh, &dir_1, &dir_2, mu, T, og, spin, eta, 0.01, 0.01).unwrap();
+            .Hall_conductivity_adapted(&kmesh, &dir_1, &dir_2, mu, T, spin, eta, 0.01, 0.01)
+            .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}", conductivity * (2.0 * PI));
@@ -1008,7 +1019,7 @@ mod tests {
         let kvec = kvec * 2.0;
         let kvec = model.lat.dot(&(kvec.reversed_axes()));
         let kvec = kvec.reversed_axes();
-        let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, 0.0, 1, 1e-3);
+        let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, 1, 1e-3);
         let data = berry_curv.into_shape((nk, nk)).unwrap();
         draw_heatmap(
             &(-data).map(|x| (x + 1.0).log(10.0)),
@@ -1040,7 +1051,7 @@ mod tests {
             E_min,
             E_max,
             E_n,
-           0,
+            0,
         );
 
         //-----算一下wilson loop 结果-----------------------
@@ -1100,7 +1111,9 @@ mod tests {
         fg.show();
 
         //开始计算角态
-        let model = model.make_supercell(&array![[0.0, -1.0], [1.0, 0.0]]).unwrap();
+        let model = model
+            .make_supercell(&array![[0.0, -1.0], [1.0, 0.0]])
+            .unwrap();
         let num = 19;
         /*
         let model_1=model.cut_piece(num,0).unwrap();
@@ -1204,9 +1217,11 @@ mod tests {
         let og = 0.0;
         let mu = Array1::linspace(E_min, E_max, E_n);
         let T = 30.0;
-        let sigma: Array1<f64> = model.Nonlinear_Hall_conductivity_Extrinsic(
-            &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5,
-        ).unwrap();
+        let sigma: Array1<f64> = model
+            .Nonlinear_Hall_conductivity_Extrinsic(
+                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5,
+            )
+            .unwrap();
 
         //开始绘制非线性电导
         let mut fg = Figure::new();
@@ -1223,8 +1238,9 @@ mod tests {
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
 
-        let sigma: Array1<f64> =
-            model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, 3).unwrap();
+        let sigma: Array1<f64> = model
+            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, 3)
+            .unwrap();
         //开始绘制非线性电导
         let mut fg = Figure::new();
         let x: Vec<f64> = mu.to_vec();
@@ -1324,7 +1340,7 @@ mod tests {
         let li: Complex<f64> = 1.0 * Complex::i();
         let t1 = 1.0 + 0.0 * li;
         let t2 = 0.5 + 0.0 * li;
-        let Delta= 0.0;
+        let Delta = 0.0;
         let dim_r: usize = 1;
         let norb: usize = 2;
         let lat = arr2(&[[1.0]]);
@@ -1332,7 +1348,7 @@ mod tests {
         let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
         model.add_hop(t1, 0, 1, &array![0], SpinDirection::None);
         model.add_hop(t2, 0, 1, &array![-1], SpinDirection::None);
-        model.add_onsite(&array![Delta,-Delta],0);
+        model.add_onsite(&array![Delta, -Delta], 0);
 
         let nk: usize = 101;
         let path = [[0.0], [0.5], [1.0]];
@@ -1374,7 +1390,9 @@ mod tests {
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("make_supercell took {} seconds", duration.as_secs_f64()); // 输出执行时间
-        let A = super_model.unfold(&U, &path, nk, -3.0, 5.0, nk, 1e-2, 1e-3).unwrap();
+        let A = super_model
+            .unfold(&U, &path, nk, -3.0, 5.0, nk, 1e-2, 1e-3)
+            .unwrap();
         let name = "./tests/unfold_test/";
         create_dir_all(&name).expect("can't creat the file");
         draw_heatmap(&A.reversed_axes(), "./tests/unfold_test/unfold_band.pdf");
