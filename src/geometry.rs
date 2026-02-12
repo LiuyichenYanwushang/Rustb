@@ -39,7 +39,7 @@ impl Model {
         let n_k = kvec.nrows();
         let diff = &kvec.row(n_k - 1) - &kvec.row(0);
         for i in diff.iter() {
-            if (i - i.round()).abs() > 1e-5 {
+            if (i - i.round()).abs() > 1e-9 {
                 panic!(
                     "wrong, the end of this loop must differ from the beginning by an integer grid vector. yours {}\n",
                     i.fract()
@@ -56,11 +56,16 @@ impl Model {
         let add_phase = diff.dot(&use_orb.t());
         let add_phase = add_phase.mapv(|x| Complex::new(0.0, -2.0 * x * PI).exp());
         let (eval, mut evec) = self.solve_all(kvec);
-        let first_evec = &evec.slice(s![0, .., ..]);
+        let first_evec: &ArrayRef<_, Dim<[_; 2]>> = &evec.slice(s![0, .., ..]);
+        let add_phase = Array2::from_diag(&add_phase);
+        let end_evec = first_evec.to_owned().dot(&add_phase);
+
+        /*
         let mut end_evec = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
         Zip::from(end_evec.outer_iter_mut())
             .and(first_evec.outer_iter())
             .for_each(|mut A, B| A.assign(&(&B * &add_phase)));
+        */
         evec.slice_mut(s![n_k - 1, .., ..]).assign(&end_evec);
         let evec = evec.select(Axis(1), occ);
         let n_occ = occ.len();
@@ -90,6 +95,81 @@ impl Model {
         );
         let result = result.eigvals().unwrap();
         let result = result.mapv(|x| -x.arg());
+        result
+    }
+
+    pub fn berry_loop_det<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> f64
+    where
+        S: Data<Elem = f64>,
+    {
+        //! 这个函数是计算某一个闭合路径上的 berry phase, 用的是wilson loop 方法.
+        //!
+        //! 其算法如下: 我们首先将末端的k点的波函数相位统一. 如果闭合回路沿着布里渊区两端,
+        //! 那么因为布洛赫函数在布里渊区存在一个相位差 $e^{-2\pi i \bm \tau_i}$, 我们有
+        //! $\ket{u_{n,\bm k_\text{end}}}=e^{-2\pi i \bm \tau_i}\ket{u_{n,\bm k_\text{first}}}$
+        //!
+        //! 我们定义交叠矩阵 $F_{mn,\bm k}=\braket{\psi_{m,\bm k}}{\psi_{n,\bm k+\dd\bm k}}$
+        //!
+        //! 接下来我们将其正交化, 用 SVD 分解, 有 $U,S,V=\text{svd}(F_{\bm k})$, $F_{\bm k}=UV$
+        //!
+        //! 接下来我们 将其 连乘, 有 $$W=\prod_{i} F_{\bm k_i} F_{\bm k_{i+1}}$$,
+        //!
+        //! 最后, 我们直接求 det,
+        let n_k = kvec.nrows();
+        let diff = &kvec.row(n_k - 1) - &kvec.row(0);
+        for i in diff.iter() {
+            if (i - i.round()).abs() > 1e-9 {
+                panic!(
+                    "wrong, the end of this loop must differ from the beginning by an integer grid vector. yours {}\n",
+                    i.fract()
+                )
+            }
+        }
+        let use_orb = if self.spin {
+            let mut orb0 = self.orb.to_owned();
+            orb0.append(Axis(0), self.orb.view());
+            orb0
+        } else {
+            self.orb.to_owned()
+        };
+        let add_phase = diff.dot(&use_orb.t());
+        let add_phase = add_phase.mapv(|x| Complex::new(0.0, -2.0 * x * PI).exp());
+        let (eval, mut evec) = self.solve_all(kvec);
+        let first_evec: &ArrayRef<_, Dim<[_; 2]>> = &evec.slice(s![0, .., ..]);
+        let add_phase = Array2::from_diag(&add_phase);
+        let end_evec = first_evec.to_owned().dot(&add_phase);
+
+        evec.slice_mut(s![n_k - 1, .., ..]).assign(&end_evec);
+        let evec = evec.select(Axis(1), occ);
+        let n_occ = occ.len();
+        let evec_conj = evec.map(|x| x.conj());
+        let evec = evec.slice(s![1..n_k, .., ..]).to_owned();
+        let evec_conj = evec_conj.slice(s![0..n_k - 1, .., ..]).to_owned();
+        let mut ovr = Array3::zeros((n_k - 1, n_occ, n_occ));
+        Zip::from(ovr.outer_iter_mut())
+            .and(evec.outer_iter())
+            .and(evec_conj.outer_iter())
+            .for_each(|mut O, e, e_j| {
+                for (i, a) in e_j.outer_iter().enumerate() {
+                    for (j, b) in e.outer_iter().enumerate() {
+                        O[[i, j]] = a.dot(&b);
+                    }
+                }
+            });
+        /*
+        Zip::from(ovr.outer_iter_mut()).for_each(|mut O| {
+            let (U, S, V) = O.svd(true, true).unwrap();
+            let U = U.unwrap();
+            let V = V.unwrap();
+            O.assign(&U.dot(&V));
+        });
+        */
+        let result: Array2<Complex<f64>> = ovr.outer_iter().fold(
+            Array2::from_diag(&Array1::<Complex<f64>>::ones(n_occ)),
+            |acc, x| acc.dot(&x),
+        );
+        let result = result.det().unwrap();
+        let result = -result.arg();
         result
     }
 

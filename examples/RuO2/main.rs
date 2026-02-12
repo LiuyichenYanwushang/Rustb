@@ -253,7 +253,7 @@ fn conductivity_onek(
             _ => panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}", spin),
         };
         X = kron(&pauli, &Array2::eye(model.norb()));
-        for i in 0..model.dim_r {
+        for i in 0..model.dim_r as usize {
             let j = J.slice(s![i, .., ..]).to_owned();
             let j = anti_comm(&X, &j) / 2.0; //这里做反对易
             J.slice_mut(s![i, .., ..]).assign(&(j * dir_1[[i]]));
@@ -264,7 +264,7 @@ fn conductivity_onek(
         if spin != 0 {
             println!("Warning, the model haven't got spin, so the spin input will be ignord");
         }
-        for i in 0..model.dim_r {
+        for i in 0..model.dim_r as usize {
             J.slice_mut(s![i, .., ..])
                 .mul_assign(Complex::new(dir_1[[i]], 0.0));
             v.slice_mut(s![i, .., ..])

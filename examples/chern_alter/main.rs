@@ -64,7 +64,7 @@ fn main() {
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, 0.0, 0, 1e-3);
+    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, 0, 1e-3);
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data.map(|x| {
@@ -77,7 +77,9 @@ fn main() {
         }),
         "./examples/chern_alter/heat_map.pdf",
     );
-    let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, 0.0, 0, 1e-3).unwrap();
+    let conductivity = model
+        .Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, 0, 1e-3)
+        .unwrap();
     println!("{}", conductivity / (2.0 * PI));
 
     let E_min = -1.0;
@@ -86,7 +88,8 @@ fn main() {
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let sigma: Array1<f64> = model
-        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5).unwrap();
+        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5)
+        .unwrap();
     //开始绘制非线性电导
     let mut fg = Figure::new();
     let x: Vec<f64> = mu.to_vec();
@@ -105,8 +108,9 @@ fn main() {
     let E_n = 2000;
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let sigma: Array1<f64> =
-        model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, 0).unwrap();
+    let sigma: Array1<f64> = model
+        .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, 0)
+        .unwrap();
     //开始绘制非线性电导
     let mut fg = Figure::new();
     let x: Vec<f64> = mu.to_vec();

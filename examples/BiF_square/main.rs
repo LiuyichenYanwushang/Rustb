@@ -188,7 +188,9 @@ fn main() {
     let spin: usize = 3;
     let kmesh = arr1(&[nk, nk, 1]);
     let start = Instant::now(); // 开始计时
-    let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, og, spin, eta).unwrap();
+    let conductivity = model
+        .Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta)
+        .unwrap();
     let end = Instant::now(); // 结束计时
     let duration = end.duration_since(start); // 计算执行时间
     println!(
@@ -198,7 +200,9 @@ fn main() {
     ); // 输出执行时间
 
     let mu = Array1::<f64>::linspace(-1.0, 1.0, 1001);
-    let conductivity = model.Hall_conductivity_mu(&kmesh, &dir_1, &dir_2, &mu, T, og, spin, eta).unwrap();
+    let conductivity = model
+        .Hall_conductivity_mu(&kmesh, &dir_1, &dir_2, &mu, T, spin, eta)
+        .unwrap();
 
     let mu: f64 = 0.0;
 
@@ -232,7 +236,7 @@ fn main() {
     let kmesh = arr1(&[nk, nk, 1]);
     let kvec = gen_kmesh(&kmesh).unwrap();
     //let kvec=kvec-0.5;
-    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, og, spin, eta);
+    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, spin, eta);
     let data = berry_curv.into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data,
@@ -247,7 +251,7 @@ fn main() {
     ];
     let label = vec!["G", "X", "M", "G"];
     let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
-    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, og, spin, eta);
+    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, spin, eta);
 
     let mut fg = Figure::new();
     let x: Vec<f64> = k_dist.to_vec();

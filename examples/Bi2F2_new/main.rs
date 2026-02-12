@@ -110,7 +110,9 @@ fn main() {
     ];
     let label = vec!["G", "X", "M", "G"];
     let nk = 1001;
-    model.show_band(&path, &label, nk, "examples/Bi2F2_new/band").unwrap();
+    model
+        .show_band(&path, &label, nk, "examples/Bi2F2_new/band")
+        .unwrap();
 
     //-----算一下wilson loop 的结果-----------------------
     let n = 1001;

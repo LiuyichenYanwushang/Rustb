@@ -2631,7 +2631,6 @@ impl Model {
         };
         Ok(model)
     }
-
     #[allow(non_snake_case)]
     pub fn dos(
         &self,

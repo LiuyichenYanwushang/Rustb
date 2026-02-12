@@ -117,7 +117,7 @@ fn main() {
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, 0.0, 0, 1e-3);
+    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, 0, 1e-3);
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data.map(|x| {
@@ -130,7 +130,9 @@ fn main() {
         }),
         "./examples/yuxuan_try/heat_map.pdf",
     );
-    let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, 0.0, 0, 1e-3).unwrap();
+    let conductivity = model
+        .Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, 0, 1e-3)
+        .unwrap();
     println!("{}", conductivity / (2.0 * PI));
 
     /*

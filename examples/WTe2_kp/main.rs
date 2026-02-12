@@ -32,7 +32,8 @@ fn main() {
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 5.0;
     let sigma: Array1<f64> = model
-        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5).unwrap();
+        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5)
+        .unwrap();
     let sigma = sigma / (2.0 * PI).powi(2);
 
     //开始绘制非线性电导
@@ -61,9 +62,11 @@ fn main() {
     let mut omega = Array1::<f64>::zeros(E_n);
     for (i, t0) in t.iter().enumerate() {
         let model = gen_model(*t0, v, ap, eta, m);
-        let sigma = model.Nonlinear_Hall_conductivity_Extrinsic(
-            &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5,
-        ).unwrap();
+        let sigma = model
+            .Nonlinear_Hall_conductivity_Extrinsic(
+                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5,
+            )
+            .unwrap();
         omega[[i]] = sigma.iter().fold(f64::NAN, |a, &b| a.min(b)) * model.lat.det().unwrap();
     }
     let mut fg = Figure::new();

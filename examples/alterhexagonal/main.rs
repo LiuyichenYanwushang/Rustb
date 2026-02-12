@@ -79,8 +79,7 @@ fn main() {
             //println!("{}",mu);
             //plot!(E,dos,"examples/alterhexagonal/dos.pdf");
 
-            let conductivity =
-                model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, 0.0, 0.0, 0, 1e-3);
+            let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, 0.0, 0, 1e-3);
             /*
             println!("{},{}",mu,conductivity/(2.0*PI));
             if (conductivity/2.0/PI-1.0).abs()<1e-2{
