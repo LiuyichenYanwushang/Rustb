@@ -1,6 +1,7 @@
 //!这个模块是用wilson loop 的方法来计算各种几何量.
 use crate::math::comm;
 use crate::{Model, gen_kmesh};
+use crate::solve_ham::solve_ham;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;

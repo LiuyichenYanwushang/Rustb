@@ -14,6 +14,7 @@ use crate::basis::{Dimension, find_R};
 use crate::error::{Result, TbError};
 use crate::kpoints::gen_kmesh;
 use crate::math::comm;
+use crate::solve_ham::solve_ham;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;

@@ -259,7 +259,7 @@ impl surf_Green {
         //let UR = UR.broadcast((nRR, self.nsta, self.nsta)).unwrap();
         //let hamRk = (&self.ham_hop * &UR).sum_axis(Axis(0));
         //let ham0k: Array2<Complex<f64>> = &ham0
-        //    + &conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>, OwnedRepr<Complex<f64>>>(&ham0k)
+        //    + &conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>>(&ham0k)
         //    + &ham0k;
         //作规范变换
         let ham0k = ham0k.dot(&U);
@@ -276,7 +276,7 @@ impl surf_Green {
     ) -> (f64, f64, f64) {
         let (hamk, hamRk) = self.gen_ham_onek(kvec);
         let hamRk_conj: Array2<Complex<f64>> =
-            conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>, OwnedRepr<Complex<f64>>>(&hamRk);
+            conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>>(&hamRk);
         let I0 = Array2::<Complex<f64>>::eye(self.nsta);
         let accurate: f64 = 1e-8;
         let epsilon = Complex::new(Energy, self.eta) * &I0;
@@ -319,7 +319,7 @@ impl surf_Green {
     ) -> (Array1<f64>, Array1<f64>, Array1<f64>) {
         let (hamk, hamRk) = self.gen_ham_onek(kvec);
         let hamRk_conj: Array2<Complex<f64>> =
-            conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>, OwnedRepr<Complex<f64>>>(&hamRk);
+            conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>>(&hamRk);
         let I0 = Array2::<Complex<f64>>::eye(self.nsta);
         let accurate: f64 = 1e-6;
         let ((N_R, N_L), N_B): ((Vec<_>, Vec<_>), Vec<_>) = Energy

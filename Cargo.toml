@@ -29,7 +29,7 @@ rayon="1.8.0"
 gnuplot="0.0.39"
 lapack = "0.19.0"
 num-traits = "0.2.17"
-ndarray = { version = "0.17.0", features = ["rayon", "serde"] }
+ndarray = { version = "0.17.2", features = ["rayon", "serde"] }
 serde = { version = "1.0.215", features = ["derive"] }
 blas = "0.23.0"
 cblas-sys = "0.2.0"

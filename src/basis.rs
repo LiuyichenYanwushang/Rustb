@@ -13,7 +13,7 @@ use crate::error::{Result, TbError};
 use crate::generics::hop_use;
 use crate::kpoints::gen_kmesh;
 use crate::math::comm;
-use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
+use crate::solve_ham::*;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -129,8 +129,8 @@ fn remove_col<T: Copy>(array: Array2<T>, col_to_remove: usize) -> Array2<T> {
 }
 
 macro_rules! update_hamiltonian {
-    //这个代码是用来更新哈密顿量的, 判断是否有自旋, 以及要更新的 ind_i, ind_j,
-    //输入一个哈密顿量, 返回一个新的哈密顿量
+    // This macro updates the Hamiltonian, checking for spin and the indices ind_i, ind_j.
+    // It takes a Hamiltonian and returns a new Hamiltonian.
     ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {{
         if $spin {
             match $pauli {
@@ -159,8 +159,8 @@ macro_rules! update_hamiltonian {
 }
 
 macro_rules! add_hamiltonian {
-    //这个代码是用来更新哈密顿量的, 判断是否有自旋, 以及要更新的 ind_i, ind_j,
-    //输入一个哈密顿量, 返回一个新的哈密顿量
+    // This macro updates the Hamiltonian, checking for spin and the indices ind_i, ind_j.
+    // It takes a Hamiltonian and returns a new Hamiltonian.
     ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {{
         if $spin {
             match $pauli {
@@ -224,27 +224,6 @@ impl Model {
         spin: bool,
         atom: Option<Vec<Atom>>,
     ) -> Result<Model> {
-        /*
-        //!这个函数是用来初始化一个 Model, 需要输入的变量意义为
-        //!
-        //!模型维度 dim_r,
-        //!
-        //!轨道数目 norb,
-        //!
-        //!晶格常数 lat,
-        //!
-        //!轨道 orb,
-        //!
-        //!是否考虑自旋 spin,
-        //!
-        //!原子数目 natom, 可以选择 None,
-        //!
-        //!原子位置坐标 atom, 可以选择 None,
-        //!
-        //!每个原子的轨道数目, atom_list, 可以选择 None.
-        //!
-        //! 注意, 如果原子部分存在 None, 那么最好统一都是None.
-         */
         //! This function is used to initialize a Model. The variables that need to be input are as follows:
         //!
         //! - dim_r: the dimension of the model
@@ -284,8 +263,8 @@ impl Model {
         let new_atom = match atom {
             Some(atom0) => atom0,
             None => {
-                //通过判断轨道是不是离得太近而判定是否属于一个原子,
-                //这种方法只适用于wannier90不开最局域化
+                // Determine if orbitals belong to the same atom by checking if they are too close;
+                // this method only works when wannier90 does not perform maximal localization.
                 let mut new_atom = Vec::new();
                 new_atom.push(Atom::new(orb.row(0).to_owned(), 1, AtomType::H));
                 for i in 1..norb {
@@ -329,7 +308,7 @@ impl Model {
         Ok(model)
     }
     pub fn set_projection(&mut self, proj: &Vec<OrbProj>) {
-        //! 这个函数是用来设置tb模型的projection 的
+        //! This function sets the tight-binding model's orbital projections.
         self.orb_projection = proj.clone();
     }
     #[allow(non_snake_case)]
@@ -341,19 +320,6 @@ impl Model {
         R: &ArrayBase<T, Ix1>,
         pauli: impl Into<SpinDirection>,
     ) {
-        /*
-        //! 这个是用来给模型添加 hopping 的, "set" 表示可以用来覆盖之前的hopping
-        //!
-        //! tmp: hopping 的参数
-        //!
-        //! ind_i,ind_j: 哈密顿量中的轨道序数, 表示从 i-> j 的hopping
-        //!
-        //! R: 表示hopping 到的原胞位置
-        //!
-        //! pauli:可以取0,1,2,3, 分别表示 $\sg_0$, $\sg_x$, $\sg_y$, $\sg_z$.
-        //!
-        //! 总地来说, 这个函数是让 $\bra{i\bm 0}\hat H\ket{j\bm R}=$tmp
-         */
         //! This function is used to add hopping to the model. The "set" indicates that it can be used to override previous hopping.
         //!
         //! - tmp: the parameters for hopping
@@ -407,7 +373,7 @@ impl Model {
         let negative_R = &(-R);
         match find_R(&self.hamR, &R) {
             Some(index) => {
-                // 获取负 R 的索引（必须存在，否则 panic）
+                // Get the index of negative R (must exist, otherwise panic)
                 let index_inv =
                     find_R(&self.hamR, &negative_R).expect("Negative R not found in hamR");
 
@@ -418,7 +384,7 @@ impl Model {
                     );
                 }
 
-                // 更新 R 位置的矩阵元
+                // Update matrix elements at R position
                 update_hamiltonian!(
                     self.spin,
                     pauli,
@@ -429,7 +395,7 @@ impl Model {
                     norb
                 );
 
-                // 更新负 R 位置的矩阵元（除非是 onsite 且 R=0）
+                // Update matrix elements at negative R position (unless onsite and R=0)
                 if index != 0 || ind_i != ind_j {
                     update_hamiltonian!(
                         self.spin,
@@ -442,7 +408,7 @@ impl Model {
                     );
                 }
 
-                // 检查 onsite 矩阵元是否为实数
+                // Check if onsite matrix element is real
                 assert!(
                     !(ind_i == ind_j && tmp.im != 0.0 && index == 0),
                     "Wrong, the onsite hopping must be real, but here is {}",
@@ -475,7 +441,7 @@ impl Model {
         R: &ArrayBase<T, Ix1>,
         pauli: impl Into<SpinDirection>,
     ) {
-        //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp
+        //! Parameters are the same as set_hop, but $\bra{i\bm 0}\hat H\ket{j\bm R}$ += tmp
         let pauli: SpinDirection = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
         if pauli != SpinDirection::None && self.spin == false {
@@ -496,11 +462,11 @@ impl Model {
         let negative_R = &(-R);
         match find_R(&self.hamR, &R) {
             Some(index) => {
-                // 获取负 R 的索引（必须存在，否则 panic）
+                // Get the index of negative R (must exist, otherwise panic)
                 let index_inv =
                     find_R(&self.hamR, &negative_R).expect("Negative R not found in hamR");
 
-                // 更新 R 位置的矩阵元
+                // Update matrix elements at R position
                 add_hamiltonian!(
                     self.spin,
                     pauli,
@@ -511,7 +477,7 @@ impl Model {
                     norb
                 );
 
-                // 更新负 R 位置的矩阵元（除非是 onsite 且 R=0）
+                // Update matrix elements at negative R position (unless onsite and R=0)
                 if index != 0 || ind_i != ind_j {
                     add_hamiltonian!(
                         self.spin,
@@ -524,7 +490,7 @@ impl Model {
                     );
                 }
 
-                // 检查 onsite 矩阵元是否为实数
+                // Check if onsite matrix element is real
                 assert!(
                     !(ind_i == ind_j && tmp.im != 0.0 && index == 0),
                     "Wrong, the onsite hopping must be real, but here is {}",
@@ -556,7 +522,7 @@ impl Model {
         ind_j: usize,
         R: &Array1<isize>,
     ) -> Result<()> {
-        //!参数和 set_hop 一致, 但是 $\bra{i\bm 0}\hat H\ket{j\bm R}$+=tmp , 不考虑自旋, 直接添加参数
+        //! Parameters are the same as set_hop, but $\bra{i\bm 0}\hat H\ket{j\bm R}$ += tmp, ignoring spin, directly adding parameters
         if R.len() != self.dim_r() {
             return Err(TbError::RVectorLengthError {
                 expected: self.dim_r(),
@@ -595,7 +561,7 @@ impl Model {
 
     #[allow(non_snake_case)]
     pub fn set_onsite(&mut self, tmp: &Array1<f64>, pauli: impl Into<SpinDirection>) {
-        //! 直接对对角项进行设置
+        //! Directly set diagonal elements
         let pauli = pauli.into();
         if tmp.len() != self.norb() {
             panic!(
@@ -611,7 +577,7 @@ impl Model {
 
     #[allow(non_snake_case)]
     pub fn add_onsite(&mut self, tmp: &Array1<f64>, pauli: impl Into<SpinDirection>) {
-        //! 直接对对角项进行设置
+        //! Directly set diagonal elements
         let pauli = pauli.into();
         if tmp.len() != self.norb() {
             panic!(
@@ -628,7 +594,7 @@ impl Model {
     }
     #[allow(non_snake_case)]
     pub fn set_onsite_one(&mut self, tmp: f64, ind: usize, pauli: impl Into<SpinDirection>) {
-        //!对  $\bra{i\bm 0}\hat H\ket{i\bm 0}$ 进行设置
+        //! Set $\bra{i\bm 0}\hat H\ket{i\bm 0}$
         let pauli = pauli.into();
         let R = Array1::<isize>::zeros(self.dim_r());
         self.set_hop(Complex::new(tmp, 0.0), ind, ind, &R, pauli)
@@ -640,7 +606,7 @@ impl Model {
         R: &Array1<isize>,
         pauli: impl Into<SpinDirection>,
     ) {
-        //! 删除 $\bra{i\bm 0}\hat H\ket{j\bm R}$
+        //! Delete $\bra{i\bm 0}\hat H\ket{j\bm R}$
         let pauli = pauli.into();
         if R.len() != self.dim_r() {
             panic!("Wrong, the R length should equal to dim_r")
@@ -662,7 +628,7 @@ impl Model {
         path: &Array2<f64>,
         nk: usize,
     ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
-        //!根据高对称点来生成高对称路径, 画能带图
+        //! Generate high symmetry path from high symmetry points, plot band structure
         if self.dim_r() == 0 {
             return Err(TbError::ZeroDimKPathError);
         }
@@ -713,31 +679,31 @@ impl Model {
     #[allow(non_snake_case)]
     #[inline(always)]
     #[cfg_attr(doc, katexit::katexit)]
-    ///这个是做傅里叶变换, 将实空间的哈密顿量变换到倒空间的哈密顿量
+    ///Performs Fourier transform, converting real-space Hamiltonian to reciprocal-space Hamiltonian.
     ///
-    ///我们有两种规范, 分别是晶格规范和原子规范, 对应的是 Gauge:Lattice 和 Gauge:Atom.
+    ///There are two gauge choices: lattice gauge and atomic gauge, corresponding to `Gauge::Lattice` and `Gauge::Atom`.
     ///
-    ///对于原子规范, 实空间波函数$\ket{n\bm R}$与倒空间波函数 $\ket{u_{\bm k,n}}$ 的变换形式为
+    ///For the atomic gauge, the transformation between real-space wavefunction $\ket{n\bm R}$ and reciprocal-space wavefunction $\ket{u_{\bm k,n}}$ is:
     ///
     ///$$\ket{u_{n\bm k}(\bm r)}=\sum_{\bm R} e^{i\bm k\cdot(\bm R+\bm\tau_n)}\ket{n\bm R}$$
     ///
-    ///满足 $\ket{u_{i\bm k}(\bm r+\bm R)}=\ket{u_{i\bm k}(\bm r)}$
+    ///satisfying $\ket{u_{i\bm k}(\bm r+\bm R)}=\ket{u_{i\bm k}(\bm r)}$.
     ///
-    ///对于哈密顿量, 我们有
+    ///For the Hamiltonian, we have:
     ///$$
     ///H_{mn,\bm k}=\bra{u_{m\bm k}}\hat H\ket{u_{n\bm k}}=\sum_{\bm R^\prime}\sum_{\bm R} \bra{m\bm R^\prime}\hat H\ket{n\bm R}e^{-i(\bm R'-\bm R+\bm\tau_m-\bm \tau_n)\cdot\bm k}.
     ///$$
-    ///考虑到平移对称性, 只有 $\bm R'-\bm R$ 是有意义的, 所以
+    ///Due to translational symmetry, only $\bm R'-\bm R$ matters, thus:
     ///$$
     ///H_{mn,\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat H\ket{n\bm R}e^{i(\bm R-\bm\tau_m+\bm \tau_n)\cdot\bm k}
     ///$$
     ///
-    ///而对于晶格规范, 有 $$\ket{\phi_{n\bm k}}=\sum_{\bm R} e^{i\bm k\cdot\bm R}\ket{n\bm R},$$ 所以
+    ///For the lattice gauge, we have $$\ket{\phi_{n\bm k}}=\sum_{\bm R} e^{i\bm k\cdot\bm R}\ket{n\bm R},$$ so:
     ///$$
     ///H_{mn,\bm k}=\sum_{\bm R} \bra{m\bm 0}\hat H\ket{n\bm R}e^{i(\bm R)\cdot\bm k}
     ///$$
     ///
-    ///此时 $\ket{\psi_{n\bm k}}$ 是倒空间周期的, 即 $\ket{\phi_{n\bm k}(\bm r)}=\ket{\phi_{n\bm k+\bm G}(\bm r)}$
+    ///Here $\ket{\psi_{n\bm k}}$ is periodic in reciprocal space: $\ket{\phi_{n\bm k}(\bm r)}=\ket{\phi_{n\bm k+\bm G}(\bm r)}$.
     pub fn gen_ham<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
@@ -776,7 +742,7 @@ impl Model {
                 };
                 let U = Array2::from_diag(&U0);
                 let U_dag = Array2::from_diag(&U0.map(|x| x.conj()));
-                //接下来两步填上轨道坐标导致的相位
+                // Next two steps fill in the phase due to orbital coordinates
                 let hamk: Array2<Complex<f64>> = U_dag.dot(&hamk);
                 let re_ham = hamk.dot(&U);
                 re_ham
@@ -784,13 +750,13 @@ impl Model {
         };
         hamk
     }
-    ///这个函数是用来生成速度算符的, 即 $\bra{m\bm k}\p_\ap H_{\bm k}\ket{n\bm k},$
-    ///这里的基函数是布洛赫波函数
+    /// This function generates the velocity operator, i.e., $\bra{m\bm k}\p_\ap H_{\bm k}\ket{n\bm k},$
+    /// The basis functions are Bloch wavefunctions.
     ///
-    /// 这里速度算符的计算公式, 我们在程序中采用 tight-binding 模型,
-    /// 即傅里叶变换的时候考虑原子位置.
+    /// The velocity operator formula uses the tight-binding model,
+    /// where the Fourier transform includes atomic positions.
     ///
-    /// 这样我们就有
+    /// Thus we have
     ///
     /// $$
     /// \\begin\{aligned\}
@@ -799,9 +765,9 @@ impl Model {
     /// \\end\{aligned\}
     /// $$
     ///
-    ///这里的 $\\mathcal A_{\bm k}$ 的定义为 $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R-\bm\tau_m+\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
-    ///其中 $\bm r_{mn}$ 可以由 wannier90 给出, 只需要设定 write_rmn=ture
-    ///在这里, 所有的 $\bm R$, $\bm r$, 以及 $\bm \tau$ 都是以实空间为坐标系.
+    /// Here $\\mathcal A_{\bm k}$ is defined as $$\\mathcal A_{\bm k,\ap,mn}=-i\sum_{\bm R}r_{mn,\ap}(\bm R)e^{i\bm k\cdot(\bm R-\bm\tau_m+\bm\tau_{n})}+i\tau_{n\ap}\dt_{mn}$$
+    /// where $\bm r_{mn}$ can be provided by wannier90 by setting write_rmn=true
+    /// Here, all $\bm R$, $\bm r$, and $\bm \tau$ are in real-space coordinates.
     #[allow(non_snake_case)]
     #[inline(always)]
     pub fn gen_v<S: Data<Elem = f64>>(
@@ -809,7 +775,7 @@ impl Model {
         kvec: &ArrayBase<S, Ix1>,
         gauge: Gauge,
     ) -> (Array3<Complex<f64>>, Array2<Complex<f64>>) {
-        //我们采用的不是原子规范, 而是晶格规范
+        // We use lattice gauge rather than atomic gauge
         assert_eq!(
             kvec.len(),
             self.dim_r(),
@@ -822,11 +788,11 @@ impl Model {
             .dot(kvec)
             .mapv(|x| Complex::<f64>::new(x, 0.0));
         let Us = Us * Complex::new(0.0, 2.0 * PI);
-        let Us = Us.mapv(Complex::exp); //Us 就是 exp(i k R)
-        //定义一个初始化的速度矩阵
+        let Us = Us.mapv(Complex::exp); // Us is exp(i k R)
+        // Define an initialized velocity matrix
         let mut v = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
         let R0 = &self.hamR.mapv(|x| Complex::<f64>::new(x as f64, 0.0));
-        //R0 是实空间的 hamR
+        // R0 is the real-space hamR
         let R0 = R0.dot(&self.lat.mapv(|x| Complex::new(x, 0.0)));
         let hamk: Array2<Complex<f64>> = self
             .ham
@@ -847,11 +813,11 @@ impl Model {
                 let U0 = U0.mapv(|x| Complex::<f64>::new(x, 0.0));
                 let U0 = U0 * Complex::new(0.0, 2.0 * PI);
                 let mut U0 = U0.mapv(Complex::exp);
-                //U0 是相位因子
+                // U0 is the phase factor
                 let U = Array2::from_diag(&U0);
                 let U_conj = Array2::from_diag(&U0.mapv(|x| x.conj()));
                 let orb_real = orb_sta.dot(&self.lat);
-                //开始构建 -orb_real[[i,r]]+orb_real[[j,r]];-----------------
+                // Start constructing -orb_real[[i,r]]+orb_real[[j,r]];-----------------
                 let mut UU = Array3::<f64>::zeros((self.dim_r(), self.nsta(), self.nsta()));
                 let A = orb_real.view().insert_axis(Axis(2));
                 let A = A
@@ -861,7 +827,7 @@ impl Model {
                 let mut B = A.view().permuted_axes([0, 2, 1]);
                 let UU = &B - &A;
                 let UU = UU.mapv(|x| Complex::<f64>::new(0.0, x)); //UU[i,j]=i(-tau[i]+tau[j])
-                //定义一个初始化的速度矩阵
+                // Define an initialized velocity matrix
                 Zip::from(v.outer_iter_mut())
                     .and(R0.axis_iter(Axis(1)))
                     .and(UU.outer_iter())
@@ -873,12 +839,12 @@ impl Model {
                             );
                         let vv: Array2<Complex<f64>> = &vv + &hamk * &det_tau;
                         let vv = &U_conj.dot(&vv);
-                        let vv = vv.dot(&U); //接下来两步填上轨道坐标导致的相位
+                        let vv = vv.dot(&U); // Next two steps fill in the phase due to orbital coordinates
                         v0.assign(&vv);
                     });
-                //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
-                //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
-                let hamk = U_conj.dot(&hamk.dot(&U)); //这一步别忘了把hamk 的相位加上
+                // At this point, we have computed sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)}
+                // Next, compute Berry connection A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
+                let hamk = U_conj.dot(&hamk.dot(&U)); // Don't forget to add the phase to hamk
                 if self.rmatrix.len_of(Axis(0)) != 1 {
                     let mut rk =
                         Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
@@ -902,7 +868,7 @@ impl Model {
                 (v, hamk)
             }
             Gauge::Lattice => {
-                //采用晶格规范
+                // Use lattice gauge
                 Zip::from(v.outer_iter_mut())
                     .and(R0.axis_iter(Axis(1)))
                     .for_each(|mut v0, r| {
@@ -913,8 +879,8 @@ impl Model {
                             );
                         v0.assign(&vv);
                     });
-                //到这里, 我们完成了 sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)} 的计算
-                //接下来, 我们计算贝利联络 A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
+                // At this point, we have computed sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)}
+                // Next, compute Berry connection A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
                 if self.rmatrix.len_of(Axis(0)) != 1 {
                     let mut rk =
                         Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
@@ -937,155 +903,14 @@ impl Model {
         (v, hamk)
     }
 
-    #[allow(non_snake_case)]
-    #[inline(always)]
-    pub fn solve_band_onek<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> Array1<f64> {
-        //!求解单个k点的能带值
-        assert_eq!(
-            kvec.len(),
-            self.dim_r(),
-            "Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",
-            kvec.len(),
-            self.dim_r()
-        );
-        let hamk = self.gen_ham(kvec, Gauge::Atom);
-        let eval = eigvalsh_v(&hamk, UPLO::Upper);
-        eval
-    }
 
-    pub fn solve_band_range_onek<S: Data<Elem = f64>>(
-        &self,
-        kvec: &ArrayBase<S, Ix1>,
-        range: (f64, f64),
-        epsilon: f64,
-    ) -> Array1<f64> {
-        ///这个是用来求解部分能带的算法, 可以加快求解速度, 尤其是求解角态或者hing state.
-        assert_eq!(
-            kvec.len(),
-            self.dim_r(),
-            "Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",
-            kvec.len(),
-            self.dim_r()
-        );
-        let hamk = self.gen_ham(&kvec, Gauge::Atom);
-        let eval = eigvalsh_r(&hamk, range, epsilon, UPLO::Upper);
-        eval
-    }
-    pub fn solve_band_all<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix2>) -> Array2<f64> {
-        //!求解多个k点的能带值
-        let nk = kvec.len_of(Axis(0));
-        let mut band = Array2::<f64>::zeros((nk, self.nsta()));
-        Zip::from(kvec.outer_iter())
-            .and(band.outer_iter_mut())
-            .for_each(|x, mut a| {
-                let eval = self.solve_band_onek(&x);
-                a.assign(&eval);
-            });
-        band
-    }
-    #[allow(non_snake_case)]
-    pub fn solve_band_all_parallel<S: Data<Elem = f64>>(
-        &self,
-        kvec: &ArrayBase<S, Ix2>,
-    ) -> Array2<f64> {
-        //!并行求解多个k点的能带值
-        let nk = kvec.len_of(Axis(0));
-        let mut band = Array2::<f64>::zeros((nk, self.nsta()));
-        Zip::from(kvec.outer_iter())
-            .and(band.outer_iter_mut())
-            .par_for_each(|x, mut a| {
-                let eval = self.solve_band_onek(&x);
-                a.assign(&eval);
-            });
-        band
-    }
-    #[allow(non_snake_case)]
-    #[inline(always)]
-    pub fn solve_onek<S: Data<Elem = f64>>(
-        &self,
-        kvec: &ArrayBase<S, Ix1>,
-    ) -> (Array1<f64>, Array2<Complex<f64>>) {
-        assert_eq!(
-            kvec.len(),
-            self.dim_r(),
-            "Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",
-            kvec.len(),
-            self.dim_r()
-        );
-        let hamk = self.gen_ham(&kvec, Gauge::Atom);
-        let (eval, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
-            (eigvals, eigvecs)
-        } else {
-            todo!()
-        };
-        let evec =
-            conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>, OwnedRepr<Complex<f64>>>(&evec);
-        (eval, evec)
-    }
-    pub fn solve_range_onek<S: Data<Elem = f64>>(
-        &self,
-        kvec: &ArrayBase<S, Ix1>,
-        range: (f64, f64),
-        epsilon: f64,
-    ) -> (Array1<f64>, Array2<Complex<f64>>) {
-        ///这个是用来求解部分能带的算法, 可以加快求解速度, 尤其是求解角态或者hing state.
-        assert_eq!(
-            kvec.len(),
-            self.dim_r(),
-            "Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",
-            kvec.len(),
-            self.dim_r()
-        );
-        let hamk = self.gen_ham(&kvec, Gauge::Atom);
-        let (eval, evec) = eigh_r(&hamk, range, epsilon, UPLO::Upper);
-        let evec = evec.mapv(|x| x.conj());
-        (eval, evec)
-    }
-
-    #[allow(non_snake_case)]
-    pub fn solve_all<S: Data<Elem = f64>>(
-        &self,
-        kvec: &ArrayBase<S, Ix2>,
-    ) -> (Array2<f64>, Array3<Complex<f64>>) {
-        let nk = kvec.len_of(Axis(0));
-        let mut band = Array2::<f64>::zeros((nk, self.nsta()));
-        let mut vectors = Array3::<Complex<f64>>::zeros((nk, self.nsta(), self.nsta()));
-        Zip::from(kvec.outer_iter())
-            .and(band.outer_iter_mut())
-            .and(vectors.outer_iter_mut())
-            .for_each(|x, mut a, mut b| {
-                let (eval, evec) = self.solve_onek(&x);
-                a.assign(&eval);
-                b.assign(&evec);
-            });
-        (band, vectors)
-    }
-    #[allow(non_snake_case)]
-    pub fn solve_all_parallel<S: Data<Elem = f64>>(
-        &self,
-        kvec: &ArrayBase<S, Ix2>,
-    ) -> (Array2<f64>, Array3<Complex<f64>>) {
-        let nk = kvec.len_of(Axis(0));
-        let mut band = Array2::<f64>::zeros((nk, self.nsta()));
-        let mut vectors = Array3::<Complex<f64>>::zeros((nk, self.nsta(), self.nsta()));
-        Zip::from(kvec.outer_iter())
-            .and(band.outer_iter_mut())
-            .and(vectors.outer_iter_mut())
-            .par_for_each(|x, mut a, mut b| {
-                let (eval, evec) = self.solve_onek(&x);
-                a.assign(&eval);
-                b.assign(&evec);
-            });
-        (band, vectors)
-    }
-
-    ///这个函数是用来将model的某个方向进行截断的
+    /// This function truncates a certain direction of the model.
     ///
-    ///num:截出多少个原胞
+    /// num: number of unit cells to truncate
     ///
-    ///dir:方向
+    /// dir: direction
     ///
-    ///返回一个model, 其中 dir 和输入的model是一致的, 但是轨道数目和原子数目都会扩大num倍, 沿着dir方向没有胞间hopping.
+    /// Returns a model where the dir direction matches the input model, but the number of orbitals and atoms is multiplied by num, with no inter-cell hopping along the dir direction.
     pub fn cut_piece(&self, num: usize, dir: usize) -> Result<Model> {
         //! This function is used to truncate a certain direction of a model.
         //!
@@ -1103,9 +928,9 @@ impl Model {
                 dim: self.dim_r(),
             });
         }
-        let mut new_orb = Array2::<f64>::zeros((self.norb() * num, self.dim_r())); //定义一个新的轨道
+        let mut new_orb = Array2::<f64>::zeros((self.norb() * num, self.dim_r())); // Define a new orbital
         let mut new_orb_proj = Vec::new();
-        let mut new_atom = Vec::new(); //定义一个新的原子
+        let mut new_atom = Vec::new(); // Define a new atom
         let new_norb = self.norb() * num;
         let new_nsta = self.nsta() * num;
         let new_natom = self.natom() * num;
@@ -1136,8 +961,8 @@ impl Model {
         let mut new_ham = Array3::<Complex<f64>>::zeros((1, new_nsta, new_nsta));
         let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), new_nsta, new_nsta));
         let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r()));
-        //新的轨道和原子构造完成, 开始构建哈密顿量
-        //先尝试构建位置函数
+        // New orbitals and atoms constructed, start building Hamiltonian
+        // First attempt to construct position function
         let exist_r = self.rmatrix.len_of(Axis(0)) != 1;
         if exist_r == false {
             for n in 0..num {
@@ -1165,7 +990,7 @@ impl Model {
                     let ham = ham.to_owned();
                     ind_R[[dir]] = 0;
                     if ind < num {
-                        //开始构建哈密顿量
+                        // Start building Hamiltonian
                         let mut use_ham = Array2::<Complex<f64>>::zeros((new_nsta, new_nsta));
                         if self.spin {
                             //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
@@ -1230,7 +1055,7 @@ impl Model {
                     let rmatrix = rmatrix.to_owned();
                     ind_R[[dir]] = 0;
                     if ind < num {
-                        //开始构建哈密顿量
+                        // Start building Hamiltonian
                         let mut use_ham = Array2::<Complex<f64>>::zeros((new_nsta, new_nsta));
                         if self.spin {
                             //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
@@ -1950,245 +1775,6 @@ impl Model {
         self.rmatrix = self.rmatrix.select(Axis(3), &new_state_order);
     }
 
-    pub fn unfold(
-        &self,
-        U: &Array2<f64>,
-        path: &Array2<f64>,
-        nk: usize,
-        E_min: f64,
-        E_max: f64,
-        E_n: usize,
-        eta: f64,
-        precision: f64,
-    ) -> Result<Array2<f64>> {
-        //! 能带反折叠算法, 用来计算能带反折叠后的能带. 可以用来计算合金以及一些超胞
-        //! 算法参考
-        //!
-        //! 首先, 我们定义超胞布里渊区下的哈密顿量 $H_{\\bm K}$ 以及其格林函数 $$G(\og,\bm K)=(\og+i\eta-H_{\bm K})^{-1}$$
-        //!
-        //! 这里 $H_{\bm k}$ 是超胞的哈密顿量. 其本征值和本征态为 $\ve_{N\bm K}$ 和 $\bra{\psi_{N\bm K}}$
-        //!
-        //! 故我们可以在本征态下将格林函数写为 $$G(\og,\bm K)=\sum_{N}\f{\dyad{\psi_{N\bm K}}}{\og+i\eta-\ve_{N\bm K}}$$
-        //!
-        //! 再利用普函数定理, 有 $A(\og,\bm K)=-\f{1}{\pi}\Im G(\og,\bm K)$, 对其求trace, 我们就能画超胞的能谱.
-        //!
-        //! 但是, 我们希望得到的是原胞的能谱, 所以我们需要得到原胞的基, 即 $\ket{n\bm k}$.
-        //!
-        //! 反折叠后的能谱为 $$A_{nn}(\og,\bm k)=\sum_{N\bm K}\lt\\vert \braket{n\bm k}{\psi_{N\bm K}}\rt\\vert^2 A_{NN}(\og,\bm K)$$
-        //!
-        //!接下来我们计算 $\braket{n\bm k}{\psi_{N\bm K}}$
-        //!
-        //!首先, 我们有$$ \lt\\{
-        //!\\begin{aligned}
-        //!\ket{N\bm K}&=\f{1}{\sqrt{V}}\sum_{\bm R}e^{-i\bm K\cdot(\bm R+\bm\tau_N)}\ket{N\bm R}\\\\
-        //!\ket{n\bm k}&=\f{1}{\sqrt{v}}\sum_{\bm r}e^{-i\bm k\cdot(\bm r+\bm\tau_n)}\ket{n\bm r}\\\\
-        //!\\end{aligned}\rt\.$$
-        let li: Complex<f64> = Complex::i();
-        let E = Array1::<f64>::linspace(E_min, E_max, E_n);
-        let mut A0 = Array2::<f64>::zeros((E_n, nk));
-        let inv_U = U.inv().unwrap();
-        let unfold_lat = &inv_U.dot(&self.lat);
-        let V = self.lat.det().unwrap();
-        let unfold_V = unfold_lat.det().unwrap();
-        let U_det = U.det().unwrap();
-        if U_det <= 1.0 {
-            return Err(TbError::InvalidSupercellDet { det: U_det });
-        }
-        //我们先根据path计算一下k点
-        let (kvec, kdist, knode) = {
-            let n_node: usize = path.len_of(Axis(0));
-            let k_metric = (&unfold_lat.dot(&unfold_lat.t())).inv().unwrap();
-            let mut k_node = Array1::<f64>::zeros(n_node);
-            for n in 1..n_node {
-                //let dk=path.slice(s![n,..]).to_owned()-path.slice(s![n-1,..]).to_owned();
-                let dk = path.row(n).to_owned() - path.slice(s![n - 1, ..]).to_owned();
-                let a = k_metric.dot(&dk);
-                let dklen = dk.dot(&a).sqrt();
-                k_node[[n]] = k_node[[n - 1]] + dklen;
-            }
-            let mut node_index: Vec<usize> = vec![0];
-            for n in 1..n_node - 1 {
-                let frac = k_node[[n]] / k_node[[n_node - 1]];
-                let a = (frac * ((nk - 1) as f64).round()) as usize;
-                node_index.push(a)
-            }
-            node_index.push(nk - 1);
-            let mut k_dist = Array1::<f64>::zeros(nk);
-            let mut k_vec = Array2::<f64>::zeros((nk, self.dim_r()));
-            //k_vec.slice_mut(s![0,..]).assign(&path.slice(s![0,..]));
-            k_vec.row_mut(0).assign(&path.row(0));
-            for n in 1..n_node {
-                let n_i = node_index[n - 1];
-                let n_f = node_index[n];
-                let kd_i = k_node[[n - 1]];
-                let kd_f = k_node[[n]];
-                let k_i = path.row(n - 1);
-                let k_f = path.row(n);
-                for j in n_i..n_f + 1 {
-                    let frac: f64 = ((j - n_i) as f64) / ((n_f - n_i) as f64);
-                    k_dist[[j]] = kd_i + frac * (kd_f - kd_i);
-                    k_vec
-                        .row_mut(j)
-                        .assign(&((1.0 - frac) * k_i.to_owned() + frac * k_f.to_owned()));
-                }
-            }
-            (k_vec, k_dist, k_node)
-        };
-
-        //我们先unfold一下k点
-        let fold_k = &kvec.dot(&U.t()); // fold_k 是要求解的本征值和本征态
-        let (eval, evec) = self.solve_all_parallel(&fold_k); //开始求解本征态和本征值
-        let eval = eval.mapv(|x| Complex::new(x, 0.0));
-        let mut G = Array3::<Complex<f64>>::zeros((E_n, nk, self.nsta()));
-        //Zip::from(G.outer_iter_mut()).and(E.view()).par_for_each(|mut g,og| {g.assign(&(Complex::new(1.0,0.0)/(*og+li*eta-&eval)));});
-        for (e, og) in E.iter().enumerate() {
-            for (k, vec) in eval.outer_iter().enumerate() {
-                for i in 0..self.nsta() {
-                    G[[e, k, i]] = 1.0 / (*og + eta * li - vec[[i]]);
-                }
-            }
-        }
-        let mut G = G.mapv(|x| -x.im() / PI);
-        G.swap_axes(0, 1);
-        //接下来我们计算原胞的原子位置和轨道位置
-        let mut unit_atom = Array2::<f64>::zeros((0, self.dim_r()));
-        let mut unit_orb = Array2::<f64>::zeros((0, self.dim_r()));
-        let atom_position = self.atom_position();
-        let unfold_atom = &atom_position.dot(U).map(|x| {
-            if (x.fract() - 1.0).abs() < precision || x.fract().abs() < precision {
-                0.0
-            } else if x.fract() < 0.0 {
-                x.fract() + 1.0
-            } else {
-                x.fract()
-            }
-        });
-        let unfold_orb = &self.orb.dot(U).map(|x| {
-            if (x.fract() - 1.0).abs() < precision || x.fract().abs() < precision {
-                0.0
-            } else if x.fract() < 0.0 {
-                x.fract() + 1.0
-            } else {
-                x.fract()
-            }
-        });
-        let mut match_atom_list = Array1::<usize>::zeros(self.natom());
-        let mut match_orb_list = Array1::<usize>::zeros(self.norb());
-        let mut unit_atom_orb_match = Vec::<usize>::new(); //这个是原胞中, 原子的第一个轨道对应的轨道list中的位置
-        //接下来我们计算原胞内存在哪些原子, 然后给出原胞和超胞的对应关系, 以及原胞轨道和超胞轨道的对应关系
-        let mut a = 0;
-        let mut b = 0;
-        let mut orb_index = 0;
-        for (i, u_atom) in unfold_atom.outer_iter().enumerate() {
-            let (exist, index): (bool, Option<usize>) = {
-                let mut exist = false;
-                let mut index = None;
-                for (j, u_atom_one) in unit_atom.outer_iter().enumerate() {
-                    let mut a0 = true;
-                    a0 = a0 && ((&u_atom - &u_atom_one).norm() < 5e-2);
-                    if a0 {
-                        exist = true;
-                        index = Some(j);
-                        break;
-                    }
-                }
-                (exist, index)
-            };
-            if exist && a != 0 {
-                let index = index.unwrap();
-                match_atom_list[[i]] = index;
-                for i0 in
-                    unit_atom_orb_match[index]..unit_atom_orb_match[index] + self.atoms[i].norb()
-                {
-                    match_orb_list[[b]] = i0;
-                    b += 1;
-                }
-            } else {
-                unit_atom.push_row(u_atom);
-                match_atom_list[[i]] = a;
-                unit_atom_orb_match.push(orb_index);
-                for i0 in 0..self.atoms[i].norb() {
-                    unit_orb.push_row(unfold_orb.row(b));
-                    match_orb_list[[b]] = i0 + orb_index;
-                    b += 1;
-                }
-                orb_index += self.atoms[i].norb();
-                a += 1;
-            }
-        }
-        if unit_atom.nrows() != self.natom() / (U_det as usize) {
-            return Err(TbError::InvalidAtomConfiguration);
-        }
-        //好了, 接下来让我们计算权重
-        let mut weight = Array2::<Complex<f64>>::zeros((nk, self.nsta()));
-        let mut B = Array3::<f64>::zeros((nk, E_n, unit_orb.nrows()));
-        if self.spin {
-            for k0 in 0..nk {
-                let mut r = &self.orb.dot(&fold_k.row(k0)) - &self.orb.dot(U).dot(&kvec.row(k0));
-                let r0 = r.clone();
-                r.append(Axis(0), r0.view()).unwrap();
-                weight
-                    .slice_mut(s![k0, ..])
-                    .assign(&(-PI * 2.0 * r).mapv(|x| Complex::new(0.0, x).exp()));
-            }
-            let A = match_orb_list.clone();
-            match_orb_list.append(Axis(0), A.view()).unwrap();
-            Zip::from(B.outer_iter_mut())
-                .and(G.outer_iter())
-                .and(weight.outer_iter())
-                .and(evec.outer_iter())
-                .par_for_each(|mut b, g, w, vec| {
-                    for (i0, mut b0) in b.axis_iter_mut(Axis(1)).enumerate() {
-                        let mut A = Array1::<Complex<f64>>::zeros(self.nsta());
-                        A = match_orb_list
-                            .iter()
-                            .enumerate()
-                            .zip(w.iter().zip(vec.axis_iter(Axis(1))))
-                            .fold(A.clone(), |mut acc, ((io, orb_index), (w0, vec0))| {
-                                if *orb_index == i0 {
-                                    acc + *w0 * &vec0
-                                } else {
-                                    acc
-                                }
-                            });
-                        let A = A.mapv(|x| x.norm_sqr());
-                        b0.assign(&g.dot(&A));
-                    }
-                });
-        } else {
-            for k0 in 0..nk {
-                let weight1 = (-PI
-                    * 2.0
-                    * (&self.orb.dot(&fold_k.row(k0)) - &self.orb.dot(U).dot(&kvec.row(k0))))
-                    .mapv(|x| Complex::new(0.0, x).exp());
-                weight.slice_mut(s![k0, ..]).assign(&weight1);
-            }
-            Zip::from(B.outer_iter_mut())
-                .and(G.outer_iter())
-                .and(weight.outer_iter())
-                .and(evec.outer_iter())
-                .par_for_each(|mut b, g, w, vec| {
-                    for (i0, mut b0) in b.axis_iter_mut(Axis(1)).enumerate() {
-                        let mut A = Array1::<Complex<f64>>::zeros(self.nsta());
-                        A = match_orb_list
-                            .iter()
-                            .enumerate()
-                            .zip(w.iter().zip(vec.axis_iter(Axis(1))))
-                            .fold(A.clone(), |mut acc, ((io, orb_index), (w0, vec0))| {
-                                if *orb_index == i0 {
-                                    acc + *w0 * &vec0
-                                } else {
-                                    acc
-                                }
-                            });
-                        let A = A.mapv(|x| x.norm_sqr());
-                        b0.assign(&g.dot(&A));
-                    }
-                });
-        }
-        A0 = B.sum_axis(Axis(2));
-        Ok(A0.reversed_axes())
-    }
 
     pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model> {
         //这个函数是用来对模型做变换的, 变换前后模型的基矢 $L'=UL$.

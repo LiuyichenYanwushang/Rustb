@@ -9,52 +9,51 @@
 //! The implementations are based on the Kubo formula and semiclassical wave-packet
 //! dynamics, providing both intrinsic and extrinsic contributions to transport.
 
-//!# Niu qian 方程推导非线性霍尔效应
-//!以下是用niuqian 方程来推导各阶线性和非线性霍尔效应的公式过程
-
-//!出发点是如下公式
+//! Derivation of nonlinear Hall effect using Niu-Qian equations
+//! This section derives formulas for linear and nonlinear Hall conductivities using the Niu-Qian formalism.
+//! Starting from the current density formula:
 //!$$\bm J=-e\int_\tx{BZ}\dd\bm k\sum_n f_n\bm v_n$$
-//!这里 n 表示能带, 而 $f_n$ 是feimi-dirac distribution. 这里速度算符的定义按照 niuqian
-//!老师的定义为 $$\bm v=\f{1}{\hbar}\f{\p\ve_n}{\p\bm k}-\f{e}{\hbar}\bm E\times\bm\Og_n$$
-//!我们设第 $n$ 阶霍尔电导的定义为
-//!$$\sg_{\ap_1,\ap_2,\cdots,\ap_n;d}=\f{1}{n!}\left\.\f{\p^n J_d}{\p E_{\ap_1}\cdots\p E_{\ap_n}}\right\vert_{\bm E=0}$$
-//!为了得到其表达式, 我们定义级数展开
-//!$$\lt\\\{\\begin{aligned}
-//!f_n=f_n^{(0)}+f_n^{(1)}+f_n^{(2)}\cdots\\\\
-//!\bm v_n=\bm v_n^{(0)}+\bm v_n^{(1)}+\bm v_n^{(2)}\cdots\\\\
-//!\\end{aligned}\rt\.$$
-//!这样我们有
-//!$$ \\begin{aligned}\bm J^{(0)}&=-e\int_\tx{BZ}\dd\bm k\sum_n f_n^{(0)}\bm v_n^{(0)}\\\\
-//!\bm J^{(1)}&=-e\int_\tx{BZ}\dd\bm k\sum_n f_n^{(1)}\bm v_n^{(0)}+f_n^{(0)}\bm v_n^{(1)}\\\\
-//!\bm J^{(2)}&=-e\int_\tx{BZ}\dd\bm k\sum_n f_n^{(2)}\bm v_n^{(0)}+f_n^{(1)}\bm v_n^{(1)}+f_n^{(0)}\bm v_n^{(2)}\\\\
-//!\\end{aligned}$$
-
-//!接下来我们考虑 $f$ 的各阶修正. 利用玻尔兹曼方程, 我们有
-//!$$\p_t f-\f{e}{\hbar}\bm E\cdot\nb_{\bm k} f=-\f{f-f_0}{\tau}$$
-//!令 $f=\sum_{s=1}e^{is\og t} f_n^{(s)}$, 我们有
-//!$$\\begin{aligned} is\og\sum_{s=1}f_n^{(s)}-\f{e}{\hbar}\bm E\cdot\nb_{\bm k}\sum_{s=0} f_n^{(s)}=-\f{1}{\tau}\sum_{s=1} f_n^{(s)}\\\\
-//!\Rightarrow (is\og+\f{1}{\tau})\sum_{s=1} f_n^{(i)}-\f{e}{\hbar}\bm E\cdot\nb_{\bm k}\sum_{i=0} f_n^{(i)}=0\\\\
-//!\\end{aligned}$$
-//!最终, 我们能够得到高阶的费米分布, 为
-//!$$f_n^{(l)}=\f{e}{\hbar} \f{\bm E\nb_{\bm k} f_n^{(l-1)}}{i l \og+1/\tau}=\lt(\f{e/\hbar}{i\og+1/\tau}\rt)\bm E^l\nb^l_{\bm k} f_n^{(0)}$$
-//!取零频极限, 我们有 $$\lim_{\og\to 0} f_n^{(l)}\approx \lt(\f{e\tau}{\hbar}\rt)^l \bm E^l\nb^l_{\bm k} f_n^{(0)}$$
-
-//!关于费米速度 $\bm v_n=\f{1}{\hbar}\pdv{\ve_n}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n$,
-//!我们可以定义各阶展开
-//!$$\\begin{aligned}
-//!\bm v_n^{(0)}&=\f{1}{\hbar}\pdv{\ve_n^{(0)}}{\bm k}\\\\
-//!\bm v_n^{(1)}&=\f{1}{\hbar}\pdv{\ve_n^{(1)}}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n^{(0)}\\\\
-//!\bm v_n^{(2)}&=\f{1}{\hbar}\pdv{\ve_n^{(2)}}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n^{(1)}\\\\
-//!\\end{aligned}$$
-//!对于接下来我们的出发点是电场下的哈密顿量
-//!$$H_{\bm k}=\sum_{mn}\lt(\ve_n^{(0)}\dt_{nm}-e\bm E\cdot\bra{\psi_n}\bm r\ket{\psi_n}\rt)\ket{\psi_n}\bra{\psi_m}$$
+//! Here $n$ labels bands, $f_n$ is the Fermi-Dirac distribution. The velocity operator according to Niu-Qian is:
+//! $$\bm v=\f{1}{\hbar}\f{\p\ve_n}{\p\bm k}-\f{e}{\hbar}\bm E\times\bm\Og_n$$
+//! The $n$-th order Hall conductivity is defined as:
+//! $$\sg_{\ap_1,\ap_2,\cdots,\ap_n;d}=\f{1}{n!}\left\.\f{\p^n J_d}{\p E_{\ap_1}\cdots\p E_{\ap_n}}\right\vert_{\bm E=0}$$
+//! To obtain its expression, we define series expansions:
+//! $$\lt\\\{\\begin{aligned}
+//! f_n=f_n^{(0)}+f_n^{(1)}+f_n^{(2)}\cdots\\\\
+//! \bm v_n=\bm v_n^{(0)}+\bm v_n^{(1)}+\bm v_n^{(2)}\cdots\\\\
+//! \\end{aligned}\rt\.$$
+//! This gives:
+//! $$ \\begin{aligned}\bm J^{(0)}&=-e\int_\tx{BZ}\dd\bm k\sum_n f_n^{(0)}\bm v_n^{(0)}\\\\
+//! \bm J^{(1)}&=-e\int_\tx{BZ}\dd\bm k\sum_n f_n^{(1)}\bm v_n^{(0)}+f_n^{(0)}\bm v_n^{(1)}\\\\
+//! \bm J^{(2)}&=-e\int_\tx{BZ}\dd\bm k\sum_n f_n^{(2)}\bm v_n^{(0)}+f_n^{(1)}\bm v_n^{(1)}+f_n^{(0)}\bm v_n^{(2)}\\\\
+//! \\end{aligned}$$
+//!
+//! Now consider the corrections to $f$. Using the Boltzmann equation:
+//! $$\p_t f-\f{e}{\hbar}\bm E\cdot\nb_{\bm k} f=-\f{f-f_0}{\tau}$$
+//! Setting $f=\sum_{s=1}e^{is\og t} f_n^{(s)}$, we have:
+//! $$\\begin{aligned} is\og\sum_{s=1}f_n^{(s)}-\f{e}{\hbar}\bm E\cdot\nb_{\bm k}\sum_{s=0} f_n^{(s)}=-\f{1}{\tau}\sum_{s=1} f_n^{(s)}\\\\
+//! \Rightarrow (is\og+\f{1}{\tau})\sum_{s=1} f_n^{(i)}-\f{e}{\hbar}\bm E\cdot\nb_{\bm k}\sum_{i=0} f_n^{(i)}=0\\\\
+//! \\end{aligned}$$
+//! Finally, we obtain the higher-order Fermi distribution:
+//! $$f_n^{(l)}=\f{e}{\hbar} \f{\bm E\nb_{\bm k} f_n^{(l-1)}}{i l \og+1/\tau}=\lt(\f{e/\hbar}{i\og+1/\tau}\rt)\bm E^l\nb^l_{\bm k} f_n^{(0)}$$
+//! Taking the zero-frequency limit: $$\lim_{\og\to 0} f_n^{(l)}\approx \lt(\f{e\tau}{\hbar}\rt)^l \bm E^l\nb^l_{\bm k} f_n^{(0)}$$
+//!
+//! For the Fermi velocity $\bm v_n=\f{1}{\hbar}\pdv{\ve_n}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n$,
+//! we define order-by-order expansions:
+//! $$\\begin{aligned}
+//! \bm v_n^{(0)}&=\f{1}{\hbar}\pdv{\ve_n^{(0)}}{\bm k}\\\\
+//! \bm v_n^{(1)}&=\f{1}{\hbar}\pdv{\ve_n^{(1)}}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n^{(0)}\\\\
+//! \bm v_n^{(2)}&=\f{1}{\hbar}\pdv{\ve_n^{(2)}}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n^{(1)}\\\\
+//! \\end{aligned}$$
+//! Next, starting from the Hamiltonian under electric field:
+//! $$H_{\bm k}=\sum_{mn}\lt(\ve_n^{(0)}\dt_{nm}-e\bm E\cdot\bra{\psi_n}\bm r\ket{\psi_n}\rt)\ket{\psi_n}\bra{\psi_m}$$
 //!我们将其拆成两部分, 对角部分和非对角部分
 //!$$\\begin{aligned}
 //!H_{\bm k}^{(0)}&=\sum_{n}\lt(\ve_{n\bm k}^{(0)}-e\bm E\cdot\bm A_n\rt)\dyad{\psi_n}\\\\
 //!H_{\bm k}^{(1)}&=\sum_{n=\not m}\lt(-e\bm E\cdot\bm A_{mn}\rt)\ket{\psi_m}\bra{\psi_n}\\\\
 //!\\end{aligned}$$
 //!这里 $\bm A_{mn}=\bra{\psi_m}\bm r\ket{\psi_n}=i\bra{\psi_m}\p_{\bm k}\ket{\psi_n}$
-
+//!
 //!显然, 我们知道公式
 //!$$e^{\hat S}\hat{\mathcal{O}}e^{-\hat S}=\mathcal{O}+\lt[\hat S,\hat{\mcl{O}}\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\hat{\mcl{O}}\rt]\rt]+\f{1}{6}\lt[\hat S,\lt[\hat S,\lt[\hat S,\hat{\mcl{O}}\rt]\rt]\rt]\cdots$$
 //! 为了方便计算, 我们可以选择一个 $\hat S$, 让 $H_{\bm k}^{(1)}+\lt[\hat S,\hat H_{\bm k}^{(0)}\rt]=0$, 我们有
@@ -63,7 +62,7 @@
 //!&=H_{\bm k}^{(0)}+\f{1}{2}\lt[S,H_{\bm k}^{(1)}\rt]+\f{1}{3}\lt[S,\lt[S,H_{\bm k}^{(1)}\rt]\rt]\cdots
 //!\\end{aligned}$$
 //!为了满足条件, 我们选择 $$S_{nn}=0,\ S_{nm}=\f{-e\bm E\cdot \bm A_{nm}}{\ve_{nm}-e\bm E\cdot \bm A_{nm}}$$
-
+//!
 //!因为我们有
 //!$$\\begin{aligned} \lt[S,H_{\bm k}^{(0)}\rt]&=SH_{\bm k}^{(0)}-H_{\bm k}^{(0)}S=\sum_{j=\not m} S_{mj}H_{\bm k,jn}^{(0)}-\sum_{j=\not n }H_{\bm k,mj}^{(0)}S_{jn}\\\\
 //!&=\sum_{j=\not m}\f{-e\bm E\cdot \bm A_{mj}\lt(\ve_j^{(0)}-e\bm E\cdot\bm A_j\rt)\dt_{jn}}{\ve_{mj}-e\bm E\cdot\lt(\bm A_m-\bm A_j\rt)}-\sum_{j=\not n}\f{-e\lt(\ve_j^{(0)}-e\bm E\cdot\bm A_j\rt)\lt(\bm E\cdot \bm A_{jn}\rt)\dt_{mj}}{\ve_{jn}-e\bm E\cdot\lt(\bm A_j-\bm A_n\rt)}\\\\
@@ -86,7 +85,7 @@
 //!\lt(A_n^c\rt)^{(2)}&=e^2 E_a E_b \lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nl}^a A_{lm}^b A_{mn}^c}{(\ve_n-\ve_m)(\ve_n-\ve_l)}\rt)+e^2 E_a E_b\lt( \sum_{m=\not n}\f{A_{nm}^a A_{mn}^b (A_n^c-A_m^c)}{(\ve_n-\ve_m)^2}\rt)\\\\
 //!&=e^2 E_a E_b\lt(S_n^{abc}-F_n^{abc}\rt)
 //!\\end{aligned}$$
-
+//!
 //!这样利用贝利曲率公式 $\Og_n^{ab}=\p_a A_n^b -\p_b A_n^a$
 //!我们有 $$\\begin{aligned}
 //!\lt(\Og_n^{ab}\rt)^{(1)}&=-e E_c\lt(\p_a G_n^{bc}-\p_b G_n^{ac}\rt)\\\\
@@ -99,9 +98,9 @@
 //!+\f{e^3\tau}{\hbar^2}\sum_n \int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3} \f{1}{2} f_n \lt(\p_a\Og_n^{bc}+\p_b\Og_n^{ac}\rt)\\\\
 //!&-\f{e^3}{\hbar}\sum_n\int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3} f_n\lt(2\p_c G_n^{ab}-\f{1}{2}\lt(\p_a G_n^{bc}+\p_b G_n^{ac}\rt)\rt)
 //!\end{aligned}$$
-
+//!
 //! ## Berry connection 的化简
-
+//!
 //!为了实际的计算, 我们需要将 Berry connection 的形式修改一下, 我们首先按照微分的定理有 $$\p_{\bm k}\lt(H_{\bm k}\ket{\psi_{n\bm k}}\rt)=\lt(\p_{\bm k}H_{\bm k}+H_{\bm k}\p_{\bm k}\rt)\ket{\psi_{n\bm k}}$$
 //!然后我们又因为 $H_{\bm k}\ket{\psi_{n\bm k}}=\ve_{n\bm k}\ket{\psi_{n\bm k}}$, 所以 $$\p_{\bm k}\lt(H_{\bm k}\ket{\psi_{n\bm k}}\rt)=\p_{\bm k}\ve_{n\bm k}\ket{\psi_{n\bm k}}+\ve_{n\bm k}\p_{\bm k}\ket{\psi_{n\bm k}}$$
 //!所以我们有 $$\\begin{aligned}
@@ -111,6 +110,7 @@
 //!根据上面的式子, 我们很容易得到当 $m=\not n$ 时 $$\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}=\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 //!也就是说, 我们能够最终得到 $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 
+use crate::solve_ham::solve_ham;
 use crate::error::{Result, TbError};
 use crate::kpoints::{gen_kmesh, gen_krange};
 use crate::math::*;
@@ -343,6 +343,7 @@ pub fn adapted_integrate_quick(
         }
     }
 }
+
 
 #[allow(non_snake_case)]
 impl Model {

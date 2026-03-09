@@ -2,6 +2,7 @@
 pub mod SKmodel;
 pub mod atom_struct;
 pub mod basis;
+pub mod unfold;
 pub mod conductivity;
 pub mod error;
 pub mod generics;
@@ -15,6 +16,7 @@ pub mod output;
 pub mod phy_const;
 pub mod surfgreen;
 pub mod wannier90;
+pub mod solve_ham;
 pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
 pub use crate::atom_struct::{Atom, OrbProj};
 pub use crate::basis::*;
@@ -1359,44 +1361,6 @@ mod tests {
 
         let (band, evec) = super_model.solve_onek(&array![0.0]);
         println!("{}", band);
-    }
-    #[test]
-    fn unfold_test() {
-        use std::fs::create_dir_all;
-        let li: Complex<f64> = 1.0 * Complex::i();
-        let t1 = 1.0 + 0.0 * li;
-        let t2 = 0.1 + 0.0 * li;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
-        let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
-        let orb = arr2(&[[0., 0.], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
-        //最近邻hopping
-        model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 2, 0, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 1, 2, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 0, 2, &array![0, -1], SpinDirection::None);
-        model.add_hop(t1, 0, 1, &array![-1, 0], SpinDirection::None);
-        model.add_hop(t1, 2, 1, &array![-1, 1], SpinDirection::None);
-
-        let nk: usize = 101;
-        let path = array![[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.], [0.0, 0.0]];
-        let label = vec!["G", "K", "M", "G"];
-        let (kvec, kdist, knode) = model.k_path(&path, nk).unwrap();
-        let U = array![[2.0, 0.0], [0.0, 2.0]];
-
-        let start = Instant::now(); // 开始计时
-        let super_model = model.make_supercell(&U).unwrap();
-        let end = Instant::now(); // 结束计时
-        let duration = end.duration_since(start); // 计算执行时间
-        println!("make_supercell took {} seconds", duration.as_secs_f64()); // 输出执行时间
-        let A = super_model
-            .unfold(&U, &path, nk, -3.0, 5.0, nk, 1e-2, 1e-3)
-            .unwrap();
-        let name = "./tests/unfold_test/";
-        create_dir_all(&name).expect("can't creat the file");
-        draw_heatmap(&A.reversed_axes(), "./tests/unfold_test/unfold_band.pdf");
-        super_model.show_band(&path, &label, nk, name).unwrap();
     }
     #[test]
     fn BBH_model() {
