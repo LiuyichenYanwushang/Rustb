@@ -1,7 +1,7 @@
 //!这个模块是用wilson loop 的方法来计算各种几何量.
 use crate::math::comm;
+use crate::solve_ham::solve;
 use crate::{Model, gen_kmesh};
-use crate::solve_ham::solve_ham;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -17,26 +17,61 @@ use std::io::Write;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
 
-impl Model {
+pub trait Berry {
     //!这个模块是用wilson loop 的方法来计算各种几何量.
-    pub fn berry_loop<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> Array1<f64>
+    /// 这个函数是计算某一个闭合路径上的 berry phase, 用的是wilson loop 方法.
+    ///
+    /// 其算法如下: 我们首先将末端的k点的波函数相位统一. 如果闭合回路沿着布里渊区两端,
+    /// 那么因为布洛赫函数在布里渊区存在一个相位差 $e^{-2\pi i \bm \tau_i}$, 我们有
+    /// $\ket{u_{n,\bm k_\text{end}}}=e^{-2\pi i \bm \tau_i}\ket{u_{n,\bm k_\text{first}}}$
+    ///
+    /// 我们定义交叠矩阵 $F_{mn,\bm k}=\braket{\psi_{m,\bm k}}{\psi_{n,\bm k+\dd\bm k}}$
+    ///
+    /// 接下来我们将其正交化, 用 SVD 分解, 有 $U,S,V=\text{svd}(F_{\bm k})$, $F_{\bm k}=UV$
+    ///
+    /// 接下来我们将其连乘, 有 $$W=\prod_{i} F_{\bm k_i} F_{\bm k_{i+1}}$$,
+    ///
+    /// 最后, 我们求本征值并取其幅角, 有 $e^{i\Theta}=\text{eigh}(W)$,
+    /// 就能够得到这个loop的wanniercentre
+    fn berry_loop<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> Array1<f64>
+    where
+        S: Data<Elem = f64>;
+
+    ///同上, 但是我们求取本征值的时候, 不采用SVD分解, 也不对角化,而是直接取det,
+    ///这样就能得到所有占据数的信息
+    fn berry_loop_det<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> f64
+    where
+        S: Data<Elem = f64>;
+
+    ///这个函数是用 wilson loop 方法来计算berry curvature 的. 根据给定的平面, 其返回一个 Array2<f64>, 这个算法的优点是精度高, 计算量小, 能快速收敛, 但是只能用于绝缘体.
+    ///前两个指标表示横和纵, 数值表示大小
+    fn berry_flux(
+        &self,
+        occ: &Vec<usize>,
+        k_start: &Array1<f64>,
+        dir_1: &Array1<f64>,
+        dir_2: &Array1<f64>,
+        nk1: usize,
+        nk2: usize,
+    ) -> Array3<f64>;
+    ///这个是计算一个闭合路径的berry phase 的
+    fn berry_phase(&self, occ: &Vec<usize>, kvec: &Array3<f64>) -> Array2<f64>;
+    ///这个是计算wcc的, 沿着第一个方向走, 沿着第二个方向积分
+    fn wannier_centre(
+        &self,
+        occ: &Vec<usize>,
+        k_start: &Array1<f64>,
+        dir_1: &Array1<f64>, //第一个方向遍历
+        dir_2: &Array1<f64>, //第二个方向积分
+        nk1: usize,
+        nk2: usize,
+    ) -> Array2<f64>;
+}
+impl Berry for Model {
+    fn berry_loop<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> Array1<f64>
     where
         S: Data<Elem = f64>,
     {
-        //! 这个函数是计算某一个闭合路径上的 berry phase, 用的是wilson loop 方法.
-        //!
-        //! 其算法如下: 我们首先将末端的k点的波函数相位统一. 如果闭合回路沿着布里渊区两端,
-        //! 那么因为布洛赫函数在布里渊区存在一个相位差 $e^{-2\pi i \bm \tau_i}$, 我们有
-        //! $\ket{u_{n,\bm k_\text{end}}}=e^{-2\pi i \bm \tau_i}\ket{u_{n,\bm k_\text{first}}}$
-        //!
-        //! 我们定义交叠矩阵 $F_{mn,\bm k}=\braket{\psi_{m,\bm k}}{\psi_{n,\bm k+\dd\bm k}}$
-        //!
-        //! 接下来我们将其正交化, 用 SVD 分解, 有 $U,S,V=\text{svd}(F_{\bm k})$, $F_{\bm k}=UV$
-        //!
-        //! 接下来我们 将其 连乘, 有 $$W=\prod_{i} F_{\bm k_i} F_{\bm k_{i+1}}$$,
-        //!
-        //! 最后, 我们求本征值并取其幅角, 有 $e^{i\Theta}=\text{eigh}(W)$,
-        //! 就能够得到这个loop的wanniercentre
         let n_k = kvec.nrows();
         let diff = &kvec.row(n_k - 1) - &kvec.row(0);
         for i in diff.iter() {
@@ -99,23 +134,10 @@ impl Model {
         result
     }
 
-    pub fn berry_loop_det<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> f64
+    fn berry_loop_det<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> f64
     where
         S: Data<Elem = f64>,
     {
-        //! 这个函数是计算某一个闭合路径上的 berry phase, 用的是wilson loop 方法.
-        //!
-        //! 其算法如下: 我们首先将末端的k点的波函数相位统一. 如果闭合回路沿着布里渊区两端,
-        //! 那么因为布洛赫函数在布里渊区存在一个相位差 $e^{-2\pi i \bm \tau_i}$, 我们有
-        //! $\ket{u_{n,\bm k_\text{end}}}=e^{-2\pi i \bm \tau_i}\ket{u_{n,\bm k_\text{first}}}$
-        //!
-        //! 我们定义交叠矩阵 $F_{mn,\bm k}=\braket{\psi_{m,\bm k}}{\psi_{n,\bm k+\dd\bm k}}$
-        //!
-        //! 接下来我们将其正交化, 用 SVD 分解, 有 $U,S,V=\text{svd}(F_{\bm k})$, $F_{\bm k}=UV$
-        //!
-        //! 接下来我们 将其 连乘, 有 $$W=\prod_{i} F_{\bm k_i} F_{\bm k_{i+1}}$$,
-        //!
-        //! 最后, 我们直接求 det,
         let n_k = kvec.nrows();
         let diff = &kvec.row(n_k - 1) - &kvec.row(0);
         for i in diff.iter() {
@@ -174,7 +196,7 @@ impl Model {
         result
     }
 
-    pub fn berry_flux(
+    fn berry_flux(
         &self,
         occ: &Vec<usize>,
         k_start: &Array1<f64>,
@@ -183,8 +205,6 @@ impl Model {
         nk1: usize,
         nk2: usize,
     ) -> Array3<f64> {
-        //!这个函数是用 wilson loop 方法来计算berry curvature 的. 根据给定的平面, 其返回一个 Array2<f64>, 这个算法的优点是精度高, 计算量小, 能快速收敛, 但是只能用于绝缘体.
-        //!前两个指标表示横和纵, 数值表示大小
         assert_eq!(
             k_start.len(),
             self.dim_r(),
@@ -239,8 +259,8 @@ impl Model {
         berry_flux
     }
 
-    pub fn berry_phase(&self, occ: &Vec<usize>, kvec: &Array3<f64>) -> Array2<f64> {
-        //!这里是计算wcc的, 沿着第一个方向走, 沿着第二个方向积分
+    fn berry_phase(&self, occ: &Vec<usize>, kvec: &Array3<f64>) -> Array2<f64> {
+        //!这里是计算一个闭合路径的berry phase 的
         let nk1 = kvec.shape()[0];
         let nk2 = kvec.shape()[1];
         let nocc = occ.len();
@@ -259,7 +279,7 @@ impl Model {
         wcc
     }
 
-    pub fn wannier_centre(
+    fn wannier_centre(
         &self,
         occ: &Vec<usize>,
         k_start: &Array1<f64>,

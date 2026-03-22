@@ -1,7 +1,7 @@
 //!这个是给程序提供泛型支持的模块
 use crate::SpinDirection;
 use crate::TbError;
-use crate::basis::Dimension;
+use crate::model::Dimension;
 use num_complex::Complex64;
 use num_traits::identities::Zero;
 

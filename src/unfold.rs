@@ -1,51 +1,52 @@
 use crate::Model;
 use crate::error::{Result, TbError};
+use crate::solve_ham::*;
+use crate::output::*;
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::*;
-use std::f64::consts::PI;
 use num_complex::{Complex, Complex64};
 use rayon::prelude::*;
-use crate::solve_ham::solve_ham;
-pub trait unfold{
-        //! 能带反折叠算法, 用来计算能带反折叠后的能带. 可以用来计算合金以及一些超胞, 杂质, 缺陷,
-        //!电荷密度波在原胞下的影响.
-        /// 算法参考文章 PRL 104, 216401 (2010) 
-        ///
-        /// 首先, 我们定义超胞布里渊区下的哈密顿量 $H_{\\bm K}$ 以及其格林函数 $$G(\og,\bm K)=(\og+i\eta-H_{\bm K})^{-1}$$
-        ///
-        /// 这里 $H_{\bm k}$ 是超胞的哈密顿量. 其本征值和本征态为 $\ve_{N\bm K}$ 和 $\bra{\psi_{N\bm K}}$
-        ///
-        /// 故我们可以在本征态下将格林函数写为 $$G(\og,\bm K)=\sum_{N}\f{\dyad{\psi_{N\bm K}}}{\og+i\eta-\ve_{N\bm K}}$$
-        ///
-        /// 再利用普函数定理, 有 $A(\og,\bm K)=-\f{1}{\pi}\Im G(\og,\bm K)$, 对其求trace, 我们就能画超胞的能谱.
-        ///
-        /// 但是, 我们希望得到的是原胞的能谱, 所以我们需要得到原胞的基, 即 $\ket{n\bm k}$.
-        ///
-        /// 反折叠后的能谱为 
-        /// $$A_{nn}(\og,\bm k)=\sum_{N\bm K}\lt\\vert \braket{n\bm k}{\psi_{N\bm K}}\rt\\vert^2 A_{NN}(\og,\bm K)$$
-        ///
-        ///接下来我们计算 $\braket{n\bm k}{\psi_{N\bm K}}$
-        ///
-        ///首先, 我们有$$ \lt\\{
-        ///\\begin{aligned}
-        ///\ket{N\bm K}&=\f{1}{\sqrt{V}}\sum_{\bm R}e^{-i\bm K\cdot(\bm R+\bm\tau_N)}\ket{N\bm R}\\\\
-        ///\ket{n\bm k}&=\f{1}{\sqrt{v}}\sum_{\bm r}e^{-i\bm k\cdot(\bm r+\bm\tau_n)}\ket{n\bm r}\\\\
-        ///\\end{aligned}\rt\.$$
-        ///
-        ///然后, 我们考虑一个扩包函数, 让原胞 a 和超胞 A 之间通过 U 来联系, 即 A=Ua, 其中 A 和 a
-        ///都是基矢. 由于倒格矢和格矢之间的关系 $b a^T=(2\pi)I$ 以及 $B A^T=(2\pi)I$,
-        ///我们立即可以得到 $b=BU^T$. 其中 B 和 b 分别是原胞和超胞的倒格矢.
-        ///
-        /// $$
-        /// \begin{aligned}
-        /// \bra{n\bm k}\ket{N\bm K}&=\sum_{J\bm R}\braket{n\bm k}{J\bm R}\braket{J\bm R}{J\bm K}\braket{J\bm K}{N\bm K}\\\\
-        /// &=\sum_{J\bm R}\braket{n\bm k}{n'(J)\bm R+\bm r(J)}\braket{J\bm R}{J\bm k}\braket{J\bm K}{N\bm K}\\\\
-        /// &=\sqrt{\frac{1}{V}}\sum_{J\bm R}e^{i(\bm K-\bm k)\cdot\bm R-i\bm k\cdot\bm r(J)}\delta_{n,n'(J)}\braket{J\bm k}{N\bm K}.
-        /// \end{aligned}
-        /// $$
-        ///
-        /// 显然, $r(J)$ 和 $n'(J)$ 都是可以计算的, 利用U, 能够得到折叠前后的对应关系
+use std::f64::consts::PI;
+pub trait Unfold {
+    //! 能带反折叠算法, 用来计算能带反折叠后的能带. 可以用来计算合金以及一些超胞, 杂质, 缺陷,
+    //!电荷密度波在原胞下的影响.
+    /// 算法参考文章 PRL 104, 216401 (2010)
+    ///
+    /// 首先, 我们定义超胞布里渊区下的哈密顿量 $H_{\\bm K}$ 以及其格林函数 $$G(\og,\bm K)=(\og+i\eta-H_{\bm K})^{-1}$$
+    ///
+    /// 这里 $H_{\bm k}$ 是超胞的哈密顿量. 其本征值和本征态为 $\ve_{N\bm K}$ 和 $\bra{\psi_{N\bm K}}$
+    ///
+    /// 故我们可以在本征态下将格林函数写为 $$G(\og,\bm K)=\sum_{N}\f{\dyad{\psi_{N\bm K}}}{\og+i\eta-\ve_{N\bm K}}$$
+    ///
+    /// 再利用普函数定理, 有 $A(\og,\bm K)=-\f{1}{\pi}\Im G(\og,\bm K)$, 对其求trace, 我们就能画超胞的能谱.
+    ///
+    /// 但是, 我们希望得到的是原胞的能谱, 所以我们需要得到原胞的基, 即 $\ket{n\bm k}$.
+    ///
+    /// 反折叠后的能谱为
+    /// $$A_{nn}(\og,\bm k)=\sum_{N\bm K}\lt\\vert \braket{n\bm k}{\psi_{N\bm K}}\rt\\vert^2 A_{NN}(\og,\bm K)$$
+    ///
+    ///接下来我们计算 $\braket{n\bm k}{\psi_{N\bm K}}$
+    ///
+    ///首先, 我们有$$ \lt\\{
+    ///\\begin{aligned}
+    ///\ket{N\bm K}&=\f{1}{\sqrt{V}}\sum_{\bm R}e^{-i\bm K\cdot(\bm R+\bm\tau_N)}\ket{N\bm R}\\\\
+    ///\ket{n\bm k}&=\f{1}{\sqrt{v}}\sum_{\bm r}e^{-i\bm k\cdot(\bm r+\bm\tau_n)}\ket{n\bm r}\\\\
+    ///\\end{aligned}\rt\.$$
+    ///
+    ///然后, 我们考虑一个扩包函数, 让原胞 a 和超胞 A 之间通过 U 来联系, 即 A=Ua, 其中 A 和 a
+    ///都是基矢. 由于倒格矢和格矢之间的关系 $b a^T=(2\pi)I$ 以及 $B A^T=(2\pi)I$,
+    ///我们立即可以得到 $b=BU^T$. 其中 B 和 b 分别是原胞和超胞的倒格矢.
+    ///
+    /// $$
+    /// \begin{aligned}
+    /// \bra{n\bm k}\ket{N\bm K}&=\sum_{J\bm R}\braket{n\bm k}{J\bm R}\braket{J\bm R}{J\bm K}\braket{J\bm K}{N\bm K}\\\\
+    /// &=\sum_{J\bm R}\braket{n\bm k}{n'(J)\bm R+\bm r(J)}\braket{J\bm R}{J\bm k}\braket{J\bm K}{N\bm K}\\\\
+    /// &=\sqrt{\frac{1}{V}}\sum_{J\bm R}e^{i(\bm K-\bm k)\cdot\bm R-i\bm k\cdot\bm r(J)}\delta_{n,n'(J)}\braket{J\bm k}{N\bm K}.
+    /// \end{aligned}
+    /// $$
+    ///
+    /// 显然, $r(J)$ 和 $n'(J)$ 都是可以计算的, 利用U, 能够得到折叠前后的对应关系
     fn unfold(
         &self,
         U: &Array2<f64>,
@@ -59,7 +60,7 @@ pub trait unfold{
     ) -> Result<Array2<f64>>;
 }
 
-impl unfold for Model{
+impl Unfold for Model {
     fn unfold(
         &self,
         U: &Array2<f64>,
@@ -73,7 +74,8 @@ impl unfold for Model{
     ) -> Result<Array2<f64>> {
         let li: Complex<f64> = Complex::i();
         let E = Array1::<f64>::linspace(E_min, E_max, E_n);
-        let mut A0 = Array2::<f64>::zeros((E_n, nk)); let inv_U = U.inv().unwrap();
+        let mut A0 = Array2::<f64>::zeros((E_n, nk));
+        let inv_U = U.inv().unwrap();
         let unfold_lat = &inv_U.dot(&self.lat);
         let V = self.lat.det().unwrap();
         let unfold_V = unfold_lat.det().unwrap();
@@ -281,6 +283,8 @@ impl unfold for Model{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SpinDirection;
+    use crate::draw_heatmap;
     use gnuplot::{
         AutoOption, AxesCommon, Color, Figure, Fix, Font, LineStyle, Major, PointSymbol, Rotate,
         Solid, TextOffset,
@@ -290,9 +294,7 @@ mod tests {
     use num_complex::Complex;
     use std::f64::consts::PI;
     use std::time::{Duration, Instant};
-    use crate::SpinDirection;
-    use crate::draw_heatmap;
-
+    use crate::kpath::*;
 
     #[test]
     fn unfold_test() {

@@ -10,11 +10,12 @@
 //!
 //!POSCAR 格式
 use crate::Model;
-use crate::basis::{Dimension, find_R};
+use crate::kpath::*;
+use crate::model::{Dimension, find_R};
 use crate::error::{Result, TbError};
 use crate::kpoints::gen_kmesh;
 use crate::math::comm;
-use crate::solve_ham::solve_ham;
+use crate::solve_ham::solve;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
@@ -30,10 +31,18 @@ use std::io::Write;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
 
-impl Model {
-    pub fn output_hr(&self, path: &str, seedname: &str) {
-        //! 这个函数是用来将 tight-binding 模型输出到 wannier90_hr.dat 格式的
+pub trait OutPut {
+    /// 这个函数是用来将 tight-binding 模型输出到 wannier90_hr.dat 格式的
+    fn output_hr(&self, path: &str, seedname: &str);
+    fn output_POSCAR(&self, path: &str);
+    fn output_win(&self, path: &str, seedname: &str);
+    fn output_xyz(&self, path: &str, seedname: &str);
+    fn show_band(&self, path: &Array2<f64>, label: &Vec<&str>, nk: usize, name: &str)
+    -> Result<()>;
+}
 
+impl OutPut for Model {
+    fn output_hr(&self, path: &str, seedname: &str) {
         let n_R = self.hamR.nrows(); //length of hamR
         let mut hr_name = String::new();
         hr_name.push_str(path);
@@ -221,7 +230,7 @@ impl Model {
         }
     }
 
-    pub fn output_POSCAR(&self, path: &str) {
+    fn output_POSCAR(&self, path: &str) {
         let mut name = String::new();
         name.push_str(path);
         name.push_str("POSCAR");
@@ -326,7 +335,7 @@ impl Model {
         }
     }
 
-    pub fn output_win(&self, path: &str, seedname: &str) {
+    fn output_win(&self, path: &str, seedname: &str) {
         //!这个是用来输出 win 文件的. 这里projection 需要人为添加, 因为没有保存相关的projection 数据
         let mut name = String::new();
         name.push_str(path);
@@ -414,7 +423,7 @@ impl Model {
         writeln!(file, "begin projections");
         writeln!(file, "end projections");
     }
-    pub fn output_xyz(&self, path: &str, seedname: &str) {
+    fn output_xyz(&self, path: &str, seedname: &str) {
         //!这个是用来输出 xyz 文件的. 这里projection 需要人为添加, 因为没有保存相关的projection 数据
         let mut name = String::new();
         name.push_str(path);
@@ -541,7 +550,7 @@ impl Model {
 
     ///这个函数是用来快速画能带图的, 用python画图, 因为Rust画图不太方便.
     #[allow(non_snake_case)]
-    pub fn show_band(
+    fn show_band(
         &self,
         path: &Array2<f64>,
         label: &Vec<&str>,

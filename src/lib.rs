@@ -1,53 +1,53 @@
 #![allow(warnings)]
 pub mod SKmodel;
 pub mod atom_struct;
-pub mod basis;
-pub mod unfold;
+pub mod model;
 pub mod conductivity;
+pub mod cut;
 pub mod error;
 pub mod generics;
 pub mod geometry;
 pub mod io;
 pub mod kpoints;
+pub mod kpath;
 pub mod math;
+pub mod model_build;
+pub mod model_enums;
+pub mod model_physics;
 pub mod model_struct;
+pub mod model_transform;
+pub mod model_utils;
 pub mod ndarray_lapack;
+pub mod optical_conductivity;
+pub mod orbital_angular;
 pub mod output;
 pub mod phy_const;
-pub mod surfgreen;
-pub mod wannier90;
 pub mod solve_ham;
+pub mod surfgreen;
+pub mod unfold;
+pub mod velocity;
+pub mod wannier90;
 pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
 pub use crate::atom_struct::{Atom, OrbProj};
-pub use crate::basis::*;
+pub use crate::model::*;
+pub use crate::model_enums::*;
+pub use crate::model_physics::*;
 pub use crate::conductivity::*;
+pub use crate::cut::CutModel;
 pub use crate::error::{Result, TbError};
 use crate::generics::usefloat;
+pub use crate::geometry::*;
 pub use crate::io::*;
 pub use crate::kpoints::{gen_kmesh, gen_krange};
+pub use crate::kpath::*;
 pub use crate::math::*;
+pub use crate::optical_conductivity::*;
 pub use crate::output::*;
-#[doc(hidden)]
+pub use crate::solve_ham::solve;
 pub use crate::surfgreen::surf_Green;
+pub use crate::unfold::Unfold;
+pub use crate::velocity::*;
 pub use crate::wannier90::*;
-use gnuplot::Major;
-use ndarray::concatenate;
-use ndarray::linalg::kron;
-use ndarray::prelude::*;
-use ndarray::*;
-use ndarray_linalg::conjugate;
-use ndarray_linalg::*;
-use ndarray_linalg::{Eigh, UPLO};
-use num_complex::Complex;
-use num_traits::identities::Zero;
-use rayon::prelude::*;
-use std::f64::consts::PI;
-use std::fs::File;
-use std::io::Write;
-use std::ops::AddAssign;
-use std::ops::Deref;
-use std::ops::MulAssign;
-use std::time::Instant;
 
 /// # Rustb - Tight-Binding Model Library
 ///
@@ -200,6 +200,12 @@ mod tests {
     use num_complex::Complex;
     use std::f64::consts::PI;
     use std::time::{Duration, Instant};
+    use ndarray::concatenate;
+    use ndarray::linalg::kron;
+    use ndarray_linalg::conjugate;
+    use ndarray_linalg::*;
+    use ndarray_linalg::{Eigh, UPLO};
+    use rayon::prelude::*;
 
     fn write_txt(data: Array2<f64>, output: &str) -> std::io::Result<()> {
         use std::fs::File;

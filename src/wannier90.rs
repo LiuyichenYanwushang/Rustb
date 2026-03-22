@@ -1,18 +1,24 @@
 #[cfg_attr(doc, katexit::katexit)]
-
 use crate::atom_struct::{Atom, AtomType, OrbProj};
-use crate::basis::{Dimension, find_R};
 use crate::error::{Result, TbError};
 use crate::math::comm;
-use crate::{Gauge, Model, SpinDirection};
+use crate::model::Dimension;
+
+use crate::{Gauge, Model, SpinDirection,find_R};
 use ndarray::prelude::*;
 use ndarray_linalg::conjugate;
 use ndarray_linalg::*;
 use num_complex::{Complex, Complex64};
 
-impl Model {
+pub trait Wannier90 {
+    fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Self>
+    where
+        Self: Sized;
+}
+
+impl Wannier90 for Model {
     #[allow(non_snake_case)]
-    pub fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Model> {
+    fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Self> {
         // This function reads tight-binding files from Wannier90.
         //
         // The 'path' parameter specifies the file location, which can be an absolute path (starting with "/")
@@ -920,7 +926,7 @@ impl Model {
             }
         }
 
-        let mut model = Model {
+        let mut model = Self {
             dim_r: Dimension::three,
             spin,
             lat,
