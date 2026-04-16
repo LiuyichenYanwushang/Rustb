@@ -1,5 +1,4 @@
 //! Utility functions and macros for tight-binding model operations
-
 use ndarray::prelude::*;
 use ndarray::*;
 use num_complex::Complex;
@@ -49,74 +48,4 @@ pub fn remove_col<T: Copy>(array: Array2<T>, col_to_remove: usize) -> Array2<T> 
     array.select(Axis(1), &indices)
 }
 
-/// Macro to update Hamiltonian matrix elements with spin consideration
-///
-/// This macro updates the Hamiltonian, checking for spin and the indices ind_i, ind_j.
-/// It takes a Hamiltonian and returns a new Hamiltonian.
-macro_rules! update_hamiltonian {
-    // This macro updates the Hamiltonian, checking for spin and the indices ind_i, ind_j.
-    // It takes a Hamiltonian and returns a new Hamiltonian.
-    ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {{
-        if $spin {
-            match $pauli {
-                crate::model_enums::SpinDirection::None => {
-                    $new_ham[[$ind_i, $ind_j]] = $tmp;
-                    $new_ham[[$ind_i + $norb, $ind_j + $norb]] = $tmp;
-                }
-                crate::model_enums::SpinDirection::x => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] = $tmp;
-                    $new_ham[[$ind_i, $ind_j + $norb]] = $tmp;
-                }
-                crate::model_enums::SpinDirection::y => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] = $tmp * Complex::<f64>::i();
-                    $new_ham[[$ind_i, $ind_j + $norb]] = -$tmp * Complex::<f64>::i();
-                }
-                crate::model_enums::SpinDirection::z => {
-                    $new_ham[[$ind_i, $ind_j]] = $tmp;
-                    $new_ham[[$ind_i + $norb, $ind_j + $norb]] = -$tmp;
-                }
-            }
-        } else {
-            $new_ham[[$ind_i, $ind_j]] = $tmp;
-        }
-        $new_ham
-    }};
-}
-
-/// Macro to add to Hamiltonian matrix elements with spin consideration
-///
-/// This macro adds to the Hamiltonian, checking for spin and the indices ind_i, ind_j.
-/// It takes a Hamiltonian and returns a new Hamiltonian.
-macro_rules! add_hamiltonian {
-    // This macro updates the Hamiltonian, checking for spin and the indices ind_i, ind_j.
-    // It takes a Hamiltonian and returns a new Hamiltonian.
-    ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {{
-        if $spin {
-            match $pauli {
-                crate::model_enums::SpinDirection::None => {
-                    $new_ham[[$ind_i, $ind_j]] += $tmp;
-                    $new_ham[[$ind_i + $norb, $ind_j + $norb]] += $tmp;
-                }
-                crate::model_enums::SpinDirection::x => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] += $tmp;
-                    $new_ham[[$ind_i, $ind_j + $norb]] += $tmp;
-                }
-                crate::model_enums::SpinDirection::y => {
-                    $new_ham[[$ind_i + $norb, $ind_j]] += $tmp * Complex::<f64>::i();
-                    $new_ham[[$ind_i, $ind_j + $norb]] -= $tmp * Complex::<f64>::i();
-                }
-                crate::model_enums::SpinDirection::z => {
-                    $new_ham[[$ind_i, $ind_j]] += $tmp;
-                    $new_ham[[$ind_i + $norb, $ind_j + $norb]] -= $tmp;
-                }
-            }
-        } else {
-            $new_ham[[$ind_i, $ind_j]] += $tmp;
-        }
-        $new_ham
-    }};
-}
-
-// Export the macros
-pub(crate) use add_hamiltonian;
-pub(crate) use update_hamiltonian;
+//读取VASP代码的CHGCAR

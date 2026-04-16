@@ -1,21 +1,19 @@
 #![allow(warnings)]
 pub mod SKmodel;
 pub mod atom_struct;
-pub mod model;
 pub mod conductivity;
 pub mod cut;
 pub mod error;
 pub mod generics;
 pub mod geometry;
 pub mod io;
-pub mod kpoints;
 pub mod kpath;
+pub mod kpoints;
+pub mod magnetic_field;
 pub mod math;
+pub mod model;
 pub mod model_build;
-pub mod model_enums;
 pub mod model_physics;
-pub mod model_struct;
-pub mod model_transform;
 pub mod model_utils;
 pub mod ndarray_lapack;
 pub mod optical_conductivity;
@@ -29,18 +27,18 @@ pub mod velocity;
 pub mod wannier90;
 pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
 pub use crate::atom_struct::{Atom, OrbProj};
-pub use crate::model::*;
-pub use crate::model_enums::*;
-pub use crate::model_physics::*;
 pub use crate::conductivity::*;
 pub use crate::cut::CutModel;
 pub use crate::error::{Result, TbError};
 use crate::generics::usefloat;
 pub use crate::geometry::*;
 pub use crate::io::*;
-pub use crate::kpoints::{gen_kmesh, gen_krange};
 pub use crate::kpath::*;
+pub use crate::kpoints::{gen_kmesh, gen_krange};
+pub use crate::magnetic_field::*;
 pub use crate::math::*;
+pub use crate::model::*;
+pub use crate::model_physics::*;
 pub use crate::optical_conductivity::*;
 pub use crate::output::*;
 pub use crate::solve_ham::solve;
@@ -195,21 +193,22 @@ mod tests {
         AutoOption, AxesCommon, Color, Figure, Fix, Font, LineStyle, Major, PointSymbol, Rotate,
         Solid, TextOffset,
     };
-    use ndarray::prelude::*;
-    use ndarray::*;
-    use num_complex::Complex;
-    use std::f64::consts::PI;
-    use std::time::{Duration, Instant};
     use ndarray::concatenate;
     use ndarray::linalg::kron;
+    use ndarray::prelude::*;
+    use ndarray::*;
     use ndarray_linalg::conjugate;
     use ndarray_linalg::*;
     use ndarray_linalg::{Eigh, UPLO};
+    use num_complex::Complex;
     use rayon::prelude::*;
+    use std::f64::consts::PI;
+    use std::fs::File;
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+    use std::fs::create_dir_all;
 
     fn write_txt(data: Array2<f64>, output: &str) -> std::io::Result<()> {
-        use std::fs::File;
-        use std::io::Write;
         let mut file = File::create(output).expect("Unable to BAND.dat");
         let n = data.len_of(Axis(0));
         let s = data.len_of(Axis(1));
@@ -1151,7 +1150,6 @@ mod tests {
         let show_str = new_model.atom_position().dot(&model.lat);
         let show_str = show_str.slice(s![.., 0..2]).to_owned();
         let show_size = size.row(new_model.norb()).to_owned();
-        use std::fs::create_dir_all;
         create_dir_all("tests/kane/magnetic").expect("can't creat the file");
         write_txt_1(band, "tests/kane/magnetic/band.txt");
         write_txt(size, "tests/kane/magnetic/evec.txt");
@@ -1459,10 +1457,166 @@ mod tests {
         let norb = new_model.norb();
         let size = show_evec;
         let show_str = new_model.atom_position().dot(&model.lat);
-        use std::fs::create_dir_all;
         create_dir_all("tests/BBH/corner").expect("can't creat the file");
         write_txt_1(band, "tests/BBH/corner/band.txt");
         write_txt(size, "tests/BBH/corner/evec.txt");
         write_txt(show_str, "tests/BBH/corner/structure.txt");
+    }
+
+    #[test]
+    fn graphene_magnetic_field() {
+        use crate::{MagneticField, Model, SpinDirection};
+        use ndarray::{Axis, arr1, arr2};
+        use num_complex::Complex;
+        // 如果你在其他地方定义了画图函数，请确保 use 进来，例如：
+        // use crate::draw_heatmap;
+
+        // 1. 设置模型基本参数
+        let t = Complex::new(-1.0, 0.0);
+        let delta = 0.0;
+        let dim_r: usize = 2;
+        let norb: usize = 2;
+
+        // 石墨烯晶格：a1 = (1, 0), a2 = (1/2, √3/2)
+        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+        // 轨道的相对分数坐标 (Fractional Coordinates)
+        let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
+
+        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
+
+        // 添加最近邻跃迁
+        let r0: ndarray::Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
+        for r in r0.axis_iter(Axis(0)) {
+            model.add_hop(t, 0, 1, &r.to_owned(), SpinDirection::None);
+        }
+
+        // 2. 施加磁场
+        // 重要：二维中，面外磁场垂直于 xy 平面，对应的索引必须为 z 轴 (即 mag_dir = 2)
+        // 扩胞 [3, 3] 表示 a1 和 a2 两个方向各扩胞 3 倍
+        // 磁通 8 表示整体超胞含有 8 个磁通量子 (每个原胞 8/9 个磁通)
+        let magnetic_model = model.add_magnetic_field(2, [9, 9], 40).unwrap();
+
+        // 3. 高对称路径 (注意：六角晶格的 K 点在分数倒格矢坐标下是 1/3, 1/3)
+        let path = arr2(&[[0.0, 0.0], [0.5, 0.0], [1.0 / 3.0, 1.0 / 3.0], [0.0, 0.0]]);
+        let label = vec!["Γ", "M", "K", "Γ"];
+        let nk = 1001;
+
+        // 4. 绘制折叠态下的超胞能带 (Hofstadter 蝴蝶状能带切片)
+        magnetic_model
+            .show_band(&path, &label, nk, "tests/graphene_magnetic")
+            .unwrap();
+
+        // 5. 展开能带 (Unfold) 回到原胞 Brillouin 区
+        let u_matrix = arr2(&[[9.0, 0.0], [0.0, 9.0]]);
+
+        // 生成对应的谱函数 (Spectral Weight)
+        let a_spectral = magnetic_model
+            .unfold(&u_matrix, &path, nk, -3.0, 3.0, nk, 1e-3, 1e-5)
+            .unwrap();
+
+        // 将谱函数输出为热力图
+        // (假定 draw_heatmap 接收二维热力矩阵以及保存路径)
+        draw_heatmap(
+            &a_spectral.reversed_axes(),
+            "./tests/graphene_magnetic/unfold_band.pdf",
+        );
+    }
+
+    #[test]
+    fn test_hofstadter_butterfly_gnuplot() {
+        use gnuplot::AutoOption::Fix;
+        use gnuplot::{AxesCommon, Color, Figure, PointSize, PointSymbol};
+
+        // 1. 初始化一个标准的 2D 正方晶格
+        let t = Complex::new(-1.0, 0.0);
+        let dim_r = 2;
+        // 正方晶格基矢 a1=(1,0), a2=(0,1)
+        let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+        // 单轨道坐标位于原点
+        let orb = arr2(&[[0.0, 0.0]]);
+
+        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        model.set_onsite(&arr1(&[0.0]), SpinDirection::None);
+
+        // 加上最近邻跃迁 (上下左右4个方向)
+        let r0: ndarray::Array2<isize> = arr2(&[[1, 0], [-1, 0], [0, 1], [0, -1]]);
+        for r in r0.axis_iter(Axis(0)) {
+            model.add_hop(t, 0, 0, &r.to_owned(), SpinDirection::None);
+        }
+
+        // 2. 准备扫描磁通并记录坐标
+        let q = 81; // 分母 q 设定为 49 形成的蝴蝶分形已经足够好看
+
+        // 我们用两个动态数组分别记录散点图的 X 轴 (磁通) 和 Y 轴 (能量)
+        let mut x_data = Vec::new();
+        let mut y_data = Vec::new();
+
+        println!("开始计算 Hofstadter 蝴蝶能谱，进度: ");
+
+        for p in 0..=q {
+            // 在 y 轴方向扩胞 q 倍，即 [1, q]，形成一个一维超胞
+            let mag_model = model.add_magnetic_field(2, [1, q], p as isize).unwrap();
+            let norb = mag_model.norb();
+
+            // 提取 Gamma 点 k = (0,0) 的哈密顿量矩阵
+            let mut h_k0 = Array2::<Complex<f64>>::zeros((norb, norb));
+            for iR in 0..mag_model.hamR.nrows() {
+                for i in 0..norb {
+                    for j in 0..norb {
+                        h_k0[[i, j]] += mag_model.ham[[iR, i, j]];
+                    }
+                }
+            }
+
+            // --- 求解本征值 ---
+            let evals = h_k0.eigvalsh(UPLO::Upper).expect("矩阵对角化失败");
+
+            // 收集坐标点
+            let flux_ratio = (p as f64) / (q as f64);
+            for &e in evals.iter() {
+                x_data.push(flux_ratio);
+                y_data.push(e);
+            }
+
+            if p % 10 == 0 {
+                println!("已完成 {}/{}", p, q);
+            }
+        }
+
+        println!(
+            "计算完成，共有 {} 个能级点，正在使用 gnuplot 绘图...",
+            x_data.len()
+        );
+
+        // 3. 使用 Gnuplot 直接输出图像
+        // 确保目录存在
+        create_dir_all("tests").expect("无法创建 tests 文件夹");
+
+        let mut fg = Figure::new();
+        let axes = fg.axes2d();
+
+        axes.set_title("Hofstadter's Butterfly", &[]);
+        axes.set_x_label("Magnetic Flux (\\Phi / \\Phi_0)", &[]);
+        axes.set_y_label("Energy (E/t)", &[]);
+
+        // 固定 x 和 y 的坐标范围
+        let axes = axes.set_x_range(Fix(0.0), Fix(1.0));
+        let axes = axes.set_y_range(Fix(-10.0), Fix(10.0));
+
+        // 使用 .points 绘制散点图
+        // PointSymbol('.') 表示画极小的像素点，最适合用来展示密集的分形结构
+        // Color("navy") 使用深蓝色
+        axes.points(
+            &x_data,
+            &y_data,
+            &[Color("navy"), PointSymbol('.'), PointSize(0.6)],
+        );
+
+        // 将图像渲染为 PDF
+        fg.set_terminal("pdfcairo", "tests/hofstadter_butterfly.pdf");
+        fg.show().expect("Gnuplot 画图失败");
+
+        println!("完美！图像已保存至 tests/hofstadter_butterfly.pdf");
     }
 }

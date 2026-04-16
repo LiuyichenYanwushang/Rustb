@@ -1,8 +1,8 @@
 //! Physics calculation methods for tight-binding models
+use crate::Gauge;
 use crate::Model;
 use crate::error::{Result, TbError};
 use crate::kpoints::gen_kmesh;
-use crate::model_enums::Gauge;
 use crate::solve_ham::solve;
 use ndarray::prelude::*;
 use ndarray::*;
@@ -126,10 +126,5 @@ impl Model {
             .reduce(|| Array1::<f64>::zeros(E_n), |acc, x| acc + x);
         let dos = dos / (nk as f64);
         Ok((E, dos))
-    }
-
-    ///这个函数是用来给模型添加磁场的
-    pub fn add_magnetic_field(&self) -> Result<Model> {
-        Ok(self.clone())
     }
 }

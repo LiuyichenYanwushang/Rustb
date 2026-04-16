@@ -8,10 +8,11 @@
 //! $$
 //! where $\Sigma$ is the self-energy due to the semi-infinite bulk.
 use crate::Model;
-use crate::model::Dimension;
 use crate::error::{Result, TbError};
-use crate::kpoints::gen_kmesh;
 use crate::kpath::*;
+use crate::kpoints::gen_kmesh;
+use crate::model::Dimension;
+pub use crate::model_utils::{remove_col, remove_row};
 use gnuplot::Major;
 use gnuplot::{Auto, AutoOption::Fix, AxesCommon, Custom, Figure, Font, HOT, RAINBOW};
 use ndarray::concatenate;
@@ -60,18 +61,7 @@ pub struct surf_Green {
     pub ham_hopR: Array2<isize>,
 }
 
-#[inline(always)]
-fn remove_row<T: Copy>(array: Array2<T>, row_to_remove: usize) -> Array2<T> {
-    let indices: Vec<_> = (0..array.nrows()).filter(|&r| r != row_to_remove).collect();
-    array.select(Axis(0), &indices)
-}
-#[inline(always)]
-fn remove_col<T: Copy>(array: Array2<T>, col_to_remove: usize) -> Array2<T> {
-    let indices: Vec<_> = (0..array.ncols()).filter(|&r| r != col_to_remove).collect();
-    array.select(Axis(1), &indices)
-}
-
-impl Kpath for surf_Green{
+impl Kpath for surf_Green {
     fn k_path(
         &self,
         path: &Array2<f64>,

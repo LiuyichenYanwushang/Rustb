@@ -1,6 +1,6 @@
 [package]
 name = "Rustb"
-version = "0.6.5"
+version = "0.6.6"
 edition = "2024"
 
 categories = ["science"]
@@ -35,6 +35,7 @@ blas = "0.23.0"
 cblas-sys = "0.2.0"
 katexit = "0.1.5"
 thiserror = "2.0.12"
+toml = "0.8"
 
 
 [dependencies.intel-mkl-src]

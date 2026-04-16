@@ -7,13 +7,13 @@ use num_complex::Complex;
 use rayon::prelude::*;
 use std::f64::consts::PI;
 
-pub trait Kpath{
+pub trait Kpath {
     //! Generate high symmetry path from high symmetry points, plot band structure
     fn k_path(
         &self,
         path: &Array2<f64>,
         nk: usize,
-    ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> ;
+    ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)>;
 }
 
 impl Kpath for Model {

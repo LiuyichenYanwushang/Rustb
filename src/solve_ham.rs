@@ -1,6 +1,6 @@
 //!这个模块是用来求解哈密顿量的
-use crate::Model;
 use crate::Gauge;
+use crate::Model;
 use crate::error::{Result, TbError};
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
 use ndarray::prelude::*;

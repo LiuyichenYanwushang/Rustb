@@ -1,7 +1,7 @@
 use crate::Model;
 use crate::error::{Result, TbError};
-use crate::solve_ham::*;
 use crate::output::*;
+use crate::solve_ham::*;
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::*;
@@ -285,6 +285,7 @@ mod tests {
     use super::*;
     use crate::SpinDirection;
     use crate::draw_heatmap;
+    use crate::kpath::*;
     use gnuplot::{
         AutoOption, AxesCommon, Color, Figure, Fix, Font, LineStyle, Major, PointSymbol, Rotate,
         Solid, TextOffset,
@@ -294,7 +295,6 @@ mod tests {
     use num_complex::Complex;
     use std::f64::consts::PI;
     use std::time::{Duration, Instant};
-    use crate::kpath::*;
 
     #[test]
     fn unfold_test() {

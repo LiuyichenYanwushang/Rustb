@@ -10,11 +10,11 @@
 //!
 //!POSCAR 格式
 use crate::Model;
-use crate::kpath::*;
-use crate::model::{Dimension, find_R};
 use crate::error::{Result, TbError};
+use crate::kpath::*;
 use crate::kpoints::gen_kmesh;
 use crate::math::comm;
+use crate::model::{Dimension, find_R};
 use crate::solve_ham::solve;
 use ndarray::concatenate;
 use ndarray::linalg::kron;

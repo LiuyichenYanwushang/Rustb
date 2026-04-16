@@ -4,7 +4,7 @@ use crate::error::{Result, TbError};
 use crate::math::comm;
 use crate::model::Dimension;
 
-use crate::{Gauge, Model, SpinDirection,find_R};
+use crate::{Gauge, Model, SpinDirection, find_R};
 use ndarray::prelude::*;
 use ndarray_linalg::conjugate;
 use ndarray_linalg::*;

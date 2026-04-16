@@ -514,17 +514,12 @@ impl BerryCurvature for Model {
         );
         let mut UU = Array2::<f64>::zeros((self.nsta(), self.nsta()));
         for i in 0..self.nsta() {
-            for j in 0..self.nsta() {
+            //这里利用了U的对称特征
+            for j in i..self.nsta() {
                 let a = band[[i]] - band[[j]];
                 //这里用η进行展宽
                 UU[[i, j]] = 1.0 / (a.powi(2) + eta.powi(2));
-                /*
-                if a.abs() < 1e-8 {
-                    UU[[i, j]] = 0.0;
-                } else {
-                    UU[[i, j]] = 1.0 / (a.powi(2)+eta.powi(2));
-                }
-                */
+                UU[[j, i]] = UU[[i, j]];
             }
         }
         let omega_n = im
