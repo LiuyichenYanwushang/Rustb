@@ -5,7 +5,7 @@ edition = "2024"
 
 categories = ["science"]
 description = "A package for calculating band, angle state, linear and nonlinear conductivities based on tight-binding models"
-exclude = ["target/", "examples/", ".github/", "crate/","tests/", "CLAUDE.md", ".claude/"]
+exclude = ["target/", "examples/", ".github/", "crate/","tests/", "benches/", "CLAUDE.md", ".claude/"]
 keywords = ["tight-binding","physics","Rustb"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -54,6 +54,13 @@ version = "0.10.4"
 optional = true
 default-features = false
 features = ["cblas"]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "bench_main"
+harness = false
 
 [[package.metadata.docs.rs.artifacts]]
 src = "doc/dos_2D.svg"

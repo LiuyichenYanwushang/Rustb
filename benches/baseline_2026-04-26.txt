@@ -1,0 +1,40 @@
+gen_ham/Lattice/small(2orb)
+                        time:   [303.81 ns 305.74 ns 307.66 ns]
+gen_ham/Atom/small(2orb)
+                        time:   [760.86 ns 764.75 ns 768.80 ns]
+gen_ham/Lattice/medium(18orb)
+                        time:   [1.7094 µs 1.7211 µs 1.7340 µs]
+gen_ham/Atom/medium(18orb)
+                        time:   [6.3721 µs 6.4149 µs 6.4616 µs]
+gen_ham/Lattice/spinful(4sta)
+                        time:   [422.25 ns 424.80 ns 428.08 ns]
+gen_ham/Atom/spinful(4sta)
+                        time:   [1.0277 µs 1.0365 µs 1.0479 µs]
+gen_v/Atom_gauge/small(2orb)
+                        time:   [2.5033 µs 2.5197 µs 2.5363 µs]
+gen_v/Lattice_gauge/small(2orb)
+                        time:   [1.0005 µs 1.0058 µs 1.0116 µs]
+gen_v/Atom_gauge/medium(18orb)
+                        time:   [23.982 µs 24.127 µs 24.285 µs]
+gen_v/Lattice_gauge/medium(18orb)
+                        time:   [7.7700 µs 7.8320 µs 7.9094 µs]
+gen_v/Atom_gauge/spinful(4sta)
+                        time:   [3.3132 µs 3.3281 µs 3.3440 µs]
+gen_v/Lattice_gauge/spinful(4sta)
+                        time:   [1.4516 µs 1.4581 µs 1.4651 µs]
+solve_onek/eigh/small(2orb)
+                        time:   [1.4147 µs 1.4209 µs 1.4276 µs]
+solve_onek/eigh/medium(18orb)
+                        time:   [27.873 µs 28.021 µs 28.177 µs]
+solve_onek/eigh/spinful(4sta)
+                        time:   [1.9874 µs 1.9999 µs 2.0132 µs]
+solve_band_all_parallel/small_101x101
+                        time:   [2.6009 ms 2.6424 ms 2.6869 ms]
+berry_curvature_onek/scalar/small(2orb)
+                        time:   [4.2113 µs 4.2590 µs 4.3133 µs]
+berry_curvature_onek/scalar/spinful(4sta)
+                        time:   [5.7434 µs 5.7986 µs 5.8761 µs]
+berry_curvature_onek/spin_z/spinful(4sta)
+                        time:   [6.7623 µs 6.7975 µs 6.8350 µs]
+                        time:   [1.1556 ms 1.1786 ms 1.2041 ms]
+dos/small_51x51         time:   [3.4248 ms 3.4960 ms 3.5712 ms]
