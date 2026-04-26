@@ -6,7 +6,6 @@ use crate::kpoints::gen_kmesh;
 use crate::solve_ham::solve;
 use ndarray::prelude::*;
 use ndarray::*;
-use ndarray_linalg::Inverse;
 use num_complex::Complex;
 use rayon::prelude::*;
 use std::f64::consts::PI;
@@ -50,41 +49,63 @@ impl Model {
             "Wrong, the k-vector's length must equal to the dimension of model."
         );
 
-        let Us = (self.hamR.mapv(|x| x as f64))
-            .dot(kvec)
-            .mapv(|x| Complex::<f64>::new(x, 0.0));
-        let Us = Us * Complex::new(0.0, 2.0 * PI);
-        let Us = Us.mapv(Complex::exp);
-        let hamk: Array2<Complex<f64>> = self
-            .ham
-            .outer_iter()
-            .zip(Us.iter())
-            .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (hm, u)| {
-                acc + &hm * *u
-            });
+        let n_r = self.hamR.nrows();
+        let dim = self.dim_r();
+        let nsta = self.nsta();
 
-        let hamk = match gauge {
+        // Fused phase factor: R·k → exp(i 2π R·k) in one pass
+        let Us: Vec<Complex<f64>> = (0..n_r)
+            .map(|i| {
+                let mut phase = 0.0f64;
+                for d in 0..dim {
+                    phase += self.hamR[[i, d]] as f64 * kvec[d];
+                }
+                Complex::new(0.0, 2.0 * PI * phase).exp()
+            })
+            .collect();
+
+        // Mutable accumulate (no intermediate per-R allocations)
+        let mut hamk = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        for i in 0..n_r {
+            let u = Us[i];
+            let hm = self.ham.slice(s![i, .., ..]);
+            Zip::from(&mut hamk).and(&hm).for_each(|a, &b| *a += b * u);
+        }
+
+        match gauge {
             Gauge::Lattice => hamk,
             Gauge::Atom => {
-                let U0: Array1<f64> = self.orb.dot(kvec);
-                let U0: Array1<Complex<f64>> = U0.mapv(|x| Complex::<f64>::new(x, 0.0));
-                let U0 = U0 * Complex::new(0.0, 2.0 * PI);
-                let mut U0: Array1<Complex<f64>> = U0.mapv(Complex::exp);
-                let U0 = if self.spin {
-                    let U0 = concatenate![Axis(0), U0, U0];
-                    U0
-                } else {
-                    U0
-                };
-                let U = Array2::from_diag(&U0);
-                let U_dag = Array2::from_diag(&U0.map(|x: &Complex<f64>| x.conj()));
-                // Next two steps fill in the phase due to orbital coordinates
-                let hamk: Array2<Complex<f64>> = U_dag.dot(&hamk);
-                let re_ham = hamk.dot(&U);
-                re_ham
+                // Fused: τ·k → exp(i 2π τ·k) in one pass
+                let orb_phase: Vec<Complex<f64>> = self
+                    .orb
+                    .outer_iter()
+                    .map(|tau| {
+                        let mut phase = 0.0f64;
+                        for d in 0..dim {
+                            phase += tau[d] * kvec[d];
+                        }
+                        Complex::new(0.0, 2.0 * PI * phase).exp()
+                    })
+                    .collect();
+                let norb = self.norb();
+                let phase_len = if self.spin { 2 * norb } else { norb };
+                let mut U0 = Array1::<Complex<f64>>::zeros(phase_len);
+                for i in 0..norb {
+                    U0[i] = orb_phase[i];
+                    if self.spin {
+                        U0[i + norb] = orb_phase[i];
+                    }
+                }
+                // Element-wise gauge transform: H'[m,n] = e^{-i k·τ_m} * H[m,n] * e^{i k·τ_n}
+                for m in 0..nsta {
+                    let conj_phase_m = U0[m].conj();
+                    for n in 0..nsta {
+                        hamk[[m, n]] *= conj_phase_m * U0[n];
+                    }
+                }
+                hamk
             }
-        };
-        hamk
+        }
     }
 
     #[allow(non_snake_case)]

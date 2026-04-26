@@ -48,7 +48,6 @@ impl Velocity for Model {
         kvec: &ArrayBase<S, Ix1>,
         gauge: Gauge,
     ) -> (Array3<Complex<f64>>, Array2<Complex<f64>>) {
-        // We use lattice gauge rather than atomic gauge
         assert_eq!(
             kvec.len(),
             self.dim_r(),
@@ -57,23 +56,32 @@ impl Velocity for Model {
             self.dim_r()
         );
 
-        let Us = (self.hamR.mapv(|x| x as f64))
-            .dot(kvec)
-            .mapv(|x| Complex::<f64>::new(x, 0.0));
-        let Us = Us * Complex::new(0.0, 2.0 * PI);
-        let Us = Us.mapv(Complex::exp); // Us is exp(i k R)
-        // Define an initialized velocity matrix
-        let mut v = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
+        let n_r = self.hamR.nrows();
+        let dim = self.dim_r();
+        let nsta = self.nsta();
+
+        // Fused phase factor: R·k → exp(i 2π R·k) in one pass
+        let Us: Vec<Complex<f64>> = (0..n_r)
+            .map(|i| {
+                let mut phase = 0.0f64;
+                for d in 0..dim {
+                    phase += self.hamR[[i, d]] as f64 * kvec[d];
+                }
+                Complex::new(0.0, 2.0 * PI * phase).exp()
+            })
+            .collect();
+
+        let mut v = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));
         let R0 = &self.hamR.mapv(|x| Complex::<f64>::new(x as f64, 0.0));
-        // R0 is the real-space hamR
         let R0 = R0.dot(&self.lat.mapv(|x| Complex::new(x, 0.0)));
-        let hamk: Array2<Complex<f64>> = self
-            .ham
-            .outer_iter()
-            .zip(Us.iter())
-            .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (hm, u)| {
-                acc + &hm * *u
-            });
+
+        // Mutable accumulate (no intermediate per-R allocations)
+        let mut hamk = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        for i in 0..n_r {
+            let u = Us[i];
+            let hm = self.ham.slice(s![i, .., ..]);
+            Zip::from(&mut hamk).and(&hm).for_each(|a, &b| *a += b * u);
+        }
         let (v, hamk) = match gauge {
             Gauge::Atom => {
                 let orb_sta = if self.spin {
@@ -82,13 +90,19 @@ impl Velocity for Model {
                 } else {
                     self.orb.to_owned()
                 };
-                let U0 = orb_sta.dot(kvec);
-                let U0 = U0.mapv(|x| Complex::<f64>::new(x, 0.0));
-                let U0 = U0 * Complex::new(0.0, 2.0 * PI);
-                let mut U0 = U0.mapv(Complex::exp);
-                // U0 is the phase factor
-                let U = Array2::from_diag(&U0);
-                let U_conj = Array2::from_diag(&U0.mapv(|x| x.conj()));
+                // Fused: τ·k → exp(i 2π τ·k) in one pass
+                let orb_phase: Vec<Complex<f64>> = orb_sta
+                    .outer_iter()
+                    .map(|tau| {
+                        let mut phase = 0.0f64;
+                        for d in 0..dim {
+                            phase += tau[d] * kvec[d];
+                        }
+                        Complex::new(0.0, 2.0 * PI * phase).exp()
+                    })
+                    .collect();
+                let U = Array2::from_diag(&Array1::from(orb_phase.clone()));
+                let U_conj = Array2::from_diag(&Array1::from(orb_phase.iter().map(|x| x.conj()).collect::<Vec<_>>()));
                 let orb_real = orb_sta.dot(&self.lat);
                 // Start constructing -orb_real[[i,r]]+orb_real[[j,r]];-----------------
                 let mut UU = Array3::<f64>::zeros((self.dim_r(), self.nsta(), self.nsta()));
@@ -100,74 +114,67 @@ impl Velocity for Model {
                 let mut B = A.view().permuted_axes([0, 2, 1]);
                 let UU = &B - &A;
                 let UU = UU.mapv(|x| Complex::<f64>::new(0.0, x)); //UU[i,j]=i(-tau[i]+tau[j])
-                // Define an initialized velocity matrix
-                Zip::from(v.outer_iter_mut())
-                    .and(R0.axis_iter(Axis(1)))
-                    .and(UU.outer_iter())
-                    .for_each(|mut v0, r, det_tau| {
-                        let vv: Array2<Complex<f64>> =
-                            self.ham.outer_iter().zip(Us.iter().zip(r.iter())).fold(
-                                Array2::zeros((self.nsta(), self.nsta())),
-                                |acc, (ham, (us, r0))| acc + &ham * *us * *r0 * Complex::i(),
-                            );
-                        let vv: Array2<Complex<f64>> = &vv + &hamk * &det_tau;
-                        let vv = &U_conj.dot(&vv);
-                        let vv = vv.dot(&U); // Next two steps fill in the phase due to orbital coordinates
-                        v0.assign(&vv);
-                    });
+                // Mutable accumulate velocity per direction (no intermediate allocations)
+                for d in 0..dim {
+                    let mut vv = Array2::<Complex<f64>>::zeros((nsta, nsta));
+                    for i_r in 0..n_r {
+                        let factor = Us[i_r] * R0[[i_r, d]] * Complex::i();
+                        let hm = self.ham.slice(s![i_r, .., ..]);
+                        Zip::from(&mut vv).and(&hm).for_each(|a, &b| *a += b * factor);
+                    }
+                    let det_tau = UU.slice(s![d, .., ..]);
+                    let vv = &vv + &hamk * &det_tau;
+                    let vv = &U_conj.dot(&vv);
+                    let vv = vv.dot(&U);
+                    v.slice_mut(s![d, .., ..]).assign(&vv);
+                }
                 // At this point, we have computed sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)}
                 // Next, compute Berry connection A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
                 let hamk = U_conj.dot(&hamk.dot(&U)); // Don't forget to add the phase to hamk
                 if self.rmatrix.len_of(Axis(0)) != 1 {
-                    let mut rk =
-                        Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
-                    let mut rk = self
-                        .rmatrix
-                        .axis_iter(Axis(0))
-                        .zip(Us.iter())
-                        .fold(rk, |acc, (ham, us)| acc + &ham * *us);
-                    for i in 0..3 {
-                        let mut r0: ArrayViewMut2<Complex<f64>> = rk.slice_mut(s![i, .., ..]);
+                    let n_rmat = self.rmatrix.len_of(Axis(0));
+                    let mut rk = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));
+                    for i_r in 0..n_rmat {
+                        let u = Us[i_r];
+                        let rm = self.rmatrix.slice(s![i_r, .., .., ..]);
+                        Zip::from(&mut rk).and(&rm).for_each(|a, &b| *a += b * u);
+                    }
+                    for i in 0..dim {
+                        let mut r0 = rk.slice_mut(s![i, .., ..]);
                         let r_new = r0.dot(&U);
                         let r_new = U_conj.dot(&r_new);
                         r0.assign(&r_new);
                         let mut dig = r0.diag_mut();
-                        //dig.assign(&(&dig - &orb_real.column(i)));
-                        dig.assign(&Array1::zeros(self.nsta()));
-                        let A = comm(&hamk, &r0) * Complex::i();
-                        v.slice_mut(s![i, .., ..]).add_assign(&A);
+                        dig.assign(&Array1::zeros(nsta));
+                        let a_comm = comm(&hamk, &r0) * Complex::i();
+                        v.slice_mut(s![i, .., ..]).add_assign(&a_comm);
                     }
                 }
                 (v, hamk)
             }
             Gauge::Lattice => {
-                // Use lattice gauge
-                Zip::from(v.outer_iter_mut())
-                    .and(R0.axis_iter(Axis(1)))
-                    .for_each(|mut v0, r| {
-                        let vv: Array2<Complex<f64>> =
-                            self.ham.outer_iter().zip(Us.iter().zip(r.iter())).fold(
-                                Array2::zeros((self.nsta(), self.nsta())),
-                                |acc, (ham, (us, r0))| acc + &ham * *us * *r0 * Complex::i(),
-                            );
-                        v0.assign(&vv);
-                    });
-                // At this point, we have computed sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)}
-                // Next, compute Berry connection A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
+                // Mutable accumulate velocity per direction
+                for d in 0..dim {
+                    let mut vv = Array2::<Complex<f64>>::zeros((nsta, nsta));
+                    for i_r in 0..n_r {
+                        let factor = Us[i_r] * R0[[i_r, d]] * Complex::i();
+                        let hm = self.ham.slice(s![i_r, .., ..]);
+                        Zip::from(&mut vv).and(&hm).for_each(|a, &b| *a += b * factor);
+                    }
+                    v.slice_mut(s![d, .., ..]).assign(&vv);
+                }
                 if self.rmatrix.len_of(Axis(0)) != 1 {
-                    let mut rk =
-                        Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
-                    let mut rk = self
-                        .rmatrix
-                        .axis_iter(Axis(0))
-                        .zip(Us.iter())
-                        .fold(rk, |acc, (ham, us)| acc + &ham * *us);
-                    for i in 0..3 {
-                        let mut r0: ArrayViewMut2<Complex<f64>> = rk.slice_mut(s![i, .., ..]);
-                        //let mut dig = r0.diag_mut();
-                        //dig.assign(&Array1::zeros(self.nsta()));
-                        let A = comm(&hamk, &r0) * Complex::i();
-                        v.slice_mut(s![i, .., ..]).add_assign(&A);
+                    let n_rmat = self.rmatrix.len_of(Axis(0));
+                    let mut rk = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));
+                    for i_r in 0..n_rmat {
+                        let u = Us[i_r];
+                        let rm = self.rmatrix.slice(s![i_r, .., .., ..]);
+                        Zip::from(&mut rk).and(&rm).for_each(|a, &b| *a += b * u);
+                    }
+                    for i in 0..dim {
+                        let r0 = rk.slice(s![i, .., ..]);
+                        let a_comm = comm(&hamk, &r0) * Complex::i();
+                        v.slice_mut(s![i, .., ..]).add_assign(&a_comm);
                     }
                 }
                 (v, hamk)
