@@ -32,6 +32,21 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 
+/// Apply gauge transform to a contiguous matrix slice:
+/// `mat[m,n] *= exp(-i k·τ_m) * exp(i k·τ_n)`.
+/// Flat indexing avoids per-element ndarray bounds-check overhead.
+#[inline]
+fn apply_gauge_transform(mat: &mut [Complex<f64>], phase: &[Complex<f64>]) {
+    let nsta = phase.len();
+    for m in 0..nsta {
+        let conj_pm = phase[m].conj();
+        let row = m * nsta;
+        for n in 0..nsta {
+            mat[row + n] *= conj_pm * phase[n];
+        }
+    }
+}
+
 pub trait Velocity {
     fn gen_v<S: Data<Elem = f64>>(
         &self,
@@ -101,8 +116,6 @@ impl Velocity for Model {
                         Complex::new(0.0, 2.0 * PI * phase).exp()
                     })
                     .collect();
-                let U = Array2::from_diag(&Array1::from(orb_phase.clone()));
-                let U_conj = Array2::from_diag(&Array1::from(orb_phase.iter().map(|x| x.conj()).collect::<Vec<_>>()));
                 let orb_real = orb_sta.dot(&self.lat);
                 // Start constructing -orb_real[[i,r]]+orb_real[[j,r]];-----------------
                 let mut UU = Array3::<f64>::zeros((self.dim_r(), self.nsta(), self.nsta()));
@@ -122,15 +135,13 @@ impl Velocity for Model {
                         let hm = self.ham.slice(s![i_r, .., ..]);
                         Zip::from(&mut vv).and(&hm).for_each(|a, &b| *a += b * factor);
                     }
-                    let det_tau = UU.slice(s![d, .., ..]);
-                    let vv = &vv + &hamk * &det_tau;
-                    let vv = &U_conj.dot(&vv);
-                    let vv = vv.dot(&U);
+                    let mut vv = &vv + &hamk * &UU.slice(s![d, .., ..]);
+                    apply_gauge_transform(vv.as_slice_mut().unwrap(), &orb_phase);
                     v.slice_mut(s![d, .., ..]).assign(&vv);
                 }
                 // At this point, we have computed sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)}
                 // Next, compute Berry connection A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
-                let hamk = U_conj.dot(&hamk.dot(&U)); // Don't forget to add the phase to hamk
+                apply_gauge_transform(hamk.as_slice_mut().unwrap(), &orb_phase);
                 if self.rmatrix.len_of(Axis(0)) != 1 {
                     let n_rmat = self.rmatrix.len_of(Axis(0));
                     let mut rk = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));
@@ -141,9 +152,15 @@ impl Velocity for Model {
                     }
                     for i in 0..dim {
                         let mut r0 = rk.slice_mut(s![i, .., ..]);
-                        let r_new = r0.dot(&U);
-                        let r_new = U_conj.dot(&r_new);
-                        r0.assign(&r_new);
+                        let phase = orb_phase.as_slice();
+                        let r0_slice = r0.as_slice_mut().unwrap();
+                        for m in 0..nsta {
+                            let conj_pm = phase[m].conj();
+                            let row = m * nsta;
+                            for n in 0..nsta {
+                                r0_slice[row + n] *= conj_pm * phase[n];
+                            }
+                        }
                         let mut dig = r0.diag_mut();
                         dig.assign(&Array1::zeros(nsta));
                         let a_comm = comm(&hamk, &r0) * Complex::i();

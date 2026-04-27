@@ -210,8 +210,28 @@ fn sk_element(
             3_f64.sqrt() * l * l * m * get!(v_pd_sigma, "Vpdσ")
                 + m * (1.0 - 2.0 * l * l) * get!(v_pd_pi, "Vpdπ")
         }
-        // For brevity, other p-d, d-d, and f-orbitals are omitted here.
-        // Refer to the full implementation in the previous message.
+        // s-f
+        (s, fz3) | (fz3, s) => {
+            n * (5.0 * n * n - 3.0) / 2.0 * get!(v_sf_sigma, "Vsfσ")
+        }
+        (s, fxz2) | (fxz2, s) => {
+            (3.0_f64.sqrt()) * l * (5.0 * n * n - 1.0) / 2.0 * get!(v_sf_sigma, "Vsfσ")
+        }
+        (s, fyz2) | (fyz2, s) => {
+            (3.0_f64.sqrt()) * m * (5.0 * n * n - 1.0) / 2.0 * get!(v_sf_sigma, "Vsfσ")
+        }
+        (s, fxyz) | (fxyz, s) => {
+            (15.0_f64.sqrt()) * l * m * n * get!(v_sf_sigma, "Vsfσ")
+        }
+        (s, fx3) | (fx3, s) => {
+            (15.0_f64.sqrt()) / 2.0 * l * (l * l - 3.0 * m * m) * get!(v_sf_sigma, "Vsfσ")
+        }
+        (s, fy3) | (fy3, s) => {
+            (15.0_f64.sqrt()) / 2.0 * m * (3.0 * l * l - m * m) * get!(v_sf_sigma, "Vsfσ")
+        }
+        (s, fz2x2y2) | (fz2x2y2, s) => {
+            (15.0_f64.sqrt()) / 2.0 * n * (l * l - m * m) * get!(v_sf_sigma, "Vsfσ")
+        }
         // Unsupported combination
         _ => return Err(TbError::UnsupportedOrbitalCombination(oi, oj)),
     };

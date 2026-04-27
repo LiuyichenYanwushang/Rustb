@@ -117,7 +117,6 @@ use crate::phy_const::mu_B;
 use crate::solve_ham::solve;
 use crate::velocity::*;
 use crate::{Gauge, Model};
-use ndarray::linalg::kron;
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::conjugate;
@@ -127,6 +126,41 @@ use rayon::prelude::*;
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
+
+/// Directly construct spin Pauli matrix σ⊗I_{norb}/2 without kron.
+/// Only sets 2*norb non-zero elements (O(norb)) instead of O(nsta²).
+#[inline]
+fn build_spin_matrix(norb: usize, spin: usize) -> Array2<Complex<f64>> {
+    let nsta = 2 * norb;
+    let mut m = Array2::<Complex<f64>>::zeros((nsta, nsta));
+    let half = Complex::new(0.5, 0.0);
+    let i_half = Complex::new(0.0, 0.5);
+    match spin {
+        1 => {
+            // σ_x ⊗ I: [0 I; I 0] / 2
+            for i in 0..norb {
+                m[[i, i + norb]] = half;
+                m[[i + norb, i]] = half;
+            }
+        }
+        2 => {
+            // σ_y ⊗ I: [0 -iI; iI 0] / 2
+            for i in 0..norb {
+                m[[i, i + norb]] = -i_half;
+                m[[i + norb, i]] = i_half;
+            }
+        }
+        3 => {
+            // σ_z ⊗ I: [I 0; 0 -I] / 2
+            for i in 0..norb {
+                m[[i, i]] = half;
+                m[[i + norb, i + norb]] = -half;
+            }
+        }
+        _ => {}
+    }
+    m
+}
 
 /**
 这个函数是用来做自适应积分算法的
@@ -415,85 +449,89 @@ impl BerryCurvature for Model {
         let (J, v) = if self.spin {
             let J = match spin {
                 0 => {
-                    let J = J
-                        .outer_iter()
-                        .zip(dir_1.iter())
-                        .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (x, d)| {
-                            acc + &x * (*d + 0.0 * li)
-                        });
-                    J
+                    let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+                    for d in 0..self.dim_r() {
+                        let w = dir_1[d];
+                        if w != 0.0 {
+                            Zip::from(&mut jmat).and(&J.slice(s![d, .., ..])).for_each(|a, &b| *a += b * w);
+                        }
+                    }
+                    jmat
                 }
                 1 => {
-                    let pauli = arr2(&[
-                        [0.0 + 0.0 * li, 1.0 + 0.0 * li],
-                        [1.0 + 0.0 * li, 0.0 + 0.0 * li],
-                    ]) / 2.0;
-                    let mut X: Array2<Complex<f64>> = Array2::eye(self.nsta());
-                    X = kron(&pauli, &Array2::eye(self.norb()));
-                    let J = J
-                        .outer_iter()
-                        .zip(dir_1.iter())
-                        .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (x, d)| {
-                            acc + &anti_comm(&X, &x) * (*d * 0.5 + 0.0 * li)
-                        });
-                    J
+                    let sp = build_spin_matrix(self.norb(), 1);
+                    let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+                    for d in 0..self.dim_r() {
+                        let w = dir_1[d];
+                        if w != 0.0 {
+                            let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
+                            Zip::from(&mut jmat).and(&ac).for_each(|a, &b| *a += b * w * 0.5);
+                        }
+                    }
+                    jmat
                 }
                 2 => {
-                    let pauli = arr2(&[
-                        [0.0 + 0.0 * li, 0.0 - 1.0 * li],
-                        [0.0 + 1.0 * li, 0.0 + 0.0 * li],
-                    ]) / 2.0;
-                    let mut X: Array2<Complex<f64>> = Array2::eye(self.nsta());
-                    X = kron(&pauli, &Array2::eye(self.norb()));
-                    let J = J
-                        .outer_iter()
-                        .zip(dir_1.iter())
-                        .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (x, d)| {
-                            acc + &anti_comm(&X, &x) * (*d * 0.5 + 0.0 * li)
-                        });
-                    J
+                    let sp = build_spin_matrix(self.norb(), 2);
+                    let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+                    for d in 0..self.dim_r() {
+                        let w = dir_1[d];
+                        if w != 0.0 {
+                            let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
+                            Zip::from(&mut jmat).and(&ac).for_each(|a, &b| *a += b * w * 0.5);
+                        }
+                    }
+                    jmat
                 }
                 3 => {
-                    let pauli = arr2(&[
-                        [1.0 + 0.0 * li, 0.0 + 0.0 * li],
-                        [0.0 + 0.0 * li, -1.0 + 0.0 * li],
-                    ]) / 2.0;
-                    let mut X: Array2<Complex<f64>> = Array2::eye(self.nsta());
-                    X = kron(&pauli, &Array2::eye(self.norb()));
-                    let J = J
-                        .outer_iter()
-                        .zip(dir_1.iter())
-                        .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (x, d)| {
-                            acc + &anti_comm(&X, &x) * (*d * 0.5 + 0.0 * li)
-                        });
-                    J
+                    let sp = build_spin_matrix(self.norb(), 3);
+                    let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+                    for d in 0..self.dim_r() {
+                        let w = dir_1[d];
+                        if w != 0.0 {
+                            let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
+                            Zip::from(&mut jmat).and(&ac).for_each(|a, &b| *a += b * w * 0.5);
+                        }
+                    }
+                    jmat
                 }
                 _ => panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}", spin),
             };
-            let v = v
-                .outer_iter()
-                .zip(dir_2.iter())
-                .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (x, d)| {
-                    acc + &x * (*d + 0.0 * li)
-                });
+            let v = {
+                let mut vmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+                for d in 0..self.dim_r() {
+                    let w = dir_2[d];
+                    if w != 0.0 {
+                        Zip::from(&mut vmat).and(&v.slice(s![d, .., ..])).for_each(|a, &b| *a += b * w);
+                    }
+                }
+                vmat
+            };
             (J, v)
         } else {
             if spin != 0 {
                 println!("Warning, the model haven't got spin, so the spin input will be ignord");
             }
 
-            let J = J
-                .outer_iter()
-                .zip(dir_1.iter())
-                .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (x, d)| {
-                    acc + &x * (*d + 0.0 * li)
-                });
-            let v = v
-                .outer_iter()
-                .zip(dir_2.iter())
-                .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (x, d)| {
-                    acc + &x * (*d + 0.0 * li)
-                });
+            let J = {
+                let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+                for d in 0..self.dim_r() {
+                    let w = dir_1[d];
+                    if w != 0.0 {
+                        Zip::from(&mut jmat).and(&J.slice(s![d, .., ..])).for_each(|a, &b| *a += b * w);
+                    }
+                }
+                jmat
+            };
+            let v = {
+                let mut vmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+                for d in 0..self.dim_r() {
+                    let w = dir_2[d];
+                    if w != 0.0 {
+                        Zip::from(&mut vmat).and(&v.slice(s![d, .., ..])).for_each(|a, &b| *a += b * w);
+                    }
+                }
+                vmat
+            };
             (J, v)
         };
 
@@ -756,33 +794,7 @@ impl Model {
             v0 = v0 + v.slice(s![r, .., ..]).to_owned() * dir_3[[r]];
         }
         if self.spin {
-            let mut X: Array2<Complex<f64>> = Array2::eye(self.nsta());
-            let pauli: Array2<Complex<f64>> = match spin {
-                0 => arr2(&[
-                    [1.0 + 0.0 * li, 0.0 + 0.0 * li],
-                    [0.0 + 0.0 * li, 1.0 + 0.0 * li],
-                ]),
-                1 => {
-                    arr2(&[
-                        [0.0 + 0.0 * li, 1.0 + 0.0 * li],
-                        [1.0 + 0.0 * li, 0.0 + 0.0 * li],
-                    ]) / 2.0
-                }
-                2 => {
-                    arr2(&[
-                        [0.0 + 0.0 * li, 0.0 - 1.0 * li],
-                        [0.0 + 1.0 * li, 0.0 + 0.0 * li],
-                    ]) / 2.0
-                }
-                3 => {
-                    arr2(&[
-                        [1.0 + 0.0 * li, 0.0 + 0.0 * li],
-                        [0.0 + 0.0 * li, -1.0 + 0.0 * li],
-                    ]) / 2.0
-                }
-                _ => panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}", spin),
-            };
-            X = kron(&pauli, &Array2::eye(self.norb()));
+            let X = build_spin_matrix(self.norb(), spin);
             for i in 0..self.dim_r() {
                 let j = J.slice(s![i, .., ..]).to_owned();
                 let j = anti_comm(&X, &j) / 2.0; //这里做反对易
@@ -1015,31 +1027,11 @@ impl Model {
         //开始最后的计算
         if self.spin {
             //如果考虑自旋, 我们就计算 \partial_h G_{ij}
-            let mut S: Array2<Complex<f64>> = Array2::eye(self.nsta());
-            let li = Complex::<f64>::new(0.0, 1.0);
-            let pauli: Array2<Complex<f64>> = match spin {
-                0 => Array2::<Complex<f64>>::eye(2),
-                1 => {
-                    arr2(&[
-                        [0.0 + 0.0 * li, 1.0 + 0.0 * li],
-                        [1.0 + 0.0 * li, 0.0 + 0.0 * li],
-                    ]) / 2.0
-                }
-                2 => {
-                    arr2(&[
-                        [0.0 + 0.0 * li, 0.0 - 1.0 * li],
-                        [0.0 + 1.0 * li, 0.0 + 0.0 * li],
-                    ]) / 2.0
-                }
-                3 => {
-                    arr2(&[
-                        [1.0 + 0.0 * li, 0.0 + 0.0 * li],
-                        [0.0 + 0.0 * li, -1.0 + 0.0 * li],
-                    ]) / 2.0
-                }
-                _ => panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}", spin),
+            let X = if spin == 0 {
+                Array2::eye(self.nsta())
+            } else {
+                build_spin_matrix(self.norb(), spin)
             };
-            let X = kron(&pauli, &Array2::eye(self.norb()));
             let mut S = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
             for i in 0..self.dim_r() {
                 let v0 = J.slice(s![i, .., ..]).to_owned();

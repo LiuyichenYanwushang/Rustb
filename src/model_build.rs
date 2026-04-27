@@ -1107,6 +1107,15 @@ impl Model {
                 }
             }
         }
+        // Keep new_rmatrix in sync with new_ham for magnetic field compatibility
+        let n_r = new_ham.len_of(Axis(0));
+        if new_rmatrix.len_of(Axis(0)) < n_r {
+            let extra = n_r - new_rmatrix.len_of(Axis(0));
+            let zero_rm = Array3::<Complex<f64>>::zeros((self.dim_r(), nsta, nsta));
+            for _ in 0..extra {
+                new_rmatrix.push(Axis(0), zero_rm.view());
+            }
+        }
         let mut model = Model {
             dim_r: Dimension::try_from(self.dim_r())?,
             spin: self.spin,
