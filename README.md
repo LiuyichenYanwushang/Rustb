@@ -202,12 +202,18 @@ let model = sk.to_tb_model().unwrap();
 ### Wannier90 Interface
 
 ```rust
-// Read Wannier90 _hr.dat, _r.dat, _wsvec.dat files
-let model = Model::from_wannier90("wannier90_hr.dat", "wannier90_r.dat",
-                                   "wannier90_wsvec.dat", true).unwrap();
+// Read a Wannier90 tight-binding model. Provide the directory path and seedname.
+// The function automatically reads:
+//   seedname.win            — lattice vectors, spin, projections, atom positions
+//   seedname_hr.dat         — Hamiltonian matrix elements H(R)
+//   seedname_centres.xyz    — orbital positions (recommended, set write_xyz=true)
+//   seedname_r.dat          — position matrix elements r(R) (optional, set write_rmn=true)
+//   seedname_wsvec.dat      — Wannier subspace vectors (recommended for better symmetry)
 
-// Write Wannier90 format files from a model
-model.output_hr("output_hr.dat").unwrap();
+let model = Model::from_hr("./", "wannier90", 0.0).unwrap();
+
+// Export a model in Wannier90 hr.dat format
+model.output_hr("./output/", "my_model").unwrap();
 ```
 
 ## Model Construction API
