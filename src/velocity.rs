@@ -44,21 +44,6 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 
-/// Apply gauge transform to a contiguous matrix slice:
-/// `mat[m,n] *= exp(-i k·τ_m) * exp(i k·τ_n)`.
-/// Flat indexing avoids per-element ndarray bounds-check overhead.
-#[inline]
-fn apply_gauge_transform(mat: &mut [Complex<f64>], phase: &[Complex<f64>]) {
-    let nsta = phase.len();
-    for m in 0..nsta {
-        let conj_pm = phase[m].conj();
-        let row = m * nsta;
-        for n in 0..nsta {
-            mat[row + n] *= conj_pm * phase[n];
-        }
-    }
-}
-
 /// Trait for computing the velocity operator $\mathbf{v}(\mathbf{k})$.
 ///
 /// The velocity operator is defined as the k-derivative of the Bloch Hamiltonian:
@@ -217,12 +202,25 @@ impl Velocity for Model {
                             vv.scaled_add(u * r0_d * Complex::i(), &hm);
                         });
                     azip!((v in &mut vv, &h in &hamk, &u in &UU.slice(s![d, .., ..])) *v += h * u);
-                    apply_gauge_transform(vv.as_slice_mut().unwrap(), &orb_phase);
+                    // Gauge transform: for m + Zip, no allocation
+                    for m in 0..nsta {
+                        let mut row = vv.slice_mut(s![m, ..]);
+                        let conj_pm = orb_phase[m].conj();
+                        Zip::from(&mut row)
+                            .and(orb_phase.as_slice())
+                            .for_each(|h, &pn| *h *= conj_pm * pn);
+                    }
                     v.slice_mut(s![d, .., ..]).assign(&vv);
                 }
                 // At this point, we have computed sum_{R} iR H_{mn}(R) e^{ik(R+tau_n-tau_m)}
                 // Next, compute Berry connection A_\alpha=\sum_R r(R)e^{ik(R+tau_n-tau_m)}-tau
-                apply_gauge_transform(hamk.as_slice_mut().unwrap(), &orb_phase);
+                for m in 0..nsta {
+                    let mut row = hamk.slice_mut(s![m, ..]);
+                    let conj_pm = orb_phase[m].conj();
+                    Zip::from(&mut row)
+                        .and(orb_phase.as_slice())
+                        .for_each(|h, &pn| *h *= conj_pm * pn);
+                }
                 if self.rmatrix.len_of(Axis(0)) != 1 {
                     let n_rmat = self.rmatrix.len_of(Axis(0));
                     let mut rk = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));

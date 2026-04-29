@@ -162,15 +162,14 @@ impl surf_Green {
         let mut hamRR = Array2::<isize>::zeros((0, model.dim_r as usize));
         let use_hamR = model.hamR.rows();
         let use_ham = model.ham.outer_iter();
+        // No clone needed: push/push_row copy from the view directly
         for (ham, R) in use_ham.zip(use_hamR) {
-            let ham = ham.clone();
-            let R = R.clone();
             if R[[dir]] == 0 {
-                ham0.push(Axis(0), ham.view());
-                hamR0.push_row(R.view());
+                ham0.push(Axis(0), ham);
+                hamR0.push_row(R);
             } else if R[[dir]] > 0 {
-                hamR.push(Axis(0), ham.view());
-                hamRR.push_row(R.view());
+                hamR.push(Axis(0), ham);
+                hamRR.push_row(R);
             }
         }
         let new_lat = remove_row(model.lat.clone(), dir);
@@ -203,13 +202,9 @@ impl surf_Green {
         &self,
         kvec: &ArrayBase<S, Ix1>,
     ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>) {
-        let mut ham0k = Array2::<Complex<f64>>::zeros((self.nsta, self.nsta));
-        let mut hamRk = Array2::<Complex<f64>>::zeros((self.nsta, self.nsta));
         if kvec.len() != self.dim_r {
             panic!("Wrong, the k-vector's length must equal to the dimension of model.")
         }
-        let nR: usize = self.ham_bulkR.len_of(Axis(0));
-        let nRR: usize = self.ham_hopR.len_of(Axis(0));
         // Orbital gauge phases: exp(i 2π τ·k)
         let orb_phase: Array1<Complex<f64>> = self
             .orb
@@ -279,7 +274,7 @@ impl surf_Green {
             eps_t = eps_t + g0;
             ap = mat_1.dot(&ap);
             bt = mat_2.dot(&bt);
-            if ap.sum().norm() < accurate {
+            if ap.iter().map(|x| x.norm()).sum::<f64>() < accurate {
                 break;
             }
         }
@@ -323,14 +318,13 @@ impl surf_Green {
                     eps_t += g0;
                     ap = mat_1.dot(&ap);
                     bt = mat_2.dot(&bt);
-                    if ap.map(|x| x.norm()).sum() < accurate {
+                    if ap.iter().map(|x| x.norm()).sum::<f64>() < accurate {
                         break;
                     }
                 }
                 let g_LL = (&epsilon - eps).inv().unwrap();
                 let g_RR = (&epsilon - eps_t).inv().unwrap();
                 let g_B = (&epsilon - epi).inv().unwrap();
-                //求trace
                 let N_R: f64 = -1.0 / (PI) * g_RR.into_diag().sum().im;
                 let N_L: f64 = -1.0 / (PI) * g_LL.into_diag().sum().im;
                 let N_B: f64 = -1.0 / (PI) * g_B.into_diag().sum().im;

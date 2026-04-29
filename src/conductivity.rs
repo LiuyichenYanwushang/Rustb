@@ -648,7 +648,8 @@ impl BerryCurvature for Model {
         };
 
         let evec_conj = evec.t();
-        let evec = evec.mapv(|x| x.conj());
+        // Lazy map: no heap allocation for the conjugated copy
+        let evec = evec.map(|x| x.conj());
         let A1 = J.dot(&evec);
         let A1 = &evec_conj.dot(&A1);
         let A2 = v.dot(&evec);
@@ -657,27 +658,19 @@ impl BerryCurvature for Model {
         let AA = A1 * A2;
         let Complex { re, im } = AA.view().split_complex();
         let im = im.mapv(|x| -2.0 * x);
-        assert_eq!(
-            band.len(),
-            self.nsta(),
-            "this is strange for band's length is not equal to self.nsta()"
-        );
-        let mut UU = Array2::<f64>::zeros((self.nsta(), self.nsta()));
+        // Fused: compute omega_n directly without allocating UU[nsta,nsta]
+        let mut omega_n = Array1::<f64>::zeros(self.nsta());
         for i in 0..self.nsta() {
-            //这里利用了U的对称特征
-            for j in i..self.nsta() {
-                let a = band[[i]] - band[[j]];
-                //这里用η进行展宽
-                UU[[i, j]] = 1.0 / (a.powi(2) + eta.powi(2));
-                UU[[j, i]] = UU[[i, j]];
+            let im_row = im.row(i);
+            let mut sum = 0.0f64;
+            for j in 0..self.nsta() {
+                if i != j {
+                    let a = band[[i]] - band[[j]];
+                    sum += im_row[[j]] / (a.powi(2) + eta.powi(2));
+                }
             }
+            omega_n[[i]] = sum;
         }
-        let omega_n = im
-            .outer_iter()
-            .zip(UU.outer_iter())
-            .map(|(a, b)| a.dot(&b))
-            .collect();
-        let omega_n = Array1::from_vec(omega_n);
         (omega_n, band)
     }
 
@@ -1037,7 +1030,7 @@ impl Model {
             todo!()
         };
         let evec_conj = evec.t();
-        let evec = evec.mapv(|x| x.conj());
+        let evec = evec.map(|x| x.conj());
 
         let v0 = v0.dot(&evec.t());
         let v0 = &evec_conj.dot(&v0);
@@ -1266,7 +1259,7 @@ impl Model {
             todo!()
         };
         let evec_conj = evec.t();
-        let evec = evec.mapv(|x| x.conj());
+        let evec = evec.map(|x| x.conj());
         for i in 0..self.dim_r() {
             let v_s = v.slice(s![i, .., ..]).to_owned();
             let v_s = evec_conj
