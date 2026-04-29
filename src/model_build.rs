@@ -1172,13 +1172,8 @@ impl Model {
             return Err(TbError::InvalidSupercellDet { det: 0.0 });
         }
         let U_inv = U.inv().unwrap();
-        //开始判断是否存在小数
-        for i in 0..U.len_of(Axis(0)) {
-            for j in 0..U.len_of(Axis(1)) {
-                if U[[i, j]].fract() > 1e-8 {
-                    return Err(TbError::InvalidSupercellMatrix);
-                }
-            }
+        if U.iter().any(|&x| x.fract() > 1e-8) {
+            return Err(TbError::InvalidSupercellMatrix);
         }
 
         //开始构建新的轨道位置和原子位置
