@@ -1,4 +1,205 @@
 #![allow(warnings)]
+
+//! # Rustb -- Tight-Binding Model Library
+//!
+//! A Rust library for tight-binding model calculations in condensed matter physics.
+//! It supports model construction from both explicit hopping parameters and
+//! Slater-Koster integrals, band structure solving, topological analysis, and
+//! linear/nonlinear transport property calculations.
+//!
+//! ## Module overview
+//!
+//! ### Core data structures
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`model`] | Central [`Model`] struct with lattice, orbital, and hopping data, plus enums
+//! |   [`Gauge`], [`Dimension`], [`SpinDirection`] |
+//! | [`atom_struct`] | [`Atom`] and [`OrbProj`] types for describing atomic sites and orbital
+//! |   projections |
+//! | [`SKmodel`] | Slater-Koster parameterized models with two-center integrals and f-orbital
+//! |   support; [`SlaterKosterModel`], [`SkAtom`], [`SkParams`] |
+//!
+//! ### Model construction and manipulation
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`model_build`] | Constructors (`Model::tb_model`), hopping setup (`add_hop`, `set_hop`),
+//! |   on-site energies (`set_onsite`), and supercell building (`make_supercell`) |
+//! | [`cut`] | [`CutModel`] trait for extracting finite slabs from supercells |
+//! | [`geometry`] | Supercell geometry, dot structures, and related spatial operations |
+//! | [`model_utils`] | Internal utility functions for model manipulation |
+//!
+//! ### Hamiltonian solving
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`solve_ham`] | Parallel diagonalization of H(k) over k-point meshes
+//! |   (`solve_all_parallel`, `solve_band_all_parallel`) |
+//! | [`ndarray_lapack`] | LAPACK bindings for ndarray matrices |
+//!
+//! ### k-space sampling
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`kpath`] | k-path generation along high-symmetry lines (`k_path`) |
+//! | [`kpoints`] | Uniform k-mesh generation (`gen_kmesh`, `gen_krange`) |
+//!
+//! ### Transport properties
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`conductivity`] | Linear and nonlinear conductivity tensors via the Kubo formalism:
+//! |   anomalous Hall, spin Hall, and nonlinear responses |
+//! | [`optical_conductivity`] | Frequency-dependent optical conductivity |
+//!
+//! ### Operators and observables
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`velocity`] | Velocity operator v_a(k) at each k-point |
+//! | [`orbital_angular`] | Orbital angular momentum operator |
+//! | [`math`] | Mathematical utilities (commutators, matrix operations) |
+//!
+//! ### Topological analysis
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`model_physics`] | Density of states, Berry curvature, Chern numbers, Wilson loops,
+//! |   and Wannier centers |
+//!
+//! ### Surface and defect calculations
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`surfgreen`] | Surface Green's function G^s(omega, k_parallel) for
+//! |   semi-infinite systems; local density of states at surfaces and edges |
+//!
+//! ### Interfaces
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`wannier90`] | Read Wannier90 `_hr.dat` and `_r.dat` files |
+//! | [`unfold`] | Band unfolding for supercell calculations (the [`Unfold`] trait) |
+//! | [`tmrtool`] | Tunneling magnetoresistance utilities ([`TMRBlocks`]) |
+//!
+//! ### Magnetic field
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`magnetic_field`] | Uniform magnetic field via Peierls substitution |
+//!
+//! ### Output and I/O
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`output`] | Band structure and surface state plotting via gnuplot (`show_band`, etc.) |
+//! | [`io`] | Text file I/O for 1D and 2D arrays (`write_txt`, `write_txt_1`) |
+//!
+//! ### Supporting modules
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`error`] | Centralized error handling ([`TbError`], [`Result`]) |
+//! | [`phy_const`] | Physical constants (hbar, e, k_B, etc.) |
+//! | [`generics`] | Numeric type abstractions |
+//!
+//! ## Mathematical foundation
+//!
+//! The tight-binding Hamiltonian in second-quantized form:
+//!
+//! $$
+//! H = \sum_{i,j} t_{ij} c_i^\dagger c_j + \sum_i \epsilon_i c_i^\dagger c_i
+//! $$
+//!
+//! where t_{ij} are hopping parameters and epsilon_i are on-site energies.
+//!
+//! The Bloch Hamiltonian at a given k-point is:
+//!
+//! $$
+//! H_{mn}(\mathbf{k}) = \sum_{\mathbf{R}} H_{mn}(\mathbf{R})\, e^{i \mathbf{k} \cdot \mathbf{R}}
+//! $$
+//!
+//! where R runs over lattice vectors and H_{mn}(R) is the
+//! hopping matrix element from orbital n to orbital m.
+//!
+//! For transport, the Berry curvature is computed as:
+//!
+//! $$
+//! \Omega_n(\mathbf{k}) = -2\,\operatorname{Im}\sum_{m\neq n}
+//! \frac{\bra{n}\partial_{k_x} H\ket{m}\bra{m}\partial_{k_y} H\ket{n}}
+//!      {(E_n - E_m)^2}
+//! $$
+//!
+//! and the anomalous Hall conductivity follows from the Brillouin-zone integral:
+//!
+//! $$
+//! \sigma_{xy} = \frac{e^2}{\hbar} \int \frac{d^d k}{(2\pi)^d}\,
+//! \sum_n f_n(\mathbf{k})\, \Omega_n(\mathbf{k})
+//! $$
+//!
+//! ## Quick start
+//!
+//! The example below builds a nearest-neighbor graphene model, computes the band
+//! structure and density of states, constructs a zigzag nanoribbon, and plots the
+//! edge states.
+//!
+//! ```no_run
+//! # use Rustb::error::Result;
+//! # fn main() -> Result<()> {
+//! use ndarray::prelude::*;
+//! use num_complex::Complex;
+//! use Rustb::*;
+//!
+//! // --- Build the graphene tight-binding model ---
+//! let t1 = Complex::new(1.0, 0.0);     // nearest-neighbor hopping
+//! let t2 = Complex::new(0.1, 0.0);     // next-nearest-neighbor hopping
+//! let delta = 0.5;                     // staggered on-site potential
+//!
+//! // Honeycomb lattice vectors
+//! let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
+//! // Two sublattice sites in fractional coordinates
+//! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
+//!
+//! let mut model = Model::tb_model(2, lat, orb, false, None)?;
+//! model.set_onsite(&arr1(&[delta, -delta]), SpinDirection::None);
+//!
+//! // Nearest-neighbor hoppings (A <-> B)
+//! model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
+//! model.add_hop(t1, 0, 1, &array![-1, 0], SpinDirection::None);
+//! model.add_hop(t1, 0, 1, &array![0, -1], SpinDirection::None);
+//!
+//! // Next-nearest-neighbor hoppings (A-A and B-B)
+//! for &(i, j) in &[(0, 0), (1, 1)] {
+//!     for r in &[array![1, 0], array![0, 1], array![1, -1]] {
+//!         model.add_hop(t2, i, j, r, SpinDirection::None);
+//!     }
+//! }
+//!
+//! // --- Band structure along high-symmetry path G -> K -> M -> G ---
+//! let nk = 1001;
+//! let path = arr2(&[[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.5], [0.0, 0.0]]);
+//! let label = vec!["G", "K", "M", "G"];
+//! model.show_band(&path, &label, nk, "graphene")?;
+//!
+//! // --- Zigzag nanoribbon and edge states ---
+//! let U = arr2(&[[1.0, 1.0], [-1.0, 1.0]]);
+//! let super_model = model.make_supercell(&U)?;
+//! let zig_model = super_model.cut_piece(100, 0)?;
+//! let path_edge = arr2(&[[0.0, 0.0], [0.0, 0.5], [0.0, 1.0]]);
+//! let label_edge = vec!["G", "M", "G"];
+//! zig_model.show_band(&path_edge, &label_edge, 501, "graphene_zig")?;
+//!
+//! // --- Density of states ---
+//! let kmesh = arr1(&[101, 101]);
+//! let (energies, dos) = model.dos(&kmesh, -3.0, 3.0, 1000, 1e-2)?;
+//! // Write DOS data to a text file
+//! let dos_data = ndarray::stack![Axis(0), energies, dos];
+//! write_txt(&dos_data, "dos.dat")?;
+//! # Ok(())
+//! # }
+//! ```
+
 pub mod SKmodel;
 pub mod atom_struct;
 pub mod conductivity;
@@ -22,6 +223,7 @@ pub mod output;
 pub mod phy_const;
 pub mod solve_ham;
 pub mod surfgreen;
+pub mod tmrtool;
 pub mod unfold;
 pub mod velocity;
 pub mod wannier90;
@@ -47,145 +249,6 @@ pub use crate::unfold::Unfold;
 pub use crate::velocity::*;
 pub use crate::wannier90::*;
 
-/// # Rustb - Tight-Binding Model Library
-///
-/// A comprehensive Rust library for tight-binding model calculations with support for:
-/// - Band structure calculations
-/// - Surface state computations using Green's functions
-/// - Linear and nonlinear transport properties
-/// - Berry phase and curvature calculations
-/// - Slater-Koster parameterized models
-///
-/// ## Key Features
-///
-/// - **Band Structure**: Solve eigenvalue problems $H(\mathbf{k}) \psi_n(\mathbf{k}) = E_n(\mathbf{k}) \psi_n(\mathbf{k})$
-/// - **Surface States**: Compute surface Green's functions $G^s(\omega, \mathbf{k}_\parallel)$
-/// - **Transport Properties**:
-///   - Anomalous Hall conductivity $\sigma_{xy} = \frac{e^2}{\hbar} \int \frac{d^2k}{(2\pi)^2} \Omega_z(\mathbf{k})$
-///   - Spin Hall conductivity
-///   - Nonlinear conductivity tensors
-/// - **Topological Invariants**: Chern numbers, Wilson loops, and Wannier centers
-/// - **Slater-Koster Models**: Parameterized tight-binding models with two-center integrals
-/// - **File I/O**: Utilities for writing calculation results to text files
-///
-/// ## Mathematical Foundation
-///
-/// The library implements the tight-binding Hamiltonian:
-/// $$
-/// H = \sum_{i,j} t_{ij} c_i^\dagger c_j + \sum_i \epsilon_i c_i^\dagger c_i
-/// $$
-/// where $t_{ij}$ are hopping parameters and $\epsilon_i$ are on-site energies.
-///
-/// For transport calculations, we compute the Berry curvature:
-/// $$
-/// \Omega_n(\mathbf{k}) = -2\,\text{Im}\sum_{m\neq n} \frac{\bra{n}\partial_{k_x} H\ket{m}\bra{m}\partial_{k_y} H\ket{n}}{(E_n - E_m)^2}
-/// $$
-///
-/// ## File I/O Utilities
-///
-/// The library provides file output utilities through the `io` module:
-/// - `write_txt`: Write 2D arrays to text files with formatted output
-/// - `write_txt_1`: Write 1D arrays to text files with formatted output
-///
-/// These functions automatically handle number formatting and spacing for scientific data.
-
-///An example
-///
-///```
-///use gnuplot::{Color,Figure, AxesCommon, AutoOption::Fix,HOT};
-///use gnuplot::Major;
-///use ndarray::*;
-///use ndarray::prelude::*;
-///use num_complex::Complex;
-///use Rustb::*;
-///
-///fn graphene(){
-///    let li:Complex<f64>=1.0*Complex::i();
-///    let t1=1.0+0.0*li;
-///    let t2=0.1+0.0*li;
-///    let t3=0.0+0.0*li;
-///    let delta=0.5;
-///    let dim_r:usize=2;
-///    let norb:usize=2;
-///    let lat=arr2(&[[3.0_f64.sqrt(),-1.0],[3.0_f64.sqrt(),1.0]]);
-///    let orb=arr2(&[[0.0,0.0],[1.0/3.0,1.0/3.0]]);
-///    let mut model=Model::tb_model(dim_r,lat,orb,false,None);
-///    model.set_onsite(&arr1(&[delta,-delta]),SpinDirection::None);
-///    model.add_hop(t1,0,1,&array![0,0],SpinDirection::None);
-///    model.add_hop(t1,0,1,&array![-1,0],SpinDirection::None);
-///    model.add_hop(t1,0,1,&array![0,-1],SpinDirection::None);
-///    model.add_hop(t2,0,0,&array![1,0],SpinDirection::None);
-///    model.add_hop(t2,1,1,&array![1,0],SpinDirection::None);
-///    model.add_hop(t2,0,0,&array![0,1],SpinDirection::None);
-///    model.add_hop(t2,1,1,&array![0,1],SpinDirection::None);
-///    model.add_hop(t2,0,0,&array![1,-1],SpinDirection::None);
-///    model.add_hop(t2,1,1,&array![1,-1],SpinDirection::None);
-///    model.add_hop(t3,0,1,&array![1,-1],SpinDirection::None);
-///    model.add_hop(t3,0,1,&array![-1,1],SpinDirection::None);
-///    model.add_hop(t3,0,1,&array![-1,-1],SpinDirection::None);
-///    let nk:usize=1001;
-///    let path=[[0.0,0.0],[2.0/3.0,1.0/3.0],[0.5,0.5],[0.0,0.0]];
-///    let path=arr2(&path);
-///    let (k_vec,k_dist,k_node)=model.k_path(&path,nk);
-///    let (eval,evec)=model.solve_all_parallel(&k_vec);
-///    let label=vec!["G","K","M","G"];
-///    let (k_vec,k_dist,k_node)=model.k_path(&path,nk); //generate the k vector
-///    let eval=model.solve_band_all_parallel(&k_vec);  //calculate the bands
-///    let mut fg = Figure::new();
-///    let x:Vec<f64>=k_dist.to_vec();
-///    let axes=fg.axes2d();
-///    for i in 0..model.nsta{
-///        let y:Vec<f64>=eval.slice(s![..,i]).to_owned().to_vec();
-///        axes.lines(&x, &y, &[Color("black")]);
-///    }
-///    let axes=axes.set_x_range(Fix(0.0), Fix(k_node[[k_node.len()-1]]));
-///    let label=label.clone();
-///    let mut show_ticks=Vec::new();
-///    for i in 0..k_node.len(){
-///        let A=k_node[[i]];
-///        let B=label[i];
-///        show_ticks.push(Major(A,Fix(B)));
-///    }
-///    axes.set_x_ticks_custom(show_ticks.into_iter(),&[],&[]);
-///    let k_node=k_node.to_vec();
-///    let mut jpg_name=String::new();
-///    jpg_name.push_str("band.jpg");
-///    fg.set_terminal("jpeg", &jpg_name);
-///    fg.show();
-///
-///    //start to draw the band structure
-///    //Starting to calculate the edge state, first is the zigzag state
-///    let nk:usize=501;
-///    let U=arr2(&[[1.0,1.0],[-1.0,1.0]]);
-///    let super_model=model.make_supercell(&U);
-///    let zig_model=super_model.cut_piece(100,0);
-///    let path=[[0.0,0.0],[0.0,0.5],[0.0,1.0]];
-///    let path=arr2(&path);
-///    let label=vec!["G","M","G"];
-///    zig_model.show_band(&path,&label,nk,"graphene_zig");
-///    //Starting to calculate the DOS of graphene
-///    let nk:usize=101;
-///    let kmesh=arr1(&[nk,nk]);
-///    let E_min=-3.0;
-///    let E_max=3.0;
-///    let E_n=1000;
-///    let (E0,dos)=model.dos(&kmesh,E_min,E_max,E_n,1e-2);
-///    //start to show DOS
-///    let mut fg = Figure::new();
-///    let x:Vec<f64>=E0.to_vec();
-///    let axes=fg.axes2d();
-///    let y:Vec<f64>=dos.to_vec();
-///    axes.lines(&x, &y, &[Color("black")]);
-///    let mut show_ticks=Vec::<String>::new();
-///    let mut pdf_name=String::new();
-///    pdf_name.push_str("dos.jpg");
-///    fg.set_terminal("pdfcairo", &pdf_name);
-///    fg.show();
-///}
-///```
-///
-///
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,9 +267,9 @@ mod tests {
     use rayon::prelude::*;
     use std::f64::consts::PI;
     use std::fs::File;
+    use std::fs::create_dir_all;
     use std::io::Write;
     use std::time::{Duration, Instant};
-    use std::fs::create_dir_all;
 
     fn write_txt(data: Array2<f64>, output: &str) -> std::io::Result<()> {
         let mut file = File::create(output).expect("Unable to BAND.dat");
@@ -495,7 +558,7 @@ mod tests {
         let (eval, evec) = model.solve_all_parallel(&k_vec);
         let label = vec!["G", "K", "M", "K'", "G"];
         model.show_band(&path, &label, nk, "tests/Haldan").unwrap();
-        /////开始计算体系的霍尔电导率//////
+        // --- Compute Hall conductivity ---
         let nk: usize = 31;
         let T: f64 = 0.0;
         let eta: f64 = 0.001;
@@ -764,7 +827,7 @@ mod tests {
         println!("{},{}", eval1, eval2);
         println!("{}", evec2.dot(&evec1).mapv(|x| x.norm().round()));
 
-        /////开始计算体系的霍尔电导率//////
+        // --- Compute Hall conductivity ---
         let nk: usize = 11;
         let T: f64 = 0.0;
         let eta: f64 = 0.001;
@@ -973,7 +1036,7 @@ mod tests {
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
 
-        /////开始计算体系的霍尔电导率//////
+        // --- Compute Hall conductivity ---
         let nk: usize = 31;
         let T: f64 = 0.0;
         let eta: f64 = 0.001;
@@ -1159,8 +1222,8 @@ mod tests {
 
     #[test]
     fn Enonlinear() {
-        //!arxiv 1706.07702
-        //!用来测试非线性外在的霍尔电导
+        //! arxiv:1706.07702
+        //! Test for the extrinsic nonlinear Hall conductivity.
         let li: Complex<f64> = 1.0 * Complex::i();
         let delta = 0.;
         let t1 = 1.0 + 0.0 * li;

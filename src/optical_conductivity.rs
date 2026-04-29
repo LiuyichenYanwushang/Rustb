@@ -239,10 +239,12 @@ impl Model {
         Ok((matric_sum, omega_sum))
     }
 
-    ///直接计算 xx, yy, zz, xy, yz, xz 这六个量的光电导, 分为对称和反对称部分.
-    ///输出格式为 ($\sigma_{ab}^S$, $\sigma_{ab}^A), 这里 S 和 A 表示 symmetry and antisymmetry.
-    ///$sigma_{ab}^S$ 是 $6\times n_\omega$
-    ///如果是二维系统, 那么输出 xx yy xy 这三个分量
+    ///Computes the optical conductivity for the six components xx, yy, zz, xy, yz, xz
+    ///directly, separated into symmetric and antisymmetric parts.
+    ///Output format is ($\sigma_{ab}^S$, $\sigma_{ab}^A$), where S and A denote
+    ///symmetry and antisymmetry.
+    ///$\sigma_{ab}^S$ has shape $6\times n_\omega$.
+    ///For 2D systems, only the three components xx, yy, xy are produced.
     pub fn optical_conductivity_all_direction(
         &self,
         k_mesh: &Array1<usize>,

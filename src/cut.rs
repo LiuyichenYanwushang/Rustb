@@ -1,3 +1,25 @@
+//! Tools for cutting slabs, ribbons, and shaped regions from a bulk model.
+//!
+//! This module provides the [`CutModel`] trait with two methods:
+//!
+//! - [`CutModel::cut_piece`]: truncate one direction into `num` layers,
+//!   suitable for slab/ribbon construction.
+//! - [`CutModel::cut_dot`]: cut a shaped dot/edge structure from a slab,
+//!   supporting triangular (3), square (4), hexagonal (6), and octagonal (8)
+//!   shapes.
+//!
+//! # Examples
+//!
+//! ```ignore
+//! use rustb::cut::CutModel;
+//!
+//! // Create a 10-layer slab along direction 2
+//! let slab = model.cut_piece(10, 2).unwrap();
+//!
+//! // Cut a hexagonal dot from the slab
+//! let dot = slab.cut_dot(10, 6, None).unwrap();
+//! ```
+
 use crate::Atom;
 use crate::Model;
 use crate::error::{Result, TbError};
@@ -6,18 +28,51 @@ use ndarray::prelude::*;
 use ndarray::*;
 use num_complex::Complex;
 use std::ops::AddAssign;
+
+/// Trait for cutting slabs, ribbons, and shaped dots from a bulk model.
 pub trait CutModel {
-    /// This function truncates a certain direction of the model.
+    /// Cut `num` layers along direction `dir`, forming a slab with no periodic
+    /// hopping along that direction.
     ///
-    /// num: number of unit cells to truncate
+    /// The resulting model has the same in-plane lattice vectors but the lattice
+    /// vector along `dir` is scaled by `num`.  Orbitals and atoms are replicated
+    /// `num` times, and inter-layer hopping from the original model is mapped
+    /// to intra-slab hopping.
     ///
-    /// dir: direction
+    /// # Parameters
     ///
-    /// Returns a model where the dir direction matches the input model, but the number of orbitals and atoms is multiplied by num, with no inter-cell hopping along the dir direction.
+    /// - `num`: number of unit-cell layers along the cut direction.
+    /// - `dir`: the lattice-vector direction to cut (0-based).
+    ///
+    /// # Returns
+    ///
+    /// A new `Model` with `num * norb` orbitals and `num * natom` atoms.
+    ///
+    /// # Errors
+    ///
+    /// - [`TbError::InvalidSupercellSize`] if `num < 1`.
+    /// - [`TbError::InvalidDirection`] if `dir` is out of range.
     fn cut_piece(&self, num: usize, dir: usize) -> Result<Self>
     where
         Self: Sized;
 
+    /// Cut a shaped dot or edge from the model.
+    ///
+    /// # Parameters
+    ///
+    /// - `num`: size parameter controlling the number of unit cells.
+    /// - `shape`: shape type:
+    ///   - `3`: triangular.
+    ///   - `4`: square.
+    ///   - `6`: hexagonal.
+    ///   - `8`: octagonal.
+    /// - `dir`: for 3D models, the two in-plane directions.  For 2D models,
+    ///   `None` uses directions 0 and 1.
+    ///
+    /// # Errors
+    ///
+    /// - [`TbError::InvalidDimension`] if dimension is not 2 or 3.
+    /// - [`TbError::InvalidShape`] if shape is not 3, 4, 6, or 8.
     fn cut_dot(&self, num: usize, shape: usize, dir: Option<Vec<usize>>) -> Result<Self>
     where
         Self: Sized;
@@ -25,13 +80,6 @@ pub trait CutModel {
 
 impl CutModel for Model {
     fn cut_piece(&self, num: usize, dir: usize) -> Result<Model> {
-        //! This function is used to truncate a certain direction of a model.
-        //!
-        //! Parameters:
-        //! - num: number of unit cells to truncate.
-        //! - dir: the direction to be truncated.
-        //!
-        //! Returns a new model with the same direction as the input model, but with the number of orbitals and atoms increased by a factor of "num". There is no inter-cell hopping along the "dir" direction.
         if num < 1 {
             return Err(TbError::InvalidSupercellSize(num));
         }
@@ -41,9 +89,9 @@ impl CutModel for Model {
                 dim: self.dim_r(),
             });
         }
-        let mut new_orb = Array2::<f64>::zeros((self.norb() * num, self.dim_r())); // Define a new orbital
+        let mut new_orb = Array2::<f64>::zeros((self.norb() * num, self.dim_r()));
         let mut new_orb_proj = Vec::new();
-        let mut new_atom = Vec::new(); // Define a new atom
+        let mut new_atom = Vec::new();
         let new_norb = self.norb() * num;
         let new_nsta = self.nsta() * num;
         let new_natom = self.natom() * num;
@@ -74,10 +122,9 @@ impl CutModel for Model {
         let mut new_ham = Array3::<Complex<f64>>::zeros((1, new_nsta, new_nsta));
         let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), new_nsta, new_nsta));
         let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r()));
-        // New orbitals and atoms constructed, start building Hamiltonian
-        // First attempt to construct position function
         let exist_r = self.rmatrix.len_of(Axis(0)) != 1;
         if exist_r == false {
+            // Initialize rmatrix from orbital positions
             for n in 0..num {
                 for i in 0..new_norb {
                     for r in 0..self.dim_r() {
@@ -103,10 +150,8 @@ impl CutModel for Model {
                     let ham = ham.to_owned();
                     ind_R[[dir]] = 0;
                     if ind < num {
-                        // Start building Hamiltonian
                         let mut use_ham = Array2::<Complex<f64>>::zeros((new_nsta, new_nsta));
                         if self.spin {
-                            //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
                             let mut s = use_ham.slice_mut(s![
                                 n * self.norb()..(n + 1) * self.norb(),
                                 ind * self.norb()..(ind + 1) * self.norb()
@@ -168,10 +213,8 @@ impl CutModel for Model {
                     let rmatrix = rmatrix.to_owned();
                     ind_R[[dir]] = 0;
                     if ind < num {
-                        // Start building Hamiltonian
                         let mut use_ham = Array2::<Complex<f64>>::zeros((new_nsta, new_nsta));
                         if self.spin {
-                            //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
                             let mut s = use_ham.slice_mut(s![
                                 n * self.norb()..(n + 1) * self.norb(),
                                 ind * self.norb()..(ind + 1) * self.norb()
@@ -206,12 +249,11 @@ impl CutModel for Model {
                             let ham0 = ham.slice(s![0..self.norb(), 0..self.norb()]);
                             s.assign(&ham0);
                         }
-                        //开始对 r_matrix 进行操作
+                        // Handle rmatrix
                         let mut use_rmatrix =
                             Array3::<Complex<f64>>::zeros((self.dim_r(), new_nsta, new_nsta));
                         if exist_r {
                             if self.spin {
-                                //如果体系包含自旋, 那需要将其重新排序, 自旋上和下分开
                                 let mut s = use_rmatrix.slice_mut(s![
                                     ..,
                                     n * self.norb()..(n + 1) * self.norb(),
@@ -293,13 +335,11 @@ impl CutModel for Model {
     }
 
     fn cut_dot(&self, num: usize, shape: usize, dir: Option<Vec<usize>>) -> Result<Model> {
-        //! 这个是用来且角态或者切棱态的
-
         match self.dim_r() {
             3 => {
                 let dir = if dir == None {
                     eprintln!(
-                        "Wrong!, the dir is None, but model's dimension is 3, here we use defult 0,1 direction"
+                        "Wrong!, the dir is None, but model's dimension is 3, here we use default 0,1 direction"
                     );
                     let dir = vec![0, 1];
                     dir
@@ -310,7 +350,7 @@ impl CutModel for Model {
                     let model_1 = self.cut_piece(num + 1, dir[0])?;
                     let model_2 = model_1.cut_piece(num + 1, dir[1])?;
                     let mut use_atom_item = Vec::<usize>::new();
-                    let mut use_orb_item = Vec::<usize>::new(); //这个是确定要保留哪些轨道
+                    let mut use_orb_item = Vec::<usize>::new();
                     let mut a: usize = 0;
                     match shape {
                         3 => {
@@ -408,15 +448,6 @@ impl CutModel for Model {
                     new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
                     new_orb_proj.push(old_model.orb_projection[*use_i])
                 }
-                /*
-                let mut new_model = Model::tb_model(
-                    self.dim_r(),
-                    old_model.lat.clone(),
-                    new_orb,
-                    self.spin,
-                    Some(new_atom),
-                )?;
-                */
                 let new_nsta = if self.spin {
                     new_orb.len() * 2
                 } else {
@@ -538,7 +569,7 @@ impl CutModel for Model {
                     let model_1 = self.cut_piece(num + 1, 0)?;
                     let model_2 = model_1.cut_piece(num + 1, 1)?;
                     let mut use_atom_item = Vec::<usize>::new();
-                    let mut use_orb_item = Vec::<usize>::new(); //这个是确定要保留哪些轨道
+                    let mut use_orb_item = Vec::<usize>::new();
                     let mut a: usize = 0;
                     match shape {
                         3 => {

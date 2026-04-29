@@ -16,7 +16,7 @@ where
     B: Data<Elem = T>,
     T: LinalgScalar, // 约束条件：T 必须实现 LinalgScalar trait
 {
-    //! 做 $\\\{A,B\\\}$ 对易操作
+    //! Compute the commutator $[A, B] = AB - BA$.
     A.dot(B) - B.dot(A)
 }
 #[allow(non_snake_case)]
@@ -27,6 +27,6 @@ where
     B: Data<Elem = T>,
     T: LinalgScalar, // 约束条件：T 必须实现 LinalgScalar trait
 {
-    //! 做 $\\\{A,B\\\}$ 反对易操作
+    //! Compute the anti-commutator $\{A, B\} = AB + BA$.
     A.dot(B) + B.dot(A)
 }

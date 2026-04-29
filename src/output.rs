@@ -1,14 +1,14 @@
-//!这个模块是用来输出各种标准格式的, 包括
+//!This module handles output in various standard formats, including:
 //!
-//!wannier90_hr.dat 格式
+//!wannier90_hr.dat format
 //!
-//!wannier90_centres.xyz 格式
+//!wannier90_centres.xyz format
 //!
-//!wannier90.win 格式
+//!wannier90.win format
 //!
-//!整合的 wannier90 格式
+//!All-in-one Wannier90 format
 //!
-//!POSCAR 格式
+//!POSCAR format
 use crate::Model;
 use crate::error::{Result, TbError};
 use crate::kpath::*;
@@ -32,7 +32,7 @@ use std::ops::AddAssign;
 use std::ops::MulAssign;
 
 pub trait OutPut {
-    /// 这个函数是用来将 tight-binding 模型输出到 wannier90_hr.dat 格式的
+    /// Writes the tight-binding model to `wannier90_hr.dat` format.
     fn output_hr(&self, path: &str, seedname: &str);
     fn output_POSCAR(&self, path: &str);
     fn output_win(&self, path: &str, seedname: &str);
@@ -67,19 +67,6 @@ impl OutPut for Model {
         writeln!(file, "{}", weight);
         //接下来我们进行数据的写入
         match self.dim_r {
-            Dimension::zero => {
-                let mut s = String::new();
-                let ham = self.ham.slice(s![0, .., ..]);
-                for orb_2 in 0..self.nsta() {
-                    for orb_1 in 0..self.nsta() {
-                        s.push_str(&format!(
-                            "0    0    0    {:15.8}    {:15.8}\n",
-                            ham[[orb_1, orb_2]].re,
-                            ham[[orb_1, orb_2]].im
-                        ));
-                    }
-                }
-            }
             Dimension::one => {
                 let max_R1 = self.hamR.outer_iter().map(|x| x[[0]].abs()).max().unwrap();
                 let mut s = String::new();
@@ -253,11 +240,6 @@ impl OutPut for Model {
                 s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],0.0,0.0,0.0,10.0,0.0,0.0,0.0,10.0));
                 s
             }
-            Dimension::zero => {
-                panic!(
-                    "Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours zero"
-                );
-            }
         };
         writeln!(file, "{}", s);
         //开始弄atom
@@ -324,11 +306,6 @@ impl OutPut for Model {
                         ));
                         s
                     }
-                    Dimension::zero => {
-                        panic!(
-                            "Wrong! for POSCAR output, the dim_r of the model must be 1, 2 or 3, but yours zero"
-                        );
-                    }
                 };
                 writeln!(file, "{}", s);
             }
@@ -336,7 +313,8 @@ impl OutPut for Model {
     }
 
     fn output_win(&self, path: &str, seedname: &str) {
-        //!这个是用来输出 win 文件的. 这里projection 需要人为添加, 因为没有保存相关的projection 数据
+        //!Output a Wannier90 `.win` file. Note: projections must be added manually,
+        //!since projection data is not stored in the model.
         let mut name = String::new();
         name.push_str(path);
         name.push_str(seedname);
@@ -376,7 +354,6 @@ impl OutPut for Model {
                         0.0
                     );
                 }
-                Dimension::zero => panic!("Wrong, your model's dim_r is 0, not 1,2 or 3"),
             }
         }
         writeln!(file, "end atoms_cart");
@@ -411,20 +388,16 @@ impl OutPut for Model {
                 writeln!(file, "   0.000000     0.000000     1.000000");
                 writeln!(file, "   0.000000     0.000000     1.000000");
             }
-            Dimension::zero => {
-                panic!(
-                    "Wrong! Using output win file, the dim_r of model mut be 1, 2, or 3, but yours 0"
-                )
-            }
         }
         writeln!(file, "end unit_cell_cart");
         writeln!(file, "\n");
-        //还差投影轨道
+        //TODO: projections still need to be written
         writeln!(file, "begin projections");
         writeln!(file, "end projections");
     }
     fn output_xyz(&self, path: &str, seedname: &str) {
-        //!这个是用来输出 xyz 文件的. 这里projection 需要人为添加, 因为没有保存相关的projection 数据
+        //!Output a Wannier90 `_centres.xyz` file. Note: projections must be added
+        //!manually, since projection data is not stored in the model.
         let mut name = String::new();
         name.push_str(path);
         name.push_str(seedname);
@@ -541,14 +514,12 @@ impl OutPut for Model {
                 ));
                 s
             }
-            Dimension::zero => {
-                panic!("Wrong!, the dim_r must be 1,2 or 3, but yours 0");
-            }
         };
         writeln!(file, "{}", s);
     }
 
-    ///这个函数是用来快速画能带图的, 用python画图, 因为Rust画图不太方便.
+    ///Quickly plot a band structure using Python (gnuplot), since Rust-side
+    ///plotting is less convenient.
     #[allow(non_snake_case)]
     fn show_band(
         &self,
@@ -651,7 +622,7 @@ impl OutPut for Model {
 }
 
 pub fn draw_heatmap<A: Data<Elem = f64>>(data: &ArrayBase<A, Ix2>, name: &str) {
-    //!这个函数是用来画热图的, 给定一个二维矩阵, 会输出一个像素图片
+    //!Draw a heatmap from a 2D matrix, producing a pixel-based image.
     use gnuplot::{AutoOption::Fix, AxesCommon, Figure, HOT, RAINBOW};
     let mut fg = Figure::new();
     let (height, width): (usize, usize) = (data.shape()[0], data.shape()[1]);

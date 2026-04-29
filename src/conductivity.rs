@@ -2,17 +2,18 @@
 //!
 //! This module implements various conductivity calculations including:
 //! - Anomalous Hall conductivity
-//! - Spin Hall conductivity  
+//! - Spin Hall conductivity
 //! - Nonlinear Hall conductivity
 //! - Berry curvature and orbital magnetization
 //!
 //! The implementations are based on the Kubo formula and semiclassical wave-packet
 //! dynamics, providing both intrinsic and extrinsic contributions to transport.
 
-//! Derivation of nonlinear Hall effect using Niu-Qian equations
+//! ## Derivation of nonlinear Hall effect using Niu-Qian equations
+//!
 //! This section derives formulas for linear and nonlinear Hall conductivities using the Niu-Qian formalism.
 //! Starting from the current density formula:
-//!$$\bm J=-e\int_\tx{BZ}\dd\bm k\sum_n f_n\bm v_n$$
+//! $$\bm J=-e\int_\tx{BZ}\dd\bm k\sum_n f_n\bm v_n$$
 //! Here $n$ labels bands, $f_n$ is the Fermi-Dirac distribution. The velocity operator according to Niu-Qian is:
 //! $$\bm v=\f{1}{\hbar}\f{\p\ve_n}{\p\bm k}-\f{e}{\hbar}\bm E\times\bm\Og_n$$
 //! The $n$-th order Hall conductivity is defined as:
@@ -45,70 +46,78 @@
 //! \bm v_n^{(1)}&=\f{1}{\hbar}\pdv{\ve_n^{(1)}}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n^{(0)}\\\\
 //! \bm v_n^{(2)}&=\f{1}{\hbar}\pdv{\ve_n^{(2)}}{\bm k}+\f{e}{\hbar}\bm E\times\bm \Og_n^{(1)}\\\\
 //! \\end{aligned}$$
-//! Next, starting from the Hamiltonian under electric field:
+//! Next, starting from the Hamiltonian under an electric field:
 //! $$H_{\bm k}=\sum_{mn}\lt(\ve_n^{(0)}\dt_{nm}-e\bm E\cdot\bra{\psi_n}\bm r\ket{\psi_n}\rt)\ket{\psi_n}\bra{\psi_m}$$
-//!我们将其拆成两部分, 对角部分和非对角部分
-//!$$\\begin{aligned}
-//!H_{\bm k}^{(0)}&=\sum_{n}\lt(\ve_{n\bm k}^{(0)}-e\bm E\cdot\bm A_n\rt)\dyad{\psi_n}\\\\
-//!H_{\bm k}^{(1)}&=\sum_{n=\not m}\lt(-e\bm E\cdot\bm A_{mn}\rt)\ket{\psi_m}\bra{\psi_n}\\\\
-//!\\end{aligned}$$
-//!这里 $\bm A_{mn}=\bra{\psi_m}\bm r\ket{\psi_n}=i\bra{\psi_m}\p_{\bm k}\ket{\psi_n}$
+//! We split it into two parts: the diagonal part and the off-diagonal part:
+//! $$\\begin{aligned}
+//! H_{\bm k}^{(0)}&=\sum_{n}\lt(\ve_{n\bm k}^{(0)}-e\bm E\cdot\bm A_n\rt)\dyad{\psi_n}\\\\
+//! H_{\bm k}^{(1)}&=\sum_{n=\not m}\lt(-e\bm E\cdot\bm A_{mn}\rt)\ket{\psi_m}\bra{\psi_n}\\\\
+//! \\end{aligned}$$
+//! where $\bm A_{mn}=\bra{\psi_m}\bm r\ket{\psi_n}=i\bra{\psi_m}\p_{\bm k}\ket{\psi_n}$.
 //!
-//!显然, 我们知道公式
-//!$$e^{\hat S}\hat{\mathcal{O}}e^{-\hat S}=\mathcal{O}+\lt[\hat S,\hat{\mcl{O}}\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\hat{\mcl{O}}\rt]\rt]+\f{1}{6}\lt[\hat S,\lt[\hat S,\lt[\hat S,\hat{\mcl{O}}\rt]\rt]\rt]\cdots$$
-//! 为了方便计算, 我们可以选择一个 $\hat S$, 让 $H_{\bm k}^{(1)}+\lt[\hat S,\hat H_{\bm k}^{(0)}\rt]=0$, 我们有
-//!$$\\begin{aligned}
-//!H^\prime_{\bm k}&=e^{\hat S}H_{\bm k} e^{-\hat S}=H_{\bm k}^{(0)}+\lt(H_{\bm k}^{(1)}+\lt[\hat S,\hat H_{\bm k}^{(0)}\rt]\rt)+\lt(\lt[\hat S,\hat H_{\bm k}^{(1)}\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\hat H_{\bm k}^{(0)}\rt]\rt]\rt)\cdots\\\\
-//!&=H_{\bm k}^{(0)}+\f{1}{2}\lt[S,H_{\bm k}^{(1)}\rt]+\f{1}{3}\lt[S,\lt[S,H_{\bm k}^{(1)}\rt]\rt]\cdots
-//!\\end{aligned}$$
-//!为了满足条件, 我们选择 $$S_{nn}=0,\ S_{nm}=\f{-e\bm E\cdot \bm A_{nm}}{\ve_{nm}-e\bm E\cdot \bm A_{nm}}$$
+//! Clearly, we have the formula:
+//! $$e^{\hat S}\hat{\mathcal{O}}e^{-\hat S}=\mathcal{O}+\lt[\hat S,\hat{\mcl{O}}\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\hat{\mcl{O}}\rt]\rt]+\f{1}{6}\lt[\hat S,\lt[\hat S,\lt[\hat S,\hat{\mcl{O}}\rt]\rt]\rt]\cdots$$
+//! For computational convenience, we choose $\hat S$ such that $H_{\bm k}^{(1)}+\lt[\hat S,\hat H_{\bm k}^{(0)}\rt]=0$, giving:
+//! $$\\begin{aligned}
+//! H^\prime_{\bm k}&=e^{\hat S}H_{\bm k} e^{-\hat S}=H_{\bm k}^{(0)}+\lt(H_{\bm k}^{(1)}+\lt[\hat S,\hat H_{\bm k}^{(0)}\rt]\rt)+\lt(\lt[\hat S,\hat H_{\bm k}^{(1)}\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\hat H_{\bm k}^{(0)}\rt]\rt]\rt)\cdots\\\\
+//! &=H_{\bm k}^{(0)}+\f{1}{2}\lt[S,H_{\bm k}^{(1)}\rt]+\f{1}{3}\lt[S,\lt[S,H_{\bm k}^{(1)}\rt]\rt]\cdots
+//! \\end{aligned}$$
+//! To satisfy the condition, we choose:
+//! $$S_{nn}=0,\ S_{nm}=\f{-e\bm E\cdot \bm A_{nm}}{\ve_{nm}-e\bm E\cdot \bm A_{nm}}$$
 //!
-//!因为我们有
-//!$$\\begin{aligned} \lt[S,H_{\bm k}^{(0)}\rt]&=SH_{\bm k}^{(0)}-H_{\bm k}^{(0)}S=\sum_{j=\not m} S_{mj}H_{\bm k,jn}^{(0)}-\sum_{j=\not n }H_{\bm k,mj}^{(0)}S_{jn}\\\\
-//!&=\sum_{j=\not m}\f{-e\bm E\cdot \bm A_{mj}\lt(\ve_j^{(0)}-e\bm E\cdot\bm A_j\rt)\dt_{jn}}{\ve_{mj}-e\bm E\cdot\lt(\bm A_m-\bm A_j\rt)}-\sum_{j=\not n}\f{-e\lt(\ve_j^{(0)}-e\bm E\cdot\bm A_j\rt)\lt(\bm E\cdot \bm A_{jn}\rt)\dt_{mj}}{\ve_{jn}-e\bm E\cdot\lt(\bm A_j-\bm A_n\rt)}\\\\
-//!&=\f{e\lt(\bm E\cdot\bm A_{mn}\rt)\lt[\ve_{mn}- e\bm E\cdot\lt(\bm A_m-\bm A_n\rt)\rt]}{\ve_{mn}-e\bm E\cdot(\bm A_m-\bm A_n)}=-H_{\bm k}^{(1)}
-//!\\end{aligned}$$
-//!这样我们就验证了我们的结果, 我们将 $\hat S$ 进行化简和展开有
-//!$$S_{nm}\approx \f{-e\bm E\cdot\bm A_{nm}}{\ve_n^{(0)}-\ve_m^{(0)}}-\f{ e^2\lt(\bm E\cdot\bm A_{nm}\rt)\lt(\bm E\cdot\lt(\bm A_n-\bm A_m\rt)\rt)}{\lt(\ve_n^{(0)}-\ve_m^{(0)}\rt)^2}$$
-//!这样我们就能得到能带的各阶扰动
-//!$$\\begin{aligned}
-//!\ve_n^{(1)}&=-e\bm E\cdot\bm A_n\\\\
-//!\ve_n^{(2)}&=\f{e^2}{2}E_a E_b \sum_{m=\not n}\f{A_{nm}^a A_{mn}^b+A_{mn}^a A_{nm}^b}{\ve_n-\ve_m}=e^2 G_n^{ab}E_a E_b\\\\
-//!\ve_n^{(3)}&=-e^3E_a E_b E_c \lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nl}^a A_{lm}^b A_{mn}^c}{(\ve_n-\ve_m)(\ve_n-\ve_l)}\rt)+e^3 E_a E_b E_c\lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nm}^a A_{mn}^b (A_n^c-A_m^c)}{(\ve_n-\ve_m)^2}\rt)\\\\
-//!\\end{aligned}$$
-//!这里 $$G_n^{ab}=\sum_{m=\not n}\f{A_{nm}^a A_{mn}^b+A_{mn}^a A_{nm}^b}{\ve_n-\ve_m}=\sum_{m=\not n} 2\tx{Re}\f{v_{nm}^a v_{mn}^b}{(\ve_n-\ve_m)^3}$$
-//!到这里, 我们将能带的扰动得到了. 但是有一个问题, 就是 $\bm A$ 是一个规范变换, 所以并不是唯一的,
-//!同时, 对于带内的贡献 $\bm A_{n}=i\bra{\psi_{n\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}$, 没有好的求解方法,因为 $\bm A=-e\bra{\psi_n}\bm r\ket{\psi_n}$ 破坏了平移对称性. 但是我们总是可以选择一个规范.
-//!在这里我们选择 $-e\bm E\cdot\bm A_n=0$, 这个规范令 $\ve_n^{(1)}=0$. 这种规范在物理的意义上, 可以理解为贝利联络和电场的方向垂直. 对于贝利曲率的高阶项, 利用 $\bm A\to\bm A^\prime=A+\lt[\hat S,\bm A\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\bm A\rt]\rt]\cdots$, 我们有
-//!$$\\begin{aligned}
-//!\lt(A_n^b\rt)^{(1)}&=-e\bm E_a G_n^{ab}\\\\
-//!\lt(A_n^c\rt)^{(2)}&=e^2 E_a E_b \lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nl}^a A_{lm}^b A_{mn}^c}{(\ve_n-\ve_m)(\ve_n-\ve_l)}\rt)+e^2 E_a E_b\lt( \sum_{m=\not n}\f{A_{nm}^a A_{mn}^b (A_n^c-A_m^c)}{(\ve_n-\ve_m)^2}\rt)\\\\
-//!&=e^2 E_a E_b\lt(S_n^{abc}-F_n^{abc}\rt)
-//!\\end{aligned}$$
+//! Because we have:
+//! $$\\begin{aligned} \lt[S,H_{\bm k}^{(0)}\rt]&=SH_{\bm k}^{(0)}-H_{\bm k}^{(0)}S=\sum_{j=\not m} S_{mj}H_{\bm k,jn}^{(0)}-\sum_{j=\not n }H_{\bm k,mj}^{(0)}S_{jn}\\\\
+//! &=\sum_{j=\not m}\f{-e\bm E\cdot \bm A_{mj}\lt(\ve_j^{(0)}-e\bm E\cdot\bm A_j\rt)\dt_{jn}}{\ve_{mj}-e\bm E\cdot\lt(\bm A_m-\bm A_j\rt)}-\sum_{j=\not n}\f{-e\lt(\ve_j^{(0)}-e\bm E\cdot\bm A_j\rt)\lt(\bm E\cdot \bm A_{jn}\rt)\dt_{mj}}{\ve_{jn}-e\bm E\cdot\lt(\bm A_j-\bm A_n\rt)}\\\\
+//! &=\f{e\lt(\bm E\cdot\bm A_{mn}\rt)\lt[\ve_{mn}- e\bm E\cdot\lt(\bm A_m-\bm A_n\rt)\rt]}{\ve_{mn}-e\bm E\cdot(\bm A_m-\bm A_n)}=-H_{\bm k}^{(1)}
+//! \\end{aligned}$$
+//! This verifies our result. We simplify and expand $\hat S$ to obtain:
+//! $$S_{nm}\approx \f{-e\bm E\cdot\bm A_{nm}}{\ve_n^{(0)}-\ve_m^{(0)}}-\f{ e^2\lt(\bm E\cdot\bm A_{nm}\rt)\lt(\bm E\cdot\lt(\bm A_n-\bm A_m\rt)\rt)}{\lt(\ve_n^{(0)}-\ve_m^{(0)}\rt)^2}$$
+//! Thus we obtain the band perturbations at each order:
+//! $$\\begin{aligned}
+//! \ve_n^{(1)}&=-e\bm E\cdot\bm A_n\\\\
+//! \ve_n^{(2)}&=\f{e^2}{2}E_a E_b \sum_{m=\not n}\f{A_{nm}^a A_{mn}^b+A_{mn}^a A_{nm}^b}{\ve_n-\ve_m}=e^2 G_n^{ab}E_a E_b\\\\
+//! \ve_n^{(3)}&=-e^3E_a E_b E_c \lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nl}^a A_{lm}^b A_{mn}^c}{(\ve_n-\ve_m)(\ve_n-\ve_l)}\rt)+e^3 E_a E_b E_c\lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nm}^a A_{mn}^b (A_n^c-A_m^c)}{(\ve_n-\ve_m)^2}\rt)\\\\
+//! \\end{aligned}$$
+//! where $$G_n^{ab}=\sum_{m=\not n}\f{A_{nm}^a A_{mn}^b+A_{mn}^a A_{nm}^b}{\ve_n-\ve_m}=\sum_{m=\not n} 2\tx{Re}\f{v_{nm}^a v_{mn}^b}{(\ve_n-\ve_m)^3}$$
+//! At this point, we have obtained the band perturbations. However, there is a problem: $\bm A$ is a gauge-dependent quantity and is therefore not unique.
+//! Meanwhile, for the intra-band contribution $\bm A_{n}=i\bra{\psi_{n\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}$, there is no simple way to compute it because $\bm A=-e\bra{\psi_n}\bm r\ket{\psi_n}$ breaks translational symmetry. But we can always choose a gauge.
+//! Here we choose $-e\bm E\cdot\bm A_n=0$, a gauge that makes $\ve_n^{(1)}=0$. Physically, this gauge means the Berry connection is perpendicular to the direction of the electric field. For the higher-order term of the Berry curvature, using
+//! $\bm A\to\bm A^\prime=A+\lt[\hat S,\bm A\rt]+\f{1}{2}\lt[\hat S,\lt[\hat S,\bm A\rt]\rt]\cdots$, we have:
+//! $$\\begin{aligned}
+//! \lt(A_n^b\rt)^{(1)}&=-e\bm E_a G_n^{ab}\\\\
+//! \lt(A_n^c\rt)^{(2)}&=e^2 E_a E_b \lt( \sum_{m=\not n}\sum_{l=\not m,n}\f{A_{nl}^a A_{lm}^b A_{mn}^c}{(\ve_n-\ve_m)(\ve_n-\ve_l)}\rt)+e^2 E_a E_b\lt( \sum_{m=\not n}\f{A_{nm}^a A_{mn}^b (A_n^c-A_m^c)}{(\ve_n-\ve_m)^2}\rt)\\\\
+//! &=e^2 E_a E_b\lt(S_n^{abc}-F_n^{abc}\rt)
+//! \\end{aligned}$$
 //!
-//!这样利用贝利曲率公式 $\Og_n^{ab}=\p_a A_n^b -\p_b A_n^a$
-//!我们有 $$\\begin{aligned}
-//!\lt(\Og_n^{ab}\rt)^{(1)}&=-e E_c\lt(\p_a G_n^{bc}-\p_b G_n^{ac}\rt)\\\\
-//!\lt(\Og_n^{ab}\rt)^{(2)}&=e^2 E_{\ap}E_{\bt}\lt(\p_a S^{\ap\bt b}-\p_b S^{\ap\bt a}-\p_a F^{\ap\bt b}+\p_b F^{\ap\bt a}\rt)
-//!\\end{aligned}$$
-//!最终我们带入到电导率公式中, 有
-//!$$\begin{aligned}
-//!\sigma_{ab}=&-\f{e^2}{\hbar}\int_\tx{BZ} \f{\dd\bm k}{(2\pi)^3}\sum_n f_n\Og_n^{ab}+\f{e^2\tau}{\hbar^2}\sum_n \int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3}\f{\p^2\ve_n}{\p k_a\p k_b}\\\\
-//!\sigma_{abc}=&-\f{e^3\tau^2}{\hbar^3}\sum_n\int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3}\f{\p^3\ve_n}{\p k_a \p k_b \p k_c}
-//!+\f{e^3\tau}{\hbar^2}\sum_n \int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3} \f{1}{2} f_n \lt(\p_a\Og_n^{bc}+\p_b\Og_n^{ac}\rt)\\\\
-//!&-\f{e^3}{\hbar}\sum_n\int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3} f_n\lt(2\p_c G_n^{ab}-\f{1}{2}\lt(\p_a G_n^{bc}+\p_b G_n^{ac}\rt)\rt)
-//!\end{aligned}$$
+//! Next, using the Berry curvature formula $\Og_n^{ab}=\p_a A_n^b -\p_b A_n^a$, we obtain:
+//! $$\\begin{aligned}
+//! \lt(\Og_n^{ab}\rt)^{(1)}&=-e E_c\lt(\p_a G_n^{bc}-\p_b G_n^{ac}\rt)\\\\
+//! \lt(\Og_n^{ab}\rt)^{(2)}&=e^2 E_{\ap}E_{\bt}\lt(\p_a S^{\ap\bt b}-\p_b S^{\ap\bt a}-\p_a F^{\ap\bt b}+\p_b F^{\ap\bt a}\rt)
+//! \\end{aligned}$$
+//! Finally, substituting into the conductivity formula, we obtain:
+//! $$\begin{aligned}
+//! \sigma_{ab}=&-\f{e^2}{\hbar}\int_\tx{BZ} \f{\dd\bm k}{(2\pi)^3}\sum_n f_n\Og_n^{ab}+\f{e^2\tau}{\hbar^2}\sum_n \int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3}\f{\p^2\ve_n}{\p k_a\p k_b}\\\\
+//! \sigma_{abc}=&-\f{e^3\tau^2}{\hbar^3}\sum_n\int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3}\f{\p^3\ve_n}{\p k_a \p k_b \p k_c}
+//! +\f{e^3\tau}{\hbar^2}\sum_n \int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3} \f{1}{2} f_n \lt(\p_a\Og_n^{bc}+\p_b\Og_n^{ac}\rt)\\\\
+//! &-\f{e^3}{\hbar}\sum_n\int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3} f_n\lt(2\p_c G_n^{ab}-\f{1}{2}\lt(\p_a G_n^{bc}+\p_b G_n^{ac}\rt)\rt)
+//! \end{aligned}$$
 //!
-//! ## Berry connection 的化简
+//! ## Simplification of the Berry connection
 //!
-//!为了实际的计算, 我们需要将 Berry connection 的形式修改一下, 我们首先按照微分的定理有 $$\p_{\bm k}\lt(H_{\bm k}\ket{\psi_{n\bm k}}\rt)=\lt(\p_{\bm k}H_{\bm k}+H_{\bm k}\p_{\bm k}\rt)\ket{\psi_{n\bm k}}$$
-//!然后我们又因为 $H_{\bm k}\ket{\psi_{n\bm k}}=\ve_{n\bm k}\ket{\psi_{n\bm k}}$, 所以 $$\p_{\bm k}\lt(H_{\bm k}\ket{\psi_{n\bm k}}\rt)=\p_{\bm k}\ve_{n\bm k}\ket{\psi_{n\bm k}}+\ve_{n\bm k}\p_{\bm k}\ket{\psi_{n\bm k}}$$
-//!所以我们有 $$\\begin{aligned}
-//!\p_{\bm k}H_{\bm k}\ket{\psi_{n\bm k}}+H_{\bm k}\p_{\bm k}\ket{\psi_{n\bm k}}=\p_{\bm k}\ve_{n\bm k}\ket{\psi_{n\bm k}}+\ve_{n\bm k}\p_{\bm k}\ket{\psi_{n\bm k}}
-//!\\end{aligned}$$
-//!显然我们将上式等号两边的左侧插入一个完备算符 $\sum_m \dyad{\psi_{m\bm k}}$ 有 $$\sum_m\lt[\bra{\psi_{m\bm k}}\p_{\bm k}H_{\bm k}\ket{\psi_{n\bm k}}+\lt(\ve_{m\bm k}-\ve_{n\bm k}\rt)\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}\rt]\ket{\psi_{m\bm k}}=\bra{\psi_{n\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}\ket{\psi_{n\bm k}} $$
-//!根据上面的式子, 我们很容易得到当 $m=\not n$ 时 $$\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}=\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
-//!也就是说, 我们能够最终得到 $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
+//! For practical computations, we need to modify the Berry connection form. First, by the chain rule, we have:
+//! $$\p_{\bm k}\lt(H_{\bm k}\ket{\psi_{n\bm k}}\rt)=\lt(\p_{\bm k}H_{\bm k}+H_{\bm k}\p_{\bm k}\rt)\ket{\psi_{n\bm k}}$$
+//! Since $H_{\bm k}\ket{\psi_{n\bm k}}=\ve_{n\bm k}\ket{\psi_{n\bm k}}$, we also have:
+//! $$\p_{\bm k}\lt(H_{\bm k}\ket{\psi_{n\bm k}}\rt)=\p_{\bm k}\ve_{n\bm k}\ket{\psi_{n\bm k}}+\ve_{n\bm k}\p_{\bm k}\ket{\psi_{n\bm k}}$$
+//! Therefore:
+//! $$\\begin{aligned}
+//! \p_{\bm k}H_{\bm k}\ket{\psi_{n\bm k}}+H_{\bm k}\p_{\bm k}\ket{\psi_{n\bm k}}=\p_{\bm k}\ve_{n\bm k}\ket{\psi_{n\bm k}}+\ve_{n\bm k}\p_{\bm k}\ket{\psi_{n\bm k}}
+//! \\end{aligned}$$
+//! Inserting a complete set of states $\sum_m \dyad{\psi_{m\bm k}}$ on the left of both sides yields:
+//! $$\sum_m\lt[\bra{\psi_{m\bm k}}\p_{\bm k}H_{\bm k}\ket{\psi_{n\bm k}}+\lt(\ve_{m\bm k}-\ve_{n\bm k}\rt)\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}\rt]\ket{\psi_{m\bm k}}=\bra{\psi_{n\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}\ket{\psi_{n\bm k}}$$
+//! From the above, we easily see that when $m\neq n$:
+//! $$\bra{\psi_{m\bm k}}\p_{\bm k}\ket{\psi_{n\bm k}}=\f{\bra{\psi_{m\bm k}}\p_{\bm k}H_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
+//! That is, we obtain the final expression:
+//! $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}H_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 
 use crate::error::{Result, TbError};
 use crate::kpoints::{gen_kmesh, gen_krange};
@@ -162,21 +171,56 @@ fn build_spin_matrix(norb: usize, spin: usize) -> Array2<Complex<f64>> {
     m
 }
 
-/**
-这个函数是用来做自适应积分算法的
-
-对于任意维度的积分 n, 我们的将区域刨分成 n+1面体的小块, 然后用线性插值来近似这个n+1的积分结果
-
-设被积函数为 $f(x_1,x_2,...,x_n)$, 存在 $n+1$ 个点 $(y_{01},y_{02},\cdots y_{0n})\cdots(y_{n1},y_{n2}\cdots y_{nn})$, 对应的值为 $z_0,z_1,...,z_n$
-
-这样我们就能得到这一块积分的近似值为 $$ \f{1}{(n+1)!}\times\sum_{i=0}^n z_i *\dd V.$$ 其中$\dd V$ 是正 $n+1$ 面体的体积.
-
-在这里, 对于一维体系, 线性插值积分等价于梯形积分. 在两个相邻的数据点 ($x_1$,$f_1$) 和 ($x_2,$f_2$), 其积分结果为$\Delta=\f{f_1+f_2}{2}*(x_2-x_2)$.
-
-对于二维系统, 用三角形进行近似, 对于任意的小三角形得到的积分结果为 $\Delta=S\sum_{i=1}^3 f_i/3!$
-
-对于三维系统, 线性插值的结果为 $\Delta=S\sum_{i=1}^4 f_i/4!$
-*/
+/// Adaptive integration algorithm over an n-dimensional hyperrectangle.
+///
+/// For an integral in $n$ dimensions, the integration domain is partitioned into $(n+1)$-simplices,
+/// and linear interpolation is used to approximate the integral over each simplex.
+///
+/// Given the integrand $f(x_1,x_2,...,x_n)$, let there be $n+1$ vertices
+/// $(y_{01},y_{02},\cdots y_{0n})\cdots(y_{n1},y_{n2}\cdots y_{nn})$ with corresponding function
+/// values $z_0,z_1,...,z_n$. The approximate integral over one simplex is:
+/// $$ \f{1}{(n+1)!}\times\sum_{i=0}^n z_i \cdot \dd V,$$
+/// where $\dd V$ is the volume of the $(n+1)$-simplex.
+///
+/// **In 1D:** linear interpolation is equivalent to the trapezoidal rule. Between two adjacent data
+/// points $(x_1, f_1)$ and $(x_2, f_2)$, the integral is $\Delta = \f{f_1+f_2}{2}\cdot(x_2-x_1)$.
+///
+/// **In 2D:** triangular elements are used. For any small triangle, the integral is
+/// $\Delta = S\sum_{i=1}^3 f_i / 3!$.
+///
+/// **In 3D:** tetrahedral elements are used. The linear interpolation result is
+/// $\Delta = V\sum_{i=1}^4 f_i / 4!$.
+///
+/// The algorithm recursively subdivides simplices until the error estimate satisfies the tolerance.
+///
+/// # Arguments
+///
+/// * `f0` - The integrand function $f(\mathbf{k})$, taking an `Array1<f64>` and returning `f64`.
+/// * `k_range` - A `(dim, 2)` array specifying the integration domain. Each row `[k_min, k_max]`
+///   defines the range along one dimension.
+/// * `re_err` - Relative error tolerance.
+/// * `ab_err` - Absolute error tolerance.
+///
+/// # Returns
+///
+/// The approximate value of the integral.
+///
+/// # Panics
+///
+/// Panics if `k_range.len_of(Axis(0))` (the dimension) is not 1, 2, or 3.
+///
+/// # Examples
+///
+/// ```ignore
+/// use ndarray::{arr1, arr2};
+/// use rustb::conductivity::adapted_integrate_quick;
+///
+/// // Integrate sin(k1 + k2) over [0, pi] x [0, pi]
+/// let f = |k: &ndarray::Array1<f64>| (k[0] + k[1]).sin();
+/// let k_range = arr2(&[[0.0, std::f64::consts::PI], [0.0, std::f64::consts::PI]]);
+/// let result = adapted_integrate_quick(&f, &k_range, 1.0, 1e-4);
+/// assert!((result - 4.0).abs() < 1e-3);
+/// ```
 
 #[inline(always)]
 pub fn adapted_integrate_quick(
@@ -379,10 +423,32 @@ pub fn adapted_integrate_quick(
     }
 }
 
+/// Trait providing Berry curvature calculations.
+///
+/// This trait requires the [`Velocity`] trait and provides methods to compute
+/// the Berry curvature and spin Berry curvature at individual k-points or over k-point sets.
+///
+/// The spin parameter selects the spin operator:
+/// - `0`: $\sigma_0$ (identity, charge Berry curvature)
+/// - `1`: $\sigma_x$ (spin Berry curvature, x-component)
+/// - `2`: $\sigma_y$ (spin Berry curvature, y-component)
+/// - `3`: $\sigma_z$ (spin Berry curvature, z-component)
+///
+/// If the model is spinless, the spin parameter is ignored and spin=0 is used.
 pub trait BerryCurvature: Velocity {
-    //! 这个trait是用来提供Berry Curvature 的
-    //!
-    /// 产生第n条能带的贝利曲率
+    /// Computes the Berry curvature for each band at a single k-point.
+    ///
+    /// Returns `(omega_n, band)` where `omega_n` contains the Berry curvature for each band
+    /// and `band` contains the band energies.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_vec` - k-point coordinates (in fractional reciprocal coordinates).
+    /// * `dir_1` - Direction vector for the first index $\alpha$ of $\Omega_{n,\alpha\beta}$.
+    ///   Must have length equal to `self.dim_r()`.
+    /// * `dir_2` - Direction vector for the second index $\beta$ of $\Omega_{n,\alpha\beta}$.
+    /// * `spin` - Spin operator index (0, 1, 2, 3 for $\sigma_0, \sigma_x, \sigma_y, \sigma_z$).
+    /// * `eta` - Broadening parameter $\eta$ for the energy denominator.
     fn berry_curvature_n_onek<S: Data<Elem = f64>>(
         &self,
         k_vec: &ArrayBase<S, Ix1>,
@@ -392,13 +458,26 @@ pub trait BerryCurvature: Velocity {
         eta: f64,
     ) -> (Array1<f64>, Array1<f64>);
 
-    ///给定一个 k 点, 指定 dir_1=$\alpha$, dir_2=$\beta$, T 代表温度, og= $\og$,
-    ///mu=$\mu$ 为费米能级, spin=0,1,2,3 为$\sg_0,\sg_x,\sg_y,\sg_z$,
-    ///当体系不存在自旋的时候无论如何输入spin都默认 spin=0
-    ///eta=$\eta$ 是一个小量
-    /// 这个函数返回的是
-    /// $$ \sum_n f_n\Omega_{n,\ap\bt}^\gm(\bm k)=\sum_n \f{1}{e^{(\ve_{n\bm k}-\mu)/T/k_B}+1} \sum_{m=\not n}\f{J_{\ap,nm}^\gm v_{\bt,mn}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og+i\eta)^2}$$
-    /// 其中 $J_\ap^\gm=\\{s_\gm,v_\ap\\}$
+    /// Computes the temperature-dependent Berry curvature at a single k-point.
+    ///
+    /// The formula computed is:
+    /// $$ \sum_n f_n\Omega_{n,\alpha\beta}^\gamma(\mathbf k) =
+    ///    \sum_n \f{1}{e^{(\varepsilon_{n\mathbf k}-\mu)/(k_B T)}+1}
+    ///    \sum_{m\neq n} \f{J_{\alpha,nm}^\gamma v_{\beta,mn}}
+    ///    {(\varepsilon_{n\mathbf k}-\varepsilon_{m\mathbf k})^2 + \eta^2} $$
+    /// where $J_\alpha^\gamma = \{s_\gamma, v_\alpha\}$ is the anti-commutator of the
+    /// spin and velocity operators.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_vec` - k-point coordinates (in fractional reciprocal coordinates).
+    /// * `dir_1` - Direction vector for the first index $\alpha$ of $\Omega_{\alpha\beta}$.
+    /// * `dir_2` - Direction vector for the second index $\beta$.
+    /// * `mu` - Chemical potential $\mu$ (in eV).
+    /// * `T` - Temperature (in K). If `T=0`, a step function is used for the Fermi-Dirac distribution.
+    /// * `spin` - Spin operator index (0, 1, 2, 3 for $\sigma_0, \sigma_x, \sigma_y, \sigma_z$).
+    ///   Ignored if the model is spinless.
+    /// * `eta` - Broadening parameter $\eta$ (in eV).
     fn berry_curvature_onek<S: Data<Elem = f64>>(
         &self,
         k_vec: &ArrayBase<S, Ix1>,
@@ -410,8 +489,27 @@ pub trait BerryCurvature: Velocity {
         eta: f64,
     ) -> f64;
 
-    ///这个是用来并行计算大量k点的贝利曲率
-    ///这个可以用来画能带上的贝利曲率, 或者画一个贝利曲率的热图
+    /// Computes the Berry curvature at multiple k-points in parallel.
+    ///
+    /// This is useful for plotting Berry curvature along band structures or generating heat maps.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_vec` - Array of k-points, shape `(nk, dim_r)`.
+    /// * `dir_1` - Direction vector for the first index $\alpha$.
+    /// * `dir_2` - Direction vector for the second index $\beta$.
+    /// * `mu` - Chemical potential $\mu$ (in eV).
+    /// * `T` - Temperature (in K).
+    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    /// * `eta` - Broadening parameter $\eta$.
+    ///
+    /// # Returns
+    ///
+    /// An `Array1<f64>` of length `nk` containing $\sum_n f_n \Omega_{n,\alpha\beta}$ at each k-point.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dir_1.len()` or `dir_2.len()` does not equal `self.dim_r()`.
     #[allow(non_snake_case)]
     fn berry_curvature<S: Data<Elem = f64>>(
         &self,
@@ -453,7 +551,9 @@ impl BerryCurvature for Model {
                     for d in 0..self.dim_r() {
                         let w = dir_1[d];
                         if w != 0.0 {
-                            Zip::from(&mut jmat).and(&J.slice(s![d, .., ..])).for_each(|a, &b| *a += b * w);
+                            Zip::from(&mut jmat)
+                                .and(&J.slice(s![d, .., ..]))
+                                .for_each(|a, &b| *a += b * w);
                         }
                     }
                     jmat
@@ -465,7 +565,9 @@ impl BerryCurvature for Model {
                         let w = dir_1[d];
                         if w != 0.0 {
                             let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
-                            Zip::from(&mut jmat).and(&ac).for_each(|a, &b| *a += b * w * 0.5);
+                            Zip::from(&mut jmat)
+                                .and(&ac)
+                                .for_each(|a, &b| *a += b * w * 0.5);
                         }
                     }
                     jmat
@@ -477,7 +579,9 @@ impl BerryCurvature for Model {
                         let w = dir_1[d];
                         if w != 0.0 {
                             let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
-                            Zip::from(&mut jmat).and(&ac).for_each(|a, &b| *a += b * w * 0.5);
+                            Zip::from(&mut jmat)
+                                .and(&ac)
+                                .for_each(|a, &b| *a += b * w * 0.5);
                         }
                     }
                     jmat
@@ -489,7 +593,9 @@ impl BerryCurvature for Model {
                         let w = dir_1[d];
                         if w != 0.0 {
                             let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
-                            Zip::from(&mut jmat).and(&ac).for_each(|a, &b| *a += b * w * 0.5);
+                            Zip::from(&mut jmat)
+                                .and(&ac)
+                                .for_each(|a, &b| *a += b * w * 0.5);
                         }
                     }
                     jmat
@@ -501,7 +607,9 @@ impl BerryCurvature for Model {
                 for d in 0..self.dim_r() {
                     let w = dir_2[d];
                     if w != 0.0 {
-                        Zip::from(&mut vmat).and(&v.slice(s![d, .., ..])).for_each(|a, &b| *a += b * w);
+                        Zip::from(&mut vmat)
+                            .and(&v.slice(s![d, .., ..]))
+                            .for_each(|a, &b| *a += b * w);
                     }
                 }
                 vmat
@@ -517,7 +625,9 @@ impl BerryCurvature for Model {
                 for d in 0..self.dim_r() {
                     let w = dir_1[d];
                     if w != 0.0 {
-                        Zip::from(&mut jmat).and(&J.slice(s![d, .., ..])).for_each(|a, &b| *a += b * w);
+                        Zip::from(&mut jmat)
+                            .and(&J.slice(s![d, .., ..]))
+                            .for_each(|a, &b| *a += b * w);
                     }
                 }
                 jmat
@@ -527,7 +637,9 @@ impl BerryCurvature for Model {
                 for d in 0..self.dim_r() {
                     let w = dir_2[d];
                     if w != 0.0 {
-                        Zip::from(&mut vmat).and(&v.slice(s![d, .., ..])).for_each(|a, &b| *a += b * w);
+                        Zip::from(&mut vmat)
+                            .and(&v.slice(s![d, .., ..]))
+                            .for_each(|a, &b| *a += b * w);
                     }
                 }
                 vmat
@@ -580,13 +692,6 @@ impl BerryCurvature for Model {
         spin: usize,
         eta: f64,
     ) -> f64 {
-        //!给定一个 k 点, 指定 dir_1=$\alpha$, dir_2=$\beta$, T 代表温度, og= $\og$,
-        //!mu=$\mu$ 为费米能级, spin=0,1,2,3 为$\sg_0,\sg_x,\sg_y,\sg_z$,
-        //!当体系不存在自旋的时候无论如何输入spin都默认 spin=0
-        //!eta=$\eta$ 是一个小量
-        //! 这个函数返回的是
-        //! $$ \sum_n f_n\Omega_{n,\ap\bt}^\gm(\bm k)=\sum_n \f{1}{e^{(\ve_{n\bm k}-\mu)/T/k_B}+1} \sum_{m=\not n}\f{J_{\ap,nm}^\gm v_{\bt,mn}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og+i\eta)^2}$$
-        //! 其中 $J_\ap^\gm=\\{s_\gm,v_\ap\\}$
         let (omega_n, band) = self.berry_curvature_n_onek(&k_vec, &dir_1, &dir_2, spin, eta);
         let mut omega: f64 = 0.0;
         let fermi_dirac = if T == 0.0 {
@@ -609,8 +714,6 @@ impl BerryCurvature for Model {
         spin: usize,
         eta: f64,
     ) -> Array1<f64> {
-        //!这个是用来并行计算大量k点的贝利曲率
-        //!这个可以用来画能带上的贝利曲率, 或者画一个贝利曲率的热图
         if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() {
             panic!(
                 "Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",
@@ -636,11 +739,59 @@ impl BerryCurvature for Model {
 
 #[allow(non_snake_case)]
 impl Model {
-    //! 这个模块是用来提供电导率张量的, 包括自旋霍尔电导率和霍尔电导率, 以及非线性霍尔电导率.
-    //!
-    //!
-    //!
-    ///这个是计算某个费米能级, 某个温度下的Hall conductivity 的, 输出的单位为 $e^2/\hbar/\AA$.
+    /// Methods for computing conductivity tensors including the anomalous Hall conductivity,
+    /// spin Hall conductivity, and nonlinear Hall conductivity.
+    ///
+    /// The Hall conductivity is computed by integrating the Berry curvature over the Brillouin zone:
+    /// $$ \sigma_{\alpha\beta}^\gamma = \f{e^2}{\hbar} \int_{BZ} \f{\dd\mathbf k}{(2\pi)^d}
+    ///    \sum_n f_n \Omega_{n,\alpha\beta}^\gamma(\mathbf k) $$
+    /// where $d$ is the spatial dimension, $f_n$ is the Fermi-Dirac distribution, and
+    /// $\Omega_{n,\alpha\beta}^\gamma$ is the (spin) Berry curvature.
+    ///
+    /// The output is in units of $e^2/\hbar$ per length (in Angstrom) in 3D, or $e^2/\hbar$ in 2D.
+    ///
+    /// The `spin` parameter selects the spin operator:
+    /// - `0`: $\sigma_0$ (identity, charge Hall conductivity)
+    /// - `1`: $\sigma_x$ (spin Hall conductivity, x-component)
+    /// - `2`: $\sigma_y$ (spin Hall conductivity, y-component)
+    /// - `3`: $\sigma_z$ (spin Hall conductivity, z-component)
+    ///
+    /// If the model is spinless, the spin parameter is ignored and spin=0 is used.
+
+    /// Computes the anomalous Hall conductivity at a given chemical potential and temperature.
+    ///
+    /// Uses a uniform k-mesh and direct summation:
+    /// $$ \sigma_{\alpha\beta}^\gamma = \f{1}{N (2\pi)^d V} \sum_{\mathbf k} \Omega_{\alpha\beta}^\gamma(\mathbf k), $$
+    /// where $N$ is the number of k-points, $d$ is the dimension, and $V$ is the unit cell volume.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_mesh` - Number of k-points along each direction, e.g. `arr1(&[nk, nk])` for 2D.
+    /// * `dir_1` - Direction vector for the first index $\alpha$ of $\sigma_{\alpha\beta}$.
+    /// * `dir_2` - Direction vector for the second index $\beta$.
+    /// * `mu` - Chemical potential $\mu$ (in eV).
+    /// * `T` - Temperature (in K). Use `T=0` for the zero-temperature step function.
+    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    /// * `eta` - Broadening parameter $\eta$ (in eV).
+    ///
+    /// # Returns
+    ///
+    /// The Hall conductivity $\sigma_{\alpha\beta}$ in units of $e^2/\hbar/\AA$ (3D) or $e^2/\hbar$ (2D).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ndarray::arr1;
+    /// # use rustb::Model;
+    /// # fn example(model: &Model) -> Result<(), rustb::error::TbError> {
+    /// let kmesh = arr1(&[31, 31]);
+    /// let dir_1 = arr1(&[1.0, 0.0]);
+    /// let dir_2 = arr1(&[0.0, 1.0]);
+    /// let sigma_xy = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, 0, 1e-3)?;
+    /// println!("Hall conductivity = {}", sigma_xy);
+    /// # Ok(())
+    /// # }
+    /// ```
     #[allow(non_snake_case)]
     pub fn Hall_conductivity(
         &self,
@@ -652,9 +803,6 @@ impl Model {
         spin: usize,
         eta: f64,
     ) -> Result<f64> {
-        //!这个是用来计算霍尔电导的.
-        //!这里采用的是均匀撒点的方法, 利用 berry_curvature, 我们有
-        //!$$\sg_{\ap\bt}^\gm=\f{1}{N(2\pi)^r V}\sum_{\bm k} \Og_{\ap\bt}(\bm k),$$ 其中 $N$ 是 k 点数目,
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         let omega = self.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, spin, eta);
@@ -664,8 +812,27 @@ impl Model {
         let conductivity: f64 = omega.sum() / (nk as f64) / self.lat.det().unwrap();
         Ok(conductivity)
     }
+
+    /// Computes the Hall conductivity using an adaptive integration algorithm.
+    ///
+    /// This method uses [`adapted_integrate_quick`] to refine the integration mesh adaptively,
+    /// which can produce more accurate results with fewer k-points compared to uniform sampling.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_mesh` - Number of subdomain divisions along each direction.
+    /// * `dir_1`, `dir_2` - Direction vectors for the conductivity tensor indices.
+    /// * `mu` - Chemical potential (in eV).
+    /// * `T` - Temperature (in K).
+    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    /// * `eta` - Broadening parameter (in eV).
+    /// * `re_err` - Relative error tolerance for the adaptive integrator. Recommended: `1.0`.
+    /// * `ab_err` - Absolute error tolerance for the adaptive integrator. Recommended: `0.01`.
+    ///
+    /// # Returns
+    ///
+    /// The Hall conductivity in units of $e^2/\hbar/\AA$ (3D) or $e^2/\hbar$ (2D).
     #[allow(non_snake_case)]
-    ///这个是采用自适应积分算法来计算霍尔电导的, 一般来说, 我们建议 re_err 设置为 1, 而 ab_err 设置为 0.01
     pub fn Hall_conductivity_adapted(
         &self,
         k_mesh: &Array1<usize>,
@@ -693,7 +860,41 @@ impl Model {
         let conductivity: f64 = omega.sum() / self.lat.det().unwrap();
         Ok(conductivity)
     }
-    ///用来计算多个 $\mu$ 值的, 这个函数是先求出 $\Omega_n$, 然后再分别用不同的费米能级来求和, 这样速度更快, 因为避免了重复求解 $\Omega_n$, 但是相对来说更耗内存, 而且不能做到自适应积分算法.
+
+    /// Computes the Hall conductivity for multiple chemical potential values efficiently.
+    ///
+    /// This method first computes $\Omega_n$ (the Berry curvature per band) at each k-point,
+    /// then evaluates the Fermi-Dirac-weighted sum for each $\mu$. This avoids repeatedly
+    /// computing $\Omega_n$, making it much faster than calling [`Hall_conductivity`] for each $\mu$.
+    /// However, it uses more memory and cannot use adaptive integration.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_mesh` - Number of k-points along each direction.
+    /// * `dir_1`, `dir_2` - Direction vectors for the conductivity tensor indices.
+    /// * `mu` - Array of chemical potential values (in eV).
+    /// * `T` - Temperature (in K).
+    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    /// * `eta` - Broadening parameter (in eV).
+    ///
+    /// # Returns
+    ///
+    /// An `Array1<f64>` of Hall conductivity values, one for each $\mu$, in units of $e^2/\hbar/\AA$ (3D) or $e^2/\hbar$ (2D).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ndarray::Array1;
+    /// # use rustb::Model;
+    /// # fn example(model: &Model) -> Result<(), rustb::error::TbError> {
+    /// let kmesh = ndarray::arr1(&[31, 31]);
+    /// let dir_1 = ndarray::arr1(&[1.0, 0.0]);
+    /// let dir_2 = ndarray::arr1(&[0.0, 1.0]);
+    /// let mu = Array1::linspace(-2.0, 2.0, 101);
+    /// let sigma_vs_mu = model.Hall_conductivity_mu(&kmesh, &dir_1, &dir_2, &mu, 0.0, 0, 1e-3)?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn Hall_conductivity_mu(
         &self,
         k_mesh: &Array1<usize>,
@@ -762,6 +963,31 @@ impl Model {
         Ok(conductivity)
     }
 
+    /// Computes the Berry curvature dipole for each band at a single k-point.
+    ///
+    /// This computes:
+    /// $$ \pdv{\varepsilon_{n\mathbf k}}{k_\gamma} \Omega_{n,\alpha\beta} $$
+    ///
+    /// The energy derivative is obtained using the diagonal elements of the velocity operator:
+    /// $$ \pdv{\varepsilon_{\mathbf k}}{\mathbf k} = \text{diag}(v_{\mathbf k}) $$
+    /// This follows from the relation $\varepsilon_{\mathbf k} = U^\dagger H_{\mathbf k} U$ and
+    /// the observation that the commutator term $[\varepsilon_{\mathbf k}, U^\dagger\partial_{\mathbf k}U]$
+    /// does not contribute to diagonal elements.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_vec` - k-point coordinates.
+    /// * `dir_1` - Direction vector for the first index $\alpha$ of $\Omega_{n,\alpha\beta}$.
+    /// * `dir_2` - Direction vector for the second index $\beta$.
+    /// * `dir_3` - Direction vector for the derivative index $\gamma$.
+    /// * `og` - Frequency $\omega$ (for the energy denominator).
+    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    /// * `eta` - Broadening parameter $\eta$.
+    ///
+    /// # Returns
+    ///
+    /// `(omega_n, band)` where `omega_n` contains $\partial_\gamma\varepsilon_n \Omega_{n,\alpha\beta}$
+    /// for each band, and `band` contains the band energies.
     pub fn berry_curvature_dipole_n_onek(
         &self,
         k_vec: &Array1<f64>,
@@ -772,18 +998,6 @@ impl Model {
         spin: usize,
         eta: f64,
     ) -> (Array1<f64>, Array1<f64>) {
-        //! 这个是用来计算 $$\pdv{\ve_{n\bm k}}{k_\gm}\Og_{n,\ap\bt}$$
-        //!
-        //!这里需要注意的一点是, 一般来说对于 $\p_\ap\ve_{\bm k}$, 需要用差分法来求解, 我这里提供了一个算法.
-        //!$$ \ve_{\bm k}=U^\dag H_{\bm k} U\Rightarrow \pdv{\ve_{\bm k}}{\bm k}=U^\dag\pdv{H_{\bm k}}{\bm k}U+\pdv{U^\dag}{\bm k} H_{\bm k}U+U^\dag H_{\bm k}\pdv{U}{\bm k}$$
-        //!因为 $U^\dag U=1\Rightarrow \p_{\bm k}U^\dag U=-U^\dag\p_{\bm k}U$, $\p_{\bm k}H_{\bm k}=v_{\bm k}$我们有
-        //!$$\pdv{\ve_{\bm k}}{\bm k}=v_{\bm k}+\lt[\ve_{\bm k},U^\dag\p_{\bm k}U\rt]$$
-        //!而这里面唯一比较难求的项是 $D_{\bm k}=U^\dag\p_{\bm k}U$. 按照 vanderbilt 2008 年的论文中的公式, 用微扰论有
-        //!$$D_{mn,\bm k}=\left\\{\\begin{aligned}\f{v_{mn,\bm k}}{\ve_n-\ve_m} \quad &\text{if}\\ m\\ =\not n\\\ 0 \quad \quad &\text{if}\\ m\\ = n\\end{aligned}\right\.$$
-        //!我们观察到第二项对对角部分没有贡献, 所以我们可以直接设置为
-        //!$$\pdv{\ve_{\bm k}}{\bm k}=\text{diag}\lt(v_{\bm k}\rt)$$
-        //我们首先求解 omega_n 和 U^\dag j
-
         let li: Complex<f64> = 1.0 * Complex::i();
         //let (band, evec) = self.solve_onek(&k_vec);
         let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
@@ -853,6 +1067,35 @@ impl Model {
         let omega_n: Array1<f64> = omega_n * partial_ve;
         (omega_n, band) //最后得到的 D
     }
+
+    /// Computes the Berry curvature dipole for each band at multiple k-points in parallel.
+    ///
+    /// This is a parallelized version of [`berry_curvature_dipole_n_onek`] for computing
+    /// the Berry curvature dipole over a k-point set.
+    ///
+    /// The extrinsic nonlinear Hall conductivity is related to this quantity via:
+    /// $$ \sigma_{\alpha\beta\gamma} = \tau \int \dd\mathbf k \sum_n
+    ///    \partial_\gamma \varepsilon_{n\mathbf k} \Omega_{n,\alpha\beta}
+    ///    \left. \pdv{f_{\mathbf k}}{\varepsilon} \right\rvert_{E=\varepsilon_{n\mathbf k}}. $$
+    ///
+    /// # Arguments
+    ///
+    /// * `k_vec` - Array of k-points, shape `(nk, dim_r)`.
+    /// * `dir_1`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
+    /// * `dir_3` - Direction vector for the energy derivative index $\gamma$.
+    /// * `og` - Frequency $\omega$.
+    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    /// * `eta` - Broadening parameter.
+    ///
+    /// # Returns
+    ///
+    /// `(omega, band)` where `omega` has shape `(nk, nsta)` containing
+    /// $\partial_\gamma\varepsilon_n \Omega_{n,\alpha\beta}$ for each k-point and band,
+    /// and `band` has the band energies with the same shape.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of `dir_1`, `dir_2`, or `dir_3` has length different from `self.dim_r()`.
     pub fn berry_curvature_dipole_n(
         &self,
         k_vec: &Array2<f64>,
@@ -863,10 +1106,6 @@ impl Model {
         spin: usize,
         eta: f64,
     ) -> (Array2<f64>, Array2<f64>) {
-        //这个是在 onek的基础上进行并行计算得到一系列k点的berry curvature dipole
-        //!This function performs parallel computation based on the onek function to obtain a series of Berry curvature dipoles at different k-points.
-        //!这个方法用的是对费米分布的修正, 因为高阶的dipole 修正导致的非线性霍尔电导为 $$\sg_{\ap\bt\gm}=\tau\int\dd\bm k\sum_n\p_\gm\ve_{n\bm k}\Og_{n,\ap\bt}\lt\.\pdv{f_{\bm k}}{\ve}\rt\rvert_{E=\ve_{n\bm k}}.$$ 所以我们这里输出的是
-        //!$$\p_\gm\ve_{n\bm k}\Og_{n,\ap\bt}.$$
         if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
         {
             panic!(
@@ -901,6 +1140,38 @@ impl Model {
                 .unwrap();
         (omega, band)
     }
+
+    /// Computes the extrinsic nonlinear Hall conductivity via the Berry curvature dipole.
+    ///
+    /// This integrates the Berry curvature dipole over the Brillouin zone:
+    /// $$ \mathcal D_{\alpha\beta\gamma} = \int \dd\mathbf k \sum_n
+    ///    \left(-\pdv{f_n}{\varepsilon}\right) \partial_\gamma \varepsilon_{n\mathbf k}
+    ///    \Omega_{n,\alpha\beta} $$
+    ///
+    /// The energy derivative of the Fermi-Dirac distribution is:
+    /// $$ -\pdv{f_n}{\varepsilon} = \beta \f{e^{\beta(\varepsilon_n-\mu)}}{(e^{\beta(\varepsilon_n-\mu)}+1)^2}
+    ///    = \beta f_n(1-f_n) $$
+    ///
+    /// **Note:** This function currently only supports $T \neq 0$. The $T=0$ case is not yet implemented.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_mesh` - Number of k-points along each direction.
+    /// * `dir_1`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
+    /// * `dir_3` - Direction vector for the energy derivative index $\gamma$.
+    /// * `mu` - Array of chemical potential values (in eV).
+    /// * `T` - Temperature (in K). Must be non-zero.
+    /// * `og` - Frequency $\omega$ (use 0 for the DC limit).
+    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    /// * `eta` - Broadening parameter $\eta$.
+    ///
+    /// # Returns
+    ///
+    /// The extrinsic nonlinear Hall conductivity for each $\mu$ value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `T == 0` (not yet supported).
     pub fn Nonlinear_Hall_conductivity_Extrinsic(
         &self,
         k_mesh: &Array1<usize>,
@@ -913,17 +1184,6 @@ impl Model {
         spin: usize,
         eta: f64,
     ) -> Result<Array1<f64>> {
-        //这个是用 berry curvature dipole 对整个布里渊去做积分得到非线性霍尔电导, 是extrinsic 的
-        //!This function calculates the extrinsic nonlinear Hall conductivity by integrating the Berry curvature dipole over the entire Brillouin zone. The Berry curvature dipole is first computed at a series of k-points using parallel computation based on the onek function.
-
-        //! 我们基于 berry_curvature_n_dipole 来并行得到所有 k 点的 $\p_\gm\ve_{n\bm k}\Og_{n,\ap\bt}$,
-        //! 但是我们最后的公式为
-        //! $$\\mathcal D_{\ap\bt\gm}=\int \dd\bm k \sum_n\lt(-\pdv{f_{n}}{\ve}\rt)\p_\gm\ve_{n\bm k}\Og_{n,\ap\bt}$$
-        //! 然而,
-        //! $$-\pdv{f_{n}}{\ve}=\beta\f{e^{beta(\ve_n-\mu)}}{(e^{beta(\ve_n-\mu)}+1)^2}=\beta f_n(1-f_n)$$
-        //! 对于 T=0 的情况, 我们将采用四面体积分来替代, 这个需要很高的k点密度, 不建议使用
-        //! 对于 T!=0 的情况, 我们会采用类似 Dos 的方法来计算
-
         if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
         {
             panic!(
@@ -964,6 +1224,30 @@ impl Model {
         Ok(conductivity)
     }
 
+    /// Computes the Berry connection dipole at a single k-point.
+    ///
+    /// For spinless models, this computes:
+    /// $$ v_\alpha G_{\beta\gamma} - v_\beta G_{\alpha\gamma} $$
+    /// where
+    /// $$ G_{ij} = -2\,\text{Re} \sum_{m\neq n} \f{v_{i,nm} v_{j,mn}}{(\varepsilon_n - \varepsilon_m)^3} $$
+    ///
+    /// For spinful models (when `spin != 0`), this additionally computes
+    /// $\partial_{h_i} G_{jk}$, the derivative with respect to the spin field.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_vec` - k-point coordinates.
+    /// * `dir_1` - Direction vector for the first index $\alpha$.
+    /// * `dir_2` - Direction vector for the second index $\beta$.
+    /// * `dir_3` - Direction vector for the third index $\gamma$.
+    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    ///
+    /// # Returns
+    ///
+    /// `(omega, band, partial_G)` where:
+    /// - `omega`: $v_\alpha G_{\beta\gamma} - v_\beta G_{\alpha\gamma}$ per band.
+    /// - `band`: Band energies.
+    /// - `partial_G`: $\partial_{h} G$ per band (only `Some` for spinful models, `None` for spinless).
     pub fn berry_connection_dipole_onek(
         &self,
         k_vec: &Array1<f64>,
@@ -972,11 +1256,6 @@ impl Model {
         dir_3: &Array1<f64>,
         spin: usize,
     ) -> (Array1<f64>, Array1<f64>, Option<Array1<f64>>) {
-        //!这个是根据 Nonlinear_Hall_conductivity_intrinsic 的注释, 当不存在自旋的时候提供
-        //!$$v_\ap G_{\bt\gm}-v_\bt G_{\ap\gm}$$
-        //!其中 $$ G_{ij}=-2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3} $$
-        //!如果存在自旋, 即spin不等于0, 则还存在 $\p_{h_i} G_{jk}$ 项, 具体请看下面的非线性霍尔部分
-        //!我们这里暂时不考虑磁场, 只考虑电场
         let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
             self.gen_v(&k_vec, Gauge::Atom); //这是速度算符
         let mut J = v.clone();
@@ -1148,6 +1427,22 @@ impl Model {
             return (partial_ve_1 * G_23 - partial_ve_2 * G_13, band, None);
         }
     }
+
+    /// Computes the Berry connection dipole at multiple k-points in parallel.
+    ///
+    /// This is a parallelized version of [`berry_connection_dipole_onek`].
+    ///
+    /// # Arguments
+    ///
+    /// * `k_vec` - Array of k-points, shape `(nk, dim_r)`.
+    /// * `dir_1`, `dir_2`, `dir_3` - Direction vectors for the three indices.
+    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    ///
+    /// # Returns
+    ///
+    /// `(omega, band, partial_G)` where `omega` and `band` have shape `(nk, nsta)`.
+    /// For spinful models, `partial_G` is `Some` with shape `(nk, nsta)`.
+    /// For spinless models, `partial_G` is `None`.
     pub fn berry_connection_dipole(
         &self,
         k_vec: &Array2<f64>,
@@ -1156,7 +1451,6 @@ impl Model {
         dir_3: &Array1<f64>,
         spin: usize,
     ) -> (Array2<f64>, Array2<f64>, Option<Array2<f64>>) {
-        //! 这个是基于 onek 的, 进行关于 k 点并行求解
         if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
         {
             panic!(
@@ -1230,6 +1524,86 @@ impl Model {
             return (omega, band, None);
         }
     }
+
+    /// Computes the intrinsic nonlinear Hall conductivity.
+    ///
+    /// The intrinsic nonlinear Hall conductivity arises from the correction of the Berry connection
+    /// by electric and magnetic fields [PRL 112, 166601 (2014)]. The modified Berry curvature is:
+    /// $$ \tilde{\bm\Omega}_{\mathbf k} = \nabla_{\mathbf k} \times (\bm A_{\mathbf k} + \bm A_{\mathbf k}^\prime) $$
+    /// where $\bm A_{i,\mathbf k}^\prime = F_{ij} B_j + G_{ij} E_j$, with
+    /// $$
+    /// \begin{aligned}
+    /// F_{ij} &= \text{Im} \sum_{m\neq n} \f{v_{i,nm} \omega_{j,mn}}{(\varepsilon_n - \varepsilon_m)^2} \\
+    /// G_{ij} &= 2\,\text{Re} \sum_{m\neq n} \f{v_{i,nm} v_{j,mn}}{(\varepsilon_n - \varepsilon_m)^3} \\
+    /// \omega_{\alpha,mn} &= -i \varepsilon_{\alpha\beta\gamma} \sum_{l\neq n}
+    ///    \f{(v_{\beta,ml} + \partial_\beta \varepsilon_{\mathbf k} \delta_{ml}) v_{\gamma,ln}}{\varepsilon_l - \varepsilon_n}
+    /// \end{aligned}
+    /// $$
+    ///
+    /// The current response is:
+    /// $$
+    /// \begin{aligned}
+    /// \f{\partial^2 j_\alpha^\prime}{\partial E_\beta \partial E_\gamma}
+    ///    &= \int \f{\dd\mathbf k}{(2\pi)^3}
+    ///       (\partial_\alpha \varepsilon_{\mathbf k} G_{\beta\gamma} -
+    ///        \partial_\beta \varepsilon_{\mathbf k} G_{\alpha\gamma})
+    ///       \pdv{f_{\mathbf k}}{\varepsilon} \\
+    /// \f{\partial^2 j_\alpha^\prime}{\partial E_\beta \partial B_\gamma}
+    ///    &= \int \f{\dd\mathbf k}{(2\pi)^3}
+    ///       (\partial_\alpha \varepsilon_{\mathbf k} F_{\beta\gamma} -
+    ///        \partial_\beta \varepsilon_{\mathbf k} F_{\alpha\gamma} +
+    ///        \varepsilon_{\alpha\beta\ell} \Omega_\ell m_\gamma)
+    ///       \pdv{f_{\mathbf k}}{\varepsilon}
+    /// \end{aligned}
+    /// $$
+    ///
+    /// Because of the $\partial f_{\mathbf k}/\partial\varepsilon$ factor, it is recommended to
+    /// use $T \neq 0$. The $T=0$ case (using Gauss's theorem to integrate over the Fermi surface)
+    /// is not yet implemented.
+    ///
+    /// For spin Hall conductivity, the formula is [PRL 112, 166601 (2014)]:
+    /// $$ \sigma_{\alpha\beta\gamma}^i = -\int \dd\mathbf k \left[
+    ///    \f{1}{2} f_{\mathbf k} \pdv{G_{\beta\gamma}}{h_\alpha} +
+    ///    \pdv{f_{\mathbf k}}{\varepsilon}
+    ///    (\partial_\alpha s_{\mathbf k}^i G_{\beta\gamma} -
+    ///     \partial_\beta \varepsilon_{\mathbf k} G_{\alpha\gamma}^h) \right] $$
+    /// where
+    /// $$ \f{\partial G_{\beta\gamma,n}}{\partial h_\alpha} =
+    ///    2\,\text{Re} \sum_{n'\neq n}
+    ///    \f{3 (s_{\alpha,n}^i - s_{\alpha,n_1}^i) v_{\beta,nn_1} v_{\gamma,n'n}}
+    ///      {(\varepsilon_n - \varepsilon_{n'})^4}
+    ///    - 2\,\text{Re} \sum_{n_1\neq n} \sum_{n_2\neq n}
+    ///      \left[ \f{s_{\alpha,nn_2}^i v_{\beta,n_2n_1} v_{\gamma,n_1n}}
+    ///              {(\varepsilon_n - \varepsilon_{n_1})^3 (\varepsilon_n - \varepsilon_{n_2})}
+    ///      + (\beta \leftrightarrow \gamma) \right]
+    ///    - 2\,\text{Re} \sum_{n_1\neq n} \sum_{n_2\neq n_1}
+    ///      \left[ \f{s_{\alpha,n_1n_2}^i v_{\beta,n_2n} v_{\gamma,nn_1}}
+    ///              {(\varepsilon_n - \varepsilon_{n_1})^3 (\varepsilon_{n_1} - \varepsilon_{n_2})}
+    ///      + (\beta \leftrightarrow \gamma) \right] $$
+    /// and
+    /// $$
+    /// \begin{aligned}
+    /// G_{\alpha\beta}   &= 2\,\text{Re} \sum_{m\neq n} \f{v_{\alpha,nm} v_{\beta,mn}}{(\varepsilon_n - \varepsilon_m)^3} \\
+    /// G_{\alpha\beta}^h &= 2\,\text{Re} \sum_{m\neq n} \f{s_{\alpha,nm}^i v_{\beta,mn}}{(\varepsilon_n - \varepsilon_m)^3}
+    /// \end{aligned}
+    /// $$
+    /// where $s_{\alpha,mn}^i = \{ \hat{s}^i, v_\alpha \}$ is the anti-commutator of the spin and velocity operators.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_mesh` - Number of k-points along each direction.
+    /// * `dir_1`, `dir_2`, `dir_3` - Direction vectors for the three tensor indices.
+    /// * `mu` - Array of chemical potential values (in eV).
+    /// * `T` - Temperature (in K). Must be non-zero.
+    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    ///
+    /// # Returns
+    ///
+    /// The intrinsic nonlinear Hall conductivity for each $\mu$ value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `T == 0` (not yet supported).
     pub fn Nonlinear_Hall_conductivity_Intrinsic(
         &self,
         k_mesh: &Array1<usize>,
@@ -1240,46 +1614,6 @@ impl Model {
         T: f64,
         spin: usize,
     ) -> Result<Array1<f64>> {
-        //! The Intrinsic Nonlinear Hall Conductivity arises from the correction of the Berry connection by the electric and magnetic fields [PRL 112, 166601 (2014)]. The formula employed is:
-        //!$$\tilde\bm\Og_{\bm k}=\nb_{\bm k}\times\lt(\bm A_{\bm k}+\bm A_{\bm k}^\prime\rt)$$
-        //!and the $\bm A_{i,\bm k}^\prime=F_{ij}B_j+G_{ij}E_j$, where
-        //!$$
-        //!\\begin{aligned}
-        //!F_{ij}&=\text{Im}\sum_{m=\not n}\f{v_{i,nm}\og_{j,mn}}{\lt(\ve_{n}-\ve_m\rt)^2}\\\\
-        //!G_{ij}&=2\text{Re}\sum_{m=\not n}\f{v_{i,nm}v_{j,mn}}{\lt(\ve_n-\ve_m\rt)^3}\\\\
-        //!\og_{\ap,mn}&=-i\ep_{\ap\bt\gm}\sum_{l=\not n}\f{\lt(v_{\bt,ml}+\p_\bt \ve_{\bm k}\dt_{ml}\rt)v_{\gm,ln}}{\ve_l-\ve_n}
-        //!\\end{aligned}
-        //!$$
-        //!最后我们有
-        //!$$
-        //!\bm j^\prime=\bm E\times\int\f{\dd\bm k}{(2\pi)^3}\lt[\p_{\bm k}\ve_{\bm k}\times\bm A^\prime+\bm\Og\lt(\bm B\cdot\bm m\rt)\rt]\pdv{f_{\bm k}}{\ve}
-        //!$$
-        //!对其对电场和磁场进行偏导, 有
-        //!$$
-        //!\\begin{aligned}
-        //!\f{\p^2 j_{\ap}^\prime}{\p E_\bt\p E_\gm}&=\int\f{\dd\bm k}{(2\pi)^3}\lt(\p_\ap\ve_{\bm k} G_{\bt\gm}-\p_\bt\ve_{\bm k} G_{\ap\gm}\rt)\pdv{f_{\bm k}}{\ve}\\\\
-        //!\f{\p^2 j_{\ap}^\prime}{\p E_\bt\p B_\gm}&=\int\f{\dd\bm k}{(2\pi)^3}\lt(\p_\ap\ve_{\bm k} F_{\bt\gm}-\p_\bt\ve_{\bm k} F_{\ap\gm}+\ep_{\ap\bt\ell}\Og_{\ell} m_\gm\rt)\pdv{f_{\bm k}}{\ve}
-        //!\\end{aligned}
-        //!$$
-        //!由于存在 $\pdv{f_{\bm k}}{\ve}$, 不建议将温度 T=0
-        //!
-        //!可以考虑当 T=0 时候, 利用高斯公式, 将费米面内的部分进行积分, 得到精确解. 但是我现在还没办法很好的求解费米面, 所以暂时不考虑这个算法.而且对于二维体系, 公式还不一样, 还得分步讨论, 后面有时间再考虑这个程序.
-        //!
-        //!对于自旋霍尔效应, 按照文章 [PRL 112, 166601 (2014)], 非线性自旋霍尔电导为
-        //!$$\sg_{\ap\bt\gm}^i=-\int\dd\bm k \lt[\f{1}{2}f_{\bm k}\pdv{G_{\bt\gm}}{h_\ap}+\pdv{f_{\bm k}}{\ve}\lt(\p_{\ap}s_{\bm k}^i G_{\bt\gm}-\p_\bt\ve_{\bm k}G_{\ap\gm}^h\rt)\rt]$$
-        //!其中
-        //!$$\f{\p G_{\bt\gm,n}}{\p h_\ap}=2\text{Re}\sum_{n^\pr =\not n}\f{3\lt(s^i_{\ap,n}-s^i_{\ap,n_1}\rt)v_{\bt,nn_1} v_{\gm,n^\pr n}}{\lt(\ve_n-\ve_{n^\pr}\rt)^4}-2\text{Re}\sum_{n_1=\not n}\sum_{n_2=\not n}\lt[\f{s^i_{\ap,nn_2} v_{\bt,n_2n_1} v_{\gm,n_1 n}}{\lt(\ve_n-\ve_{n_1}\rt)^3(\ve_n-\ve_{n_2})}+(\bt \leftrightarrow \gm)\rt]-2\text{Re}\sum_{n_1=\not n}\sum_{n_2=\not n_1}\lt[\f{s^i_{\ap,n_1n_2} v_{\bt,n_2n} v_{\gm,n n_1}}{\lt(\ve_n-\ve_{n_1}\rt)^3(\ve_{n_1}-\ve_{n_2})}+(\bt \leftrightarrow \gm)\rt]$$
-        //!以及
-        //!$$
-        //!\lt\\\{\\begin{aligned}
-        //!G_{\ap\bt}&=2\text{Re}\sum_{m=\not n}\f{v_{\ap,nm}v_{\bt,mn}}{\lt(\ve_n-\ve_m\rt)^3}\\\\
-        //!G_{\ap\bt}^h&=2\text{Re}\sum_{m=\not n}\f{s^i_{\ap,nm}v_{\bt,mn}}{\lt(\ve_n-\ve_m\rt)^3}\\\\
-        //!\\end{aligned}\rt\.
-        //!$$
-        //!
-        //!这里 $s^i_{\ap,mn}$ 的具体形式, 原文中没有明确给出, 但是我根据霍尔效应的类比, 我猜是
-        //!$\\\{\hat s^i,v_\ap\\\}$
-
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         let (omega, band, mut partial_G): (Array2<f64>, Array2<f64>, Option<Array2<f64>>) =

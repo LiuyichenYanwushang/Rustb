@@ -1,4 +1,46 @@
-//!这个模块是用wilson loop 的方法来计算各种几何量.
+//! Geometric and topological quantities computed via the Wilson loop method.
+//!
+//! This module provides the [`Berry`] trait with methods for:
+//!
+//! - Berry phase along a closed k-space loop.
+//! - Berry curvature (flux) on a 2D k-mesh.
+//! - Wannier centres (hybrid Wannier functions) via Wilson loops.
+//!
+//! # Wilson loop algorithm
+//!
+//! For a closed loop of k-points \\(\{\mathbf k_i\}\\), the overlap matrix is
+//!
+//! $$
+//! F_{mn,\mathbf k} = \langle \psi_{m,\mathbf k} | \psi_{n,\mathbf k+\Delta\mathbf k} \rangle.
+//! $$
+//!
+//! The overlap matrices are orthonormalized via SVD: \\(F = U V^\dagger\\).  The
+//! Wilson loop is the product
+//!
+//! $$
+//! W = \prod_i F_{\mathbf k_i},
+//! $$
+//!
+//! whose eigenvalues \\(e^{i\Theta}\\) give the Wannier centres.
+//!
+//! For a closed loop that wraps the Brillouin zone, the Bloch functions at the
+//! endpoints are related by a phase factor:
+//!
+//! $$
+//! |u_{n,\mathbf k_{\text{end}}}\rangle =
+//! e^{-2\pi i \bm\tau} |u_{n,\mathbf k_{\text{first}}}\rangle.
+//! $$
+//!
+//! # Examples
+//!
+//! ```ignore
+//! use rustb::geometry::Berry;
+//!
+//! let occ = vec![0]; // occupied band index
+//! let phase = model.berry_loop(&loop_kvec, &occ);
+//! let wcc = model.wannier_centre(&occ, &k_start, &dir1, &dir2, nk1, nk2);
+//! ```
+
 use crate::math::comm;
 use crate::solve_ham::solve;
 use crate::{Model, gen_kmesh};
@@ -17,34 +59,62 @@ use std::io::Write;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
 
+/// Trait for computing Berry-phase, Berry curvature, and Wannier centre
+/// quantities via the Wilson loop method.
 pub trait Berry {
-    //!这个模块是用wilson loop 的方法来计算各种几何量.
-    /// 这个函数是计算某一个闭合路径上的 berry phase, 用的是wilson loop 方法.
+    /// Compute the Berry phase (Wannier centres) along a closed k-space loop
+    /// using Wilson loops.
     ///
-    /// 其算法如下: 我们首先将末端的k点的波函数相位统一. 如果闭合回路沿着布里渊区两端,
-    /// 那么因为布洛赫函数在布里渊区存在一个相位差 $e^{-2\pi i \bm \tau_i}$, 我们有
-    /// $\ket{u_{n,\bm k_\text{end}}}=e^{-2\pi i \bm \tau_i}\ket{u_{n,\bm k_\text{first}}}$
+    /// # Parameters
     ///
-    /// 我们定义交叠矩阵 $F_{mn,\bm k}=\braket{\psi_{m,\bm k}}{\psi_{n,\bm k+\dd\bm k}}$
+    /// - `kvec`: array of k-points defining the loop (shape `(N_k, dim_r)`).
+    ///   The loop must close modulo a reciprocal lattice vector.
+    /// - `occ`: indices of the occupied bands.
     ///
-    /// 接下来我们将其正交化, 用 SVD 分解, 有 $U,S,V=\text{svd}(F_{\bm k})$, $F_{\bm k}=UV$
+    /// # Returns
     ///
-    /// 接下来我们将其连乘, 有 $$W=\prod_{i} F_{\bm k_i} F_{\bm k_{i+1}}$$,
+    /// An `Array1<f64>` of Wannier centre positions (Berry phases divided by \\(2\pi\\)).
     ///
-    /// 最后, 我们求本征值并取其幅角, 有 $e^{i\Theta}=\text{eigh}(W)$,
-    /// 就能够得到这个loop的wanniercentre
+    /// # Algorithm
+    ///
+    /// The overlap matrices \\(F_{mn,\mathbf k}\\) are computed between adjacent
+    /// k-points, orthonormalized via SVD (\\(F = UV^\dagger\\)), and multiplied
+    /// along the loop.  The phases of the eigenvalues of the product give the
+    /// Wannier centres.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the loop endpoints do not differ by an integer reciprocal
+    /// lattice vector.
     fn berry_loop<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> Array1<f64>
     where
         S: Data<Elem = f64>;
 
-    ///同上, 但是我们求取本征值的时候, 不采用SVD分解, 也不对角化,而是直接取det,
-    ///这样就能得到所有占据数的信息
+    /// Compute the Berry phase along a closed loop without SVD orthonormalization,
+    /// using the determinant instead.
+    ///
+    /// This captures the total Berry phase of all occupied bands.
     fn berry_loop_det<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> f64
     where
         S: Data<Elem = f64>;
 
-    ///这个函数是用 wilson loop 方法来计算berry curvature 的. 根据给定的平面, 其返回一个 Array2<f64>, 这个算法的优点是精度高, 计算量小, 能快速收敛, 但是只能用于绝缘体.
-    ///前两个指标表示横和纵, 数值表示大小
+    /// Compute the Berry curvature (flux) on a 2D k-mesh using Wilson loops.
+    ///
+    /// # Parameters
+    ///
+    /// - `occ`: occupied band indices.
+    /// - `k_start`: starting k-point.
+    /// - `dir_1`: first reciprocal lattice direction.
+    /// - `dir_2`: second reciprocal lattice direction.
+    /// - `nk1`, `nk2`: number of k-points in each direction.
+    ///
+    /// # Returns
+    ///
+    /// An `Array3<f64>` of shape `(nk1, nk2, n_occ)` containing the Berry flux
+    /// through each plaquette.
+    ///
+    /// This method uses Wilson loops (high accuracy, fast convergence) but
+    /// requires a band gap (insulator).
     fn berry_flux(
         &self,
         occ: &Vec<usize>,
@@ -54,19 +124,42 @@ pub trait Berry {
         nk1: usize,
         nk2: usize,
     ) -> Array3<f64>;
-    ///这个是计算一个闭合路径的berry phase 的
+
+    /// Compute Berry phases along closed k-space loops.
+    ///
+    /// Each slice `kvec[i, :, :]` defines one loop.
+    ///
+    /// # Returns
+    ///
+    /// An `Array2<f64>` of shape `(nk1, n_occ)`.
     fn berry_phase(&self, occ: &Vec<usize>, kvec: &Array3<f64>) -> Array2<f64>;
-    ///这个是计算wcc的, 沿着第一个方向走, 沿着第二个方向积分
+
+    /// Compute hybrid Wannier centres via Wilson loops.
+    ///
+    /// The Wilson loop is taken along `dir_2` (the integration direction),
+    /// while `dir_1` is the transverse direction that is sampled.
+    ///
+    /// # Parameters
+    ///
+    /// - `occ`: occupied band indices.
+    /// - `k_start`: origin of the 2D k-mesh.
+    /// - `dir_1`: transverse direction (sampled at `nk1` points).
+    /// - `dir_2`: integration direction (`nk2` points per loop).
+    ///
+    /// # Returns
+    ///
+    /// An `Array2<f64>` of shape `(nk1, n_occ)` with the sorted Wannier centres.
     fn wannier_centre(
         &self,
         occ: &Vec<usize>,
         k_start: &Array1<f64>,
-        dir_1: &Array1<f64>, //第一个方向遍历
-        dir_2: &Array1<f64>, //第二个方向积分
+        dir_1: &Array1<f64>,
+        dir_2: &Array1<f64>,
         nk1: usize,
         nk2: usize,
     ) -> Array2<f64>;
 }
+
 impl Berry for Model {
     fn berry_loop<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> Array1<f64>
     where
@@ -96,12 +189,6 @@ impl Berry for Model {
         let add_phase = Array2::from_diag(&add_phase);
         let end_evec = first_evec.to_owned().dot(&add_phase);
 
-        /*
-        let mut end_evec = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-        Zip::from(end_evec.outer_iter_mut())
-            .and(first_evec.outer_iter())
-            .for_each(|mut A, B| A.assign(&(&B * &add_phase)));
-        */
         evec.slice_mut(s![n_k - 1, .., ..]).assign(&end_evec);
         let evec = evec.select(Axis(1), occ);
         let n_occ = occ.len();
@@ -179,14 +266,6 @@ impl Berry for Model {
                     }
                 }
             });
-        /*
-        Zip::from(ovr.outer_iter_mut()).for_each(|mut O| {
-            let (U, S, V) = O.svd(true, true).unwrap();
-            let U = U.unwrap();
-            let V = V.unwrap();
-            O.assign(&U.dot(&V));
-        });
-        */
         let result: Array2<Complex<f64>> = ovr.outer_iter().fold(
             Array2::from_diag(&Array1::<Complex<f64>>::ones(n_occ)),
             |acc, x| acc.dot(&x),
@@ -226,7 +305,7 @@ impl Berry for Model {
             dir_2.len(),
             self.dim_r()
         );
-        //开始构造loop
+        // Construct plaquette loops
         let mut k_loop = Array3::<f64>::zeros((nk1 * nk2, 5, self.dim_r()));
         for i in 0..nk1 {
             for j in 0..nk2 {
@@ -260,7 +339,6 @@ impl Berry for Model {
     }
 
     fn berry_phase(&self, occ: &Vec<usize>, kvec: &Array3<f64>) -> Array2<f64> {
-        //!这里是计算一个闭合路径的berry phase 的
         let nk1 = kvec.shape()[0];
         let nk2 = kvec.shape()[1];
         let nocc = occ.len();
@@ -283,12 +361,11 @@ impl Berry for Model {
         &self,
         occ: &Vec<usize>,
         k_start: &Array1<f64>,
-        dir_1: &Array1<f64>, //第一个方向遍历
-        dir_2: &Array1<f64>, //第二个方向积分
+        dir_1: &Array1<f64>,
+        dir_2: &Array1<f64>,
         nk1: usize,
         nk2: usize,
     ) -> Array2<f64> {
-        //!这里是计算wcc的, 沿着第一个方向走, 沿着第二个方向积分
         if k_start.len() != self.dim_r() {
             panic!(
                 "Wrong!, the k_start's length is {} but dim_r is {}, it's not equal!",

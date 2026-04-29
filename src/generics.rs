@@ -1,4 +1,4 @@
-//!这个是给程序提供泛型支持的模块
+//! Generic trait definitions for numeric type flexibility and hopping parameter conversions.
 use crate::SpinDirection;
 use crate::TbError;
 use crate::model::Dimension;
@@ -113,13 +113,12 @@ impl TryFrom<usize> for Dimension {
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(Dimension::zero),
             1 => Ok(Dimension::one),
             2 => Ok(Dimension::two),
             3 => Ok(Dimension::three),
             _ => Err(TbError::InvalidDimension {
                 dim: value,
-                supported: vec![0, 1, 2, 3],
+                supported: vec![1, 2, 3],
             }),
         }
     }

@@ -1,4 +1,33 @@
-//! Model construction and Hamiltonian manipulation methods
+//! Model construction and Hamiltonian manipulation methods.
+//!
+//! This module provides the builder pattern for [`Model`] construction. It contains
+//! methods for setting on-site energies, adding hopping terms, managing orbital and
+//! atomic positions, and building supercells via transformation matrices.
+//!
+//! All hopping terms are stored in the convention
+//!
+//! ```math
+//! \langle i,\mathbf{0} | \hat{H} | j,\mathbf{R} \rangle
+//! ```
+//!
+//! where `i` and `j` are orbital indices, and `R` is a lattice vector in units of
+//! primitive cell vectors. Hermitian conjugates are automatically generated: when a
+//! hopping with lattice vector `R` is added, the term with `-R` and interchanged
+//! orbital indices is also added with the complex conjugate of the hopping
+//! amplitude.
+//!
+//! For spinful models (`spin = true`), the basis is doubled: the first `norb`
+//! entries correspond to spin-up, and the second `norb` entries to spin-down. The
+//! `pauli` parameter controls which Pauli matrix acts in spin space.
+//!
+//! # Conventions
+//!
+//! - **Lattice vectors** `R` are stored as integer vectors in units of primitive
+//!   cell vectors (dimensionless).
+//! - **Orbital positions** are stored in fractional coordinates with respect to the
+//!   lattice vectors.
+//! - **On-site energies** must be real. A panic (or error) will result if an
+//!   on-site term with a non-zero imaginary part is set.
 
 use crate::Model;
 use crate::atom_struct::{Atom, AtomType, OrbProj};
@@ -12,10 +41,32 @@ use ndarray_linalg::Norm;
 use ndarray_linalg::{Determinant, Inverse};
 use num_complex::Complex;
 
-/// Macro to update Hamiltonian matrix elements with spin consideration
+/// Overwrite Hamiltonian matrix elements with spin decoration.
 ///
-/// This macro updates the Hamiltonian, checking for spin and the indices ind_i, ind_j.
-/// It takes a Hamiltonian and returns a new Hamiltonian.
+/// This internal macro writes a hopping amplitude `tmp` into the Hamiltonian
+/// matrix at the given orbital indices `(ind_i, ind_j)`, respecting the spin
+/// degree of freedom. The behavior depends on the [`SpinDirection`]:
+///
+/// - [`SpinDirection::None`]: Writes `tmp` to both spin blocks (spin-up/up and
+///   spin-down/down). Corresponds to `sigma_0` (identity) in spin space.
+/// - [`SpinDirection::x`]: Writes `tmp` to the off-diagonal spin blocks
+///   (up/down and down/up). Corresponds to `sigma_x`.
+/// - [`SpinDirection::y`]: Writes `+i * tmp` to up/down and `-i * tmp` to
+///   down/up. Corresponds to `sigma_y`.
+/// - [`SpinDirection::z`]: Writes `+tmp` to up/up and `-tmp` to down/down.
+///   Corresponds to `sigma_z`.
+///
+/// If the model is spinless (`spin = false`), the hopping is simply written
+/// at `(ind_i, ind_j)` without any spin structure.
+///
+/// # Parameters
+/// * `$spin` - `bool` indicating whether the model has spin
+/// * `$pauli` - [`SpinDirection`] selecting the Pauli matrix in spin space
+/// * `$tmp` - The hopping amplitude (type `Complex<f64>`)
+/// * `$new_ham` - Mutable view of the Hamiltonian matrix
+/// * `$ind_i` - Row orbital index (without spin doubling)
+/// * `$ind_j` - Column orbital index (without spin doubling)
+/// * `$norb` - Number of orbitals (without spin doubling)
 macro_rules! update_hamiltonian {
     // This macro updates the Hamiltonian, checking for spin and the indices ind_i, ind_j.
     // It takes a Hamiltonian and returns a new Hamiltonian.
@@ -46,10 +97,22 @@ macro_rules! update_hamiltonian {
     }};
 }
 
-/// Macro to add to Hamiltonian matrix elements with spin consideration
+/// Add to Hamiltonian matrix elements with spin decoration (accumulating version).
 ///
-/// This macro adds to the Hamiltonian, checking for spin and the indices ind_i, ind_j.
-/// It takes a Hamiltonian and returns a new Hamiltonian.
+/// This internal macro is the accumulating counterpart of
+/// [`update_hamiltonian!`]. Instead of overwriting the matrix element, it
+/// **adds** the hopping amplitude `tmp` to the existing value. The spin
+/// decoration follows the same Pauli matrix rules described in
+/// [`update_hamiltonian!`].
+///
+/// # Parameters
+/// * `$spin` - `bool` indicating whether the model has spin
+/// * `$pauli` - [`SpinDirection`] selecting the Pauli matrix in spin space
+/// * `$tmp` - The hopping amplitude (type `Complex<f64>`)
+/// * `$new_ham` - Mutable view of the Hamiltonian matrix
+/// * `$ind_i` - Row orbital index (without spin doubling)
+/// * `$ind_j` - Column orbital index (without spin doubling)
+/// * `$norb` - Number of orbitals (without spin doubling)
 macro_rules! add_hamiltonian {
     // This macro updates the Hamiltonian, checking for spin and the indices ind_i, ind_j.
     // It takes a Hamiltonian and returns a new Hamiltonian.
@@ -83,31 +146,59 @@ macro_rules! add_hamiltonian {
 impl Model {
     /// Create a new tight-binding model with the given crystal structure.
     ///
-    /// This constructor initializes a `Model` with the specified lattice and orbital
-    /// positions. The Hamiltonian and position matrices are initially empty and can
-    /// be populated using `set_hop`, `set_onsite`, and related methods.
+    /// This constructor initializes a [`Model`] with the specified lattice
+    /// vectors and orbital positions. The Hamiltonian and position matrices
+    /// start with a single on-site block (for `R = 0`) and are populated using
+    /// [`set_hop`], [`set_onsite`], and related methods.
+    ///
+    /// If no `atom` list is provided, atoms are inferred from the orbital
+    /// positions: orbitals closer than `1e-2` (in fractional coordinates) are
+    /// assigned to the same atom. This heuristic works best when orbitals from
+    /// different atoms are well separated.
     ///
     /// # Arguments
-    /// * `dim_r` - Real space dimensionality (1, 2, or 3)
-    /// * `lat` - Lattice vectors as a $d \times d$ matrix
-    /// * `orb` - Orbital positions in fractional coordinates
-    /// * `spin` - Whether to include spin degrees of freedom
-    /// * `atom` - Optional list of atoms with orbital information
+    /// * `dim_r` - Real-space dimensionality: 1, 2, or 3.
+    /// * `lat` - Lattice vectors as a `dim_r x dim_r` matrix. Each row is a
+    ///   lattice vector.
+    /// * `orb` - Orbital positions in fractional coordinates, shape
+    ///   `(norb, dim_r)`.
+    /// * `spin` - Whether to double the basis for spin (spinful model).
+    /// * `atom` - Optional list of [`Atom`] objects. If `None`, atoms are
+    ///   inferred from `orb`.
     ///
     /// # Returns
-    /// `Result<Model>` containing the initialized tight-binding model
+    /// `Result<Model>` containing the initialized tight-binding model.
+    ///
+    /// # Errors
+    /// Returns [`TbError::LatticeDimensionError`] if `lat` is not a square
+    /// `dim_r x dim_r` matrix.
     ///
     /// # Examples
+    ///
+    /// Create a 2D graphene model:
+    ///
     /// ```
     /// use ndarray::*;
-    /// use num_complex::Complex;
     /// use Rustb::*;
     ///
-    /// // Create graphene model
     /// let lat = array![[1.0, 0.0], [-0.5, 3_f64.sqrt() / 2.0]];
     /// let orb = array![[1.0 / 3.0, 2.0 / 3.0], [2.0 / 3.0, 1.0 / 3.0]];
-    /// let spin = false;
-    /// let mut graphene_model = Model::tb_model(2, lat, orb, spin, None).unwrap();
+    /// let mut model = Model::tb_model(2, lat, orb, false, None).unwrap();
+    /// ```
+    ///
+    /// Create a spinful model with explicit atoms:
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use Rustb::*;
+    /// use Rustb::atom_struct::*;
+    ///
+    /// let lat = array![[1.0, 0.0, 0.0],
+    ///                  [0.0, 1.0, 0.0],
+    ///                  [0.0, 0.0, 1.0]];
+    /// let orb = array![[0.0, 0.0, 0.0]];
+    /// let atom = vec![Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H)];
+    /// let mut model = Model::tb_model(3, lat, orb, true, Some(atom)).unwrap();
     /// ```
     pub fn tb_model(
         dim_r: usize,
@@ -116,21 +207,6 @@ impl Model {
         spin: bool,
         atom: Option<Vec<Atom>>,
     ) -> Result<Model> {
-        //! This function is used to initialize a Model. The variables that need to be input are as follows:
-        //!
-        //! - dim_r: the dimension of the model
-        //!
-        //! - lat: the lattice constant
-        //!
-        //! - orb: the orbital coordinates
-        //!
-        //! - spin: whether to consider spin
-        //!
-        //! - atom: the atomic coordinates, which can be None
-        //!
-        //! - atom_list: the number of orbitals for each atom, which can be None.
-        //!
-        //! Note that if any of the atomic variables are None, it is better to make them all None.
         let norb: usize = orb.len_of(Axis(0));
         let mut nsta: usize = norb;
         if spin {
@@ -198,11 +274,100 @@ impl Model {
         Ok(model)
     }
 
+    /// Set the orbital projections for every orbital in the model.
+    ///
+    /// Orbital projections determine the angular-momentum character of each
+    /// orbital (e.g., `s`, `px`, `dxy`). They are needed for Slater-Koster
+    /// interpolation, Wannier90 import, and operations that depend on orbital
+    /// symmetry.
+    ///
+    /// The length of `proj` should match `self.norb()`.
+    ///
+    /// # Arguments
+    /// * `proj` - A vector of [`OrbProj`] values, one per orbital.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use Rustb::*;
+    /// use Rustb::atom_struct::*;
+    ///
+    /// let mut model = Model::tb_model(
+    ///     3,
+    ///     array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    ///     array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.0]],
+    ///     false,
+    ///     None,
+    /// ).unwrap();
+    /// model.set_projection(&vec![OrbProj::pz, OrbProj::pz]);
+    /// ```
     pub fn set_projection(&mut self, proj: &Vec<OrbProj>) {
-        //! This function sets the tight-binding model's orbital projections.
         self.orb_projection = proj.clone();
     }
 
+    /// Set (overwrite) a hopping term in the tight-binding Hamiltonian.
+    ///
+    /// Sets the matrix element
+    ///
+    /// ```math
+    /// \langle i,\mathbf{0} | \hat{H} | j,\mathbf{R} \rangle = \text{tmp}
+    /// ```
+    ///
+    /// where `ind_i` and `ind_j` are orbital indices in the primitive-cell
+    /// basis (without spin doubling), and `R` is the lattice vector to the
+    /// target unit cell in units of primitive cell vectors.
+    ///
+    /// # Hermitian conjugate
+    ///
+    /// The Hermitian conjugate at `-R` is **automatically** set:
+    ///
+    /// ```math
+    /// \langle j,-\mathbf{R} | \hat{H} | i,\mathbf{0} \rangle = \text{tmp}^*
+    /// ```
+    ///
+    /// For on-site terms (`R = 0`, `i != j`), the conjugate is set within the
+    /// same block. Diagonal on-site terms (`R = 0`, `i == j`) must be real.
+    ///
+    /// # Spin handling
+    ///
+    /// If the model is spinful, `pauli` determines the Pauli matrix
+    /// decoration:
+    ///
+    /// - [`SpinDirection::None`] (0): `tmp * sigma_0` (identity)
+    /// - [`SpinDirection::x`] (1): `tmp * sigma_x`
+    /// - [`SpinDirection::y`] (2): `tmp * sigma_y`
+    /// - [`SpinDirection::z`] (3): `tmp * sigma_z`
+    ///
+    /// For a spinless model, `pauli` is ignored.
+    ///
+    /// # Arguments
+    /// * `tmp` - Hopping amplitude, `f64` (real) or `Complex<f64>`.
+    /// * `ind_i` - Row orbital index (0-based, in the spinless basis).
+    /// * `ind_j` - Column orbital index (0-based, in the spinless basis).
+    /// * `R` - Lattice vector to the target cell. Must have length `dim_r`.
+    /// * `pauli` - Pauli matrix decoration. Accepts `u8`, `usize`, or
+    ///   [`SpinDirection`].
+    ///
+    /// # Panics
+    /// Panics if `R.len() != dim_r`, if `ind_i` or `ind_j` is out of bounds,
+    /// or if an on-site term (`R=0`, `i=j`) has a non-zero imaginary part.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use Rustb::*;
+    ///
+    /// let lat = array![[1.0]];
+    /// let orb = array![[0.0]];
+    /// let mut model = Model::tb_model(1, lat, orb, false, None).unwrap();
+    ///
+    /// // Nearest-neighbor hopping to the right: <0,0|H|0,R=+1> = -1.0
+    /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), 0);
+    /// // Set on-site energy: <0,0|H|0,R=0> = 0.0
+    /// model.set_hop(0.0_f64, 0, 0, &arr1(&[0isize]), 0);
+    /// ```
     #[allow(non_snake_case)]
     pub fn set_hop<T: Data<Elem = isize>, U: hop_use>(
         &mut self,
@@ -212,17 +377,6 @@ impl Model {
         R: &ArrayBase<T, Ix1>,
         pauli: impl Into<SpinDirection>,
     ) {
-        //! This function is used to add hopping to the model. The "set" indicates that it can be used to override previous hopping.
-        //!
-        //! - tmp: the parameters for hopping
-        //!
-        //! - ind_i and ind_j: the orbital indices in the Hamiltonian, representing hopping from i to j
-        //!
-        //! - R: the position of the target unit cell for hopping
-        //!
-        //! - pauli: can take the values of 0, 1, 2, or 3, representing $\sigma_0$, $\sigma_x$, $\sigma_y$, $\sigma_z$.
-        //!
-        //! In general, this function is used to set $\bra{i\bm 0}\hat H\ket{j\bm R}=$tmp.
         let pauli: SpinDirection = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
         if pauli != SpinDirection::None && self.spin == false {
@@ -303,6 +457,37 @@ impl Model {
         }
     }
 
+    /// Add to a hopping term (accumulate without overwriting).
+    ///
+    /// Identical to [`set_hop`] except the hopping amplitude is **added** to
+    /// any existing value:
+    ///
+    /// ```math
+    /// \langle i,\mathbf{0} | \hat{H} | j,\mathbf{R} \rangle \mathrel{+}= \text{tmp}
+    /// ```
+    ///
+    /// Useful when building a Hamiltonian from multiple contributions (e.g.,
+    /// separate kinetic and spin-orbit coupling terms for the same orbital
+    /// pair). The Hermitian conjugate at `-R` is also updated with `tmp*`.
+    ///
+    /// See [`set_hop`] for a full description of the parameters and panics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use num_complex::Complex;
+    /// use Rustb::*;
+    ///
+    /// let lat = array![[1.0]];
+    /// let orb = array![[0.0]];
+    /// let mut model = Model::tb_model(1, lat, orb, false, None).unwrap();
+    ///
+    /// // Set real part
+    /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), 0);
+    /// // Add an imaginary part on top
+    /// model.add_hop(Complex::new(0.0, 0.1), 0, 0, &arr1(&[1isize]), 0);
+    /// ```
     #[allow(non_snake_case)]
     pub fn add_hop<T: Data<Elem = isize>, U: hop_use>(
         &mut self,
@@ -312,7 +497,6 @@ impl Model {
         R: &ArrayBase<T, Ix1>,
         pauli: impl Into<SpinDirection>,
     ) {
-        //! Parameters are the same as set_hop, but $\bra{i\bm 0}\hat H\ket{j\bm R}$ += tmp
         let pauli: SpinDirection = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
         if pauli != SpinDirection::None && self.spin == false {
@@ -385,6 +569,57 @@ impl Model {
         }
     }
 
+    /// Add a matrix element directly, bypassing spin decoration.
+    ///
+    /// Sets the single matrix element
+    ///
+    /// ```math
+    /// \langle i,\mathbf{0} | \hat{H} | j,\mathbf{R} \rangle = \text{tmp}
+    /// ```
+    ///
+    /// using the **full** (spin-doubled) basis indices. Unlike [`set_hop`] and
+    /// [`add_hop`], it does **not** apply Pauli matrix decoration. The indices
+    /// `ind_i` and `ind_j` must be in `0..nsta()`.
+    ///
+    /// This is the low-level interface for Hamiltonian manipulation, useful
+    /// when fine-grained control over individual spin components is needed.
+    ///
+    /// The Hermitian conjugate at `-R` is automatically set.
+    ///
+    /// # Arguments
+    /// * `tmp` - Complex hopping amplitude in the full spin-doubled basis.
+    /// * `ind_i` - Row orbital index (0-based, up to `nsta()`).
+    /// * `ind_j` - Column orbital index (0-based, up to `nsta()`).
+    /// * `R` - Lattice vector to the target unit cell.
+    ///
+    /// # Returns
+    /// `Result<()>` with an error on invalid input.
+    ///
+    /// # Errors
+    /// - [`TbError::RVectorLengthError`] if `R.len() != dim_r`.
+    /// - [`TbError::DimensionMismatch`] if `ind_i` or `ind_j` >= `nsta()`.
+    /// - [`TbError::OnsiteHoppingMustBeReal`] if an on-site term has a
+    ///   non-zero imaginary part.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use num_complex::Complex;
+    /// use Rustb::*;
+    ///
+    /// let lat = array![[1.0, 0.0], [0.0, 1.0]];
+    /// let orb = array![[0.0, 0.0]];
+    /// // Spinful model: norb=1, nsta=2
+    /// let mut model = Model::tb_model(2, lat, orb, true, None).unwrap();
+    ///
+    /// // Spin-flip hopping: <up,0|H|down,R=(1,0)> = 0.5
+    /// model.add_element(
+    ///     Complex::new(0.5, 0.0),
+    ///     0, 1, // up orbital -> down orbital
+    ///     &arr1(&[1isize, 0isize]),
+    /// ).unwrap();
+    /// ```
     #[allow(non_snake_case)]
     pub fn add_element(
         &mut self,
@@ -393,7 +628,6 @@ impl Model {
         ind_j: usize,
         R: &Array1<isize>,
     ) -> Result<()> {
-        //! Parameters are the same as set_hop, but $\bra{i\bm 0}\hat H\ket{j\bm R}$ += tmp, ignoring spin, directly adding parameters
         if R.len() != self.dim_r() {
             return Err(TbError::RVectorLengthError {
                 expected: self.dim_r(),
@@ -430,9 +664,36 @@ impl Model {
         Ok(())
     }
 
+    /// Set (overwrite) all on-site energies at once.
+    ///
+    /// Convenience method that calls [`set_hop`] for every orbital `i` with
+    /// `R = 0`:
+    ///
+    /// ```math
+    /// \langle i,\mathbf{0} | \hat{H} | i,\mathbf{0} \rangle = \text{tmp}[i]
+    /// ```
+    ///
+    /// # Arguments
+    /// * `tmp` - Array of length `norb` with on-site energies (real).
+    /// * `pauli` - Pauli matrix decoration. Use [`SpinDirection::None`] for
+    ///   spin-independent on-site energies.
+    ///
+    /// # Panics
+    /// Panics if `tmp.len() != norb`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use Rustb::*;
+    ///
+    /// let lat = array![[1.0, 0.0], [0.0, 1.0]];
+    /// let orb = array![[0.0, 0.0], [0.5, 0.5]];
+    /// let mut model = Model::tb_model(2, lat, orb, false, None).unwrap();
+    /// model.set_onsite(&arr1(&[1.0, -1.0]), 0);
+    /// ```
     #[allow(non_snake_case)]
     pub fn set_onsite(&mut self, tmp: &Array1<f64>, pauli: impl Into<SpinDirection>) {
-        //! Directly set diagonal elements
         let pauli = pauli.into();
         if tmp.len() != self.norb() {
             panic!(
@@ -446,9 +707,41 @@ impl Model {
         }
     }
 
+    /// Add to all on-site energies (accumulate without overwriting).
+    ///
+    /// Accumulating counterpart of [`set_onsite`]. Adds `tmp[i]` to the
+    /// existing on-site energy of orbital `i`:
+    ///
+    /// ```math
+    /// \langle i,\mathbf{0} | \hat{H} | i,\mathbf{0} \rangle \mathrel{+}= \text{tmp}[i]
+    /// ```
+    ///
+    /// Useful when building up on-site energies from multiple contributions
+    /// (e.g., crystal-field splitting plus a Zeeman term).
+    ///
+    /// # Arguments
+    /// * `tmp` - Array of length `norb` with on-site energies to add.
+    /// * `pauli` - Pauli matrix decoration for spinful models.
+    ///
+    /// # Panics
+    /// Panics if `tmp.len() != norb`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use Rustb::*;
+    ///
+    /// let lat = array![[1.0]];
+    /// let orb = array![[0.0]];
+    /// let mut model = Model::tb_model(1, lat, orb, false, None).unwrap();
+    ///
+    /// model.set_onsite(&arr1(&[1.0]), 0);
+    /// model.add_onsite(&arr1(&[0.5]), 0);
+    /// // Total on-site energy is now 1.5
+    /// ```
     #[allow(non_snake_case)]
     pub fn add_onsite(&mut self, tmp: &Array1<f64>, pauli: impl Into<SpinDirection>) {
-        //! Directly set diagonal elements
         let pauli = pauli.into();
         if tmp.len() != self.norb() {
             panic!(
@@ -464,14 +757,73 @@ impl Model {
         }
     }
 
+    /// Set a single on-site energy for one orbital.
+    ///
+    /// Sets the diagonal matrix element for orbital `ind` at `R = 0`:
+    ///
+    /// ```math
+    /// \langle \text{ind},\mathbf{0} | \hat{H} | \text{ind},\mathbf{0} \rangle = \text{tmp}
+    /// ```
+    ///
+    /// Convenience wrapper around [`set_hop`] with `R = 0`.
+    ///
+    /// # Arguments
+    /// * `tmp` - The on-site energy (must be real).
+    /// * `ind` - Orbital index (0-based, in the spinless basis).
+    /// * `pauli` - Pauli matrix decoration for spinful models.
+    ///
+    /// # Panics
+    /// Panics if `ind >= norb`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use Rustb::*;
+    ///
+    /// let lat = array![[1.0, 0.0], [0.0, 1.0]];
+    /// let orb = array![[0.0, 0.0], [0.5, 0.5]];
+    /// let mut model = Model::tb_model(2, lat, orb, false, None).unwrap();
+    ///
+    /// model.set_onsite_one(1.0, 0, 0); // E_0 = 1.0
+    /// model.set_onsite_one(-1.0, 1, 0); // E_1 = -1.0
+    /// ```
     #[allow(non_snake_case)]
     pub fn set_onsite_one(&mut self, tmp: f64, ind: usize, pauli: impl Into<SpinDirection>) {
-        //! Set $\bra{i\bm 0}\hat H\ket{i\bm 0}$
         let pauli = pauli.into();
         let R = Array1::<isize>::zeros(self.dim_r());
         self.set_hop(Complex::new(tmp, 0.0), ind, ind, &R, pauli)
     }
 
+    /// Delete (zero out) a hopping term.
+    ///
+    /// Sets the specified hopping to zero via [`set_hop`] with amplitude 0.
+    /// Both `+R` and `-R` terms (and their spin components) are zeroed.
+    ///
+    /// # Arguments
+    /// * `ind_i` - Row orbital index (spinless basis).
+    /// * `ind_j` - Column orbital index (spinless basis).
+    /// * `R` - Lattice vector of the hopping to delete.
+    /// * `pauli` - Pauli matrix decoration (must match the one used when
+    ///   the hopping was originally set).
+    ///
+    /// # Panics
+    /// Panics if `R.len() != dim_r` or orbital indices are out of bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use Rustb::*;
+    ///
+    /// let mut model = Model::tb_model(
+    ///     1, array![[1.0]], array![[0.0]], false, None,
+    /// ).unwrap();
+    ///
+    /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), 0);
+    /// // Remove the hopping
+    /// model.del_hop(0, 0, &arr1(&[1isize]), 0);
+    /// ```
     pub fn del_hop(
         &mut self,
         ind_i: usize,
@@ -479,7 +831,6 @@ impl Model {
         R: &Array1<isize>,
         pauli: impl Into<SpinDirection>,
     ) {
-        //! Delete $\bra{i\bm 0}\hat H\ket{j\bm R}$
         let pauli = pauli.into();
         if R.len() != self.dim_r() {
             panic!("Wrong, the R length should equal to dim_r")
@@ -497,8 +848,33 @@ impl Model {
 }
 
 impl Model {
+    /// Move the orbital positions to the positions of their parent atoms.
+    ///
+    /// Sets each orbital's fractional-coordinate position to the
+    /// fractional-coordinate position of the atom it belongs to. Useful
+    /// when orbitals are initially at their Wannier centers but you want to
+    /// align them with atomic positions for Slater-Koster parametrization
+    /// or symmetry analysis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use Rustb::*;
+    /// use Rustb::atom_struct::*;
+    ///
+    /// let lat = array![[1.0, 0.0, 0.0],
+    ///                  [0.0, 1.0, 0.0],
+    ///                  [0.0, 0.0, 1.0]];
+    /// let orb = array![[0.1, 0.1, 0.0], [0.6, 0.6, 0.0]];
+    /// let atoms = vec![
+    ///     Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H),
+    ///     Atom::new(arr1(&[0.5, 0.5, 0.0]), 1, AtomType::H),
+    /// ];
+    /// let mut model = Model::tb_model(3, lat, orb, false, Some(atoms)).unwrap();
+    /// model.shift_to_atom();
+    /// ```
     pub fn shift_to_atom(&mut self) {
-        //!这个是将轨道移动到原子位置上
         let mut a = 0;
         for (i, atom) in self.atoms.iter().enumerate() {
             for j in 0..atom.norb() {
@@ -508,8 +884,13 @@ impl Model {
         }
     }
 
+    /// Move the orbital positions to the positions of their parent atoms
+    /// (alternate implementation).
+    ///
+    /// Performs the same operation as [`shift_to_atom`] but uses a different
+    /// indexing pattern (iterates by atom index rather than by atom reference).
+    /// See [`shift_to_atom`] for details.
     pub fn move_to_atom(&mut self) {
-        ///This function moves the orbital position to the atomic position
         let mut a = 0;
         for i in 0..self.natom() {
             for j in 0..self.atoms[i].norb() {
@@ -519,6 +900,21 @@ impl Model {
         }
     }
 
+    /// Remove orbitals from the model.
+    ///
+    /// Deletes the specified orbitals together with all Hamiltonian and
+    /// position matrix elements involving them. The `orb_projection` list
+    /// is updated, and atoms whose orbital count drops to zero are removed.
+    ///
+    /// For spinful models, the corresponding spin-doubled indices are also
+    /// removed (index `i + norb` is removed alongside `i`).
+    ///
+    /// # Arguments
+    /// * `orb_list` - Indices of orbitals to remove (0-based, spinless
+    ///   basis). Duplicate entries are not allowed.
+    ///
+    /// # Panics
+    /// Panics if `orb_list` contains duplicate entries.
     pub fn remove_orb(&mut self, orb_list: &Vec<usize>) {
         let mut use_orb_list = orb_list.clone();
         use_orb_list.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -562,6 +958,18 @@ impl Model {
         self.rmatrix = new_rmatrix;
     }
 
+    /// Remove entire atoms from the model.
+    ///
+    /// Removes the specified atoms and all orbitals belonging to them. The
+    /// Hamiltonian, position matrix, and orbital projections are all updated
+    /// to reflect the reduced basis.
+    ///
+    /// # Arguments
+    /// * `atom_list` - Indices of atoms to remove (0-based). Duplicates are
+    ///   not allowed.
+    ///
+    /// # Panics
+    /// Panics if `atom_list` contains duplicates.
     pub fn remove_atom(&mut self, atom_list: &Vec<usize>) {
         //----------判断是否存在重复, 并给出保留的index
         let mut use_atom_list = atom_list.clone();
@@ -624,8 +1032,42 @@ impl Model {
         self.rmatrix = new_rmatrix;
     }
 
+    /// Reorder atoms and their associated orbitals.
+    ///
+    /// Rearranges atoms according to the given permutation `order`. Orbitals
+    /// are reordered to follow their parent atoms, and the Hamiltonian
+    /// matrix, position matrix, and orbital projections are all permuted
+    /// accordingly. Primarily useful for checking and debugging models
+    /// (e.g., verifying invariance under atom permutations).
+    ///
+    /// # Arguments
+    /// * `order` - A permutation of `0..natom()` giving the new atom order.
+    ///   Must have length `natom()`.
+    ///
+    /// # Panics
+    /// Panics if `order.len() != natom()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::*;
+    /// use Rustb::*;
+    /// use Rustb::atom_struct::*;
+    ///
+    /// let lat = array![[1.0, 0.0, 0.0],
+    ///                  [0.0, 1.0, 0.0],
+    ///                  [0.0, 0.0, 1.0]];
+    /// let orb = array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.0]];
+    /// let atoms = vec![
+    ///     Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H),
+    ///     Atom::new(arr1(&[0.5, 0.5, 0.0]), 1, AtomType::H),
+    /// ];
+    /// let mut model = Model::tb_model(3, lat, orb, false, Some(atoms)).unwrap();
+    ///
+    /// // Swap atom 0 and atom 1
+    /// model.reorder_atom(&vec![1, 0]);
+    /// ```
     pub fn reorder_atom(&mut self, order: &Vec<usize>) {
-        ///这个函数是用来调整模型的原子顺序的, 主要用来检查某些模型
         if order.len() != self.natom() {
             panic!(
                 "Wrong! when you using reorder_atom, the order's length {} must equal to the num of atoms {}.",
@@ -679,9 +1121,41 @@ impl Model {
         self.rmatrix = self.rmatrix.select(Axis(3), &new_state_order);
     }
 
+    /// Build a supercell by applying an integer transformation matrix `U`.
+    ///
+    /// The new lattice vectors are
+    ///
+    /// ```math
+    /// L' = U \, L
+    /// ```
+    ///
+    /// where `L` is the original lattice matrix (each row is a lattice
+    /// vector) and `U` is an integer matrix with `det(U) > 0`. The supercell
+    /// volume is multiplied by `det(U)`.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Compute the new lattice `L' = U * L`.
+    /// 2. Map all orbitals into the enlarged cell, keeping those whose
+    ///    fractional coordinates fall in `[0, 1)` on the new basis.
+    /// 3. For each orbital pair and each possible supercell lattice vector
+    ///    `R'`, compute the corresponding primitive-cell `R0` and copy the
+    ///    hopping from the original Hamiltonian.
+    /// 4. Position matrix elements are also mapped if present.
+    ///
+    /// # Arguments
+    /// * `U` - A `dim_r x dim_r` integer matrix with `det(U) > 0`.
+    ///
+    /// # Returns
+    /// `Result<Model>` containing the supercell model.
+    ///
+    /// # Errors
+    /// - [`TbError::TransformationMatrixDimMismatch`] if `U` has wrong
+    ///   dimensions.
+    /// - [`TbError::InvalidSupercellDet`] if `det(U) <= 0`.
+    /// - [`TbError::InvalidSupercellMatrix`] if `U` contains non-integer
+    ///   entries.
     pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model> {
-        //这个函数是用来对模型做变换的, 变换前后模型的基矢 $L'=UL$.
-        //!This function is used to transform the model, where the new basis after transformation is given by $L' = UL$.
         if self.dim_r() != U.len_of(Axis(0)) {
             return Err(TbError::TransformationMatrixDimMismatch {
                 expected: self.dim_r(),

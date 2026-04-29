@@ -3,12 +3,11 @@
 //! Run with: cargo bench --features intel-mkl-system
 //! Filter:    cargo bench --features intel-mkl-system -- gen_ham
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use ndarray::*;
 
-
-use num_complex::Complex;
 use Rustb::*;
+use num_complex::Complex;
 
 // ── Model builders (not timed) ──────────────────────────────────────────────
 
@@ -20,7 +19,13 @@ fn build_small() -> Model {
     m.set_onsite(&arr1(&[-0.7, 0.7]), SpinDirection::None);
     let r0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
-        m.add_hop(Complex::new(-1.0, 0.0), 0, 1, &r.to_owned(), SpinDirection::None);
+        m.add_hop(
+            Complex::new(-1.0, 0.0),
+            0,
+            1,
+            &r.to_owned(),
+            SpinDirection::None,
+        );
     }
     m
 }
@@ -76,6 +81,27 @@ fn build_small_spinful() -> Model {
     m
 }
 
+/// N×N supercell: replicates the 2-orbital graphene model to get nsta = 2*N².
+/// Hoppings are automatically replicated by `make_supercell`, no manual setup needed.
+fn build_large(n: usize) -> Model {
+    let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+    let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
+    let mut m = Model::tb_model(2, lat, orb, false, None).unwrap();
+    m.set_onsite(&arr1(&[-0.7, 0.7]), SpinDirection::None);
+    let r0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
+    for r in r0.axis_iter(Axis(0)) {
+        m.add_hop(
+            Complex::new(-1.0, 0.0),
+            0,
+            1,
+            &r.to_owned(),
+            SpinDirection::None,
+        );
+    }
+    let sc = arr2(&[[n as f64, 0.0], [0.0, n as f64]]);
+    m.make_supercell(&sc).unwrap()
+}
+
 // ── Benchmarks ──────────────────────────────────────────────────────────────
 
 fn bench_gen_ham(c: &mut Criterion) {
@@ -84,6 +110,8 @@ fn bench_gen_ham(c: &mut Criterion) {
         ("small(2orb)", build_small()),
         ("medium(18orb)", build_medium()),
         ("spinful(4sta)", build_small_spinful()),
+        ("large(128orb)", build_large(8)),
+        ("xlarge(450orb)", build_large(15)),
     ];
     let kvec = arr1(&[0.3, 0.5]);
 
@@ -108,6 +136,8 @@ fn bench_gen_v(c: &mut Criterion) {
         ("small(2orb)", build_small()),
         ("medium(18orb)", build_medium()),
         ("spinful(4sta)", build_small_spinful()),
+        ("large(128orb)", build_large(8)),
+        ("xlarge(450orb)", build_large(15)),
     ];
     let kvec = arr1(&[0.3, 0.5]);
 
@@ -172,7 +202,17 @@ fn bench_berry_curvature_onek(c: &mut Criterion) {
             BenchmarkId::new("scalar", name),
             &(model, &kvec, &dir1, &dir2),
             |b, (m, kv, d1, d2)| {
-                b.iter(|| m.berry_curvature_onek(black_box(kv), black_box(d1), black_box(d2), 0.0, 0.0, 0, 1e-3))
+                b.iter(|| {
+                    m.berry_curvature_onek(
+                        black_box(kv),
+                        black_box(d1),
+                        black_box(d2),
+                        0.0,
+                        0.0,
+                        0,
+                        1e-3,
+                    )
+                })
             },
         );
         if model.spin {
@@ -180,7 +220,17 @@ fn bench_berry_curvature_onek(c: &mut Criterion) {
                 BenchmarkId::new("spin_z", name),
                 &(model, &kvec, &dir1, &dir2),
                 |b, (m, kv, d1, d2)| {
-                    b.iter(|| m.berry_curvature_onek(black_box(kv), black_box(d1), black_box(d2), 0.0, 0.0, 3, 1e-3))
+                    b.iter(|| {
+                        m.berry_curvature_onek(
+                            black_box(kv),
+                            black_box(d1),
+                            black_box(d2),
+                            0.0,
+                            0.0,
+                            3,
+                            1e-3,
+                        )
+                    })
                 },
             );
         }
@@ -225,6 +275,75 @@ fn bench_dos(c: &mut Criterion) {
     group.finish();
 }
 
+/// Compare per-row (dimension-dispatched) vs BLAS dot for phase factor computation.
+fn bench_phase_dot_vs_perrow(c: &mut Criterion) {
+    let mut group = c.benchmark_group("phase_dot_vs_perrow");
+    let kvec = arr1(&[0.3, 0.5]);
+    let pi2 = 2.0 * std::f64::consts::PI;
+
+    for n in [8, 15, 30, 50] {
+        let m = build_large(n);
+        let dim = m.dim_r();
+
+        // hamR: per-row (dimension-dispatched)
+        group.bench_function(BenchmarkId::new("hamR_perrow", n), |b| {
+            b.iter(|| {
+                let us: Vec<Complex<f64>> = m
+                    .hamR
+                    .outer_iter()
+                    .map(|r| {
+                        let mut p = 0.0f64;
+                        for d in 0..dim {
+                            p += r[d] as f64 * kvec[d];
+                        }
+                        Complex::new(0.0, pi2 * p).exp()
+                    })
+                    .collect();
+                black_box(us)
+            })
+        });
+
+        // hamR: BLAS dot (matmul GEMV)
+        group.bench_function(BenchmarkId::new("hamR_dot", n), |b| {
+            b.iter(|| {
+                let hamr_f64 = m.hamR.mapv(|x| x as f64);
+                let phases = hamr_f64.dot(&kvec);
+                let us: Array1<Complex<f64>> = phases.mapv(|p| Complex::new(0.0, pi2 * p).exp());
+                black_box(us)
+            })
+        });
+
+        // orb: per-row
+        group.bench_function(BenchmarkId::new("orb_perrow", n), |b| {
+            b.iter(|| {
+                let op: Vec<Complex<f64>> = m
+                    .orb
+                    .outer_iter()
+                    .map(|tau| {
+                        let mut p = 0.0f64;
+                        for d in 0..dim {
+                            p += tau[d] * kvec[d];
+                        }
+                        Complex::new(0.0, pi2 * p).exp()
+                    })
+                    .collect();
+                black_box(op)
+            })
+        });
+
+        // orb: BLAS dot
+        group.bench_function(BenchmarkId::new("orb_dot", n), |b| {
+            b.iter(|| {
+                let phases = m.orb.dot(&kvec);
+                let op: Array1<Complex<f64>> = phases.mapv(|p| Complex::new(0.0, pi2 * p).exp());
+                black_box(op)
+            })
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_gen_ham,
@@ -234,5 +353,6 @@ criterion_group!(
     bench_berry_curvature_onek,
     bench_hall_conductivity,
     bench_dos,
+    bench_phase_dot_vs_perrow,
 );
 criterion_main!(benches);

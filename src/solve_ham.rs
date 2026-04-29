@@ -1,4 +1,4 @@
-//!这个模块是用来求解哈密顿量的
+//! Eigenvalue solver for tight-binding Hamiltonians.
 use crate::Gauge;
 use crate::Model;
 use crate::error::{Result, TbError};
@@ -9,7 +9,7 @@ use ndarray_linalg::*;
 use num_complex::{Complex, Complex64};
 use rayon::prelude::*;
 use std::f64::consts::PI;
-/// 这个模块主要用于求解模型的哈密顿量, 目前针对的是TB模型, 日后会增加Hubbard model的平均场方法
+/// Diagonalizes the tight-binding Hamiltonian $H(\mathbf{k})$ and returns eigenvalues and eigenvectors. For Hubbard-type models, a mean-field extension is planned.
 ///
 ///
 

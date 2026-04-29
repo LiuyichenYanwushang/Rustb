@@ -30,7 +30,7 @@ use std::ops::AddAssign;
 use std::ops::MulAssign;
 use std::time::Instant;
 
-///计算表面格林函数的时候使用的基本单位
+/// Basic building block for surface Green's function calculations.
 #[derive(Clone, Debug)]
 pub struct surf_Green {
     /// - The real space dimension of the model.
@@ -67,7 +67,7 @@ impl Kpath for surf_Green {
         path: &Array2<f64>,
         nk: usize,
     ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
-        //!根据高对称点来生成高对称路径, 画能带图
+        //! Generate a k-path from high-symmetry points for band structure plotting.
         if self.dim_r == 0 {
             return Err(TbError::ZeroDimKPathError);
         }
@@ -117,13 +117,13 @@ impl Kpath for surf_Green {
 }
 
 impl surf_Green {
-    ///从 Model 中构建一个 surf_green 的结构体
+    /// Construct a `surf_Green` from a [`Model`].
     ///
-    ///dir表示要看哪方向的表面态
+    /// `dir` specifies the surface normal direction.
     ///
-    ///eta表示小虚数得取值
+    /// `eta` is the small imaginary part for the Green's function.
     ///
-    ///对于非晶格矢量得方向, 需要用 model.make_supercell 先扩胞
+    /// For directions not aligned with a lattice vector, use [`Model::make_supercell`] first.
     pub fn from_Model(
         model: &Model,
         dir: usize,
@@ -210,56 +210,43 @@ impl surf_Green {
         }
         let nR: usize = self.ham_bulkR.len_of(Axis(0));
         let nRR: usize = self.ham_hopR.len_of(Axis(0));
-        let U0: Array1<f64> = self.orb.dot(kvec);
-        let U0: Array1<Complex<f64>> = U0.map(|x| Complex::<f64>::new(0.0, 2.0 * PI * *x));
-        let U0: Array1<Complex<f64>> = U0.mapv(Complex::exp); //关于轨道的 guage
-        let U0 = if self.spin {
-            let U0 = concatenate![Axis(0), U0, U0];
-            U0
+        // Orbital gauge phases: exp(i 2π τ·k)
+        let orb_phase: Array1<Complex<f64>> = self
+            .orb
+            .dot(kvec)
+            .mapv(|p| Complex::new(0.0, 2.0 * PI * p).exp());
+        let orb_phase = if self.spin {
+            concatenate![Axis(0), orb_phase, orb_phase]
         } else {
-            U0
+            orb_phase
         };
-        let U: Array2<Complex<f64>> = Array2::from_diag(&U0);
-        let U_conj = Array2::from_diag(&U0.map(|x| x.conj()));
-        //对体系作傅里叶变换
+        // R-space phases for ham_bulk and ham_hop
         let U0 = (self.ham_bulkR.map(|x| *x as f64))
             .dot(kvec)
             .map(|x| Complex::<f64>::new(0.0, *x * 2.0 * PI).exp());
-        //对 ham_hop 作傅里叶变换
         let UR = (self.ham_hopR.map(|x| *x as f64))
             .dot(kvec)
             .map(|x| Complex::<f64>::new(0.0, *x * 2.0 * PI).exp());
-        let ham0k = self
-            .ham_bulk
-            .outer_iter()
-            .zip(U0.iter())
-            .fold(Array2::zeros((self.nsta, self.nsta)), |acc, (ham, u)| {
-                acc + &ham * *u
-            });
-        let hamRk = self
-            .ham_hop
-            .outer_iter()
-            .zip(UR.iter())
-            .fold(Array2::zeros((self.nsta, self.nsta)), |acc, (ham, u)| {
-                acc + &ham * *u
-            });
-        //先对 ham_bulk 中的 [0,0] 提取出来
-        //let ham0 = self.ham_bulk.slice(s![0, .., ..]);
-        //let U0 = U0.slice(s![1..nR]);
-        //let U0 = U0.into_shape((nR - 1, 1, 1)).unwrap();
-        //let U0 = U0.broadcast((nR - 1, self.nsta, self.nsta)).unwrap();
-        //let ham0k = (&self.ham_bulk.slice(s![1..nR, .., ..]) * &U0).sum_axis(Axis(0));
-        //let UR = UR.into_shape((nRR, 1, 1)).unwrap();
-        //let UR = UR.broadcast((nRR, self.nsta, self.nsta)).unwrap();
-        //let hamRk = (&self.ham_hop * &UR).sum_axis(Axis(0));
-        //let ham0k: Array2<Complex<f64>> = &ham0
-        //    + &conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>>(&ham0k)
-        //    + &ham0k;
-        //作规范变换
-        let ham0k = ham0k.dot(&U);
-        let ham0k = U_conj.dot(&ham0k);
-        let hamRk = hamRk.dot(&U);
-        let hamRk = U_conj.dot(&hamRk);
+        // Build H(k) with scaled_add: zero-allocation per R
+        let mut ham0k = Array2::<Complex<f64>>::zeros((self.nsta, self.nsta));
+        Zip::from(self.ham_bulk.outer_iter())
+            .and(&U0)
+            .for_each(|ham, &u| ham0k.scaled_add(u, &ham));
+        let mut hamRk = Array2::<Complex<f64>>::zeros((self.nsta, self.nsta));
+        Zip::from(self.ham_hop.outer_iter())
+            .and(&UR)
+            .for_each(|ham, &u| hamRk.scaled_add(u, &ham));
+        // Gauge transform: H'[m,n] = conj(φ[m]) * H[m,n] * φ[n]
+        // In-place O(nsta²) replaces two O(nsta³) matrix multiplies with diagonal U.
+        for mut ham in [&mut ham0k, &mut hamRk] {
+            for m in 0..self.nsta {
+                let mut row = ham.slice_mut(s![m, ..]);
+                let conj_pm = orb_phase[m].conj();
+                Zip::from(&mut row)
+                    .and(&orb_phase)
+                    .for_each(|h, &pn| *h *= conj_pm * pn);
+            }
+        }
         (ham0k, hamRk)
     }
     #[inline(always)]

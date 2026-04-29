@@ -1,5 +1,6 @@
 //! Physics calculation methods for tight-binding models
 use crate::Gauge;
+use crate::Dimension;
 use crate::Model;
 use crate::error::{Result, TbError};
 use crate::kpoints::gen_kmesh;
@@ -49,65 +50,131 @@ impl Model {
             "Wrong, the k-vector's length must equal to the dimension of model."
         );
 
-        let n_r = self.hamR.nrows();
-        let dim = self.dim_r();
         let nsta = self.nsta();
-
-        // Fused phase factor: R·k → exp(i 2π R·k) in one pass
-        let Us: Vec<Complex<f64>> = (0..n_r)
-            .map(|i| {
-                let mut phase = 0.0f64;
-                for d in 0..dim {
-                    phase += self.hamR[[i, d]] as f64 * kvec[d];
-                }
-                Complex::new(0.0, 2.0 * PI * phase).exp()
-            })
-            .collect();
-
-        // Mutable accumulate (no intermediate per-R allocations)
         let mut hamk = Array2::<Complex<f64>>::zeros((nsta, nsta));
-        for i in 0..n_r {
-            let u = Us[i];
-            let hm = self.ham.slice(s![i, .., ..]);
-            Zip::from(&mut hamk).and(&hm).for_each(|a, &b| *a += b * u);
+
+        // Dimension-dispatched: each arm the compiler sees a compile-time
+        // constant loop bound, so the inner phase loop is fully unrolled
+        // and per-element bounds checks are eliminated.
+        match self.dim_r {
+            Dimension::one => {
+                Zip::from(self.ham.outer_iter())
+                    .and(self.hamR.outer_iter())
+                    .for_each(|hm, hamr_row| {
+                        let phase = hamr_row[0] as f64 * kvec[0];
+                        let u = Complex::new(0.0, 2.0 * PI * phase).exp();
+                        //Zip::from(&mut hamk).and(&hm).for_each(|a, &b| *a += b * u);
+                        hamk.scaled_add(u, &hm);
+                    });
+            }
+            Dimension::two => {
+                Zip::from(self.ham.outer_iter())
+                    .and(self.hamR.outer_iter())
+                    .for_each(|hm, hamr_row| {
+                        let phase =
+                            hamr_row[0] as f64 * kvec[0] + hamr_row[1] as f64 * kvec[1];
+                        let u = Complex::new(0.0, 2.0 * PI * phase).exp();
+                        //Zip::from(&mut hamk).and(&hm).for_each(|a, &b| *a += b * u);
+                        hamk.scaled_add(u, &hm);
+                    });
+            }
+            Dimension::three => {
+                Zip::from(self.ham.outer_iter())
+                    .and(self.hamR.outer_iter())
+                    .for_each(|hm, hamr_row| {
+                        let phase = hamr_row[0] as f64 * kvec[0]
+                            + hamr_row[1] as f64 * kvec[1]
+                            + hamr_row[2] as f64 * kvec[2];
+                        let u = Complex::new(0.0, 2.0 * PI * phase).exp();
+                        //Zip::from(&mut hamk).and(&hm).for_each(|a, &b| *a += b * u);
+                        hamk.scaled_add(u, &hm);
+                    });
+            }
         }
 
         match gauge {
             Gauge::Lattice => hamk,
             Gauge::Atom => {
-                // Fused: τ·k → exp(i 2π τ·k) in one pass
-                let orb_phase: Vec<Complex<f64>> = self
-                    .orb
-                    .outer_iter()
-                    .map(|tau| {
-                        let mut phase = 0.0f64;
-                        for d in 0..dim {
-                            phase += tau[d] * kvec[d];
-                        }
-                        Complex::new(0.0, 2.0 * PI * phase).exp()
-                    })
-                    .collect();
+                // Dimension-dispatched τ·k phase factors
+                let orb_phase: Vec<Complex<f64>> = match self.dim_r {
+                    Dimension::one => self
+                        .orb
+                        .outer_iter()
+                        .map(|tau| Complex::new(0.0, 2.0 * PI * tau[0] * kvec[0]).exp())
+                        .collect(),
+                    Dimension::two => self
+                        .orb
+                        .outer_iter()
+                        .map(|tau| {
+                            Complex::new(
+                                0.0,
+                                2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1]),
+                            )
+                            .exp()
+                        })
+                        .collect(),
+                    Dimension::three => self
+                        .orb
+                        .outer_iter()
+                        .map(|tau| {
+                            Complex::new(
+                                0.0,
+                                2.0 * PI
+                                    * (tau[0] * kvec[0] + tau[1] * kvec[1] + tau[2] * kvec[2]),
+                            )
+                            .exp()
+                        })
+                        .collect(),
+                };
                 let norb = self.norb();
-                let phase_len = if self.spin { 2 * norb } else { norb };
-                let mut U0 = Array1::<Complex<f64>>::zeros(phase_len);
-                for i in 0..norb {
-                    U0[i] = orb_phase[i];
-                    if self.spin {
-                        U0[i + norb] = orb_phase[i];
-                    }
+                let orb_phase = Array1::from_vec(orb_phase);
+                // Build gauge phase vector: for spinful, duplicate orbital phases
+                let mut U0 = Array1::<Complex<f64>>::zeros(if self.spin { 2 * norb } else { norb });
+                U0.slice_mut(s![..norb]).assign(&orb_phase);
+                if self.spin {
+                    U0.slice_mut(s![norb..]).assign(&orb_phase);
                 }
-                // Element-wise gauge transform: H'[m,n] = e^{-i k·τ_m} * H[m,n] * e^{i k·τ_n}
+                // Gauge transform: H'[m,n] = conj(U0[m]) * H[m,n] * U0[n]
                 for m in 0..nsta {
-                    let conj_phase_m = U0[m].conj();
-                    for n in 0..nsta {
-                        hamk[[m, n]] *= conj_phase_m * U0[n];
-                    }
+                    let mut row = hamk.slice_mut(s![m, ..]);
+                    let conj_pm = U0[m].conj();
+                    Zip::from(&mut row)
+                        .and(&U0)
+                        .for_each(|h, &pn| *h *= conj_pm * pn);
                 }
                 hamk
             }
         }
     }
 
+    /// Computes the density of states $\rho(E)$ using Gaussian smearing.
+    ///
+    /// The DOS is defined as:
+    ///
+    /// $$\rho(E) = \frac{1}{N_k} \sum_{n,\mathbf{k}} \delta(E - E_{n\mathbf{k}})$$
+    ///
+    /// The delta function is approximated by a Gaussian of width $\sigma$:
+    ///
+    /// $$\delta(x) \approx \frac{1}{\sqrt{2\pi}\,\sigma}\, e^{-x^2 / (2\sigma^2)}$$
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Generate a uniform k-mesh from `k_mesh`
+    /// 2. Diagonalize $H(\mathbf{k})$ at every k-point in parallel
+    /// 3. Convolve eigenvalues with the Gaussian kernel and sum
+    ///
+    /// The smoothness depends on both the k-point density and $\sigma$.
+    ///
+    /// # Arguments
+    ///
+    /// * `k_mesh` — k-points along each direction, e.g. `[51, 51]`
+    /// * `E_min`, `E_max` — Energy range
+    /// * `E_n` — Number of energy bins
+    /// * `sigma` — Gaussian smearing width (same units as energy)
+    ///
+    /// # Returns
+    ///
+    /// `(energies, dos)` — energy grid and corresponding DOS.
     #[allow(non_snake_case)]
     pub fn dos(
         &self,
@@ -117,15 +184,6 @@ impl Model {
         E_n: usize,
         sigma: f64,
     ) -> Result<(Array1<f64>, Array1<f64>)> {
-        //! 我这里用的算法是高斯算法, 其算法过程如下
-        //!
-        //! 首先, 根据 k_mesh 算出所有的能量 $\ve_n$, 然后, 按照定义
-        //! $$\rho(\ve)=\sum_N\int\dd\bm k \delta(\ve_n-\ve)$$
-        //! 我们将 $\delta(\ve_n-\ve)$ 做了替换, 换成了 $\f{1}{\sqrt{2\pi}\sigma}e^{-\f{(\ve_n-\ve)^2}{2\sigma^2}}$
-        //!
-        //! 然后, 计算方法是先算出所有的能量, 再将能量乘以高斯分布, 就能得到态密度.
-        //!
-        //! 态密度的光滑程度和k点密度以及高斯分布的展宽有关
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk = kvec.len_of(Axis(0));
         let eigenvalues = self.solve_band_all_parallel(&kvec);

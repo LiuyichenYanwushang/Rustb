@@ -125,8 +125,8 @@ impl OrbProj {
             _ => Err(TbError::InvalidOrbitalProjection(s.to_string())),
         }
     }
-    /// 这个函数是将 \ket{px},\ket{py},\ket{pz} 等原子轨道基转化为以 l,m 为基的函数的.
-    /// 它输入一个原子轨道比如 $\ket{px}$, 输出一个 array![Complex<f64>;16], 表示
+    /// Converts atomic orbital basis functions ($\ket{p_x}$, $\ket{p_y}$, $\ket{p_z}$, etc.) into the $(l, m)$ quantum-number basis.
+    /// Takes an atomic orbital such as $\ket{p_x}$ as input and returns a 16-element `Array1<Complex<f64>>` representing the expansion in:
     /// $$[\ket{0,0},\ket{1,-1},\ket{1,0},\ket{1,1},\ket{2,-2},\cdots,\ket{3,3}]$$
     pub fn to_quantum_number(&self) -> Result<Array1<Complex<f64>>> {
         let s = match self {

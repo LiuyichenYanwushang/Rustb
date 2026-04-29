@@ -9,34 +9,42 @@ use num_complex::{Complex, Complex64};
 use rayon::prelude::*;
 use std::f64::consts::PI;
 pub trait Unfold {
-    //! 能带反折叠算法, 用来计算能带反折叠后的能带. 可以用来计算合金以及一些超胞, 杂质, 缺陷,
-    //!电荷密度波在原胞下的影响.
-    /// 算法参考文章 PRL 104, 216401 (2010)
+    //! Band unfolding algorithm. Computes the unfolded band structure, and can be
+    //! used to study alloys, supercells, impurities, defects, and charge density
+    //! waves projected onto the primitive cell.
+    /// The algorithm follows PRL 104, 216401 (2010).
     ///
-    /// 首先, 我们定义超胞布里渊区下的哈密顿量 $H_{\\bm K}$ 以及其格林函数 $$G(\og,\bm K)=(\og+i\eta-H_{\bm K})^{-1}$$
+    /// First, define the supercell Brillouin-zone Hamiltonian $H_{\\bm K}$ and its
+    /// Green's function $$G(\og,\bm K)=(\og+i\eta-H_{\bm K})^{-1}$$
     ///
-    /// 这里 $H_{\bm k}$ 是超胞的哈密顿量. 其本征值和本征态为 $\ve_{N\bm K}$ 和 $\bra{\psi_{N\bm K}}$
+    /// where $H_{\bm K}$ is the supercell Hamiltonian. Its eigenvalues and
+    /// eigenvectors are $\ve_{N\bm K}$ and $\bra{\psi_{N\bm K}}$.
     ///
-    /// 故我们可以在本征态下将格林函数写为 $$G(\og,\bm K)=\sum_{N}\f{\dyad{\psi_{N\bm K}}}{\og+i\eta-\ve_{N\bm K}}$$
+    /// We can then write the Green's function in the eigenbasis as
+    /// $$G(\og,\bm K)=\sum_{N}\f{\dyad{\psi_{N\bm K}}}{\og+i\eta-\ve_{N\bm K}}$$
     ///
-    /// 再利用普函数定理, 有 $A(\og,\bm K)=-\f{1}{\pi}\Im G(\og,\bm K)$, 对其求trace, 我们就能画超胞的能谱.
+    /// Using the spectral theorem, $A(\og,\bm K)=-\f{1}{\pi}\Im G(\og,\bm K)$.
+    /// Taking the trace of $A$ gives the supercell spectrum.
     ///
-    /// 但是, 我们希望得到的是原胞的能谱, 所以我们需要得到原胞的基, 即 $\ket{n\bm k}$.
+    /// However, we want the primitive-cell spectrum, so we need the primitive-cell
+    /// basis $\ket{n\bm k}$.
     ///
-    /// 反折叠后的能谱为
+    /// The unfolded spectral function is
     /// $$A_{nn}(\og,\bm k)=\sum_{N\bm K}\lt\\vert \braket{n\bm k}{\psi_{N\bm K}}\rt\\vert^2 A_{NN}(\og,\bm K)$$
     ///
-    ///接下来我们计算 $\braket{n\bm k}{\psi_{N\bm K}}$
+    ///Next we compute $\braket{n\bm k}{\psi_{N\bm K}}$.
     ///
-    ///首先, 我们有$$ \lt\\{
+    ///First, we have $$ \lt\\{
     ///\\begin{aligned}
     ///\ket{N\bm K}&=\f{1}{\sqrt{V}}\sum_{\bm R}e^{-i\bm K\cdot(\bm R+\bm\tau_N)}\ket{N\bm R}\\\\
     ///\ket{n\bm k}&=\f{1}{\sqrt{v}}\sum_{\bm r}e^{-i\bm k\cdot(\bm r+\bm\tau_n)}\ket{n\bm r}\\\\
     ///\\end{aligned}\rt\.$$
     ///
-    ///然后, 我们考虑一个扩包函数, 让原胞 a 和超胞 A 之间通过 U 来联系, 即 A=Ua, 其中 A 和 a
-    ///都是基矢. 由于倒格矢和格矢之间的关系 $b a^T=(2\pi)I$ 以及 $B A^T=(2\pi)I$,
-    ///我们立即可以得到 $b=BU^T$. 其中 B 和 b 分别是原胞和超胞的倒格矢.
+    ///Then, consider a supercell mapping relating the primitive cell $a$ to the
+    ///supercell $A$ via $A=Ua$, where $A$ and $a$ are the lattice vectors. From
+    ///the relation $b a^T=(2\pi)I$ and $B A^T=(2\pi)I$, we immediately obtain
+    ///$b=BU^T$. Here $B$ and $b$ are the reciprocal lattice vectors of the
+    ///supercell and primitive cell, respectively.
     ///
     /// $$
     /// \begin{aligned}
@@ -46,7 +54,8 @@ pub trait Unfold {
     /// \end{aligned}
     /// $$
     ///
-    /// 显然, $r(J)$ 和 $n'(J)$ 都是可以计算的, 利用U, 能够得到折叠前后的对应关系
+    /// Clearly, $r(J)$ and $n'(J)$ can be computed. Using $U$, the correspondence
+    /// between folded and unfolded states is obtained.
     fn unfold(
         &self,
         U: &Array2<f64>,

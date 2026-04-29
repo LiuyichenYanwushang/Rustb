@@ -66,7 +66,6 @@ pub enum Gauge {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum Dimension {
-    zero = 0,
     one = 1,
     two = 2,
     three = 3,
@@ -103,7 +102,7 @@ impl Model {
         atom_position
     }
     pub fn dim_r(&self) -> usize {
-        self.lat.nrows()
+        self.dim_r as usize
     }
     #[inline(always)]
     pub fn atom_list(&self) -> Vec<usize> {
@@ -144,20 +143,19 @@ impl Model {
     }
     #[inline(always)]
     pub fn orb_angular(&self) -> Result<Array3<Complex<f64>>> {
-        //!这个函数输出 $\bra{m,\bm k}L\ket{n,\bm k}$ 矩阵, 这里 $\ket{n,\bm k}$
-        //!是根据轨道的projection 得到这个基函下的表示
-        //!这个表示是依据每个原子来构造的, 所以是一个块对角的矩阵
+        //! Constructs the orbital angular momentum matrices
+        //! $\bra{m} \hat{L}_\alpha \ket{n}$ in the orbital-projection basis.
+        //! The matrices are block-diagonal in atom index (one block per atom).
         //!
-        //!目前根据最新的轨道流公式, 这个已经废弃不使用了, 求轨道角动量见
-        //!
-        //!orbital_angular_momentom 函数
+        //! Deprecated: use `orbital_angular_momentum` instead for orbital
+        //! current calculations.
         let li = Complex::i() * 1.0;
         let mut i = 0;
         let mut L = Array3::<Complex<f64>>::zeros((self.dim_r(), self.norb(), self.norb()));
         let mut Lx = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
         let mut Ly = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
         let mut Lz = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
-        //开始构造在量子数为基的情况下的 Lz, L+ 和 L-.
+        //Construct Lz, L+, and L- in the angular-momentum (l, m) basis.
         let mut Lz_orig = Array2::<Complex<f64>>::zeros((16, 16));
         Lz_orig
             .slice_mut(s![1..4, 1..4])

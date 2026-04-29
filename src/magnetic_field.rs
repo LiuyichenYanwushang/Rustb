@@ -116,9 +116,9 @@
 //! the correct non-orthogonal-lattice generalization of the usual Landau-gauge
 //! construction.
 
+use crate::Model;
 use crate::error::{Result, TbError};
 use crate::find_R;
-use crate::Model;
 use ndarray::prelude::*;
 use ndarray::*;
 use num_complex::Complex;
@@ -154,13 +154,23 @@ pub trait MagneticField {
     /// $$
     /// \frac{\Phi_{\mathrm{primitive}}}{\Phi_0}=\frac{N_\phi}{mn}.
     /// $$
-    fn add_magnetic_field(&self, mag_dir: usize, expand: [usize; 2], phi_total: isize) -> Result<Self>
+    fn add_magnetic_field(
+        &self,
+        mag_dir: usize,
+        expand: [usize; 2],
+        phi_total: isize,
+    ) -> Result<Self>
     where
         Self: Sized;
 }
 
 impl MagneticField for Model {
-    fn add_magnetic_field(&self, mag_dir: usize, expand: [usize; 2], phi_total: isize) -> Result<Self> {
+    fn add_magnetic_field(
+        &self,
+        mag_dir: usize,
+        expand: [usize; 2],
+        phi_total: isize,
+    ) -> Result<Self> {
         validate_dimensions(self.dim_r(), mag_dir, expand)?;
         let perp = perpendicular_dirs(self.dim_r(), mag_dir)?;
 
@@ -198,13 +208,7 @@ impl MagneticField for Model {
                         let u2_j = super_model.orb[[orb_j, d2]];
 
                         let phase = peierls_phase_periodic_landau(
-                            phi_total,
-                            u1_i,
-                            u2_i,
-                            u1_j,
-                            u2_j,
-                            r1,
-                            r2,
+                            phi_total, u1_i, u2_i, u1_j, u2_j, r1, r2,
                         );
                         let peierls = Complex::new(phase.cos(), phase.sin());
 
@@ -218,12 +222,14 @@ impl MagneticField for Model {
         }
 
         if super_model.spin && phi_total != 0 {
-            let b_cart_tesla = magnetic_field_cartesian(&self.lat, self.dim_r(), mag_dir, expand, phi_total)?;
+            let b_cart_tesla =
+                magnetic_field_cartesian(&self.lat, self.dim_r(), mag_dir, expand, phi_total)?;
             let zeeman = zeeman_block_cartesian(b_cart_tesla, 2.0);
 
             let zero_r = Array1::<isize>::zeros(super_model.dim_r());
-            let onsite_index = find_R(&super_model.hamR, &zero_r)
-                .ok_or_else(|| TbError::Other("R = 0 block not found in magnetic supercell".to_string()))?;
+            let onsite_index = find_R(&super_model.hamR, &zero_r).ok_or_else(|| {
+                TbError::Other("R = 0 block not found in magnetic supercell".to_string())
+            })?;
             let mut ham0 = new_ham.slice_mut(s![onsite_index, .., ..]);
             add_zeeman_term(&mut ham0, norb, zeeman);
         }
@@ -294,7 +300,9 @@ fn magnetic_field_cartesian(
         let area_vec = cross3(a1, a2);
         let area_a2 = norm3(area_vec);
         if area_a2.abs() < 1e-14 {
-            return Err(TbError::Other("2D lattice area is numerically zero".to_string()));
+            return Err(TbError::Other(
+                "2D lattice area is numerically zero".to_string(),
+            ));
         }
         let b_mag = flux_per_primitive * FLUX_QUANTUM_T_M2 / (area_a2 * 1e-20);
         Ok([0.0, 0.0, b_mag])
@@ -320,12 +328,18 @@ fn validate_dimensions(dim_r: usize, mag_dir: usize, expand: [usize; 2]) -> Resu
     match dim_r {
         2 => {
             if mag_dir != 2 {
-                return Err(TbError::InvalidDirection { index: mag_dir, dim: dim_r });
+                return Err(TbError::InvalidDirection {
+                    index: mag_dir,
+                    dim: dim_r,
+                });
             }
         }
         3 => {
             if mag_dir >= 3 {
-                return Err(TbError::InvalidDirection { index: mag_dir, dim: dim_r });
+                return Err(TbError::InvalidDirection {
+                    index: mag_dir,
+                    dim: dim_r,
+                });
             }
         }
         _ => {
@@ -344,14 +358,20 @@ fn perpendicular_dirs(dim_r: usize, mag_dir: usize) -> Result<[usize; 2]> {
             if mag_dir == 2 {
                 Ok([0, 1])
             } else {
-                Err(TbError::InvalidDirection { index: mag_dir, dim: dim_r })
+                Err(TbError::InvalidDirection {
+                    index: mag_dir,
+                    dim: dim_r,
+                })
             }
         }
         3 => match mag_dir {
             0 => Ok([1, 2]),
             1 => Ok([2, 0]),
             2 => Ok([0, 1]),
-            _ => Err(TbError::InvalidDirection { index: mag_dir, dim: dim_r }),
+            _ => Err(TbError::InvalidDirection {
+                index: mag_dir,
+                dim: dim_r,
+            }),
         },
         _ => Err(TbError::InvalidDimension {
             dim: dim_r,

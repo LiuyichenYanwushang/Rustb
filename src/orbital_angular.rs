@@ -18,8 +18,9 @@ use std::f64::consts::PI;
 use std::ops::AddAssign;
 use std::ops::MulAssign;
 pub trait OrbitalAngular: Velocity {
-    //! 这个函数是用来计算单个 k 点的轨道角动量的
-    //! 轨道角动量的定义为 $$\bra{u_{m\bm k}}\bm L\ket{u_{n\bm k}}=\frac{1}{4i
+    //! Computes the orbital angular momentum at a single k-point.
+    //! The orbital angular momentum is defined as
+    //! $$\bra{u_{m\bm k}}\bm L\ket{u_{n\bm k}}=\frac{1}{4i
     //! g_L\mu_B}\sum_{\ell=\not m,n}\f{2\ve_{\ell\bm k}-\ve_{m\bm k}-\ve_{n\bm k}}{(\ve_{m\bm
     //! k}-\ve_{\ell\bm k})(\ve_{n\bm k}-\ve_{\ell\bm k})}\bra{u_{m\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{\ell\bm k}}\times\bra{u_{\ell\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{n\bm k}}$$
     fn orbital_angular_momentum_onek(&self, kvec: &Array1<f64>) -> Array3<Complex<f64>>;

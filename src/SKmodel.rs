@@ -211,18 +211,14 @@ fn sk_element(
                 + m * (1.0 - 2.0 * l * l) * get!(v_pd_pi, "Vpdπ")
         }
         // s-f
-        (s, fz3) | (fz3, s) => {
-            n * (5.0 * n * n - 3.0) / 2.0 * get!(v_sf_sigma, "Vsfσ")
-        }
+        (s, fz3) | (fz3, s) => n * (5.0 * n * n - 3.0) / 2.0 * get!(v_sf_sigma, "Vsfσ"),
         (s, fxz2) | (fxz2, s) => {
             (3.0_f64.sqrt()) * l * (5.0 * n * n - 1.0) / 2.0 * get!(v_sf_sigma, "Vsfσ")
         }
         (s, fyz2) | (fyz2, s) => {
             (3.0_f64.sqrt()) * m * (5.0 * n * n - 1.0) / 2.0 * get!(v_sf_sigma, "Vsfσ")
         }
-        (s, fxyz) | (fxyz, s) => {
-            (15.0_f64.sqrt()) * l * m * n * get!(v_sf_sigma, "Vsfσ")
-        }
+        (s, fxyz) | (fxyz, s) => (15.0_f64.sqrt()) * l * m * n * get!(v_sf_sigma, "Vsfσ"),
         (s, fx3) | (fx3, s) => {
             (15.0_f64.sqrt()) / 2.0 * l * (l * l - 3.0 * m * m) * get!(v_sf_sigma, "Vsfσ")
         }
