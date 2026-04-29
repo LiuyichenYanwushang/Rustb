@@ -1198,52 +1198,38 @@ impl Model {
             a += self.atoms[i].norb();
         }
 
+        // Pre-fetch U_inv rows and use scalar arithmetic: avoids per-iteration
+        // .to_owned() heap allocations, replacing 3-5 allocs/iter with 1 arr1! call.
         match self.dim_r() {
             3 => {
+                let u0 = U_inv.row(0).to_owned();
+                let u1 = U_inv.row(1).to_owned();
+                let u2 = U_inv.row(2).to_owned();
                 for i in -U_det - 1..U_det + 1 {
+                    let i_f = i as f64;
                     for j in -U_det - 1..U_det + 1 {
+                        let j_f = j as f64;
                         for k in -U_det - 1..U_det + 1 {
+                            let k_f = k as f64;
                             for n in 0..self.natom() {
-                                let mut atoms = use_atom_position.row(n).to_owned()
-                                    + (i as f64) * U_inv.row(0).to_owned()
-                                    + (j as f64) * U_inv.row(1).to_owned()
-                                    + (k as f64) * U_inv.row(2).to_owned(); //原子的位置在新的坐标系下的坐标
-                                atoms[[0]] = if atoms[[0]].abs() < 1e-8 {
-                                    0.0
-                                } else if (atoms[[0]] - 1.0).abs() < 1e-8 {
-                                    1.0
-                                } else {
-                                    atoms[[0]]
-                                };
-                                atoms[[1]] = if atoms[[1]].abs() < 1e-8 {
-                                    0.0
-                                } else if (atoms[[1]] - 1.0).abs() < 1e-8 {
-                                    1.0
-                                } else {
-                                    atoms[[1]]
-                                };
-                                atoms[[2]] = if atoms[[2]].abs() < 1e-8 {
-                                    0.0
-                                } else if (atoms[[2]] - 1.0).abs() < 1e-8 {
-                                    1.0
-                                } else {
-                                    atoms[[2]]
-                                };
+                                let a = use_atom_position.row(n);
+                                let mut atoms = arr1(&[
+                                    a[0] + i_f * u0[0] + j_f * u1[0] + k_f * u2[0],
+                                    a[1] + i_f * u0[1] + j_f * u1[1] + k_f * u2[1],
+                                    a[2] + i_f * u0[2] + j_f * u1[2] + k_f * u2[2],
+                                ]);
+                                atoms[[0]] = if atoms[[0]].abs() < 1e-8 { 0.0 } else if (atoms[[0]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[0]] };
+                                atoms[[1]] = if atoms[[1]].abs() < 1e-8 { 0.0 } else if (atoms[[1]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[1]] };
+                                atoms[[2]] = if atoms[[2]].abs() < 1e-8 { 0.0 } else if (atoms[[2]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[2]] };
                                 if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                                    //判断是否在原胞内
-                                    new_atom.push(Atom::new(
-                                        atoms,
-                                        self.atoms[n].norb(),
-                                        self.atoms[n].atom_type(),
-                                    ));
-                                    for n0 in
-                                        use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb()
-                                    {
-                                        //开始根据原子位置开始生成轨道
-                                        let mut orbs = use_orb.row(n0).to_owned()
-                                            + (i as f64) * U_inv.row(0).to_owned()
-                                            + (j as f64) * U_inv.row(1).to_owned()
-                                            + (k as f64) * U_inv.row(2).to_owned(); //新的轨道的坐标
+                                    new_atom.push(Atom::new(atoms, self.atoms[n].norb(), self.atoms[n].atom_type()));
+                                    for n0 in use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb() {
+                                        let o = use_orb.row(n0);
+                                        let orbs = arr1(&[
+                                            o[0] + i_f * u0[0] + j_f * u1[0] + k_f * u2[0],
+                                            o[1] + i_f * u0[1] + j_f * u1[1] + k_f * u2[1],
+                                            o[2] + i_f * u0[2] + j_f * u1[2] + k_f * u2[2],
+                                        ]);
                                         new_orb.push_row(orbs.view());
                                         new_orb_proj.push(self.orb_projection[n0]);
                                         orb_list.push(n0);
@@ -1255,43 +1241,31 @@ impl Model {
                 }
             }
             2 => {
+                let u0 = U_inv.row(0).to_owned();
+                let u1 = U_inv.row(1).to_owned();
                 for i in -U_det - 1..U_det + 1 {
+                    let i_f = i as f64;
                     for j in -U_det - 1..U_det + 1 {
+                        let j_f = j as f64;
                         for n in 0..self.natom() {
-                            let mut atoms = use_atom_position.row(n).to_owned()
-                                + (i as f64) * U_inv.row(0).to_owned()
-                                + (j as f64) * U_inv.row(1).to_owned(); //原子的位置在新的坐标系下的坐标
-                            atoms[[0]] = if atoms[[0]].abs() < 1e-8 {
-                                0.0
-                            } else if (atoms[[0]] - 1.0).abs() < 1e-8 {
-                                1.0
-                            } else {
-                                atoms[[0]]
-                            };
-                            atoms[[1]] = if atoms[[1]].abs() < 1e-8 {
-                                0.0
-                            } else if (atoms[[1]] - 1.0).abs() < 1e-8 {
-                                1.0
-                            } else {
-                                atoms[[1]]
-                            };
+                            let a = use_atom_position.row(n);
+                            let mut atoms = arr1(&[
+                                a[0] + i_f * u0[0] + j_f * u1[0],
+                                a[1] + i_f * u0[1] + j_f * u1[1],
+                            ]);
+                            atoms[[0]] = if atoms[[0]].abs() < 1e-8 { 0.0 } else if (atoms[[0]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[0]] };
+                            atoms[[1]] = if atoms[[1]].abs() < 1e-8 { 0.0 } else if (atoms[[1]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[1]] };
                             if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                                //判断是否在原胞内
-                                new_atom.push(Atom::new(
-                                    atoms,
-                                    self.atoms[n].norb(),
-                                    self.atoms[n].atom_type(),
-                                ));
-                                for n0 in use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb()
-                                {
-                                    //开始根据原子位置开始生成轨道
-                                    let mut orbs = use_orb.row(n0).to_owned()
-                                        + (i as f64) * U_inv.row(0).to_owned()
-                                        + (j as f64) * U_inv.row(1).to_owned(); //新的轨道的坐标
+                                new_atom.push(Atom::new(atoms, self.atoms[n].norb(), self.atoms[n].atom_type()));
+                                for n0 in use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb() {
+                                    let o = use_orb.row(n0);
+                                    let orbs = arr1(&[
+                                        o[0] + i_f * u0[0] + j_f * u1[0],
+                                        o[1] + i_f * u0[1] + j_f * u1[1],
+                                    ]);
                                     new_orb.push_row(orbs.view());
                                     new_orb_proj.push(self.orb_projection[n0]);
                                     orb_list.push(n0);
-                                    //orb_list_R.push_row(&arr1(&[i,j]));
                                 }
                             }
                         }
@@ -1299,32 +1273,21 @@ impl Model {
                 }
             }
             1 => {
+                let u0 = U_inv.row(0).to_owned();
                 for i in -U_det - 1..U_det + 1 {
+                    let i_f = i as f64;
                     for n in 0..self.natom() {
-                        let mut atoms = use_atom_position.row(n).to_owned()
-                            + (i as f64) * U_inv.row(0).to_owned(); //原子的位置在新的坐标系下的坐标
-                        atoms[[0]] = if atoms[[0]].abs() < 1e-8 {
-                            0.0
-                        } else if (atoms[[0]] - 1.0).abs() < 1e-8 {
-                            1.0
-                        } else {
-                            atoms[[0]]
-                        };
+                        let a = use_atom_position.row(n);
+                        let mut atoms = arr1(&[a[0] + i_f * u0[0]]);
+                        atoms[[0]] = if atoms[[0]].abs() < 1e-8 { 0.0 } else if (atoms[[0]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[0]] };
                         if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                            //判断是否在原胞内
-                            new_atom.push(Atom::new(
-                                atoms,
-                                self.atoms[n].norb(),
-                                self.atoms[n].atom_type(),
-                            ));
+                            new_atom.push(Atom::new(atoms, self.atoms[n].norb(), self.atoms[n].atom_type()));
                             for n0 in use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb() {
-                                //开始根据原子位置开始生成轨道
-                                let mut orbs = use_orb.row(n0).to_owned()
-                                    + (i as f64) * U_inv.row(0).to_owned(); //新的轨道的坐标
+                                let o = use_orb.row(n0);
+                                let orbs = arr1(&[o[0] + i_f * u0[0]]);
                                 new_orb.push_row(orbs.view());
                                 new_orb_proj.push(self.orb_projection[n0]);
                                 orb_list.push(n0);
-                                //orb_list_R.push_row(&arr1(&[i]));
                             }
                         }
                     }
