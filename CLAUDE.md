@@ -122,8 +122,11 @@ This ensures **O(1) dispatch** — one branch at the call site, zero branches in
   - Internal: `let nsta = if SPIN { 2 * norb } else { norb };`
   - rmatrix diagonal init (line 257): `if SPIN { ... duplicate ... }` → compile-time
 - [ ] `set_hop`, `add_hop`, `add_element`, `set_onsite`, `add_onsite`, `set_onsite_one`
-  - `update_hamiltonian!` macro takes `pauli: SpinDirection`, does NOT use `self.spin` directly
-  - BUT: lines 382, 502 check `self.spin == false && pauli != SpinDirection::None` — replace with `!SPIN`
+  - `update_hamiltonian!` macro (line 70): takes `$spin: bool` as first argument. Line 74: `if $spin { match $pauli { ... } } else { ... }`.
+    With `SPIN` as const generic, `$spin` becomes `SPIN` (compile-time constant):
+    - `SPIN == false` → compiler eliminates entire `if { match pauli }` block, leaves only `ham[[i,j]] = tmp`
+    - `SPIN == true` → compiler eliminates `else` branch, keeps only `match pauli` (which IS necessary — x/y/z/None are independent of spinless/spinful)
+  - Gates at lines 382, 502: `self.spin == false && pauli != SpinDirection::None` → `!SPIN && pauli != SpinDirection::None`
   - Matrix dimensions use `self.nsta()` — auto-correct
 - [ ] `del_hop`, `shift_to_atom`, `move_to_atom`, `remove_orb`, `remove_atom` — generic
 - [ ] `make_supercell<const SPIN: bool>` — internal loops use `SPIN` compile-time
@@ -181,21 +184,10 @@ This ensures **O(1) dispatch** — one branch at the call site, zero branches in
 #### `src/magnetic_field.rs`
 - [ ] Check if `self.spin` is referenced (from grep, it's not directly). Uses `nsta()`.
 
-### Phase 5: IO and Python
+### Phase 5: Tests, benches, examples
 
-#### `src/lib.rs` (Python bindings)
-- [ ] Expose `AnyModel` as `#[pyclass]`, NOT `Model<SPIN>`
-- [ ] All `#[pymethods]` on `AnyModel` dispatch to inner Model
-- [ ] Python constructor: `AnyModel::from_hr(path)` etc.
-- [ ] This is the single biggest change in lib.rs
-
-#### `src/error.rs`
-- [ ] Possibly add error variant for spin mismatch. Check if needed.
-
-### Phase 6: Tests, benches, examples
-
-#### `src/lib.rs` (tests module)
-- [ ] `build_small()` → `Model::<false>::tb_model(...)`
+#### `src/lib.rs` (tests module only — NO Python bindings in this codebase)
+- [ ] `build_small()` → returns `Model<false>`
 - [ ] All test functions using Model: add type annotation or let inference work
 - [ ] `gen_ham`, `gen_v` tests: call via `AnyModel` or direct `Model<SPIN>`
 
@@ -221,25 +213,23 @@ Agent 7: src/wannier90.rs      (from_hr returns AnyModel)
 Agent 8: src/surfgreen.rs      (surf_Green keeps bool, from_Model generic)
 Agent 9: src/cut.rs + src/model_transform.rs + src/geometry.rs
 Agent 10: src/unfold.rs + src/output.rs + src/SKmodel.rs
-Agent 11: src/lib.rs (Python bindings)
-Agent 12: benches/ + examples/ + tests in src/lib.rs
+Agent 11: benches/ + examples/ + tests in src/lib.rs
 ```
 
-Agents 1 must complete first (core types). Agents 2-12 can then run in parallel.
+Agent 1 must complete first (core types). Agents 2-11 can then run in parallel.
 
 ## 4. Risk Points
 
 - **Serde**: `Model<SPIN>` cannot derive Deserialize. Must use `AnyModel` for all file I/O.
 - **Trait objects**: `Velocity<SPIN>` trait cannot be made into trait object. All velocity usage is static dispatch already, so this is fine.
 - **`update_hamiltonian!` macro**: Takes `$spin: bool` parameter. Replace with `SPIN` const generic in calling context. Macro itself unchanged.
-- **Python bindings**: Major rewrite of lib.rs. PyO3 doesn't support Rust const generics in pyclasses.
 - **surf_Green `spin` field**: Keep as bool. The `from_Model` function bridges `Model<SPIN>` to surf_Green.
 - **Backward compatibility**: All existing code that constructs `Model` with `spin: bool` breaks. Provide `tb_model_any(spin, ...)` for migration.
 
 ## 5. Key Design Decisions
 
 1. **`surf_Green` stays with `spin: bool`** — its hot path is O(n³) matrix inversion; the spin branch overhead is negligible.
-2. **`AnyModel` is the public-facing type** for file I/O, Python, and runtime construction.
+2. **`AnyModel` is the public-facing type** for file I/O and runtime construction.
 3. **`Model<SPIN>` is the compute type** — all hot-path functions are generic over SPIN.
 4. **Default `SPIN = false`** allows `Model` without turbofish in simple cases.
 5. **Serde only on AnyModel** for deserialization; Serialize implemented manually for Model<SPIN>.
