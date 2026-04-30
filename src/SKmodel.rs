@@ -49,21 +49,19 @@ pub struct SkParams {
 }
 
 #[derive(Debug, Clone)]
-pub struct SlaterKosterModel {
+pub struct SlaterKosterModel<const SPIN: bool = false> {
     pub dim_r: usize,
     pub lat: Array2<f64>,
     pub atoms: Vec<SkAtom>,
-    pub spin: bool,
     pub neighbor_search_range: i32,
 }
 
-impl Default for SlaterKosterModel {
+impl<const SPIN: bool> Default for SlaterKosterModel<SPIN> {
     fn default() -> Self {
         Self {
             dim_r: 3,
             lat: Array2::zeros((3, 3)),
             atoms: Vec::new(),
-            spin: false,
             neighbor_search_range: 3,
         }
     }
@@ -73,13 +71,12 @@ impl Default for SlaterKosterModel {
 // Helper functions for lattice vectors and shell distances
 // -----------------------------------------------------------------------------
 
-impl SlaterKosterModel {
-    pub fn new(dim_r: usize, lat: Array2<f64>, atoms: Vec<SkAtom>, spin: bool) -> Self {
+impl<const SPIN: bool> SlaterKosterModel<SPIN> {
+    pub fn new(dim_r: usize, lat: Array2<f64>, atoms: Vec<SkAtom>) -> Self {
         Self {
             dim_r,
             lat,
             atoms,
-            spin,
             neighbor_search_range: 3,
         }
     }
@@ -238,20 +235,20 @@ fn sk_element(
 // Trait and implementation for building Model
 // -----------------------------------------------------------------------------
 
-pub trait ToTbModel {
+pub trait ToTbModel<const SPIN: bool> {
     fn build_model(
         &self,
         n_neighbors: usize,
         params: &HashMap<(AtomType, AtomType, usize), SkParams>,
-    ) -> Result<Model>;
+    ) -> Result<Model<SPIN>>;
 }
 
-impl ToTbModel for SlaterKosterModel {
+impl<const SPIN: bool> ToTbModel<SPIN> for SlaterKosterModel<SPIN> {
     fn build_model(
         &self,
         n_neighbors: usize,
         params: &HashMap<(AtomType, AtomType, usize), SkParams>,
-    ) -> Result<Model> {
+    ) -> Result<Model<SPIN>> {
         // Flatten orbitals
         let mut orb_positions = Vec::new();
         let mut orb_projections = Vec::new();
@@ -270,7 +267,7 @@ impl ToTbModel for SlaterKosterModel {
         let orb_array = Array2::from_shape_vec((norb, self.dim_r), orb_positions_flat)
             .map_err(|e| TbError::Linalg(ndarray_linalg::error::LinalgError::Shape(e)))?;
 
-        let mut model = Model::tb_model(self.dim_r, self.lat.clone(), orb_array, self.spin, None)?;
+        let mut model = Model::<SPIN>::tb_model(self.dim_r, self.lat.clone(), orb_array, None)?;
         model.set_projection(&orb_projections);
 
         if n_neighbors == 0 {
@@ -449,8 +446,8 @@ fn prompt_float(prompt: &str) -> Result<f64> {
         .map_err(|_| TbError::Other("Invalid number".into()))
 }
 
-pub fn collect_sk_parameters(
-    sk_model: &SlaterKosterModel,
+pub fn collect_sk_parameters<const SPIN: bool>(
+    sk_model: &SlaterKosterModel<SPIN>,
     n_shells: usize,
     cache_path: Option<&str>,
 ) -> Result<HashMap<(AtomType, AtomType, usize), SkParams>> {
@@ -559,11 +556,11 @@ pub fn collect_sk_parameters(
     Ok(all_params)
 }
 
-pub fn build_model_interactive(
-    sk_model: &SlaterKosterModel,
+pub fn build_model_interactive<const SPIN: bool>(
+    sk_model: &SlaterKosterModel<SPIN>,
     n_shells: usize,
     cache_path: Option<&str>,
-) -> Result<Model> {
+) -> Result<Model<SPIN>> {
     let params = collect_sk_parameters(sk_model, n_shells, cache_path)?;
     sk_model.build_model(n_shells, &params)
 }
@@ -603,7 +600,7 @@ pub fn example_graphene_interactive(cache_path: Option<&str>) -> Result<Model> {
             projections: vec![OrbProj::pz],
         },
     ];
-    let sk_model = SlaterKosterModel::new(2, lat, atoms, false);
+    let sk_model = SlaterKosterModel::<false>::new(2, lat, atoms);
     build_model_interactive(&sk_model, 1, cache_path)
 }
 
@@ -654,7 +651,7 @@ mod tests {
             atom_type: AtomType::Ce,
             projections: vec![OrbProj::fz3],
         }];
-        let sk_model = SlaterKosterModel::new(3, lat, atoms, false);
+        let sk_model = SlaterKosterModel::<false>::new(3, lat, atoms);
         let params = HashMap::new();
         let model = sk_model.build_model(0, &params).unwrap();
         assert_eq!(model.norb(), 1);

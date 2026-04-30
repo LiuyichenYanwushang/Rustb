@@ -134,7 +134,7 @@ fn gen_model(w: f64, vx: f64, vy: f64, m: f64) -> Model {
     let norb: usize = 2;
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
     let orb = arr2(&[[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
-    let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+    let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
     model.set_onsite(&array![m, m, -m, -m], SpinDirection::None);
     let w = Complex::new(w, 0.0);
     let vx = Complex::new(vx, 0.0);

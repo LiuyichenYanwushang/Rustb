@@ -26,7 +26,7 @@ fn main() {
     let spin = false;
     let atom = orb.clone();
     let atom_list = vec![1];
-    let mut model_1 = Model::tb_model(dim_r, lat, orb, spin, None).unwrap();
+    let mut model_1 = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
     let t1 = -2.0 + 0.0 * li;
     let t2 = -1.5 + 0.0 * li;
     let J = 1.0;
@@ -39,7 +39,7 @@ fn main() {
     let spin = false;
     let atom = orb.clone();
     let atom_list = vec![1];
-    let mut model_2 = Model::tb_model(dim_r, lat, orb, spin, None).unwrap();
+    let mut model_2 = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
     let t1 = -2.0 + 0.0 * li;
     let t2 = -1.5 + 0.0 * li;
     let J = 1.0;
@@ -76,7 +76,7 @@ fn main() {
     ];
     let lat = U0.dot(&model_1.lat);
     let mut new_model =
-        Model::tb_model(dim_r, lat.clone(), orb.clone(), true, Some(atom.clone())).unwrap();
+        Model::<true>::tb_model(dim_r, lat.clone(), orb.clone(), Some(atom.clone())).unwrap();
     let mut onsite = Array1::zeros(new_model.norb());
     for i in 0..model_1.norb() {
         onsite[[i]] = J;
@@ -113,7 +113,7 @@ fn main() {
     println!("{}", evec);
 
     let mut model_up =
-        Model::tb_model(dim_r, lat.clone(), orb.clone(), false, Some(atom.clone())).unwrap();
+        Model::<false>::tb_model(dim_r, lat.clone(), orb.clone(), Some(atom.clone())).unwrap();
     let mut onsite = Array1::zeros(model_up.norb());
     for i in 0..model_1.norb() {
         onsite[[i]] = J;
@@ -144,7 +144,7 @@ fn main() {
             }
         }
     }
-    let mut model_dn = Model::tb_model(dim_r, lat, orb, false, Some(atom)).unwrap();
+    let mut model_dn = Model::<false>::tb_model(dim_r, lat, orb, Some(atom)).unwrap();
     let mut onsite = Array1::zeros(model_dn.norb());
     for i in 0..model_1.norb() {
         onsite[[i]] = J;
@@ -376,8 +376,8 @@ fn main() {
     let _ = file;
 }
 
-fn conductivity_onek(
-    model: &Model,
+fn conductivity_onek<const SPIN: bool>(
+    model: &Model<SPIN>,
     k_vec: &Array1<f64>,
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,
@@ -392,7 +392,7 @@ fn conductivity_onek(
     let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
         model.gen_v(k_vec, Gauge::Atom);
     let mut J: Array3<Complex<f64>> = v.clone();
-    if model.spin {
+    if SPIN {
         let mut X: Array2<Complex<f64>> = Array2::eye(model.nsta());
         let pauli: Array2<Complex<f64>> = match spin {
             0 => arr2(&[
@@ -464,8 +464,8 @@ fn conductivity_onek(
     let omega_one = A1.zip(A2).map(|(x, y)| eta0 * x.dot(&y).re).sum();
     omega_one
 }
-fn conductivity(
-    model: &Model,
+fn conductivity<const SPIN: bool>(
+    model: &Model<SPIN>,
     k_mesh: &Array1<usize>,
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,
@@ -479,7 +479,7 @@ fn conductivity(
         .axis_iter(Axis(0))
         .into_par_iter()
         .map(|x| {
-            let omega_one = conductivity_onek(&model, &x.to_owned(), &dir_1, &dir_2, mu, spin, eta);
+            let omega_one = conductivity_onek(model, &x.to_owned(), &dir_1, &dir_2, mu, spin, eta);
             omega_one
         })
         .collect();

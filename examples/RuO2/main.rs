@@ -22,7 +22,7 @@ fn main() {
     let a0 = 1.0;
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]) * a0;
     let orb = arr2(&[[0.0, 0.0], [0.0, 0.0]]);
-    let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
+    let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
     model.add_hop(t1, 0, 0, &array![1, 0], SpinDirection::None);
     model.add_hop(t1, 0, 0, &array![0, 1], SpinDirection::None);
     model.add_hop(t1, 1, 1, &array![1, 0], SpinDirection::None);
@@ -210,7 +210,7 @@ fn main() {
 }
 #[inline(always)]
 fn conductivity_onek(
-    model: &Model,
+    model: &Model<true>,
     k_vec: &Array1<f64>,
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,
@@ -225,7 +225,7 @@ fn conductivity_onek(
     let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
         model.gen_v(k_vec, Gauge::Atom);
     let mut J: Array3<Complex<f64>> = v.clone();
-    if model.spin {
+    if true {
         let mut X: Array2<Complex<f64>> = Array2::eye(model.nsta());
         let pauli: Array2<Complex<f64>> = match spin {
             0 => arr2(&[
@@ -297,7 +297,7 @@ fn conductivity_onek(
     omega_one
 }
 fn conductivity_all(
-    model: &Model,
+    model: &Model<true>,
     k_mesh: &Array1<usize>,
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,

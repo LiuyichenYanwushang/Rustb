@@ -164,7 +164,7 @@ pub trait MagneticField {
         Self: Sized;
 }
 
-impl MagneticField for Model {
+impl<const SPIN: bool> MagneticField for Model<SPIN> {
     fn add_magnetic_field(
         &self,
         mag_dir: usize,
@@ -221,7 +221,7 @@ impl MagneticField for Model {
             }
         }
 
-        if super_model.spin && phi_total != 0 {
+        if SPIN && phi_total != 0 {
             let b_cart_tesla =
                 magnetic_field_cartesian(&self.lat, self.dim_r(), mag_dir, expand, phi_total)?;
             let zeeman = zeeman_block_cartesian(b_cart_tesla, 2.0);

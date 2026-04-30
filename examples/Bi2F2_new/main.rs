@@ -27,7 +27,7 @@ fn main() {
         [0.0, 0.5, 0.0],
         [0.0, 0.5, 0.0],
     ]);
-    let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
+    let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
     let R0: Array2<isize> = arr2(&[[0, 0, 0], [1, 0, 0], [0, -1, 0], [1, -1, 0]]);
     //------开始添加hopping----------------
     let lm = 1.0 + 0.0 * li;
@@ -287,7 +287,7 @@ fn write_txt_1(data: Array1<f64>, output: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn add_altermagnetism_0(mut model: Model, J: f64, m: f64, direction: &[f64; 3]) -> Model {
+fn add_altermagnetism_0(mut model: Model<true>, J: f64, m: f64, direction: &[f64; 3]) -> Model<true> {
     let m = Complex::new(m, 0.0);
     let J = Complex::new(J, 0.0);
     model.add_hop(m, 0, 0, &array![0, 0, 0], SpinDirection::None);
@@ -313,7 +313,7 @@ fn add_altermagnetism_0(mut model: Model, J: f64, m: f64, direction: &[f64; 3]) 
 }
 
 fn show_wilson_loop(
-    model: &Model,
+    model: &Model<true>,
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,
     occ: &Vec<usize>,
@@ -381,7 +381,7 @@ fn show_wilson_loop(
     fg.show();
 }
 
-fn calculate_M(model: &Model) {
+fn calculate_M(model: &Model<true>) {
     //开始计算三个方向的占据态的磁矩
     let kvec = gen_kmesh(&array![101, 101, 1]).unwrap();
     let (band, evec) = model.solve_all_parallel(&kvec);
@@ -467,7 +467,7 @@ fn calculate_M(model: &Model) {
         band_s0.sum() / (nk as f64) / 4.0
     );
 }
-fn calculate_C(model: &Model, n: usize) -> f64 {
+fn calculate_C(model: &Model<true>, n: usize) -> f64 {
     let dir_1 = arr1(&[1.0, 0.0, 0.0]);
     let dir_2 = arr1(&[0.0, 1.0, 0.0]);
     let occ = vec![0, 1, 2, 3];
@@ -480,7 +480,7 @@ fn calculate_C(model: &Model, n: usize) -> f64 {
     C
 }
 
-fn cut(model: &Model, num: usize, cut_type: usize, name: &str) {
+fn cut(model: &Model<true>, num: usize, cut_type: usize, name: &str) {
     //普通的切法
     let new_model = match cut_type {
         0 => {
@@ -571,7 +571,7 @@ fn cut(model: &Model, num: usize, cut_type: usize, name: &str) {
     write_txt(show_str, &structure_name);
 }
 
-fn show_alter(model: &Model, name: &str) {
+fn show_alter(model: &Model<true>, name: &str) {
     let nk = 1001;
     let path = array![[-0.5, 0.25, 0.0], [0.5, 0.25, 0.0]];
     //let path=array![[0.5,0.0,0.0],[0.0,0.5,0.0]];
@@ -604,7 +604,7 @@ fn show_alter(model: &Model, name: &str) {
     fg.show();
 }
 
-fn calculate_parity(model: &Model) {
+fn calculate_parity(model: &Model<true>) {
     //这个函数是用来计算 C2 本征值的
     let C2 = Array2::from_diag(&array![1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0]);
     let C2 = C2.mapv(|x| Complex::new(0.0, x));

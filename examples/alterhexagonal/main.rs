@@ -127,9 +127,9 @@ fn gen_model(
     delta1: Complex<f64>,
     delta2: Complex<f64>,
     delta: f64,
-) -> Model {
+) -> Model<true> {
     let li: Complex<f64> = 1.0 * Complex::i();
-    let mut model = Model::tb_model(dim_r, lat.clone(), orb.clone(), true, None).unwrap();
+    let mut model = Model::<true>::tb_model(dim_r, lat.clone(), orb.clone(), None).unwrap();
     model.set_onsite(&arr1(&[delta, delta]), SpinDirection::z);
     //最近邻hopping
     model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);

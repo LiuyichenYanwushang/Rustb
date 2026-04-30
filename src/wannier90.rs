@@ -16,7 +16,7 @@ pub trait Wannier90 {
         Self: Sized;
 }
 
-impl Wannier90 for Model {
+impl<const SPIN: bool> Wannier90 for Model<SPIN> {
     #[allow(non_snake_case)]
     fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Self> {
         // This function reads tight-binding files from Wannier90.
@@ -441,6 +441,13 @@ impl Wannier90 for Model {
                     }
                 }
             }
+        }
+        // 验证文件中的自旋设置与 SPIN 常量泛型是否一致
+        if spin != SPIN {
+            return Err(TbError::Other(format!(
+                "Spin mismatch: Wannier90 .win file has spin={} but Model was constructed with SPIN={}",
+                spin, SPIN
+            )));
         }
         //开始读取 seedname_centres.xyz 文件
         let mut reads: Vec<String> = Vec::new();
@@ -928,7 +935,6 @@ impl Wannier90 for Model {
 
         let mut model = Self {
             dim_r: Dimension::three,
-            spin,
             lat,
             orb,
             orb_projection: orb_proj,

@@ -69,7 +69,7 @@ pub trait Unfold {
     ) -> Result<Array2<f64>>;
 }
 
-impl Unfold for Model {
+impl<const SPIN: bool> Unfold for Model<SPIN> {
     fn unfold(
         &self,
         U: &Array2<f64>,
@@ -220,7 +220,7 @@ impl Unfold for Model {
         //好了, 接下来让我们计算权重
         let mut weight = Array2::<Complex<f64>>::zeros((nk, self.nsta()));
         let mut B = Array3::<f64>::zeros((nk, E_n, unit_orb.nrows()));
-        if self.spin {
+        if SPIN {
             for k0 in 0..nk {
                 let mut r = &self.orb.dot(&fold_k.row(k0)) - &self.orb.dot(U).dot(&kvec.row(k0));
                 let r0 = r.clone();
@@ -315,7 +315,7 @@ mod tests {
         let norb: usize = 2;
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0., 0.], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
+        let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
         //最近邻hopping
         model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
         model.add_hop(t1, 2, 0, &array![0, 0], SpinDirection::None);

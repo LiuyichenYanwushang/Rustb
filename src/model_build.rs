@@ -143,7 +143,7 @@ macro_rules! add_hamiltonian {
     }};
 }
 
-impl Model {
+impl<const SPIN: bool> Model<SPIN> {
     /// Create a new tight-binding model with the given crystal structure.
     ///
     /// This constructor initializes a [`Model`] with the specified lattice
@@ -162,12 +162,11 @@ impl Model {
     ///   lattice vector.
     /// * `orb` - Orbital positions in fractional coordinates, shape
     ///   `(norb, dim_r)`.
-    /// * `spin` - Whether to double the basis for spin (spinful model).
     /// * `atom` - Optional list of [`Atom`] objects. If `None`, atoms are
     ///   inferred from `orb`.
     ///
     /// # Returns
-    /// `Result<Model>` containing the initialized tight-binding model.
+    /// `Result<Model<SPIN>>` containing the initialized tight-binding model.
     ///
     /// # Errors
     /// Returns [`TbError::LatticeDimensionError`] if `lat` is not a square
@@ -183,7 +182,7 @@ impl Model {
     ///
     /// let lat = array![[1.0, 0.0], [-0.5, 3_f64.sqrt() / 2.0]];
     /// let orb = array![[1.0 / 3.0, 2.0 / 3.0], [2.0 / 3.0, 1.0 / 3.0]];
-    /// let mut model = Model::tb_model(2, lat, orb, false, None).unwrap();
+    /// let mut model = Model::<false>::tb_model(2, lat, orb, None).unwrap();
     /// ```
     ///
     /// Create a spinful model with explicit atoms:
@@ -198,20 +197,16 @@ impl Model {
     ///                  [0.0, 0.0, 1.0]];
     /// let orb = array![[0.0, 0.0, 0.0]];
     /// let atom = vec![Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H)];
-    /// let mut model = Model::tb_model(3, lat, orb, true, Some(atom)).unwrap();
+    /// let mut model = Model::<true>::tb_model(3, lat, orb, Some(atom)).unwrap();
     /// ```
     pub fn tb_model(
         dim_r: usize,
         lat: Array2<f64>,
         orb: Array2<f64>,
-        spin: bool,
         atom: Option<Vec<Atom>>,
-    ) -> Result<Model> {
+    ) -> Result<Model<SPIN>> {
         let norb: usize = orb.len_of(Axis(0));
-        let mut nsta: usize = norb;
-        if spin {
-            nsta *= 2;
-        }
+        let nsta: usize = if SPIN { 2 * norb } else { norb };
         let mut new_atom_list: Vec<usize> = vec![1];
         let mut new_atom = Array2::<f64>::zeros((0, dim_r));
         if lat.len_of(Axis(1)) != dim_r {
@@ -254,7 +249,7 @@ impl Model {
         for i in 0..norb {
             for r in 0..dim_r {
                 rmatrix[[0, r, i, i]] = Complex::<f64>::from(orb[[i, r]]);
-                if spin {
+                if SPIN {
                     rmatrix[[0, r, i + norb, i + norb]] = Complex::<f64>::from(orb[[i, r]]);
                 }
             }
@@ -262,7 +257,6 @@ impl Model {
         let orb_projection = vec![OrbProj::s; norb];
         let mut model = Model {
             dim_r: Dimension::try_from(dim_r)?,
-            spin,
             lat,
             orb,
             orb_projection,
@@ -293,11 +287,10 @@ impl Model {
     /// use Rustb::*;
     /// use Rustb::atom_struct::*;
     ///
-    /// let mut model = Model::tb_model(
+    /// let mut model = Model::<false>::tb_model(
     ///     3,
     ///     array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
     ///     array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.0]],
-    ///     false,
     ///     None,
     /// ).unwrap();
     /// model.set_projection(&vec![OrbProj::pz, OrbProj::pz]);
@@ -361,7 +354,7 @@ impl Model {
     ///
     /// let lat = array![[1.0]];
     /// let orb = array![[0.0]];
-    /// let mut model = Model::tb_model(1, lat, orb, false, None).unwrap();
+    /// let mut model = Model::<false>::tb_model(1, lat, orb, None).unwrap();
     ///
     /// // Nearest-neighbor hopping to the right: <0,0|H|0,R=+1> = -1.0
     /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), 0);
@@ -379,7 +372,7 @@ impl Model {
     ) {
         let pauli: SpinDirection = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
-        if pauli != SpinDirection::None && self.spin == false {
+        if pauli != SpinDirection::None && !SPIN {
             eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
         }
         assert!(
@@ -411,7 +404,7 @@ impl Model {
 
                 // Update matrix elements at R position
                 update_hamiltonian!(
-                    self.spin,
+                    SPIN,
                     pauli,
                     tmp,
                     self.ham.slice_mut(s![index, .., ..]),
@@ -423,7 +416,7 @@ impl Model {
                 // Update matrix elements at negative R position (unless onsite and R=0)
                 if index != 0 || ind_i != ind_j {
                     update_hamiltonian!(
-                        self.spin,
+                        SPIN,
                         pauli,
                         tmp.conj(),
                         self.ham.slice_mut(s![index_inv, .., ..]),
@@ -444,13 +437,13 @@ impl Model {
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
                 let new_ham =
-                    update_hamiltonian!(self.spin, pauli, tmp, new_ham, ind_i, ind_j, norb);
+                    update_hamiltonian!(SPIN, pauli, tmp, new_ham, ind_i, ind_j, norb);
                 self.ham.push(Axis(0), new_ham.view()).unwrap();
                 self.hamR.push(Axis(0), R.view()).unwrap();
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
                 let new_ham =
-                    update_hamiltonian!(self.spin, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
+                    update_hamiltonian!(SPIN, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
                 self.ham.push(Axis(0), new_ham.view()).unwrap();
                 self.hamR.push(Axis(0), negative_R.view()).unwrap();
             }
@@ -481,7 +474,7 @@ impl Model {
     ///
     /// let lat = array![[1.0]];
     /// let orb = array![[0.0]];
-    /// let mut model = Model::tb_model(1, lat, orb, false, None).unwrap();
+    /// let mut model = Model::<false>::tb_model(1, lat, orb, None).unwrap();
     ///
     /// // Set real part
     /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), 0);
@@ -499,7 +492,7 @@ impl Model {
     ) {
         let pauli: SpinDirection = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
-        if pauli != SpinDirection::None && self.spin == false {
+        if pauli != SpinDirection::None && !SPIN {
             eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
         }
         assert!(
@@ -523,7 +516,7 @@ impl Model {
 
                 // Update matrix elements at R position
                 add_hamiltonian!(
-                    self.spin,
+                    SPIN,
                     pauli,
                     tmp,
                     self.ham.slice_mut(s![index, .., ..]),
@@ -535,7 +528,7 @@ impl Model {
                 // Update matrix elements at negative R position (unless onsite and R=0)
                 if index != 0 || ind_i != ind_j {
                     add_hamiltonian!(
-                        self.spin,
+                        SPIN,
                         pauli,
                         tmp.conj(),
                         self.ham.slice_mut(s![index_inv, .., ..]),
@@ -556,13 +549,13 @@ impl Model {
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
                 let new_ham =
-                    update_hamiltonian!(self.spin, pauli, tmp, new_ham, ind_i, ind_j, norb);
+                    update_hamiltonian!(SPIN, pauli, tmp, new_ham, ind_i, ind_j, norb);
                 self.ham.push(Axis(0), new_ham.view()).unwrap();
                 self.hamR.push(Axis(0), R.view()).unwrap();
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
                 let new_ham =
-                    update_hamiltonian!(self.spin, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
+                    update_hamiltonian!(SPIN, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
                 self.ham.push(Axis(0), new_ham.view()).unwrap();
                 self.hamR.push(Axis(0), negative_R.view()).unwrap();
             }
@@ -611,7 +604,7 @@ impl Model {
     /// let lat = array![[1.0, 0.0], [0.0, 1.0]];
     /// let orb = array![[0.0, 0.0]];
     /// // Spinful model: norb=1, nsta=2
-    /// let mut model = Model::tb_model(2, lat, orb, true, None).unwrap();
+    /// let mut model = Model::<true>::tb_model(2, lat, orb, None).unwrap();
     ///
     /// // Spin-flip hopping: <up,0|H|down,R=(1,0)> = 0.5
     /// model.add_element(
@@ -689,7 +682,7 @@ impl Model {
     ///
     /// let lat = array![[1.0, 0.0], [0.0, 1.0]];
     /// let orb = array![[0.0, 0.0], [0.5, 0.5]];
-    /// let mut model = Model::tb_model(2, lat, orb, false, None).unwrap();
+    /// let mut model = Model::<false>::tb_model(2, lat, orb, None).unwrap();
     /// model.set_onsite(&arr1(&[1.0, -1.0]), 0);
     /// ```
     #[allow(non_snake_case)]
@@ -734,7 +727,7 @@ impl Model {
     ///
     /// let lat = array![[1.0]];
     /// let orb = array![[0.0]];
-    /// let mut model = Model::tb_model(1, lat, orb, false, None).unwrap();
+    /// let mut model = Model::<false>::tb_model(1, lat, orb, None).unwrap();
     ///
     /// model.set_onsite(&arr1(&[1.0]), 0);
     /// model.add_onsite(&arr1(&[0.5]), 0);
@@ -783,7 +776,7 @@ impl Model {
     ///
     /// let lat = array![[1.0, 0.0], [0.0, 1.0]];
     /// let orb = array![[0.0, 0.0], [0.5, 0.5]];
-    /// let mut model = Model::tb_model(2, lat, orb, false, None).unwrap();
+    /// let mut model = Model::<false>::tb_model(2, lat, orb, None).unwrap();
     ///
     /// model.set_onsite_one(1.0, 0, 0); // E_0 = 1.0
     /// model.set_onsite_one(-1.0, 1, 0); // E_1 = -1.0
@@ -816,8 +809,8 @@ impl Model {
     /// use ndarray::*;
     /// use Rustb::*;
     ///
-    /// let mut model = Model::tb_model(
-    ///     1, array![[1.0]], array![[0.0]], false, None,
+    /// let mut model = Model::<false>::tb_model(
+    ///     1, array![[1.0]], array![[0.0]], None,
     /// ).unwrap();
     ///
     /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), 0);
@@ -847,7 +840,7 @@ impl Model {
     }
 }
 
-impl Model {
+impl<const SPIN: bool> Model<SPIN> {
     /// Move the orbital positions to the positions of their parent atoms.
     ///
     /// Sets each orbital's fractional-coordinate position to the
@@ -871,7 +864,7 @@ impl Model {
     ///     Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H),
     ///     Atom::new(arr1(&[0.5, 0.5, 0.0]), 1, AtomType::H),
     /// ];
-    /// let mut model = Model::tb_model(3, lat, orb, false, Some(atoms)).unwrap();
+    /// let mut model = Model::<false>::tb_model(3, lat, orb, Some(atoms)).unwrap();
     /// model.shift_to_atom();
     /// ```
     pub fn shift_to_atom(&mut self) {
@@ -943,7 +936,7 @@ impl Model {
         }
         self.atoms.retain(|x| x.norb() != 0);
         //开始计算nsta
-        if self.spin {
+        if SPIN {
             let index_add: Vec<_> = index.iter().map(|x| *x + self.norb()).collect();
             index.extend(index_add);
         }
@@ -1018,7 +1011,7 @@ impl Model {
             new_orb_proj.push(self.orb_projection[*i])
         }
         self.orb_projection = new_orb_proj;
-        if self.spin {
+        if SPIN {
             let index_add: Vec<_> = orb_index.iter().map(|x| *x + norb).collect();
             orb_index.extend(index_add);
         }
@@ -1062,7 +1055,7 @@ impl Model {
     ///     Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H),
     ///     Atom::new(arr1(&[0.5, 0.5, 0.0]), 1, AtomType::H),
     /// ];
-    /// let mut model = Model::tb_model(3, lat, orb, false, Some(atoms)).unwrap();
+    /// let mut model = Model::<false>::tb_model(3, lat, orb, Some(atoms)).unwrap();
     ///
     /// // Swap atom 0 and atom 1
     /// model.reorder_atom(&vec![1, 0]);
@@ -1105,7 +1098,7 @@ impl Model {
         }
         self.atoms = new_atom;
         //开始重排哈密顿量
-        let new_state_order = if self.spin {
+        let new_state_order = if SPIN {
             //如果有自旋
             let mut new_state_order = new_orb_order.clone();
             for i in new_orb_order.iter() {
@@ -1155,7 +1148,7 @@ impl Model {
     /// - [`TbError::InvalidSupercellDet`] if `det(U) <= 0`.
     /// - [`TbError::InvalidSupercellMatrix`] if `U` contains non-integer
     ///   entries.
-    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model> {
+    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN>> {
         if self.dim_r() != U.len_of(Axis(0)) {
             return Err(TbError::TransformationMatrixDimMismatch {
                 expected: self.dim_r(),
@@ -1292,7 +1285,7 @@ impl Model {
         }
         //轨道位置和原子位置构建完成, 接下来我们开始构建哈密顿量
         let norb = new_orb.len_of(Axis(0));
-        let nsta = if self.spin { 2 * norb } else { norb };
+        let nsta = if SPIN { 2 * norb } else { norb };
         let natom = new_atom.len();
         let n_R = self.hamR.len_of(Axis(0));
         let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r())); //超胞准备用的hamR
@@ -1358,7 +1351,7 @@ impl Model {
                     new_rmatrix[[0, i, s, s]] = Complex::new(new_orb[[s, i]], 0.0);
                 }
             }
-            if self.spin {
+            if SPIN {
                 for i in 0..self.dim_r() {
                     for s in 0..norb {
                         new_rmatrix[[0, i, s + norb, s + norb]] =
@@ -1369,7 +1362,7 @@ impl Model {
         } else {
             gen_rmatrix = true;
         }
-        if self.spin && gen_rmatrix {
+        if SPIN && gen_rmatrix {
             for (R, use_R) in use_hamR.outer_iter().enumerate() {
                 let mut add_R: bool = false;
                 let mut useham = Array2::<Complex<f64>>::zeros((nsta, nsta));
@@ -1423,7 +1416,7 @@ impl Model {
                         .assign(&use_rmatrix);
                 }
             }
-        } else if gen_rmatrix && !self.spin {
+        } else if gen_rmatrix && !SPIN {
             for (R, use_R) in use_hamR.outer_iter().enumerate() {
                 let mut add_R: bool = false;
                 let mut useham = Array2::<Complex<f64>>::zeros((norb, norb));
@@ -1465,7 +1458,7 @@ impl Model {
                         .assign(&use_rmatrix);
                 }
             }
-        } else if self.spin {
+        } else if SPIN {
             for (R, use_R) in use_hamR.outer_iter().enumerate() {
                 let mut add_R: bool = false;
                 let mut useham = Array2::<Complex<f64>>::zeros((nsta, nsta));
@@ -1550,7 +1543,6 @@ impl Model {
         }
         let mut model = Model {
             dim_r: Dimension::try_from(self.dim_r())?,
-            spin: self.spin,
             lat: new_lat,
             orb: new_orb,
             orb_projection: new_orb_proj,

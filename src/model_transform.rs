@@ -24,7 +24,7 @@ use ndarray::*;
 use ndarray_linalg::{Determinant, Inverse};
 use num_complex::Complex;
 
-impl Model {
+impl<const SPIN: bool> Model<SPIN> {
     /// Shift all orbital positions onto their corresponding atomic positions.
     pub fn shift_to_atom(&mut self) {
         let mut a = 0;
@@ -86,7 +86,7 @@ impl Model {
         }
         self.atoms.retain(|x| x.norb() != 0);
         // Extend indices for spin
-        if self.spin {
+        if SPIN {
             let index_add: Vec<_> = index.iter().map(|x| *x + self.norb()).collect();
             index.extend(index_add);
         }
@@ -155,7 +155,7 @@ impl Model {
             new_orb_proj.push(self.orb_projection[*i])
         }
         self.orb_projection = new_orb_proj;
-        if self.spin {
+        if SPIN {
             let index_add: Vec<_> = orb_index.iter().map(|x| *x + norb).collect();
             orb_index.extend(index_add);
         }
@@ -214,7 +214,7 @@ impl Model {
         }
         self.orb_projection = new_orb_proj;
         // Build state ordering (accounts for spin)
-        let new_state_order = if self.spin {
+        let new_state_order = if SPIN {
             let mut new_state_order = new_orb_order.clone();
             for i in new_orb_order.iter() {
                 new_state_order.push(*i + self.norb());
@@ -257,7 +257,7 @@ impl Model {
     /// let U = array![[2.0, 0.0], [0.0, 2.0]];
     /// let supercell = model.make_supercell(&U).unwrap();
     /// ```
-    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model> {
+    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN>> {
         if self.dim_r() != U.len_of(Axis(0)) {
             return Err(TbError::TransformationMatrixDimMismatch {
                 expected: self.dim_r(),
@@ -424,7 +424,7 @@ impl Model {
 
         // Build the supercell Hamiltonian
         let norb = new_orb.len_of(Axis(0));
-        let nsta = if self.spin { 2 * norb } else { norb };
+        let nsta = if SPIN { 2 * norb } else { norb };
         let natom = new_atom.len();
         let n_R = self.hamR.len_of(Axis(0));
         let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r()));
@@ -487,7 +487,7 @@ impl Model {
                     new_rmatrix[[0, i, s, s]] = Complex::new(new_orb[[s, i]], 0.0);
                 }
             }
-            if self.spin {
+            if SPIN {
                 for i in 0..self.dim_r() {
                     for s in 0..norb {
                         new_rmatrix[[0, i, s + norb, s + norb]] =
@@ -500,7 +500,7 @@ impl Model {
         }
 
         // Populate the supercell Hamiltonian by mapping hopping terms
-        if self.spin && gen_rmatrix {
+        if SPIN && gen_rmatrix {
             for (R, use_R) in use_hamR.outer_iter().enumerate() {
                 let mut add_R: bool = false;
                 let mut useham = Array2::<Complex<f64>>::zeros((nsta, nsta));
@@ -553,7 +553,7 @@ impl Model {
                         .assign(&use_rmatrix);
                 }
             }
-        } else if gen_rmatrix && !self.spin {
+        } else if gen_rmatrix && !SPIN {
             for (R, use_R) in use_hamR.outer_iter().enumerate() {
                 let mut add_R: bool = false;
                 let mut useham = Array2::<Complex<f64>>::zeros((norb, norb));
@@ -594,7 +594,7 @@ impl Model {
                         .assign(&use_rmatrix);
                 }
             }
-        } else if self.spin {
+        } else if SPIN {
             for (R, use_R) in use_hamR.outer_iter().enumerate() {
                 let mut add_R: bool = false;
                 let mut useham = Array2::<Complex<f64>>::zeros((nsta, nsta));
@@ -668,7 +668,6 @@ impl Model {
         }
         let mut model = Model {
             dim_r: Dimension::try_from(self.dim_r())?,
-            spin: self.spin,
             lat: new_lat,
             orb: new_orb,
             orb_projection: new_orb_proj,

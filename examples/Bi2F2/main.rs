@@ -27,7 +27,7 @@ fn main() {
         [0.0, 0.5, 0.0],
         [0.0, 0.5, 0.0],
     ]);
-    let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
+    let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
     let R0: Array2<isize> = arr2(&[[0, 0, 0], [1, 0, 0], [0, -1, 0], [1, -1, 0]]);
     //------开始添加hopping----------------
     let lm = 1.0 + 0.0 * li;
@@ -264,7 +264,7 @@ fn write_txt_1(data: Array1<f64>, output: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn add_altermagnetism_1(mut model: Model, J: f64, direction_xy: bool) -> Model {
+fn add_altermagnetism_1(mut model: Model<true>, J: f64, direction_xy: bool) -> Model<true> {
     //接下来开始加入 altermagnetism 项
     //首先, 我们设定磁矩为 J, 加在 onsite 项上, 看能否得到altermagnetism, 目前加入的是 (cos kx- cos ky)(a sx+b xy)
     let J = Complex::new(J, 0.0);
@@ -308,7 +308,7 @@ fn add_altermagnetism_1(mut model: Model, J: f64, direction_xy: bool) -> Model {
         return model;
     }
 }
-fn add_altermagnetism_2(mut model: Model, J: f64, t3: f64, t4: f64, direction_xy: bool) -> Model {
+fn add_altermagnetism_2(mut model: Model<true>, J: f64, t3: f64, t4: f64, direction_xy: bool) -> Model<true> {
     //目前, 根据magneticTB, 我们能够得到的altermagnetism 可以考虑为如下形式:
     let li: Complex<f64> = 1.0 * Complex::i();
     let t3 = Complex::new(t3, 0.0);
@@ -344,14 +344,14 @@ fn add_altermagnetism_2(mut model: Model, J: f64, t3: f64, t4: f64, direction_xy
     }
 }
 fn add_altermagnetism_3(
-    mut model: Model,
+    mut model: Model<true>,
     J: f64,
     t3: f64,
     t4: f64,
     t5: f64,
     t6: f64,
     direction_xy: bool,
-) -> Model {
+) -> Model<true> {
     let li: Complex<f64> = 1.0 * Complex::i();
     let t3 = Complex::new(t3, 0.0);
     let t4 = Complex::new(t4, 0.0);
@@ -463,7 +463,7 @@ fn add_altermagnetism_3(
 }
 
 fn show_wilson_loop(
-    model: &Model,
+    model: &Model<true>,
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,
     occ: &Vec<usize>,
@@ -531,7 +531,7 @@ fn show_wilson_loop(
     fg.show();
 }
 
-fn calculate_M(model: &Model) {
+fn calculate_M(model: &Model<true>) {
     //开始计算三个方向的占据态的磁矩
     let kvec = gen_kmesh(&array![101, 101, 1]).expect("Failed to generate k-mesh");
     let (band, evec) = model.solve_all_parallel(&kvec);
@@ -617,7 +617,7 @@ fn calculate_M(model: &Model) {
         band_s0.sum() / (nk as f64) / 4.0
     );
 }
-fn calculate_C(model: &Model, n: usize) -> f64 {
+fn calculate_C(model: &Model<true>, n: usize) -> f64 {
     let dir_1 = arr1(&[1.0, 0.0, 0.0]);
     let dir_2 = arr1(&[0.0, 1.0, 0.0]);
     let occ = vec![0, 1, 2, 3];
@@ -630,7 +630,7 @@ fn calculate_C(model: &Model, n: usize) -> f64 {
     C
 }
 
-fn cut(model: &Model, num: usize, cut_type: usize, name: &str) {
+fn cut(model: &Model<true>, num: usize, cut_type: usize, name: &str) {
     //普通的切法
     let new_model = match cut_type {
         0 => {
@@ -719,7 +719,7 @@ fn cut(model: &Model, num: usize, cut_type: usize, name: &str) {
     write_txt(show_str, &structure_name);
 }
 
-fn show_alter(model: &Model, name: &str) {
+fn show_alter(model: &Model<true>, name: &str) {
     let nk = 1001;
     let path = array![[-0.5, 0.25, 0.0], [0.5, 0.25, 0.0]];
     let (kvec, kdist, knode) = model.k_path(&path, nk).unwrap();

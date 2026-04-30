@@ -17,7 +17,9 @@ use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{Result, TbError};
 use ndarray::*;
 use num_complex::Complex;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::de;
+use serde::ser::SerializeStruct;
 
 /// Tight-binding model structure representing the Hamiltonian $H(\mathbf{k})$ and related properties.
 ///
@@ -26,13 +28,14 @@ use serde::{Deserialize, Serialize};
 /// $$
 /// H(\mathbf{k}) = \sum_{\mathbf{R}} t(\mathbf{R}) e^{i\mathbf{k}\cdot\mathbf{R}}
 /// $$
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Model {
+///
+/// The const generic `SPIN` controls whether the model includes spin:
+/// - `Model<false>`: spinless, `nsta() == norb()`
+/// - `Model<true>`: spinful, `nsta() == 2 * norb()`, basis is [orb_1↑, orb_2↑, ..., orb_1↓, orb_2↓, ...]
+#[derive(Clone, Debug)]
+pub struct Model<const SPIN: bool = false> {
     /// Real space dimension $d$ of the model (2D or 3D systems)
     pub dim_r: Dimension,
-    /// Whether the model includes spin degrees of freedom
-    /// If spin is true, then the orbital sequence is [orb_1_up, orb_2_up, ..., orb_1_dn, orb_2_dn, ...]
-    pub spin: bool,
     /// Lattice vectors $\mathbf{a}_1, \mathbf{a}_2, \mathbf{a}_3$ as a $d \times d$ matrix
     /// where each row represents a lattice vector
     pub lat: Array2<f64>,
@@ -50,6 +53,99 @@ pub struct Model {
     /// Position matrix elements $\mathbf{r}_{mn}(\mathbf{R}) = \bra{m\mathbf{0}} \mathbf{\hat{r}} \ket{n\mathbf{R}}$
     /// used for velocity operator calculations
     pub rmatrix: Array4<Complex<f64>>,
+}
+
+// Manual Serialize: write `spin: SPIN` field
+impl<const SPIN: bool> Serialize for Model<SPIN> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut s = serializer.serialize_struct("Model", 8)?;
+        s.serialize_field("dim_r", &self.dim_r)?;
+        s.serialize_field("spin", &SPIN)?;
+        s.serialize_field("lat", &self.lat)?;
+        s.serialize_field("orb", &self.orb)?;
+        s.serialize_field("orb_projection", &self.orb_projection)?;
+        s.serialize_field("atoms", &self.atoms)?;
+        s.serialize_field("ham", &self.ham)?;
+        s.serialize_field("hamR", &self.hamR)?;
+        s.serialize_field("rmatrix", &self.rmatrix)?;
+        s.end()
+    }
+}
+
+// Helper for deserialization: read fields, then verify spin matches SPIN
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "lowercase")]
+enum ModelField {
+    DimR,
+    Spin,
+    Lat,
+    Orb,
+    OrbProjection,
+    Atoms,
+    Ham,
+    HamR,
+    Rmatrix,
+}
+
+impl<'de, const SPIN: bool> Deserialize<'de> for Model<SPIN> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct ModelVisitor<const S: bool>;
+
+        impl<'de, const S: bool> de::Visitor<'de> for ModelVisitor<S> {
+            type Value = Model<S>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a Model struct")
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> std::result::Result<Self::Value, A::Error> {
+                let mut dim_r: Option<Dimension> = None;
+                let mut spin: Option<bool> = None;
+                let mut lat: Option<Array2<f64>> = None;
+                let mut orb: Option<Array2<f64>> = None;
+                let mut orb_projection: Option<Vec<OrbProj>> = None;
+                let mut atoms: Option<Vec<Atom>> = None;
+                let mut ham: Option<Array3<Complex<f64>>> = None;
+                let mut hamR: Option<Array2<isize>> = None;
+                let mut rmatrix: Option<Array4<Complex<f64>>> = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        ModelField::DimR => dim_r = Some(map.next_value()?),
+                        ModelField::Spin => spin = Some(map.next_value()?),
+                        ModelField::Lat => lat = Some(map.next_value()?),
+                        ModelField::Orb => orb = Some(map.next_value()?),
+                        ModelField::OrbProjection => orb_projection = Some(map.next_value()?),
+                        ModelField::Atoms => atoms = Some(map.next_value()?),
+                        ModelField::Ham => ham = Some(map.next_value()?),
+                        ModelField::HamR => hamR = Some(map.next_value()?),
+                        ModelField::Rmatrix => rmatrix = Some(map.next_value()?),
+                    }
+                }
+
+                let spin = spin.ok_or_else(|| de::Error::missing_field("spin"))?;
+                if spin != S {
+                    return Err(de::Error::custom(format!(
+                        "spin mismatch: file has spin={}, but Model<{}> was requested",
+                        spin, S
+                    )));
+                }
+
+                Ok(Model {
+                    dim_r: dim_r.ok_or_else(|| de::Error::missing_field("dim_r"))?,
+                    lat: lat.ok_or_else(|| de::Error::missing_field("lat"))?,
+                    orb: orb.ok_or_else(|| de::Error::missing_field("orb"))?,
+                    orb_projection: orb_projection.ok_or_else(|| de::Error::missing_field("orb_projection"))?,
+                    atoms: atoms.ok_or_else(|| de::Error::missing_field("atoms"))?,
+                    ham: ham.ok_or_else(|| de::Error::missing_field("ham"))?,
+                    hamR: hamR.ok_or_else(|| de::Error::missing_field("hamR"))?,
+                    rmatrix: rmatrix.ok_or_else(|| de::Error::missing_field("rmatrix"))?,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("Model", &["dim_r", "spin", "lat", "orb", "orb_projection", "atoms", "ham", "hamR", "rmatrix"], ModelVisitor::<SPIN>)
+    }
 }
 
 /// Gauge choice for Bloch wavefunctions
@@ -89,7 +185,7 @@ pub enum SpinDirection {
 pub use crate::model_build::*;
 pub use crate::model_physics::*;
 
-impl Model {
+impl<const SPIN: bool> Model<SPIN> {
     #[inline(always)]
     pub fn atom_position(&self) -> Array2<f64> {
         let mut atom_position = Array2::zeros((self.natom(), self.dim_r as usize));
@@ -135,7 +231,8 @@ impl Model {
     }
     #[inline(always)]
     pub fn nsta(&self) -> usize {
-        if self.spin {
+        // SPIN is a compile-time constant: compiler eliminates the dead branch
+        if SPIN {
             2 * self.norb()
         } else {
             self.norb()
@@ -150,7 +247,6 @@ impl Model {
         //! Deprecated: use `orbital_angular_momentum` instead for orbital
         //! current calculations.
         let li = Complex::i() * 1.0;
-        let mut i = 0;
         let mut L = Array3::<Complex<f64>>::zeros((self.dim_r(), self.norb(), self.norb()));
         let mut Lx = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
         let mut Ly = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
@@ -197,9 +293,6 @@ impl Model {
         //Lx=L+ + L-, Ly=-i( L+ - L-)
         let Lx_orig = &Lup_orig + &Ldn_orig;
         let Ly_orig = -li * (&Lup_orig - &Ldn_orig);
-        //接下来我们要根据我们的轨道基函数写出我们的轨道角动量的矩阵
-        //轨道角动量矩阵是按照原子进行分块对角化的
-        //所以, 我们作循环的时候也要先按照原子进行分块对角化
         let mut a = 0;
         for atom0 in self.atoms.iter() {
             for i in a..a + atom0.norb() {

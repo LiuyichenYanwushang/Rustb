@@ -41,7 +41,7 @@ pub trait OutPut {
     -> Result<()>;
 }
 
-impl OutPut for Model {
+impl<const SPIN: bool> OutPut for Model<SPIN> {
     fn output_hr(&self, path: &str, seedname: &str) {
         let n_R = self.hamR.nrows(); //length of hamR
         let mut hr_name = String::new();
@@ -419,7 +419,7 @@ impl OutPut for Model {
                         orb_real[[i, 2]]
                     ));
                 }
-                if self.spin {
+                if SPIN {
                     for i in 0..self.norb() {
                         s.push_str(&format!(
                             "X{:>20.8}{:>17.8}{:>17.8}\n",
@@ -457,7 +457,7 @@ impl OutPut for Model {
                         orb_real[[i, 1]]
                     ));
                 }
-                if self.spin {
+                if SPIN {
                     for i in 0..self.norb() {
                         s.push_str(&format!(
                             "X{:>20.8}{:>17.8}       0.00000000\n",
@@ -491,7 +491,7 @@ impl OutPut for Model {
                         orb_real[[i, 0]]
                     ));
                 }
-                if self.spin {
+                if SPIN {
                     for i in 0..self.norb() {
                         s.push_str(&format!(
                             "X{:>20.8}       0.00000000       0.00000000\n",

@@ -160,7 +160,7 @@ pub trait Berry {
     ) -> Array2<f64>;
 }
 
-impl Berry for Model {
+impl<const SPIN: bool> Berry for Model<SPIN> {
     fn berry_loop<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> Array1<f64>
     where
         S: Data<Elem = f64>,
@@ -175,7 +175,7 @@ impl Berry for Model {
                 )
             }
         }
-        let use_orb = if self.spin {
+        let use_orb = if SPIN {
             let mut orb0 = self.orb.to_owned();
             orb0.append(Axis(0), self.orb.view());
             orb0
@@ -235,7 +235,7 @@ impl Berry for Model {
                 )
             }
         }
-        let use_orb = if self.spin {
+        let use_orb = if SPIN {
             let mut orb0 = self.orb.to_owned();
             orb0.append(Axis(0), self.orb.view());
             orb0

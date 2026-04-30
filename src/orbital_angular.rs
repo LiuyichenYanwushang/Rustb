@@ -25,7 +25,7 @@ pub trait OrbitalAngular: Velocity {
     //! k}-\ve_{\ell\bm k})(\ve_{n\bm k}-\ve_{\ell\bm k})}\bra{u_{m\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{\ell\bm k}}\times\bra{u_{\ell\bm k}}\p_{\bm k} H_{\bm k}\ket{u_{n\bm k}}$$
     fn orbital_angular_momentum_onek(&self, kvec: &Array1<f64>) -> Array3<Complex<f64>>;
 }
-impl OrbitalAngular for Model {
+impl<const SPIN: bool> OrbitalAngular for Model<SPIN> {
     fn orbital_angular_momentum_onek(&self, kvec: &Array1<f64>) -> Array3<Complex<f64>> {
         let li = Complex::<f64>::new(0.0, 1.0);
         let (v, hamk) = self.gen_v(kvec, Gauge::Atom);

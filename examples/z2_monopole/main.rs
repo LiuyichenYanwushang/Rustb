@@ -27,7 +27,7 @@ fn main() {
         [2.0 / 3.0, 1.0 / 3.0, 0.],
         [1.0 / 3.0, 2.0 / 3.0, 0.],
     ]);
-    let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
+    let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
     //onsite hopping
     model.add_hop(
         delta * 3.0_f64.sqrt(),

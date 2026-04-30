@@ -81,7 +81,6 @@
 //! |--------|---------|
 //! | [`wannier90`] | Read Wannier90 `_hr.dat` and `_r.dat` files |
 //! | [`unfold`] | Band unfolding for supercell calculations (the [`Unfold`] trait) |
-//! | [`tmrtool`] | Tunneling magnetoresistance utilities ([`TMRBlocks`]) |
 //!
 //! ### Magnetic field
 //!
@@ -161,7 +160,7 @@
 //! // Two sublattice sites in fractional coordinates
 //! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
 //!
-//! let mut model = Model::tb_model(2, lat, orb, false, None)?;
+//! let mut model = Model::<false>::tb_model(2, lat, orb, None)?;
 //! model.set_onsite(&arr1(&[delta, -delta]), SpinDirection::None);
 //!
 //! // Nearest-neighbor hoppings (A <-> B)
@@ -223,7 +222,6 @@ pub mod output;
 pub mod phy_const;
 pub mod solve_ham;
 pub mod surfgreen;
-pub mod tmrtool;
 pub mod unfold;
 pub mod velocity;
 pub mod wannier90;
@@ -334,7 +332,7 @@ mod tests {
         let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -407,7 +405,7 @@ mod tests {
         let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -473,7 +471,7 @@ mod tests {
         let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -528,7 +526,7 @@ mod tests {
         let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -793,7 +791,7 @@ mod tests {
         let norb: usize = 2;
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[delta, -delta]), SpinDirection::None);
         model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
         model.add_hop(t1, 0, 1, &array![-1, 0], SpinDirection::None);
@@ -914,7 +912,7 @@ mod tests {
         let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, true, None).unwrap();
+        let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[delta, -delta]), SpinDirection::None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -1237,7 +1235,7 @@ mod tests {
             [0.0, 0.0, 1.0],
         ]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0, 0.0], [2.0 / 3.0, 2.0 / 3.0, 0.0]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[delta, -delta]), SpinDirection::None);
         let R0: Array2<isize> = arr2(&[[0, 0, 0], [-1, 0, 0], [0, -1, 0]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -1348,7 +1346,7 @@ mod tests {
         let norb: usize = 2;
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         //最近邻hopping
         model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
         model.add_hop(t1, 2, 0, &array![0, 0], SpinDirection::None);
@@ -1414,7 +1412,7 @@ mod tests {
         let norb: usize = 2;
         let lat = arr2(&[[1.0]]);
         let orb = arr2(&[[0.3], [0.5]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         model.add_hop(t1, 0, 1, &array![0], SpinDirection::None);
         model.add_hop(t2, 0, 1, &array![-1], SpinDirection::None);
         model.add_onsite(&array![Delta, -Delta], 0);
@@ -1439,7 +1437,7 @@ mod tests {
         let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]]);
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
         model.add_hop(t1, 1, 2, &array![0, 0], SpinDirection::None);
         model.add_hop(t1, 2, 3, &array![0, 0], SpinDirection::None);
@@ -1545,7 +1543,7 @@ mod tests {
         // 轨道的相对分数坐标 (Fractional Coordinates)
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
 
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
 
         // 添加最近邻跃迁
@@ -1599,7 +1597,7 @@ mod tests {
         // 单轨道坐标位于原点
         let orb = arr2(&[[0.0, 0.0]]);
 
-        let mut model = Model::tb_model(dim_r, lat, orb, false, None).unwrap();
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[0.0]), SpinDirection::None);
 
         // 加上最近邻跃迁 (上下左右4个方向)

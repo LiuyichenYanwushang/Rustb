@@ -78,7 +78,7 @@ pub trait Velocity {
     ) -> (Array3<Complex<f64>>, Array2<Complex<f64>>);
 }
 
-impl Velocity for Model {
+impl<const SPIN: bool> Velocity for Model<SPIN> {
     #[allow(non_snake_case)]
     #[inline(always)]
     fn gen_v<S: Data<Elem = f64>>(
@@ -145,7 +145,7 @@ impl Velocity for Model {
             .for_each(|hm, &u| hamk.scaled_add(u, &hm));
         let (v, hamk) = match gauge {
             Gauge::Atom => {
-                let orb_sta = if self.spin {
+                let orb_sta = if SPIN {
                     let orb0 = concatenate(Axis(0), &[self.orb.view(), self.orb.view()]).unwrap();
                     orb0
                 } else {

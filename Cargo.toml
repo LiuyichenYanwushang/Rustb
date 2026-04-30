@@ -1,6 +1,6 @@
 [package]
 name = "Rustb"
-version = "0.6.8"
+version = "0.7.0"
 edition = "2024"
 
 categories = ["science"]

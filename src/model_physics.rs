@@ -11,7 +11,7 @@ use num_complex::Complex;
 use rayon::prelude::*;
 use std::f64::consts::PI;
 
-impl Model {
+impl<const SPIN: bool> Model<SPIN> {
     #[allow(non_snake_case)]
     #[inline(always)]
     #[cfg_attr(doc, katexit::katexit)]
@@ -129,9 +129,9 @@ impl Model {
                 let norb = self.norb();
                 let orb_phase = Array1::from_vec(orb_phase);
                 // Build gauge phase vector: for spinful, duplicate orbital phases
-                let mut U0 = Array1::<Complex<f64>>::zeros(if self.spin { 2 * norb } else { norb });
+                let mut U0 = Array1::<Complex<f64>>::zeros(if SPIN { 2 * norb } else { norb });
                 U0.slice_mut(s![..norb]).assign(&orb_phase);
-                if self.spin {
+                if SPIN {
                     U0.slice_mut(s![norb..]).assign(&orb_phase);
                 }
                 // Gauge transform: H'[m,n] = conj(U0[m]) * H[m,n] * U0[n]

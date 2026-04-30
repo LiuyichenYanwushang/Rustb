@@ -523,7 +523,7 @@ pub trait BerryCurvature: Velocity {
     ) -> Array1<f64>;
 }
 
-impl BerryCurvature for Model {
+impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
     #[allow(non_snake_case)]
     #[inline(always)]
     fn berry_curvature_n_onek<S: Data<Elem = f64>>(
@@ -544,7 +544,7 @@ impl BerryCurvature for Model {
             todo!()
         };
         let mut J = v.view();
-        let (J, v) = if self.spin {
+        let (J, v) = if SPIN {
             let J = match spin {
                 0 => {
                     let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
@@ -731,7 +731,7 @@ impl BerryCurvature for Model {
 }
 
 #[allow(non_snake_case)]
-impl Model {
+impl<const SPIN: bool> Model<SPIN> {
     /// Methods for computing conductivity tensors including the anomalous Hall conductivity,
     /// spin Hall conductivity, and nonlinear Hall conductivity.
     ///
@@ -1000,7 +1000,7 @@ impl Model {
         for r in 0..self.dim_r() {
             v0 = v0 + v.slice(s![r, .., ..]).to_owned() * dir_3[[r]];
         }
-        if self.spin {
+        if SPIN {
             let X = build_spin_matrix(self.norb(), spin);
             for i in 0..self.dim_r() {
                 let j = J.slice(s![i, .., ..]).to_owned();
@@ -1297,7 +1297,7 @@ impl Model {
         let partial_ve_3 = v_3.diag().map(|x| x.re);
 
         //开始最后的计算
-        if self.spin {
+        if SPIN {
             //如果考虑自旋, 我们就计算 \partial_h G_{ij}
             let X = if spin == 0 {
                 Array2::eye(self.nsta())
@@ -1455,7 +1455,7 @@ impl Model {
         }
         let nk = k_vec.len_of(Axis(0));
 
-        if self.spin {
+        if SPIN {
             let ((omega, band), partial_G): ((Vec<_>, Vec<_>), Vec<_>) = k_vec
                 .axis_iter(Axis(0))
                 .into_par_iter()
@@ -1630,7 +1630,7 @@ impl Model {
                     },
                 )
                 .reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
-            if self.spin {
+            if SPIN {
                 let partial_G = partial_G.unwrap();
                 let conductivity_new: Vec<f64> = mu
                     .into_par_iter()

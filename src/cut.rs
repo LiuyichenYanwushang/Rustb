@@ -78,8 +78,8 @@ pub trait CutModel {
         Self: Sized;
 }
 
-impl CutModel for Model {
-    fn cut_piece(&self, num: usize, dir: usize) -> Result<Model> {
+impl<const SPIN: bool> CutModel for Model<SPIN> {
+    fn cut_piece(&self, num: usize, dir: usize) -> Result<Model<SPIN>> {
         if num < 1 {
             return Err(TbError::InvalidSupercellSize(num));
         }
@@ -129,7 +129,7 @@ impl CutModel for Model {
                 for i in 0..new_norb {
                     for r in 0..self.dim_r() {
                         new_rmatrix[[0, r, i, i]] = Complex::new(new_orb[[i, r]], 0.0);
-                        if self.spin {
+                        if SPIN {
                             new_rmatrix[[0, r, i + new_norb, i + new_norb]] =
                                 Complex::new(new_orb[[i, r]], 0.0);
                         }
@@ -151,7 +151,7 @@ impl CutModel for Model {
                     ind_R[[dir]] = 0;
                     if ind < num {
                         let mut use_ham = Array2::<Complex<f64>>::zeros((new_nsta, new_nsta));
-                        if self.spin {
+                        if SPIN {
                             let mut s = use_ham.slice_mut(s![
                                 n * self.norb()..(n + 1) * self.norb(),
                                 ind * self.norb()..(ind + 1) * self.norb()
@@ -214,7 +214,7 @@ impl CutModel for Model {
                     ind_R[[dir]] = 0;
                     if ind < num {
                         let mut use_ham = Array2::<Complex<f64>>::zeros((new_nsta, new_nsta));
-                        if self.spin {
+                        if SPIN {
                             let mut s = use_ham.slice_mut(s![
                                 n * self.norb()..(n + 1) * self.norb(),
                                 ind * self.norb()..(ind + 1) * self.norb()
@@ -253,7 +253,7 @@ impl CutModel for Model {
                         let mut use_rmatrix =
                             Array3::<Complex<f64>>::zeros((self.dim_r(), new_nsta, new_nsta));
                         if exist_r {
-                            if self.spin {
+                            if SPIN {
                                 let mut s = use_rmatrix.slice_mut(s![
                                     ..,
                                     n * self.norb()..(n + 1) * self.norb(),
@@ -322,7 +322,6 @@ impl CutModel for Model {
         }
         let mut model = Self {
             dim_r: self.dim_r,
-            spin: self.spin,
             lat: new_lat,
             orb: new_orb,
             orb_projection: new_orb_proj,
@@ -334,7 +333,7 @@ impl CutModel for Model {
         Ok(model)
     }
 
-    fn cut_dot(&self, num: usize, shape: usize, dir: Option<Vec<usize>>) -> Result<Model> {
+    fn cut_dot(&self, num: usize, shape: usize, dir: Option<Vec<usize>>) -> Result<Model<SPIN>> {
         match self.dim_r() {
             3 => {
                 let dir = if dir == None {
@@ -448,7 +447,7 @@ impl CutModel for Model {
                     new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
                     new_orb_proj.push(old_model.orb_projection[*use_i])
                 }
-                let new_nsta = if self.spin {
+                let new_nsta = if SPIN {
                     new_orb.len() * 2
                 } else {
                     new_orb.len()
@@ -461,7 +460,6 @@ impl CutModel for Model {
 
                 let mut new_model = Self {
                     dim_r: self.dim_r,
-                    spin: self.spin,
                     lat: old_model.lat.clone(),
                     orb: new_orb,
                     orb_projection: new_orb_proj,
@@ -473,7 +471,7 @@ impl CutModel for Model {
 
                 let norb = new_model.norb();
 
-                if self.spin {
+                if SPIN {
                     let norb2 = old_model.norb();
                     for (r, R) in old_model.hamR.axis_iter(Axis(0)).enumerate() {
                         new_model.hamR.push_row(R);
@@ -506,7 +504,7 @@ impl CutModel for Model {
                         for i in 0..norb {
                             use_rmatrix[[i, i]] = Complex::new(new_model.orb[[i, r]], 0.0);
                         }
-                        if new_model.spin {
+                        if SPIN {
                             for i in 0..norb {
                                 use_rmatrix[[i + norb, i + norb]] =
                                     Complex::new(new_model.orb[[i, r]], 0.0);
@@ -524,7 +522,7 @@ impl CutModel for Model {
                         new_model.nsta(),
                         new_model.nsta(),
                     ));
-                    if old_model.spin {
+                    if SPIN {
                         let norb2 = old_model.norb();
                         for r in 0..n_R {
                             for dim in 0..self.dim_r() {
@@ -660,11 +658,10 @@ impl CutModel for Model {
                     new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
                     new_orb_proj.push(old_model.orb_projection[*use_i])
                 }
-                let mut new_model = Model::tb_model(
+                let mut new_model = Model::<SPIN>::tb_model(
                     self.dim_r(),
                     old_model.lat.clone(),
                     new_orb,
-                    self.spin,
                     Some(new_atom),
                 )?;
                 new_model.orb_projection = new_orb_proj;
@@ -675,7 +672,7 @@ impl CutModel for Model {
                 let norb = new_model.norb();
                 let nsta = new_model.nsta();
 
-                if self.spin {
+                if SPIN {
                     let norb2 = old_model.norb();
                     for (i, use_i) in use_orb_item.iter().enumerate() {
                         for (j, use_j) in use_orb_item.iter().enumerate() {
@@ -701,7 +698,7 @@ impl CutModel for Model {
                         for i in 0..norb {
                             use_rmatrix[[i, i]] = Complex::new(new_model.orb[[i, r]], 0.0);
                         }
-                        if new_model.spin {
+                        if SPIN {
                             for i in 0..norb {
                                 use_rmatrix[[i + norb, i + norb]] =
                                     Complex::new(new_model.orb[[i, r]], 0.0);
@@ -719,7 +716,7 @@ impl CutModel for Model {
                         new_model.nsta(),
                         new_model.nsta(),
                     ));
-                    if old_model.spin {
+                    if SPIN {
                         let norb2 = old_model.norb();
                         for dim in 0..self.dim_r() {
                             for (i, use_i) in use_orb_item.iter().enumerate() {
