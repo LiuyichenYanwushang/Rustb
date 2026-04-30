@@ -2,6 +2,250 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+---
+
+# REFACTORING PLAN: Const-Generic Spin (v0.7.0)
+
+> **Status**: PLANNING. Target: replace `spin: bool` field in `Model` with const generic `const SPIN: bool`, eliminating all runtime spin branches from hot paths.
+
+## 1. Core Design
+
+### 1.1 New Model definition (`src/model.rs`)
+
+```rust
+#[derive(Clone, Debug)]
+pub struct Model<const SPIN: bool = false> {
+    pub dim_r: Dimension,
+    pub lat: Array2<f64>,
+    pub orb: Array2<f64>,
+    pub orb_projection: Vec<OrbProj>,
+    pub atoms: Vec<Atom>,
+    pub ham: Array3<Complex<f64>>,
+    pub hamR: Array2<isize>,
+    pub rmatrix: Array4<Complex<f64>>,
+}
+// field `spin: bool` DELETED
+```
+
+Key method changes on `impl<const SPIN: bool> Model<SPIN>`:
+- `nsta()` → `if SPIN { 2 * self.norb() } else { self.norb() }` — **compile-time constant, no branch in release**
+- `norb()`, `natom()`, `nR()`, `dim_r()`, `atom_*()` — unchanged
+- `orb_angular()` — uses `self.nsta()` internally, works generically
+
+### 1.2 Runtime dispatch enum (in `src/model.rs`)
+
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum AnyModel {
+    Spinless(Model<false>),
+    Spinful(Model<true>),
+}
+```
+
+Every public method on `Model<SPIN>` gets a dispatch wrapper on `AnyModel`:
+
+```rust
+impl AnyModel {
+    pub fn gen_ham<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>, gauge: Gauge) -> Array2<Complex<f64>> {
+        match self {
+            AnyModel::Spinless(m) => m.gen_ham(kvec, gauge),
+            AnyModel::Spinful(m)   => m.gen_ham(kvec, gauge),
+        }
+    }
+    // ... same pattern for gen_v, solve_onek, dos, berry_curvature_onek, etc.
+}
+```
+
+This ensures **O(1) dispatch** — one branch at the call site, zero branches inside the const-generic implementation.
+
+### 1.3 Serde strategy
+
+`Model<const SPIN: bool>` cannot derive `Deserialize` (const generics + serde derive is broken). Strategy:
+
+- **Serialize**: manual impl writes `spin` field from `SPIN` constant
+- **Deserialize**: deserialize to `AnyModel` only (first reads spin field, then constructs appropriate variant). Individual `Model<SPIN>` cannot be deserialized directly.
+- Save/load paths use `AnyModel`, not `Model<SPIN>`.
+
+## 2. File-by-File Changes (ordered by dependency)
+
+### Phase 1: Core (no downstream deps)
+
+#### `src/model.rs`
+- [ ] Define `Model<const SPIN: bool>` (remove `spin: bool` field)
+- [ ] Update `nsta()`: `if SPIN { 2 * self.norb() } else { self.norb() }`
+- [ ] Update `orb_angular()` — uses `self.nsta()`, no change needed
+- [ ] Define `AnyModel` enum with `Spinless(Model<false>)` and `Spinful(Model<true>)`
+- [ ] Add dispatch methods on `AnyModel` for: `atom_*()`, `nsta()`, `norb()`, `natom()`, `nR()`, `dim_r()`, `orb_angular()`
+- [ ] Implement `Serialize` for `Model<SPIN>` manually (write `SPIN` as field)
+- [ ] Implement `Deserialize` for `AnyModel`
+- [ ] Remove `Serialize`/`Deserialize` derive from `Model`
+- [ ] `Dimension` enum, `Gauge`, `SpinDirection` — unchanged
+
+#### `src/generics.rs`
+- [ ] `TryFrom<usize> for Dimension` — unchanged
+- [ ] Any spin-related traits? Check. Probably none.
+
+### Phase 2: Hot-path computation
+
+#### `src/model_physics.rs`
+- [ ] `gen_ham` → `impl<const SPIN: bool> Model<SPIN> { fn gen_ham(...) }`
+  - `if SPIN` replaces `if self.spin` at lines 132, 134
+  - Phase vector U0 dimension: compile-time
+  - Gauge transform: already uses `for m + Zip` pattern, `nsta` from method
+- [ ] `dos` → generic over SPIN, uses `self.nsta()` and `solve_band_all_parallel`
+- [ ] Add `AnyModel::gen_ham`, `AnyModel::dos` dispatch
+
+#### `src/velocity.rs`
+- [ ] Make `Velocity` trait generic: `pub trait Velocity<const SPIN: bool>`
+- [ ] `impl<const SPIN: bool> Velocity<SPIN> for Model<SPIN>`
+- [ ] `gen_v` — `orb_sta` construction: `if SPIN { concatenate } else { to_owned }` → compile-time
+- [ ] `UU` construction — uses `self.nsta()`, ok
+- [ ] Add `AnyModel::gen_v` dispatch
+
+#### `src/solve_ham.rs`
+- [ ] All solver methods → `impl<const SPIN: bool> Model<SPIN>`
+- [ ] `solve_onek`, `solve_band_onek`, `solve_band_all`, `solve_all`, etc.
+- [ ] Use `self.nsta()` everywhere (already done)
+- [ ] Add `AnyModel` dispatch wrappers
+
+#### `src/conductivity.rs`
+- [ ] All berry curvature / Hall methods → generic over SPIN
+- [ ] Change `if self.spin` → `if SPIN` at lines 547, 1003, 1300, 1458, 1633
+- [ ] `build_spin_matrix` — this uses `SpinDirection` (Pauli x/y/z), **NOT** `self.spin`, unchanged
+- [ ] Add `AnyModel` dispatch for: `berry_curvature_onek`, `berry_curvature_n_onek`, `Hall_conductivity`, `Spin_Hall_conductivity`, `Hall_conductivity_mu`
+
+### Phase 3: Builders and constructors
+
+#### `src/model_build.rs`
+- [ ] `tb_model<const SPIN: bool>(...) -> Result<Model<SPIN>>`
+  - Parameter `spin: bool` DELETED, replaced by const generic
+  - Internal: `let nsta = if SPIN { 2 * norb } else { norb };`
+  - rmatrix diagonal init (line 257): `if SPIN { ... duplicate ... }` → compile-time
+- [ ] `set_hop`, `add_hop`, `add_element`, `set_onsite`, `add_onsite`, `set_onsite_one`
+  - `update_hamiltonian!` macro takes `pauli: SpinDirection`, does NOT use `self.spin` directly
+  - BUT: lines 382, 502 check `self.spin == false && pauli != SpinDirection::None` — replace with `!SPIN`
+  - Matrix dimensions use `self.nsta()` — auto-correct
+- [ ] `del_hop`, `shift_to_atom`, `move_to_atom`, `remove_orb`, `remove_atom` — generic
+- [ ] `make_supercell<const SPIN: bool>` — internal loops use `SPIN` compile-time
+- [ ] `reorder_atom` — uses `self.spin` at line 1021, 1108
+- [ ] Output `spin: SPIN` at line 1553 for final Model construction
+- [ ] Add `tb_model_any(spin: bool, ...) -> Result<AnyModel>` convenience function
+
+#### `src/wannier90.rs`
+- [ ] `from_hr` → returns `AnyModel` (spin detected at runtime from file)
+- [ ] Internal: detect spin (line 314-315), then construct appropriate variant
+  ```rust
+  if spin { AnyModel::Spinful(Model { ... }) } else { AnyModel::Spinless(Model { ... }) }
+  ```
+- [ ] `from_hr_file` — returns `AnyModel`
+- [ ] All other wannier90 functions — returns `AnyModel`
+- [ ] Construction code uses `nsta` (already parsed from file), minimal changes
+
+#### `src/SKmodel.rs`
+- [ ] Line 273: `Model::tb_model(self.dim_r, ..., self.spin, None)` → needs SPIN
+- [ ] Either make `SKmodel` generic over SPIN, or use `AnyModel` internally
+- [ ] Simplest: detect at construction time, use `tb_model_any`
+
+### Phase 4: Supporting modules
+
+#### `src/surfgreen.rs`
+- [ ] `surf_Green` struct: **KEEP** `spin: bool` field (not worth making generic)
+  - Reason: constructed once, hot path is O(n³) matrix inversion, `if self.spin` is negligible
+  - BUT: `from_Model` now takes `Model<SPIN>`, derive `spin = SPIN`
+  - `from_Model<const SPIN: bool>(model: &Model<SPIN>, ...) -> Result<surf_Green>`
+- [ ] `gen_ham_onek` — `self.spin` used for orb_phase doubling (line 213). Keep as-is.
+- [ ] All other surf_Green methods — unchanged
+- [ ] Add `AnyModel` wrapper: `surf_Green::from_any_model(model: &AnyModel, ...) -> Result<surf_Green>`
+
+#### `src/cut.rs`
+- [ ] All methods → generic over SPIN
+- [ ] `self.spin` → `SPIN` at lines 132, 154, 217, 256, 325, 451, 464, 476, 667, 678
+
+#### `src/model_transform.rs`
+- [ ] All methods → generic over SPIN
+- [ ] `self.spin` → `SPIN` at lines 89, 158, 217, 427, 490, 503, 556, 597, 671
+
+#### `src/geometry.rs`
+- [ ] Methods → generic over SPIN
+- [ ] `self.spin` → `SPIN` at lines 178, 238
+
+#### `src/unfold.rs`
+- [ ] `unfold` trait → `trait Unfold<const SPIN: bool>`
+- [ ] `impl<const SPIN: bool> Unfold<SPIN> for Model<SPIN>`
+- [ ] `self.spin` → `SPIN` at line 223
+
+#### `src/output.rs`
+- [ ] Output functions → generic over SPIN
+- [ ] `self.spin` → `SPIN` at lines 422, 460, 494
+
+#### `src/magnetic_field.rs`
+- [ ] Check if `self.spin` is referenced (from grep, it's not directly). Uses `nsta()`.
+
+### Phase 5: IO and Python
+
+#### `src/lib.rs` (Python bindings)
+- [ ] Expose `AnyModel` as `#[pyclass]`, NOT `Model<SPIN>`
+- [ ] All `#[pymethods]` on `AnyModel` dispatch to inner Model
+- [ ] Python constructor: `AnyModel::from_hr(path)` etc.
+- [ ] This is the single biggest change in lib.rs
+
+#### `src/error.rs`
+- [ ] Possibly add error variant for spin mismatch. Check if needed.
+
+### Phase 6: Tests, benches, examples
+
+#### `src/lib.rs` (tests module)
+- [ ] `build_small()` → `Model::<false>::tb_model(...)`
+- [ ] All test functions using Model: add type annotation or let inference work
+- [ ] `gen_ham`, `gen_v` tests: call via `AnyModel` or direct `Model<SPIN>`
+
+#### `benches/bench_main.rs`
+- [ ] `build_small()` → returns `Model<false>`
+- [ ] `build_small_spinful()` → returns `Model<true>`
+- [ ] `build_medium()`, `build_large()` → returns `Model<false>` (all supercells are spinless)
+- [ ] Benchmark functions: accept `Model<SPIN>` or use `AnyModel`
+
+#### `examples/*.rs`
+- [ ] Each example: `tb_model::<true>(...)` or `tb_model::<false>(...)` as appropriate
+
+## 3. Migration Order (for parallel agents)
+
+```
+Agent 1: src/model.rs          (core types, AnyModel, serde, accessor dispatch)
+Agent 2: src/model_physics.rs  (gen_ham, dos + AnyModel dispatch)
+Agent 3: src/velocity.rs       (Velocity trait, gen_v + AnyModel dispatch)
+Agent 4: src/solve_ham.rs      (all solvers + AnyModel dispatch)
+Agent 5: src/conductivity.rs   (berry, Hall, spin Hall + AnyModel dispatch)
+Agent 6: src/model_build.rs    (tb_model, set_hop, add_hop, make_supercell, etc.)
+Agent 7: src/wannier90.rs      (from_hr returns AnyModel)
+Agent 8: src/surfgreen.rs      (surf_Green keeps bool, from_Model generic)
+Agent 9: src/cut.rs + src/model_transform.rs + src/geometry.rs
+Agent 10: src/unfold.rs + src/output.rs + src/SKmodel.rs
+Agent 11: src/lib.rs (Python bindings)
+Agent 12: benches/ + examples/ + tests in src/lib.rs
+```
+
+Agents 1 must complete first (core types). Agents 2-12 can then run in parallel.
+
+## 4. Risk Points
+
+- **Serde**: `Model<SPIN>` cannot derive Deserialize. Must use `AnyModel` for all file I/O.
+- **Trait objects**: `Velocity<SPIN>` trait cannot be made into trait object. All velocity usage is static dispatch already, so this is fine.
+- **`update_hamiltonian!` macro**: Takes `$spin: bool` parameter. Replace with `SPIN` const generic in calling context. Macro itself unchanged.
+- **Python bindings**: Major rewrite of lib.rs. PyO3 doesn't support Rust const generics in pyclasses.
+- **surf_Green `spin` field**: Keep as bool. The `from_Model` function bridges `Model<SPIN>` to surf_Green.
+- **Backward compatibility**: All existing code that constructs `Model` with `spin: bool` breaks. Provide `tb_model_any(spin, ...)` for migration.
+
+## 5. Key Design Decisions
+
+1. **`surf_Green` stays with `spin: bool`** — its hot path is O(n³) matrix inversion; the spin branch overhead is negligible.
+2. **`AnyModel` is the public-facing type** for file I/O, Python, and runtime construction.
+3. **`Model<SPIN>` is the compute type** — all hot-path functions are generic over SPIN.
+4. **Default `SPIN = false`** allows `Model` without turbofish in simple cases.
+5. **Serde only on AnyModel** for deserialization; Serialize implemented manually for Model<SPIN>.
+
+---
+
 ## Project Overview
 
 Rustb is a Rust library for tight-binding model calculations in condensed matter physics. It computes band structures, density of states, transport properties (Hall conductivity, nonlinear responses), topological invariants (Chern numbers, Wilson loops), and surface states using Green's functions. The library interfaces with Wannier90 and supports Slater-Koster parameterized models.
