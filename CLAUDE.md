@@ -4,209 +4,90 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-# REFACTORING PLAN: Const-Generic Spin (v0.7.0)
+# v0.7.0: Const-Generic Spin
 
-> **Status**: PLANNING. Target: replace `spin: bool` field in `Model` with const generic `const SPIN: bool`, eliminating all runtime spin branches from hot paths.
+> **Status**: DONE. `Model<const SPIN: bool = false>` replaces the `spin: bool` runtime field.
+> All runtime `if self.spin` branches on hot paths are now compile-time dead-code-eliminated.
 
-## 1. Core Design
-
-### 1.1 New Model definition (`src/model.rs`)
+## How Model<SPIN> works
 
 ```rust
-#[derive(Clone, Debug)]
-pub struct Model<const SPIN: bool = false> {
+pub struct Model<const SPIN: bool = false> {  // no `spin` field
     pub dim_r: Dimension,
     pub lat: Array2<f64>,
     pub orb: Array2<f64>,
-    pub orb_projection: Vec<OrbProj>,
-    pub atoms: Vec<Atom>,
-    pub ham: Array3<Complex<f64>>,
-    pub hamR: Array2<isize>,
-    pub rmatrix: Array4<Complex<f64>>,
+    // ... other fields unchanged
 }
-// field `spin: bool` DELETED
 ```
 
-Key method changes on `impl<const SPIN: bool> Model<SPIN>`:
-- `nsta()` → `if SPIN { 2 * self.norb() } else { self.norb() }` — **compile-time constant, no branch in release**
-- `norb()`, `natom()`, `nR()`, `dim_r()`, `atom_*()` — unchanged
-- `orb_angular()` — uses `self.nsta()` internally, works generically
+- `Model<false>` → spinless, `nsta() == norb()`
+- `Model<true>` → spinful, `nsta() == 2 * norb()`, basis is [orb_1↑, ..., orb_N↑, orb_1↓, ..., orb_N↓]
+- `Model` without turbofish defaults to `Model<false>`
+- `Model<false>` and `Model<true>` are **distinct types** — they cannot be mixed in collections (arrays, Vec, etc.) without type erasure
 
-### 1.2 NO runtime dispatch enum
-
-There is NO `AnyModel` enum. `Model<SPIN>` is the only Model type. Users specify spin at compile time:
+### Constructing models
 
 ```rust
-let m = Model::<false>::tb_model(2, lat, orb, None)?;  // spinless
-let m = Model::<true>::tb_model(2, lat, orb, None)?;   // spinful
+// Spinless (default)
+let m = Model::<false>::tb_model(2, lat, orb, None)?;
+// or equivalently: Model::tb_model(2, lat, orb, None)?
+
+// Spinful
+let m = Model::<true>::tb_model(2, lat, orb, None)?;
 ```
 
-### 1.3 Serde strategy
+The old `spin: bool` parameter on `tb_model()` is **removed**. SPIN is determined entirely by the const generic.
 
-`Model<const SPIN: bool>` cannot derive `Deserialize` (const generics + serde derive issue).
+### Serde
 
-- **Serialize**: manual impl, write `"spin": SPIN` field
-- **Deserialize**: custom `Deserialize` impl reads `spin` field first, then dispatches internally. Both `Model<false>` and `Model<true>` get their own deserialize impls (duplicate code, ~30 lines each).
-- Alternative: a private `ModelData` intermediate struct with `spin: bool`, deserialized first, then converted to `Model<SPIN>` with a compile-time check.
+Manual `Serialize`/`Deserialize` implementations. Serialize writes `"spin": SPIN` as a field. Deserialize reads the `spin` field from the data and verifies it matches `SPIN`, returning an error if it doesn't match.
 
-## 2. File-by-File Changes (ordered by dependency)
+## Key design decisions
 
-### Phase 1: Core (no downstream deps)
+1. **No `AnyModel` enum** — `Model<SPIN>` is the only type. Users specify SPIN at compile time via turbofish.
+2. **All `impl Model` blocks are now `impl<const SPIN: bool> Model<SPIN>`** — methods are monomorphized for each SPIN value separately.
+3. **Traits are NOT generic over SPIN** — they use `impl<const SPIN: bool> Trait for Model<SPIN>`. Trait methods are static dispatch, not trait objects.
+4. **`surf_Green` keeps `spin: bool`** — its hot path is O(n³) matrix inversion; the single branch is negligible.
+5. **`update_hamiltonian!` / `add_hamiltonian!` macros** — take `SPIN` (const generic) instead of `self.spin`. The `if $spin { match pauli ... } else { ... }` branches are eliminated at compile time.
 
-#### `src/model.rs`
-- [ ] Define `Model<const SPIN: bool>` (remove `spin: bool` field)
-- [ ] Update `nsta()`: `if SPIN { 2 * self.norb() } else { self.norb() }`
-- [ ] Update `orb_angular()` — uses `self.nsta()`, no change needed
-- [ ] Implement `Serialize` for `Model<SPIN>` manually (write `SPIN` as field)
-- [ ] Implement `Deserialize` for `Model<SPIN>` — read spin in deserializer, verify against SPIN
-- [ ] Remove `Serialize`/`Deserialize` derive from `Model`
-- [ ] `Dimension` enum, `Gauge`, `SpinDirection` — unchanged
+## Doc comment guidelines
 
-#### `src/generics.rs`
-- [ ] `TryFrom<usize> for Dimension` — unchanged
-- [ ] Any spin-related traits? Check. Probably none.
+When writing or updating rustdoc for v0.7.0+:
 
-### Phase 2: Hot-path computation
+1. **Never reference `self.spin` or `model.spin`** in documentation — the field no longer exists.
+2. **Never reference `spin: bool` as a parameter** — `tb_model()` no longer takes it.
+3. **Use const-generic terminology**: "spinful model (`SPIN = true`)" or "`Model<true>`" instead of "`spin = true`".
+4. **Macro `$spin` parameter**: keep current docs (it's an internal implementation detail, still takes a bool value at the macro level — the caller now passes `SPIN` the const generic).
+5. **`surf_Green`**: its `spin: bool` field still exists and is an implementation detail; documentation can reference it but should note it's derived from `Model<SPIN>` via `from_Model`.
+6. **Doc examples**: use `Model::<false>::tb_model(...)` or `Model::<true>::tb_model(...)` (always with turbofish for clarity).
 
-#### `src/model_physics.rs`
-- [ ] `gen_ham` → `impl<const SPIN: bool> Model<SPIN> { fn gen_ham(...) }`
-  - `if SPIN` replaces `if self.spin` at lines 132, 134
-  - Phase vector U0 dimension: compile-time
-  - Gauge transform: already uses `for m + Zip` pattern, `nsta` from method
-- [ ] `dos` → generic over SPIN, uses `self.nsta()` and `solve_band_all_parallel`
-- [ ] No dispatch needed — `Model<SPIN>` is the only type
+### Doc anti-patterns to fix
 
-#### `src/velocity.rs`
-- [ ] Make `Velocity` trait generic: `pub trait Velocity<const SPIN: bool>`
-- [ ] `impl<const SPIN: bool> Velocity<SPIN> for Model<SPIN>`
-- [ ] `gen_v` — `orb_sta` construction: `if SPIN { concatenate } else { to_owned }` → compile-time
-- [ ] `UU` construction — uses `self.nsta()`, ok
-- [ ] No dispatch needed
+```rust
+// WRONG — references deleted spin field/parameter
+/// * `spin` - Whether to double the basis for spin (spinful model).
+/// If the model is spinless (`spin = false`), ...
+/// Create a spinful model with explicit atoms:
 
-#### `src/solve_ham.rs`
-- [ ] All solver methods → `impl<const SPIN: bool> Model<SPIN>`
-- [ ] `solve_onek`, `solve_band_onek`, `solve_band_all`, `solve_all`, etc.
-- [ ] Use `self.nsta()` everywhere (already done)
-- [ ] All methods → generic over SPIN, no dispatch needed
-
-#### `src/conductivity.rs`
-- [ ] All berry curvature / Hall methods → generic over SPIN
-- [ ] Change `if self.spin` → `if SPIN` at lines 547, 1003, 1300, 1458, 1633
-- [ ] `build_spin_matrix` — this uses `SpinDirection` (Pauli x/y/z), **NOT** `self.spin`, unchanged
-
-### Phase 3: Builders and constructors
-
-#### `src/model_build.rs`
-- [ ] `tb_model<const SPIN: bool>(...) -> Result<Model<SPIN>>`
-  - Parameter `spin: bool` DELETED, replaced by const generic
-  - Internal: `let nsta = if SPIN { 2 * norb } else { norb };`
-  - rmatrix diagonal init (line 257): `if SPIN { ... duplicate ... }` → compile-time
-- [ ] `set_hop`, `add_hop`, `add_element`, `set_onsite`, `add_onsite`, `set_onsite_one`
-  - `update_hamiltonian!` macro (line 70): takes `$spin: bool` as first argument. Line 74: `if $spin { match $pauli { ... } } else { ... }`.
-    With `SPIN` as const generic, `$spin` becomes `SPIN` (compile-time constant):
-    - `SPIN == false` → compiler eliminates entire `if { match pauli }` block, leaves only `ham[[i,j]] = tmp`
-    - `SPIN == true` → compiler eliminates `else` branch, keeps only `match pauli` (which IS necessary — x/y/z/None are independent of spinless/spinful)
-  - Gates at lines 382, 502: `self.spin == false && pauli != SpinDirection::None` → `!SPIN && pauli != SpinDirection::None`
-  - Matrix dimensions use `self.nsta()` — auto-correct
-- [ ] `del_hop`, `shift_to_atom`, `move_to_atom`, `remove_orb`, `remove_atom` — generic
-- [ ] `make_supercell<const SPIN: bool>` — internal loops use `SPIN` compile-time
-- [ ] `reorder_atom` — uses `self.spin` at line 1021, 1108
-- [ ] Output `spin: SPIN` at line 1553 for final Model construction
-#### `src/wannier90.rs`
-- [ ] `from_hr` → generic: `Model::<SPIN>::from_hr(...)` — verifies file spin matches SPIN, errors if not
-- [ ] User must specify SPIN at call site. If spin is unknown, user manually checks file header first.
-  ```rust
-  // User code: explicit
-  let m = Model::<true>::from_hr("wannier90_hr.dat")?;  // expects spinful
-  let m = Model::<false>::from_hr("wannier90_hr.dat")?; // expects spinless, errors if spinors=T
-  ```
-
-#### `src/SKmodel.rs`
-- [ ] Line 273: `Model::tb_model(self.dim_r, ..., self.spin, None)` → `SKmodel` itself needs SPIN
-
-### Phase 4: Supporting modules
-
-#### `src/surfgreen.rs`
-- [ ] `surf_Green` struct: **KEEP** `spin: bool` field (not worth making generic)
-  - Reason: constructed once, hot path is O(n³) matrix inversion, `if self.spin` is negligible
-  - BUT: `from_Model` now takes `Model<SPIN>`, derive `spin = SPIN`
-  - `from_Model<const SPIN: bool>(model: &Model<SPIN>, ...) -> Result<surf_Green>`
-- [ ] `gen_ham_onek` — `self.spin` used for orb_phase doubling (line 213). Keep as-is.
-- [ ] All other surf_Green methods — unchanged
-- [ ] Add `from_model` generic: `from_Model<const SPIN: bool>(model: &Model<SPIN>, ...)`
-
-#### `src/cut.rs`
-- [ ] All methods → generic over SPIN
-- [ ] `self.spin` → `SPIN` at lines 132, 154, 217, 256, 325, 451, 464, 476, 667, 678
-
-#### `src/model_transform.rs`
-- [ ] All methods → generic over SPIN
-- [ ] `self.spin` → `SPIN` at lines 89, 158, 217, 427, 490, 503, 556, 597, 671
-
-#### `src/geometry.rs`
-- [ ] Methods → generic over SPIN
-- [ ] `self.spin` → `SPIN` at lines 178, 238
-
-#### `src/unfold.rs`
-- [ ] `unfold` trait → `trait Unfold<const SPIN: bool>`
-- [ ] `impl<const SPIN: bool> Unfold<SPIN> for Model<SPIN>`
-- [ ] `self.spin` → `SPIN` at line 223
-
-#### `src/output.rs`
-- [ ] Output functions → generic over SPIN
-- [ ] `self.spin` → `SPIN` at lines 422, 460, 494
-
-#### `src/magnetic_field.rs`
-- [ ] Check if `self.spin` is referenced (from grep, it's not directly). Uses `nsta()`.
-
-### Phase 5: Tests, benches, examples
-
-#### `src/lib.rs` (tests module only — NO Python bindings in this codebase)
-- [ ] `build_small()` → returns `Model<false>`
-- [ ] All test functions using Model: add type annotation or let inference work
-
-#### `benches/bench_main.rs`
-- [ ] `build_small()` → returns `Model<false>`
-- [ ] `build_small_spinful()` → returns `Model<true>`
-- [ ] `build_medium()`, `build_large()` → returns `Model<false>` (all supercells are spinless)
-- [ ] Benchmark functions: accept `Model<SPIN>` directly (spinless builds for most, spinful for spin-orbit benchmarks)
-
-#### `examples/*.rs`
-- [ ] Each example: `tb_model::<true>(...)` or `tb_model::<false>(...)` as appropriate
-
-## 3. Migration Order (for parallel agents)
-
-```
-Agent 1: src/model.rs          (core types, serde)
-Agent 2: src/model_physics.rs  (gen_ham, dos)
-Agent 3: src/velocity.rs       (Velocity trait, gen_v)
-Agent 4: src/solve_ham.rs      (all solvers)
-Agent 5: src/conductivity.rs   (berry, Hall, spin Hall)
-Agent 6: src/model_build.rs    (tb_model, set_hop, add_hop, make_supercell, update_hamiltonian!)
-Agent 7: src/wannier90.rs      (from_hr generic, verifies SPIN)
-Agent 8: src/surfgreen.rs      (surf_Green keeps bool, from_Model generic)
-Agent 9: src/cut.rs + src/model_transform.rs + src/geometry.rs
-Agent 10: src/unfold.rs + src/output.rs + src/SKmodel.rs
-Agent 11: benches/ + examples/ + tests in src/lib.rs
+// CORRECT
+/// * `SPIN` is a const generic on [`Model`]; `Model::<true>` doubles the basis for spin.
+/// For spinless models (default), the hopping is simply written...
+/// Create a spinful model:
+/// ```
+/// Model::<true>::tb_model(3, lat, orb, Some(atoms)).unwrap();
+/// ```
 ```
 
-Agent 1 must complete first (core types). Agents 2-11 can then run in parallel.
+### Key files with doc comments needing attention
 
-## 4. Risk Points
-
-- **Serde**: `Model<SPIN>` cannot derive Deserialize. Must use custom implementation. Internal `ModelData` helper struct may simplify this.
-- **Trait objects**: `Velocity<SPIN>` trait cannot be made into trait object. All velocity usage is static dispatch already, so this is fine.
-- **`update_hamiltonian!` macro**: Takes `$spin: bool` parameter. Replace with `SPIN` const generic in calling context. Macro itself unchanged.
-- **surf_Green `spin` field**: Keep as bool. The `from_Model` function bridges `Model<SPIN>` to surf_Green.
-- **Backward compatibility**: All existing code that constructs `Model` with `spin: bool` breaks. Provide `tb_model_any(spin, ...)` for migration.
-
-## 5. Key Design Decisions
-
-1. **`surf_Green` stays with `spin: bool`** — its hot path is O(n³) matrix inversion; the spin branch overhead is negligible.
-2. **`Model<SPIN>` is the only type** — no runtime dispatch enum. Users specify SPIN at compile time.
-3. **Default `SPIN = false`** allows `Model` without turbofish for spinless cases.
-4. **Serde**: Custom serialize/deserialize on `Model<SPIN>`. Deserialization verifies file spin matches SPIN.
-5. **`from_hr`**: Generic over SPIN, verifies file matches. Users must know spin at compile time.
+- `src/model_build.rs` — `tb_model` docs, `update_hamiltonian!`/`add_hamiltonian!` docs, `set_hop`/`add_hop` docs, top-level module docs
+- `src/model.rs` — struct-level rustdoc
+- `src/velocity.rs` — `gen_v` comment about spin doubling
+- `src/model_physics.rs` — `gen_ham` comment about spin doubling
+- `src/conductivity.rs` — any spin-related docs
+- `src/surfgreen.rs` — `surf_Green` spin field docs
+- `src/SKmodel.rs` — `SlaterKosterModel` docs
+- `src/lib.rs` — quick start example (line 164 uses `Model::<false>::`)
 
 ---
 
@@ -409,7 +290,7 @@ Run `cargo test` to execute all tests; check generated PDFs in `tests/` for visu
 
 ## Notes for Development
 - When adding new hopping terms, ensure Hermitian conjugate exists (`-R` vector)
-- Spin‑ful models double the orbital basis (Pauli matrices in spin space)
+- Spin is a const generic (`Model<SPIN>`): `Model<true>` doubles the orbital basis with Pauli matrices in spin space
 - Position matrix `rmatrix` is essential for velocity operator calculations
 - Use `Gauge::Atom` or `Gauge::Lattice` for consistent phase conventions
 - k‑points are in reciprocal lattice coordinates (fractions of reciprocal vectors)

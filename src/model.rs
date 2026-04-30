@@ -17,9 +17,9 @@ use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{Result, TbError};
 use ndarray::*;
 use num_complex::Complex;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de;
 use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Tight-binding model structure representing the Hamiltonian $H(\mathbf{k})$ and related properties.
 ///
@@ -30,8 +30,8 @@ use serde::ser::SerializeStruct;
 /// $$
 ///
 /// The const generic `SPIN` controls whether the model includes spin:
-/// - `Model<false>`: spinless, `nsta() == norb()`
-/// - `Model<true>`: spinful, `nsta() == 2 * norb()`, basis is [orb_1↑, orb_2↑, ..., orb_1↓, orb_2↓, ...]
+/// - `Model<false>` (default): spinless, `nsta() == norb()`
+/// - `Model<true>`: spinful, `nsta() == 2 * norb()`, basis is [orb₁↑, orb₂↑, ..., orb₁↓, orb₂↓, ...]
 #[derive(Clone, Debug)]
 pub struct Model<const SPIN: bool = false> {
     /// Real space dimension $d$ of the model (2D or 3D systems)
@@ -98,7 +98,10 @@ impl<'de, const SPIN: bool> Deserialize<'de> for Model<SPIN> {
                 formatter.write_str("a Model struct")
             }
 
-            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> std::result::Result<Self::Value, A::Error> {
+            fn visit_map<A: de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
                 let mut dim_r: Option<Dimension> = None;
                 let mut spin: Option<bool> = None;
                 let mut lat: Option<Array2<f64>> = None;
@@ -135,7 +138,8 @@ impl<'de, const SPIN: bool> Deserialize<'de> for Model<SPIN> {
                     dim_r: dim_r.ok_or_else(|| de::Error::missing_field("dim_r"))?,
                     lat: lat.ok_or_else(|| de::Error::missing_field("lat"))?,
                     orb: orb.ok_or_else(|| de::Error::missing_field("orb"))?,
-                    orb_projection: orb_projection.ok_or_else(|| de::Error::missing_field("orb_projection"))?,
+                    orb_projection: orb_projection
+                        .ok_or_else(|| de::Error::missing_field("orb_projection"))?,
                     atoms: atoms.ok_or_else(|| de::Error::missing_field("atoms"))?,
                     ham: ham.ok_or_else(|| de::Error::missing_field("ham"))?,
                     hamR: hamR.ok_or_else(|| de::Error::missing_field("hamR"))?,
@@ -144,7 +148,21 @@ impl<'de, const SPIN: bool> Deserialize<'de> for Model<SPIN> {
             }
         }
 
-        deserializer.deserialize_struct("Model", &["dim_r", "spin", "lat", "orb", "orb_projection", "atoms", "ham", "hamR", "rmatrix"], ModelVisitor::<SPIN>)
+        deserializer.deserialize_struct(
+            "Model",
+            &[
+                "dim_r",
+                "spin",
+                "lat",
+                "orb",
+                "orb_projection",
+                "atoms",
+                "ham",
+                "hamR",
+                "rmatrix",
+            ],
+            ModelVisitor::<SPIN>,
+        )
     }
 }
 
@@ -232,11 +250,7 @@ impl<const SPIN: bool> Model<SPIN> {
     #[inline(always)]
     pub fn nsta(&self) -> usize {
         // SPIN is a compile-time constant: compiler eliminates the dead branch
-        if SPIN {
-            2 * self.norb()
-        } else {
-            self.norb()
-        }
+        if SPIN { 2 * self.norb() } else { self.norb() }
     }
     #[inline(always)]
     pub fn orb_angular(&self) -> Result<Array3<Complex<f64>>> {

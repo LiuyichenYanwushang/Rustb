@@ -16,7 +16,7 @@
 //! orbital indices is also added with the complex conjugate of the hopping
 //! amplitude.
 //!
-//! For spinful models (`spin = true`), the basis is doubled: the first `norb`
+//! For spinful models (`Model::<true>`), the basis is doubled: the first `norb`
 //! entries correspond to spin-up, and the second `norb` entries to spin-down. The
 //! `pauli` parameter controls which Pauli matrix acts in spin space.
 //!
@@ -56,11 +56,12 @@ use num_complex::Complex;
 /// - [`SpinDirection::z`]: Writes `+tmp` to up/up and `-tmp` to down/down.
 ///   Corresponds to `sigma_z`.
 ///
-/// If the model is spinless (`spin = false`), the hopping is simply written
+/// For spinless models (the default), the hopping is simply written
 /// at `(ind_i, ind_j)` without any spin structure.
 ///
 /// # Parameters
-/// * `$spin` - `bool` indicating whether the model has spin
+/// * `$spin` - compile-time constant (`SPIN` const generic) indicating
+///   whether the model has spin
 /// * `$pauli` - [`SpinDirection`] selecting the Pauli matrix in spin space
 /// * `$tmp` - The hopping amplitude (type `Complex<f64>`)
 /// * `$new_ham` - Mutable view of the Hamiltonian matrix
@@ -106,7 +107,8 @@ macro_rules! update_hamiltonian {
 /// [`update_hamiltonian!`].
 ///
 /// # Parameters
-/// * `$spin` - `bool` indicating whether the model has spin
+/// * `$spin` - compile-time constant (`SPIN` const generic) indicating
+///   whether the model has spin
 /// * `$pauli` - [`SpinDirection`] selecting the Pauli matrix in spin space
 /// * `$tmp` - The hopping amplitude (type `Complex<f64>`)
 /// * `$new_ham` - Mutable view of the Hamiltonian matrix
@@ -164,6 +166,11 @@ impl<const SPIN: bool> Model<SPIN> {
     ///   `(norb, dim_r)`.
     /// * `atom` - Optional list of [`Atom`] objects. If `None`, atoms are
     ///   inferred from `orb`.
+    ///
+    /// The `SPIN` const generic determines whether the basis is spin-doubled.
+    /// Use `Model::<true>::tb_model(...)` for spinful models,
+    /// `Model::<false>::tb_model(...)` or just `Model::tb_model(...)` for
+    /// spinless.
     ///
     /// # Returns
     /// `Result<Model<SPIN>>` containing the initialized tight-binding model.
@@ -332,7 +339,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// - [`SpinDirection::y`] (2): `tmp * sigma_y`
     /// - [`SpinDirection::z`] (3): `tmp * sigma_z`
     ///
-    /// For a spinless model, `pauli` is ignored.
+    /// For a spinless model (`Model<false>`), `pauli` is silently ignored.
     ///
     /// # Arguments
     /// * `tmp` - Hopping amplitude, `f64` (real) or `Complex<f64>`.
@@ -436,8 +443,7 @@ impl<const SPIN: bool> Model<SPIN> {
             None => {
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
-                let new_ham =
-                    update_hamiltonian!(SPIN, pauli, tmp, new_ham, ind_i, ind_j, norb);
+                let new_ham = update_hamiltonian!(SPIN, pauli, tmp, new_ham, ind_i, ind_j, norb);
                 self.ham.push(Axis(0), new_ham.view()).unwrap();
                 self.hamR.push(Axis(0), R.view()).unwrap();
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
@@ -548,8 +554,7 @@ impl<const SPIN: bool> Model<SPIN> {
             None => {
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
 
-                let new_ham =
-                    update_hamiltonian!(SPIN, pauli, tmp, new_ham, ind_i, ind_j, norb);
+                let new_ham = update_hamiltonian!(SPIN, pauli, tmp, new_ham, ind_i, ind_j, norb);
                 self.ham.push(Axis(0), new_ham.view()).unwrap();
                 self.hamR.push(Axis(0), R.view()).unwrap();
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
@@ -1206,12 +1211,36 @@ impl<const SPIN: bool> Model<SPIN> {
                                     a[1] + i_f * u0[1] + j_f * u1[1] + k_f * u2[1],
                                     a[2] + i_f * u0[2] + j_f * u1[2] + k_f * u2[2],
                                 ]);
-                                atoms[[0]] = if atoms[[0]].abs() < 1e-8 { 0.0 } else if (atoms[[0]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[0]] };
-                                atoms[[1]] = if atoms[[1]].abs() < 1e-8 { 0.0 } else if (atoms[[1]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[1]] };
-                                atoms[[2]] = if atoms[[2]].abs() < 1e-8 { 0.0 } else if (atoms[[2]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[2]] };
+                                atoms[[0]] = if atoms[[0]].abs() < 1e-8 {
+                                    0.0
+                                } else if (atoms[[0]] - 1.0).abs() < 1e-8 {
+                                    1.0
+                                } else {
+                                    atoms[[0]]
+                                };
+                                atoms[[1]] = if atoms[[1]].abs() < 1e-8 {
+                                    0.0
+                                } else if (atoms[[1]] - 1.0).abs() < 1e-8 {
+                                    1.0
+                                } else {
+                                    atoms[[1]]
+                                };
+                                atoms[[2]] = if atoms[[2]].abs() < 1e-8 {
+                                    0.0
+                                } else if (atoms[[2]] - 1.0).abs() < 1e-8 {
+                                    1.0
+                                } else {
+                                    atoms[[2]]
+                                };
                                 if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                                    new_atom.push(Atom::new(atoms, self.atoms[n].norb(), self.atoms[n].atom_type()));
-                                    for n0 in use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb() {
+                                    new_atom.push(Atom::new(
+                                        atoms,
+                                        self.atoms[n].norb(),
+                                        self.atoms[n].atom_type(),
+                                    ));
+                                    for n0 in
+                                        use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb()
+                                    {
                                         let o = use_orb.row(n0);
                                         let orbs = arr1(&[
                                             o[0] + i_f * u0[0] + j_f * u1[0] + k_f * u2[0],
@@ -1241,11 +1270,28 @@ impl<const SPIN: bool> Model<SPIN> {
                                 a[0] + i_f * u0[0] + j_f * u1[0],
                                 a[1] + i_f * u0[1] + j_f * u1[1],
                             ]);
-                            atoms[[0]] = if atoms[[0]].abs() < 1e-8 { 0.0 } else if (atoms[[0]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[0]] };
-                            atoms[[1]] = if atoms[[1]].abs() < 1e-8 { 0.0 } else if (atoms[[1]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[1]] };
+                            atoms[[0]] = if atoms[[0]].abs() < 1e-8 {
+                                0.0
+                            } else if (atoms[[0]] - 1.0).abs() < 1e-8 {
+                                1.0
+                            } else {
+                                atoms[[0]]
+                            };
+                            atoms[[1]] = if atoms[[1]].abs() < 1e-8 {
+                                0.0
+                            } else if (atoms[[1]] - 1.0).abs() < 1e-8 {
+                                1.0
+                            } else {
+                                atoms[[1]]
+                            };
                             if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                                new_atom.push(Atom::new(atoms, self.atoms[n].norb(), self.atoms[n].atom_type()));
-                                for n0 in use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb() {
+                                new_atom.push(Atom::new(
+                                    atoms,
+                                    self.atoms[n].norb(),
+                                    self.atoms[n].atom_type(),
+                                ));
+                                for n0 in use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb()
+                                {
                                     let o = use_orb.row(n0);
                                     let orbs = arr1(&[
                                         o[0] + i_f * u0[0] + j_f * u1[0],
@@ -1267,9 +1313,19 @@ impl<const SPIN: bool> Model<SPIN> {
                     for n in 0..self.natom() {
                         let a = use_atom_position.row(n);
                         let mut atoms = arr1(&[a[0] + i_f * u0[0]]);
-                        atoms[[0]] = if atoms[[0]].abs() < 1e-8 { 0.0 } else if (atoms[[0]] - 1.0).abs() < 1e-8 { 1.0 } else { atoms[[0]] };
+                        atoms[[0]] = if atoms[[0]].abs() < 1e-8 {
+                            0.0
+                        } else if (atoms[[0]] - 1.0).abs() < 1e-8 {
+                            1.0
+                        } else {
+                            atoms[[0]]
+                        };
                         if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                            new_atom.push(Atom::new(atoms, self.atoms[n].norb(), self.atoms[n].atom_type()));
+                            new_atom.push(Atom::new(
+                                atoms,
+                                self.atoms[n].norb(),
+                                self.atoms[n].atom_type(),
+                            ));
                             for n0 in use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb() {
                                 let o = use_orb.row(n0);
                                 let orbs = arr1(&[o[0] + i_f * u0[0]]);

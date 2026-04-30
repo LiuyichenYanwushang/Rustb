@@ -160,11 +160,8 @@ impl<const SPIN: bool> Velocity for Model<SPIN> {
                     Dimension::two => orb_sta
                         .outer_iter()
                         .map(|tau| {
-                            Complex::new(
-                                0.0,
-                                2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1]),
-                            )
-                            .exp()
+                            Complex::new(0.0, 2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1]))
+                                .exp()
                         })
                         .collect(),
                     Dimension::three => orb_sta
@@ -172,10 +169,7 @@ impl<const SPIN: bool> Velocity for Model<SPIN> {
                         .map(|tau| {
                             Complex::new(
                                 0.0,
-                                2.0 * PI
-                                    * (tau[0] * kvec[0]
-                                        + tau[1] * kvec[1]
-                                        + tau[2] * kvec[2]),
+                                2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1] + tau[2] * kvec[2]),
                             )
                             .exp()
                         })

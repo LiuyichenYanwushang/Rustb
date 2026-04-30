@@ -48,6 +48,12 @@ pub struct SkParams {
     pub v_ff_phi: Option<f64>,
 }
 
+/// Slater-Koster tight-binding model description, before conversion to
+/// a full [`Model`].
+///
+/// The const generic `SPIN` (default `false`) controls whether the
+/// resulting [`Model`] will be spinful. When `SPIN = true`, the orbital
+/// basis is doubled with a Pauli-matrix structure.
 #[derive(Debug, Clone)]
 pub struct SlaterKosterModel<const SPIN: bool = false> {
     pub dim_r: usize,
@@ -72,6 +78,10 @@ impl<const SPIN: bool> Default for SlaterKosterModel<SPIN> {
 // -----------------------------------------------------------------------------
 
 impl<const SPIN: bool> SlaterKosterModel<SPIN> {
+    /// Create a new `SlaterKosterModel`.
+    ///
+    /// The `SPIN` const generic controls whether the eventual [`Model`]
+    /// will be spinful. The default neighbor search range is 3.
     pub fn new(dim_r: usize, lat: Array2<f64>, atoms: Vec<SkAtom>) -> Self {
         Self {
             dim_r,
@@ -235,6 +245,10 @@ fn sk_element(
 // Trait and implementation for building Model
 // -----------------------------------------------------------------------------
 
+/// Trait for building a tight-binding [`Model`] from an SK description.
+///
+/// The const generic `SPIN` is carried through to the output [`Model`].
+/// When `SPIN = true`, `build_model` constructs a spinful basis.
 pub trait ToTbModel<const SPIN: bool> {
     fn build_model(
         &self,

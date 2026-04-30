@@ -1,6 +1,6 @@
 //! Physics calculation methods for tight-binding models
-use crate::Gauge;
 use crate::Dimension;
+use crate::Gauge;
 use crate::Model;
 use crate::error::{Result, TbError};
 use crate::kpoints::gen_kmesh;
@@ -71,8 +71,7 @@ impl<const SPIN: bool> Model<SPIN> {
                 Zip::from(self.ham.outer_iter())
                     .and(self.hamR.outer_iter())
                     .for_each(|hm, hamr_row| {
-                        let phase =
-                            hamr_row[0] as f64 * kvec[0] + hamr_row[1] as f64 * kvec[1];
+                        let phase = hamr_row[0] as f64 * kvec[0] + hamr_row[1] as f64 * kvec[1];
                         let u = Complex::new(0.0, 2.0 * PI * phase).exp();
                         //Zip::from(&mut hamk).and(&hm).for_each(|a, &b| *a += b * u);
                         hamk.scaled_add(u, &hm);
@@ -106,11 +105,8 @@ impl<const SPIN: bool> Model<SPIN> {
                         .orb
                         .outer_iter()
                         .map(|tau| {
-                            Complex::new(
-                                0.0,
-                                2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1]),
-                            )
-                            .exp()
+                            Complex::new(0.0, 2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1]))
+                                .exp()
                         })
                         .collect(),
                     Dimension::three => self
@@ -119,8 +115,7 @@ impl<const SPIN: bool> Model<SPIN> {
                         .map(|tau| {
                             Complex::new(
                                 0.0,
-                                2.0 * PI
-                                    * (tau[0] * kvec[0] + tau[1] * kvec[1] + tau[2] * kvec[2]),
+                                2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1] + tau[2] * kvec[2]),
                             )
                             .exp()
                         })

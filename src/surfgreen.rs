@@ -41,7 +41,8 @@ pub struct surf_Green {
     pub nsta: usize,
     /// - The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
     pub natom: usize,
-    /// - Whether the model has spin enabled. If enabled, spin=true
+    /// - Whether this surface Green's function was built from a spinful model.
+    ///   Derived from `Model<SPIN>` via [`from_Model`](surf_Green::from_Model).
     pub spin: bool,
     /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
     pub lat: Array2<f64>,
@@ -118,6 +119,12 @@ impl Kpath for surf_Green {
 
 impl surf_Green {
     /// Construct a `surf_Green` from a [`Model`].
+    ///
+    /// This method is generic over the const parameter `SPIN`, which
+    /// determines whether spin is enabled. The `surf_Green::spin` field is
+    /// set from this const generic (`spin = SPIN`), and the internal
+    /// Hamiltonian construction (`orb_phase` doubling, etc.) uses it at
+    /// runtime.
     ///
     /// `dir` specifies the surface normal direction.
     ///
