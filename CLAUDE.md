@@ -32,39 +32,22 @@ Key method changes on `impl<const SPIN: bool> Model<SPIN>`:
 - `norb()`, `natom()`, `nR()`, `dim_r()`, `atom_*()` — unchanged
 - `orb_angular()` — uses `self.nsta()` internally, works generically
 
-### 1.2 Runtime dispatch enum (in `src/model.rs`)
+### 1.2 NO runtime dispatch enum
+
+There is NO `AnyModel` enum. `Model<SPIN>` is the only Model type. Users specify spin at compile time:
 
 ```rust
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum AnyModel {
-    Spinless(Model<false>),
-    Spinful(Model<true>),
-}
+let m = Model::<false>::tb_model(2, lat, orb, None)?;  // spinless
+let m = Model::<true>::tb_model(2, lat, orb, None)?;   // spinful
 ```
-
-Every public method on `Model<SPIN>` gets a dispatch wrapper on `AnyModel`:
-
-```rust
-impl AnyModel {
-    pub fn gen_ham<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>, gauge: Gauge) -> Array2<Complex<f64>> {
-        match self {
-            AnyModel::Spinless(m) => m.gen_ham(kvec, gauge),
-            AnyModel::Spinful(m)   => m.gen_ham(kvec, gauge),
-        }
-    }
-    // ... same pattern for gen_v, solve_onek, dos, berry_curvature_onek, etc.
-}
-```
-
-This ensures **O(1) dispatch** — one branch at the call site, zero branches inside the const-generic implementation.
 
 ### 1.3 Serde strategy
 
-`Model<const SPIN: bool>` cannot derive `Deserialize` (const generics + serde derive is broken). Strategy:
+`Model<const SPIN: bool>` cannot derive `Deserialize` (const generics + serde derive issue).
 
-- **Serialize**: manual impl writes `spin` field from `SPIN` constant
-- **Deserialize**: deserialize to `AnyModel` only (first reads spin field, then constructs appropriate variant). Individual `Model<SPIN>` cannot be deserialized directly.
-- Save/load paths use `AnyModel`, not `Model<SPIN>`.
+- **Serialize**: manual impl, write `"spin": SPIN` field
+- **Deserialize**: custom `Deserialize` impl reads `spin` field first, then dispatches internally. Both `Model<false>` and `Model<true>` get their own deserialize impls (duplicate code, ~30 lines each).
+- Alternative: a private `ModelData` intermediate struct with `spin: bool`, deserialized first, then converted to `Model<SPIN>` with a compile-time check.
 
 ## 2. File-by-File Changes (ordered by dependency)
 
@@ -74,10 +57,8 @@ This ensures **O(1) dispatch** — one branch at the call site, zero branches in
 - [ ] Define `Model<const SPIN: bool>` (remove `spin: bool` field)
 - [ ] Update `nsta()`: `if SPIN { 2 * self.norb() } else { self.norb() }`
 - [ ] Update `orb_angular()` — uses `self.nsta()`, no change needed
-- [ ] Define `AnyModel` enum with `Spinless(Model<false>)` and `Spinful(Model<true>)`
-- [ ] Add dispatch methods on `AnyModel` for: `atom_*()`, `nsta()`, `norb()`, `natom()`, `nR()`, `dim_r()`, `orb_angular()`
 - [ ] Implement `Serialize` for `Model<SPIN>` manually (write `SPIN` as field)
-- [ ] Implement `Deserialize` for `AnyModel`
+- [ ] Implement `Deserialize` for `Model<SPIN>` — read spin in deserializer, verify against SPIN
 - [ ] Remove `Serialize`/`Deserialize` derive from `Model`
 - [ ] `Dimension` enum, `Gauge`, `SpinDirection` — unchanged
 
@@ -93,26 +74,25 @@ This ensures **O(1) dispatch** — one branch at the call site, zero branches in
   - Phase vector U0 dimension: compile-time
   - Gauge transform: already uses `for m + Zip` pattern, `nsta` from method
 - [ ] `dos` → generic over SPIN, uses `self.nsta()` and `solve_band_all_parallel`
-- [ ] Add `AnyModel::gen_ham`, `AnyModel::dos` dispatch
+- [ ] No dispatch needed — `Model<SPIN>` is the only type
 
 #### `src/velocity.rs`
 - [ ] Make `Velocity` trait generic: `pub trait Velocity<const SPIN: bool>`
 - [ ] `impl<const SPIN: bool> Velocity<SPIN> for Model<SPIN>`
 - [ ] `gen_v` — `orb_sta` construction: `if SPIN { concatenate } else { to_owned }` → compile-time
 - [ ] `UU` construction — uses `self.nsta()`, ok
-- [ ] Add `AnyModel::gen_v` dispatch
+- [ ] No dispatch needed
 
 #### `src/solve_ham.rs`
 - [ ] All solver methods → `impl<const SPIN: bool> Model<SPIN>`
 - [ ] `solve_onek`, `solve_band_onek`, `solve_band_all`, `solve_all`, etc.
 - [ ] Use `self.nsta()` everywhere (already done)
-- [ ] Add `AnyModel` dispatch wrappers
+- [ ] All methods → generic over SPIN, no dispatch needed
 
 #### `src/conductivity.rs`
 - [ ] All berry curvature / Hall methods → generic over SPIN
 - [ ] Change `if self.spin` → `if SPIN` at lines 547, 1003, 1300, 1458, 1633
 - [ ] `build_spin_matrix` — this uses `SpinDirection` (Pauli x/y/z), **NOT** `self.spin`, unchanged
-- [ ] Add `AnyModel` dispatch for: `berry_curvature_onek`, `berry_curvature_n_onek`, `Hall_conductivity`, `Spin_Hall_conductivity`, `Hall_conductivity_mu`
 
 ### Phase 3: Builders and constructors
 
@@ -132,22 +112,17 @@ This ensures **O(1) dispatch** — one branch at the call site, zero branches in
 - [ ] `make_supercell<const SPIN: bool>` — internal loops use `SPIN` compile-time
 - [ ] `reorder_atom` — uses `self.spin` at line 1021, 1108
 - [ ] Output `spin: SPIN` at line 1553 for final Model construction
-- [ ] Add `tb_model_any(spin: bool, ...) -> Result<AnyModel>` convenience function
-
 #### `src/wannier90.rs`
-- [ ] `from_hr` → returns `AnyModel` (spin detected at runtime from file)
-- [ ] Internal: detect spin (line 314-315), then construct appropriate variant
+- [ ] `from_hr` → generic: `Model::<SPIN>::from_hr(...)` — verifies file spin matches SPIN, errors if not
+- [ ] User must specify SPIN at call site. If spin is unknown, user manually checks file header first.
   ```rust
-  if spin { AnyModel::Spinful(Model { ... }) } else { AnyModel::Spinless(Model { ... }) }
+  // User code: explicit
+  let m = Model::<true>::from_hr("wannier90_hr.dat")?;  // expects spinful
+  let m = Model::<false>::from_hr("wannier90_hr.dat")?; // expects spinless, errors if spinors=T
   ```
-- [ ] `from_hr_file` — returns `AnyModel`
-- [ ] All other wannier90 functions — returns `AnyModel`
-- [ ] Construction code uses `nsta` (already parsed from file), minimal changes
 
 #### `src/SKmodel.rs`
-- [ ] Line 273: `Model::tb_model(self.dim_r, ..., self.spin, None)` → needs SPIN
-- [ ] Either make `SKmodel` generic over SPIN, or use `AnyModel` internally
-- [ ] Simplest: detect at construction time, use `tb_model_any`
+- [ ] Line 273: `Model::tb_model(self.dim_r, ..., self.spin, None)` → `SKmodel` itself needs SPIN
 
 ### Phase 4: Supporting modules
 
@@ -158,7 +133,7 @@ This ensures **O(1) dispatch** — one branch at the call site, zero branches in
   - `from_Model<const SPIN: bool>(model: &Model<SPIN>, ...) -> Result<surf_Green>`
 - [ ] `gen_ham_onek` — `self.spin` used for orb_phase doubling (line 213). Keep as-is.
 - [ ] All other surf_Green methods — unchanged
-- [ ] Add `AnyModel` wrapper: `surf_Green::from_any_model(model: &AnyModel, ...) -> Result<surf_Green>`
+- [ ] Add `from_model` generic: `from_Model<const SPIN: bool>(model: &Model<SPIN>, ...)`
 
 #### `src/cut.rs`
 - [ ] All methods → generic over SPIN
@@ -189,13 +164,12 @@ This ensures **O(1) dispatch** — one branch at the call site, zero branches in
 #### `src/lib.rs` (tests module only — NO Python bindings in this codebase)
 - [ ] `build_small()` → returns `Model<false>`
 - [ ] All test functions using Model: add type annotation or let inference work
-- [ ] `gen_ham`, `gen_v` tests: call via `AnyModel` or direct `Model<SPIN>`
 
 #### `benches/bench_main.rs`
 - [ ] `build_small()` → returns `Model<false>`
 - [ ] `build_small_spinful()` → returns `Model<true>`
 - [ ] `build_medium()`, `build_large()` → returns `Model<false>` (all supercells are spinless)
-- [ ] Benchmark functions: accept `Model<SPIN>` or use `AnyModel`
+- [ ] Benchmark functions: accept `Model<SPIN>` directly (spinless builds for most, spinful for spin-orbit benchmarks)
 
 #### `examples/*.rs`
 - [ ] Each example: `tb_model::<true>(...)` or `tb_model::<false>(...)` as appropriate
@@ -203,13 +177,13 @@ This ensures **O(1) dispatch** — one branch at the call site, zero branches in
 ## 3. Migration Order (for parallel agents)
 
 ```
-Agent 1: src/model.rs          (core types, AnyModel, serde, accessor dispatch)
-Agent 2: src/model_physics.rs  (gen_ham, dos + AnyModel dispatch)
-Agent 3: src/velocity.rs       (Velocity trait, gen_v + AnyModel dispatch)
-Agent 4: src/solve_ham.rs      (all solvers + AnyModel dispatch)
-Agent 5: src/conductivity.rs   (berry, Hall, spin Hall + AnyModel dispatch)
-Agent 6: src/model_build.rs    (tb_model, set_hop, add_hop, make_supercell, etc.)
-Agent 7: src/wannier90.rs      (from_hr returns AnyModel)
+Agent 1: src/model.rs          (core types, serde)
+Agent 2: src/model_physics.rs  (gen_ham, dos)
+Agent 3: src/velocity.rs       (Velocity trait, gen_v)
+Agent 4: src/solve_ham.rs      (all solvers)
+Agent 5: src/conductivity.rs   (berry, Hall, spin Hall)
+Agent 6: src/model_build.rs    (tb_model, set_hop, add_hop, make_supercell, update_hamiltonian!)
+Agent 7: src/wannier90.rs      (from_hr generic, verifies SPIN)
 Agent 8: src/surfgreen.rs      (surf_Green keeps bool, from_Model generic)
 Agent 9: src/cut.rs + src/model_transform.rs + src/geometry.rs
 Agent 10: src/unfold.rs + src/output.rs + src/SKmodel.rs
@@ -220,7 +194,7 @@ Agent 1 must complete first (core types). Agents 2-11 can then run in parallel.
 
 ## 4. Risk Points
 
-- **Serde**: `Model<SPIN>` cannot derive Deserialize. Must use `AnyModel` for all file I/O.
+- **Serde**: `Model<SPIN>` cannot derive Deserialize. Must use custom implementation. Internal `ModelData` helper struct may simplify this.
 - **Trait objects**: `Velocity<SPIN>` trait cannot be made into trait object. All velocity usage is static dispatch already, so this is fine.
 - **`update_hamiltonian!` macro**: Takes `$spin: bool` parameter. Replace with `SPIN` const generic in calling context. Macro itself unchanged.
 - **surf_Green `spin` field**: Keep as bool. The `from_Model` function bridges `Model<SPIN>` to surf_Green.
@@ -229,10 +203,10 @@ Agent 1 must complete first (core types). Agents 2-11 can then run in parallel.
 ## 5. Key Design Decisions
 
 1. **`surf_Green` stays with `spin: bool`** — its hot path is O(n³) matrix inversion; the spin branch overhead is negligible.
-2. **`AnyModel` is the public-facing type** for file I/O and runtime construction.
-3. **`Model<SPIN>` is the compute type** — all hot-path functions are generic over SPIN.
-4. **Default `SPIN = false`** allows `Model` without turbofish in simple cases.
-5. **Serde only on AnyModel** for deserialization; Serialize implemented manually for Model<SPIN>.
+2. **`Model<SPIN>` is the only type** — no runtime dispatch enum. Users specify SPIN at compile time.
+3. **Default `SPIN = false`** allows `Model` without turbofish for spinless cases.
+4. **Serde**: Custom serialize/deserialize on `Model<SPIN>`. Deserialization verifies file spin matches SPIN.
+5. **`from_hr`**: Generic over SPIN, verifies file matches. Users must know spin at compile time.
 
 ---
 
