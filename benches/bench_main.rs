@@ -344,6 +344,48 @@ fn bench_phase_dot_vs_perrow(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_surfgreen(c: &mut Criterion) {
+    // Use very small model: surfgreen O(nsta³) matrix inversion in surf_green_one
+    // dominates, so we keep nsta tiny for collectible benchmarks.
+    let mut group = c.benchmark_group("surfgreen");
+    let m = build_small();
+
+    group.bench_function("from_Model", |b| {
+        b.iter(|| {
+            let sg = surf_Green::from_Model(black_box(&m), 0, 0.01, None).unwrap();
+            black_box(sg)
+        })
+    });
+
+    let sg = surf_Green::from_Model(&m, 0, 0.01, None).unwrap();
+    let kvec_1d_sg = arr1(&[0.3]); // dim_r reduced to 1 after surface cut
+    group.bench_function("gen_ham_onek", |b| {
+        b.iter(|| {
+            let (h0, hr) = sg.gen_ham_onek(black_box(&kvec_1d_sg));
+            black_box((h0, hr))
+        })
+    });
+
+    let sg = surf_Green::from_Model(&m, 1, 0.01, None).unwrap();
+    let kvec_1d = arr1(&[0.3]);
+    group.bench_function("surf_green_one", |b| {
+        b.iter(|| {
+            let r = sg.surf_green_one(black_box(&kvec_1d), 0.0);
+            black_box(r)
+        })
+    });
+
+    let energies = Array1::linspace(-3.0, 3.0, 20);
+    group.bench_function("surf_green_onek", |b| {
+        b.iter(|| {
+            let r = sg.surf_green_onek(black_box(&kvec_1d), black_box(&energies));
+            black_box(r)
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_gen_ham,
@@ -354,5 +396,6 @@ criterion_group!(
     bench_hall_conductivity,
     bench_dos,
     bench_phase_dot_vs_perrow,
+    bench_surfgreen,
 );
 criterion_main!(benches);
