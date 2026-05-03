@@ -145,6 +145,7 @@ fn build_spin_matrix(norb: usize, spin: usize) -> Array2<Complex<f64>> {
     let half = Complex::new(0.5, 0.0);
     let i_half = Complex::new(0.0, 0.5);
     match spin {
+        0 => { m=Array2::<Complex<f64>>::eye(2*norb);}
         1 => {
             // σ_x ⊗ I: [0 I; I 0] / 2
             for i in 0..norb {
