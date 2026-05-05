@@ -18,17 +18,17 @@ fn main() {
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]) * a0; //正方晶格
     let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
     let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
-    model.set_onsite(&arr1(&[J, -J]), SpinDirection::z);
+    model.set_onsite(&arr1(&[J, -J]), SpinDirection::Z);
     //底层最近邻hopping
-    model.add_hop(t + delta, 0, 0, &array![-1, 0], SpinDirection::None);
-    model.add_hop(t - delta, 0, 0, &array![0, -1], SpinDirection::None);
-    model.add_hop(t - delta, 1, 1, &array![-1, 0], SpinDirection::None);
-    model.add_hop(t + delta, 1, 1, &array![0, -1], SpinDirection::None);
+    model.add_hop(t + delta, 0, 0, &array![-1, 0], None);
+    model.add_hop(t - delta, 0, 0, &array![0, -1], None);
+    model.add_hop(t - delta, 1, 1, &array![-1, 0], None);
+    model.add_hop(t + delta, 1, 1, &array![0, -1], None);
     //添加SOC项
-    model.add_hop(lm_so, 0, 1, &array![0, 0], SpinDirection::z);
-    model.add_hop(lm_so, 0, 1, &array![0, -1], SpinDirection::z);
-    model.add_hop(lm_so, 0, 1, &array![-1, 0], SpinDirection::z);
-    model.add_hop(lm_so, 0, 1, &array![-1, -1], SpinDirection::z);
+    model.add_hop(lm_so, 0, 1, &array![0, 0], SpinDirection::Z);
+    model.add_hop(lm_so, 0, 1, &array![0, -1], SpinDirection::Z);
+    model.add_hop(lm_so, 0, 1, &array![-1, 0], SpinDirection::Z);
+    model.add_hop(lm_so, 0, 1, &array![-1, -1], SpinDirection::Z);
 
     let nk: usize = 1001;
     let path = array![[0.0, 0.0], [0.0, 0.5], [0.5, 0.5], [0.0, 0.5], [0.0, 0.0]];
@@ -47,7 +47,7 @@ fn main() {
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
     let (berry_curv, band) =
-        model.berry_curvature_dipole_n(&kvec, &dir_1, &dir_2, &dir_3, 0.0, 0, 1e-3);
+        model.berry_curvature_dipole_n(&kvec, &dir_1, &dir_2, &dir_3, 0.0, None, 1e-3);
     ///////////////////////////////////////////
     let beta = 1.0 / T / (8.617e-5);
     let f: Array2<f64> = band.clone().map(|x| 1.0 / ((beta * x).exp() + 1.0));
@@ -64,7 +64,7 @@ fn main() {
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, 0, 1e-3);
+    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, None, 1e-3);
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data.map(|x| {
@@ -78,7 +78,7 @@ fn main() {
         "./examples/chern_alter/heat_map.pdf",
     );
     let conductivity = model
-        .Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, 0, 1e-3)
+        .Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, None, 1e-3)
         .unwrap();
     println!("{}", conductivity / (2.0 * PI));
 
@@ -88,7 +88,7 @@ fn main() {
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let sigma: Array1<f64> = model
-        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5)
+        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, None, 1e-5)
         .unwrap();
     //开始绘制非线性电导
     let mut fg = Figure::new();
@@ -109,7 +109,7 @@ fn main() {
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let sigma: Array1<f64> = model
-        .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, 0)
+        .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, None)
         .unwrap();
     //开始绘制非线性电导
     let mut fg = Figure::new();

@@ -16,7 +16,7 @@ fn build_small() -> Model<false> {
     let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
     let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
     let mut m = Model::<false>::tb_model(2, lat, orb, None).unwrap();
-    m.set_onsite(&arr1(&[-0.7, 0.7]), SpinDirection::None);
+    m.set_onsite(&arr1(&[-0.7, 0.7]), None);
     let r0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
         m.add_hop(
@@ -24,7 +24,7 @@ fn build_small() -> Model<false> {
             0,
             1,
             &r.to_owned(),
-            SpinDirection::None,
+            None,
         );
     }
     m
@@ -39,18 +39,18 @@ fn build_medium() -> Model<false> {
     let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
     let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
     let mut m = Model::<false>::tb_model(2, lat, orb, None).unwrap();
-    m.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
+    m.set_onsite(&arr1(&[-delta, delta]), None);
     let r0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
-        m.add_hop(t, 0, 1, &r.to_owned(), SpinDirection::None);
+        m.add_hop(t, 0, 1, &r.to_owned(), None);
     }
     let r0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
-        m.add_hop(t2 * li, 0, 0, &r.to_owned(), SpinDirection::None);
+        m.add_hop(t2 * li, 0, 0, &r.to_owned(), None);
     }
     let r0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
     for r in r0.axis_iter(Axis(0)) {
-        m.add_hop(t2 * li, 1, 1, &r.to_owned(), SpinDirection::None);
+        m.add_hop(t2 * li, 1, 1, &r.to_owned(), None);
     }
     #[allow(non_snake_case)]
     let U = array![[3.0, 0.0], [0.0, 3.0]];
@@ -65,18 +65,18 @@ fn build_small_spinful() -> Model<true> {
     let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
     let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
     let mut m = Model::<true>::tb_model(2, lat, orb, None).unwrap();
-    m.set_onsite(&arr1(&[0.0, 0.0]), SpinDirection::None);
+    m.set_onsite(&arr1(&[0.0, 0.0]), None);
     let r0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
-        m.set_hop(t, 0, 1, &r.to_owned(), SpinDirection::None);
+        m.set_hop(t, 0, 1, &r.to_owned(), None);
     }
     let r0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
-        m.set_hop(soc * li, 0, 0, &r.to_owned(), SpinDirection::z);
+        m.set_hop(soc * li, 0, 0, &r.to_owned(), SpinDirection::Z);
     }
     let r0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
     for r in r0.axis_iter(Axis(0)) {
-        m.set_hop(soc * li, 1, 1, &r.to_owned(), SpinDirection::z);
+        m.set_hop(soc * li, 1, 1, &r.to_owned(), SpinDirection::Z);
     }
     m
 }
@@ -86,7 +86,7 @@ fn build_large(n: usize) -> Model<false> {
     let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
     let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
     let mut m = Model::<false>::tb_model(2, lat, orb, None).unwrap();
-    m.set_onsite(&arr1(&[-0.7, 0.7]), SpinDirection::None);
+    m.set_onsite(&arr1(&[-0.7, 0.7]), None);
     let r0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
         m.add_hop(
@@ -94,7 +94,7 @@ fn build_large(n: usize) -> Model<false> {
             0,
             1,
             &r.to_owned(),
-            SpinDirection::None,
+            None,
         );
     }
     let sc = arr2(&[[n as f64, 0.0], [0.0, n as f64]]);
@@ -249,7 +249,7 @@ fn bench_berry_curvature_onek(c: &mut Criterion) {
                         black_box(d2),
                         0.0,
                         0.0,
-                        0,
+                        None,
                         1e-3,
                     )
                 })
@@ -271,7 +271,7 @@ fn bench_berry_curvature_onek(c: &mut Criterion) {
                         black_box(d2),
                         0.0,
                         0.0,
-                        0,
+                        None,
                         1e-3,
                     )
                 })
@@ -288,7 +288,7 @@ fn bench_berry_curvature_onek(c: &mut Criterion) {
                         black_box(d2),
                         0.0,
                         0.0,
-                        3,
+                        Some(SpinDirection::Z),
                         1e-3,
                     )
                 })
@@ -315,7 +315,7 @@ fn bench_hall_conductivity(c: &mut Criterion) {
                     black_box(&dir2),
                     0.0,
                     0.0,
-                    0,
+                    None,
                     1e-3,
                 )
                 .unwrap()

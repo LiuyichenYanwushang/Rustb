@@ -31,8 +31,8 @@ fn main() {
     let t2 = -1.5 + 0.0 * li;
     let J = 1.0;
     //model.set_onsite(&array![J],3);
-    model_1.add_hop(t1, 0, 0, &array![-1, 0, 0], SpinDirection::None);
-    model_1.add_hop(t2, 0, 0, &array![0, -1, 0], SpinDirection::None);
+    model_1.add_hop(t1, 0, 0, &array![-1, 0, 0], None);
+    model_1.add_hop(t2, 0, 0, &array![0, -1, 0], None);
 
     let lat = array![[4.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 40.0]];
     let orb = array![[0.0, 0.0, 0.5]];
@@ -44,8 +44,8 @@ fn main() {
     let t2 = -1.5 + 0.0 * li;
     let J = 1.0;
     //model.set_onsite(&array![J],3);
-    model_2.add_hop(t2, 0, 0, &array![-1, 0, 0], SpinDirection::None);
-    model_2.add_hop(t1, 0, 0, &array![0, -1, 0], SpinDirection::None);
+    model_2.add_hop(t2, 0, 0, &array![-1, 0, 0], None);
+    model_2.add_hop(t1, 0, 0, &array![0, -1, 0], None);
 
     let path = [
         [0.0, 0.0, 0.0],
@@ -82,7 +82,7 @@ fn main() {
         onsite[[i]] = J;
         onsite[[i + model_1.norb()]] = -J;
     }
-    new_model.set_onsite(&onsite, SpinDirection::z);
+    new_model.set_onsite(&onsite, SpinDirection::Z);
     for i in 0..model_1.norb() {
         for j in 0..model_1.norb() {
             for (r1, R1) in model_1.hamR.axis_iter(Axis(0)).enumerate() {
@@ -90,7 +90,7 @@ fn main() {
                     continue;
                 }
                 let t1 = model_1.ham[[r1, i, j]];
-                new_model.add_hop(t1, i, j, &R1.to_owned(), SpinDirection::None);
+                new_model.add_hop(t1, i, j, &R1.to_owned(), None);
             }
             for (r2, R2) in model_2.hamR.axis_iter(Axis(0)).enumerate() {
                 if r2 == 0 && i > j {
@@ -102,7 +102,7 @@ fn main() {
                     i + model_1.norb(),
                     j + model_1.norb(),
                     &R2.to_owned(),
-                    SpinDirection::None,
+                    None,
                 );
             }
         }
@@ -119,7 +119,7 @@ fn main() {
         onsite[[i]] = J;
         onsite[[i + model_1.norb()]] = -J;
     }
-    model_up.set_onsite(&onsite, SpinDirection::None);
+    model_up.set_onsite(&onsite, None);
     for i in 0..model_1.norb() {
         for j in 0..model_1.norb() {
             for (r1, R1) in model_1.hamR.axis_iter(Axis(0)).enumerate() {
@@ -127,7 +127,7 @@ fn main() {
                     continue;
                 }
                 let t1 = model_1.ham[[r1, i, j]];
-                model_up.add_hop(t1, i, j, &R1.to_owned(), SpinDirection::None);
+                model_up.add_hop(t1, i, j, &R1.to_owned(), None);
             }
             for (r2, R2) in model_2.hamR.axis_iter(Axis(0)).enumerate() {
                 if r2 == 0 && i > j {
@@ -139,7 +139,7 @@ fn main() {
                     i + model_1.norb(),
                     j + model_1.norb(),
                     &R2.to_owned(),
-                    SpinDirection::None,
+                    None,
                 );
             }
         }
@@ -150,7 +150,7 @@ fn main() {
         onsite[[i]] = J;
         onsite[[i + model_1.norb()]] = -J;
     }
-    model_dn.set_onsite(&(-onsite), SpinDirection::None);
+    model_dn.set_onsite(&(-onsite), None);
     for i in 0..model_1.norb() {
         for j in 0..model_1.norb() {
             for (r1, R1) in model_1.hamR.axis_iter(Axis(0)).enumerate() {
@@ -158,7 +158,7 @@ fn main() {
                     continue;
                 }
                 let t1 = model_1.ham[[r1, i, j]];
-                model_dn.add_hop(t1, i, j, &R1.to_owned(), SpinDirection::None);
+                model_dn.add_hop(t1, i, j, &R1.to_owned(), None);
             }
             for (r2, R2) in model_2.hamR.axis_iter(Axis(0)).enumerate() {
                 if r2 == 0 && i > j {
@@ -170,7 +170,7 @@ fn main() {
                     i + model_1.norb(),
                     j + model_1.norb(),
                     &R2.to_owned(),
-                    SpinDirection::None,
+                    None,
                 );
             }
         }
@@ -213,13 +213,13 @@ fn main() {
     let dir_1 = arr1(&[1.0, 0.0, 0.0]);
     let dir_2 = arr1(&[0.0, 1.0, 0.0]);
     let mu = 1.0;
-    let spin = 3;
+    let spin = Some(SpinDirection::Z);
     let eta = 1e-2;
     //检测收敛性
     for i in (100..600).step_by(100) {
         let k_mesh = arr1(&[i, i, 1]);
-        let cond_xx = conductivity(&new_model, &k_mesh, &dir_1, &dir_1, mu, 0, eta);
-        let cond_xy = conductivity(&new_model, &k_mesh, &dir_1, &dir_2, mu, 0, eta);
+        let cond_xx = conductivity(&new_model, &k_mesh, &dir_1, &dir_1, mu, None, eta);
+        let cond_xy = conductivity(&new_model, &k_mesh, &dir_1, &dir_2, mu, None, eta);
         let cond_xyz = conductivity(&new_model, &k_mesh, &dir_1, &dir_2, mu, spin, eta);
         println!("{},{},{},{}", i, cond_xx, cond_xy, cond_xyz);
     }
@@ -232,7 +232,7 @@ fn main() {
         .map(|x| {
             let dir_1 = arr1(&[x.cos(), x.sin(), 0.0]);
             let dir_2 = arr1(&[-x.sin(), x.cos(), 0.0]);
-            let cond_xx = conductivity(&new_model, &k_mesh, &dir_1, &dir_1, mu, 0, eta);
+            let cond_xx = conductivity(&new_model, &k_mesh, &dir_1, &dir_1, mu, None, eta);
             let cond_xy = conductivity(&new_model, &k_mesh, &dir_1, &dir_2, mu, spin, eta);
             (cond_xx, cond_xy)
         })
@@ -382,7 +382,7 @@ fn conductivity_onek<const SPIN: bool>(
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,
     mu: f64,
-    spin: usize,
+    spin: Option<SpinDirection>,
     eta: f64,
 ) -> f64 {
     //!给定一个k点, 返回 $\Omega_n(\bm k)$
@@ -395,29 +395,28 @@ fn conductivity_onek<const SPIN: bool>(
     if SPIN {
         let mut X: Array2<Complex<f64>> = Array2::eye(model.nsta());
         let pauli: Array2<Complex<f64>> = match spin {
-            0 => arr2(&[
+            None => arr2(&[
                 [1.0 + 0.0 * li, 0.0 + 0.0 * li],
                 [0.0 + 0.0 * li, 1.0 + 0.0 * li],
             ]),
-            1 => {
+            Some(SpinDirection::X) => {
                 arr2(&[
                     [0.0 + 0.0 * li, 1.0 + 0.0 * li],
                     [1.0 + 0.0 * li, 0.0 + 0.0 * li],
                 ]) / 2.0
             }
-            2 => {
+            Some(SpinDirection::Y) => {
                 arr2(&[
                     [0.0 + 0.0 * li, 0.0 - 1.0 * li],
                     [0.0 + 1.0 * li, 0.0 + 0.0 * li],
                 ]) / 2.0
             }
-            3 => {
+            Some(SpinDirection::Z) => {
                 arr2(&[
                     [1.0 + 0.0 * li, 0.0 + 0.0 * li],
                     [0.0 + 0.0 * li, -1.0 + 0.0 * li],
                 ]) / 2.0
             }
-            _ => panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}", spin),
         };
         X = kron(&pauli, &Array2::eye(model.norb()));
         for i in 0..model.dim_r as usize {
@@ -428,7 +427,7 @@ fn conductivity_onek<const SPIN: bool>(
                 .mul_assign(Complex::new(dir_2[[i]], 0.0));
         }
     } else {
-        if spin != 0 {
+        if spin.is_some() {
             println!("Warning, the model haven't got spin, so the spin input will be ignord");
         }
         for i in 0..model.dim_r as usize {
@@ -470,7 +469,7 @@ fn conductivity<const SPIN: bool>(
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,
     mu: f64,
-    spin: usize,
+    spin: Option<SpinDirection>,
     eta: f64,
 ) -> f64 {
     let k_vec = gen_kmesh(&k_mesh).expect("Failed to generate k-mesh");

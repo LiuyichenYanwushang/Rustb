@@ -317,12 +317,12 @@ mod tests {
         let orb = arr2(&[[0., 0.], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
         let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
         //最近邻hopping
-        model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 2, 0, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 1, 2, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 0, 2, &array![0, -1], SpinDirection::None);
-        model.add_hop(t1, 0, 1, &array![-1, 0], SpinDirection::None);
-        model.add_hop(t1, 2, 1, &array![-1, 1], SpinDirection::None);
+        model.add_hop(t1, 0, 1, &array![0, 0], None);
+        model.add_hop(t1, 2, 0, &array![0, 0], None);
+        model.add_hop(t1, 1, 2, &array![0, 0], None);
+        model.add_hop(t1, 0, 2, &array![0, -1], None);
+        model.add_hop(t1, 0, 1, &array![-1, 0], None);
+        model.add_hop(t1, 2, 1, &array![-1, 1], None);
 
         let nk: usize = 101;
         let path = array![[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.], [0.0, 0.0]];

@@ -19,17 +19,17 @@ fn main() {
     let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]) * a0;
     let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
     let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
-    model.set_onsite(&arr1(&[delta, delta]), SpinDirection::z);
+    model.set_onsite(&arr1(&[delta, delta]), SpinDirection::Z);
     //最近邻hopping
-    model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
-    model.add_hop(t1, 0, 1, &array![-1, 0], SpinDirection::None);
-    model.add_hop(t1, 0, 1, &array![0, -1], SpinDirection::None);
+    model.add_hop(t1, 0, 1, &array![0, 0], None);
+    model.add_hop(t1, 0, 1, &array![-1, 0], None);
+    model.add_hop(t1, 0, 1, &array![0, -1], None);
     //Rashba
     let d1 = model.orb.row(1).to_owned() - model.orb.row(0).to_owned();
     let d1 = d1.dot(&model.lat);
     println!("{}", d1);
-    model.add_hop(-lm_so * li * d1[[0]], 0, 1, &array![0, 0], SpinDirection::y);
-    model.add_hop(lm_so * li * d1[[1]], 0, 1, &array![0, 0], SpinDirection::x);
+    model.add_hop(-lm_so * li * d1[[0]], 0, 1, &array![0, 0], SpinDirection::Y);
+    model.add_hop(lm_so * li * d1[[1]], 0, 1, &array![0, 0], SpinDirection::X);
     let d2 = model.orb.row(1).to_owned() - model.orb.row(0).to_owned() + &array![-1.0, 0.0];
     let d2 = d2.dot(&model.lat);
     println!("{}", d2);
@@ -38,9 +38,9 @@ fn main() {
         0,
         1,
         &array![-1, 0],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
-    model.add_hop(lm_so * li * d2[[1]], 0, 1, &array![-1, 0], SpinDirection::x);
+    model.add_hop(lm_so * li * d2[[1]], 0, 1, &array![-1, 0], SpinDirection::X);
     let d3 = model.orb.row(1).to_owned() - model.orb.row(0).to_owned() + &array![0.0, -1.0];
     let d3 = d3.dot(&model.lat);
     println!("{}", d3);
@@ -49,32 +49,32 @@ fn main() {
         0,
         1,
         &array![0, -1],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
-    model.add_hop(lm_so * li * d3[[1]], 0, 1, &array![0, -1], SpinDirection::x);
+    model.add_hop(lm_so * li * d3[[1]], 0, 1, &array![0, -1], SpinDirection::X);
     //最后加上d+id 项
-    model.add_hop(J, 0, 1, &array![0, 0], SpinDirection::x);
+    model.add_hop(J, 0, 1, &array![0, 0], SpinDirection::X);
     model.add_hop(
         J * (-PI * 4.0 / 3.0 * li).exp(),
         0,
         1,
         &array![-1, 0],
-        SpinDirection::x,
+        SpinDirection::X,
     );
     model.add_hop(
         J * (-PI * 8.0 / 3.0 * li).exp(),
         0,
         1,
         &array![0, -1],
-        SpinDirection::x,
+        SpinDirection::X,
     );
     /*
-    model.add_hop(J,0,0,&array![1,0],SpinDirection::z);
-    model.add_hop(J,1,1,&array![1,0],SpinDirection::z);
-    model.add_hop(J*(-PI*4.0/3.0*li).exp(),0,0,&array![0,1],SpinDirection::z);
-    model.add_hop(J*(-PI*4.0/3.0*li).exp(),1,1,&array![0,1],SpinDirection::z);
-    model.add_hop(J*(-PI*8.0/3.0*li).exp(),0,0,&array![-1,1],SpinDirection::z);
-    model.add_hop(J*(-PI*8.0/3.0*li).exp(),1,1,&array![-1,1],SpinDirection::z);
+    model.add_hop(J,0,0,&array![1,0],SpinDirection::Z);
+    model.add_hop(J,1,1,&array![1,0],SpinDirection::Z);
+    model.add_hop(J*(-PI*4.0/3.0*li).exp(),0,0,&array![0,1],SpinDirection::Z);
+    model.add_hop(J*(-PI*4.0/3.0*li).exp(),1,1,&array![0,1],SpinDirection::Z);
+    model.add_hop(J*(-PI*8.0/3.0*li).exp(),0,0,&array![-1,1],SpinDirection::Z);
+    model.add_hop(J*(-PI*8.0/3.0*li).exp(),1,1,&array![-1,1],SpinDirection::Z);
     */
     let nk: usize = 1001;
     let path = array![
@@ -117,7 +117,7 @@ fn main() {
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, 0, 1e-3);
+    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, None, 1e-3);
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data.map(|x| {
@@ -131,7 +131,7 @@ fn main() {
         "./examples/yuxuan_try/heat_map.pdf",
     );
     let conductivity = model
-        .Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, 0, 1e-3)
+        .Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, None, 1e-3)
         .unwrap();
     println!("{}", conductivity / (2.0 * PI));
 

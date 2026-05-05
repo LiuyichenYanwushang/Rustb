@@ -161,17 +161,17 @@
 //! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
 //!
 //! let mut model = Model::<false>::tb_model(2, lat, orb, None)?;
-//! model.set_onsite(&arr1(&[delta, -delta]), SpinDirection::None);
+//! model.set_onsite(&arr1(&[delta, -delta]), None);
 //!
 //! // Nearest-neighbor hoppings (A <-> B)
-//! model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
-//! model.add_hop(t1, 0, 1, &array![-1, 0], SpinDirection::None);
-//! model.add_hop(t1, 0, 1, &array![0, -1], SpinDirection::None);
+//! model.add_hop(t1, 0, 1, &array![0, 0], None);
+//! model.add_hop(t1, 0, 1, &array![-1, 0], None);
+//! model.add_hop(t1, 0, 1, &array![0, -1], None);
 //!
 //! // Next-nearest-neighbor hoppings (A-A and B-B)
 //! for &(i, j) in &[(0, 0), (1, 1)] {
 //!     for r in &[array![1, 0], array![0, 1], array![1, -1]] {
-//!         model.add_hop(t2, i, j, r, SpinDirection::None);
+//!         model.add_hop(t2, i, j, r, None);
 //!     }
 //! }
 //!
@@ -225,27 +225,29 @@ pub mod surfgreen;
 pub mod unfold;
 pub mod velocity;
 pub mod wannier90;
+pub mod quantum_geometry;
+use crate::generics::usefloat;
 pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
 pub use crate::atom_struct::{Atom, OrbProj};
 pub use crate::conductivity::*;
-pub use crate::cut::CutModel;
+pub use crate::cut::*;
 pub use crate::error::{Result, TbError};
-use crate::generics::usefloat;
 pub use crate::geometry::*;
 pub use crate::io::*;
 pub use crate::kpath::*;
-pub use crate::kpoints::{gen_kmesh, gen_krange};
+pub use crate::kpoints::*;
 pub use crate::magnetic_field::*;
 pub use crate::math::*;
 pub use crate::model::*;
 pub use crate::model_physics::*;
 pub use crate::optical_conductivity::*;
 pub use crate::output::*;
-pub use crate::solve_ham::solve;
-pub use crate::surfgreen::surf_Green;
-pub use crate::unfold::Unfold;
+pub use crate::solve_ham::*;
+pub use crate::surfgreen::*;
+pub use crate::unfold::*;
 pub use crate::velocity::*;
 pub use crate::wannier90::*;
+pub use crate::quantum_geometry::*;
 
 #[cfg(test)]
 mod tests {
@@ -333,11 +335,11 @@ mod tests {
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
+        model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.set_hop(t, 0, 1, &R, SpinDirection::None);
+            model.set_hop(t, 0, 1, &R, None);
         }
         assert_eq!(model.solve_band_onek(&array![0.0, 0.0]), array![-3.0, 3.0]);
         let result = model.solve_band_onek(&array![1.0 / 3.0, 2.0 / 3.0]);
@@ -406,21 +408,21 @@ mod tests {
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
+        model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.add_hop(t, 0, 1, &R, SpinDirection::None);
+            model.add_hop(t, 0, 1, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.add_hop(t2 * li, 0, 0, &R, SpinDirection::None);
+            model.add_hop(t2 * li, 0, 0, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.add_hop(t2 * li, 1, 1, &R, SpinDirection::None);
+            model.add_hop(t2 * li, 1, 1, &R, None);
         }
         let k_vec = array![1.0 / 3.0, 2.0 / 3.0];
         let dir_1 = array![1.0, 0.0];
@@ -428,7 +430,7 @@ mod tests {
         let mu = 0.0;
         let T = 0.0;
         let og = 0.0;
-        let spin = 0;
+        let spin = None;
         let eta = 1e-3;
         let result1 =
             model.berry_curvature_onek(&k_vec, &dir_1, &dir_2, mu, T, spin, eta) * (2.0 * PI);
@@ -472,21 +474,21 @@ mod tests {
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
+        model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.add_hop(t, 0, 1, &R, SpinDirection::None);
+            model.add_hop(t, 0, 1, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.add_hop(t2 * li, 0, 0, &R, SpinDirection::None);
+            model.add_hop(t2 * li, 0, 0, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.add_hop(t2 * li, 1, 1, &R, SpinDirection::None);
+            model.add_hop(t2 * li, 1, 1, &R, None);
         }
         println!("{:?}", model.atom_list());
         let U = array![[3.0, 0.0], [0.0, 3.0]];
@@ -527,21 +529,21 @@ mod tests {
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
+        model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.add_hop(t, 0, 1, &R, SpinDirection::None);
+            model.add_hop(t, 0, 1, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.add_hop(t2 * li, 0, 0, &R, SpinDirection::None);
+            model.add_hop(t2 * li, 0, 0, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.add_hop(t2 * li, 1, 1, &R, SpinDirection::None);
+            model.add_hop(t2 * li, 1, 1, &R, None);
         }
         let nk: usize = 101;
         let path = [
@@ -565,7 +567,7 @@ mod tests {
         let dir_1 = arr1(&[1.0, 0.0]);
         let dir_2 = arr1(&[0.0, 1.0]);
         let dir_3 = arr1(&[0.0, 1.0]);
-        let spin: usize = 0;
+        let spin = None;
         let kmesh = arr1(&[nk, nk]);
 
         let start = Instant::now(); // 开始计时
@@ -792,19 +794,19 @@ mod tests {
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[delta, -delta]), SpinDirection::None);
-        model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 0, 1, &array![-1, 0], SpinDirection::None);
-        model.add_hop(t1, 0, 1, &array![0, -1], SpinDirection::None);
-        model.add_hop(t2, 0, 0, &array![1, 0], SpinDirection::None);
-        model.add_hop(t2, 1, 1, &array![1, 0], SpinDirection::None);
-        model.add_hop(t2, 0, 0, &array![0, 1], SpinDirection::None);
-        model.add_hop(t2, 1, 1, &array![0, 1], SpinDirection::None);
-        model.add_hop(t2, 0, 0, &array![1, -1], SpinDirection::None);
-        model.add_hop(t2, 1, 1, &array![1, -1], SpinDirection::None);
-        model.add_hop(t3, 0, 1, &array![1, -1], SpinDirection::None);
-        model.add_hop(t3, 0, 1, &array![-1, 1], SpinDirection::None);
-        model.add_hop(t3, 0, 1, &array![-1, -1], SpinDirection::None);
+        model.set_onsite(&arr1(&[delta, -delta]), None);
+        model.add_hop(t1, 0, 1, &array![0, 0], None);
+        model.add_hop(t1, 0, 1, &array![-1, 0], None);
+        model.add_hop(t1, 0, 1, &array![0, -1], None);
+        model.add_hop(t2, 0, 0, &array![1, 0], None);
+        model.add_hop(t2, 1, 1, &array![1, 0], None);
+        model.add_hop(t2, 0, 0, &array![0, 1], None);
+        model.add_hop(t2, 1, 1, &array![0, 1], None);
+        model.add_hop(t2, 0, 0, &array![1, -1], None);
+        model.add_hop(t2, 1, 1, &array![1, -1], None);
+        model.add_hop(t3, 0, 1, &array![1, -1], None);
+        model.add_hop(t3, 0, 1, &array![-1, 1], None);
+        model.add_hop(t3, 0, 1, &array![-1, -1], None);
         let nk: usize = 101;
         let path = [[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.5], [0.0, 0.0]];
         let path = arr2(&path);
@@ -833,7 +835,7 @@ mod tests {
         let mu: f64 = 0.0;
         let dir_1 = arr1(&[1.0, 0.0]);
         let dir_2 = arr1(&[0.0, 1.0]);
-        let spin: usize = 0;
+        let spin = None;
         let kmesh = arr1(&[nk, nk]);
         let (eval, evec) = model.solve_onek(&arr1(&[0.3, 0.5]));
         let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta);
@@ -882,7 +884,7 @@ mod tests {
         let T = 300.0;
         let sigma: Array1<f64> = model
             .Nonlinear_Hall_conductivity_Extrinsic(
-                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5,
+                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, None, 1e-5,
             )
             .unwrap();
 
@@ -913,37 +915,37 @@ mod tests {
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
         let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[delta, -delta]), SpinDirection::None);
+        model.set_onsite(&arr1(&[delta, -delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.set_hop(t, 0, 1, &R, SpinDirection::None);
+            model.set_hop(t, 0, 1, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.set_hop(soc * li, 0, 0, &R, SpinDirection::z);
+            model.set_hop(soc * li, 0, 0, &R, SpinDirection::Z);
         }
         let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.set_hop(soc * li, 1, 1, &R, SpinDirection::z);
+            model.set_hop(soc * li, 1, 1, &R, SpinDirection::Z);
         }
         //加入rashba项
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             let r0 = R.map(|x| *x as f64).dot(&model.lat);
-            model.add_hop(rashba * li * r0[[1]], 0, 0, &R, SpinDirection::x);
-            model.add_hop(rashba * li * r0[[0]], 0, 0, &R, SpinDirection::y);
+            model.add_hop(rashba * li * r0[[1]], 0, 0, &R, SpinDirection::X);
+            model.add_hop(rashba * li * r0[[0]], 0, 0, &R, SpinDirection::Y);
         }
 
         let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             let r0 = R.map(|x| *x as f64).dot(&model.lat);
-            model.add_hop(-rashba * li * r0[[1]], 1, 1, &R, SpinDirection::x);
-            model.add_hop(-rashba * li * r0[[0]], 1, 1, &R, SpinDirection::y);
+            model.add_hop(-rashba * li * r0[[1]], 1, 1, &R, SpinDirection::X);
+            model.add_hop(-rashba * li * r0[[0]], 1, 1, &R, SpinDirection::Y);
         }
         let nk: usize = 101;
         let path = [
@@ -1043,7 +1045,7 @@ mod tests {
         //let dir_1=arr1(&[3.0_f64.sqrt()/2.0,-0.5]);
         let dir_1 = arr1(&[1.0, 0.0]);
         let dir_2 = arr1(&[0.0, 1.0]);
-        let spin: usize = 3;
+        let spin = Some(SpinDirection::Z);
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
         let conductivity = model
@@ -1087,7 +1089,7 @@ mod tests {
         let kvec = kvec * 2.0;
         let kvec = model.lat.dot(&(kvec.reversed_axes()));
         let kvec = kvec.reversed_axes();
-        let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, 1, 1e-3);
+        let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, Some(SpinDirection::X), 1e-3);
         let data = berry_curv.into_shape((nk, nk)).unwrap();
         draw_heatmap(
             &(-data).map(|x| (x + 1.0).log(10.0)),
@@ -1098,10 +1100,10 @@ mod tests {
         let B = 0.1 + 0.0 * li;
         let tha = 0.0 / 180.0 * PI;
 
-        model.add_hop(B * tha.cos(), 0, 0, &array![0, 0], SpinDirection::x);
-        model.add_hop(B * tha.cos(), 1, 1, &array![0, 0], SpinDirection::x);
-        model.add_hop(B * tha.sin(), 0, 0, &array![0, 0], SpinDirection::y);
-        model.add_hop(B * tha.sin(), 1, 1, &array![0, 0], SpinDirection::y);
+        model.add_hop(B * tha.cos(), 0, 0, &array![0, 0], SpinDirection::X);
+        model.add_hop(B * tha.cos(), 1, 1, &array![0, 0], SpinDirection::X);
+        model.add_hop(B * tha.sin(), 0, 0, &array![0, 0], SpinDirection::Y);
+        model.add_hop(B * tha.sin(), 1, 1, &array![0, 0], SpinDirection::Y);
         //考虑添加onsite 项破坏空间反演和mirror
 
         let green = surf_Green::from_Model(&model, 0, 1e-3, None).unwrap();
@@ -1236,25 +1238,25 @@ mod tests {
         ]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0, 0.0], [2.0 / 3.0, 2.0 / 3.0, 0.0]]);
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[delta, -delta]), SpinDirection::None);
+        model.set_onsite(&arr1(&[delta, -delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0, 0], [-1, 0, 0], [0, -1, 0]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.set_hop(t1, 0, 1, &R, SpinDirection::None);
+            model.set_hop(t1, 0, 1, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0, 1], [-1, 1, 1], [0, -1, 1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.set_hop(t2, 0, 0, &R, SpinDirection::None);
+            model.set_hop(t2, 0, 0, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0, -1], [-1, 1, -1], [0, -1, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
-            model.set_hop(t2, 1, 1, &R, SpinDirection::None);
+            model.set_hop(t2, 1, 1, &R, None);
         }
         let R = arr1(&[0, 0, 1]);
-        model.set_hop(t3, 0, 0, &R, SpinDirection::None);
-        model.set_hop(t3, 1, 1, &R, SpinDirection::None);
+        model.set_hop(t3, 0, 0, &R, None);
+        model.set_hop(t3, 1, 1, &R, None);
         let path = array![
             [0.0, 0.0, 0.0],
             [1.0 / 3.0, 2.0 / 3.0, 0.0],
@@ -1286,7 +1288,7 @@ mod tests {
         let T = 30.0;
         let sigma: Array1<f64> = model
             .Nonlinear_Hall_conductivity_Extrinsic(
-                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5,
+                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, None, 1e-5,
             )
             .unwrap();
 
@@ -1306,7 +1308,7 @@ mod tests {
         fg.show();
 
         let sigma: Array1<f64> = model
-            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, 3)
+            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, Some(SpinDirection::Z))
             .unwrap();
         //开始绘制非线性电导
         let mut fg = Figure::new();
@@ -1348,12 +1350,12 @@ mod tests {
         let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
         //最近邻hopping
-        model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 2, 0, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 1, 2, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 0, 2, &array![0, -1], SpinDirection::None);
-        model.add_hop(t1, 0, 1, &array![-1, 0], SpinDirection::None);
-        model.add_hop(t1, 2, 1, &array![-1, 1], SpinDirection::None);
+        model.add_hop(t1, 0, 1, &array![0, 0], None);
+        model.add_hop(t1, 2, 0, &array![0, 0], None);
+        model.add_hop(t1, 1, 2, &array![0, 0], None);
+        model.add_hop(t1, 0, 2, &array![0, -1], None);
+        model.add_hop(t1, 0, 1, &array![-1, 0], None);
+        model.add_hop(t1, 2, 1, &array![-1, 1], None);
         let nk: usize = 101;
         let path = [[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.], [0.0, 0.0]];
         let path = arr2(&path);
@@ -1413,9 +1415,9 @@ mod tests {
         let lat = arr2(&[[1.0]]);
         let orb = arr2(&[[0.3], [0.5]]);
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.add_hop(t1, 0, 1, &array![0], SpinDirection::None);
-        model.add_hop(t2, 0, 1, &array![-1], SpinDirection::None);
-        model.add_onsite(&array![Delta, -Delta], 0);
+        model.add_hop(t1, 0, 1, &array![0], None);
+        model.add_hop(t2, 0, 1, &array![-1], None);
+        model.add_onsite(&array![Delta, -Delta], None);
 
         let nk: usize = 101;
         let path = [[0.0], [0.5], [1.0]];
@@ -1438,14 +1440,14 @@ mod tests {
         let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]]);
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 1, 2, &array![0, 0], SpinDirection::None);
-        model.add_hop(t1, 2, 3, &array![0, 0], SpinDirection::None);
-        model.add_hop(i0 * t1, 3, 0, &array![0, 0], SpinDirection::None);
-        model.add_hop(t2, 0, 1, &array![-1, 0], SpinDirection::None);
-        model.add_hop(i0 * t2, 0, 3, &array![0, -1], SpinDirection::None);
-        model.add_hop(t2, 2, 3, &array![1, 0], SpinDirection::None);
-        model.add_hop(t2, 2, 1, &array![0, 1], SpinDirection::None);
+        model.add_hop(t1, 0, 1, &array![0, 0], None);
+        model.add_hop(t1, 1, 2, &array![0, 0], None);
+        model.add_hop(t1, 2, 3, &array![0, 0], None);
+        model.add_hop(i0 * t1, 3, 0, &array![0, 0], None);
+        model.add_hop(t2, 0, 1, &array![-1, 0], None);
+        model.add_hop(i0 * t2, 0, 3, &array![0, -1], None);
+        model.add_hop(t2, 2, 3, &array![1, 0], None);
+        model.add_hop(t2, 2, 1, &array![0, 1], None);
         let nk: usize = 101;
         let path = [[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.0]];
         let path = arr2(&path);
@@ -1544,12 +1546,12 @@ mod tests {
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
 
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), SpinDirection::None);
+        model.set_onsite(&arr1(&[-delta, delta]), None);
 
         // 添加最近邻跃迁
         let r0: ndarray::Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for r in r0.axis_iter(Axis(0)) {
-            model.add_hop(t, 0, 1, &r.to_owned(), SpinDirection::None);
+            model.add_hop(t, 0, 1, &r.to_owned(), None);
         }
 
         // 2. 施加磁场
@@ -1598,12 +1600,12 @@ mod tests {
         let orb = arr2(&[[0.0, 0.0]]);
 
         let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[0.0]), SpinDirection::None);
+        model.set_onsite(&arr1(&[0.0]), None);
 
         // 加上最近邻跃迁 (上下左右4个方向)
         let r0: ndarray::Array2<isize> = arr2(&[[1, 0], [-1, 0], [0, 1], [0, -1]]);
         for r in r0.axis_iter(Axis(0)) {
-            model.add_hop(t, 0, 0, &r.to_owned(), SpinDirection::None);
+            model.add_hop(t, 0, 0, &r.to_owned(), None);
         }
 
         // 2. 准备扫描磁通并记录坐标

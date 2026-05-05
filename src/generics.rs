@@ -63,41 +63,19 @@ impl hop_use for Complex64 {
     }
 }
 
-// 实现从u8到SpinDirection的转换
-impl From<u8> for SpinDirection {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => SpinDirection::None,
-            1 => SpinDirection::x,
-            2 => SpinDirection::y,
-            3 => SpinDirection::z,
-            _ => panic!("Invalid value for SpinDirection"),
-        }
-    }
-}
-
-// 实现从usize到SpinDirection的转换
-impl From<usize> for SpinDirection {
-    fn from(value: usize) -> Self {
-        match value {
-            0 => SpinDirection::None,
-            1 => SpinDirection::x,
-            2 => SpinDirection::y,
-            3 => SpinDirection::z,
-            _ => panic!("Invalid value for SpinDirection"),
-        }
-    }
-}
-
-// 实现从i32到SpinDirection的转换
-impl From<i32> for SpinDirection {
-    fn from(value: i32) -> Self {
-        match value {
-            0 => SpinDirection::None,
-            1 => SpinDirection::x,
-            2 => SpinDirection::y,
-            3 => SpinDirection::z,
-            _ => panic!("Invalid value for SpinDirection"),
+// Conversion from integer types to Option<SpinDirection>.
+// Note: we cannot impl From<usize> for Option<SpinDirection> due to orphan rules
+// (both From and Option are foreign). Use SpinDirection::from_usize() instead.
+impl SpinDirection {
+    /// Convert a `usize` (0=I, 1=X, 2=Y, 3=Z) to `Option<SpinDirection>`.
+    /// Returns `None` for spin index 0 (identity), `Some(SpinDirection::X/Y/Z)` for 1/2/3.
+    pub fn from_index(index: usize) -> Option<SpinDirection> {
+        match index {
+            0 => None,
+            1 => Some(SpinDirection::X),
+            2 => Some(SpinDirection::Y),
+            3 => Some(SpinDirection::Z),
+            _ => panic!("Invalid spin index: {}. Valid values are 0 (I), 1 (X), 2 (Y), 3 (Z).", index),
         }
     }
 }

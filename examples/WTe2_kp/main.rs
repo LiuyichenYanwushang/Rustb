@@ -32,7 +32,7 @@ fn main() {
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 5.0;
     let sigma: Array1<f64> = model
-        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5)
+        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, None, 1e-5)
         .unwrap();
     let sigma = sigma / (2.0 * PI).powi(2);
 
@@ -64,7 +64,7 @@ fn main() {
         let model = gen_model(*t0, v, ap, eta, m);
         let sigma = model
             .Nonlinear_Hall_conductivity_Extrinsic(
-                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, 0, 1e-5,
+                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, None, 1e-5,
             )
             .unwrap();
         omega[[i]] = sigma.iter().fold(f64::NAN, |a, &b| a.min(b)) * model.lat.det().unwrap();
@@ -92,21 +92,21 @@ fn gen_model(t: f64, v: f64, ap: f64, eta: f64, m: f64) -> Model {
     let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
     model.set_onsite(
         &array![m / 2.0 - 4.0 * ap, -m / 2.0 + 4.0 * ap],
-        SpinDirection::None,
+        None,
     );
     let t = Complex::new(t, 0.0);
     let v = Complex::new(v, 0.0);
     let ap = Complex::new(ap, 0.0);
     let eta = Complex::new(eta, 0.0);
-    model.add_hop(li * t / 2.0, 0, 0, &array![1, 0], SpinDirection::None);
-    model.add_hop(ap, 0, 0, &array![1, 0], SpinDirection::None);
-    model.add_hop(ap, 0, 0, &array![0, 1], SpinDirection::None);
-    model.add_hop(li * t / 2.0, 1, 1, &array![1, 0], SpinDirection::None);
-    model.add_hop(-ap, 1, 1, &array![1, 0], SpinDirection::None);
-    model.add_hop(-ap, 1, 1, &array![0, 1], SpinDirection::None);
-    model.add_hop(li * v / 2.0, 0, 1, &array![0, 1], SpinDirection::None);
-    model.add_hop(-li * v / 2.0, 0, 1, &array![0, -1], SpinDirection::None);
-    model.add_hop(eta * v / 2.0, 0, 1, &array![1, 0], SpinDirection::None);
-    model.add_hop(-eta * v / 2.0, 0, 1, &array![-1, 0], SpinDirection::None);
+    model.add_hop(li * t / 2.0, 0, 0, &array![1, 0], None);
+    model.add_hop(ap, 0, 0, &array![1, 0], None);
+    model.add_hop(ap, 0, 0, &array![0, 1], None);
+    model.add_hop(li * t / 2.0, 1, 1, &array![1, 0], None);
+    model.add_hop(-ap, 1, 1, &array![1, 0], None);
+    model.add_hop(-ap, 1, 1, &array![0, 1], None);
+    model.add_hop(li * v / 2.0, 0, 1, &array![0, 1], None);
+    model.add_hop(-li * v / 2.0, 0, 1, &array![0, -1], None);
+    model.add_hop(eta * v / 2.0, 0, 1, &array![1, 0], None);
+    model.add_hop(-eta * v / 2.0, 0, 1, &array![-1, 0], None);
     model
 }

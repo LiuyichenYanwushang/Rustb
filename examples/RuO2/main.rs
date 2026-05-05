@@ -23,18 +23,18 @@ fn main() {
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]) * a0;
     let orb = arr2(&[[0.0, 0.0], [0.0, 0.0]]);
     let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
-    model.add_hop(t1, 0, 0, &array![1, 0], SpinDirection::None);
-    model.add_hop(t1, 0, 0, &array![0, 1], SpinDirection::None);
-    model.add_hop(t1, 1, 1, &array![1, 0], SpinDirection::None);
-    model.add_hop(t1, 1, 1, &array![0, 1], SpinDirection::None);
+    model.add_hop(t1, 0, 0, &array![1, 0], None);
+    model.add_hop(t1, 0, 0, &array![0, 1], None);
+    model.add_hop(t1, 1, 1, &array![1, 0], None);
+    model.add_hop(t1, 1, 1, &array![0, 1], None);
 
-    model.add_hop(delta, 0, 0, &array![1, 0], SpinDirection::None);
-    model.add_hop(-delta, 0, 0, &array![0, 1], SpinDirection::None);
-    model.add_hop(-delta, 1, 1, &array![1, 0], SpinDirection::None);
-    model.add_hop(delta, 1, 1, &array![0, 1], SpinDirection::None);
+    model.add_hop(delta, 0, 0, &array![1, 0], None);
+    model.add_hop(-delta, 0, 0, &array![0, 1], None);
+    model.add_hop(-delta, 1, 1, &array![1, 0], None);
+    model.add_hop(delta, 1, 1, &array![0, 1], None);
 
-    model.add_hop(J, 0, 0, &array![0, 0], SpinDirection::z);
-    model.add_hop(-J, 1, 1, &array![0, 0], SpinDirection::z);
+    model.add_hop(J, 0, 0, &array![0, 0], SpinDirection::Z);
+    model.add_hop(-J, 1, 1, &array![0, 0], SpinDirection::Z);
 
     let nk: usize = 1001;
     let path = array![[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5], [0.0, 0.0]];
@@ -140,7 +140,7 @@ fn main() {
     let dir_1 = arr1(&[1.0, 0.0]);
     let dir_2 = arr1(&[0.0, 1.0]);
     let mu = 0.5;
-    let spin = 3;
+    let spin = Some(SpinDirection::Z);
     let eta = 1e-1;
     let n_theta = 361;
     let theta = Array1::<f64>::linspace(0.0, 2.0 * PI, n_theta);
@@ -215,7 +215,7 @@ fn conductivity_onek(
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,
     mu: f64,
-    spin: usize,
+    spin: Option<SpinDirection>,
     eta: f64,
 ) -> f64 {
     //!给定一个k点, 返回 $\Omega_n(\bm k)$
@@ -228,29 +228,28 @@ fn conductivity_onek(
     if true {
         let mut X: Array2<Complex<f64>> = Array2::eye(model.nsta());
         let pauli: Array2<Complex<f64>> = match spin {
-            0 => arr2(&[
+            None => arr2(&[
                 [1.0 + 0.0 * li, 0.0 + 0.0 * li],
                 [0.0 + 0.0 * li, 1.0 + 0.0 * li],
             ]),
-            1 => {
+            Some(SpinDirection::X) => {
                 arr2(&[
                     [0.0 + 0.0 * li, 1.0 + 0.0 * li],
                     [1.0 + 0.0 * li, 0.0 + 0.0 * li],
                 ]) / 2.0
             }
-            2 => {
+            Some(SpinDirection::Y) => {
                 arr2(&[
                     [0.0 + 0.0 * li, 0.0 - 1.0 * li],
                     [0.0 + 1.0 * li, 0.0 + 0.0 * li],
                 ]) / 2.0
             }
-            3 => {
+            Some(SpinDirection::Z) => {
                 arr2(&[
                     [1.0 + 0.0 * li, 0.0 + 0.0 * li],
                     [0.0 + 0.0 * li, -1.0 + 0.0 * li],
                 ]) / 2.0
             }
-            _ => panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}", spin),
         };
         X = kron(&pauli, &Array2::eye(model.norb()));
         for i in 0..model.dim_r as usize {
@@ -261,7 +260,7 @@ fn conductivity_onek(
                 .mul_assign(Complex::new(dir_2[[i]], 0.0));
         }
     } else {
-        if spin != 0 {
+        if spin.is_some() {
             println!("Warning, the model haven't got spin, so the spin input will be ignord");
         }
         for i in 0..model.dim_r as usize {
@@ -302,7 +301,7 @@ fn conductivity_all(
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,
     mu: f64,
-    spin: usize,
+    spin: Option<SpinDirection>,
     eta: f64,
 ) -> f64 {
     let k_vec = gen_kmesh(&k_mesh).unwrap();

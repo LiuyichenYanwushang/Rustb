@@ -79,7 +79,7 @@ pub enum TbError {
     InvalidSupercellMatrix,
 
     #[error("Spin direction '{0:?}' is invalid for a model without spin.")]
-    SpinNotAllowed(SpinDirection),
+    SpinNotAllowed(Option<SpinDirection>),
 
     #[error("Invalid k-point mesh dimensions: {0:?}")]
     InvalidKmeshDimensions(Array1<usize>),

@@ -125,7 +125,7 @@ use crate::math::*;
 use crate::phy_const::mu_B;
 use crate::solve_ham::solve;
 use crate::velocity::*;
-use crate::{Gauge, Model};
+use crate::{Gauge, Model, SpinDirection};
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::conjugate;
@@ -139,35 +139,34 @@ use std::ops::MulAssign;
 /// Directly construct spin Pauli matrix σ⊗I_{norb}/2 without kron.
 /// Only sets 2*norb non-zero elements (O(norb)) instead of O(nsta²).
 #[inline]
-fn build_spin_matrix(norb: usize, spin: usize) -> Array2<Complex<f64>> {
+fn build_spin_matrix(norb: usize, spin: Option<SpinDirection>) -> Array2<Complex<f64>> {
     let nsta = 2 * norb;
     let mut m = Array2::<Complex<f64>>::zeros((nsta, nsta));
     let half = Complex::new(0.5, 0.0);
     let i_half = Complex::new(0.0, 0.5);
     match spin {
-        0 => { m=Array2::<Complex<f64>>::eye(2*norb);}
-        1 => {
+        None => { m = Array2::<Complex<f64>>::eye(2 * norb); }
+        Some(SpinDirection::X) => {
             // σ_x ⊗ I: [0 I; I 0] / 2
             for i in 0..norb {
                 m[[i, i + norb]] = half;
                 m[[i + norb, i]] = half;
             }
         }
-        2 => {
+        Some(SpinDirection::Y) => {
             // σ_y ⊗ I: [0 -iI; iI 0] / 2
             for i in 0..norb {
                 m[[i, i + norb]] = -i_half;
                 m[[i + norb, i]] = i_half;
             }
         }
-        3 => {
+        Some(SpinDirection::Z) => {
             // σ_z ⊗ I: [I 0; 0 -I] / 2
             for i in 0..norb {
                 m[[i, i]] = half;
                 m[[i + norb, i + norb]] = -half;
             }
         }
-        _ => {}
     }
     m
 }
@@ -445,7 +444,7 @@ pub trait BerryCurvature: Velocity {
     /// # Arguments
     ///
     /// * `k_vec` - k-point coordinates (in fractional reciprocal coordinates).
-    /// * `dir_1` - Direction vector for the first index $\alpha$ of $\Omega_{n,\alpha\beta}$.
+    /// * `current_dir` - Current direction (direction vector for the first index $\alpha$ of $\Omega_{n,\alpha\beta}$).
     ///   Must have length equal to `self.dim_r()`.
     /// * `dir_2` - Direction vector for the second index $\beta$ of $\Omega_{n,\alpha\beta}$.
     /// * `spin` - Spin operator index (0, 1, 2, 3 for $\sigma_0, \sigma_x, \sigma_y, \sigma_z$).
@@ -453,9 +452,9 @@ pub trait BerryCurvature: Velocity {
     fn berry_curvature_n_onek<S: Data<Elem = f64>>(
         &self,
         k_vec: &ArrayBase<S, Ix1>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> (Array1<f64>, Array1<f64>);
 
@@ -472,7 +471,7 @@ pub trait BerryCurvature: Velocity {
     /// # Arguments
     ///
     /// * `k_vec` - k-point coordinates (in fractional reciprocal coordinates).
-    /// * `dir_1` - Direction vector for the first index $\alpha$ of $\Omega_{\alpha\beta}$.
+    /// * `current_dir` - Current direction (direction vector for the first index $\alpha$ of $\Omega_{\alpha\beta}$).
     /// * `dir_2` - Direction vector for the second index $\beta$.
     /// * `mu` - Chemical potential $\mu$ (in eV).
     /// * `T` - Temperature (in K). If `T=0`, a step function is used for the Fermi-Dirac distribution.
@@ -482,11 +481,11 @@ pub trait BerryCurvature: Velocity {
     fn berry_curvature_onek<S: Data<Elem = f64>>(
         &self,
         k_vec: &ArrayBase<S, Ix1>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         mu: f64,
         T: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> f64;
 
@@ -497,7 +496,7 @@ pub trait BerryCurvature: Velocity {
     /// # Arguments
     ///
     /// * `k_vec` - Array of k-points, shape `(nk, dim_r)`.
-    /// * `dir_1` - Direction vector for the first index $\alpha$.
+    /// * `current_dir` - Direction vector for the first index $\alpha$.
     /// * `dir_2` - Direction vector for the second index $\beta$.
     /// * `mu` - Chemical potential $\mu$ (in eV).
     /// * `T` - Temperature (in K).
@@ -510,16 +509,16 @@ pub trait BerryCurvature: Velocity {
     ///
     /// # Panics
     ///
-    /// Panics if `dir_1.len()` or `dir_2.len()` does not equal `self.dim_r()`.
+    /// Panics if `current_dir.len()` or `dir_2.len()` does not equal `self.dim_r()`.
     #[allow(non_snake_case)]
     fn berry_curvature<S: Data<Elem = f64>>(
         &self,
         k_vec: &ArrayBase<S, Ix2>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         mu: f64,
         T: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> Array1<f64>;
 }
@@ -530,9 +529,9 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
     fn berry_curvature_n_onek<S: Data<Elem = f64>>(
         &self,
         k_vec: &ArrayBase<S, Ix1>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> (Array1<f64>, Array1<f64>) {
         let li: Complex<f64> = 1.0 * Complex::i();
@@ -547,10 +546,10 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
         let mut J = v.view();
         let (J, v) = if SPIN {
             let J = match spin {
-                0 => {
+                None => {
                     let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
                     for d in 0..self.dim_r() {
-                        let w = dir_1[d];
+                        let w = current_dir[d];
                         if w != 0.0 {
                             Zip::from(&mut jmat)
                                 .and(&J.slice(s![d, .., ..]))
@@ -559,11 +558,11 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
                     }
                     jmat
                 }
-                1 => {
-                    let sp = build_spin_matrix(self.norb(), 1);
+                Some(SpinDirection::X) => {
+                    let sp = build_spin_matrix(self.norb(), Some(SpinDirection::X));
                     let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
                     for d in 0..self.dim_r() {
-                        let w = dir_1[d];
+                        let w = current_dir[d];
                         if w != 0.0 {
                             let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
                             Zip::from(&mut jmat)
@@ -573,11 +572,11 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
                     }
                     jmat
                 }
-                2 => {
-                    let sp = build_spin_matrix(self.norb(), 2);
+                Some(SpinDirection::Y) => {
+                    let sp = build_spin_matrix(self.norb(), Some(SpinDirection::Y));
                     let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
                     for d in 0..self.dim_r() {
-                        let w = dir_1[d];
+                        let w = current_dir[d];
                         if w != 0.0 {
                             let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
                             Zip::from(&mut jmat)
@@ -587,11 +586,11 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
                     }
                     jmat
                 }
-                3 => {
-                    let sp = build_spin_matrix(self.norb(), 3);
+                Some(SpinDirection::Z) => {
+                    let sp = build_spin_matrix(self.norb(), Some(SpinDirection::Z));
                     let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
                     for d in 0..self.dim_r() {
-                        let w = dir_1[d];
+                        let w = current_dir[d];
                         if w != 0.0 {
                             let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
                             Zip::from(&mut jmat)
@@ -601,7 +600,6 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
                     }
                     jmat
                 }
-                _ => panic!("Wrong, spin should be 0, 1, 2, 3, but you input {}", spin),
             };
             let v = {
                 let mut vmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
@@ -617,14 +615,14 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
             };
             (J, v)
         } else {
-            if spin != 0 {
+            if spin.is_some() {
                 println!("Warning, the model haven't got spin, so the spin input will be ignord");
             }
 
             let J = {
                 let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
                 for d in 0..self.dim_r() {
-                    let w = dir_1[d];
+                    let w = current_dir[d];
                     if w != 0.0 {
                         Zip::from(&mut jmat)
                             .and(&J.slice(s![d, .., ..]))
@@ -679,14 +677,14 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
     fn berry_curvature_onek<S: Data<Elem = f64>>(
         &self,
         k_vec: &ArrayBase<S, Ix1>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         mu: f64,
         T: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> f64 {
-        let (omega_n, band) = self.berry_curvature_n_onek(&k_vec, &dir_1, &dir_2, spin, eta);
+        let (omega_n, band) = self.berry_curvature_n_onek(&k_vec, &current_dir, &dir_2, spin, eta);
         let mut omega: f64 = 0.0;
         let fermi_dirac = if T == 0.0 {
             band.mapv(|x| if x > mu { 0.0 } else { 1.0 })
@@ -701,18 +699,18 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
     fn berry_curvature<S: Data<Elem = f64>>(
         &self,
         k_vec: &ArrayBase<S, Ix2>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         mu: f64,
         T: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> Array1<f64> {
-        if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() {
+        if current_dir.len() != self.dim_r() || dir_2.len() != self.dim_r() {
             panic!(
-                "Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",
+                "Wrong, the current_dir or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {} and {}",
                 self.dim_r(),
-                dir_1.len(),
+                current_dir.len(),
                 dir_2.len()
             )
         }
@@ -722,7 +720,7 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
             .into_par_iter()
             .map(|x| {
                 let omega_one =
-                    self.berry_curvature_onek(&x.to_owned(), &dir_1, &dir_2, mu, T, spin, eta);
+                    self.berry_curvature_onek(&x.to_owned(), &current_dir, &dir_2, mu, T, spin, eta);
                 omega_one
             })
             .collect();
@@ -761,7 +759,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # Arguments
     ///
     /// * `k_mesh` - Number of k-points along each direction, e.g. `arr1(&[nk, nk])` for 2D.
-    /// * `dir_1` - Direction vector for the first index $\alpha$ of $\sigma_{\alpha\beta}$.
+    /// * `current_dir` - Direction vector for the first index $\alpha$ of $\sigma_{\alpha\beta}$.
     /// * `dir_2` - Direction vector for the second index $\beta$.
     /// * `mu` - Chemical potential $\mu$ (in eV).
     /// * `T` - Temperature (in K). Use `T=0` for the zero-temperature step function.
@@ -779,9 +777,9 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # use rustb::Model;
     /// # fn example(model: &Model) -> Result<(), rustb::error::TbError> {
     /// let kmesh = arr1(&[31, 31]);
-    /// let dir_1 = arr1(&[1.0, 0.0]);
+    /// let current_dir = arr1(&[1.0, 0.0]);
     /// let dir_2 = arr1(&[0.0, 1.0]);
-    /// let sigma_xy = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, 0, 1e-3)?;
+    /// let sigma_xy = model.Hall_conductivity(&kmesh, &current_dir, &dir_2, 0.0, 0.0, None, 1e-3)?;
     /// println!("Hall conductivity = {}", sigma_xy);
     /// # Ok(())
     /// # }
@@ -790,16 +788,16 @@ impl<const SPIN: bool> Model<SPIN> {
     pub fn Hall_conductivity(
         &self,
         k_mesh: &Array1<usize>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         mu: f64,
         T: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> Result<f64> {
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
-        let omega = self.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, spin, eta);
+        let omega = self.berry_curvature(&kvec, &current_dir, &dir_2, mu, T, spin, eta);
         //目前求积分的方法上, 还是直接求和最有用, 其他的典型积分方法, 如gauss 法等,
         //都因为存在间断点而效率不高.
         //对于非零温的, 使用梯形法应该效果能好一些.
@@ -815,7 +813,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # Arguments
     ///
     /// * `k_mesh` - Number of subdomain divisions along each direction.
-    /// * `dir_1`, `dir_2` - Direction vectors for the conductivity tensor indices.
+    /// * `current_dir`, `dir_2` - Direction vectors for the conductivity tensor indices.
     /// * `mu` - Chemical potential (in eV).
     /// * `T` - Temperature (in K).
     /// * `spin` - Spin operator index (0, 1, 2, 3).
@@ -830,11 +828,11 @@ impl<const SPIN: bool> Model<SPIN> {
     pub fn Hall_conductivity_adapted(
         &self,
         k_mesh: &Array1<usize>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         mu: f64,
         T: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
         re_err: f64,
         ab_err: f64,
@@ -843,7 +841,7 @@ impl<const SPIN: bool> Model<SPIN> {
         let n_range = k_range.len_of(Axis(0));
         let ab_err = ab_err / (n_range as f64);
         let use_fn =
-            |k0: &Array1<f64>| self.berry_curvature_onek(k0, &dir_1, &dir_2, mu, T, spin, eta);
+            |k0: &Array1<f64>| self.berry_curvature_onek(k0, &current_dir, &dir_2, mu, T, spin, eta);
         let inte = |k_range| adapted_integrate_quick(&use_fn, &k_range, re_err, ab_err);
         let omega: Vec<f64> = k_range
             .axis_iter(Axis(0))
@@ -865,7 +863,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # Arguments
     ///
     /// * `k_mesh` - Number of k-points along each direction.
-    /// * `dir_1`, `dir_2` - Direction vectors for the conductivity tensor indices.
+    /// * `current_dir`, `dir_2` - Direction vectors for the conductivity tensor indices.
     /// * `mu` - Array of chemical potential values (in eV).
     /// * `T` - Temperature (in K).
     /// * `spin` - Spin operator index (0, 1, 2, 3).
@@ -882,21 +880,21 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # use rustb::Model;
     /// # fn example(model: &Model) -> Result<(), rustb::error::TbError> {
     /// let kmesh = ndarray::arr1(&[31, 31]);
-    /// let dir_1 = ndarray::arr1(&[1.0, 0.0]);
+    /// let current_dir = ndarray::arr1(&[1.0, 0.0]);
     /// let dir_2 = ndarray::arr1(&[0.0, 1.0]);
     /// let mu = Array1::linspace(-2.0, 2.0, 101);
-    /// let sigma_vs_mu = model.Hall_conductivity_mu(&kmesh, &dir_1, &dir_2, &mu, 0.0, 0, 1e-3)?;
+    /// let sigma_vs_mu = model.Hall_conductivity_mu(&kmesh, &current_dir, &dir_2, &mu, 0.0, None, 1e-3)?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn Hall_conductivity_mu(
         &self,
         k_mesh: &Array1<usize>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         mu: &Array1<f64>,
         T: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> Result<Array1<f64>> {
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
@@ -906,7 +904,7 @@ impl<const SPIN: bool> Model<SPIN> {
             .into_par_iter()
             .map(|x| {
                 let (omega_n, band) =
-                    self.berry_curvature_n_onek(&x.to_owned(), &dir_1, &dir_2, spin, eta);
+                    self.berry_curvature_n_onek(&x.to_owned(), &current_dir, &dir_2, spin, eta);
                 (omega_n, band)
             })
             .collect();
@@ -971,7 +969,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # Arguments
     ///
     /// * `k_vec` - k-point coordinates.
-    /// * `dir_1` - Direction vector for the first index $\alpha$ of $\Omega_{n,\alpha\beta}$.
+    /// * `current_dir` - Current direction (direction vector for the first index $\alpha$ of $\Omega_{n,\alpha\beta}$).
     /// * `dir_2` - Direction vector for the second index $\beta$.
     /// * `dir_3` - Direction vector for the derivative index $\gamma$.
     /// * `og` - Frequency $\omega$ (for the energy denominator).
@@ -985,11 +983,11 @@ impl<const SPIN: bool> Model<SPIN> {
     pub fn berry_curvature_dipole_n_onek(
         &self,
         k_vec: &Array1<f64>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         dir_3: &Array1<f64>,
         og: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> (Array1<f64>, Array1<f64>) {
         let li: Complex<f64> = 1.0 * Complex::i();
@@ -1006,17 +1004,17 @@ impl<const SPIN: bool> Model<SPIN> {
             for i in 0..self.dim_r() {
                 let j = J.slice(s![i, .., ..]).to_owned();
                 let j = anti_comm(&X, &j) / 2.0; //这里做反对易
-                J.slice_mut(s![i, .., ..]).assign(&(j * dir_1[[i]]));
+                J.slice_mut(s![i, .., ..]).assign(&(j * current_dir[[i]]));
                 v.slice_mut(s![i, .., ..])
                     .mul_assign(Complex::new(dir_2[[i]], 0.0));
             }
         } else {
-            if spin != 0 {
+            if spin.is_some() {
                 println!("Warning, the model haven't got spin, so the spin input will be ignord");
             }
             for i in 0..self.dim_r() {
                 J.slice_mut(s![i, .., ..])
-                    .mul_assign(Complex::new(dir_1[[i]], 0.0));
+                    .mul_assign(Complex::new(current_dir[[i]], 0.0));
                 v.slice_mut(s![i, .., ..])
                     .mul_assign(Complex::new(dir_2[[i]], 0.0));
             }
@@ -1057,7 +1055,7 @@ impl<const SPIN: bool> Model<SPIN> {
             omega_n[[i]] = -2.0 * A1.slice(s![i, ..]).dot(&A2.slice(s![.., i])).im;
         }
 
-        //let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&dir_1,&dir_2,og,spin,eta);
+        //let (omega_n,band)=self.berry_curvature_n_onek(&k_vec,&current_dir,&dir_2,og,spin,eta);
         let omega_n: Array1<f64> = omega_n * partial_ve;
         (omega_n, band) //最后得到的 D
     }
@@ -1075,7 +1073,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # Arguments
     ///
     /// * `k_vec` - Array of k-points, shape `(nk, dim_r)`.
-    /// * `dir_1`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
+    /// * `current_dir`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
     /// * `dir_3` - Direction vector for the energy derivative index $\gamma$.
     /// * `og` - Frequency $\omega$.
     /// * `spin` - Spin operator index (0, 1, 2, 3).
@@ -1089,23 +1087,23 @@ impl<const SPIN: bool> Model<SPIN> {
     ///
     /// # Panics
     ///
-    /// Panics if any of `dir_1`, `dir_2`, or `dir_3` has length different from `self.dim_r()`.
+    /// Panics if any of `current_dir`, `dir_2`, or `dir_3` has length different from `self.dim_r()`.
     pub fn berry_curvature_dipole_n(
         &self,
         k_vec: &Array2<f64>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         dir_3: &Array1<f64>,
         og: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> (Array2<f64>, Array2<f64>) {
-        if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
+        if current_dir.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
         {
             panic!(
-                "Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",
+                "Wrong, the current_dir or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {} and {}",
                 self.dim_r(),
-                dir_1.len(),
+                current_dir.len(),
                 dir_2.len()
             )
         }
@@ -1116,7 +1114,7 @@ impl<const SPIN: bool> Model<SPIN> {
             .map(|x| {
                 let (omega_one, band) = self.berry_curvature_dipole_n_onek(
                     &x.to_owned(),
-                    &dir_1,
+                    &current_dir,
                     &dir_2,
                     &dir_3,
                     og,
@@ -1151,7 +1149,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # Arguments
     ///
     /// * `k_mesh` - Number of k-points along each direction.
-    /// * `dir_1`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
+    /// * `current_dir`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
     /// * `dir_3` - Direction vector for the energy derivative index $\gamma$.
     /// * `mu` - Array of chemical potential values (in eV).
     /// * `T` - Temperature (in K). Must be non-zero.
@@ -1169,21 +1167,21 @@ impl<const SPIN: bool> Model<SPIN> {
     pub fn Nonlinear_Hall_conductivity_Extrinsic(
         &self,
         k_mesh: &Array1<usize>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         dir_3: &Array1<f64>,
         mu: &Array1<f64>,
         T: f64,
         og: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
         eta: f64,
     ) -> Result<Array1<f64>> {
-        if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
+        if current_dir.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
         {
             panic!(
-                "Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",
+                "Wrong, the current_dir or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {} and {}",
                 self.dim_r(),
-                dir_1.len(),
+                current_dir.len(),
                 dir_2.len()
             )
         }
@@ -1191,7 +1189,7 @@ impl<const SPIN: bool> Model<SPIN> {
         let nk: usize = kvec.len_of(Axis(0));
         //为了节省内存, 本来是可以直接算完求和, 但是为了方便, 我是先存下来再算, 让程序结构更合理
         let (omega, band) =
-            self.berry_curvature_dipole_n(&kvec, &dir_1, &dir_2, &dir_3, og, spin, eta);
+            self.berry_curvature_dipole_n(&kvec, &current_dir, &dir_2, &dir_3, og, spin, eta);
         let omega = omega.into_raw_vec();
         let band = band.into_raw_vec();
         let n_e = mu.len();
@@ -1231,7 +1229,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # Arguments
     ///
     /// * `k_vec` - k-point coordinates.
-    /// * `dir_1` - Direction vector for the first index $\alpha$.
+    /// * `current_dir` - Direction vector for the first index $\alpha$.
     /// * `dir_2` - Direction vector for the second index $\beta$.
     /// * `dir_3` - Direction vector for the third index $\gamma$.
     /// * `spin` - Spin operator index (0, 1, 2, 3).
@@ -1245,10 +1243,10 @@ impl<const SPIN: bool> Model<SPIN> {
     pub fn berry_connection_dipole_onek(
         &self,
         k_vec: &Array1<f64>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         dir_3: &Array1<f64>,
-        spin: usize,
+        spin: Option<SpinDirection>,
     ) -> (Array1<f64>, Array1<f64>, Option<Array1<f64>>) {
         let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
             self.gen_v(&k_vec, Gauge::Atom); //这是速度算符
@@ -1273,7 +1271,7 @@ impl<const SPIN: bool> Model<SPIN> {
         let mut v_2 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
         let mut v_3 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
         for i in 0..self.dim_r() {
-            v_1 = v_1.clone() + v.slice(s![i, .., ..]).to_owned() * Complex::new(dir_1[[i]], 0.0);
+            v_1 = v_1.clone() + v.slice(s![i, .., ..]).to_owned() * Complex::new(current_dir[[i]], 0.0);
             v_2 = v_2.clone() + v.slice(s![i, .., ..]).to_owned() * Complex::new(dir_2[[i]], 0.0);
             v_3 = v_3.clone() + v.slice(s![i, .., ..]).to_owned() * Complex::new(dir_3[[i]], 0.0);
         }
@@ -1300,11 +1298,7 @@ impl<const SPIN: bool> Model<SPIN> {
         //开始最后的计算
         if SPIN {
             //如果考虑自旋, 我们就计算 \partial_h G_{ij}
-            let X = if spin == 0 {
-                Array2::eye(self.nsta())
-            } else {
-                build_spin_matrix(self.norb(), spin)
-            };
+            let X = build_spin_matrix(self.norb(), spin);
             let mut S = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
             for i in 0..self.dim_r() {
                 let v0 = J.slice(s![i, .., ..]).to_owned();
@@ -1319,7 +1313,7 @@ impl<const SPIN: bool> Model<SPIN> {
             let mut s_3 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
             for i in 0..self.dim_r() {
                 s_1 =
-                    s_1.clone() + S.slice(s![i, .., ..]).to_owned() * Complex::new(dir_1[[i]], 0.0);
+                    s_1.clone() + S.slice(s![i, .., ..]).to_owned() * Complex::new(current_dir[[i]], 0.0);
                 s_2 =
                     s_2.clone() + S.slice(s![i, .., ..]).to_owned() * Complex::new(dir_2[[i]], 0.0);
                 s_3 =
@@ -1429,7 +1423,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # Arguments
     ///
     /// * `k_vec` - Array of k-points, shape `(nk, dim_r)`.
-    /// * `dir_1`, `dir_2`, `dir_3` - Direction vectors for the three indices.
+    /// * `current_dir`, `dir_2`, `dir_3` - Direction vectors for the three indices.
     /// * `spin` - Spin operator index (0, 1, 2, 3).
     ///
     /// # Returns
@@ -1440,17 +1434,17 @@ impl<const SPIN: bool> Model<SPIN> {
     pub fn berry_connection_dipole(
         &self,
         k_vec: &Array2<f64>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         dir_3: &Array1<f64>,
-        spin: usize,
+        spin: Option<SpinDirection>,
     ) -> (Array2<f64>, Array2<f64>, Option<Array2<f64>>) {
-        if dir_1.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
+        if current_dir.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
         {
             panic!(
-                "Wrong, the dir_1 or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {},{}",
+                "Wrong, the current_dir or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {} and {}",
                 self.dim_r(),
-                dir_1.len(),
+                current_dir.len(),
                 dir_2.len()
             )
         }
@@ -1463,7 +1457,7 @@ impl<const SPIN: bool> Model<SPIN> {
                 .map(|x| {
                     let (omega_one, band, partial_G) = self.berry_connection_dipole_onek(
                         &x.to_owned(),
-                        &dir_1,
+                        &current_dir,
                         &dir_2,
                         &dir_3,
                         spin,
@@ -1497,7 +1491,7 @@ impl<const SPIN: bool> Model<SPIN> {
                 .map(|x| {
                     let (omega_one, band, partial_G) = self.berry_connection_dipole_onek(
                         &x.to_owned(),
-                        &dir_1,
+                        &current_dir,
                         &dir_2,
                         &dir_3,
                         spin,
@@ -1586,7 +1580,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// # Arguments
     ///
     /// * `k_mesh` - Number of k-points along each direction.
-    /// * `dir_1`, `dir_2`, `dir_3` - Direction vectors for the three tensor indices.
+    /// * `current_dir`, `dir_2`, `dir_3` - Direction vectors for the three tensor indices.
     /// * `mu` - Array of chemical potential values (in eV).
     /// * `T` - Temperature (in K). Must be non-zero.
     /// * `spin` - Spin operator index (0, 1, 2, 3).
@@ -1601,17 +1595,17 @@ impl<const SPIN: bool> Model<SPIN> {
     pub fn Nonlinear_Hall_conductivity_Intrinsic(
         &self,
         k_mesh: &Array1<usize>,
-        dir_1: &Array1<f64>,
+        current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         dir_3: &Array1<f64>,
         mu: &Array1<f64>,
         T: f64,
-        spin: usize,
+        spin: Option<SpinDirection>,
     ) -> Result<Array1<f64>> {
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         let (omega, band, mut partial_G): (Array2<f64>, Array2<f64>, Option<Array2<f64>>) =
-            self.berry_connection_dipole(&kvec, &dir_1, &dir_2, &dir_3, spin);
+            self.berry_connection_dipole(&kvec, &current_dir, &dir_2, &dir_3, spin);
         let omega = omega.into_raw_vec();
         let omega = Array1::from(omega);
         let band0 = band.clone();

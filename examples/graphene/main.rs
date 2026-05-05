@@ -19,23 +19,23 @@ fn main() {
     let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]) * a0;
     let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
     let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
-    model.add_onsite(&arr1(&[delta, -delta]), SpinDirection::z);
-    model.add_onsite(&arr1(&[J, J]), SpinDirection::z);
-    model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
-    model.add_hop(t1, 0, 1, &array![-1, 0], SpinDirection::None);
-    model.add_hop(t1, 0, 1, &array![0, -1], SpinDirection::None);
-    model.add_hop(li * soc, 0, 0, &array![1, 0], SpinDirection::z);
-    model.add_hop(-li * soc, 1, 1, &array![1, 0], SpinDirection::z);
-    model.add_hop(li * soc, 0, 0, &array![0, 1], SpinDirection::z);
-    model.add_hop(-li * soc, 1, 1, &array![0, 1], SpinDirection::z);
-    model.add_hop(li * soc, 0, 0, &array![1, -1], SpinDirection::z);
-    model.add_hop(-li * soc, 1, 1, &array![1, -1], SpinDirection::z);
+    model.add_onsite(&arr1(&[delta, -delta]), SpinDirection::Z);
+    model.add_onsite(&arr1(&[J, J]), SpinDirection::Z);
+    model.add_hop(t1, 0, 1, &array![0, 0], None);
+    model.add_hop(t1, 0, 1, &array![-1, 0], None);
+    model.add_hop(t1, 0, 1, &array![0, -1], None);
+    model.add_hop(li * soc, 0, 0, &array![1, 0], SpinDirection::Z);
+    model.add_hop(-li * soc, 1, 1, &array![1, 0], SpinDirection::Z);
+    model.add_hop(li * soc, 0, 0, &array![0, 1], SpinDirection::Z);
+    model.add_hop(-li * soc, 1, 1, &array![0, 1], SpinDirection::Z);
+    model.add_hop(li * soc, 0, 0, &array![1, -1], SpinDirection::Z);
+    model.add_hop(-li * soc, 1, 1, &array![1, -1], SpinDirection::Z);
     println!("{}", model.ham);
     println!("{}", model.hamR);
     /*
-    model.add_hop(t3,0,1,&array![1,-1],SpinDirection::None);
-    model.add_hop(t3,0,1,&array![-1,1],SpinDirection::None);
-    model.add_hop(t3,0,1,&array![-1,-1],SpinDirection::None);
+    model.add_hop(t3,0,1,&array![1,-1],None);
+    model.add_hop(t3,0,1,&array![-1,1],None);
+    model.add_hop(t3,0,1,&array![-1,-1],None);
     */
     let path = array![
         [0.0, 0.0],

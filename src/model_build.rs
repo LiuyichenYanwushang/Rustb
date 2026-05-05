@@ -45,15 +45,15 @@ use num_complex::Complex;
 ///
 /// This internal macro writes a hopping amplitude `tmp` into the Hamiltonian
 /// matrix at the given orbital indices `(ind_i, ind_j)`, respecting the spin
-/// degree of freedom. The behavior depends on the [`SpinDirection`]:
+/// degree of freedom. The behavior depends on [`Option<SpinDirection>`]:
 ///
-/// - [`SpinDirection::None`]: Writes `tmp` to both spin blocks (spin-up/up and
+/// - `None`: Writes `tmp` to both spin blocks (spin-up/up and
 ///   spin-down/down). Corresponds to `sigma_0` (identity) in spin space.
-/// - [`SpinDirection::x`]: Writes `tmp` to the off-diagonal spin blocks
+/// - `Some(SpinDirection::X)`: Writes `tmp` to the off-diagonal spin blocks
 ///   (up/down and down/up). Corresponds to `sigma_x`.
-/// - [`SpinDirection::y`]: Writes `+i * tmp` to up/down and `-i * tmp` to
+/// - `Some(SpinDirection::Y)`: Writes `+i * tmp` to up/down and `-i * tmp` to
 ///   down/up. Corresponds to `sigma_y`.
-/// - [`SpinDirection::z`]: Writes `+tmp` to up/up and `-tmp` to down/down.
+/// - `Some(SpinDirection::Z)`: Writes `+tmp` to up/up and `-tmp` to down/down.
 ///   Corresponds to `sigma_z`.
 ///
 /// For spinless models (the default), the hopping is simply written
@@ -62,7 +62,7 @@ use num_complex::Complex;
 /// # Parameters
 /// * `$spin` - compile-time constant (`SPIN` const generic) indicating
 ///   whether the model has spin
-/// * `$pauli` - [`SpinDirection`] selecting the Pauli matrix in spin space
+/// * `$pauli` - [`Option<SpinDirection>`] selecting the Pauli matrix in spin space
 /// * `$tmp` - The hopping amplitude (type `Complex<f64>`)
 /// * `$new_ham` - Mutable view of the Hamiltonian matrix
 /// * `$ind_i` - Row orbital index (without spin doubling)
@@ -74,19 +74,19 @@ macro_rules! update_hamiltonian {
     ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {{
         if $spin {
             match $pauli {
-                crate::SpinDirection::None => {
+                None => {
                     $new_ham[[$ind_i, $ind_j]] = $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] = $tmp;
                 }
-                crate::SpinDirection::x => {
+                Some(crate::SpinDirection::X) => {
                     $new_ham[[$ind_i + $norb, $ind_j]] = $tmp;
                     $new_ham[[$ind_i, $ind_j + $norb]] = $tmp;
                 }
-                crate::SpinDirection::y => {
+                Some(crate::SpinDirection::Y) => {
                     $new_ham[[$ind_i + $norb, $ind_j]] = $tmp * Complex::<f64>::i();
                     $new_ham[[$ind_i, $ind_j + $norb]] = -$tmp * Complex::<f64>::i();
                 }
-                crate::SpinDirection::z => {
+                Some(crate::SpinDirection::Z) => {
                     $new_ham[[$ind_i, $ind_j]] = $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] = -$tmp;
                 }
@@ -121,19 +121,19 @@ macro_rules! add_hamiltonian {
     ($spin:expr, $pauli:expr, $tmp:expr, $new_ham:expr, $ind_i:expr, $ind_j:expr,$norb:expr) => {{
         if $spin {
             match $pauli {
-                crate::SpinDirection::None => {
+                None => {
                     $new_ham[[$ind_i, $ind_j]] += $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] += $tmp;
                 }
-                crate::SpinDirection::x => {
+                Some(crate::SpinDirection::X) => {
                     $new_ham[[$ind_i + $norb, $ind_j]] += $tmp;
                     $new_ham[[$ind_i, $ind_j + $norb]] += $tmp;
                 }
-                crate::SpinDirection::y => {
+                Some(crate::SpinDirection::Y) => {
                     $new_ham[[$ind_i + $norb, $ind_j]] += $tmp * Complex::<f64>::i();
                     $new_ham[[$ind_i, $ind_j + $norb]] -= $tmp * Complex::<f64>::i();
                 }
-                crate::SpinDirection::z => {
+                Some(crate::SpinDirection::Z) => {
                     $new_ham[[$ind_i, $ind_j]] += $tmp;
                     $new_ham[[$ind_i + $norb, $ind_j + $norb]] -= $tmp;
                 }
@@ -334,7 +334,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// If the model is spinful, `pauli` determines the Pauli matrix
     /// decoration:
     ///
-    /// - [`SpinDirection::None`] (0): `tmp * sigma_0` (identity)
+    /// - `None` (0): `tmp * sigma_0` (identity)
     /// - [`SpinDirection::x`] (1): `tmp * sigma_x`
     /// - [`SpinDirection::y`] (2): `tmp * sigma_y`
     /// - [`SpinDirection::z`] (3): `tmp * sigma_z`
@@ -364,9 +364,9 @@ impl<const SPIN: bool> Model<SPIN> {
     /// let mut model = Model::<false>::tb_model(1, lat, orb, None).unwrap();
     ///
     /// // Nearest-neighbor hopping to the right: <0,0|H|0,R=+1> = -1.0
-    /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), 0);
+    /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), None);
     /// // Set on-site energy: <0,0|H|0,R=0> = 0.0
-    /// model.set_hop(0.0_f64, 0, 0, &arr1(&[0isize]), 0);
+    /// model.set_hop(0.0_f64, 0, 0, &arr1(&[0isize]), None);
     /// ```
     #[allow(non_snake_case)]
     pub fn set_hop<T: Data<Elem = isize>, U: hop_use>(
@@ -375,11 +375,11 @@ impl<const SPIN: bool> Model<SPIN> {
         ind_i: usize,
         ind_j: usize,
         R: &ArrayBase<T, Ix1>,
-        pauli: impl Into<SpinDirection>,
+        pauli: impl Into<Option<SpinDirection>>,
     ) {
-        let pauli: SpinDirection = pauli.into();
+        let pauli: Option<SpinDirection> = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
-        if pauli != SpinDirection::None && !SPIN {
+        if pauli.is_some() && !SPIN {
             eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
         }
         assert!(
@@ -483,9 +483,9 @@ impl<const SPIN: bool> Model<SPIN> {
     /// let mut model = Model::<false>::tb_model(1, lat, orb, None).unwrap();
     ///
     /// // Set real part
-    /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), 0);
+    /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), None);
     /// // Add an imaginary part on top
-    /// model.add_hop(Complex::new(0.0, 0.1), 0, 0, &arr1(&[1isize]), 0);
+    /// model.add_hop(Complex::new(0.0, 0.1), 0, 0, &arr1(&[1isize]), None);
     /// ```
     #[allow(non_snake_case)]
     pub fn add_hop<T: Data<Elem = isize>, U: hop_use>(
@@ -494,11 +494,11 @@ impl<const SPIN: bool> Model<SPIN> {
         ind_i: usize,
         ind_j: usize,
         R: &ArrayBase<T, Ix1>,
-        pauli: impl Into<SpinDirection>,
+        pauli: impl Into<Option<SpinDirection>>,
     ) {
-        let pauli: SpinDirection = pauli.into();
+        let pauli: Option<SpinDirection> = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
-        if pauli != SpinDirection::None && !SPIN {
+        if pauli.is_some() && !SPIN {
             eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
         }
         assert!(
@@ -688,11 +688,11 @@ impl<const SPIN: bool> Model<SPIN> {
     /// let lat = array![[1.0, 0.0], [0.0, 1.0]];
     /// let orb = array![[0.0, 0.0], [0.5, 0.5]];
     /// let mut model = Model::<false>::tb_model(2, lat, orb, None).unwrap();
-    /// model.set_onsite(&arr1(&[1.0, -1.0]), 0);
+    /// model.set_onsite(&arr1(&[1.0, -1.0]), None);
     /// ```
     #[allow(non_snake_case)]
-    pub fn set_onsite(&mut self, tmp: &Array1<f64>, pauli: impl Into<SpinDirection>) {
-        let pauli = pauli.into();
+    pub fn set_onsite(&mut self, tmp: &Array1<f64>, pauli: impl Into<Option<SpinDirection>>) {
+        let pauli: Option<SpinDirection> = pauli.into();
         if tmp.len() != self.norb() {
             panic!(
                 "Wrong, the norb is {}, however, the onsite input's length is {}",
@@ -734,13 +734,13 @@ impl<const SPIN: bool> Model<SPIN> {
     /// let orb = array![[0.0]];
     /// let mut model = Model::<false>::tb_model(1, lat, orb, None).unwrap();
     ///
-    /// model.set_onsite(&arr1(&[1.0]), 0);
-    /// model.add_onsite(&arr1(&[0.5]), 0);
+    /// model.set_onsite(&arr1(&[1.0]), None);
+    /// model.add_onsite(&arr1(&[0.5]), None);
     /// // Total on-site energy is now 1.5
     /// ```
     #[allow(non_snake_case)]
-    pub fn add_onsite(&mut self, tmp: &Array1<f64>, pauli: impl Into<SpinDirection>) {
-        let pauli = pauli.into();
+    pub fn add_onsite(&mut self, tmp: &Array1<f64>, pauli: impl Into<Option<SpinDirection>>) {
+        let pauli: Option<SpinDirection> = pauli.into();
         if tmp.len() != self.norb() {
             panic!(
                 "Wrong, the norb is {}, however, the onsite input's length is {}",
@@ -783,12 +783,12 @@ impl<const SPIN: bool> Model<SPIN> {
     /// let orb = array![[0.0, 0.0], [0.5, 0.5]];
     /// let mut model = Model::<false>::tb_model(2, lat, orb, None).unwrap();
     ///
-    /// model.set_onsite_one(1.0, 0, 0); // E_0 = 1.0
-    /// model.set_onsite_one(-1.0, 1, 0); // E_1 = -1.0
+    /// model.set_onsite_one(1.0, 0, None); // E_0 = 1.0
+    /// model.set_onsite_one(-1.0, 1, None); // E_1 = -1.0
     /// ```
     #[allow(non_snake_case)]
-    pub fn set_onsite_one(&mut self, tmp: f64, ind: usize, pauli: impl Into<SpinDirection>) {
-        let pauli = pauli.into();
+    pub fn set_onsite_one(&mut self, tmp: f64, ind: usize, pauli: impl Into<Option<SpinDirection>>) {
+        let pauli: Option<SpinDirection> = pauli.into();
         let R = Array1::<isize>::zeros(self.dim_r());
         self.set_hop(Complex::new(tmp, 0.0), ind, ind, &R, pauli)
     }
@@ -818,18 +818,17 @@ impl<const SPIN: bool> Model<SPIN> {
     ///     1, array![[1.0]], array![[0.0]], None,
     /// ).unwrap();
     ///
-    /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), 0);
+    /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), None);
     /// // Remove the hopping
-    /// model.del_hop(0, 0, &arr1(&[1isize]), 0);
+    /// model.del_hop(0, 0, &arr1(&[1isize]), None);
     /// ```
     pub fn del_hop(
         &mut self,
         ind_i: usize,
         ind_j: usize,
         R: &Array1<isize>,
-        pauli: impl Into<SpinDirection>,
+        pauli: impl Into<Option<SpinDirection>>,
     ) {
-        let pauli = pauli.into();
         if R.len() != self.dim_r() {
             panic!("Wrong, the R length should equal to dim_r")
         }

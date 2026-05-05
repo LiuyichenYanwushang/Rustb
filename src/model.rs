@@ -185,18 +185,34 @@ pub enum Dimension {
     three = 3,
 }
 
-/// Spin direction for Pauli matrices
+/// Pauli matrix selector for spin-dependent operators in a spinful model.
+///
+/// In a spinful model (`SPIN = true`), a spin operator is constructed as
+/// $\sigma_i \otimes I_{\text{norb}}$ where $\sigma_i$ is the chosen Pauli matrix.
+/// Used as [`Option<SpinDirection>`]:
+/// - `None` means $\sigma_0 = I$ (identity, no spin projection).
+/// - `Some(SpinDirection::X)` means $\sigma_x$.
+/// - `Some(SpinDirection::Y)` means $\sigma_y$.
+/// - `Some(SpinDirection::Z)` means $\sigma_z$.
+///
+/// # Examples
+///
+/// ```ignore
+/// use rustb::SpinDirection;
+/// // Berry curvature with σ_z spin projection
+/// let omega = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, Some(SpinDirection::Z), eta);
+/// // Berry curvature without spin projection (identity)
+/// let omega = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, None, eta);
+/// ```
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum SpinDirection {
-    /// Identity matrix $\sigma_0$
-    None = 0,
     /// Pauli matrix $\sigma_x$
-    x = 1,
+    X = 1,
     /// Pauli matrix $\sigma_y$
-    y = 2,
+    Y = 2,
     /// Pauli matrix $\sigma_z$
-    z = 3,
+    Z = 3,
 }
 
 // Include Model implementation from submodules

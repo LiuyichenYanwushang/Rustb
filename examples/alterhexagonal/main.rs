@@ -79,7 +79,7 @@ fn main() {
             //println!("{}",mu);
             //plot!(E,dos,"examples/alterhexagonal/dos.pdf");
 
-            let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, 0.0, 0, 1e-3);
+            let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, 0.0, None, 1e-3);
             /*
             println!("{},{}",mu,conductivity/(2.0*PI));
             if (conductivity/2.0/PI-1.0).abs()<1e-2{
@@ -100,7 +100,7 @@ fn main() {
     let og=0.0;
     let mu=Array1::linspace(E_min,E_max,E_n);
     let eta=1e-5;
-    let conductivity=model.Hall_conductivity_mu(&kmesh,&dir_1,&dir_2,&mu,T,og,0,eta);
+    let conductivity=model.Hall_conductivity_mu(&kmesh,&dir_1,&dir_2,&mu, T, None, eta);
     let mut file=File::create("conductivity.dat").expect("Unable to BAND.dat");
     for i in 0..E_n{
         let mut s = String::new();
@@ -130,16 +130,16 @@ fn gen_model(
 ) -> Model<true> {
     let li: Complex<f64> = 1.0 * Complex::i();
     let mut model = Model::<true>::tb_model(dim_r, lat.clone(), orb.clone(), None).unwrap();
-    model.set_onsite(&arr1(&[delta, delta]), SpinDirection::z);
+    model.set_onsite(&arr1(&[delta, delta]), SpinDirection::Z);
     //最近邻hopping
-    model.add_hop(t1, 0, 1, &array![0, 0], SpinDirection::None);
-    model.add_hop(t1, 0, 1, &array![-1, 0], SpinDirection::None);
-    model.add_hop(t1, 0, 1, &array![0, -1], SpinDirection::None);
+    model.add_hop(t1, 0, 1, &array![0, 0], None);
+    model.add_hop(t1, 0, 1, &array![-1, 0], None);
+    model.add_hop(t1, 0, 1, &array![0, -1], None);
     //Rashba
     let d1 = model.orb.row(1).to_owned() - model.orb.row(0).to_owned();
     let d1 = d1.dot(&model.lat);
-    model.add_hop(-lm_so * li * d1[[0]], 0, 1, &array![0, 0], SpinDirection::y);
-    model.add_hop(lm_so * li * d1[[1]], 0, 1, &array![0, 0], SpinDirection::x);
+    model.add_hop(-lm_so * li * d1[[0]], 0, 1, &array![0, 0], SpinDirection::Y);
+    model.add_hop(lm_so * li * d1[[1]], 0, 1, &array![0, 0], SpinDirection::X);
     let d2 = model.orb.row(1).to_owned() - model.orb.row(0).to_owned() + &array![-1.0, 0.0];
     let d2 = d2.dot(&model.lat);
     model.add_hop(
@@ -147,9 +147,9 @@ fn gen_model(
         0,
         1,
         &array![-1, 0],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
-    model.add_hop(lm_so * li * d2[[1]], 0, 1, &array![-1, 0], SpinDirection::x);
+    model.add_hop(lm_so * li * d2[[1]], 0, 1, &array![-1, 0], SpinDirection::X);
     let d3 = model.orb.row(1).to_owned() - model.orb.row(0).to_owned() + &array![0.0, -1.0];
     let d3 = d3.dot(&model.lat);
     model.add_hop(
@@ -157,9 +157,9 @@ fn gen_model(
         0,
         1,
         &array![0, -1],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
-    model.add_hop(lm_so * li * d3[[1]], 0, 1, &array![0, -1], SpinDirection::x);
+    model.add_hop(lm_so * li * d3[[1]], 0, 1, &array![0, -1], SpinDirection::X);
     //最后加上altermagnetism 项
 
     let theta = 0.0 * PI;
@@ -171,21 +171,21 @@ fn gen_model(
         0,
         1,
         &array![0, 0],
-        SpinDirection::z,
+        SpinDirection::Z,
     );
     model.add_hop(
         theta.cos() * delta1 / 2.0,
         0,
         1,
         &array![-1, 0],
-        SpinDirection::z,
+        SpinDirection::Z,
     );
     model.add_hop(
         -theta.cos() * delta1,
         0,
         1,
         &array![0, -1],
-        SpinDirection::z,
+        SpinDirection::Z,
     );
 
     //x方向
@@ -194,21 +194,21 @@ fn gen_model(
         0,
         1,
         &array![0, 0],
-        SpinDirection::x,
+        SpinDirection::X,
     );
     model.add_hop(
         theta.sin() * phi.cos() * delta1 / 2.0,
         0,
         1,
         &array![-1, 0],
-        SpinDirection::x,
+        SpinDirection::X,
     );
     model.add_hop(
         -theta.sin() * phi.cos() * delta1,
         0,
         1,
         &array![0, -1],
-        SpinDirection::x,
+        SpinDirection::X,
     );
     //y 方向
     model.add_hop(
@@ -216,53 +216,53 @@ fn gen_model(
         0,
         1,
         &array![0, 0],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
     model.add_hop(
         theta.sin() * phi.sin() * delta1 / 2.0,
         0,
         1,
         &array![-1, 0],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
     model.add_hop(
         -theta.sin() * phi.sin() * delta1,
         0,
         1,
         &array![0, -1],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
     //次近邻项
     //z方向
-    model.add_hop(theta.cos() * delta2, 0, 0, &array![1, 0], SpinDirection::z);
-    model.add_hop(theta.cos() * delta2, 1, 1, &array![1, 0], SpinDirection::z);
+    model.add_hop(theta.cos() * delta2, 0, 0, &array![1, 0], SpinDirection::Z);
+    model.add_hop(theta.cos() * delta2, 1, 1, &array![1, 0], SpinDirection::Z);
     model.add_hop(
         -0.5 * theta.cos() * delta2,
         0,
         0,
         &array![0, 1],
-        SpinDirection::z,
+        SpinDirection::Z,
     );
     model.add_hop(
         -0.5 * theta.cos() * delta2,
         1,
         1,
         &array![0, 1],
-        SpinDirection::z,
+        SpinDirection::Z,
     );
     model.add_hop(
         -0.5 * theta.cos() * delta2,
         0,
         0,
         &array![-1, 1],
-        SpinDirection::z,
+        SpinDirection::Z,
     );
     model.add_hop(
         -0.5 * theta.cos() * delta2,
         1,
         1,
         &array![-1, 1],
-        SpinDirection::z,
+        SpinDirection::Z,
     );
 
     //x方向
@@ -271,42 +271,42 @@ fn gen_model(
         0,
         0,
         &array![1, 0],
-        SpinDirection::x,
+        SpinDirection::X,
     );
     model.add_hop(
         theta.sin() * phi.cos() * delta2,
         1,
         1,
         &array![1, 0],
-        SpinDirection::x,
+        SpinDirection::X,
     );
     model.add_hop(
         -0.5 * theta.sin() * phi.cos() * delta2,
         0,
         0,
         &array![0, 1],
-        SpinDirection::x,
+        SpinDirection::X,
     );
     model.add_hop(
         -0.5 * theta.sin() * phi.cos() * delta2,
         1,
         1,
         &array![0, 1],
-        SpinDirection::x,
+        SpinDirection::X,
     );
     model.add_hop(
         -0.5 * theta.sin() * phi.cos() * delta2,
         0,
         0,
         &array![-1, 1],
-        SpinDirection::x,
+        SpinDirection::X,
     );
     model.add_hop(
         -0.5 * theta.sin() * phi.cos() * delta2,
         1,
         1,
         &array![-1, 1],
-        SpinDirection::x,
+        SpinDirection::X,
     );
 
     //y 方向
@@ -316,42 +316,42 @@ fn gen_model(
         0,
         0,
         &array![1, 0],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
     model.add_hop(
         theta.sin() * phi.sin() * delta2,
         1,
         1,
         &array![1, 0],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
     model.add_hop(
         -0.5 * theta.sin() * phi.sin() * delta2,
         0,
         0,
         &array![0, 1],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
     model.add_hop(
         -0.5 * theta.sin() * phi.sin() * delta2,
         1,
         1,
         &array![0, 1],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
     model.add_hop(
         -0.5 * theta.sin() * phi.sin() * delta2,
         0,
         0,
         &array![-1, 1],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
     model.add_hop(
         -0.5 * theta.sin() * phi.sin() * delta2,
         1,
         1,
         &array![-1, 1],
-        SpinDirection::y,
+        SpinDirection::Y,
     );
     model
 }

@@ -33,53 +33,53 @@ fn main() {
     let cos_t2 = 1.0 - h.powi(2) / 2.0;
     let t_sg = t_sg * cos_t2;
     //我们只考虑最近邻
-    model.add_hop(-t_sg, 0, 2, &R0.row(0).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 0, 2, &R0.row(0).to_owned(), SpinDirection::None);
-    model.add_hop(t_sg, 0, 3, &R0.row(0).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 0, 3, &R0.row(0).to_owned(), SpinDirection::None);
-    model.add_hop(t_sg, 1, 2, &R0.row(0).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 1, 2, &R0.row(0).to_owned(), SpinDirection::None);
-    model.add_hop(-t_sg, 1, 3, &R0.row(0).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 1, 3, &R0.row(0).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 0, 2, &R0.row(0).to_owned(), None);
+    model.add_hop(t_pi, 0, 2, &R0.row(0).to_owned(), None);
+    model.add_hop(t_sg, 0, 3, &R0.row(0).to_owned(), None);
+    model.add_hop(t_pi, 0, 3, &R0.row(0).to_owned(), None);
+    model.add_hop(t_sg, 1, 2, &R0.row(0).to_owned(), None);
+    model.add_hop(t_pi, 1, 2, &R0.row(0).to_owned(), None);
+    model.add_hop(-t_sg, 1, 3, &R0.row(0).to_owned(), None);
+    model.add_hop(t_pi, 1, 3, &R0.row(0).to_owned(), None);
     //第二个
-    model.add_hop(-t_sg, 0, 2, &R0.row(1).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 0, 2, &R0.row(1).to_owned(), SpinDirection::None);
-    model.add_hop(-t_sg, 0, 3, &R0.row(1).to_owned(), SpinDirection::None);
-    model.add_hop(-t_pi, 0, 3, &R0.row(1).to_owned(), SpinDirection::None);
-    model.add_hop(-t_sg, 1, 2, &R0.row(1).to_owned(), SpinDirection::None);
-    model.add_hop(-t_pi, 1, 2, &R0.row(1).to_owned(), SpinDirection::None);
-    model.add_hop(-t_sg, 1, 3, &R0.row(1).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 1, 3, &R0.row(1).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 0, 2, &R0.row(1).to_owned(), None);
+    model.add_hop(t_pi, 0, 2, &R0.row(1).to_owned(), None);
+    model.add_hop(-t_sg, 0, 3, &R0.row(1).to_owned(), None);
+    model.add_hop(-t_pi, 0, 3, &R0.row(1).to_owned(), None);
+    model.add_hop(-t_sg, 1, 2, &R0.row(1).to_owned(), None);
+    model.add_hop(-t_pi, 1, 2, &R0.row(1).to_owned(), None);
+    model.add_hop(-t_sg, 1, 3, &R0.row(1).to_owned(), None);
+    model.add_hop(t_pi, 1, 3, &R0.row(1).to_owned(), None);
     //第三个
-    model.add_hop(-t_sg, 0, 2, &R0.row(2).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 0, 2, &R0.row(2).to_owned(), SpinDirection::None);
-    model.add_hop(-t_sg, 0, 3, &R0.row(2).to_owned(), SpinDirection::None);
-    model.add_hop(-t_pi, 0, 3, &R0.row(2).to_owned(), SpinDirection::None);
-    model.add_hop(-t_sg, 1, 2, &R0.row(2).to_owned(), SpinDirection::None);
-    model.add_hop(-t_pi, 1, 2, &R0.row(2).to_owned(), SpinDirection::None);
-    model.add_hop(-t_sg, 1, 3, &R0.row(2).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 1, 3, &R0.row(2).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 0, 2, &R0.row(2).to_owned(), None);
+    model.add_hop(t_pi, 0, 2, &R0.row(2).to_owned(), None);
+    model.add_hop(-t_sg, 0, 3, &R0.row(2).to_owned(), None);
+    model.add_hop(-t_pi, 0, 3, &R0.row(2).to_owned(), None);
+    model.add_hop(-t_sg, 1, 2, &R0.row(2).to_owned(), None);
+    model.add_hop(-t_pi, 1, 2, &R0.row(2).to_owned(), None);
+    model.add_hop(-t_sg, 1, 3, &R0.row(2).to_owned(), None);
+    model.add_hop(t_pi, 1, 3, &R0.row(2).to_owned(), None);
     //第四个
-    model.add_hop(-t_sg, 0, 2, &R0.row(3).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 0, 2, &R0.row(3).to_owned(), SpinDirection::None);
-    model.add_hop(t_sg, 0, 3, &R0.row(3).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 0, 3, &R0.row(3).to_owned(), SpinDirection::None);
-    model.add_hop(t_sg, 1, 2, &R0.row(3).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 1, 2, &R0.row(3).to_owned(), SpinDirection::None);
-    model.add_hop(-t_sg, 1, 3, &R0.row(3).to_owned(), SpinDirection::None);
-    model.add_hop(t_pi, 1, 3, &R0.row(3).to_owned(), SpinDirection::None);
+    model.add_hop(-t_sg, 0, 2, &R0.row(3).to_owned(), None);
+    model.add_hop(t_pi, 0, 2, &R0.row(3).to_owned(), None);
+    model.add_hop(t_sg, 0, 3, &R0.row(3).to_owned(), None);
+    model.add_hop(t_pi, 0, 3, &R0.row(3).to_owned(), None);
+    model.add_hop(t_sg, 1, 2, &R0.row(3).to_owned(), None);
+    model.add_hop(t_pi, 1, 2, &R0.row(3).to_owned(), None);
+    model.add_hop(-t_sg, 1, 3, &R0.row(3).to_owned(), None);
+    model.add_hop(t_pi, 1, 3, &R0.row(3).to_owned(), None);
     //开始加上自旋轨道耦合
-    model.add_hop(lm * li, 0, 1, &array![0, 0, 0], SpinDirection::z);
-    model.add_hop(lm * li, 2, 3, &array![0, 0, 0], SpinDirection::z);
+    model.add_hop(lm * li, 0, 1, &array![0, 0, 0], SpinDirection::Z);
+    model.add_hop(lm * li, 2, 3, &array![0, 0, 0], SpinDirection::Z);
     //最后一项
-    model.add_hop(li * t_eff, 0, 3, &R0.row(0).to_owned(), SpinDirection::y);
-    model.add_hop(-li * t_eff, 1, 2, &R0.row(0).to_owned(), SpinDirection::y);
-    model.add_hop(li * t_eff, 0, 3, &R0.row(1).to_owned(), SpinDirection::x);
-    model.add_hop(-li * t_eff, 1, 2, &R0.row(1).to_owned(), SpinDirection::x);
-    model.add_hop(-li * t_eff, 0, 3, &R0.row(2).to_owned(), SpinDirection::x);
-    model.add_hop(li * t_eff, 1, 2, &R0.row(2).to_owned(), SpinDirection::x);
-    model.add_hop(-li * t_eff, 0, 3, &R0.row(3).to_owned(), SpinDirection::y);
-    model.add_hop(li * t_eff, 1, 2, &R0.row(3).to_owned(), SpinDirection::y);
+    model.add_hop(li * t_eff, 0, 3, &R0.row(0).to_owned(), SpinDirection::Y);
+    model.add_hop(-li * t_eff, 1, 2, &R0.row(0).to_owned(), SpinDirection::Y);
+    model.add_hop(li * t_eff, 0, 3, &R0.row(1).to_owned(), SpinDirection::X);
+    model.add_hop(-li * t_eff, 1, 2, &R0.row(1).to_owned(), SpinDirection::X);
+    model.add_hop(-li * t_eff, 0, 3, &R0.row(2).to_owned(), SpinDirection::X);
+    model.add_hop(li * t_eff, 1, 2, &R0.row(2).to_owned(), SpinDirection::X);
+    model.add_hop(-li * t_eff, 0, 3, &R0.row(3).to_owned(), SpinDirection::Y);
+    model.add_hop(li * t_eff, 1, 2, &R0.row(3).to_owned(), SpinDirection::Y);
     //开始计算体能带
     let path = array![
         [0.0, 0.0, 0.0],
@@ -128,24 +128,24 @@ fn main() {
     //首先, 我们设定磁矩为 J, 加在 onsite 项上, 看能否得到altermagnetism
 
     let J = 0.1 + 0.0 * li;
-    model.add_hop(J, 0, 0, &array![1, 0, 0], SpinDirection::x);
-    model.add_hop(J, 1, 1, &array![1, 0, 0], SpinDirection::x);
-    model.add_hop(J, 2, 2, &array![1, 0, 0], SpinDirection::x);
-    model.add_hop(J, 3, 3, &array![1, 0, 0], SpinDirection::x);
-    model.add_hop(-J, 0, 0, &array![0, 1, 0], SpinDirection::x);
-    model.add_hop(-J, 1, 1, &array![0, 1, 0], SpinDirection::x);
-    model.add_hop(-J, 2, 2, &array![0, 1, 0], SpinDirection::x);
-    model.add_hop(-J, 3, 3, &array![0, 1, 0], SpinDirection::x);
+    model.add_hop(J, 0, 0, &array![1, 0, 0], SpinDirection::X);
+    model.add_hop(J, 1, 1, &array![1, 0, 0], SpinDirection::X);
+    model.add_hop(J, 2, 2, &array![1, 0, 0], SpinDirection::X);
+    model.add_hop(J, 3, 3, &array![1, 0, 0], SpinDirection::X);
+    model.add_hop(-J, 0, 0, &array![0, 1, 0], SpinDirection::X);
+    model.add_hop(-J, 1, 1, &array![0, 1, 0], SpinDirection::X);
+    model.add_hop(-J, 2, 2, &array![0, 1, 0], SpinDirection::X);
+    model.add_hop(-J, 3, 3, &array![0, 1, 0], SpinDirection::X);
 
     let J = 0.1 + 0.0 * li;
-    model.add_hop(J, 0, 0, &array![1, 0, 0], SpinDirection::y);
-    model.add_hop(J, 1, 1, &array![1, 0, 0], SpinDirection::y);
-    model.add_hop(J, 2, 2, &array![1, 0, 0], SpinDirection::y);
-    model.add_hop(J, 3, 3, &array![1, 0, 0], SpinDirection::y);
-    model.add_hop(-J, 0, 0, &array![0, 1, 0], SpinDirection::y);
-    model.add_hop(-J, 1, 1, &array![0, 1, 0], SpinDirection::y);
-    model.add_hop(-J, 2, 2, &array![0, 1, 0], SpinDirection::y);
-    model.add_hop(-J, 3, 3, &array![0, 1, 0], SpinDirection::y);
+    model.add_hop(J, 0, 0, &array![1, 0, 0], SpinDirection::Y);
+    model.add_hop(J, 1, 1, &array![1, 0, 0], SpinDirection::Y);
+    model.add_hop(J, 2, 2, &array![1, 0, 0], SpinDirection::Y);
+    model.add_hop(J, 3, 3, &array![1, 0, 0], SpinDirection::Y);
+    model.add_hop(-J, 0, 0, &array![0, 1, 0], SpinDirection::Y);
+    model.add_hop(-J, 1, 1, &array![0, 1, 0], SpinDirection::Y);
+    model.add_hop(-J, 2, 2, &array![0, 1, 0], SpinDirection::Y);
+    model.add_hop(-J, 3, 3, &array![0, 1, 0], SpinDirection::Y);
 
     let path = array![[0.5, 0.0, 0.0], [0.0, 0.5, 0.0]];
     let (kvec, kdist, knode) = model.k_path(&path, nk).unwrap();
@@ -185,7 +185,7 @@ fn main() {
     let mu: f64 = 0.0;
     let dir_1 = arr1(&[1.0, 0.0, 0.0]);
     let dir_2 = arr1(&[0.0, 1.0, 0.0]);
-    let spin: usize = 3;
+    let spin = None;
     let kmesh = arr1(&[nk, nk, 1]);
     let start = Instant::now(); // 开始计时
     let conductivity = model

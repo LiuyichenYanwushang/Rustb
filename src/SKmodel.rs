@@ -363,7 +363,7 @@ impl<const SPIN: bool> ToTbModel<SPIN> for SlaterKosterModel<SPIN> {
                                     s_idx,
                                 )?;
                                 if hop.abs() > 1e-12 {
-                                    model.add_hop(hop, io, jo, R, SpinDirection::None);
+                                    model.add_hop(hop, io, jo, R, None);
                                 }
                             }
                         }

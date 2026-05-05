@@ -34,44 +34,44 @@ fn main() {
         0,
         0,
         &array![0, 0, 0],
-        SpinDirection::x,
+        SpinDirection::X,
     );
-    model.add_hop(-delta, 0, 0, &array![0, 0, 0], SpinDirection::y);
+    model.add_hop(-delta, 0, 0, &array![0, 0, 0], SpinDirection::Y);
     model.add_hop(
         -delta * 3.0_f64.sqrt(),
         3,
         3,
         &array![0, 0, 0],
-        SpinDirection::x,
+        SpinDirection::X,
     );
-    model.add_hop(-delta, 3, 3, &array![0, 0, 0], SpinDirection::y);
-    model.add_hop(delta, 4, 4, &array![0, 0, 0], SpinDirection::y);
+    model.add_hop(-delta, 3, 3, &array![0, 0, 0], SpinDirection::Y);
+    model.add_hop(delta, 4, 4, &array![0, 0, 0], SpinDirection::Y);
 
     /*
-    model.add_hop(-delta*3.0_f64.sqrt(),1,1,&array![0,0,0],SpinDirection::x);
-    model.add_hop(delta,1,1,&array![0,0,0],SpinDirection::y);
-    model.add_hop(delta*3.0_f64.sqrt(),2,2,&array![0,0,0],SpinDirection::x);
-    model.add_hop(delta,2,2,&array![0,0,0],SpinDirection::y);
-    model.add_hop(-delta,5,5,&array![0,0,0],SpinDirection::y);
+    model.add_hop(-delta*3.0_f64.sqrt(),1,1,&array![0,0,0],SpinDirection::X);
+    model.add_hop(delta,1,1,&array![0,0,0],SpinDirection::Y);
+    model.add_hop(delta*3.0_f64.sqrt(),2,2,&array![0,0,0],SpinDirection::X);
+    model.add_hop(delta,2,2,&array![0,0,0],SpinDirection::Y);
+    model.add_hop(-delta,5,5,&array![0,0,0],SpinDirection::Y);
     */
 
-    model.add_hop(t1, 0, 1, &array![0, 0, 0], SpinDirection::None);
-    model.add_hop(t1, 0, 2, &array![0, 0, 0], SpinDirection::None);
-    model.add_hop(t1, 0, 5, &array![0, -1, 0], SpinDirection::None);
-    model.add_hop(t1, 1, 4, &array![0, 0, 0], SpinDirection::None);
-    model.add_hop(t1, 1, 3, &array![1, -1, 0], SpinDirection::None);
-    model.add_hop(t1, 2, 3, &array![0, 0, 0], SpinDirection::None);
-    model.add_hop(t1, 2, 4, &array![-1, 0, 0], SpinDirection::None);
-    model.add_hop(t1, 3, 5, &array![0, 0, 0], SpinDirection::None);
-    model.add_hop(t1, 4, 5, &array![0, 0, 0], SpinDirection::None);
+    model.add_hop(t1, 0, 1, &array![0, 0, 0], None);
+    model.add_hop(t1, 0, 2, &array![0, 0, 0], None);
+    model.add_hop(t1, 0, 5, &array![0, -1, 0], None);
+    model.add_hop(t1, 1, 4, &array![0, 0, 0], None);
+    model.add_hop(t1, 1, 3, &array![1, -1, 0], None);
+    model.add_hop(t1, 2, 3, &array![0, 0, 0], None);
+    model.add_hop(t1, 2, 4, &array![-1, 0, 0], None);
+    model.add_hop(t1, 3, 5, &array![0, 0, 0], None);
+    model.add_hop(t1, 4, 5, &array![0, 0, 0], None);
 
-    //    model.add_hop(t1,2,3,&array![0,0,0],SpinDirection::None);
-    //    model.add_hop(t1,2,3,&array![-1,0,0],SpinDirection::None);
-    //    model.add_hop(t1,2,3,&array![0,-1,0],SpinDirection::None);
-    //    model.add_hop(th1,0,2,&array![0,0,0],SpinDirection::None);
-    //    model.add_hop(th2,1,3,&array![0,0,0],SpinDirection::None);
-    //    model.add_hop(th2,0,2,&array![0,0,-1],SpinDirection::None);
-    //    model.add_hop(th1,1,3,&array![0,0,-1],SpinDirection::None);
+    //    model.add_hop(t1,2,3,&array![0,0,0],None);
+    //    model.add_hop(t1,2,3,&array![-1,0,0],None);
+    //    model.add_hop(t1,2,3,&array![0,-1,0],None);
+    //    model.add_hop(th1,0,2,&array![0,0,0],None);
+    //    model.add_hop(th2,1,3,&array![0,0,0],None);
+    //    model.add_hop(th2,0,2,&array![0,0,-1],None);
+    //    model.add_hop(th1,1,3,&array![0,0,-1],None);
     let nk: usize = 1001;
     //let path=[[0.0,0.0,0.0],[2.0/3.0,1.0/3.0,0.0],[0.5,0.5,0.0],[0.0,0.0,0.0],[0.0,0.0,0.5],[2.0/3.0,1.0/3.0,0.5],[2.0/3.0,1.0/3.0,0.0]];
     //let label=vec!["G","K","M","G","H","K0","K"];
