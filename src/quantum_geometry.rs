@@ -313,80 +313,73 @@ impl<const SPIN: bool> Model<SPIN> {
             })
             .collect();
 
-        let mut metric_n: Vec<Vec<f64>> = Vec::with_capacity(nk);
-        let mut omega_n: Vec<Vec<f64>> = Vec::with_capacity(nk);
-        let mut band: Vec<Vec<f64>> = Vec::with_capacity(nk);
-        for (m, o, b) in all {
-            metric_n.push(m);
-            omega_n.push(o);
-            band.push(b);
-        }
-
         // Flatten into (nk, nsta) arrays
-        let metric_n = Array2::<f64>::from_shape_vec(
-            (nk, nsta),
-            metric_n.into_iter().flatten().collect(),
-        )
-        .unwrap();
-        let omega_n = Array2::<f64>::from_shape_vec(
-            (nk, nsta),
-            omega_n.into_iter().flatten().collect(),
-        )
-        .unwrap();
-        let band =
-            Array2::<f64>::from_shape_vec((nk, nsta), band.into_iter().flatten().collect())
-                .unwrap();
+        let (metric_flat, omega_flat, band_flat): (Vec<f64>, Vec<f64>, Vec<f64>) = {
+            let cap = nk * nsta;
+            let mut mf = Vec::with_capacity(cap);
+            let mut of = Vec::with_capacity(cap);
+            let mut bf = Vec::with_capacity(cap);
+            for (m, o, b) in all {
+                mf.extend(m);
+                of.extend(o);
+                bf.extend(b);
+            }
+            (mf, of, bf)
+        };
+        let metric_n = Array2::<f64>::from_shape_vec((nk, nsta), metric_flat).unwrap();
+        let omega_n = Array2::<f64>::from_shape_vec((nk, nsta), omega_flat).unwrap();
+        let band = Array2::<f64>::from_shape_vec((nk, nsta), band_flat).unwrap();
 
         let n_mu = mu.len();
         let norm = 1.0 / (nk as f64);
 
-        let (metric_mu, omega_mu) = if T == 0.0 {
-            let mut g_arr = Array1::<f64>::zeros(n_mu);
-            let mut o_arr = Array1::<f64>::zeros(n_mu);
-            for (i_mu, &mu_i) in mu.iter().enumerate() {
-                let mut g_sum = 0.0f64;
-                let mut o_sum = 0.0f64;
-                for ik in 0..nk {
-                    for ib in 0..nsta {
-                        if band[[ik, ib]] <= mu_i {
-                            g_sum += metric_n[[ik, ib]];
-                            o_sum += omega_n[[ik, ib]];
+        // Fermi‑Dirac weighted BZ sum — single pass over mu, computing metric
+        // and omega together to avoid redundant work and intermediate allocations.
+        let metric_mu: Vec<(f64, f64)> = if T == 0.0 {
+            // T = 0: step function, parallel over mu
+            mu.into_par_iter()
+                .map(|&mu_i| {
+                    let mut g_sum = 0.0f64;
+                    let mut o_sum = 0.0f64;
+                    for ik in 0..nk {
+                        for ib in 0..nsta {
+                            if band[[ik, ib]] <= mu_i {
+                                g_sum += metric_n[[ik, ib]];
+                                o_sum += omega_n[[ik, ib]];
+                            }
                         }
                     }
-                }
-                g_arr[i_mu] = g_sum * norm;
-                o_arr[i_mu] = o_sum * norm;
-            }
-            (g_arr, o_arr)
+                    (g_sum * norm, o_sum * norm)
+                })
+                .collect::<Vec<(f64, f64)>>()
         } else {
+            // T > 0: Fermi‑Dirac distribution, parallel over mu
             let beta = 1.0 / (T * 8.617e-5);
-            let g_arr: Vec<f64> = mu
-                .into_par_iter()
+            mu.into_par_iter()
                 .map(|&mu_i| {
-                    let fd = band.mapv(|e| 1.0 / ((beta * (e - mu_i)).exp() + 1.0));
-                    let g: Vec<f64> = metric_n
-                        .axis_iter(Axis(0))
-                        .zip(fd.axis_iter(Axis(0)))
-                        .map(|(m_row, f_row)| (&m_row * &f_row).sum())
-                        .collect();
-                    g.iter().sum::<f64>() * norm
+                    let mut g_sum = 0.0f64;
+                    let mut o_sum = 0.0f64;
+                    for ik in 0..nk {
+                        for ib in 0..nsta {
+                            let e = band[[ik, ib]];
+                            let fd = 1.0 / ((beta * (e - mu_i)).exp() + 1.0);
+                            g_sum += metric_n[[ik, ib]] * fd;
+                            o_sum += omega_n[[ik, ib]] * fd;
+                        }
+                    }
+                    (g_sum * norm, o_sum * norm)
                 })
-                .collect();
-            let o_arr: Vec<f64> = mu
-                .into_par_iter()
-                .map(|&mu_i| {
-                    let fd = band.mapv(|e| 1.0 / ((beta * (e - mu_i)).exp() + 1.0));
-                    let o: Vec<f64> = omega_n
-                        .axis_iter(Axis(0))
-                        .zip(fd.axis_iter(Axis(0)))
-                        .map(|(o_row, f_row)| (&o_row * &f_row).sum())
-                        .collect();
-                    o.iter().sum::<f64>() * norm
-                })
-                .collect();
-            (Array1::from_vec(g_arr), Array1::from_vec(o_arr))
+                .collect::<Vec<(f64, f64)>>()
         };
 
-        Ok((metric_mu, omega_mu))
+        let n_mu = mu.len();
+        let mut g_arr = Array1::<f64>::zeros(n_mu);
+        let mut o_arr = Array1::<f64>::zeros(n_mu);
+        for (i, (g, o)) in metric_mu.into_iter().enumerate() {
+            g_arr[i] = g;
+            o_arr[i] = o;
+        }
+
+        Ok((g_arr, o_arr))
     }
 }
