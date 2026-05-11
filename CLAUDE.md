@@ -191,57 +191,101 @@ cargo runexample graphene  # or any other example name
 ## High-Level Architecture
 
 ### Core Data Structures
-- **`Model`** (`src/basis.rs`): Central tight-binding model struct containing:
-  - `lat`: Lattice vectors (d×d matrix)
+
+- **`Model<const SPIN: bool>`** (`src/model.rs`): Central tight-binding model struct. SPIN is a const generic (`Model<false>` = spinless, `Model<true>` = spinful with doubled basis [orb₁↑,…,orb_N↑, orb₁↓,…,orb_N↓]). Key fields:
+  - `dim_r`: `Dimension` enum (Dim1/Dim2/Dim3)
+  - `lat`: Lattice vectors (d×d matrix, in Å)
   - `orb`: Orbital positions in fractional coordinates
-  - `ham`: Hamiltonian matrix elements Hₘₙ(R) as 3D array [orb_m, orb_n, R_index]
-  - `hamR`: Lattice vectors R for each hopping
-  - `rmatrix`: Position matrix elements for velocity operator calculations
-  - `atoms`: List of `Atom` objects with orbital information
-  - `spin`: Boolean indicating spinful/spinless model
-- **`Atom`** (`src/atom_struct.rs`): Atomic site with orbital projections (s, p, d, f, hybrid)
+  - `ham`: Hopping amplitudes Hₘₙ(R) as 3D array `[norb, norb, nR]`
+  - `hamR`: Lattice vectors R (integer, in units of primitive cell vectors) for each hopping
+  - `rmatrix`: Position matrix elements rₘₙ(R) from Wannier90 (for velocity operator)
+  - `atoms`: `Vec<Atom>` with orbital/position information
+- **`Gauge`** (`src/model.rs`): Enum controlling velocity operator convention — `Gauge::Atom` (orbital positions included in phase) or `Gauge::Lattice` (only R vectors in phase)
+- **`Dimension`** (`src/model.rs`): Enum for system dimensionality — `Dim1`, `Dim2`, `Dim3`
+- **`SpinDirection`** (`src/model.rs`): Enum for spin projection in Berry curvature/quantum geometry — `X`, `Y`, `Z` (Pauli matrices σ_x, σ_y, σ_z). Pass `None` for identity (no spin projection)
+- **`Atom`** (`src/atom_struct.rs`): Atomic site with orbital projections (s, p, d, f, and hybrid orbitals)
 - **`OrbProj`**: Orbital projection descriptor for Slater-Koster integrals
 
-### Key Modules
-- **`basis`**: Core Model implementation, Hamiltonian construction, eigenvalue solving
-- **`conductivity`**: Transport properties (Hall, spin Hall, nonlinear conductivities)
-- **`surfgreen`**: Surface Green's functions for edge/surface state calculations
-- **`wannier90`**: Interface with Wannier90 tight-binding models
-- **`SKmodel`**: Slater-Koster parameterized models with two-center integrals
-- **`geometry`**: Supercell construction, cutting pieces, dot structures
-- **`kpoints`**: k‑point mesh generation and path construction
-- **`math`**: Mathematical utilities (commutators, matrix operations)
-- **`output`**: Band structure plotting and file output
-- **`io`**: Text file I/O for arrays
-- **`error`**: Centralized error handling with `TbError` enum
-- **`generics`**: Trait definitions for numeric type flexibility
-- **`ndarray_lapack`**: LAPACK bindings for ndarray matrices
-- **`phy_const`**: Physical constants (ħ, e, k_B, etc.)
-- **`unfold`**: Band unfolding for supercell calculations (implements `unfold` trait on `Model`)
+### Trait Hierarchy (Trait-Based API)
+
+Responses (Berry curvature, Hall conductivity, quantum geometry) use a layered trait design:
+
+```
+Velocity  (src/velocity.rs)
+  └─ BerryCurvature  (src/conductivity.rs)
+       └─ QuantumGeometry  (src/quantum_geometry.rs)
+```
+
+- **`Velocity`**: Computes the velocity operator matrix v_α(k) = (1/ħ) ∂H/∂k_α at a given k-point. Uses atomic-gauge formula with position matrix elements if available.
+- **`BerryCurvature`**: Band-resolved and summed Berry curvature, Hall conductivity (AHC), nonlinear Hall (intrinsic + extrinsic), Berry curvature dipole, Berry connection dipole.
+- **`QuantumGeometry`**: Quantum geometric tensor G_{n,αβ}(k), quantum metric g_{n,αβ}, Berry curvature Ω_{n,αβ}. Band-resolved and Fermi-sea summed.
+
+A separate trait pair handles Fermi surface visualization:
+
+```
+FermiSurface   (src/fermi_surface.rs)   → 2D marching squares / 3D marching tetrahedra
+FermiSurfacePlane (src/fermi_surface.rs) → 3D k-plane slice Fermi surface
+```
+
+All methods on these traits are provided methods with default implementations. Models get them via blanket impls (`impl<const SPIN: bool> Velocity for Model<SPIN>`, etc.).
+
+### Key Source Files
+
+| File | Purpose |
+|------|---------|
+| `model.rs` | `Model<SPIN>` struct, `Gauge`, `Dimension`, `SpinDirection` enums |
+| `model_build.rs` | Builder methods: `tb_model()`, `set_hop()`, `add_hop()`, `set_onsite()`, `update_hamiltonian!`, `add_hamiltonian!` macros, supercell construction |
+| `model_physics.rs` | Physics methods: `gen_ham()` (Bloch Hamiltonian), `gen_v()` (velocity), `solve_band()`, `solve_all()`, `solve_all_parallel()`, density of states |
+| `model_transform.rs` | Model transformations: supercell, cut, slice, apply symmetry operations |
+| `model_utils.rs` | Internal utilities: `find_R()`, `remove_col()`, `remove_row()` |
+| `velocity.rs` | `Velocity` trait — velocity operator matrices |
+| `conductivity.rs` | `BerryCurvature` trait — Berry curvature, AHC, nonlinear Hall |
+| `quantum_geometry.rs` | `QuantumGeometry` trait — quantum metric, Berry curvature with broadening |
+| `optical_conductivity.rs` | Optical conductivity (Kubo formula) |
+| `magnetic_field.rs` | Peierls substitution, magnetic supercells |
+| `surfgreen.rs` | Surface Green's function (iterative method) for edge/surface states |
+| `wannier90.rs` | Wannier90 `_hr.dat`, `_r.dat`, `_wsvec.dat` file I/O |
+| `SKmodel.rs` | Slater-Koster tight-binding with two-center integrals |
+| `atom_struct.rs` | `Atom`, `OrbProj` types |
+| `geometry.rs` | Supercell geometry, cutting pieces, dot/hole structures |
+| `cut.rs` | Model slicing/cutting operations |
+| `kpoints.rs` | k‑point mesh generation (`gen_kmesh`) |
+| `kplane.rs` | k‑plane mesh generation (`gen_kplane`) |
+| `kpath.rs` | High-symmetry k‑path construction |
+| `fermi_surface.rs` | `FermiSurface` / `FermiSurfacePlane` traits, marching squares/tetrahedra, gnuplot rendering |
+| `solve_ham.rs` | Eigensolver helpers (diagonalize H(k), compute eigenvectors) |
+| `unfold.rs` | Band unfolding for supercell calculations |
+| `orbital_angular.rs` | Orbital angular momentum operators |
+| `output.rs` | Plotting: `show_band()`, `show_surf_state()`, `draw_heatmap()` (via gnuplot) |
+| `io.rs` | Text file I/O: `write_txt()`, `write_txt_1()` |
+| `error.rs` | `TbError` enum, `Result<T>` type alias |
+| `math.rs` | `comm()` (commutator), matrix utilities |
+| `generics.rs` | Numeric trait bounds |
+| `ndarray_lapack.rs` | LAPACK FFI bindings |
+| `phy_const.rs` | Physical constants (ħ, e, k_B, etc.) |
+| `lib.rs` | Crate root: module declarations, re-exports (`pub use X::*`), integration tests |
 
 ### External Dependencies
-- **`ndarray` / `ndarray-linalg`**: N‑dimensional arrays and linear algebra
+- **`ndarray` / `ndarray-linalg`**: N‑dimensional arrays and linear algebra (eigendecomposition, SVD)
 - **`rayon`**: Parallel iteration over k‑points
-- **`gnuplot`**: Plotting band structures and DOS
-- **`num-complex`**: Complex number support
-- **`serde`**: Serialization for model saving/loading
+- **`gnuplot`**: Plotting band structures, DOS, surface states
+- **`num-complex`**: Complex number support (Complex<f64>)
+- **`serde`**: Model serialization/deserialization
 
 ### Calculation Workflow
-1. **Model Construction**: Create `Model` with lattice and orbital positions
-2. **Set Hopping**: Add hopping terms with `add_hop`/`set_hop` and on‑site energies
-3. **Band Structure**: Solve eigenvalue problem on k‑path with `solve_all_parallel`
-4. **Transport**: Compute Berry curvature, Hall conductivity via `Hall_conductivity`
-5. **Surface States**: Construct `surf_Green` object and compute local DOS
-6. **Topology**: Calculate Wilson loops, Wannier centers, Chern numbers
+1. **Model Construction**: `Model::<SPIN>::tb_model(dim, lat, orb, atoms)` creates an empty model
+2. **Set Hopping**: `set_hop()`, `add_hop()`, `set_onsite()` populate Hₘₙ(R); Hermitian conjugates are auto-generated
+3. **Band Structure**: `solve_all_parallel()` diagonalizes H(k) on a k‑path or k‑mesh
+4. **Transport**: `berry_curvature()` / `Hall_conductivity()` via the `BerryCurvature` trait
+5. **Surface States**: `surf_Green::from_Model()` constructs the surface Green's function; `surf_state()` computes local DOS
+6. **Topology**: Wilson loops (`wannier_center()`), Chern numbers, Z₂ invariants
+7. **Quantum Geometry**: `quantum_metric_n()` / `quantum_metric_sum()` via the `QuantumGeometry` trait
+8. **Fermi Surface**: `show_fermi_surface()` via `FermiSurface` trait; 2D contour or 3D isosurface
 
-### Parallelism
-- k‑point loops are parallelized with `rayon` (e.g., `solve_all_parallel`)
-- Large matrix operations use BLAS/LAPACK backends (Intel MKL, OpenBLAS, netlib)
-
-### Error Handling
-- All fallible operations return `Result<T, TbError>`
-- `TbError` enum covers I/O, linear algebra, invalid input, and physics errors
-- Use `?` operator for ergonomic error propagation
+### k‑Point and Coordinate Conventions
+- **k‑points**: Fractional reciprocal coordinates; phase factor in `gen_ham()` uses `exp(2πi k·R)` where R is in integer lattice-vector units
+- **Orbital positions**: Fractional coordinates (columns of `orb` are the fractional coordinates of orbital positions)
+- **Cartesian conversion**: Multiply fractional vectors by the lattice matrix `lat` (each column of `lat` is a lattice vector in Å)
 
 ## BLAS/LAPACK Backend Selection
 The library supports multiple BLAS/LAPACK implementations via Cargo features:
@@ -262,14 +306,15 @@ Tests and examples generate PDF plots via gnuplot in `tests/` subdirectories:
 The plotting functions (`show_band`, `show_surf_state`, `draw_heatmap`) automatically create these files.
 
 ## Examples Structure
-Each example in `examples/` is a standalone program demonstrating specific capabilities:
-- `graphene`: Basic honeycomb lattice with edge states
+Each example in `examples/` is a standalone binary (directory with `main.rs` and often data files like `KLABELS`, `BAND.dat`):
+- `graphene`: Basic honeycomb lattice with edge states and band structure
+- `BHZ`: Bernevig-Hughes-Zhang model for quantum spin Hall effect (not yet registered in Cargo.toml [[example]])
 - `WTe2_kp`: k·p model for WTe₂
 - `Intrinsic_nonlinear`: Nonlinear Hall conductivity
 - `z2_monopole`: Z₂ monopole charge calculation
 - `Bi2F2`, `BiF_square`, `RuO2`: Material‑specific models
 - `alterhexagonal`, `chern_alter`, `alter_twist`: Altermagnetic systems
-- `Bi2F2_new`: Updated Bi₂F₂ model
+- `Bi2F2_new`: Updated Bi₂F₂ model with additional analyses
 - `yuxuan_try`: Experimental/test configurations
 
 Examples serve both as usage templates and validation tests.
@@ -285,18 +330,21 @@ Run `cargo test` to execute all tests; check generated PDFs in `tests/` for visu
 
 ## File I/O
 - **Text files**: Use `write_txt` and `write_txt_1` from `io` module for 1D/2D arrays
-- **Wannier90 compatibility**: `output_hr` writes `wannier90_hr.dat` format
+- **Wannier90 compatibility**: `from_hr(path, seedname, zero_energy)` loads `_hr.dat` files; `from_r()` also loads position matrix elements from `_r.dat`
 - **Model serialization**: `Model` implements `Serialize`/`Deserialize` via `serde`
+- **Plotting**: `show_band()`, `show_surf_state()`, `draw_heatmap()` generate PDFs via gnuplot
 
 ## Notes for Development
-- When adding new hopping terms, ensure Hermitian conjugate exists (`-R` vector)
-- Spin is a const generic (`Model<SPIN>`): `Model<true>` doubles the orbital basis with Pauli matrices in spin space
-- Position matrix `rmatrix` is essential for velocity operator calculations
-- Use `Gauge::Atom` or `Gauge::Lattice` for consistent phase conventions
-- k‑points are in reciprocal lattice coordinates (fractions of reciprocal vectors)
+- When adding new hopping terms, Hermitian conjugates are auto-generated (the `-R` vector with conjugated amplitude is added automatically by `set_hop`/`add_hop`)
+- `Model<SPIN>` is const-generic: `Model<true>` doubles the orbital basis with Pauli matrices in spin space. The two types are distinct — they cannot be mixed in collections without type erasure
+- Position matrix `rmatrix` from Wannier90 (requires `write_rmn = true`) is used for accurate velocity operators. Without it, the rmatrix commutator term in `gen_v()` is omitted
+- `Gauge::Atom` includes orbital positions in the phase factor; `Gauge::Lattice` uses only R vectors. This affects velocity matrices and all derived quantities
+- k‑points are in fractional reciprocal coordinates; the phase factor uses `exp(2πi k·(R - τ_m + τ_n))`
+- The trait hierarchy (`Velocity` → `BerryCurvature` → `QuantumGeometry`) means new physics quantities can be added as new traits that extend existing ones
+- All public APIs use `pub use X::*` re-exports from `lib.rs`; users import from `rustb::` directly
 
 ## Performance Tips
-- Enable link‑time optimization in release builds (`lto = "fat"` in Cargo.toml)
-- Use Intel MKL for best numerical performance on Intel/AMD CPUs
-- Parallelize over k‑points with `rayon` for embarrassingly parallel calculations
+- Release builds use `lto = "fat"` and `codegen-units = 1` for maximum optimization
+- Use Intel MKL (`--features intel-mkl-static`) for best numerical performance on Intel/AMD CPUs
+- k‑point loops are parallelized with `rayon`; the trait methods (e.g., `berry_curvature`) accept `&[Array1<f64>]` and parallelize internally
 - For large supercells, consider iterative eigensolvers for partial spectra

@@ -225,6 +225,8 @@ pub mod surfgreen;
 pub mod unfold;
 pub mod velocity;
 pub mod wannier90;
+pub mod fermi_surface;
+pub mod kplane;
 pub mod quantum_geometry;
 use crate::generics::usefloat;
 pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
@@ -248,6 +250,8 @@ pub use crate::unfold::*;
 pub use crate::velocity::*;
 pub use crate::wannier90::*;
 pub use crate::quantum_geometry::*;
+pub use crate::fermi_surface::*;
+pub use crate::kplane::*;
 
 #[cfg(test)]
 mod tests {
@@ -1681,5 +1685,49 @@ mod tests {
         fg.show().expect("Gnuplot 画图失败");
 
         println!("完美！图像已保存至 tests/hofstadter_butterfly.pdf");
+    }
+
+    #[test]
+    fn fermi_surface_graphene() {
+        let li: Complex<f64> = 1.0 * Complex::i();
+        let t1 = 1.0 + 0.0 * li;
+        let dim_r: usize = 2;
+        let norb: usize = 2;
+        let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
+        let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        model.add_hop(t1, 0, 1, &array![0, 0], None);
+        model.add_hop(t1, 0, 1, &array![-1, 0], None);
+        model.add_hop(t1, 0, 1, &array![0, -1], None);
+
+        // E_F = 0.1 slightly above Dirac point → small Fermi pockets around K, K'
+        let k_mesh = arr1(&[100, 100]);
+        model
+            .show_fermi_surface(&k_mesh, 0.1, "tests/graphene")
+            .expect("Fermi surface plot failed");
+        println!("Graphene Fermi surface saved to tests/graphene/fermi_surface.pdf");
+    }
+
+    #[test]
+    fn fermi_surface_kagome() {
+        let li: Complex<f64> = 1.0 * Complex::i();
+        let t1 = 1.0 + 0.0 * li;
+        let dim_r: usize = 2;
+        let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
+        let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
+        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        model.add_hop(t1, 0, 1, &array![0, 0], None);
+        model.add_hop(t1, 2, 0, &array![0, 0], None);
+        model.add_hop(t1, 1, 2, &array![0, 0], None);
+        model.add_hop(t1, 0, 2, &array![0, -1], None);
+        model.add_hop(t1, 0, 1, &array![-1, 0], None);
+        model.add_hop(t1, 2, 1, &array![-1, 1], None);
+
+        // E_F = -1.0 (flat band) — should show a Fermi surface contour
+        let k_mesh = arr1(&[80, 80]);
+        model
+            .show_fermi_surface(&k_mesh, -1.0, "tests/kagome")
+            .expect("Fermi surface plot failed");
+        println!("Kagome Fermi surface saved to tests/kagome/fermi_surface.pdf");
     }
 }
