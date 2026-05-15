@@ -1,3 +1,4 @@
+#![cfg_attr(doc, katexit::katexit)]
 //! Velocity operator $\mathbf{v}(\mathbf{k}) = \nabla_{\mathbf{k}} H(\mathbf{k})$ for tight-binding models.
 //!
 //! Provides the [`Velocity`] trait and its implementation for [`Model`],
@@ -195,6 +196,7 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 
+#[cfg_attr(doc, katexit::katexit)]
 /// Trait for computing the velocity operator $\mathbf{v}(\mathbf{k})$.
 ///
 /// The velocity operator is defined as the k-derivative of the Bloch Hamiltonian:

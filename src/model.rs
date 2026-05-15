@@ -1,3 +1,4 @@
+#![cfg_attr(doc, katexit::katexit)]
 //! Core implementation of tight-binding model operations and Hamiltonian construction.
 //!
 //! This module provides the fundamental methods for working with tight-binding models,
