@@ -166,13 +166,96 @@ impl<'de, const SPIN: bool> Deserialize<'de> for Model<SPIN> {
     }
 }
 
-/// Gauge choice for Bloch wavefunctions
+/// Gauge choice for the Bloch basis, controlling the Fourier convention between
+/// Wannier functions $\ket{\alpha\mathbf{R}}$ and Bloch functions.
+///
+/// A tight-binding model is built from Wannier functions
+/// $\ket{\alpha\mathbf{R}}$ where $\alpha$ labels orbitals and
+/// $\mathbf{R}$ labels unit cells. The two gauges differ by whether orbital
+/// positions $\boldsymbol{\tau}_\alpha$ (fractional coordinates within the
+/// unit cell) appear in the Fourier phase factor.
+///
+/// Physical observables (band energies, Berry curvature, conductivity) are
+/// gauge-invariant. The gauge affects only intermediate quantities such as
+/// the velocity operator matrix and the Berry connection.
+///
+/// # Lattice gauge (Wannier90 default)
+///
+/// Bloch basis without $\boldsymbol{\tau}_\alpha$ in the phase:
+///
+/// $$
+/// \ket{\psi^W_{\alpha\mathbf{k}}} = \frac{1}{\sqrt{N}} \sum_{\mathbf{R}} e^{i\mathbf{k}\cdot\mathbf{R}} \ket{\alpha\mathbf{R}} .
+/// $$
+///
+/// The periodic part is $\ket{e^W_{\alpha\mathbf{k}}} = e^{-i\mathbf{k}\cdot\hat{\mathbf{r}}} \ket{\psi^W_{\alpha\mathbf{k}}}$.
+/// The reciprocal-space Hamiltonian is
+///
+/// $$
+/// H^W_{\alpha\beta}(\mathbf{k}) \equiv \bra{\psi^W_{\alpha\mathbf{k}}} H \ket{\psi^W_{\beta\mathbf{k}}}
+/// = \sum_{\mathbf{R}} \bra{\alpha\mathbf{0}} H \ket{\beta\mathbf{R}} \, e^{i\mathbf{k}\cdot\mathbf{R}} .
+/// $$
+///
+/// The velocity operator follows from $\nabla_{\mathbf{k}} H^W$ plus a commutator
+/// with the Berry connection $A^W$ (obtained directly from Wannier90 `_r.dat`):
+///
+/// $$
+/// v^W(\mathbf{k}) = \nabla_{\mathbf{k}} H^W(\mathbf{k}) + i\bigl[ H^W(\mathbf{k}), A^W(\mathbf{k}) \bigr] .
+/// $$
+///
+/// **When to use**: This is Wannier90's native convention. Choose this when working
+/// with Wannier90-generated `_hr.dat` and `_r.dat` files without modifications.
+///
+/// # Atom gauge
+///
+/// Bloch basis with orbital positions $\boldsymbol{\tau}_\alpha$ in the phase:
+///
+/// $$
+/// \ket{\alpha\mathbf{k}} = \frac{1}{\sqrt{N}} \sum_{\mathbf{R}} e^{i\mathbf{k}\cdot(\mathbf{R} + \boldsymbol{\tau}_\alpha)} \ket{\alpha\mathbf{R}} .
+/// $$
+///
+/// The relation to the Lattice gauge is $\ket{\alpha\mathbf{k}} = e^{i\mathbf{k}\cdot\boldsymbol{\tau}_\alpha} \ket{\psi^W_{\alpha\mathbf{k}}}$.
+/// The reciprocal-space Hamiltonian becomes
+///
+/// $$
+/// \bar{H}_{\alpha\beta}(\mathbf{k}) \equiv \bra{\alpha\mathbf{k}} H \ket{\beta\mathbf{k}}
+/// = \sum_{\mathbf{R}} \bra{\alpha\mathbf{0}} H \ket{\beta\mathbf{R}} \, e^{i\mathbf{k}\cdot(\mathbf{R} - \boldsymbol{\tau}_\alpha + \boldsymbol{\tau}_\beta)} .
+/// $$
+///
+/// The velocity operator is $\nabla_{\mathbf{k}} \bar{H}(\mathbf{k}) + i[\bar{H}(\mathbf{k}), \bar{\mathbf{r}}]$
+/// where $\bar{\mathbf{r}}$ is the gauge-transformed Berry connection.
+///
+/// **When to use**: This gauge is natural when orbital positions have physical
+/// significance (e.g. when computing position-dependent responses or when the model
+/// is constructed from explicit orbital coordinates rather than from Wannier90 output).
+///
+/// # Gauge transformation
+///
+/// The two gauges are related by a diagonal unitary transformation:
+///
+/// $$
+/// H^W_{\alpha\beta}(\mathbf{k}) = e^{-i\mathbf{k}\cdot\boldsymbol{\tau}_\alpha} \,
+///   \bar{H}_{\alpha\beta}(\mathbf{k}) \,
+///   e^{+i\mathbf{k}\cdot\boldsymbol{\tau}_\beta} .
+/// $$
+///
+/// All gauge-invariant quantities (eigenvalues, Berry curvature, Hall conductivity)
+/// are identical in both gauges.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum Gauge {
-    /// Lattice gauge: $\ket{\phi_{n\bm k}} = \sum_{\bm R} e^{i\bm k\cdot\bm R}\ket{n\bm R}$
+    /// Lattice gauge (Wannier90 default).
+    ///
+    /// Bloch basis without $\boldsymbol{\tau}_\alpha$ in the phase:
+    /// $\ket{\psi^W_{\alpha\mathbf{k}}} = \frac{1}{\sqrt{N}} \sum_{\mathbf{R}} e^{i\mathbf{k}\cdot\mathbf{R}} \ket{\alpha\mathbf{R}}$.
+    /// The Hamiltonian is
+    /// $H^W_{\alpha\beta}(\mathbf{k}) = \sum_{\mathbf{R}} \bra{\alpha\mathbf{0}} H \ket{\beta\mathbf{R}} e^{i\mathbf{k}\cdot\mathbf{R}}$.
     Lattice = 0,
-    /// Atomic gauge: $\ket{u_{n\bm k}} = \sum_{\bm R} e^{i\bm k\cdot(\bm R+\bm\tau_n)}\ket{n\bm R}$
+    /// Atom gauge.
+    ///
+    /// Bloch basis with orbital positions $\boldsymbol{\tau}_\alpha$ in the phase:
+    /// $\ket{\alpha\mathbf{k}} = \frac{1}{\sqrt{N}} \sum_{\mathbf{R}} e^{i\mathbf{k}\cdot(\mathbf{R} + \boldsymbol{\tau}_\alpha)} \ket{\alpha\mathbf{R}}$.
+    /// The Hamiltonian is
+    /// $\bar{H}_{\alpha\beta}(\mathbf{k}) = \sum_{\mathbf{R}} \bra{\alpha\mathbf{0}} H \ket{\beta\mathbf{R}} e^{i\mathbf{k}\cdot(\mathbf{R} - \boldsymbol{\tau}_\alpha + \boldsymbol{\tau}_\beta)}$.
     Atom = 1,
 }
 
