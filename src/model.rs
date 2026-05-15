@@ -1,4 +1,3 @@
-#![cfg_attr(doc, katexit::katexit)]
 //! Core implementation of tight-binding model operations and Hamiltonian construction.
 //!
 //! This module provides the fundamental methods for working with tight-binding models,
@@ -167,6 +166,7 @@ impl<'de, const SPIN: bool> Deserialize<'de> for Model<SPIN> {
     }
 }
 
+#[cfg_attr(doc, katexit::katexit)]
 /// Gauge choice for the Bloch basis, controlling the Fourier convention between
 /// Wannier functions $\ket{\alpha\mathbf{R}}$ and Bloch functions.
 ///
@@ -214,7 +214,10 @@ impl<'de, const SPIN: bool> Deserialize<'de> for Model<SPIN> {
 /// \ket{\alpha\mathbf{k}} = \frac{1}{\sqrt{N}} \sum_{\mathbf{R}} e^{i\mathbf{k}\cdot(\mathbf{R} + \boldsymbol{\tau}_\alpha)} \ket{\alpha\mathbf{R}} .
 /// $$
 ///
-/// The relation to the Lattice gauge is $\ket{\alpha\mathbf{k}} = e^{i\mathbf{k}\cdot\boldsymbol{\tau}_\alpha} \ket{\psi^W_{\alpha\mathbf{k}}}$.
+/// The relation to the Lattice gauge is
+/// $$
+/// \ket{\alpha\mathbf{k}} = e^{i\mathbf{k}\cdot\boldsymbol{\tau}_\alpha} \ket{\psi^W_{\alpha\mathbf{k}}} .
+/// $$
 /// The reciprocal-space Hamiltonian becomes
 ///
 /// $$
