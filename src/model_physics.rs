@@ -53,42 +53,48 @@ impl<const SPIN: bool> Model<SPIN> {
         let nsta = self.nsta();
         let mut hamk = Array2::<Complex<f64>>::zeros((nsta, nsta));
 
-        // Dimension-dispatched: each arm the compiler sees a compile-time
-        // constant loop bound, so the inner phase loop is fully unrolled
-        // and per-element bounds checks are eliminated.
-        match self.dim_r {
-            Dimension::one => {
-                Zip::from(self.ham.outer_iter())
-                    .and(self.hamR.outer_iter())
-                    .for_each(|hm, hamr_row| {
-                        let phase = hamr_row[0] as f64 * kvec[0];
-                        let u = Complex::new(0.0, 2.0 * PI * phase).exp();
-                        //Zip::from(&mut hamk).and(&hm).for_each(|a, &b| *a += b * u);
-                        hamk.scaled_add(u, &hm);
-                    });
-            }
-            Dimension::two => {
-                Zip::from(self.ham.outer_iter())
-                    .and(self.hamR.outer_iter())
-                    .for_each(|hm, hamr_row| {
-                        let phase = hamr_row[0] as f64 * kvec[0] + hamr_row[1] as f64 * kvec[1];
-                        let u = Complex::new(0.0, 2.0 * PI * phase).exp();
-                        //Zip::from(&mut hamk).and(&hm).for_each(|a, &b| *a += b * u);
-                        hamk.scaled_add(u, &hm);
-                    });
-            }
-            Dimension::three => {
-                Zip::from(self.ham.outer_iter())
-                    .and(self.hamR.outer_iter())
-                    .for_each(|hm, hamr_row| {
-                        let phase = hamr_row[0] as f64 * kvec[0]
-                            + hamr_row[1] as f64 * kvec[1]
-                            + hamr_row[2] as f64 * kvec[2];
-                        let u = Complex::new(0.0, 2.0 * PI * phase).exp();
-                        //Zip::from(&mut hamk).and(&hm).for_each(|a, &b| *a += b * u);
-                        hamk.scaled_add(u, &hm);
-                    });
-            }
+        // Precompute phase factors exp(i 2π k·R) for each R vector.
+        // Dimension-dispatched: compile-time constant loop bound for R·k dot.
+        let Us: Vec<Complex<f64>> = match self.dim_r {
+            Dimension::one => self
+                .hamR
+                .outer_iter()
+                .map(|r| Complex::new(0.0, 2.0 * PI * r[0] as f64 * kvec[0]).exp())
+                .collect(),
+            Dimension::two => self
+                .hamR
+                .outer_iter()
+                .map(|r| {
+                    Complex::new(
+                        0.0,
+                        2.0 * PI * (r[0] as f64 * kvec[0] + r[1] as f64 * kvec[1]),
+                    )
+                    .exp()
+                })
+                .collect(),
+            Dimension::three => self
+                .hamR
+                .outer_iter()
+                .map(|r| {
+                    Complex::new(
+                        0.0,
+                        2.0 * PI
+                            * (r[0] as f64 * kvec[0]
+                                + r[1] as f64 * kvec[1]
+                                + r[2] as f64 * kvec[2]),
+                    )
+                    .exp()
+                })
+                .collect(),
+        };
+
+        // BLAS zaxpy: hamk += u * hm[R] for each R, replaces Zip::for_each + scaled_add
+        let hamk_slice = hamk.as_slice_mut().unwrap();
+        for (iR, &u) in Us.iter().enumerate() {
+            let hm = self.ham.index_axis(Axis(0), iR);
+            let hm_slice = hm.as_slice().unwrap();
+            let n = hm_slice.len() as i32;
+            unsafe { blas::zaxpy(n, u, hm_slice, 1, hamk_slice, 1) };
         }
 
         match gauge {
