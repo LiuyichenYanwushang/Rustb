@@ -30,11 +30,11 @@
 //!   on-site term with a non-zero imaginary part is set.
 
 use crate::Model;
+use crate::SpinDirection;
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{Result, TbError};
 use crate::generics::hop_use;
 use crate::model_utils::find_R;
-use crate::{Dimension, SpinDirection};
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::Norm;
@@ -145,7 +145,7 @@ macro_rules! add_hamiltonian {
     }};
 }
 
-impl<const SPIN: bool> Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     /// Create a new tight-binding model with the given crystal structure.
     ///
     /// This constructor initializes a [`Model`] with the specified lattice
@@ -207,18 +207,17 @@ impl<const SPIN: bool> Model<SPIN> {
     /// let mut model = Model::<true>::tb_model(3, lat, orb, Some(atom)).unwrap();
     /// ```
     pub fn tb_model(
-        dim_r: usize,
         lat: Array2<f64>,
         orb: Array2<f64>,
         atom: Option<Vec<Atom>>,
-    ) -> Result<Model<SPIN>> {
+    ) -> Result<Model<SPIN, DIM>> {
         let norb: usize = orb.len_of(Axis(0));
         let nsta: usize = if SPIN { 2 * norb } else { norb };
         let mut new_atom_list: Vec<usize> = vec![1];
-        let mut new_atom = Array2::<f64>::zeros((0, dim_r));
-        if lat.len_of(Axis(1)) != dim_r {
+        let mut new_atom = Array2::<f64>::zeros((0, DIM));
+        if lat.len_of(Axis(1)) != DIM {
             return Err(TbError::LatticeDimensionError {
-                expected: dim_r,
+                expected: DIM,
                 actual: lat.len_of(Axis(1)),
             });
         }
@@ -251,10 +250,10 @@ impl<const SPIN: bool> Model<SPIN> {
         };
         let natom = new_atom.len();
         let ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta));
-        let hamR = Array2::<isize>::zeros((1, dim_r));
-        let mut rmatrix = Array4::<Complex<f64>>::zeros((1, dim_r, nsta, nsta));
+        let hamR = Array2::<isize>::zeros((1, DIM));
+        let mut rmatrix = Array4::<Complex<f64>>::zeros((1, DIM, nsta, nsta));
         for i in 0..norb {
-            for r in 0..dim_r {
+            for r in 0..DIM {
                 rmatrix[[0, r, i, i]] = Complex::<f64>::from(orb[[i, r]]);
                 if SPIN {
                     rmatrix[[0, r, i + norb, i + norb]] = Complex::<f64>::from(orb[[i, r]]);
@@ -263,7 +262,6 @@ impl<const SPIN: bool> Model<SPIN> {
         }
         let orb_projection = vec![OrbProj::s; norb];
         let mut model = Model {
-            dim_r: Dimension::try_from(dim_r)?,
             lat,
             orb,
             orb_projection,
@@ -787,7 +785,12 @@ impl<const SPIN: bool> Model<SPIN> {
     /// model.set_onsite_one(-1.0, 1, None); // E_1 = -1.0
     /// ```
     #[allow(non_snake_case)]
-    pub fn set_onsite_one(&mut self, tmp: f64, ind: usize, pauli: impl Into<Option<SpinDirection>>) {
+    pub fn set_onsite_one(
+        &mut self,
+        tmp: f64,
+        ind: usize,
+        pauli: impl Into<Option<SpinDirection>>,
+    ) {
         let pauli: Option<SpinDirection> = pauli.into();
         let R = Array1::<isize>::zeros(self.dim_r());
         self.set_hop(Complex::new(tmp, 0.0), ind, ind, &R, pauli)
@@ -844,7 +847,7 @@ impl<const SPIN: bool> Model<SPIN> {
     }
 }
 
-impl<const SPIN: bool> Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     /// Move the orbital positions to the positions of their parent atoms.
     ///
     /// Sets each orbital's fractional-coordinate position to the
@@ -1152,7 +1155,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// - [`TbError::InvalidSupercellDet`] if `det(U) <= 0`.
     /// - [`TbError::InvalidSupercellMatrix`] if `U` contains non-integer
     ///   entries.
-    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN>> {
+    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM>> {
         if self.dim_r() != U.len_of(Axis(0)) {
             return Err(TbError::TransformationMatrixDimMismatch {
                 expected: self.dim_r(),
@@ -1597,7 +1600,6 @@ impl<const SPIN: bool> Model<SPIN> {
             }
         }
         let mut model = Model {
-            dim_r: Dimension::try_from(self.dim_r())?,
             lat: new_lat,
             orb: new_orb,
             orb_projection: new_orb_proj,

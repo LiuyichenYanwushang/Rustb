@@ -160,7 +160,7 @@
 //! // Two sublattice sites in fractional coordinates
 //! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
 //!
-//! let mut model = Model::<false>::tb_model(2, lat, orb, None)?;
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
 //! model.set_onsite(&arr1(&[delta, -delta]), None);
 //!
 //! // Nearest-neighbor hoppings (A <-> B)
@@ -204,10 +204,12 @@ pub mod atom_struct;
 pub mod conductivity;
 pub mod cut;
 pub mod error;
+pub mod fermi_surface;
 pub mod generics;
 pub mod geometry;
 pub mod io;
 pub mod kpath;
+pub mod kplane;
 pub mod kpoints;
 pub mod magnetic_field;
 pub mod math;
@@ -220,23 +222,23 @@ pub mod optical_conductivity;
 pub mod orbital_angular;
 pub mod output;
 pub mod phy_const;
+pub mod quantum_geometry;
 pub mod solve_ham;
 pub mod surfgreen;
 pub mod unfold;
 pub mod velocity;
 pub mod wannier90;
-pub mod fermi_surface;
-pub mod kplane;
-pub mod quantum_geometry;
-use crate::generics::usefloat;
 pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
 pub use crate::atom_struct::{Atom, OrbProj};
 pub use crate::conductivity::*;
 pub use crate::cut::*;
 pub use crate::error::{Result, TbError};
+pub use crate::fermi_surface::*;
+use crate::generics::usefloat;
 pub use crate::geometry::*;
 pub use crate::io::*;
 pub use crate::kpath::*;
+pub use crate::kplane::*;
 pub use crate::kpoints::*;
 pub use crate::magnetic_field::*;
 pub use crate::math::*;
@@ -244,14 +246,12 @@ pub use crate::model::*;
 pub use crate::model_physics::*;
 pub use crate::optical_conductivity::*;
 pub use crate::output::*;
+pub use crate::quantum_geometry::*;
 pub use crate::solve_ham::*;
 pub use crate::surfgreen::*;
 pub use crate::unfold::*;
 pub use crate::velocity::*;
 pub use crate::wannier90::*;
-pub use crate::quantum_geometry::*;
-pub use crate::fermi_surface::*;
-pub use crate::kplane::*;
 
 #[cfg(test)]
 mod tests {
@@ -334,11 +334,9 @@ mod tests {
         let li: Complex<f64> = 1.0 * Complex::i();
         let t = 1.0;
         let delta = 0.0;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -407,11 +405,9 @@ mod tests {
         let t = -1.0 + 0.0 * li;
         let t2 = -1.0 + 0.0 * li;
         let delta = 0.7;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -473,11 +469,9 @@ mod tests {
         let t = 2.0 + 0.0 * li;
         let t2 = -1.0 + 0.0 * li;
         let delta = 0.7;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -528,11 +522,9 @@ mod tests {
         let t = -1.0 + 0.0 * li;
         let t2 = -1.0 + 0.0 * li;
         let delta = 0.7;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -793,11 +785,9 @@ mod tests {
         let t2 = 0.0 + 0.0 * li;
         let t3 = 0.0 + 0.0 * li;
         let delta = 0.0;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[delta, -delta]), None);
         model.add_hop(t1, 0, 1, &array![0, 0], None);
         model.add_hop(t1, 0, 1, &array![-1, 0], None);
@@ -914,11 +904,9 @@ mod tests {
         let alter = 0.0 + 0.0 * li;
         let soc = 0.06 * t;
         let rashba = 0.0 * t;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[delta, -delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -1093,7 +1081,8 @@ mod tests {
         let kvec = kvec * 2.0;
         let kvec = model.lat.dot(&(kvec.reversed_axes()));
         let kvec = kvec.reversed_axes();
-        let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, Some(SpinDirection::X), 1e-3);
+        let berry_curv =
+            model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, Some(SpinDirection::X), 1e-3);
         let data = berry_curv.into_shape((nk, nk)).unwrap();
         draw_heatmap(
             &(-data).map(|x| (x + 1.0).log(10.0)),
@@ -1233,15 +1222,13 @@ mod tests {
         let t1 = 1.0 + 0.0 * li;
         let t2 = 0.2 * t1;
         let t3 = 0.2 * t1;
-        let dim_r: usize = 3;
-        let norb: usize = 2;
         let lat = arr2(&[
             [1.0, 0.0, 0.0],
             [0.5, 3.0_f64.sqrt() / 2.0, 0.0],
             [0.0, 0.0, 1.0],
         ]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0, 0.0], [2.0 / 3.0, 2.0 / 3.0, 0.0]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[delta, -delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0, 0], [-1, 0, 0], [0, -1, 0]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -1312,7 +1299,15 @@ mod tests {
         fg.show();
 
         let sigma: Array1<f64> = model
-            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, Some(SpinDirection::Z))
+            .Nonlinear_Hall_conductivity_Intrinsic(
+                &kmesh,
+                &dir_1,
+                &dir_2,
+                &dir_3,
+                &mu,
+                T,
+                Some(SpinDirection::Z),
+            )
             .unwrap();
         //开始绘制非线性电导
         let mut fg = Figure::new();
@@ -1348,11 +1343,9 @@ mod tests {
         let li: Complex<f64> = 1.0 * Complex::i();
         let t1 = 1.0 + 0.0 * li;
         let t2 = 0.1 + 0.0 * li;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         //最近邻hopping
         model.add_hop(t1, 0, 1, &array![0, 0], None);
         model.add_hop(t1, 2, 0, &array![0, 0], None);
@@ -1414,11 +1407,9 @@ mod tests {
         let t1 = 1.0 + 0.0 * li;
         let t2 = 0.5 + 0.0 * li;
         let Delta = 0.0;
-        let dim_r: usize = 1;
-        let norb: usize = 2;
         let lat = arr2(&[[1.0]]);
         let orb = arr2(&[[0.3], [0.5]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
         model.add_hop(t1, 0, 1, &array![0], None);
         model.add_hop(t2, 0, 1, &array![-1], None);
         model.add_onsite(&array![Delta, -Delta], None);
@@ -1439,11 +1430,9 @@ mod tests {
         let t1 = 0.1 + 0.0 * li;
         let t2 = 1.0 + 0.0 * li;
         let i0 = -1.0;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
         let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.add_hop(t1, 0, 1, &array![0, 0], None);
         model.add_hop(t1, 1, 2, &array![0, 0], None);
         model.add_hop(t1, 2, 3, &array![0, 0], None);
@@ -1541,15 +1530,13 @@ mod tests {
         // 1. 设置模型基本参数
         let t = Complex::new(-1.0, 0.0);
         let delta = 0.0;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
 
         // 石墨烯晶格：a1 = (1, 0), a2 = (1/2, √3/2)
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         // 轨道的相对分数坐标 (Fractional Coordinates)
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
 
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), None);
 
         // 添加最近邻跃迁
@@ -1597,13 +1584,12 @@ mod tests {
 
         // 1. 初始化一个标准的 2D 正方晶格
         let t = Complex::new(-1.0, 0.0);
-        let dim_r = 2;
         // 正方晶格基矢 a1=(1,0), a2=(0,1)
         let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
         // 单轨道坐标位于原点
         let orb = arr2(&[[0.0, 0.0]]);
 
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[0.0]), None);
 
         // 加上最近邻跃迁 (上下左右4个方向)
@@ -1691,11 +1677,9 @@ mod tests {
     fn fermi_surface_graphene() {
         let li: Complex<f64> = 1.0 * Complex::i();
         let t1 = 1.0 + 0.0 * li;
-        let dim_r: usize = 2;
-        let norb: usize = 2;
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.add_hop(t1, 0, 1, &array![0, 0], None);
         model.add_hop(t1, 0, 1, &array![-1, 0], None);
         model.add_hop(t1, 0, 1, &array![0, -1], None);
@@ -1712,10 +1696,9 @@ mod tests {
     fn fermi_surface_kagome() {
         let li: Complex<f64> = 1.0 * Complex::i();
         let t1 = 1.0 + 0.0 * li;
-        let dim_r: usize = 2;
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
-        let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.add_hop(t1, 0, 1, &array![0, 0], None);
         model.add_hop(t1, 2, 0, &array![0, 0], None);
         model.add_hop(t1, 1, 2, &array![0, 0], None);

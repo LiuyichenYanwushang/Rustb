@@ -17,12 +17,11 @@ fn main() {
     let t1 = -1.0 + 0.0 * li;
     let J = 0.5 + 0.0 * li;
     let delta = -0.25 + 0.0 * li;
-    let dim_r: usize = 2;
     let norb: usize = 2;
     let a0 = 1.0;
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]) * a0;
     let orb = arr2(&[[0.0, 0.0], [0.0, 0.0]]);
-    let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
+    let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
     model.add_hop(t1, 0, 0, &array![1, 0], None);
     model.add_hop(t1, 0, 0, &array![0, 1], None);
     model.add_hop(t1, 1, 1, &array![1, 0], None);
@@ -210,7 +209,7 @@ fn main() {
 }
 #[inline(always)]
 fn conductivity_onek(
-    model: &Model<true>,
+    model: &Model<true, 2>,
     k_vec: &Array1<f64>,
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,
@@ -252,7 +251,7 @@ fn conductivity_onek(
             }
         };
         X = kron(&pauli, &Array2::eye(model.norb()));
-        for i in 0..model.dim_r as usize {
+        for i in 0..model.dim_r() {
             let j = J.slice(s![i, .., ..]).to_owned();
             let j = anti_comm(&X, &j) / 2.0; //这里做反对易
             J.slice_mut(s![i, .., ..]).assign(&(j * dir_1[[i]]));
@@ -263,7 +262,7 @@ fn conductivity_onek(
         if spin.is_some() {
             println!("Warning, the model haven't got spin, so the spin input will be ignord");
         }
-        for i in 0..model.dim_r as usize {
+        for i in 0..model.dim_r() {
             J.slice_mut(s![i, .., ..])
                 .mul_assign(Complex::new(dir_1[[i]], 0.0));
             v.slice_mut(s![i, .., ..])
@@ -296,7 +295,7 @@ fn conductivity_onek(
     omega_one
 }
 fn conductivity_all(
-    model: &Model<true>,
+    model: &Model<true, 2>,
     k_mesh: &Array1<usize>,
     dir_1: &Array1<f64>,
     dir_2: &Array1<f64>,

@@ -11,7 +11,6 @@ use crate::Model;
 use crate::error::{Result, TbError};
 use crate::kpath::*;
 use crate::kpoints::gen_kmesh;
-use crate::model::Dimension;
 pub use crate::model_utils::{remove_col, remove_row};
 use gnuplot::Major;
 use gnuplot::{Auto, AutoOption::Fix, AxesCommon, Custom, Figure, Font, HOT, RAINBOW};
@@ -131,16 +130,16 @@ impl surf_Green {
     /// `eta` is the small imaginary part for the Green's function.
     ///
     /// For directions not aligned with a lattice vector, use [`Model::make_supercell`] first.
-    pub fn from_Model<const SPIN: bool>(
-        model: &Model<SPIN>,
+    pub fn from_Model<const SPIN: bool, const DIM: usize>(
+        model: &Model<SPIN, DIM>,
         dir: usize,
         eta: f64,
         Np: Option<usize>,
     ) -> Result<surf_Green> {
-        if dir >= model.dim_r as usize {
+        if dir >= model.dim_r() {
             return Err(TbError::InvalidDirection {
                 index: dir,
-                dim: model.dim_r as usize,
+                dim: model.dim_r(),
             });
         }
         let mut R_max: usize = 0;
@@ -160,13 +159,13 @@ impl surf_Green {
             None => R_max,
         };
 
-        let mut U = Array2::<f64>::eye(model.dim_r as usize);
+        let mut U = Array2::<f64>::eye(model.dim_r());
         U[[dir, dir]] = R_max as f64;
         let model = model.make_supercell(&U)?;
         let mut ham0 = Array3::<Complex<f64>>::zeros((0, model.nsta(), model.nsta()));
-        let mut hamR0 = Array2::<isize>::zeros((0, model.dim_r as usize));
+        let mut hamR0 = Array2::<isize>::zeros((0, model.dim_r()));
         let mut hamR = Array3::<Complex<f64>>::zeros((0, model.nsta(), model.nsta()));
-        let mut hamRR = Array2::<isize>::zeros((0, model.dim_r as usize));
+        let mut hamRR = Array2::<isize>::zeros((0, model.dim_r()));
         let use_hamR = model.hamR.rows();
         let use_ham = model.ham.outer_iter();
         // No clone needed: push/push_row copy from the view directly
@@ -186,7 +185,7 @@ impl surf_Green {
         let new_hamR0 = remove_col(hamR0, dir);
         let new_hamRR = remove_col(hamRR, dir);
         let green: surf_Green = surf_Green {
-            dim_r: model.dim_r as usize - 1,
+            dim_r: model.dim_r() - 1,
             norb: model.norb(),
             nsta: model.nsta(),
             natom: model.natom(),

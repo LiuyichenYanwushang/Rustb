@@ -13,12 +13,11 @@ fn main() {
     let lm_so = 0.2 + 0.0 * li;
     let J = -0.5 + 0.0 * li;
     let delta = 0.2;
-    let dim_r: usize = 2;
     let norb: usize = 2;
     let a0 = 0.5;
     let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]) * a0;
     let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
-    let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
+    let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
     model.set_onsite(&arr1(&[delta, delta]), SpinDirection::Z);
     //最近邻hopping
     model.add_hop(t1, 0, 1, &array![0, 0], None);

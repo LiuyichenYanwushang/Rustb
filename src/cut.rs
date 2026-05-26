@@ -78,8 +78,8 @@ pub trait CutModel {
         Self: Sized;
 }
 
-impl<const SPIN: bool> CutModel for Model<SPIN> {
-    fn cut_piece(&self, num: usize, dir: usize) -> Result<Model<SPIN>> {
+impl<const SPIN: bool, const DIM: usize> CutModel for Model<SPIN, DIM> {
+    fn cut_piece(&self, num: usize, dir: usize) -> Result<Model<SPIN, DIM>> {
         if num < 1 {
             return Err(TbError::InvalidSupercellSize(num));
         }
@@ -321,7 +321,6 @@ impl<const SPIN: bool> CutModel for Model<SPIN> {
             }
         }
         let mut model = Self {
-            dim_r: self.dim_r,
             lat: new_lat,
             orb: new_orb,
             orb_projection: new_orb_proj,
@@ -333,7 +332,12 @@ impl<const SPIN: bool> CutModel for Model<SPIN> {
         Ok(model)
     }
 
-    fn cut_dot(&self, num: usize, shape: usize, dir: Option<Vec<usize>>) -> Result<Model<SPIN>> {
+    fn cut_dot(
+        &self,
+        num: usize,
+        shape: usize,
+        dir: Option<Vec<usize>>,
+    ) -> Result<Model<SPIN, DIM>> {
         match self.dim_r() {
             3 => {
                 let dir = if dir == None {
@@ -459,7 +463,6 @@ impl<const SPIN: bool> CutModel for Model<SPIN> {
                     Array4::<Complex<f64>>::zeros((n_R, self.dim_r(), new_nsta, new_nsta));
 
                 let mut new_model = Self {
-                    dim_r: self.dim_r,
                     lat: old_model.lat.clone(),
                     orb: new_orb,
                     orb_projection: new_orb_proj,
@@ -658,12 +661,8 @@ impl<const SPIN: bool> CutModel for Model<SPIN> {
                     new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
                     new_orb_proj.push(old_model.orb_projection[*use_i])
                 }
-                let mut new_model = Model::<SPIN>::tb_model(
-                    self.dim_r(),
-                    old_model.lat.clone(),
-                    new_orb,
-                    Some(new_atom),
-                )?;
+                let mut new_model =
+                    Model::<SPIN, DIM>::tb_model(old_model.lat.clone(), new_orb, Some(new_atom))?;
                 new_model.orb_projection = new_orb_proj;
                 let n_R = new_model.hamR.len_of(Axis(0));
                 let mut new_ham =

@@ -17,14 +17,13 @@
 use crate::Model;
 use crate::atom_struct::Atom;
 use crate::error::{Result, TbError};
-use crate::model_enums::Dimension;
 use crate::model_utils::find_R;
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::{Determinant, Inverse};
 use num_complex::Complex;
 
-impl<const SPIN: bool> Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     /// Shift all orbital positions onto their corresponding atomic positions.
     pub fn shift_to_atom(&mut self) {
         let mut a = 0;
@@ -257,7 +256,7 @@ impl<const SPIN: bool> Model<SPIN> {
     /// let U = array![[2.0, 0.0], [0.0, 2.0]];
     /// let supercell = model.make_supercell(&U).unwrap();
     /// ```
-    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN>> {
+    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM>> {
         if self.dim_r() != U.len_of(Axis(0)) {
             return Err(TbError::TransformationMatrixDimMismatch {
                 expected: self.dim_r(),
@@ -667,7 +666,6 @@ impl<const SPIN: bool> Model<SPIN> {
             }
         }
         let mut model = Model {
-            dim_r: Dimension::try_from(self.dim_r())?,
             lat: new_lat,
             orb: new_orb,
             orb_projection: new_orb_proj,

@@ -55,17 +55,15 @@ pub struct SkParams {
 /// resulting [`Model`] will be spinful. When `SPIN = true`, the orbital
 /// basis is doubled with a Pauli-matrix structure.
 #[derive(Debug, Clone)]
-pub struct SlaterKosterModel<const SPIN: bool = false> {
-    pub dim_r: usize,
+pub struct SlaterKosterModel<const SPIN: bool = false, const DIM: usize = 3> {
     pub lat: Array2<f64>,
     pub atoms: Vec<SkAtom>,
     pub neighbor_search_range: i32,
 }
 
-impl<const SPIN: bool> Default for SlaterKosterModel<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Default for SlaterKosterModel<SPIN, DIM> {
     fn default() -> Self {
         Self {
-            dim_r: 3,
             lat: Array2::zeros((3, 3)),
             atoms: Vec::new(),
             neighbor_search_range: 3,
@@ -77,14 +75,14 @@ impl<const SPIN: bool> Default for SlaterKosterModel<SPIN> {
 // Helper functions for lattice vectors and shell distances
 // -----------------------------------------------------------------------------
 
-impl<const SPIN: bool> SlaterKosterModel<SPIN> {
+impl<const SPIN: bool, const DIM: usize> SlaterKosterModel<SPIN, DIM> {
     /// Create a new `SlaterKosterModel`.
     ///
     /// The `SPIN` const generic controls whether the eventual [`Model`]
-    /// will be spinful. The default neighbor search range is 3.
-    pub fn new(dim_r: usize, lat: Array2<f64>, atoms: Vec<SkAtom>) -> Self {
+    /// will be spinful. The dimension `DIM` is a const generic inferred
+    /// from the lattice matrix. The default neighbor search range is 3.
+    pub fn new(lat: Array2<f64>, atoms: Vec<SkAtom>) -> Self {
         Self {
-            dim_r,
             lat,
             atoms,
             neighbor_search_range: 3,
@@ -101,7 +99,7 @@ impl<const SPIN: bool> SlaterKosterModel<SPIN> {
 
     fn generate_R_vectors(&self) -> Vec<Array1<isize>> {
         let rng = -self.neighbor_search_range..=self.neighbor_search_range;
-        match self.dim_r {
+        match DIM {
             1 => rng.map(|i| arr1(&[i as isize])).collect(),
             2 => rng
                 .clone()
@@ -249,20 +247,20 @@ fn sk_element(
 ///
 /// The const generic `SPIN` is carried through to the output [`Model`].
 /// When `SPIN = true`, `build_model` constructs a spinful basis.
-pub trait ToTbModel<const SPIN: bool> {
+pub trait ToTbModel<const SPIN: bool, const DIM: usize> {
     fn build_model(
         &self,
         n_neighbors: usize,
         params: &HashMap<(AtomType, AtomType, usize), SkParams>,
-    ) -> Result<Model<SPIN>>;
+    ) -> Result<Model<SPIN, DIM>>;
 }
 
-impl<const SPIN: bool> ToTbModel<SPIN> for SlaterKosterModel<SPIN> {
+impl<const SPIN: bool, const DIM: usize> ToTbModel<SPIN, DIM> for SlaterKosterModel<SPIN, DIM> {
     fn build_model(
         &self,
         n_neighbors: usize,
         params: &HashMap<(AtomType, AtomType, usize), SkParams>,
-    ) -> Result<Model<SPIN>> {
+    ) -> Result<Model<SPIN, DIM>> {
         // Flatten orbitals
         let mut orb_positions = Vec::new();
         let mut orb_projections = Vec::new();
@@ -278,10 +276,10 @@ impl<const SPIN: bool> ToTbModel<SPIN> for SlaterKosterModel<SPIN> {
             .into_iter()
             .flat_map(|v| v.into_raw_vec())
             .collect();
-        let orb_array = Array2::from_shape_vec((norb, self.dim_r), orb_positions_flat)
+        let orb_array = Array2::from_shape_vec((norb, DIM), orb_positions_flat)
             .map_err(|e| TbError::Linalg(ndarray_linalg::error::LinalgError::Shape(e)))?;
 
-        let mut model = Model::<SPIN>::tb_model(self.dim_r, self.lat.clone(), orb_array, None)?;
+        let mut model = Model::<SPIN, DIM>::tb_model(self.lat.clone(), orb_array, None)?;
         model.set_projection(&orb_projections);
 
         if n_neighbors == 0 {
@@ -342,8 +340,8 @@ impl<const SPIN: bool> ToTbModel<SPIN> for SlaterKosterModel<SPIN> {
                             })?;
 
                         let l = dvec[0] / dist;
-                        let m = if self.dim_r > 1 { dvec[1] / dist } else { 0.0 };
-                        let n = if self.dim_r > 2 { dvec[2] / dist } else { 0.0 };
+                        let m = if DIM > 1 { dvec[1] / dist } else { 0.0 };
+                        let n = if DIM > 2 { dvec[2] / dist } else { 0.0 };
 
                         for (pi_idx, &proj_i) in projs_i.iter().enumerate() {
                             let io = offset_i + pi_idx;
@@ -460,8 +458,8 @@ fn prompt_float(prompt: &str) -> Result<f64> {
         .map_err(|_| TbError::Other("Invalid number".into()))
 }
 
-pub fn collect_sk_parameters<const SPIN: bool>(
-    sk_model: &SlaterKosterModel<SPIN>,
+pub fn collect_sk_parameters<const SPIN: bool, const DIM: usize>(
+    sk_model: &SlaterKosterModel<SPIN, DIM>,
     n_shells: usize,
     cache_path: Option<&str>,
 ) -> Result<HashMap<(AtomType, AtomType, usize), SkParams>> {
@@ -570,11 +568,11 @@ pub fn collect_sk_parameters<const SPIN: bool>(
     Ok(all_params)
 }
 
-pub fn build_model_interactive<const SPIN: bool>(
-    sk_model: &SlaterKosterModel<SPIN>,
+pub fn build_model_interactive<const SPIN: bool, const DIM: usize>(
+    sk_model: &SlaterKosterModel<SPIN, DIM>,
     n_shells: usize,
     cache_path: Option<&str>,
-) -> Result<Model<SPIN>> {
+) -> Result<Model<SPIN, DIM>> {
     let params = collect_sk_parameters(sk_model, n_shells, cache_path)?;
     sk_model.build_model(n_shells, &params)
 }
@@ -600,7 +598,7 @@ pub fn read_sk_params_from_file(
 // Example
 // -----------------------------------------------------------------------------
 
-pub fn example_graphene_interactive(cache_path: Option<&str>) -> Result<Model> {
+pub fn example_graphene_interactive(cache_path: Option<&str>) -> Result<Model<false, 2>> {
     let lat = arr2(&[[1.0, 0.0], [-0.5, 3.0f64.sqrt() / 2.0]]);
     let atoms = vec![
         SkAtom {
@@ -614,7 +612,7 @@ pub fn example_graphene_interactive(cache_path: Option<&str>) -> Result<Model> {
             projections: vec![OrbProj::pz],
         },
     ];
-    let sk_model = SlaterKosterModel::<false>::new(2, lat, atoms);
+    let sk_model = SlaterKosterModel::<false, 2>::new(lat, atoms);
     build_model_interactive(&sk_model, 1, cache_path)
 }
 
@@ -665,7 +663,7 @@ mod tests {
             atom_type: AtomType::Ce,
             projections: vec![OrbProj::fz3],
         }];
-        let sk_model = SlaterKosterModel::<false>::new(3, lat, atoms);
+        let sk_model = SlaterKosterModel::<false, 3>::new(lat, atoms);
         let params = HashMap::new();
         let model = sk_model.build_model(0, &params).unwrap();
         assert_eq!(model.norb(), 1);

@@ -1,5 +1,4 @@
 //! Physics calculation methods for tight-binding models
-use crate::Dimension;
 use crate::Gauge;
 use crate::Model;
 use crate::error::{Result, TbError};
@@ -11,7 +10,7 @@ use num_complex::Complex;
 use rayon::prelude::*;
 use std::f64::consts::PI;
 
-impl<const SPIN: bool> Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     #[allow(non_snake_case)]
     #[inline(always)]
     #[cfg_attr(doc, katexit::katexit)]
@@ -55,13 +54,13 @@ impl<const SPIN: bool> Model<SPIN> {
 
         // Precompute phase factors exp(i 2π k·R) for each R vector.
         // Dimension-dispatched: compile-time constant loop bound for R·k dot.
-        let Us: Vec<Complex<f64>> = match self.dim_r {
-            Dimension::one => self
+        let Us: Vec<Complex<f64>> = match DIM {
+            1 => self
                 .hamR
                 .outer_iter()
                 .map(|r| Complex::new(0.0, 2.0 * PI * r[0] as f64 * kvec[0]).exp())
                 .collect(),
-            Dimension::two => self
+            2 => self
                 .hamR
                 .outer_iter()
                 .map(|r| {
@@ -72,7 +71,7 @@ impl<const SPIN: bool> Model<SPIN> {
                     .exp()
                 })
                 .collect(),
-            Dimension::three => self
+            3 => self
                 .hamR
                 .outer_iter()
                 .map(|r| {
@@ -86,6 +85,7 @@ impl<const SPIN: bool> Model<SPIN> {
                     .exp()
                 })
                 .collect(),
+            _ => unreachable!(),
         };
 
         // BLAS zaxpy: hamk += u * hm[R] for each R, replaces Zip::for_each + scaled_add
@@ -101,13 +101,13 @@ impl<const SPIN: bool> Model<SPIN> {
             Gauge::Lattice => hamk,
             Gauge::Atom => {
                 // Dimension-dispatched τ·k phase factors
-                let orb_phase: Vec<Complex<f64>> = match self.dim_r {
-                    Dimension::one => self
+                let orb_phase: Vec<Complex<f64>> = match DIM {
+                    1 => self
                         .orb
                         .outer_iter()
                         .map(|tau| Complex::new(0.0, 2.0 * PI * tau[0] * kvec[0]).exp())
                         .collect(),
-                    Dimension::two => self
+                    2 => self
                         .orb
                         .outer_iter()
                         .map(|tau| {
@@ -115,7 +115,7 @@ impl<const SPIN: bool> Model<SPIN> {
                                 .exp()
                         })
                         .collect(),
-                    Dimension::three => self
+                    3 => self
                         .orb
                         .outer_iter()
                         .map(|tau| {
@@ -126,6 +126,7 @@ impl<const SPIN: bool> Model<SPIN> {
                             .exp()
                         })
                         .collect(),
+                    _ => unreachable!(),
                 };
                 let norb = self.norb();
                 let orb_phase = Array1::from_vec(orb_phase);

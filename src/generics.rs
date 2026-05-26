@@ -75,7 +75,10 @@ impl SpinDirection {
             1 => Some(SpinDirection::X),
             2 => Some(SpinDirection::Y),
             3 => Some(SpinDirection::Z),
-            _ => panic!("Invalid spin index: {}. Valid values are 0 (I), 1 (X), 2 (Y), 3 (Z).", index),
+            _ => panic!(
+                "Invalid spin index: {}. Valid values are 0 (I), 1 (X), 2 (Y), 3 (Z).",
+                index
+            ),
         }
     }
 }

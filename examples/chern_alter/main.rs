@@ -13,11 +13,10 @@ fn main() {
     let lm_so = 0.5 + 0.0 * li;
     let J = 3.0;
     let delta = 2.0;
-    let dim_r: usize = 2;
     let a0 = 1.0;
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]) * a0; //正方晶格
     let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
-    let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
+    let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
     model.set_onsite(&arr1(&[J, -J]), SpinDirection::Z);
     //底层最近邻hopping
     model.add_hop(t + delta, 0, 0, &array![-1, 0], None);
@@ -88,7 +87,9 @@ fn main() {
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let sigma: Array1<f64> = model
-        .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, None, 1e-5)
+        .Nonlinear_Hall_conductivity_Extrinsic(
+            &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, None, 1e-5,
+        )
         .unwrap();
     //开始绘制非线性电导
     let mut fg = Figure::new();

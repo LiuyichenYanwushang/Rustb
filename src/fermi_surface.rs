@@ -6,12 +6,11 @@
 //! - [`FermiSurfacePlane`]: 2D Fermi surface slice on a specified k‑plane
 //!   (3D models only)
 
+use crate::Model;
 use crate::error::{Result, TbError};
 use crate::kplane::gen_kplane;
 use crate::kpoints::gen_kmesh;
-use crate::model::Dimension;
 use crate::solve_ham::solve;
-use crate::Model;
 use ndarray::prelude::*;
 use ndarray::*;
 use rayon::prelude::*;
@@ -83,8 +82,7 @@ fn marching_squares_2d(
             // Edges: 0=bottom(c0-c1), 1=right(c1-c2), 2=top(c3-c2), 3=left(c0-c3)
             let corners = [&idx00, &idx10, &idx11, &idx01];
             let edge_pairs: [(usize, usize); 4] = [(0, 1), (1, 2), (3, 2), (0, 3)];
-            let edge_vals: [(f64, f64); 4] =
-                [(e00, e10), (e10, e11), (e01, e11), (e00, e01)];
+            let edge_vals: [(f64, f64); 4] = [(e00, e10), (e10, e11), (e01, e11), (e00, e01)];
 
             let mut ei = 0;
             while ei < 5 && edges[ei] != -1 {
@@ -96,14 +94,18 @@ fn marching_squares_2d(
                 let p_a = interpolate_edge(
                     kvec.row(*corners[ca]),
                     kvec.row(*corners[cb]),
-                    va, vb, e_fermi,
+                    va,
+                    vb,
+                    e_fermi,
                 );
                 let (ca, cb) = edge_pairs[e_b];
                 let (va, vb) = edge_vals[e_b];
                 let p_b = interpolate_edge(
                     kvec.row(*corners[ca]),
                     kvec.row(*corners[cb]),
-                    va, vb, e_fermi,
+                    va,
+                    vb,
+                    e_fermi,
                 );
 
                 segments.push((p_a, p_b));
@@ -138,14 +140,7 @@ fn interpolate_edge(
 ///
 /// Vertices: v0, v1, v2, v3
 /// Edges: 0=v0-v1, 1=v1-v2, 2=v2-v0, 3=v0-v3, 4=v1-v3, 5=v2-v3
-const TET_EDGE_PAIRS: [(usize, usize); 6] = [
-    (0, 1),
-    (1, 2),
-    (2, 0),
-    (0, 3),
-    (1, 3),
-    (2, 3),
-];
+const TET_EDGE_PAIRS: [(usize, usize); 6] = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)];
 
 /// Marching-tetrahedra case table.
 ///
@@ -223,7 +218,12 @@ fn marching_tetrahedra_3d(
 
                 // Process each of the 5 tetrahedra
                 for &[v0, v1, v2, v3] in &CUBE_TETS {
-                    let ev = [corner_val[v0], corner_val[v1], corner_val[v2], corner_val[v3]];
+                    let ev = [
+                        corner_val[v0],
+                        corner_val[v1],
+                        corner_val[v2],
+                        corner_val[v3],
+                    ];
                     let case = ((ev[0] >= e_fermi) as usize)
                         | (((ev[1] >= e_fermi) as usize) << 1)
                         | (((ev[2] >= e_fermi) as usize) << 2)
@@ -238,30 +238,9 @@ fn marching_tetrahedra_3d(
                         let e_c = edges[ei + 2] as usize;
 
                         let tri = [
-                            tet_interp(
-                                kvec,
-                                &corner_idx,
-                                &corner_val,
-                                &tet_verts,
-                                e_a,
-                                e_fermi,
-                            ),
-                            tet_interp(
-                                kvec,
-                                &corner_idx,
-                                &corner_val,
-                                &tet_verts,
-                                e_b,
-                                e_fermi,
-                            ),
-                            tet_interp(
-                                kvec,
-                                &corner_idx,
-                                &corner_val,
-                                &tet_verts,
-                                e_c,
-                                e_fermi,
-                            ),
+                            tet_interp(kvec, &corner_idx, &corner_val, &tet_verts, e_a, e_fermi),
+                            tet_interp(kvec, &corner_idx, &corner_val, &tet_verts, e_b, e_fermi),
+                            tet_interp(kvec, &corner_idx, &corner_val, &tet_verts, e_c, e_fermi),
                         ];
                         triangles.push(tri);
                         ei += 3;
@@ -377,18 +356,9 @@ fn render_fermi_3d(triangles: &[[Array1<f64>; 3]], name: &str) -> Result<()> {
         writeln!(stdin, "set pm3d depthorder").ok();
         writeln!(stdin, "set style fill transparent solid 0.5").ok();
         writeln!(stdin, "set view 60, 30").ok();
-        writeln!(
-            stdin,
-            "set xlabel 'k_x' font 'Times New Roman,18'"
-        ).ok();
-        writeln!(
-            stdin,
-            "set ylabel 'k_y' font 'Times New Roman,18'"
-        ).ok();
-        writeln!(
-            stdin,
-            "set zlabel 'k_z' font 'Times New Roman,18'"
-        ).ok();
+        writeln!(stdin, "set xlabel 'k_x' font 'Times New Roman,18'").ok();
+        writeln!(stdin, "set ylabel 'k_y' font 'Times New Roman,18'").ok();
+        writeln!(stdin, "set zlabel 'k_z' font 'Times New Roman,18'").ok();
         writeln!(stdin, "splot '{}' with pm3d notitle", data_path).ok();
     }
 
@@ -417,12 +387,7 @@ pub trait FermiSurface: solve {
     ///   (e.g. `[100, 100]` for 2D, `[50, 50, 50]` for 3D).
     /// * `e_fermi` - Fermi energy in eV.
     /// * `name` - Output directory name (receives `fermi_surface.pdf`).
-    fn show_fermi_surface(
-        &self,
-        k_mesh: &Array1<usize>,
-        e_fermi: f64,
-        name: &str,
-    ) -> Result<()>;
+    fn show_fermi_surface(&self, k_mesh: &Array1<usize>, e_fermi: f64, name: &str) -> Result<()>;
 }
 
 /// Trait for Fermi surface slices on arbitrary k‑planes (3D models).
@@ -454,18 +419,13 @@ pub trait FermiSurfacePlane: solve {
 
 // ── Trait implementations for Model ───────────────────────────────────
 
-impl<const SPIN: bool> FermiSurface for Model<SPIN> {
-    fn show_fermi_surface(
-        &self,
-        k_mesh: &Array1<usize>,
-        e_fermi: f64,
-        name: &str,
-    ) -> Result<()> {
-        match self.dim_r {
-            Dimension::one => Err(TbError::NotImplemented(
+impl<const SPIN: bool, const DIM: usize> FermiSurface for Model<SPIN, DIM> {
+    fn show_fermi_surface(&self, k_mesh: &Array1<usize>, e_fermi: f64, name: &str) -> Result<()> {
+        match self.dim_r() {
+            1 => Err(TbError::NotImplemented(
                 "Fermi surface not meaningful for 1D systems".into(),
             )),
-            Dimension::two => {
+            2 => {
                 let kvec: Array2<f64> = gen_kmesh(k_mesh)?;
                 let n1 = k_mesh[0];
                 let n2 = k_mesh[1];
@@ -488,7 +448,7 @@ impl<const SPIN: bool> FermiSurface for Model<SPIN> {
 
                 render_fermi_2d(&all_segments, name, "k_x", "k_y")
             }
-            Dimension::three => {
+            3 => {
                 let kvec: Array2<f64> = gen_kmesh(k_mesh)?;
                 let n1 = k_mesh[0];
                 let n2 = k_mesh[1];
@@ -520,13 +480,11 @@ impl<const SPIN: bool> FermiSurface for Model<SPIN> {
                     for k in 0..n3 {
                         for j in 0..n2 {
                             for i in 0..n1 {
-                                energy[[k, j, i]] =
-                                    eval[[i + j * n1 + k * (n1 * n2), b]];
+                                energy[[k, j, i]] = eval[[i + j * n1 + k * (n1 * n2), b]];
                             }
                         }
                     }
-                    let tris =
-                        marching_tetrahedra_3d(&energy, &kvec, n1, n2, n3, e_fermi);
+                    let tris = marching_tetrahedra_3d(&energy, &kvec, n1, n2, n3, e_fermi);
                     all_triangles.extend(tris);
                 }
 
@@ -535,11 +493,12 @@ impl<const SPIN: bool> FermiSurface for Model<SPIN> {
                 }
                 render_fermi_3d(&all_triangles, name)
             }
+            _ => unreachable!(),
         }
     }
 }
 
-impl<const SPIN: bool> FermiSurfacePlane for Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> FermiSurfacePlane for Model<SPIN, DIM> {
     fn show_fermi_surface_plane(
         &self,
         origin: &Array1<f64>,
@@ -550,9 +509,9 @@ impl<const SPIN: bool> FermiSurfacePlane for Model<SPIN> {
         e_fermi: f64,
         name: &str,
     ) -> Result<()> {
-        if self.dim_r != Dimension::three {
+        if self.dim_r() != 3 {
             return Err(TbError::InvalidDimension {
-                dim: self.dim_r as usize,
+                dim: self.dim_r(),
                 supported: vec![3],
             });
         }
@@ -561,8 +520,7 @@ impl<const SPIN: bool> FermiSurfacePlane for Model<SPIN> {
         let eval = self.solve_band_all_parallel(&kvec);
 
         let nsta = self.nsta();
-        let mut all_segments: Vec<Vec<(Array1<f64>, Array1<f64>)>> =
-            Vec::with_capacity(nsta);
+        let mut all_segments: Vec<Vec<(Array1<f64>, Array1<f64>)>> = Vec::with_capacity(nsta);
 
         for b in 0..nsta {
             let mut energy = Array2::<f64>::zeros((n2, n1));

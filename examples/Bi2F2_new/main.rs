@@ -16,7 +16,6 @@ use std::ops::AddAssign;
 use std::time::Instant;
 fn main() {
     let li: Complex<f64> = 1.0 * Complex::i();
-    let dim_r: usize = 3;
     let norb: usize = 2;
     let a0 = 1.0;
     let h = 0.0;
@@ -27,7 +26,7 @@ fn main() {
         [0.0, 0.5, 0.0],
         [0.0, 0.5, 0.0],
     ]);
-    let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
+    let mut model = Model::<true>::tb_model(lat, orb, None).unwrap();
     let R0: Array2<isize> = arr2(&[[0, 0, 0], [1, 0, 0], [0, -1, 0], [1, -1, 0]]);
     //------开始添加hopping----------------
     let lm = 1.0 + 0.0 * li;

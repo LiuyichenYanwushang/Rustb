@@ -16,12 +16,11 @@ fn main() {
     let delta = 0.0;
     let delta1 = 0.9 + 0.0 * li;
     let delta2 = 0.22 + 0.0 * li;
-    let dim_r: usize = 2;
     let norb: usize = 2;
     let a0 = 3.0_f64.sqrt();
     let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]) * a0;
     let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
-    let model = gen_model(dim_r, &lat, &orb, t1, lm_so, delta1, delta2, delta);
+    let model = gen_model(&lat, &orb, t1, lm_so, delta1, delta2, delta);
 
     let nk: usize = 1001;
     let path = array![
@@ -64,7 +63,7 @@ fn main() {
             let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
             let d1 = d1 + 0.0 * li;
             let d2 = d2 + 0.0 * li;
-            let model = gen_model(dim_r, &lat, &orb, t1, lm_so, d1, d2, delta);
+            let model = gen_model(&lat, &orb, t1, lm_so, d1, d2, delta);
             let (E, dos) = model.dos(&kmesh, E_min, E_max, E_n, 1e-3).unwrap();
             let mut a = 0.0;
             let mut mu = 0.0;
@@ -119,7 +118,6 @@ fn main() {
 }
 
 fn gen_model(
-    dim_r: usize,
     lat: &Array2<f64>,
     orb: &Array2<f64>,
     t1: Complex<f64>,
@@ -127,9 +125,9 @@ fn gen_model(
     delta1: Complex<f64>,
     delta2: Complex<f64>,
     delta: f64,
-) -> Model<true> {
+) -> Model<true, 2> {
     let li: Complex<f64> = 1.0 * Complex::i();
-    let mut model = Model::<true>::tb_model(dim_r, lat.clone(), orb.clone(), None).unwrap();
+    let mut model = Model::<true, 2>::tb_model(lat.clone(), orb.clone(), None).unwrap();
     model.set_onsite(&arr1(&[delta, delta]), SpinDirection::Z);
     //最近邻hopping
     model.add_hop(t1, 0, 1, &array![0, 0], None);

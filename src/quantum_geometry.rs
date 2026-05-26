@@ -106,7 +106,7 @@ pub trait QuantumGeometry: Velocity {
     ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>, Array2<f64>);
 }
 
-impl<const SPIN: bool> QuantumGeometry for Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> QuantumGeometry for Model<SPIN, DIM> {
     #[inline(always)]
     fn quantum_geometry_n_onek<S: Data<Elem = f64>>(
         &self,
@@ -122,22 +122,16 @@ impl<const SPIN: bool> QuantumGeometry for Model<SPIN> {
             self.gen_v(&k_vec, Gauge::Atom);
 
         // Project velocity along dir_1 (α direction): v_α = Σ_d dir_1[d] · v_d
-        let v_alpha = v
-            .outer_iter()
-            .zip(dir_1.iter())
-            .fold(
-                Array2::zeros((self.nsta(), self.nsta())),
-                |acc, (v_d, &d)| acc + &v_d * (d + 0.0 * li),
-            );
+        let v_alpha = v.outer_iter().zip(dir_1.iter()).fold(
+            Array2::zeros((self.nsta(), self.nsta())),
+            |acc, (v_d, &d)| acc + &v_d * (d + 0.0 * li),
+        );
 
         // Project velocity along dir_2 (β direction): v_β = Σ_d dir_2[d] · v_d
-        let v_beta = v
-            .outer_iter()
-            .zip(dir_2.iter())
-            .fold(
-                Array2::zeros((self.nsta(), self.nsta())),
-                |acc, (v_d, &d)| acc + &v_d * (d + 0.0 * li),
-            );
+        let v_beta = v.outer_iter().zip(dir_2.iter()).fold(
+            Array2::zeros((self.nsta(), self.nsta())),
+            |acc, (v_d, &d)| acc + &v_d * (d + 0.0 * li),
+        );
 
         // Diagonalize H(k)
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
@@ -224,7 +218,7 @@ impl<const SPIN: bool> QuantumGeometry for Model<SPIN> {
 
 // ── Fermi‑Dirac‑weighted quantum geometry over a k‑mesh ─────────────────
 
-impl<const SPIN: bool> Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     /// Fermi–Dirac weighted quantum metric and Berry curvature as a function of
     /// chemical potential.
     ///
@@ -305,8 +299,7 @@ impl<const SPIN: bool> Model<SPIN> {
             .axis_iter(Axis(0))
             .into_par_iter()
             .map(|k| {
-                let (m, o, b) =
-                    self.quantum_geometry_n_onek(&k.to_owned(), dir_1, dir_2, eta);
+                let (m, o, b) = self.quantum_geometry_n_onek(&k.to_owned(), dir_1, dir_2, eta);
                 let m_real: Vec<f64> = m.iter().map(|c| c.re).collect();
                 let o_real: Vec<f64> = o.iter().map(|c| c.re).collect();
                 (m_real, o_real, b.to_vec())

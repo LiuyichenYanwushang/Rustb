@@ -145,7 +145,9 @@ fn build_spin_matrix(norb: usize, spin: Option<SpinDirection>) -> Array2<Complex
     let half = Complex::new(0.5, 0.0);
     let i_half = Complex::new(0.0, 0.5);
     match spin {
-        None => { m = Array2::<Complex<f64>>::eye(2 * norb); }
+        None => {
+            m = Array2::<Complex<f64>>::eye(2 * norb);
+        }
         Some(SpinDirection::X) => {
             // σ_x ⊗ I: [0 I; I 0] / 2
             for i in 0..norb {
@@ -523,7 +525,7 @@ pub trait BerryCurvature: Velocity {
     ) -> Array1<f64>;
 }
 
-impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> BerryCurvature for Model<SPIN, DIM> {
     #[allow(non_snake_case)]
     #[inline(always)]
     fn berry_curvature_n_onek<S: Data<Elem = f64>>(
@@ -719,8 +721,15 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
             .axis_iter(Axis(0))
             .into_par_iter()
             .map(|x| {
-                let omega_one =
-                    self.berry_curvature_onek(&x.to_owned(), &current_dir, &dir_2, mu, T, spin, eta);
+                let omega_one = self.berry_curvature_onek(
+                    &x.to_owned(),
+                    &current_dir,
+                    &dir_2,
+                    mu,
+                    T,
+                    spin,
+                    eta,
+                );
                 omega_one
             })
             .collect();
@@ -730,7 +739,7 @@ impl<const SPIN: bool> BerryCurvature for Model<SPIN> {
 }
 
 #[allow(non_snake_case)]
-impl<const SPIN: bool> Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     /// Methods for computing conductivity tensors including the anomalous Hall conductivity,
     /// spin Hall conductivity, and nonlinear Hall conductivity.
     ///
@@ -840,8 +849,9 @@ impl<const SPIN: bool> Model<SPIN> {
         let mut k_range = gen_krange(k_mesh)?; //将要计算的区域分成小块
         let n_range = k_range.len_of(Axis(0));
         let ab_err = ab_err / (n_range as f64);
-        let use_fn =
-            |k0: &Array1<f64>| self.berry_curvature_onek(k0, &current_dir, &dir_2, mu, T, spin, eta);
+        let use_fn = |k0: &Array1<f64>| {
+            self.berry_curvature_onek(k0, &current_dir, &dir_2, mu, T, spin, eta)
+        };
         let inte = |k_range| adapted_integrate_quick(&use_fn, &k_range, re_err, ab_err);
         let omega: Vec<f64> = k_range
             .axis_iter(Axis(0))
@@ -1098,7 +1108,9 @@ impl<const SPIN: bool> Model<SPIN> {
         spin: Option<SpinDirection>,
         eta: f64,
     ) -> (Array2<f64>, Array2<f64>) {
-        if current_dir.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
+        if current_dir.len() != self.dim_r()
+            || dir_2.len() != self.dim_r()
+            || dir_3.len() != self.dim_r()
         {
             panic!(
                 "Wrong, the current_dir or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {} and {}",
@@ -1176,7 +1188,9 @@ impl<const SPIN: bool> Model<SPIN> {
         spin: Option<SpinDirection>,
         eta: f64,
     ) -> Result<Array1<f64>> {
-        if current_dir.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
+        if current_dir.len() != self.dim_r()
+            || dir_2.len() != self.dim_r()
+            || dir_3.len() != self.dim_r()
         {
             panic!(
                 "Wrong, the current_dir or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {} and {}",
@@ -1271,7 +1285,8 @@ impl<const SPIN: bool> Model<SPIN> {
         let mut v_2 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
         let mut v_3 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
         for i in 0..self.dim_r() {
-            v_1 = v_1.clone() + v.slice(s![i, .., ..]).to_owned() * Complex::new(current_dir[[i]], 0.0);
+            v_1 = v_1.clone()
+                + v.slice(s![i, .., ..]).to_owned() * Complex::new(current_dir[[i]], 0.0);
             v_2 = v_2.clone() + v.slice(s![i, .., ..]).to_owned() * Complex::new(dir_2[[i]], 0.0);
             v_3 = v_3.clone() + v.slice(s![i, .., ..]).to_owned() * Complex::new(dir_3[[i]], 0.0);
         }
@@ -1312,8 +1327,8 @@ impl<const SPIN: bool> Model<SPIN> {
             let mut s_2 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
             let mut s_3 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
             for i in 0..self.dim_r() {
-                s_1 =
-                    s_1.clone() + S.slice(s![i, .., ..]).to_owned() * Complex::new(current_dir[[i]], 0.0);
+                s_1 = s_1.clone()
+                    + S.slice(s![i, .., ..]).to_owned() * Complex::new(current_dir[[i]], 0.0);
                 s_2 =
                     s_2.clone() + S.slice(s![i, .., ..]).to_owned() * Complex::new(dir_2[[i]], 0.0);
                 s_3 =
@@ -1439,7 +1454,9 @@ impl<const SPIN: bool> Model<SPIN> {
         dir_3: &Array1<f64>,
         spin: Option<SpinDirection>,
     ) -> (Array2<f64>, Array2<f64>, Option<Array2<f64>>) {
-        if current_dir.len() != self.dim_r() || dir_2.len() != self.dim_r() || dir_3.len() != self.dim_r()
+        if current_dir.len() != self.dim_r()
+            || dir_2.len() != self.dim_r()
+            || dir_3.len() != self.dim_r()
         {
             panic!(
                 "Wrong, the current_dir or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {} and {}",

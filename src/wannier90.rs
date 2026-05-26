@@ -2,8 +2,6 @@
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{Result, TbError};
 use crate::math::comm;
-use crate::model::Dimension;
-
 use crate::{Gauge, Model, SpinDirection, find_R};
 use ndarray::prelude::*;
 use ndarray_linalg::conjugate;
@@ -16,7 +14,7 @@ pub trait Wannier90 {
         Self: Sized;
 }
 
-impl<const SPIN: bool> Wannier90 for Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Wannier90 for Model<SPIN, DIM> {
     #[allow(non_snake_case)]
     fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Self> {
         // This function reads tight-binding files from Wannier90.
@@ -933,8 +931,14 @@ impl<const SPIN: bool> Wannier90 for Model<SPIN> {
             }
         }
 
+        // Validate that loaded data dimension matches the const generic DIM
+        if DIM != 3 {
+            return Err(TbError::InvalidDimension {
+                dim: DIM,
+                supported: vec![3],
+            });
+        }
         let mut model = Self {
-            dim_r: Dimension::three,
             lat,
             orb,
             orb_projection: orb_proj,

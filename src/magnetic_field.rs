@@ -164,7 +164,7 @@ pub trait MagneticField {
         Self: Sized;
 }
 
-impl<const SPIN: bool> MagneticField for Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> MagneticField for Model<SPIN, DIM> {
     fn add_magnetic_field(
         &self,
         mag_dir: usize,

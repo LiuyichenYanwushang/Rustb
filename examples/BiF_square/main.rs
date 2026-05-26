@@ -17,7 +17,6 @@ fn main() {
     let lm = 1.2 + 0.0 * li;
     let t_eff = 0.2 + 0.0 * li;
     let delta = 0.0;
-    let dim_r: usize = 3;
     let norb: usize = 2;
     let a0 = 2.0;
     let h = 0.1;
@@ -28,7 +27,7 @@ fn main() {
         [0.0, 0.5, 0.5 - h],
         [0.0, 0.5, 0.5 - h],
     ]);
-    let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
+    let mut model = Model::<true>::tb_model(lat, orb, None).unwrap();
     let R0: Array2<isize> = arr2(&[[0, 0, 0], [1, 0, 0], [0, -1, 0], [1, -1, 0]]);
     let cos_t2 = 1.0 - h.powi(2) / 2.0;
     let t_sg = t_sg * cos_t2;

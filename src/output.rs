@@ -14,7 +14,7 @@ use crate::error::{Result, TbError};
 use crate::kpath::*;
 use crate::kpoints::gen_kmesh;
 use crate::math::comm;
-use crate::model::{Dimension, find_R};
+use crate::model::find_R;
 use crate::solve_ham::solve;
 use ndarray::concatenate;
 use ndarray::linalg::kron;
@@ -41,7 +41,7 @@ pub trait OutPut {
     -> Result<()>;
 }
 
-impl<const SPIN: bool> OutPut for Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> OutPut for Model<SPIN, DIM> {
     fn output_hr(&self, path: &str, seedname: &str) {
         let n_R = self.hamR.nrows(); //length of hamR
         let mut hr_name = String::new();
@@ -66,8 +66,8 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
         }
         writeln!(file, "{}", weight);
         //接下来我们进行数据的写入
-        match self.dim_r {
-            Dimension::one => {
+        match self.dim_r() {
+            1 => {
                 let max_R1 = self.hamR.outer_iter().map(|x| x[[0]].abs()).max().unwrap();
                 let mut s = String::new();
                 for i in -max_R1..max_R1 {
@@ -110,7 +110,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                 }
                 writeln!(file, "{}", s);
             }
-            Dimension::two => {
+            2 => {
                 let max_values = self
                     .hamR
                     .fold_axis(Axis(0), isize::min_value(), |max, &value| {
@@ -160,7 +160,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                 }
                 writeln!(file, "{}", s);
             }
-            Dimension::three => {
+            3 => {
                 let max_values = self
                     .hamR
                     .fold_axis(Axis(0), isize::min_value(), |max, &value| {
@@ -214,6 +214,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                 }
                 writeln!(file, "{}", s);
             }
+            _ => unreachable!(),
         }
     }
 
@@ -224,22 +225,23 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
         let mut file = File::create(&name).expect("Unable to BAND.dat");
         writeln!(file, "Generate by Rustb");
         writeln!(file, "1.0");
-        let s = match self.dim_r {
-            Dimension::three => {
+        let s = match self.dim_r() {
+            3 => {
                 let mut s = String::new();
                 s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],self.lat[[0,1]],self.lat[[0,2]],self.lat[[1,0]],self.lat[[1,1]],self.lat[[1,2]],self.lat[[2,0]],self.lat[[2,1]],self.lat[[2,2]]));
                 s
             }
-            Dimension::two => {
+            2 => {
                 let mut s = String::new();
                 s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],self.lat[[0,1]],0.0,self.lat[[1,0]],self.lat[[1,1]],0.0,0.0,0.0,10.0));
                 s
             }
-            Dimension::one => {
+            1 => {
                 let mut s = String::new();
                 s.push_str(&format!("    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}\n    {:>15.8}    {:>15.8}    {:>15.8}",self.lat[[0,0]],0.0,0.0,0.0,10.0,0.0,0.0,0.0,10.0));
                 s
             }
+            _ => unreachable!(),
         };
         writeln!(file, "{}", s);
         //开始弄atom
@@ -275,8 +277,8 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
         let mut s = String::new();
         for i in 0..atom_type.len() {
             for j in 0..new_atom_position[i].len() {
-                let s = match self.dim_r {
-                    Dimension::three => {
+                let s = match self.dim_r() {
+                    3 => {
                         let mut s = String::new();
                         s.push_str(&format!(
                             "{:>15.8}   {:>15.8}   {:>15.8}",
@@ -286,7 +288,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                         ));
                         s
                     }
-                    Dimension::two => {
+                    2 => {
                         let mut s = String::new();
                         s.push_str(&format!(
                             "{:>15.8}   {:>15.8}   {:>15.8}",
@@ -296,7 +298,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                         ));
                         s
                     }
-                    Dimension::one => {
+                    1 => {
                         let mut s = String::new();
                         s.push_str(&format!(
                             "{:>15.8}   {:>15.8}   {:>15.8}",
@@ -306,6 +308,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                         ));
                         s
                     }
+                    _ => unreachable!(),
                 };
                 writeln!(file, "{}", s);
             }
@@ -323,8 +326,8 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
         writeln!(file, "begin atoms_cart");
         for at in self.atoms.iter() {
             let atom_position = at.position();
-            match self.dim_r {
-                Dimension::three => {
+            match self.dim_r() {
+                3 => {
                     writeln!(
                         file,
                         "{}  {:>10.6}  {:>10.6}  {:>10.6}",
@@ -334,7 +337,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                         atom_position[1]
                     );
                 }
-                Dimension::two => {
+                2 => {
                     writeln!(
                         file,
                         "{}  {:>10.6}  {:>10.6}  {:>10.6}",
@@ -344,7 +347,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                         0.0
                     );
                 }
-                Dimension::one => {
+                1 => {
                     writeln!(
                         file,
                         "{}  {:>10.6}  {:>10.6}  {:>10.6}",
@@ -354,13 +357,14 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                         0.0
                     );
                 }
+                _ => unreachable!(),
             }
         }
         writeln!(file, "end atoms_cart");
         writeln!(file, "\n");
         writeln!(file, "begin unit_cell_cart");
-        match self.dim_r {
-            Dimension::three => {
+        match self.dim_r() {
+            3 => {
                 let mut s = String::new();
                 for i in 0..3 {
                     for j in 0..3 {
@@ -369,7 +373,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                     writeln!(file, "{}", s);
                 }
             }
-            Dimension::two => {
+            2 => {
                 let mut s = String::new();
                 for i in 0..2 {
                     for j in 0..2 {
@@ -380,7 +384,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                 }
                 writeln!(file, "   0.000000     0.000000     1.000000");
             }
-            Dimension::one => {
+            1 => {
                 let mut s = String::new();
                 s.push_str(&format!("{:>10.6}  ", self.lat[[0, 0]]));
                 s.push_str("   0.000000     0.000000");
@@ -388,6 +392,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                 writeln!(file, "   0.000000     0.000000     1.000000");
                 writeln!(file, "   0.000000     0.000000     1.000000");
             }
+            _ => unreachable!(),
         }
         writeln!(file, "end unit_cell_cart");
         writeln!(file, "\n");
@@ -408,8 +413,8 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
         let atom_position_real = self.atom_position().dot(&self.lat);
         writeln!(file, "{}", number);
         writeln!(file, "Wannier centres, written by Rustb");
-        let mut s = match self.dim_r {
-            Dimension::three => {
+        let mut s = match self.dim_r() {
+            3 => {
                 let mut s = String::new();
                 for i in 0..self.norb() {
                     s.push_str(&format!(
@@ -448,7 +453,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                 ));
                 s
             }
-            Dimension::two => {
+            2 => {
                 let mut s = String::new();
                 for i in 0..self.norb() {
                     s.push_str(&format!(
@@ -483,7 +488,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                 ));
                 s
             }
-            Dimension::one => {
+            1 => {
                 let mut s = String::new();
                 for i in 0..self.norb() {
                     s.push_str(&format!(
@@ -514,6 +519,7 @@ impl<const SPIN: bool> OutPut for Model<SPIN> {
                 ));
                 s
             }
+            _ => unreachable!(),
         };
         writeln!(file, "{}", s);
     }

@@ -20,13 +20,12 @@ use std::sync::{Arc, Mutex};
 fn main() {
     let li = Complex::i();
     let zero_energy: f64 = 0.;
-    let dim_r = 3;
     let lat = array![[3.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 40.0]];
     let orb = array![[0.0, 0.0, 0.0]];
     let spin = false;
     let atom = orb.clone();
     let atom_list = vec![1];
-    let mut model_1 = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+    let mut model_1 = Model::<false>::tb_model(lat, orb, None).unwrap();
     let t1 = -2.0 + 0.0 * li;
     let t2 = -1.5 + 0.0 * li;
     let J = 1.0;
@@ -39,7 +38,7 @@ fn main() {
     let spin = false;
     let atom = orb.clone();
     let atom_list = vec![1];
-    let mut model_2 = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+    let mut model_2 = Model::<false>::tb_model(lat, orb, None).unwrap();
     let t1 = -2.0 + 0.0 * li;
     let t2 = -1.5 + 0.0 * li;
     let J = 1.0;
@@ -76,7 +75,7 @@ fn main() {
     ];
     let lat = U0.dot(&model_1.lat);
     let mut new_model =
-        Model::<true>::tb_model(dim_r, lat.clone(), orb.clone(), Some(atom.clone())).unwrap();
+        Model::<true>::tb_model(lat.clone(), orb.clone(), Some(atom.clone())).unwrap();
     let mut onsite = Array1::zeros(new_model.norb());
     for i in 0..model_1.norb() {
         onsite[[i]] = J;
@@ -113,7 +112,7 @@ fn main() {
     println!("{}", evec);
 
     let mut model_up =
-        Model::<false>::tb_model(dim_r, lat.clone(), orb.clone(), Some(atom.clone())).unwrap();
+        Model::<false>::tb_model(lat.clone(), orb.clone(), Some(atom.clone())).unwrap();
     let mut onsite = Array1::zeros(model_up.norb());
     for i in 0..model_1.norb() {
         onsite[[i]] = J;
@@ -144,7 +143,7 @@ fn main() {
             }
         }
     }
-    let mut model_dn = Model::<false>::tb_model(dim_r, lat, orb, Some(atom)).unwrap();
+    let mut model_dn = Model::<false>::tb_model(lat, orb, Some(atom)).unwrap();
     let mut onsite = Array1::zeros(model_dn.norb());
     for i in 0..model_1.norb() {
         onsite[[i]] = J;
@@ -419,7 +418,7 @@ fn conductivity_onek<const SPIN: bool>(
             }
         };
         X = kron(&pauli, &Array2::eye(model.norb()));
-        for i in 0..model.dim_r as usize {
+        for i in 0..model.dim_r() {
             let j = J.slice(s![i, .., ..]).to_owned();
             let j = anti_comm(&X, &j) / 2.0; //这里做反对易
             J.slice_mut(s![i, .., ..]).assign(&(j * dir_1[[i]]));
@@ -430,7 +429,7 @@ fn conductivity_onek<const SPIN: bool>(
         if spin.is_some() {
             println!("Warning, the model haven't got spin, so the spin input will be ignord");
         }
-        for i in 0..model.dim_r as usize {
+        for i in 0..model.dim_r() {
             J.slice_mut(s![i, .., ..])
                 .mul_assign(Complex::new(dir_1[[i]], 0.0));
             v.slice_mut(s![i, .., ..])

@@ -181,7 +181,6 @@
 //! - $R_\alpha^{\rm (cart)}$, $\tau_{n\alpha}^{\rm (cart)}$: Cartesian coordinates (in Å),
 //!   obtained by multiplying fractional vectors with the lattice matrix `lat`
 //! - The returned velocity matrix is **anti-Hermitian**: $v_\alpha^\dagger = -v_\alpha$
-use crate::Dimension;
 use crate::Gauge;
 use crate::Model;
 use crate::comm;
@@ -231,7 +230,7 @@ pub trait Velocity {
     ) -> (Array3<Complex<f64>>, Array2<Complex<f64>>);
 }
 
-impl<const SPIN: bool> Velocity for Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Velocity for Model<SPIN, DIM> {
     #[allow(non_snake_case)]
     #[inline(always)]
     fn gen_v<S: Data<Elem = f64>>(
@@ -252,13 +251,13 @@ impl<const SPIN: bool> Velocity for Model<SPIN> {
 
         // Phase factors exp(i 2π k·R): dimension-dispatched for loop unrolling.
         // Cached since each R's phase is reused in hamk, velocity (dim dirs), and rmatrix.
-        let Us: Vec<Complex<f64>> = match self.dim_r {
-            Dimension::one => self
+        let Us: Vec<Complex<f64>> = match DIM {
+            1 => self
                 .hamR
                 .outer_iter()
                 .map(|r| Complex::new(0.0, 2.0 * PI * r[0] as f64 * kvec[0]).exp())
                 .collect(),
-            Dimension::two => self
+            2 => self
                 .hamR
                 .outer_iter()
                 .map(|r| {
@@ -269,7 +268,7 @@ impl<const SPIN: bool> Velocity for Model<SPIN> {
                     .exp()
                 })
                 .collect(),
-            Dimension::three => self
+            3 => self
                 .hamR
                 .outer_iter()
                 .map(|r| {
@@ -283,6 +282,7 @@ impl<const SPIN: bool> Velocity for Model<SPIN> {
                     .exp()
                 })
                 .collect(),
+            _ => unreachable!(),
         };
 
         // R in Cartesian: f64 matmul avoids Complex conversion + uses faster DGEMM
@@ -309,19 +309,19 @@ impl<const SPIN: bool> Velocity for Model<SPIN> {
                     self.orb.to_owned()
                 };
                 // Dimension-dispatched τ·k phase factors
-                let orb_phase: Vec<Complex<f64>> = match self.dim_r {
-                    Dimension::one => orb_sta
+                let orb_phase: Vec<Complex<f64>> = match DIM {
+                    1 => orb_sta
                         .outer_iter()
                         .map(|tau| Complex::new(0.0, 2.0 * PI * tau[0] * kvec[0]).exp())
                         .collect(),
-                    Dimension::two => orb_sta
+                    2 => orb_sta
                         .outer_iter()
                         .map(|tau| {
                             Complex::new(0.0, 2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1]))
                                 .exp()
                         })
                         .collect(),
-                    Dimension::three => orb_sta
+                    3 => orb_sta
                         .outer_iter()
                         .map(|tau| {
                             Complex::new(
@@ -331,6 +331,7 @@ impl<const SPIN: bool> Velocity for Model<SPIN> {
                             .exp()
                         })
                         .collect(),
+                    _ => unreachable!(),
                 };
                 let orb_real = orb_sta.dot(&self.lat);
                 // UU[d,m,n] = i*(tau[n,d] - tau[m,d])

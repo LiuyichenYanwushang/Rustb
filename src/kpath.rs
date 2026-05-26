@@ -16,7 +16,7 @@ pub trait Kpath {
     ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)>;
 }
 
-impl<const SPIN: bool> Kpath for Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Kpath for Model<SPIN, DIM> {
     fn k_path(
         &self,
         path: &Array2<f64>,

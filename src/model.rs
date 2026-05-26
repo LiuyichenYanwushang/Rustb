@@ -1,13 +1,4 @@
 //! Core implementation of tight-binding model operations and Hamiltonian construction.
-//!
-//! This module provides the fundamental methods for working with tight-binding models,
-//! including Hamiltonian construction, eigenvalue solving, and various physical
-//! property calculations. The main `Model` struct implements methods for:
-//! - Setting hopping parameters and on-site energies
-//! - Solving the eigenvalue problem $H(\mathbf{k}) \psi_n = E_n \psi_n$
-//! - Computing velocity operators $\mathbf{v} = \frac{1}{\hbar} \nabla_\mathbf{k} H(\mathbf{k})$
-//! - Calculating Berry curvature and topological invariants
-//! - Constructing surface Green's functions
 
 // Re-export all model-related functionality from submodules
 pub use crate::model_utils::{find_R, remove_col, remove_row};
@@ -21,45 +12,26 @@ use serde::de;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Tight-binding model structure representing the Hamiltonian $H(\mathbf{k})$ and related properties.
+/// Tight-binding model structure.
 ///
-/// The model is defined by its real-space hopping parameters $t_{ij}(\mathbf{R})$ where $\mathbf{R}$
-/// is the lattice vector connecting unit cells. The Bloch Hamiltonian is given by:
-/// $$
-/// H(\mathbf{k}) = \sum_{\mathbf{R}} t(\mathbf{R}) e^{i\mathbf{k}\cdot\mathbf{R}}
-/// $$
-///
-/// The const generic `SPIN` controls whether the model includes spin:
-/// - `Model<false>` (default): spinless, `nsta() == norb()`
-/// - `Model<true>`: spinful, `nsta() == 2 * norb()`, basis is [orb₁↑, orb₂↑, ..., orb₁↓, orb₂↓, ...]
+/// Const generic `SPIN`: spinless (false, default) / spinful (true).
+/// Const generic `DIM`: spatial dimension 1/2/3 (default 3).
 #[derive(Clone, Debug)]
-pub struct Model<const SPIN: bool = false> {
-    /// Real space dimension $d$ of the model (2D or 3D systems)
-    pub dim_r: Dimension,
-    /// Lattice vectors $\mathbf{a}_1, \mathbf{a}_2, \mathbf{a}_3$ as a $d \times d$ matrix
-    /// where each row represents a lattice vector
+pub struct Model<const SPIN: bool = false, const DIM: usize = 3> {
     pub lat: Array2<f64>,
-    /// Orbital positions in fractional coordinates within the unit cell
     pub orb: Array2<f64>,
-    /// Orbital projection information (s, p, d orbitals etc.)
     pub orb_projection: Vec<OrbProj>,
-    /// Atomic positions and information
     pub atoms: Vec<Atom>,
-    /// Hamiltonian matrix elements $H_{mn}(\mathbf{R}) = \bra{m\mathbf{0}} H \ket{n\mathbf{R}}$
-    /// stored as a 3D array: [orbital_m, orbital_n, R_index]
     pub ham: Array3<Complex<f64>>,
-    /// Lattice vectors $\mathbf{R}$ corresponding to the hoppings in `ham`
     pub hamR: Array2<isize>,
-    /// Position matrix elements $\mathbf{r}_{mn}(\mathbf{R}) = \bra{m\mathbf{0}} \mathbf{\hat{r}} \ket{n\mathbf{R}}$
-    /// used for velocity operator calculations
     pub rmatrix: Array4<Complex<f64>>,
 }
 
-// Manual Serialize: write `spin: SPIN` field
-impl<const SPIN: bool> Serialize for Model<SPIN> {
+// Manual Serialize
+impl<const SPIN: bool, const DIM: usize> Serialize for Model<SPIN, DIM> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut s = serializer.serialize_struct("Model", 8)?;
-        s.serialize_field("dim_r", &self.dim_r)?;
+        s.serialize_field("dim_r", &DIM)?;
         s.serialize_field("spin", &SPIN)?;
         s.serialize_field("lat", &self.lat)?;
         s.serialize_field("orb", &self.orb)?;
@@ -72,7 +44,7 @@ impl<const SPIN: bool> Serialize for Model<SPIN> {
     }
 }
 
-// Helper for deserialization: read fields, then verify spin matches SPIN
+// Helper for deserialization
 #[derive(Deserialize)]
 #[serde(field_identifier, rename_all = "lowercase")]
 enum ModelField {
@@ -87,22 +59,24 @@ enum ModelField {
     Rmatrix,
 }
 
-impl<'de, const SPIN: bool> Deserialize<'de> for Model<SPIN> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        struct ModelVisitor<const S: bool>;
+impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, DIM> {
+    fn deserialize<De: Deserializer<'de>>(
+        deserializer: De,
+    ) -> std::result::Result<Self, De::Error> {
+        struct ModelVisitor<const S: bool, const D: usize>;
 
-        impl<'de, const S: bool> de::Visitor<'de> for ModelVisitor<S> {
-            type Value = Model<S>;
+        impl<'de, const S: bool, const D: usize> de::Visitor<'de> for ModelVisitor<S, D> {
+            type Value = Model<S, D>;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a Model struct")
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a Model struct")
             }
 
             fn visit_map<A: de::MapAccess<'de>>(
                 self,
                 mut map: A,
             ) -> std::result::Result<Self::Value, A::Error> {
-                let mut dim_r: Option<Dimension> = None;
+                let mut dim_r: Option<usize> = None;
                 let mut spin: Option<bool> = None;
                 let mut lat: Option<Array2<f64>> = None;
                 let mut orb: Option<Array2<f64>> = None;
@@ -134,8 +108,15 @@ impl<'de, const SPIN: bool> Deserialize<'de> for Model<SPIN> {
                     )));
                 }
 
+                let dim_r = dim_r.ok_or_else(|| de::Error::missing_field("dim_r"))?;
+                if dim_r != D {
+                    return Err(de::Error::custom(format!(
+                        "dimension mismatch: file has dim_r={}, but Model<DIM={}> was requested",
+                        dim_r, D
+                    )));
+                }
+
                 Ok(Model {
-                    dim_r: dim_r.ok_or_else(|| de::Error::missing_field("dim_r"))?,
                     lat: lat.ok_or_else(|| de::Error::missing_field("lat"))?,
                     orb: orb.ok_or_else(|| de::Error::missing_field("orb"))?,
                     orb_projection: orb_projection
@@ -161,144 +142,33 @@ impl<'de, const SPIN: bool> Deserialize<'de> for Model<SPIN> {
                 "hamR",
                 "rmatrix",
             ],
-            ModelVisitor::<SPIN>,
+            ModelVisitor::<SPIN, DIM>,
         )
     }
 }
 
-#[cfg_attr(doc, katexit::katexit)]
-/// Gauge choice for the Bloch basis, controlling the Fourier convention between
-/// Wannier functions $\ket{\alpha\mathbf{R}}$ and Bloch functions.
-///
-/// A tight-binding model is built from Wannier functions
-/// $\ket{\alpha\mathbf{R}}$ where $\alpha$ labels orbitals and
-/// $\mathbf{R}$ labels unit cells. The two gauges differ by whether orbital
-/// positions $\boldsymbol{\tau}_\alpha$ (fractional coordinates within the
-/// unit cell) appear in the Fourier phase factor.
-///
-/// Physical observables (band energies, Berry curvature, conductivity) are
-/// gauge-invariant. The gauge affects only intermediate quantities such as
-/// the velocity operator matrix and the Berry connection.
-///
-/// # Lattice gauge (Wannier90 default)
-///
-/// Bloch basis without $\boldsymbol{\tau}_\alpha$ in the phase:
-///
-/// $$
-/// \ket{\psi^W_{\alpha\mathbf{k}}} = \frac{1}{\sqrt{N}} \sum_{\mathbf{R}} e^{i\mathbf{k}\cdot\mathbf{R}} \ket{\alpha\mathbf{R}} .
-/// $$
-///
-/// The periodic part is $\ket{e^W_{\alpha\mathbf{k}}} = e^{-i\mathbf{k}\cdot\hat{\mathbf{r}}} \ket{\psi^W_{\alpha\mathbf{k}}}$.
-/// The reciprocal-space Hamiltonian is
-///
-/// $$
-/// H^W_{\alpha\beta}(\mathbf{k}) \equiv \bra{\psi^W_{\alpha\mathbf{k}}} H \ket{\psi^W_{\beta\mathbf{k}}}
-/// = \sum_{\mathbf{R}} \bra{\alpha\mathbf{0}} H \ket{\beta\mathbf{R}} \, e^{i\mathbf{k}\cdot\mathbf{R}} .
-/// $$
-///
-/// The velocity operator follows from $\nabla_{\mathbf{k}} H^W$ plus a commutator
-/// with the Berry connection $A^W$ (obtained directly from Wannier90 `_r.dat`):
-///
-/// $$
-/// v^W(\mathbf{k}) = \nabla_{\mathbf{k}} H^W(\mathbf{k}) + i\bigl[ H^W(\mathbf{k}), A^W(\mathbf{k}) \bigr] .
-/// $$
-///
-/// **When to use**: This is Wannier90's native convention. Choose this when working
-/// with Wannier90-generated `_hr.dat` and `_r.dat` files without modifications.
-///
-/// # Atom gauge
-///
-/// Bloch basis with orbital positions $\boldsymbol{\tau}_\alpha$ in the phase:
-///
-/// $$
-/// \ket{\alpha\mathbf{k}} = \frac{1}{\sqrt{N}} \sum_{\mathbf{R}} e^{i\mathbf{k}\cdot(\mathbf{R} + \boldsymbol{\tau}_\alpha)} \ket{\alpha\mathbf{R}} .
-/// $$
-///
-/// The relation to the Lattice gauge is
-/// $$
-/// \ket{\alpha\mathbf{k}} = e^{i\mathbf{k}\cdot\boldsymbol{\tau}_\alpha} \ket{\psi^W_{\alpha\mathbf{k}}} .
-/// $$
-/// The reciprocal-space Hamiltonian becomes
-///
-/// $$
-/// \bar{H}_{\alpha\beta}(\mathbf{k}) \equiv \bra{\alpha\mathbf{k}} H \ket{\beta\mathbf{k}}
-/// = \sum_{\mathbf{R}} \bra{\alpha\mathbf{0}} H \ket{\beta\mathbf{R}} \, e^{i\mathbf{k}\cdot(\mathbf{R} - \boldsymbol{\tau}_\alpha + \boldsymbol{\tau}_\beta)} .
-/// $$
-///
-/// The velocity operator is $\nabla_{\mathbf{k}} \bar{H}(\mathbf{k}) + i[\bar{H}(\mathbf{k}), \bar{\mathbf{r}}]$
-/// where $\bar{\mathbf{r}}$ is the gauge-transformed Berry connection.
-///
-/// **When to use**: This gauge is natural when orbital positions have physical
-/// significance (e.g. when computing position-dependent responses or when the model
-/// is constructed from explicit orbital coordinates rather than from Wannier90 output).
-///
-/// # Gauge transformation
-///
-/// The two gauges are related by a diagonal unitary transformation:
-///
-/// $$
-/// H^W_{\alpha\beta}(\mathbf{k}) = e^{-i\mathbf{k}\cdot\boldsymbol{\tau}_\alpha} \,
-///   \bar{H}_{\alpha\beta}(\mathbf{k}) \,
-///   e^{+i\mathbf{k}\cdot\boldsymbol{\tau}_\beta} .
-/// $$
-///
-/// All gauge-invariant quantities (eigenvalues, Berry curvature, Hall conductivity)
-/// are identical in both gauges.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+/// Gauge choice for the Bloch basis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Gauge {
-    /// Lattice gauge (Wannier90 default).
-    ///
-    /// Bloch basis without $\boldsymbol{\tau}_\alpha$ in the phase:
-    /// $\ket{\psi^W_{\alpha\mathbf{k}}} = \frac{1}{\sqrt{N}} \sum_{\mathbf{R}} e^{i\mathbf{k}\cdot\mathbf{R}} \ket{\alpha\mathbf{R}}$.
-    /// The Hamiltonian is
-    /// $H^W_{\alpha\beta}(\mathbf{k}) = \sum_{\mathbf{R}} \bra{\alpha\mathbf{0}} H \ket{\beta\mathbf{R}} e^{i\mathbf{k}\cdot\mathbf{R}}$.
-    Lattice = 0,
-    /// Atom gauge.
-    ///
-    /// Bloch basis with orbital positions $\boldsymbol{\tau}_\alpha$ in the phase:
-    /// $\ket{\alpha\mathbf{k}} = \frac{1}{\sqrt{N}} \sum_{\mathbf{R}} e^{i\mathbf{k}\cdot(\mathbf{R} + \boldsymbol{\tau}_\alpha)} \ket{\alpha\mathbf{R}}$.
-    /// The Hamiltonian is
-    /// $\bar{H}_{\alpha\beta}(\mathbf{k}) = \sum_{\mathbf{R}} \bra{\alpha\mathbf{0}} H \ket{\beta\mathbf{R}} e^{i\mathbf{k}\cdot(\mathbf{R} - \boldsymbol{\tau}_\alpha + \boldsymbol{\tau}_\beta)}$.
-    Atom = 1,
+    Lattice,
+    Atom,
 }
 
-/// Real-space dimensionality of the model
+/// System dimensionality.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Dimension {
     one = 1,
     two = 2,
     three = 3,
 }
 
-/// Pauli matrix selector for spin-dependent operators in a spinful model.
-///
-/// In a spinful model (`SPIN = true`), a spin operator is constructed as
-/// $\sigma_i \otimes I_{\text{norb}}$ where $\sigma_i$ is the chosen Pauli matrix.
-/// Used as [`Option<SpinDirection>`]:
-/// - `None` means $\sigma_0 = I$ (identity, no spin projection).
-/// - `Some(SpinDirection::X)` means $\sigma_x$.
-/// - `Some(SpinDirection::Y)` means $\sigma_y$.
-/// - `Some(SpinDirection::Z)` means $\sigma_z$.
-///
-/// # Examples
-///
-/// ```ignore
-/// use rustb::SpinDirection;
-/// // Berry curvature with σ_z spin projection
-/// let omega = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, Some(SpinDirection::Z), eta);
-/// // Berry curvature without spin projection (identity)
-/// let omega = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, None, eta);
-/// ```
+/// Pauli matrix selector for spin-dependent operators.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum SpinDirection {
-    /// Pauli matrix $\sigma_x$
     X = 1,
-    /// Pauli matrix $\sigma_y$
     Y = 2,
-    /// Pauli matrix $\sigma_z$
     Z = 3,
 }
 
@@ -306,10 +176,10 @@ pub enum SpinDirection {
 pub use crate::model_build::*;
 pub use crate::model_physics::*;
 
-impl<const SPIN: bool> Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     #[inline(always)]
     pub fn atom_position(&self) -> Array2<f64> {
-        let mut atom_position = Array2::zeros((self.natom(), self.dim_r as usize));
+        let mut atom_position = Array2::zeros((self.natom(), DIM));
         atom_position
             .outer_iter_mut()
             .zip(self.atoms.iter())
@@ -319,7 +189,7 @@ impl<const SPIN: bool> Model<SPIN> {
         atom_position
     }
     pub fn dim_r(&self) -> usize {
-        self.dim_r as usize
+        DIM
     }
     #[inline(always)]
     pub fn atom_list(&self) -> Vec<usize> {
@@ -330,19 +200,6 @@ impl<const SPIN: bool> Model<SPIN> {
         atom_list
     }
     #[inline(always)]
-    pub fn atom_type(&self) -> Vec<AtomType> {
-        let mut atom_type = Vec::new();
-        for a in self.atoms.iter() {
-            atom_type.push(a.atom_type());
-        }
-        atom_type
-    }
-    #[inline(always)]
-    pub fn nR(&self) -> usize {
-        self.hamR.nrows()
-    }
-
-    #[inline(always)]
     pub fn natom(&self) -> usize {
         self.atoms.len()
     }
@@ -352,23 +209,15 @@ impl<const SPIN: bool> Model<SPIN> {
     }
     #[inline(always)]
     pub fn nsta(&self) -> usize {
-        // SPIN is a compile-time constant: compiler eliminates the dead branch
         if SPIN { 2 * self.norb() } else { self.norb() }
     }
     #[inline(always)]
     pub fn orb_angular(&self) -> Result<Array3<Complex<f64>>> {
-        //! Constructs the orbital angular momentum matrices
-        //! $\bra{m} \hat{L}_\alpha \ket{n}$ in the orbital-projection basis.
-        //! The matrices are block-diagonal in atom index (one block per atom).
-        //!
-        //! Deprecated: use `orbital_angular_momentum` instead for orbital
-        //! current calculations.
         let li = Complex::i() * 1.0;
         let mut L = Array3::<Complex<f64>>::zeros((self.dim_r(), self.norb(), self.norb()));
         let mut Lx = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
         let mut Ly = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
         let mut Lz = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
-        //Construct Lz, L+, and L- in the angular-momentum (l, m) basis.
         let mut Lz_orig = Array2::<Complex<f64>>::zeros((16, 16));
         Lz_orig
             .slice_mut(s![1..4, 1..4])
@@ -407,7 +256,6 @@ impl<const SPIN: bool> Model<SPIN> {
                 }
             }
         }
-        //Lx=L+ + L-, Ly=-i( L+ - L-)
         let Lx_orig = &Lup_orig + &Ldn_orig;
         let Ly_orig = -li * (&Lup_orig - &Ldn_orig);
         let mut a = 0;
@@ -417,8 +265,7 @@ impl<const SPIN: bool> Model<SPIN> {
                     .to_quantum_number()?
                     .mapv(|x: Complex<f64>| x.conj());
                 for j in a..a + atom0.norb() {
-                    let proj_j: Array1<Complex<f64>> =
-                        self.orb_projection[j].to_quantum_number()?;
+                    let proj_j = self.orb_projection[j].to_quantum_number()?;
                     L[[0, i, j]] = proj_i.dot(&Lx_orig.dot(&proj_j));
                     L[[1, i, j]] = proj_i.dot(&Ly_orig.dot(&proj_j));
                     L[[2, i, j]] = proj_i.dot(&Lz_orig.dot(&proj_j));

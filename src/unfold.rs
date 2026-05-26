@@ -69,7 +69,7 @@ pub trait Unfold {
     ) -> Result<Array2<f64>>;
 }
 
-impl<const SPIN: bool> Unfold for Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Unfold for Model<SPIN, DIM> {
     fn unfold(
         &self,
         U: &Array2<f64>,
@@ -311,11 +311,10 @@ mod tests {
         let li: Complex<f64> = 1.0 * Complex::i();
         let t1 = 1.0 + 0.0 * li;
         let t2 = 0.1 + 0.0 * li;
-        let dim_r: usize = 2;
         let norb: usize = 2;
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0., 0.], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
-        let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
+        let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
         //最近邻hopping
         model.add_hop(t1, 0, 1, &array![0, 0], None);
         model.add_hop(t1, 2, 0, &array![0, 0], None);

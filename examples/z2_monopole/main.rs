@@ -13,7 +13,6 @@ fn main() {
     let th1 = 0.2 + 0.0 * li;
     let th2 = 0.4 + 0.0 * li;
     let delta = 0.5 + 0.0 * li;
-    let dim_r: usize = 3;
     let lat = arr2(&[
         [3.0_f64.sqrt(), -1.0, 0.0],
         [3.0_f64.sqrt(), 1.0, 0.0],
@@ -27,7 +26,7 @@ fn main() {
         [2.0 / 3.0, 1.0 / 3.0, 0.],
         [1.0 / 3.0, 2.0 / 3.0, 0.],
     ]);
-    let mut model = Model::<true>::tb_model(dim_r, lat, orb, None).unwrap();
+    let mut model = Model::<true>::tb_model(lat, orb, None).unwrap();
     //onsite hopping
     model.add_hop(
         delta * 3.0_f64.sqrt(),

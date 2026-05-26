@@ -12,33 +12,27 @@ use num_complex::Complex;
 // ── Model builders (not timed) ──────────────────────────────────────────────
 
 /// 2-orbital graphene-like model (small baseline)
-fn build_small() -> Model<false> {
+fn build_small() -> Model<false, 2> {
     let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
     let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-    let mut m = Model::<false>::tb_model(2, lat, orb, None).unwrap();
+    let mut m = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
     m.set_onsite(&arr1(&[-0.7, 0.7]), None);
     let r0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
-        m.add_hop(
-            Complex::new(-1.0, 0.0),
-            0,
-            1,
-            &r.to_owned(),
-            None,
-        );
+        m.add_hop(Complex::new(-1.0, 0.0), 0, 1, &r.to_owned(), None);
     }
     m
 }
 
 /// 3×3 supercell of small model (18 orbitals, medium)
-fn build_medium() -> Model<false> {
+fn build_medium() -> Model<false, 2> {
     let li: Complex<f64> = Complex::i();
     let t = Complex::new(2.0, 0.0);
     let t2 = Complex::new(-1.0, 0.0);
     let delta = 0.7;
     let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
     let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-    let mut m = Model::<false>::tb_model(2, lat, orb, None).unwrap();
+    let mut m = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
     m.set_onsite(&arr1(&[-delta, delta]), None);
     let r0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
@@ -58,13 +52,13 @@ fn build_medium() -> Model<false> {
 }
 
 /// 2-orbital spinful model (4 states, spin-orbit coupling)
-fn build_small_spinful() -> Model<true> {
+fn build_small_spinful() -> Model<true, 2> {
     let li: Complex<f64> = Complex::i();
     let t = -1.0;
     let soc = 0.06 * t;
     let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
     let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-    let mut m = Model::<true>::tb_model(2, lat, orb, None).unwrap();
+    let mut m = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
     m.set_onsite(&arr1(&[0.0, 0.0]), None);
     let r0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
@@ -82,20 +76,14 @@ fn build_small_spinful() -> Model<true> {
 }
 
 /// N×N supercell: replicates the 2-orbital graphene model to get nsta = 2*N².
-fn build_large(n: usize) -> Model<false> {
+fn build_large(n: usize) -> Model<false, 2> {
     let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
     let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-    let mut m = Model::<false>::tb_model(2, lat, orb, None).unwrap();
+    let mut m = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
     m.set_onsite(&arr1(&[-0.7, 0.7]), None);
     let r0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
     for r in r0.axis_iter(Axis(0)) {
-        m.add_hop(
-            Complex::new(-1.0, 0.0),
-            0,
-            1,
-            &r.to_owned(),
-            None,
-        );
+        m.add_hop(Complex::new(-1.0, 0.0), 0, 1, &r.to_owned(), None);
     }
     let sc = arr2(&[[n as f64, 0.0], [0.0, n as f64]]);
     m.make_supercell(&sc).unwrap()
@@ -103,24 +91,27 @@ fn build_large(n: usize) -> Model<false> {
 
 // ── Spinless model lists (all Model<false>) ────────────────────────────────
 
-const SPINLESS_MODELS: &[(&str, fn() -> Model<false>)] = &[
-    ("small(2orb)", build_small as fn() -> Model<false>),
-    ("medium(18orb)", build_medium as fn() -> Model<false>),
-    ("large(128orb)", build_large8 as fn() -> Model<false>),
-    ("xlarge(450orb)", build_large15 as fn() -> Model<false>),
+const SPINLESS_MODELS: &[(&str, fn() -> Model<false, 2>)] = &[
+    ("small(2orb)", build_small as fn() -> Model<false, 2>),
+    ("medium(18orb)", build_medium as fn() -> Model<false, 2>),
+    ("large(128orb)", build_large8 as fn() -> Model<false, 2>),
+    ("xlarge(450orb)", build_large15 as fn() -> Model<false, 2>),
 ];
 
-fn build_large8() -> Model<false> { build_large(8) }
-fn build_large15() -> Model<false> { build_large(15) }
+fn build_large8() -> Model<false, 2> {
+    build_large(8)
+}
+fn build_large15() -> Model<false, 2> {
+    build_large(15)
+}
 
-const SPINLESS_SMALL: &[(&str, fn() -> Model<false>)] = &[
-    ("small(2orb)", build_small as fn() -> Model<false>),
-    ("medium(18orb)", build_medium as fn() -> Model<false>),
+const SPINLESS_SMALL: &[(&str, fn() -> Model<false, 2>)] = &[
+    ("small(2orb)", build_small as fn() -> Model<false, 2>),
+    ("medium(18orb)", build_medium as fn() -> Model<false, 2>),
 ];
 
-const SPINLESS_CURV: &[(&str, fn() -> Model<false>)] = &[
-    ("small(2orb)", build_small as fn() -> Model<false>),
-];
+const SPINLESS_CURV: &[(&str, fn() -> Model<false, 2>)] =
+    &[("small(2orb)", build_small as fn() -> Model<false, 2>)];
 
 // ── Benchmarks ──────────────────────────────────────────────────────────────
 

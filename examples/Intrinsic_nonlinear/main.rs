@@ -128,13 +128,12 @@ fn main() {
 }
 
 ///$$H=w\sin(k_x)+v_x \sin(k_x)\tau_x+v_y\sin(k_y)\tau_y\sigma_x+\Delta\tau_z$$
-fn gen_model(w: f64, vx: f64, vy: f64, m: f64) -> Model {
+fn gen_model(w: f64, vx: f64, vy: f64, m: f64) -> Model<false, 2> {
     let li: Complex<f64> = 1.0 * Complex::i();
-    let dim_r: usize = 2;
     let norb: usize = 2;
     let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
     let orb = arr2(&[[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]);
-    let mut model = Model::<false>::tb_model(dim_r, lat, orb, None).unwrap();
+    let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
     model.set_onsite(&array![m, m, -m, -m], None);
     let w = Complex::new(w, 0.0);
     let vx = Complex::new(vx, 0.0);

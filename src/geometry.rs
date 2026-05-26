@@ -160,7 +160,7 @@ pub trait Berry {
     ) -> Array2<f64>;
 }
 
-impl<const SPIN: bool> Berry for Model<SPIN> {
+impl<const SPIN: bool, const DIM: usize> Berry for Model<SPIN, DIM> {
     fn berry_loop<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> Array1<f64>
     where
         S: Data<Elem = f64>,
