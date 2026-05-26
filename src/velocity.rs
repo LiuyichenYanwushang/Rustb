@@ -1,4 +1,3 @@
-#![cfg_attr(doc, katexit::katexit)]
 //! Velocity operator $\mathbf{v}(\mathbf{k}) = \nabla_{\mathbf{k}} H(\mathbf{k})$ for tight-binding models.
 //!
 //! Provides the [`Velocity`] trait and its implementation for [`Model`],

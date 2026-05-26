@@ -159,25 +159,25 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     /// different atoms are well separated.
     ///
     /// # Arguments
-    /// * `dim_r` - Real-space dimensionality: 1, 2, or 3.
-    /// * `lat` - Lattice vectors as a `dim_r x dim_r` matrix. Each row is a
-    ///   lattice vector.
+    /// * `lat` - Lattice vectors as a `DIM x DIM` matrix. Each row is a
+    ///   lattice vector. The dimensionality `DIM` is determined by the
+    ///   const generic on [`Model<SPIN, DIM>`] (default: 3).
     /// * `orb` - Orbital positions in fractional coordinates, shape
-    ///   `(norb, dim_r)`.
+    ///   `(norb, DIM)`.
     /// * `atom` - Optional list of [`Atom`] objects. If `None`, atoms are
     ///   inferred from `orb`.
     ///
-    /// The `SPIN` const generic determines whether the basis is spin-doubled.
-    /// Use `Model::<true>::tb_model(...)` for spinful models,
-    /// `Model::<false>::tb_model(...)` or just `Model::tb_model(...)` for
-    /// spinless.
+    /// The `SPIN` and `DIM` const generics determine the basis and
+    /// dimensionality. Use `Model::<true>::tb_model(...)` for spinful models,
+    /// `Model::<false>::tb_model(...)` for spinless. For non-default
+    /// dimensionality, specify `DIM`: e.g., `Model::<false, 2>::tb_model(...)`.
     ///
     /// # Returns
     /// `Result<Model<SPIN>>` containing the initialized tight-binding model.
     ///
     /// # Errors
     /// Returns [`TbError::LatticeDimensionError`] if `lat` is not a square
-    /// `dim_r x dim_r` matrix.
+    /// `DIM x DIM` matrix.
     ///
     /// # Examples
     ///
@@ -189,7 +189,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     ///
     /// let lat = array![[1.0, 0.0], [-0.5, 3_f64.sqrt() / 2.0]];
     /// let orb = array![[1.0 / 3.0, 2.0 / 3.0], [2.0 / 3.0, 1.0 / 3.0]];
-    /// let mut model = Model::<false>::tb_model(2, lat, orb, None).unwrap();
+    /// let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
     /// ```
     ///
     /// Create a spinful model with explicit atoms:
@@ -204,7 +204,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     ///                  [0.0, 0.0, 1.0]];
     /// let orb = array![[0.0, 0.0, 0.0]];
     /// let atom = vec![Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H)];
-    /// let mut model = Model::<true>::tb_model(3, lat, orb, Some(atom)).unwrap();
+    /// let mut model = Model::<true>::tb_model(lat, orb, Some(atom)).unwrap();
     /// ```
     pub fn tb_model(
         lat: Array2<f64>,
@@ -293,7 +293,6 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     /// use Rustb::atom_struct::*;
     ///
     /// let mut model = Model::<false>::tb_model(
-    ///     3,
     ///     array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
     ///     array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.0]],
     ///     None,
@@ -359,7 +358,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     ///
     /// let lat = array![[1.0]];
     /// let orb = array![[0.0]];
-    /// let mut model = Model::<false>::tb_model(1, lat, orb, None).unwrap();
+    /// let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
     ///
     /// // Nearest-neighbor hopping to the right: <0,0|H|0,R=+1> = -1.0
     /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), None);
@@ -478,7 +477,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     ///
     /// let lat = array![[1.0]];
     /// let orb = array![[0.0]];
-    /// let mut model = Model::<false>::tb_model(1, lat, orb, None).unwrap();
+    /// let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
     ///
     /// // Set real part
     /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), None);
@@ -607,7 +606,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     /// let lat = array![[1.0, 0.0], [0.0, 1.0]];
     /// let orb = array![[0.0, 0.0]];
     /// // Spinful model: norb=1, nsta=2
-    /// let mut model = Model::<true>::tb_model(2, lat, orb, None).unwrap();
+    /// let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
     ///
     /// // Spin-flip hopping: <up,0|H|down,R=(1,0)> = 0.5
     /// model.add_element(
@@ -685,7 +684,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     ///
     /// let lat = array![[1.0, 0.0], [0.0, 1.0]];
     /// let orb = array![[0.0, 0.0], [0.5, 0.5]];
-    /// let mut model = Model::<false>::tb_model(2, lat, orb, None).unwrap();
+    /// let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
     /// model.set_onsite(&arr1(&[1.0, -1.0]), None);
     /// ```
     #[allow(non_snake_case)]
@@ -730,7 +729,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     ///
     /// let lat = array![[1.0]];
     /// let orb = array![[0.0]];
-    /// let mut model = Model::<false>::tb_model(1, lat, orb, None).unwrap();
+    /// let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
     ///
     /// model.set_onsite(&arr1(&[1.0]), None);
     /// model.add_onsite(&arr1(&[0.5]), None);
@@ -779,7 +778,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     ///
     /// let lat = array![[1.0, 0.0], [0.0, 1.0]];
     /// let orb = array![[0.0, 0.0], [0.5, 0.5]];
-    /// let mut model = Model::<false>::tb_model(2, lat, orb, None).unwrap();
+    /// let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
     ///
     /// model.set_onsite_one(1.0, 0, None); // E_0 = 1.0
     /// model.set_onsite_one(-1.0, 1, None); // E_1 = -1.0
@@ -817,8 +816,8 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     /// use ndarray::*;
     /// use Rustb::*;
     ///
-    /// let mut model = Model::<false>::tb_model(
-    ///     1, array![[1.0]], array![[0.0]], None,
+    /// let mut model = Model::<false, 1>::tb_model(
+    ///     array![[1.0]], array![[0.0]], None,
     /// ).unwrap();
     ///
     /// model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), None);
@@ -871,7 +870,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     ///     Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H),
     ///     Atom::new(arr1(&[0.5, 0.5, 0.0]), 1, AtomType::H),
     /// ];
-    /// let mut model = Model::<false>::tb_model(3, lat, orb, Some(atoms)).unwrap();
+    /// let mut model = Model::<false>::tb_model(lat, orb, Some(atoms)).unwrap();
     /// model.shift_to_atom();
     /// ```
     pub fn shift_to_atom(&mut self) {
@@ -1062,7 +1061,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     ///     Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H),
     ///     Atom::new(arr1(&[0.5, 0.5, 0.0]), 1, AtomType::H),
     /// ];
-    /// let mut model = Model::<false>::tb_model(3, lat, orb, Some(atoms)).unwrap();
+    /// let mut model = Model::<false>::tb_model(lat, orb, Some(atoms)).unwrap();
     ///
     /// // Swap atom 0 and atom 1
     /// model.reorder_atom(&vec![1, 0]);
