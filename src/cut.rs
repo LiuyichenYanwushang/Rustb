@@ -120,86 +120,20 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
             }
         }
         let mut new_ham = Array3::<Complex<f64>>::zeros((1, new_nsta, new_nsta));
-        let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), new_nsta, new_nsta));
-        let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r()));
-        if !RMATRIX {
-            // Initialize rmatrix from orbital positions
-            for n in 0..num {
-                for i in 0..new_norb {
-                    for r in 0..self.dim_r() {
-                        new_rmatrix[[0, r, i, i]] = Complex::new(new_orb[[i, r]], 0.0);
-                        if SPIN {
-                            new_rmatrix[[0, r, i + new_norb, i + new_norb]] =
-                                Complex::new(new_orb[[i, r]], 0.0);
-                        }
-                    }
-                }
-            }
-
-            let mut using_ham = self.ham.clone();
-            let mut using_hamR = self.hamR.clone();
-            for n in 0..num {
-                for (i0, (ind_R, ham)) in using_hamR
-                    .outer_iter()
-                    .zip(using_ham.outer_iter())
-                    .enumerate()
-                {
-                    let ind: usize = (ind_R[[dir]] + (n as isize)) as usize;
-                    let mut ind_R = ind_R.to_owned();
-                    let ham = ham.to_owned();
-                    ind_R[[dir]] = 0;
-                    if ind < num {
-                        let mut use_ham = Array2::<Complex<f64>>::zeros((new_nsta, new_nsta));
-                        if SPIN {
-                            let mut s = use_ham.slice_mut(s![
-                                n * self.norb()..(n + 1) * self.norb(),
-                                ind * self.norb()..(ind + 1) * self.norb()
-                            ]);
-                            let ham0 = ham.slice(s![0..self.norb(), 0..self.norb()]);
-                            s.assign(&ham0);
-
-                            let mut s = use_ham.slice_mut(s![
-                                new_norb + n * self.norb()..new_norb + (n + 1) * self.norb(),
-                                ind * self.norb()..(ind + 1) * self.norb()
-                            ]);
-                            let ham0 = ham.slice(s![self.norb()..self.nsta(), 0..self.norb()]);
-                            s.assign(&ham0);
-                            let mut s = use_ham.slice_mut(s![
-                                n * self.norb()..(n + 1) * self.norb(),
-                                new_norb + ind * self.norb()..new_norb + (ind + 1) * self.norb()
-                            ]);
-                            let ham0 = ham.slice(s![0..self.norb(), self.norb()..self.nsta()]);
-                            s.assign(&ham0);
-                            let mut s = use_ham.slice_mut(s![
-                                new_norb + n * self.norb()..new_norb + (n + 1) * self.norb(),
-                                new_norb + ind * self.norb()..new_norb + (ind + 1) * self.norb()
-                            ]);
-                            let ham0 =
-                                ham.slice(s![self.norb()..self.nsta(), self.norb()..self.nsta()]);
-                            s.assign(&ham0);
-                        } else {
-                            let mut s = use_ham.slice_mut(s![
-                                n * self.norb()..(n + 1) * self.norb(),
-                                ind * self.norb()..(ind + 1) * self.norb()
-                            ]);
-                            let ham0 = ham.slice(s![0..self.norb(), 0..self.norb()]);
-                            s.assign(&ham0);
-                        }
-                        if let Some(index) = find_R(&new_hamR, &ind_R) {
-                            new_ham.slice_mut(s![index, .., ..]).add_assign(&use_ham);
-                        } else {
-                            new_ham.push(Axis(0), use_ham.view());
-                            new_hamR.push(Axis(0), ind_R.view());
-                        }
-                    } else {
-                        continue;
-                    }
-                }
-            }
+        let mut new_rmatrix = if RMATRIX {
+            Some(Array4::<Complex<f64>>::zeros((1, self.dim_r(), new_nsta, new_nsta)))
         } else {
+            None
+        };
+        let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r()));
+        {
             let mut using_ham = self.ham.clone();
             let mut using_hamR = self.hamR.clone();
-            let mut using_rmatrix = self.rmatrix.as_ref().unwrap().clone();
+            let using_rmatrix = if RMATRIX {
+                self.rmatrix.as_ref().unwrap().clone()
+            } else {
+                Array4::zeros((using_ham.shape()[0], self.dim_r(), self.nsta(), self.nsta()))
+            };
             for n in 0..num {
                 for (i0, (ind_R, (ham, rmatrix))) in using_hamR
                     .outer_iter()
@@ -305,13 +239,22 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                         }
                         if let Some(index) = find_R(&new_hamR, &ind_R) {
                             new_ham.slice_mut(s![index, .., ..]).add_assign(&use_ham);
-                            new_rmatrix
-                                .slice_mut(s![index, .., .., ..])
-                                .add_assign(&use_rmatrix);
+                            if RMATRIX {
+                                new_rmatrix
+                                    .as_mut()
+                                    .unwrap()
+                                    .slice_mut(s![index, .., .., ..])
+                                    .add_assign(&use_rmatrix);
+                            }
                         } else {
                             new_ham.push(Axis(0), use_ham.view());
                             new_hamR.push(Axis(0), ind_R.view());
-                            new_rmatrix.push(Axis(0), use_rmatrix.view());
+                            if RMATRIX {
+                                new_rmatrix
+                                    .as_mut()
+                                    .unwrap()
+                                    .push(Axis(0), use_rmatrix.view());
+                            }
                         }
                     } else {
                         continue;
@@ -326,7 +269,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
             atoms: new_atom,
             ham: new_ham,
             hamR: new_hamR,
-            rmatrix: Some(new_rmatrix),
+            rmatrix: new_rmatrix,
         };
         Ok(model)
     }
@@ -458,8 +401,6 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                 let n_R = old_model.hamR.len_of(Axis(0));
                 let mut new_ham = Array3::<Complex<f64>>::zeros((n_R, new_nsta, new_nsta));
                 let mut new_hamR = Array2::<isize>::zeros((0, self.dim_r()));
-                let mut new_rmatrix =
-                    Array4::<Complex<f64>>::zeros((n_R, self.dim_r(), new_nsta, new_nsta));
 
                 let mut new_model = Self {
                     lat: old_model.lat.clone(),
@@ -468,7 +409,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                     atoms: new_atom,
                     ham: new_ham,
                     hamR: new_hamR,
-                    rmatrix: Some(new_rmatrix),
+                    rmatrix: None,
                 };
 
                 let norb = new_model.norb();
@@ -499,31 +440,8 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                         }
                     }
                 }
-                let nsta = new_model.nsta();
-                if !RMATRIX {
-                    for r in 0..self.dim_r() {
-                        let mut use_rmatrix = Array2::<Complex<f64>>::zeros((nsta, nsta));
-                        for i in 0..norb {
-                            use_rmatrix[[i, i]] = Complex::new(new_model.orb[[i, r]], 0.0);
-                        }
-                        if SPIN {
-                            for i in 0..norb {
-                                use_rmatrix[[i + norb, i + norb]] =
-                                    Complex::new(new_model.orb[[i, r]], 0.0);
-                            }
-                        }
-                        if new_model.rmatrix.is_none() {
-                            new_model.rmatrix =
-                                Some(Array4::zeros((1, self.dim_r(), nsta, nsta)));
-                        }
-                        new_model
-                            .rmatrix
-                            .as_mut()
-                            .unwrap()
-                            .slice_mut(s![0, r, .., ..])
-                            .assign(&use_rmatrix);
-                    }
-                } else {
+                if RMATRIX {
+                    let nsta = new_model.nsta();
                     let mut new_rmatrix = Array4::<Complex<f64>>::zeros((
                         n_R,
                         self.dim_r(),
@@ -696,30 +614,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                 }
                 new_model.ham = new_ham;
                 new_model.hamR = new_hamR;
-                if !RMATRIX {
-                    for r in 0..self.dim_r() {
-                        let mut use_rmatrix = Array2::<Complex<f64>>::zeros((nsta, nsta));
-                        for i in 0..norb {
-                            use_rmatrix[[i, i]] = Complex::new(new_model.orb[[i, r]], 0.0);
-                        }
-                        if SPIN {
-                            for i in 0..norb {
-                                use_rmatrix[[i + norb, i + norb]] =
-                                    Complex::new(new_model.orb[[i, r]], 0.0);
-                            }
-                        }
-                        if new_model.rmatrix.is_none() {
-                            new_model.rmatrix =
-                                Some(Array4::zeros((1, self.dim_r(), nsta, nsta)));
-                        }
-                        new_model
-                            .rmatrix
-                            .as_mut()
-                            .unwrap()
-                            .slice_mut(s![0, r, .., ..])
-                            .assign(&use_rmatrix);
-                    }
-                } else {
+                if RMATRIX {
                     let mut new_rmatrix = Array4::<Complex<f64>>::zeros((
                         n_R,
                         self.dim_r(),
