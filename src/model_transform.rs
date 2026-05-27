@@ -476,7 +476,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         let use_n_R = use_hamR.len_of(Axis(0));
         let mut gen_rmatrix: bool = false;
-        if !RMATRIX {
+        if !<R as RMatrixData>::HAS_RMATRIX {
             for i in 0..self.dim_r() {
                 for s in 0..norb {
                     new_rmatrix[[0, i, s, s]] = Complex::new(new_orb[[s, i]], 0.0);
@@ -524,13 +524,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                 self.ham[[index, *use_i + self.norb(), *use_j + self.norb()]];
                             for r in 0..self.dim_r() {
                                 use_rmatrix[[r, int_i, int_j]] =
-                                    self.rmatrix.as_ref().unwrap()[[index, r, *use_i, *use_j]];
+                                    self.rmatrix.as_array4()[[index, r, *use_i, *use_j]];
                                 use_rmatrix[[r, int_i + norb, int_j]] =
-                                    self.rmatrix.as_ref().unwrap()[[index, r, *use_i + self.norb(), *use_j]];
+                                    self.rmatrix.as_array4()[[index, r, *use_i + self.norb(), *use_j]];
                                 use_rmatrix[[r, int_i, int_j + norb]] =
-                                    self.rmatrix.as_ref().unwrap()[[index, r, *use_i, *use_j + self.norb()]];
+                                    self.rmatrix.as_array4()[[index, r, *use_i, *use_j + self.norb()]];
                                 use_rmatrix[[r, int_i + norb, int_j + norb]] = self.rmatrix
-                                    .as_ref().unwrap()[[index, r, *use_i + self.norb(), *use_j + self.norb()]];
+                                    .as_array4()[[index, r, *use_i + self.norb(), *use_j + self.norb()]];
                             }
                         } else {
                             continue;
@@ -571,7 +571,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
                             for r in 0..self.dim_r() {
                                 use_rmatrix[[r, int_i, int_j]] =
-                                    self.rmatrix.as_ref().unwrap()[[index, r, *use_i, *use_j]]
+                                    self.rmatrix.as_array4()[[index, r, *use_i, *use_j]]
                             }
                         } else {
                             continue;
@@ -668,7 +668,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             atoms: new_atom,
             ham: new_ham,
             hamR: new_hamR,
-            rmatrix: Some(new_rmatrix),
+            rmatrix: R::from_array(new_rmatrix),
         };
         Ok(model)
     }
