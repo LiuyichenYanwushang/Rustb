@@ -180,6 +180,14 @@ pub enum SpinDirection {
     Z = 3,
 }
 
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM, true> {
+    /// Access the position matrix (only available when RMATRIX=true).
+    #[inline(always)]
+    pub fn rmatrix(&self) -> &Array4<Complex<f64>> {
+        self.rmatrix.as_ref().unwrap()
+    }
+}
+
 // Include Model implementation from submodules
 pub use crate::model_build::*;
 pub use crate::model_physics::*;
