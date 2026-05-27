@@ -119,6 +119,7 @@
 //! That is, we obtain the final expression:
 //! $$\bm A_{mn}=i\f{\bra{\psi_{m\bm k}}\p_{\bm k}H_{\bm k}\ket{\psi_{n\bm k}}}{\ve_{n\bm k}-\ve_{m\bm k}}$$
 
+use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kpoints::{gen_kmesh, gen_krange};
 use crate::math::*;
@@ -525,7 +526,7 @@ pub trait BerryCurvature: Velocity {
     ) -> Array1<f64>;
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> BerryCurvature for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature for Model<SPIN, DIM, R> {
     #[allow(non_snake_case)]
     #[inline(always)]
     fn berry_curvature_n_onek<S: Data<Elem = f64>>(
@@ -739,7 +740,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> BerryCurvature for
 }
 
 #[allow(non_snake_case)]
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Methods for computing conductivity tensors including the anomalous Hall conductivity,
     /// spin Hall conductivity, and nonlinear Hall conductivity.
     ///

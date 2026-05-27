@@ -117,6 +117,7 @@
 //! construction.
 
 use crate::Model;
+use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::find_R;
 use ndarray::prelude::*;
@@ -164,7 +165,7 @@ pub trait MagneticField {
         Self: Sized;
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> MagneticField for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> MagneticField for Model<SPIN, DIM, R> {
     fn add_magnetic_field(
         &self,
         mag_dir: usize,
@@ -212,9 +213,9 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> MagneticField for 
                         let peierls = Complex::new(phase.cos(), phase.sin());
 
                         ham_slice[[i, j]] *= peierls;
-                        if let Some(ref mut rm) = new_rmatrix {
+                        if <R as RMatrixData>::HAS_RMATRIX {
                             for alpha in 0..dim_r {
-                                rm[[i_r, alpha, i, j]] *= peierls;
+                                new_rmatrix.as_array4_mut()[[i_r, alpha, i, j]] *= peierls;
                             }
                         }
                     }

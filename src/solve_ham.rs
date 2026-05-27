@@ -1,6 +1,7 @@
 //! Eigenvalue solver for tight-binding Hamiltonians.
 use crate::Gauge;
 use crate::Model;
+use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
 use ndarray::prelude::*;
@@ -48,7 +49,7 @@ pub trait solve {
         kvec: &ArrayBase<S, Ix2>,
     ) -> (Array2<f64>, Array3<Complex<f64>>);
 }
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> solve for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> solve for Model<SPIN, DIM, R> {
     #[allow(non_snake_case)]
     #[inline(always)]
     fn solve_band_onek<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> Array1<f64> {

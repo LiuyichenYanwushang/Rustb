@@ -30,6 +30,7 @@
 //!   on-site term with a non-zero imaginary part is set.
 
 use crate::Model;
+use crate::model::RMatrixData;
 use crate::SpinDirection;
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{Result, TbError};
@@ -145,7 +146,7 @@ macro_rules! add_hamiltonian {
     }};
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Create a new tight-binding model with the given crystal structure.
     ///
     /// This constructor initializes a [`Model`] with the specified lattice
@@ -210,7 +211,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
         lat: Array2<f64>,
         orb: Array2<f64>,
         atom: Option<Vec<Atom>>,
-    ) -> Result<Model<SPIN, DIM, RMATRIX>> {
+    ) -> Result<Model<SPIN, DIM, R>> {
         let norb: usize = orb.len_of(Axis(0));
         let nsta: usize = if SPIN { 2 * norb } else { norb };
         let mut new_atom_list: Vec<usize> = vec![1];
@@ -251,20 +252,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
         let natom = new_atom.len();
         let ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta));
         let hamR = Array2::<isize>::zeros((1, DIM));
-        let rmatrix = if RMATRIX {
-            let mut r = Array4::<Complex<f64>>::zeros((1, DIM, nsta, nsta));
-            for i in 0..norb {
-                for ri in 0..DIM {
-                    r[[0, ri, i, i]] = Complex::<f64>::from(orb[[i, ri]]);
-                    if SPIN {
-                        r[[0, ri, i + norb, i + norb]] = Complex::<f64>::from(orb[[i, ri]]);
-                    }
-                }
-            }
-            Some(r)
-        } else {
-            None
-        };
+        let rmatrix = R::from_orb(&orb, norb, SPIN, DIM);
         let orb_projection = vec![OrbProj::s; norb];
         let mut model = Model {
             lat,
@@ -851,7 +839,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
     }
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Move the orbital positions to the positions of their parent atoms.
     ///
     /// Sets each orbital's fractional-coordinate position to the
@@ -957,10 +945,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
         let new_ham = new_ham.select(Axis(2), &index);
         self.ham = new_ham;
         //开始操作rmatrix
-        self.rmatrix = self.rmatrix.as_ref().map(|rm| {
-            let new_rm = rm.select(Axis(2), &index);
-            new_rm.select(Axis(3), &index)
-        });
+        self.rmatrix = self.rmatrix.select_axes(Axis(2), &index, Axis(3), &index);
     }
 
     /// Remove entire atoms from the model.
@@ -1032,10 +1017,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
         let new_ham = new_ham.select(Axis(2), &orb_index);
         self.ham = new_ham;
         //开始操作rmatrix
-        self.rmatrix = self.rmatrix.as_ref().map(|rm| {
-            let new_rm = rm.select(Axis(2), &orb_index);
-            new_rm.select(Axis(3), &orb_index)
-        });
+        self.rmatrix = self.rmatrix.select_axes(Axis(2), &orb_index, Axis(3), &orb_index);
     }
 
     /// Reorder atoms and their associated orbitals.
@@ -1123,10 +1105,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
         };
         self.ham = self.ham.select(Axis(1), &new_state_order);
         self.ham = self.ham.select(Axis(2), &new_state_order);
-        self.rmatrix = self.rmatrix.as_ref().map(|rm| {
-            let new_rm = rm.select(Axis(2), &new_state_order);
-            new_rm.select(Axis(3), &new_state_order)
-        });
+        self.rmatrix = self.rmatrix.select_axes(Axis(2), &new_state_order, Axis(3), &new_state_order);
     }
 
     /// Build a supercell by applying an integer transformation matrix `U`.
@@ -1163,7 +1142,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
     /// - [`TbError::InvalidSupercellDet`] if `det(U) <= 0`.
     /// - [`TbError::InvalidSupercellMatrix`] if `U` contains non-integer
     ///   entries.
-    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM, RMATRIX>> {
+    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM, R>> {
         if self.dim_r() != U.len_of(Axis(0)) {
             return Err(TbError::TransformationMatrixDimMismatch {
                 expected: self.dim_r(),
@@ -1410,8 +1389,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
             _ => todo!(),
         }
         let use_n_R = use_hamR.len_of(Axis(0));
-        let mut gen_rmatrix: bool = false;
-        if !RMATRIX || self.rmatrix.is_none() {
+        if !<R as RMatrixData>::HAS_RMATRIX {
             for i in 0..self.dim_r() {
                 for s in 0..norb {
                     new_rmatrix[[0, i, s, s]] = Complex::new(new_orb[[s, i]], 0.0);
@@ -1425,10 +1403,8 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
                     }
                 }
             }
-        } else {
-            gen_rmatrix = true;
         }
-        if SPIN && gen_rmatrix {
+        if SPIN && R::HAS_RMATRIX {
             for (R, use_R) in use_hamR.outer_iter().enumerate() {
                 let mut add_R: bool = false;
                 let mut useham = Array2::<Complex<f64>>::zeros((nsta, nsta));
@@ -1457,7 +1433,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
                             useham[[int_i + norb, int_j + norb]] =
                                 self.ham[[index, *use_i + self.norb(), *use_j + self.norb()]];
                             for r in 0..self.dim_r() {
-                                let rmat = self.rmatrix.as_ref().unwrap();
+                                let rmat = self.rmatrix.as_array4();
                                 use_rmatrix[[r, int_i, int_j]] =
                                     rmat[[index, r, *use_i, *use_j]];
                                 use_rmatrix[[r, int_i + norb, int_j]] =
@@ -1483,7 +1459,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
                         .assign(&use_rmatrix);
                 }
             }
-        } else if gen_rmatrix && !SPIN {
+        } else if R::HAS_RMATRIX && !SPIN {
             for (R, use_R) in use_hamR.outer_iter().enumerate() {
                 let mut add_R: bool = false;
                 let mut useham = Array2::<Complex<f64>>::zeros((norb, norb));
@@ -1506,8 +1482,9 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
                             add_R = true;
                             useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
                             for r in 0..self.dim_r() {
+                                let rmat = self.rmatrix.as_array4();
                                 use_rmatrix[[r, int_i, int_j]] =
-                                    self.rmatrix.as_ref().unwrap()[[index, r, *use_i, *use_j]]
+                                    rmat[[index, r, *use_i, *use_j]]
                             }
                         } else {
                             continue;
@@ -1615,7 +1592,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
             atoms: new_atom,
             ham: new_ham,
             hamR: new_hamR,
-            rmatrix: if RMATRIX { Some(new_rmatrix) } else { None },
+            rmatrix: R::from_array(new_rmatrix),
         };
         Ok(model)
     }

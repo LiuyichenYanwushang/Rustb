@@ -1,6 +1,7 @@
 //! Physics calculation methods for tight-binding models
 use crate::Gauge;
 use crate::Model;
+use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kpoints::gen_kmesh;
 use crate::solve_ham::solve;
@@ -10,7 +11,7 @@ use num_complex::Complex;
 use rayon::prelude::*;
 use std::f64::consts::PI;
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     #[allow(non_snake_case)]
     #[inline(always)]
     #[cfg_attr(doc, katexit::katexit)]

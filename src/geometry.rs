@@ -41,6 +41,7 @@
 //! let wcc = model.wannier_centre(&occ, &k_start, &dir1, &dir2, nk1, nk2);
 //! ```
 
+use crate::RMatrixData;
 use crate::math::comm;
 use crate::solve_ham::solve;
 use crate::{Model, gen_kmesh};
@@ -160,7 +161,7 @@ pub trait Berry {
     ) -> Array2<f64>;
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Berry for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, DIM, R> {
     fn berry_loop<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> Array1<f64>
     where
         S: Data<Elem = f64>,

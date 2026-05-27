@@ -7,6 +7,7 @@
 //!   (3D models only)
 
 use crate::Model;
+use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kplane::gen_kplane;
 use crate::kpoints::gen_kmesh;
@@ -419,7 +420,7 @@ pub trait FermiSurfacePlane: solve {
 
 // ── Trait implementations for Model ───────────────────────────────────
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> FermiSurface for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> FermiSurface for Model<SPIN, DIM, R> {
     fn show_fermi_surface(&self, k_mesh: &Array1<usize>, e_fermi: f64, name: &str) -> Result<()> {
         match self.dim_r() {
             1 => Err(TbError::NotImplemented(
@@ -498,7 +499,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> FermiSurface for M
     }
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> FermiSurfacePlane for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> FermiSurfacePlane for Model<SPIN, DIM, R> {
     fn show_fermi_surface_plane(
         &self,
         origin: &Array1<f64>,

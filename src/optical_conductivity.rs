@@ -15,7 +15,7 @@ use crate::math::*;
 use crate::phy_const::mu_B;
 use crate::solve_ham::solve;
 use crate::velocity::*;
-use crate::{Gauge, Model};
+use crate::{Gauge, Model, RMatrixData};
 use ndarray::linalg::kron;
 use ndarray::prelude::*;
 use ndarray::*;
@@ -38,7 +38,7 @@ pub trait OpticalGeometry: Velocity {
     ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>, Array1<f64>);
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> OpticalGeometry for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OpticalGeometry for Model<SPIN, DIM, R> {
     #[inline(always)]
     fn optical_geometry_n_onek<S: Data<Elem = f64>>(
         &self,

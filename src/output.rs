@@ -10,6 +10,7 @@
 //!
 //!POSCAR format
 use crate::Model;
+use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kpath::*;
 use crate::kpoints::gen_kmesh;
@@ -41,7 +42,7 @@ pub trait OutPut {
     -> Result<()>;
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> OutPut for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, DIM, R> {
     fn output_hr(&self, path: &str, seedname: &str) {
         let n_R = self.hamR.nrows(); //length of hamR
         let mut hr_name = String::new();

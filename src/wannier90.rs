@@ -2,7 +2,7 @@
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{Result, TbError};
 use crate::math::comm;
-use crate::{Gauge, Model, SpinDirection, find_R};
+use crate::{Gauge, HasRMatrix, Model, NoRMatrix, RMatrixData, SpinDirection, find_R};
 use ndarray::prelude::*;
 use ndarray_linalg::conjugate;
 use ndarray_linalg::*;
@@ -14,7 +14,7 @@ pub trait Wannier90 {
         Self: Sized;
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Wannier90 for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPIN, DIM, R> {
     #[allow(non_snake_case)]
     fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Self> {
         // This function reads tight-binding files from Wannier90.
@@ -542,7 +542,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Wannier90 for Mode
         };
         //开始尝试读取 _r.dat 文件
         let mut have_r = false;
-        let mut rmatrix = if RMATRIX {
+        let mut rmatrix = if R::HAS_RMATRIX {
             let mut r_path = file_path.clone();
             r_path.push_str("_r.dat");
             let path = Path::new(&r_path);
@@ -647,7 +647,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Wannier90 for Mode
             } else {
                 return Err(TbError::FileCreation {
                     path: r_path.clone(),
-                    message: "RMATRIX=true but _r.dat file not found".to_string(),
+                    message: "R::HAS_RMATRIX=true but _r.dat file not found".to_string(),
                 });
             }
         } else {
@@ -942,13 +942,13 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Wannier90 for Mode
             atoms: atom,
             ham,
             hamR,
-            rmatrix: if RMATRIX { Some(rmatrix) } else { None },
+            rmatrix: R::from_array(rmatrix),
         };
         Ok(model)
     }
 }
 
-impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM, true> {
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM, HasRMatrix> {
     /// Load a tight-binding model from Wannier90 files including position matrix elements.
     ///
     /// This is a convenience wrapper around [`Wannier90::from_hr`] that requires

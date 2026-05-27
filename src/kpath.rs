@@ -1,4 +1,5 @@
 use crate::Model;
+use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use ndarray::prelude::*;
 use ndarray::*;
@@ -16,7 +17,7 @@ pub trait Kpath {
     ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)>;
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Kpath for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Kpath for Model<SPIN, DIM, R> {
     fn k_path(
         &self,
         path: &Array2<f64>,

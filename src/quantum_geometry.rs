@@ -35,7 +35,7 @@
 use crate::error::Result;
 use crate::kpoints::gen_kmesh;
 use crate::velocity::*;
-use crate::{Gauge, Model};
+use crate::{Gauge, Model, RMatrixData};
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::*;
@@ -106,7 +106,7 @@ pub trait QuantumGeometry: Velocity {
     ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>, Array2<f64>);
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> QuantumGeometry for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry for Model<SPIN, DIM, R> {
     #[inline(always)]
     fn quantum_geometry_n_onek<S: Data<Elem = f64>>(
         &self,
@@ -218,7 +218,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> QuantumGeometry fo
 
 // ── Fermi‑Dirac‑weighted quantum geometry over a k‑mesh ─────────────────
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Fermi–Dirac weighted quantum metric and Berry curvature as a function of
     /// chemical potential.
     ///

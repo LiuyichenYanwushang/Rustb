@@ -22,6 +22,8 @@
 
 use crate::Atom;
 use crate::Model;
+use crate::NoRMatrix;
+use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::find_R;
 use ndarray::prelude::*;
@@ -78,8 +80,8 @@ pub trait CutModel {
         Self: Sized;
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model<SPIN, DIM, RMATRIX> {
-    fn cut_piece(&self, num: usize, dir: usize) -> Result<Model<SPIN, DIM, RMATRIX>> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> CutModel for Model<SPIN, DIM, R> {
+    fn cut_piece(&self, num: usize, dir: usize) -> Result<Model<SPIN, DIM, R>> {
         if num < 1 {
             return Err(TbError::InvalidSupercellSize(num));
         }
@@ -120,17 +122,13 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
             }
         }
         let mut new_ham = Array3::<Complex<f64>>::zeros((1, new_nsta, new_nsta));
-        let mut new_rmatrix = if RMATRIX {
-            Some(Array4::<Complex<f64>>::zeros((1, self.dim_r(), new_nsta, new_nsta)))
-        } else {
-            None
-        };
+        let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), new_nsta, new_nsta));
         let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r()));
         {
             let mut using_ham = self.ham.clone();
             let mut using_hamR = self.hamR.clone();
-            let using_rmatrix = if RMATRIX {
-                self.rmatrix.as_ref().unwrap().clone()
+            let using_rmatrix = if <R as RMatrixData>::HAS_RMATRIX {
+                self.rmatrix.as_array4().clone()
             } else {
                 Array4::zeros((using_ham.shape()[0], self.dim_r(), self.nsta(), self.nsta()))
             };
@@ -185,7 +183,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                         // Handle rmatrix
                         let mut use_rmatrix =
                             Array3::<Complex<f64>>::zeros((self.dim_r(), new_nsta, new_nsta));
-                        if RMATRIX {
+                        if <R as RMatrixData>::HAS_RMATRIX {
                             if SPIN {
                                 let mut s = use_rmatrix.slice_mut(s![
                                     ..,
@@ -239,20 +237,16 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                         }
                         if let Some(index) = find_R(&new_hamR, &ind_R) {
                             new_ham.slice_mut(s![index, .., ..]).add_assign(&use_ham);
-                            if RMATRIX {
+                            if <R as RMatrixData>::HAS_RMATRIX {
                                 new_rmatrix
-                                    .as_mut()
-                                    .unwrap()
                                     .slice_mut(s![index, .., .., ..])
                                     .add_assign(&use_rmatrix);
                             }
                         } else {
                             new_ham.push(Axis(0), use_ham.view());
                             new_hamR.push(Axis(0), ind_R.view());
-                            if RMATRIX {
+                            if <R as RMatrixData>::HAS_RMATRIX {
                                 new_rmatrix
-                                    .as_mut()
-                                    .unwrap()
                                     .push(Axis(0), use_rmatrix.view());
                             }
                         }
@@ -269,7 +263,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
             atoms: new_atom,
             ham: new_ham,
             hamR: new_hamR,
-            rmatrix: new_rmatrix,
+            rmatrix: R::from_array(new_rmatrix),
         };
         Ok(model)
     }
@@ -279,7 +273,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
         num: usize,
         shape: usize,
         dir: Option<Vec<usize>>,
-    ) -> Result<Model<SPIN, DIM, RMATRIX>> {
+    ) -> Result<Model<SPIN, DIM, R>> {
         match self.dim_r() {
             3 => {
                 let dir = if dir == None {
@@ -409,7 +403,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                     atoms: new_atom,
                     ham: new_ham,
                     hamR: new_hamR,
-                    rmatrix: None,
+                    rmatrix: R::from_array(Array4::zeros((n_R, self.dim_r(), new_nsta, new_nsta))),
                 };
 
                 let norb = new_model.norb();
@@ -440,7 +434,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                         }
                     }
                 }
-                if RMATRIX {
+                if <R as RMatrixData>::HAS_RMATRIX {
                     let nsta = new_model.nsta();
                     let mut new_rmatrix = Array4::<Complex<f64>>::zeros((
                         n_R,
@@ -455,13 +449,13 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                                 for (i, use_i) in use_orb_item.iter().enumerate() {
                                     for (j, use_j) in use_orb_item.iter().enumerate() {
                                         new_rmatrix[[r, dim, i, j]] =
-                                            old_model.rmatrix.as_ref().unwrap()[[r, dim, *use_i, *use_j]];
+                                            old_model.rmatrix.as_array4()[[r, dim, *use_i, *use_j]];
                                         new_rmatrix[[r, dim, i + norb, j + norb]] = old_model
-                                            .rmatrix.as_ref().unwrap()[[r, dim, *use_i + norb2, *use_j + norb2]];
+                                            .rmatrix.as_array4()[[r, dim, *use_i + norb2, *use_j + norb2]];
                                         new_rmatrix[[r, dim, i + norb, j]] =
-                                            old_model.rmatrix.as_ref().unwrap()[[r, dim, *use_i + norb2, *use_j]];
+                                            old_model.rmatrix.as_array4()[[r, dim, *use_i + norb2, *use_j]];
                                         new_rmatrix[[r, dim, i, j + norb]] =
-                                            old_model.rmatrix.as_ref().unwrap()[[r, dim, *use_i, *use_j + norb2]];
+                                            old_model.rmatrix.as_array4()[[r, dim, *use_i, *use_j + norb2]];
                                     }
                                 }
                             }
@@ -472,13 +466,13 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                                 for (i, use_i) in use_orb_item.iter().enumerate() {
                                     for (j, use_j) in use_orb_item.iter().enumerate() {
                                         new_rmatrix[[r, dim, i, j]] =
-                                            old_model.rmatrix.as_ref().unwrap()[[r, dim, *use_i, *use_j]];
+                                            old_model.rmatrix.as_array4()[[r, dim, *use_i, *use_j]];
                                     }
                                 }
                             }
                         }
                     }
-                    new_model.rmatrix = Some(new_rmatrix);
+                    new_model.rmatrix = R::from_array(new_rmatrix);
                 }
                 return Ok(new_model);
             }
@@ -585,7 +579,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                     new_orb_proj.push(old_model.orb_projection[*use_i])
                 }
                 let mut new_model =
-                    Model::<SPIN, DIM, RMATRIX>::tb_model(old_model.lat.clone(), new_orb, Some(new_atom))?;
+                    Self::tb_model(old_model.lat.clone(), new_orb, Some(new_atom))?;
                 new_model.orb_projection = new_orb_proj;
                 let n_R = new_model.hamR.len_of(Axis(0));
                 let mut new_ham =
@@ -614,7 +608,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                 }
                 new_model.ham = new_ham;
                 new_model.hamR = new_hamR;
-                if RMATRIX {
+                if <R as RMatrixData>::HAS_RMATRIX {
                     let mut new_rmatrix = Array4::<Complex<f64>>::zeros((
                         n_R,
                         self.dim_r(),
@@ -627,13 +621,13 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                             for (i, use_i) in use_orb_item.iter().enumerate() {
                                 for (j, use_j) in use_orb_item.iter().enumerate() {
                                     new_rmatrix[[0, dim, i, j]] =
-                                        old_model.rmatrix.as_ref().unwrap()[[0, dim, *use_i, *use_j]];
+                                        old_model.rmatrix.as_array4()[[0, dim, *use_i, *use_j]];
                                     new_rmatrix[[0, dim, i + norb, j + norb]] =
-                                        old_model.rmatrix.as_ref().unwrap()[[0, dim, *use_i + norb2, *use_j + norb2]];
+                                        old_model.rmatrix.as_array4()[[0, dim, *use_i + norb2, *use_j + norb2]];
                                     new_rmatrix[[0, dim, i + norb, j]] =
-                                        old_model.rmatrix.as_ref().unwrap()[[0, dim, *use_i + norb2, *use_j]];
+                                        old_model.rmatrix.as_array4()[[0, dim, *use_i + norb2, *use_j]];
                                     new_rmatrix[[0, dim, i, j + norb]] =
-                                        old_model.rmatrix.as_ref().unwrap()[[0, dim, *use_i, *use_j + norb2]];
+                                        old_model.rmatrix.as_array4()[[0, dim, *use_i, *use_j + norb2]];
                                 }
                             }
                         }
@@ -642,12 +636,12 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> CutModel for Model
                             for (i, use_i) in use_orb_item.iter().enumerate() {
                                 for (j, use_j) in use_orb_item.iter().enumerate() {
                                     new_rmatrix[[0, dim, i, j]] =
-                                        old_model.rmatrix.as_ref().unwrap()[[0, dim, *use_i, *use_j]];
+                                        old_model.rmatrix.as_array4()[[0, dim, *use_i, *use_j]];
                                 }
                             }
                         }
                     }
-                    new_model.rmatrix = Some(new_rmatrix);
+                    new_model.rmatrix = R::from_array(new_rmatrix);
                 }
                 return Ok(new_model);
             }

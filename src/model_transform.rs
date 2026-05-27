@@ -15,6 +15,7 @@
 //! ```
 
 use crate::Model;
+use crate::RMatrixData;
 use crate::atom_struct::Atom;
 use crate::error::{Result, TbError};
 use crate::model_utils::find_R;
@@ -23,7 +24,7 @@ use ndarray::*;
 use ndarray_linalg::{Determinant, Inverse};
 use num_complex::Complex;
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Shift all orbital positions onto their corresponding atomic positions.
     pub fn shift_to_atom(&mut self) {
         let mut a = 0;
@@ -94,9 +95,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
         let new_ham = new_ham.select(Axis(2), &index);
         self.ham = new_ham;
         // Update rmatrix
-        let new_rmatrix = self.rmatrix.as_ref().unwrap().select(Axis(2), &index);
-        let new_rmatrix = new_rmatrix.select(Axis(3), &index);
-        self.rmatrix = Some(new_rmatrix);
+        self.rmatrix = self.rmatrix.select_axes(Axis(2), &index, Axis(3), &index);
     }
 
     /// Remove specified atoms (and their orbitals) from the model.
@@ -163,9 +162,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
         let new_ham = new_ham.select(Axis(2), &orb_index);
         self.ham = new_ham;
         // Update rmatrix
-        let new_rmatrix = self.rmatrix.as_ref().unwrap().select(Axis(2), &orb_index);
-        let new_rmatrix = new_rmatrix.select(Axis(3), &orb_index);
-        self.rmatrix = Some(new_rmatrix);
+        self.rmatrix = self.rmatrix.select_axes(Axis(2), &orb_index, Axis(3), &orb_index);
     }
 
     /// Reorder atoms and their orbitals.
@@ -224,9 +221,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
         };
         self.ham = self.ham.select(Axis(1), &new_state_order);
         self.ham = self.ham.select(Axis(2), &new_state_order);
-        let new_rmatrix = self.rmatrix.as_ref().unwrap().select(Axis(2), &new_state_order);
-        let new_rmatrix = new_rmatrix.select(Axis(3), &new_state_order);
-        self.rmatrix = Some(new_rmatrix);
+        self.rmatrix = self.rmatrix.select_axes(Axis(2), &new_state_order, Axis(3), &new_state_order);
     }
 
     /// Build a supercell by applying an integer transformation matrix `U`.
@@ -257,7 +252,7 @@ impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, R
     /// let U = array![[2.0, 0.0], [0.0, 2.0]];
     /// let supercell = model.make_supercell(&U).unwrap();
     /// ```
-    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM, RMATRIX>> {
+    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM, R>> {
         if self.dim_r() != U.len_of(Axis(0)) {
             return Err(TbError::TransformationMatrixDimMismatch {
                 expected: self.dim_r(),

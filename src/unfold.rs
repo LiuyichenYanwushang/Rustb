@@ -1,4 +1,5 @@
 use crate::Model;
+use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::output::*;
 use crate::solve_ham::*;
@@ -69,7 +70,7 @@ pub trait Unfold {
     ) -> Result<Array2<f64>>;
 }
 
-impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Unfold for Model<SPIN, DIM, RMATRIX> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, DIM, R> {
     fn unfold(
         &self,
         U: &Array2<f64>,
