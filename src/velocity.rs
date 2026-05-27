@@ -1,6 +1,6 @@
 //! Velocity operator $\mathbf{v}(\mathbf{k}) = \nabla_{\mathbf{k}} H(\mathbf{k})$ for tight-binding models.
 //!
-//! Provides the [`Velocity`] trait and its implementation for [`Model`],
+//! Provides the [`Velocity`] trait and its implementation for [`Model`]<SPIN, DIM, R>,
 //! computing matrix elements $\bra{m\mathbf{k}} \partial_\alpha H_{\mathbf{k}} \ket{n\mathbf{k}}$
 //! at a given k-point. Essential for Berry curvature, optical conductivity,
 //! and other transport calculations.
@@ -155,8 +155,9 @@
 //! $$
 //!
 //! The position matrix elements $\mathbf{r}_{mn}(\mathbf{R})$ are provided by Wannier90
-//! (setting `write_rmn = true`). If unavailable, the commutator term $[H(\mathbf{k}), \mathcal{A}_{\mathbf{k},\alpha}]$
-//! is omitted.
+//! (setting `write_rmn = true`). Their availability is checked at compile time via
+//! `<R as RMatrixData>::HAS_RMATRIX`. For [`NoRMatrix`] (the default), the commutator
+//! term $[H(\mathbf{k}), \mathcal{A}_{\mathbf{k},\alpha}]$ is omitted.
 //!
 //! # Implementation notes
 //!
@@ -204,6 +205,10 @@ use std::ops::AddAssign;
 ///
 /// Note this is the **full velocity operator matrix** in the Bloch basis,
 /// not just the band-diagonal group velocity $\partial E_n/\partial\mathbf{k}$.
+///
+/// In the [`Model`]<SPIN, DIM, R> implementation, the position-matrix
+/// commutator term $i[H, \mathcal{A}]$ is included only when
+/// `<R as RMatrixData>::HAS_RMATRIX` is `true`, checked at compile time.
 ///
 /// # Returns
 ///

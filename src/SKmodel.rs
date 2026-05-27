@@ -54,6 +54,10 @@ pub struct SkParams {
 /// The const generic `SPIN` (default `false`) controls whether the
 /// resulting [`Model`] will be spinful. When `SPIN = true`, the orbital
 /// basis is doubled with a Pauli-matrix structure.
+///
+/// The const generic `DIM` (default `3`) is the spatial dimension (1, 2, or 3).
+/// It controls the shape of R-vectors and orbital position arrays, and
+/// the component lookup (l, m, n) in Slater-Koster integral evaluation.
 #[derive(Debug, Clone)]
 pub struct SlaterKosterModel<const SPIN: bool = false, const DIM: usize = 3> {
     pub lat: Array2<f64>,

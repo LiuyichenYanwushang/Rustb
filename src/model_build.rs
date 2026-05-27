@@ -325,9 +325,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// decoration:
     ///
     /// - `None` (0): `tmp * sigma_0` (identity)
-    /// - [`SpinDirection::x`] (1): `tmp * sigma_x`
-    /// - [`SpinDirection::y`] (2): `tmp * sigma_y`
-    /// - [`SpinDirection::z`] (3): `tmp * sigma_z`
+    /// - [`SpinDirection::X`] (1): `tmp * sigma_x`
+    /// - [`SpinDirection::Y`] (2): `tmp * sigma_y`
+    /// - [`SpinDirection::Z`] (3): `tmp * sigma_z`
     ///
     /// For a spinless model (`Model<false>`), `pauli` is silently ignored.
     ///
@@ -335,12 +335,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `tmp` - Hopping amplitude, `f64` (real) or `Complex<f64>`.
     /// * `ind_i` - Row orbital index (0-based, in the spinless basis).
     /// * `ind_j` - Column orbital index (0-based, in the spinless basis).
-    /// * `R` - Lattice vector to the target cell. Must have length `dim_r`.
+    /// * `R` - Lattice vector to the target cell. Must have length `DIM`.
     /// * `pauli` - Pauli matrix decoration. Accepts `u8`, `usize`, or
     ///   [`SpinDirection`].
     ///
     /// # Panics
-    /// Panics if `R.len() != dim_r`, if `ind_i` or `ind_j` is out of bounds,
+    /// Panics if `R.len() != DIM`, if `ind_i` or `ind_j` is out of bounds,
     /// or if an on-site term (`R=0`, `i=j`) has a non-zero imaginary part.
     ///
     /// # Examples
@@ -584,7 +584,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// `Result<()>` with an error on invalid input.
     ///
     /// # Errors
-    /// - [`TbError::RVectorLengthError`] if `R.len() != dim_r`.
+    /// - [`TbError::RVectorLengthError`] if `R.len() != DIM`.
     /// - [`TbError::DimensionMismatch`] if `ind_i` or `ind_j` >= `nsta()`.
     /// - [`TbError::OnsiteHoppingMustBeReal`] if an on-site term has a
     ///   non-zero imaginary part.
@@ -663,7 +663,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// # Arguments
     /// * `tmp` - Array of length `norb` with on-site energies (real).
-    /// * `pauli` - Pauli matrix decoration. Use [`SpinDirection::None`] for
+    /// * `pauli` - Pauli matrix decoration. Use `None` for
     ///   spin-independent on-site energies.
     ///
     /// # Panics
@@ -801,7 +801,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///   the hopping was originally set).
     ///
     /// # Panics
-    /// Panics if `R.len() != dim_r` or orbital indices are out of bounds.
+    /// Panics if `R.len() != DIM` or orbital indices are out of bounds.
     ///
     /// # Examples
     ///
@@ -1131,7 +1131,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// 4. Position matrix elements are also mapped if present.
     ///
     /// # Arguments
-    /// * `U` - A `dim_r x dim_r` integer matrix with `det(U) > 0`.
+    /// * `U` - A `DIM x DIM` integer matrix with `det(U) > 0`.
     ///
     /// # Returns
     /// `Result<Model>` containing the supercell model.

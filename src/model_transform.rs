@@ -232,7 +232,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// # Parameters
     ///
-    /// - `U`: the `dim_r x dim_r` integer transformation matrix.
+    /// - `U`: the `DIM x DIM` integer transformation matrix.
     ///
     /// # Returns
     ///

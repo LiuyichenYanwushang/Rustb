@@ -13,7 +13,7 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`model`] | Central [`Model`] struct with lattice, orbital, and hopping data, plus enums
+//! | [`model`] | Central [`Model`]<SPIN, DIM, R> struct with lattice, orbital, and hopping data, plus enums
 //! |   [`Gauge`], [`Dimension`], [`SpinDirection`] |
 //! | [`atom_struct`] | [`Atom`] and [`OrbProj`] types for describing atomic sites and orbital
 //! |   projections |
