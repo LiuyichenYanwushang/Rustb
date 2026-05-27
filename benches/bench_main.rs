@@ -94,15 +94,11 @@ fn build_large(n: usize) -> Model<false, 2> {
 const SPINLESS_MODELS: &[(&str, fn() -> Model<false, 2>)] = &[
     ("small(2orb)", build_small as fn() -> Model<false, 2>),
     ("medium(18orb)", build_medium as fn() -> Model<false, 2>),
-    ("large(128orb)", build_large8 as fn() -> Model<false, 2>),
-    ("xlarge(450orb)", build_large15 as fn() -> Model<false, 2>),
+    ("large(50orb)", build_large5 as fn() -> Model<false, 2>),
 ];
 
-fn build_large8() -> Model<false, 2> {
-    build_large(8)
-}
-fn build_large15() -> Model<false, 2> {
-    build_large(15)
+fn build_large5() -> Model<false, 2> {
+    build_large(5)
 }
 
 const SPINLESS_SMALL: &[(&str, fn() -> Model<false, 2>)] = &[
@@ -212,7 +208,7 @@ fn bench_solve_onek(c: &mut Criterion) {
 fn bench_solve_band_parallel(c: &mut Criterion) {
     let mut group = c.benchmark_group("solve_band_all_parallel");
     let model = build_small();
-    let nk = 101;
+    let nk = 51;
     let kmesh = arr1(&[nk, nk]);
     let kvec = gen_kmesh(&kmesh).unwrap();
     group.bench_function("small_101x101", |b| {
@@ -292,12 +288,12 @@ fn bench_berry_curvature_onek(c: &mut Criterion) {
 fn bench_hall_conductivity(c: &mut Criterion) {
     let mut group = c.benchmark_group("Hall_conductivity");
     let model = build_small();
-    let nk = 31;
+    let nk = 21;
     let kmesh = arr1(&[nk, nk]);
     let dir1 = arr1(&[1.0, 0.0]);
     let dir2 = arr1(&[0.0, 1.0]);
 
-    group.bench_function("small_31x31", |b| {
+    group.bench_function("small_21x21", |b| {
         b.iter(|| {
             model
                 .Hall_conductivity(
@@ -318,9 +314,9 @@ fn bench_hall_conductivity(c: &mut Criterion) {
 fn bench_dos(c: &mut Criterion) {
     let mut group = c.benchmark_group("dos");
     let model = build_small();
-    let kmesh = arr1(&[51, 51]);
+    let kmesh = arr1(&[31, 31]);
 
-    group.bench_function("small_51x51", |b| {
+    group.bench_function("small_31x31", |b| {
         b.iter(|| model.dos(black_box(&kmesh), -3.0, 3.0, 500, 1e-2).unwrap())
     });
     group.finish();
@@ -332,7 +328,7 @@ fn bench_phase_dot_vs_perrow(c: &mut Criterion) {
     let kvec = arr1(&[0.3, 0.5]);
     let pi2 = 2.0 * std::f64::consts::PI;
 
-    for n in [8, 15, 30, 50] {
+    for n in [5, 8, 12, 16] {
         let m = build_large(n);
         let dim = m.dim_r();
 

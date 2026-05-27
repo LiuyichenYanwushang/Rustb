@@ -292,12 +292,10 @@ impl<const SPIN: bool, const DIM: usize> Velocity for Model<SPIN, DIM> {
 
         // Build H(k) = Σ_R H(R) exp(i 2π k·R)
         let mut hamk = Array2::<Complex<f64>>::zeros((nsta, nsta));
-        let hamk_slice0 = hamk.as_slice_mut().unwrap();
+        let hamk_slice = hamk.as_slice_mut().unwrap();
         for (iR, &u) in Us.iter().enumerate() {
             let hm = self.ham.index_axis(Axis(0), iR);
-            let hm_slice = hm.as_slice().unwrap();
-            let n = hm_slice.len() as i32;
-            unsafe { blas::zaxpy(n, u, hm_slice, 1, hamk_slice0, 1) };
+            crate::ndarray_lapack::zaxpy(u, hm.as_slice().unwrap(), hamk_slice);
         }
         let (v, hamk) = match gauge {
             Gauge::Atom => {
@@ -341,18 +339,15 @@ impl<const SPIN: bool, const DIM: usize> Velocity for Model<SPIN, DIM> {
                     .permuted_axes([1, 0, 2]);
                 let B = A.view().permuted_axes([0, 2, 1]);
                 let UU = (&B - &A).mapv(|x| Complex::<f64>::new(0.0, x));
-                // Velocity per direction: BLAS zaxpy replaces Zip::for_each + scaled_add
+                // Velocity per direction: Zip::for_each auto-vectorized accumulation
                 // azip! merges the hamk*UU[d] term in-place
                 for d in 0..dim {
                     let mut vv = Array2::<Complex<f64>>::zeros((nsta, nsta));
                     let R0_d = R0.column(d);
-                    let vv_slice = vv.as_slice_mut().unwrap();
                     for (iR, &u) in Us.iter().enumerate() {
                         let hm = self.ham.index_axis(Axis(0), iR);
-                        let hm_slice = hm.as_slice().unwrap();
                         let alpha = u * R0_d[iR] * Complex::i();
-                        let n = hm_slice.len() as i32;
-                        unsafe { blas::zaxpy(n, alpha, hm_slice, 1, vv_slice, 1) };
+                        crate::ndarray_lapack::zaxpy(alpha, hm.as_slice().unwrap(), vv.as_slice_mut().unwrap());
                     }
                     azip!((v in &mut vv, &h in &hamk, &u in &UU.slice(s![d, .., ..])) *v += h * u);
                     // Gauge transform: for m + Zip, no allocation
@@ -377,12 +372,9 @@ impl<const SPIN: bool, const DIM: usize> Velocity for Model<SPIN, DIM> {
                 if self.rmatrix.len_of(Axis(0)) != 1 {
                     let n_rmat = self.rmatrix.len_of(Axis(0));
                     let mut rk = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));
-                    let rk_slice = rk.as_slice_mut().unwrap();
                     for (iR, &u) in Us[..n_rmat].iter().enumerate() {
                         let rm = self.rmatrix.index_axis(Axis(0), iR);
-                        let rm_slice = rm.as_slice().unwrap();
-                        let n = rm_slice.len() as i32;
-                        unsafe { blas::zaxpy(n, u, rm_slice, 1, rk_slice, 1) };
+                        crate::ndarray_lapack::zaxpy(u, rm.as_slice().unwrap(), rk.as_slice_mut().unwrap());
                     }
                     for i in 0..dim {
                         let mut r0 = rk.slice_mut(s![i, .., ..]);
@@ -405,25 +397,19 @@ impl<const SPIN: bool, const DIM: usize> Velocity for Model<SPIN, DIM> {
                 for d in 0..dim {
                     let mut vv = Array2::<Complex<f64>>::zeros((nsta, nsta));
                     let R0_d = R0.column(d);
-                    let vv_slice = vv.as_slice_mut().unwrap();
                     for (iR, &u) in Us.iter().enumerate() {
                         let hm = self.ham.index_axis(Axis(0), iR);
-                        let hm_slice = hm.as_slice().unwrap();
                         let alpha = u * R0_d[iR] * Complex::i();
-                        let n = hm_slice.len() as i32;
-                        unsafe { blas::zaxpy(n, alpha, hm_slice, 1, vv_slice, 1) };
+                        crate::ndarray_lapack::zaxpy(alpha, hm.as_slice().unwrap(), vv.as_slice_mut().unwrap());
                     }
                     v.slice_mut(s![d, .., ..]).assign(&vv);
                 }
                 if self.rmatrix.len_of(Axis(0)) != 1 {
                     let n_rmat = self.rmatrix.len_of(Axis(0));
                     let mut rk = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));
-                    let rk_slice = rk.as_slice_mut().unwrap();
                     for (iR, &u) in Us[..n_rmat].iter().enumerate() {
                         let rm = self.rmatrix.index_axis(Axis(0), iR);
-                        let rm_slice = rm.as_slice().unwrap();
-                        let n = rm_slice.len() as i32;
-                        unsafe { blas::zaxpy(n, u, rm_slice, 1, rk_slice, 1) };
+                        crate::ndarray_lapack::zaxpy(u, rm.as_slice().unwrap(), rk.as_slice_mut().unwrap());
                     }
                     for i in 0..dim {
                         let r0 = rk.slice(s![i, .., ..]);

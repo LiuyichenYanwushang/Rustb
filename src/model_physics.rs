@@ -88,13 +88,10 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
             _ => unreachable!(),
         };
 
-        // BLAS zaxpy: hamk += u * hm[R] for each R, replaces Zip::for_each + scaled_add
         let hamk_slice = hamk.as_slice_mut().unwrap();
         for (iR, &u) in Us.iter().enumerate() {
             let hm = self.ham.index_axis(Axis(0), iR);
-            let hm_slice = hm.as_slice().unwrap();
-            let n = hm_slice.len() as i32;
-            unsafe { blas::zaxpy(n, u, hm_slice, 1, hamk_slice, 1) };
+            crate::ndarray_lapack::zaxpy(u, hm.as_slice().unwrap(), hamk_slice);
         }
 
         match gauge {

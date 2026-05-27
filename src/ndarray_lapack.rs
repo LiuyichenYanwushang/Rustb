@@ -28,6 +28,18 @@ use ndarray_linalg::UPLO;
 use num_complex::Complex;
 use std::ffi::c_char;
 
+/// Safe wrapper around BLAS `zaxpy`: `y += alpha * x` for `Complex<f64>` slices.
+///
+/// # Panics
+///
+/// Panics if `x.len() != y.len()`.
+#[inline]
+pub fn zaxpy(alpha: Complex<f64>, x: &[Complex<f64>], y: &mut [Complex<f64>]) {
+    assert_eq!(x.len(), y.len(), "zaxpy: x and y must have the same length");
+    let n = x.len() as i32;
+    unsafe { blas::zaxpy(n, alpha, x, 1, y, 1) };
+}
+
 /// Compute selected eigenvalues and eigenvectors of a complex Hermitian matrix
 /// using LAPACK's `zheevx` (expert driver).
 ///
