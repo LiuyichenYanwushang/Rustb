@@ -41,7 +41,7 @@ pub trait OutPut {
     -> Result<()>;
 }
 
-impl<const SPIN: bool, const DIM: usize> OutPut for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> OutPut for Model<SPIN, DIM, RMATRIX> {
     fn output_hr(&self, path: &str, seedname: &str) {
         let n_R = self.hamR.nrows(); //length of hamR
         let mut hr_name = String::new();

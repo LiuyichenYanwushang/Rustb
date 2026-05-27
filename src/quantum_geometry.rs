@@ -106,7 +106,7 @@ pub trait QuantumGeometry: Velocity {
     ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>, Array2<f64>);
 }
 
-impl<const SPIN: bool, const DIM: usize> QuantumGeometry for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> QuantumGeometry for Model<SPIN, DIM, RMATRIX> {
     #[inline(always)]
     fn quantum_geometry_n_onek<S: Data<Elem = f64>>(
         &self,
@@ -218,7 +218,7 @@ impl<const SPIN: bool, const DIM: usize> QuantumGeometry for Model<SPIN, DIM> {
 
 // ── Fermi‑Dirac‑weighted quantum geometry over a k‑mesh ─────────────────
 
-impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
     /// Fermi–Dirac weighted quantum metric and Berry curvature as a function of
     /// chemical potential.
     ///

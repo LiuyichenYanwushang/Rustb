@@ -16,21 +16,23 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 ///
 /// Const generic `SPIN`: spinless (false, default) / spinful (true).
 /// Const generic `DIM`: spatial dimension 1/2/3 (default 3).
+/// Const generic `RMATRIX`: whether position matrix elements are stored (default false).
 #[derive(Clone, Debug)]
-pub struct Model<const SPIN: bool = false, const DIM: usize = 3> {
+pub struct Model<const SPIN: bool = false, const DIM: usize = 3, const RMATRIX: bool = false> {
     pub lat: Array2<f64>,
     pub orb: Array2<f64>,
     pub orb_projection: Vec<OrbProj>,
     pub atoms: Vec<Atom>,
     pub ham: Array3<Complex<f64>>,
     pub hamR: Array2<isize>,
-    pub rmatrix: Array4<Complex<f64>>,
+    pub rmatrix: Option<Array4<Complex<f64>>>,
 }
 
 // Manual Serialize
-impl<const SPIN: bool, const DIM: usize> Serialize for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Serialize for Model<SPIN, DIM, RMATRIX> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut s = serializer.serialize_struct("Model", 8)?;
+        let n_fields = if RMATRIX { 8 } else { 7 };
+        let mut s = serializer.serialize_struct("Model", n_fields)?;
         s.serialize_field("dim_r", &DIM)?;
         s.serialize_field("spin", &SPIN)?;
         s.serialize_field("lat", &self.lat)?;
@@ -39,7 +41,9 @@ impl<const SPIN: bool, const DIM: usize> Serialize for Model<SPIN, DIM> {
         s.serialize_field("atoms", &self.atoms)?;
         s.serialize_field("ham", &self.ham)?;
         s.serialize_field("hamR", &self.hamR)?;
-        s.serialize_field("rmatrix", &self.rmatrix)?;
+        if RMATRIX {
+            s.serialize_field("rmatrix", &self.rmatrix)?;
+        }
         s.end()
     }
 }
@@ -59,14 +63,18 @@ enum ModelField {
     Rmatrix,
 }
 
-impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, DIM> {
+impl<'de, const SPIN: bool, const DIM: usize, const RMATRIX: bool> Deserialize<'de>
+    for Model<SPIN, DIM, RMATRIX>
+{
     fn deserialize<De: Deserializer<'de>>(
         deserializer: De,
     ) -> std::result::Result<Self, De::Error> {
-        struct ModelVisitor<const S: bool, const D: usize>;
+        struct ModelVisitor<const S: bool, const D: usize, const R: bool>;
 
-        impl<'de, const S: bool, const D: usize> de::Visitor<'de> for ModelVisitor<S, D> {
-            type Value = Model<S, D>;
+        impl<'de, const S: bool, const D: usize, const R: bool> de::Visitor<'de>
+            for ModelVisitor<S, D, R>
+        {
+            type Value = Model<S, D, R>;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("a Model struct")
@@ -124,7 +132,7 @@ impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, D
                     atoms: atoms.ok_or_else(|| de::Error::missing_field("atoms"))?,
                     ham: ham.ok_or_else(|| de::Error::missing_field("ham"))?,
                     hamR: hamR.ok_or_else(|| de::Error::missing_field("hamR"))?,
-                    rmatrix: rmatrix.ok_or_else(|| de::Error::missing_field("rmatrix"))?,
+                    rmatrix: if R { rmatrix } else { None },
                 })
             }
         }
@@ -142,7 +150,7 @@ impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, D
                 "hamR",
                 "rmatrix",
             ],
-            ModelVisitor::<SPIN, DIM>,
+            ModelVisitor::<SPIN, DIM, RMATRIX>,
         )
     }
 }
@@ -176,7 +184,11 @@ pub enum SpinDirection {
 pub use crate::model_build::*;
 pub use crate::model_physics::*;
 
-impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
+    #[inline(always)]
+    pub fn has_rmatrix(&self) -> bool {
+        RMATRIX
+    }
     #[inline(always)]
     pub fn atom_position(&self) -> Array2<f64> {
         let mut atom_position = Array2::zeros((self.natom(), DIM));

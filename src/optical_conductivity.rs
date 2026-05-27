@@ -38,7 +38,7 @@ pub trait OpticalGeometry: Velocity {
     ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>, Array1<f64>);
 }
 
-impl<const SPIN: bool, const DIM: usize> OpticalGeometry for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> OpticalGeometry for Model<SPIN, DIM, RMATRIX> {
     #[inline(always)]
     fn optical_geometry_n_onek<S: Data<Elem = f64>>(
         &self,

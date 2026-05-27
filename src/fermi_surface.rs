@@ -419,7 +419,7 @@ pub trait FermiSurfacePlane: solve {
 
 // ── Trait implementations for Model ───────────────────────────────────
 
-impl<const SPIN: bool, const DIM: usize> FermiSurface for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> FermiSurface for Model<SPIN, DIM, RMATRIX> {
     fn show_fermi_surface(&self, k_mesh: &Array1<usize>, e_fermi: f64, name: &str) -> Result<()> {
         match self.dim_r() {
             1 => Err(TbError::NotImplemented(
@@ -498,7 +498,7 @@ impl<const SPIN: bool, const DIM: usize> FermiSurface for Model<SPIN, DIM> {
     }
 }
 
-impl<const SPIN: bool, const DIM: usize> FermiSurfacePlane for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> FermiSurfacePlane for Model<SPIN, DIM, RMATRIX> {
     fn show_fermi_surface_plane(
         &self,
         origin: &Array1<f64>,

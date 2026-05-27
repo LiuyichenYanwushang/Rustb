@@ -525,7 +525,7 @@ pub trait BerryCurvature: Velocity {
     ) -> Array1<f64>;
 }
 
-impl<const SPIN: bool, const DIM: usize> BerryCurvature for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> BerryCurvature for Model<SPIN, DIM, RMATRIX> {
     #[allow(non_snake_case)]
     #[inline(always)]
     fn berry_curvature_n_onek<S: Data<Elem = f64>>(
@@ -739,7 +739,7 @@ impl<const SPIN: bool, const DIM: usize> BerryCurvature for Model<SPIN, DIM> {
 }
 
 #[allow(non_snake_case)]
-impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
     /// Methods for computing conductivity tensors including the anomalous Hall conductivity,
     /// spin Hall conductivity, and nonlinear Hall conductivity.
     ///

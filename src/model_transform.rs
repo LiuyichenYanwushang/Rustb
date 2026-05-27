@@ -23,7 +23,7 @@ use ndarray::*;
 use ndarray_linalg::{Determinant, Inverse};
 use num_complex::Complex;
 
-impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
     /// Shift all orbital positions onto their corresponding atomic positions.
     pub fn shift_to_atom(&mut self) {
         let mut a = 0;
@@ -94,9 +94,9 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
         let new_ham = new_ham.select(Axis(2), &index);
         self.ham = new_ham;
         // Update rmatrix
-        let new_rmatrix = self.rmatrix.select(Axis(2), &index);
+        let new_rmatrix = self.rmatrix.as_ref().unwrap().select(Axis(2), &index);
         let new_rmatrix = new_rmatrix.select(Axis(3), &index);
-        self.rmatrix = new_rmatrix;
+        self.rmatrix = Some(new_rmatrix);
     }
 
     /// Remove specified atoms (and their orbitals) from the model.
@@ -163,9 +163,9 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
         let new_ham = new_ham.select(Axis(2), &orb_index);
         self.ham = new_ham;
         // Update rmatrix
-        let new_rmatrix = self.rmatrix.select(Axis(2), &orb_index);
+        let new_rmatrix = self.rmatrix.as_ref().unwrap().select(Axis(2), &orb_index);
         let new_rmatrix = new_rmatrix.select(Axis(3), &orb_index);
-        self.rmatrix = new_rmatrix;
+        self.rmatrix = Some(new_rmatrix);
     }
 
     /// Reorder atoms and their orbitals.
@@ -224,8 +224,9 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
         };
         self.ham = self.ham.select(Axis(1), &new_state_order);
         self.ham = self.ham.select(Axis(2), &new_state_order);
-        self.rmatrix = self.rmatrix.select(Axis(2), &new_state_order);
-        self.rmatrix = self.rmatrix.select(Axis(3), &new_state_order);
+        let new_rmatrix = self.rmatrix.as_ref().unwrap().select(Axis(2), &new_state_order);
+        let new_rmatrix = new_rmatrix.select(Axis(3), &new_state_order);
+        self.rmatrix = Some(new_rmatrix);
     }
 
     /// Build a supercell by applying an integer transformation matrix `U`.
@@ -256,7 +257,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
     /// let U = array![[2.0, 0.0], [0.0, 2.0]];
     /// let supercell = model.make_supercell(&U).unwrap();
     /// ```
-    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM>> {
+    pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM, RMATRIX>> {
         if self.dim_r() != U.len_of(Axis(0)) {
             return Err(TbError::TransformationMatrixDimMismatch {
                 expected: self.dim_r(),
@@ -480,7 +481,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
         }
         let use_n_R = use_hamR.len_of(Axis(0));
         let mut gen_rmatrix: bool = false;
-        if self.rmatrix.len_of(Axis(0)) == 1 {
+        if !RMATRIX {
             for i in 0..self.dim_r() {
                 for s in 0..norb {
                     new_rmatrix[[0, i, s, s]] = Complex::new(new_orb[[s, i]], 0.0);
@@ -528,13 +529,13 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
                                 self.ham[[index, *use_i + self.norb(), *use_j + self.norb()]];
                             for r in 0..self.dim_r() {
                                 use_rmatrix[[r, int_i, int_j]] =
-                                    self.rmatrix[[index, r, *use_i, *use_j]];
+                                    self.rmatrix.as_ref().unwrap()[[index, r, *use_i, *use_j]];
                                 use_rmatrix[[r, int_i + norb, int_j]] =
-                                    self.rmatrix[[index, r, *use_i + self.norb(), *use_j]];
+                                    self.rmatrix.as_ref().unwrap()[[index, r, *use_i + self.norb(), *use_j]];
                                 use_rmatrix[[r, int_i, int_j + norb]] =
-                                    self.rmatrix[[index, r, *use_i, *use_j + self.norb()]];
+                                    self.rmatrix.as_ref().unwrap()[[index, r, *use_i, *use_j + self.norb()]];
                                 use_rmatrix[[r, int_i + norb, int_j + norb]] = self.rmatrix
-                                    [[index, r, *use_i + self.norb(), *use_j + self.norb()]];
+                                    .as_ref().unwrap()[[index, r, *use_i + self.norb(), *use_j + self.norb()]];
                             }
                         } else {
                             continue;
@@ -575,7 +576,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
                             useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
                             for r in 0..self.dim_r() {
                                 use_rmatrix[[r, int_i, int_j]] =
-                                    self.rmatrix[[index, r, *use_i, *use_j]]
+                                    self.rmatrix.as_ref().unwrap()[[index, r, *use_i, *use_j]]
                             }
                         } else {
                             continue;
@@ -672,7 +673,7 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
             atoms: new_atom,
             ham: new_ham,
             hamR: new_hamR,
-            rmatrix: new_rmatrix,
+            rmatrix: Some(new_rmatrix),
         };
         Ok(model)
     }

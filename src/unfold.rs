@@ -69,7 +69,7 @@ pub trait Unfold {
     ) -> Result<Array2<f64>>;
 }
 
-impl<const SPIN: bool, const DIM: usize> Unfold for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Unfold for Model<SPIN, DIM, RMATRIX> {
     fn unfold(
         &self,
         U: &Array2<f64>,

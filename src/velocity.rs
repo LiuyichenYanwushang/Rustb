@@ -229,7 +229,7 @@ pub trait Velocity {
     ) -> (Array3<Complex<f64>>, Array2<Complex<f64>>);
 }
 
-impl<const SPIN: bool, const DIM: usize> Velocity for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Velocity for Model<SPIN, DIM, RMATRIX> {
     #[allow(non_snake_case)]
     #[inline(always)]
     fn gen_v<S: Data<Elem = f64>>(
@@ -369,11 +369,11 @@ impl<const SPIN: bool, const DIM: usize> Velocity for Model<SPIN, DIM> {
                         .and(orb_phase.as_slice())
                         .for_each(|h, &pn| *h *= conj_pm * pn);
                 }
-                if self.rmatrix.len_of(Axis(0)) != 1 {
-                    let n_rmat = self.rmatrix.len_of(Axis(0));
+                if RMATRIX && self.rmatrix.is_some() {
+                    let n_rmat = self.rmatrix.as_ref().unwrap().len_of(Axis(0));
                     let mut rk = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));
                     for (iR, &u) in Us[..n_rmat].iter().enumerate() {
-                        let rm = self.rmatrix.index_axis(Axis(0), iR);
+                        let rm = self.rmatrix.as_ref().unwrap().index_axis(Axis(0), iR);
                         crate::ndarray_lapack::zaxpy(u, rm.as_slice().unwrap(), rk.as_slice_mut().unwrap());
                     }
                     for i in 0..dim {
@@ -404,11 +404,11 @@ impl<const SPIN: bool, const DIM: usize> Velocity for Model<SPIN, DIM> {
                     }
                     v.slice_mut(s![d, .., ..]).assign(&vv);
                 }
-                if self.rmatrix.len_of(Axis(0)) != 1 {
-                    let n_rmat = self.rmatrix.len_of(Axis(0));
+                if RMATRIX && self.rmatrix.is_some() {
+                    let n_rmat = self.rmatrix.as_ref().unwrap().len_of(Axis(0));
                     let mut rk = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));
                     for (iR, &u) in Us[..n_rmat].iter().enumerate() {
-                        let rm = self.rmatrix.index_axis(Axis(0), iR);
+                        let rm = self.rmatrix.as_ref().unwrap().index_axis(Axis(0), iR);
                         crate::ndarray_lapack::zaxpy(u, rm.as_slice().unwrap(), rk.as_slice_mut().unwrap());
                     }
                     for i in 0..dim {

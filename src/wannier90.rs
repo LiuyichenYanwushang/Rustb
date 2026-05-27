@@ -14,7 +14,7 @@ pub trait Wannier90 {
         Self: Sized;
 }
 
-impl<const SPIN: bool, const DIM: usize> Wannier90 for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Wannier90 for Model<SPIN, DIM, RMATRIX> {
     #[allow(non_snake_case)]
     fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Self> {
         // This function reads tight-binding files from Wannier90.
@@ -541,14 +541,14 @@ impl<const SPIN: bool, const DIM: usize> Wannier90 for Model<SPIN, DIM> {
             orb
         };
         //开始尝试读取 _r.dat 文件
-        let mut reads: Vec<String> = Vec::new();
-        let mut r_path = file_path.clone();
-        r_path.push_str("_r.dat");
-        let path = Path::new(&r_path);
-        let hr = File::open(path);
         let mut have_r = false;
-        let mut rmatrix = if let Ok(hr) = hr {
-            have_r = true;
+        let mut rmatrix = if RMATRIX {
+            let mut r_path = file_path.clone();
+            r_path.push_str("_r.dat");
+            let path = Path::new(&r_path);
+            let hr = File::open(path);
+            if let Ok(hr) = hr {
+                have_r = true;
             let reader = BufReader::new(hr);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
@@ -644,17 +644,14 @@ impl<const SPIN: bool, const DIM: usize> Wannier90 for Model<SPIN, DIM> {
                 }
             }
             rmatrix
-        } else {
-            let mut rmatrix = Array4::<Complex<f64>>::zeros((1, 3, nsta, nsta));
-            for i in 0..norb {
-                for r in 0..3 {
-                    rmatrix[[0, r, i, i]] = Complex::<f64>::from(orb[[i, r]]);
-                    if spin {
-                        rmatrix[[0, r, i + norb, i + norb]] = Complex::<f64>::from(orb[[i, r]]);
-                    }
-                }
+            } else {
+                return Err(TbError::FileCreation {
+                    path: r_path.clone(),
+                    message: "RMATRIX=true but _r.dat file not found".to_string(),
+                });
             }
-            rmatrix
+        } else {
+            Array4::<Complex<f64>>::zeros((1, 3, 1, 1))
         };
 
         //最后判断有没有wannier90_wsvec.dat-----------------------------------
@@ -945,8 +942,23 @@ impl<const SPIN: bool, const DIM: usize> Wannier90 for Model<SPIN, DIM> {
             atoms: atom,
             ham,
             hamR,
-            rmatrix,
+            rmatrix: if RMATRIX { Some(rmatrix) } else { None },
         };
         Ok(model)
+    }
+}
+
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM, true> {
+    /// Load a tight-binding model from Wannier90 files including position matrix elements.
+    ///
+    /// This is a convenience wrapper around [`Wannier90::from_hr`] that requires
+    /// the Wannier90 `_r.dat` file to be present. Returns `Model<SPIN, DIM, true>`
+    /// with position matrix elements (`rmatrix`) populated.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TbError::FileCreation` if `_r.dat` is missing.
+    pub fn from_hr_with_rmatrix(path: &str, file_name: &str, zero_energy: f64) -> Result<Self> {
+        <Self as Wannier90>::from_hr(path, file_name, zero_energy)
     }
 }

@@ -164,7 +164,7 @@ pub trait MagneticField {
         Self: Sized;
 }
 
-impl<const SPIN: bool, const DIM: usize> MagneticField for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> MagneticField for Model<SPIN, DIM, RMATRIX> {
     fn add_magnetic_field(
         &self,
         mag_dir: usize,
@@ -195,7 +195,6 @@ impl<const SPIN: bool, const DIM: usize> MagneticField for Model<SPIN, DIM> {
                 let r2 = r_vec[d2];
 
                 let mut ham_slice = new_ham.slice_mut(s![i_r, .., ..]);
-                let mut r_slice = new_rmatrix.slice_mut(s![i_r, .., .., ..]);
 
                 for i in 0..total_basis {
                     let orb_i = i % norb;
@@ -213,8 +212,10 @@ impl<const SPIN: bool, const DIM: usize> MagneticField for Model<SPIN, DIM> {
                         let peierls = Complex::new(phase.cos(), phase.sin());
 
                         ham_slice[[i, j]] *= peierls;
-                        for alpha in 0..dim_r {
-                            r_slice[[alpha, i, j]] *= peierls;
+                        if let Some(ref mut rm) = new_rmatrix {
+                            for alpha in 0..dim_r {
+                                rm[[i_r, alpha, i, j]] *= peierls;
+                            }
                         }
                     }
                 }

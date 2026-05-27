@@ -48,7 +48,7 @@ pub trait solve {
         kvec: &ArrayBase<S, Ix2>,
     ) -> (Array2<f64>, Array3<Complex<f64>>);
 }
-impl<const SPIN: bool, const DIM: usize> solve for Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> solve for Model<SPIN, DIM, RMATRIX> {
     #[allow(non_snake_case)]
     #[inline(always)]
     fn solve_band_onek<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> Array1<f64> {

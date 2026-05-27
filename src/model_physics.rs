@@ -10,7 +10,7 @@ use num_complex::Complex;
 use rayon::prelude::*;
 use std::f64::consts::PI;
 
-impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM> {
+impl<const SPIN: bool, const DIM: usize, const RMATRIX: bool> Model<SPIN, DIM, RMATRIX> {
     #[allow(non_snake_case)]
     #[inline(always)]
     #[cfg_attr(doc, katexit::katexit)]

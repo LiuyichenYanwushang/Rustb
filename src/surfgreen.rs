@@ -130,8 +130,8 @@ impl surf_Green {
     /// `eta` is the small imaginary part for the Green's function.
     ///
     /// For directions not aligned with a lattice vector, use [`Model::make_supercell`] first.
-    pub fn from_Model<const SPIN: bool, const DIM: usize>(
-        model: &Model<SPIN, DIM>,
+    pub fn from_Model<const SPIN: bool, const DIM: usize, const RMATRIX: bool>(
+        model: &Model<SPIN, DIM, RMATRIX>,
         dir: usize,
         eta: f64,
         Np: Option<usize>,
