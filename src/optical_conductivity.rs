@@ -55,27 +55,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OpticalGeometry for Mod
         //! `eta` is a small quantity
 
         let li: Complex<f64> = 1.0 * Complex::i();
-        //let (band, evec) = self.solve_onek(&k_vec);
 
-        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
-            self.gen_v(&k_vec, Gauge::Atom); //这是速度算符
-        let mut J = v.view();
+        // Build direction matrix: [dir_1, dir_2]
+        let directions = {
+            let mut d = Array2::<f64>::zeros((2, self.dim_r()));
+            d.row_mut(0).assign(dir_1);
+            d.row_mut(1).assign(dir_2);
+            d
+        };
+        let (v_proj, hamk) =
+            self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
 
-        // Project the velocity operator onto the direction dir_1
-        let J = J
-            .outer_iter()
-            .zip(dir_1.iter())
-            .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (x, d)| {
-                acc + &x * (*d + 0.0 * li)
-            });
-
-        // Project the velocity operator onto the direction dir_2
-        let v = v
-            .outer_iter()
-            .zip(dir_2.iter())
-            .fold(Array2::zeros((self.nsta(), self.nsta())), |acc, (x, d)| {
-                acc + &x * (*d + 0.0 * li)
-            });
+        let J: Array2<Complex<f64>> = v_proj.slice(s![0, .., ..]).to_owned();
+        let v: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
 
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)

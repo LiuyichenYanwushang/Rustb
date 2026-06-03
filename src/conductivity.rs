@@ -538,116 +538,30 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature for Mode
         eta: f64,
     ) -> (Array1<f64>, Array1<f64>) {
         let li: Complex<f64> = 1.0 * Complex::i();
-        //let (band, evec) = self.solve_onek(&k_vec);
-        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
-            self.gen_v(&k_vec, Gauge::Atom); //这是速度算符
+        // Build direction matrix: [current_dir, dir_2]
+        let directions = {
+            let mut d = Array2::<f64>::zeros((2, self.dim_r()));
+            d.row_mut(0).assign(current_dir);
+            d.row_mut(1).assign(dir_2);
+            d
+        };
+        let (v_proj, hamk) =
+            self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)
         } else {
             todo!()
         };
-        let mut J = v.view();
-        let (J, v) = if SPIN {
-            let J = match spin {
-                None => {
-                    let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-                    for d in 0..self.dim_r() {
-                        let w = current_dir[d];
-                        if w != 0.0 {
-                            Zip::from(&mut jmat)
-                                .and(&J.slice(s![d, .., ..]))
-                                .for_each(|a, &b| *a += b * w);
-                        }
-                    }
-                    jmat
-                }
-                Some(SpinDirection::X) => {
-                    let sp = build_spin_matrix(self.norb(), Some(SpinDirection::X));
-                    let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-                    for d in 0..self.dim_r() {
-                        let w = current_dir[d];
-                        if w != 0.0 {
-                            let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
-                            Zip::from(&mut jmat)
-                                .and(&ac)
-                                .for_each(|a, &b| *a += b * w * 0.5);
-                        }
-                    }
-                    jmat
-                }
-                Some(SpinDirection::Y) => {
-                    let sp = build_spin_matrix(self.norb(), Some(SpinDirection::Y));
-                    let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-                    for d in 0..self.dim_r() {
-                        let w = current_dir[d];
-                        if w != 0.0 {
-                            let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
-                            Zip::from(&mut jmat)
-                                .and(&ac)
-                                .for_each(|a, &b| *a += b * w * 0.5);
-                        }
-                    }
-                    jmat
-                }
-                Some(SpinDirection::Z) => {
-                    let sp = build_spin_matrix(self.norb(), Some(SpinDirection::Z));
-                    let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-                    for d in 0..self.dim_r() {
-                        let w = current_dir[d];
-                        if w != 0.0 {
-                            let ac = anti_comm(&sp, &J.slice(s![d, .., ..]));
-                            Zip::from(&mut jmat)
-                                .and(&ac)
-                                .for_each(|a, &b| *a += b * w * 0.5);
-                        }
-                    }
-                    jmat
-                }
-            };
-            let v = {
-                let mut vmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-                for d in 0..self.dim_r() {
-                    let w = dir_2[d];
-                    if w != 0.0 {
-                        Zip::from(&mut vmat)
-                            .and(&v.slice(s![d, .., ..]))
-                            .for_each(|a, &b| *a += b * w);
-                    }
-                }
-                vmat
-            };
-            (J, v)
+        let J: Array2<Complex<f64>> = if SPIN && spin.is_some() {
+            let sp = build_spin_matrix(self.norb(), spin);
+            anti_comm(&sp, &v_proj.slice(s![0, .., ..])) * 0.5
         } else {
-            if spin.is_some() {
+            if !SPIN && spin.is_some() {
                 println!("Warning, the model haven't got spin, so the spin input will be ignord");
             }
-
-            let J = {
-                let mut jmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-                for d in 0..self.dim_r() {
-                    let w = current_dir[d];
-                    if w != 0.0 {
-                        Zip::from(&mut jmat)
-                            .and(&J.slice(s![d, .., ..]))
-                            .for_each(|a, &b| *a += b * w);
-                    }
-                }
-                jmat
-            };
-            let v = {
-                let mut vmat = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-                for d in 0..self.dim_r() {
-                    let w = dir_2[d];
-                    if w != 0.0 {
-                        Zip::from(&mut vmat)
-                            .and(&v.slice(s![d, .., ..]))
-                            .for_each(|a, &b| *a += b * w);
-                    }
-                }
-                vmat
-            };
-            (J, v)
+            v_proj.slice(s![0, .., ..]).to_owned()
         };
+        let v: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
 
         let evec_conj = evec.t();
         // Lazy map: no heap allocation for the conjugated copy
@@ -1002,37 +916,30 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         eta: f64,
     ) -> (Array1<f64>, Array1<f64>) {
         let li: Complex<f64> = 1.0 * Complex::i();
-        //let (band, evec) = self.solve_onek(&k_vec);
-        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
-            self.gen_v(&k_vec, Gauge::Atom); //这是速度算符
-        let mut J: Array3<Complex<f64>> = v.clone();
-        let mut v0 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta())); //这个是速度项, 对应的dir_3 的速度
-        for r in 0..self.dim_r() {
-            v0 = v0 + v.slice(s![r, .., ..]).to_owned() * dir_3[[r]];
-        }
-        if SPIN {
+        // Build direction matrix: [current_dir, dir_2, dir_3]
+        let directions = {
+            let mut d = Array2::<f64>::zeros((3, self.dim_r()));
+            d.row_mut(0).assign(current_dir);
+            d.row_mut(1).assign(dir_2);
+            d.row_mut(2).assign(dir_3);
+            d
+        };
+        let (v_proj, hamk) =
+            self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
+        // v_proj[0] = Σ_d current_dir[d] * v_raw[d]  → J
+        // v_proj[1] = Σ_d dir_2[d] * v_raw[d]        → v
+        // v_proj[2] = Σ_d dir_3[d] * v_raw[d]        → v0
+        let J: Array2<Complex<f64>> = if SPIN {
             let X = build_spin_matrix(self.norb(), spin);
-            for i in 0..self.dim_r() {
-                let j = J.slice(s![i, .., ..]).to_owned();
-                let j = anti_comm(&X, &j) / 2.0; //这里做反对易
-                J.slice_mut(s![i, .., ..]).assign(&(j * current_dir[[i]]));
-                v.slice_mut(s![i, .., ..])
-                    .mul_assign(Complex::new(dir_2[[i]], 0.0));
-            }
+            anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5
         } else {
             if spin.is_some() {
                 println!("Warning, the model haven't got spin, so the spin input will be ignord");
             }
-            for i in 0..self.dim_r() {
-                J.slice_mut(s![i, .., ..])
-                    .mul_assign(Complex::new(current_dir[[i]], 0.0));
-                v.slice_mut(s![i, .., ..])
-                    .mul_assign(Complex::new(dir_2[[i]], 0.0));
-            }
+            v_proj.slice(s![0, .., ..]).to_owned()
         };
-
-        let J: Array2<Complex<f64>> = J.sum_axis(Axis(0));
-        let v: Array2<Complex<f64>> = v.sum_axis(Axis(0));
+        let v: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
+        let v0: Array2<Complex<f64>> = v_proj.slice(s![2, .., ..]).to_owned();
 
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)

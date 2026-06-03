@@ -429,3 +429,329 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Velocity for Model<SPIN
         (v, hamk)
     }
 }
+
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    /// Projected velocity operator: computes direction-weighted velocity matrices
+    /// directly without materializing the per-direction `(DIM, nsta, nsta)` array.
+    ///
+    /// For each row `w = directions.row(p)`, computes:
+    ///
+    /// ```text
+    /// v_proj[p] = Σ_d w[d] · v_raw[d]
+    /// ```
+    ///
+    /// where `v_raw[d]` is the velocity operator for Cartesian direction d.
+    ///
+    /// This fuses the direction summation into the R-term and τ-term of `gen_v`,
+    /// avoiding the intermediate `(DIM, nsta, nsta)` allocation and the secondary
+    /// projection pass. The R-term scalar becomes `i·(w·R)` instead of `i·R_d`,
+    /// and the τ-term uses `i·(w·τ_n − w·τ_m)` instead of per-direction differences.
+    ///
+    /// # Arguments
+    /// * `kvec` — k-point in fractional coordinates (length = `dim_r()`).
+    /// * `gauge` — [`Gauge::Atom`] or [`Gauge::Lattice`].
+    /// * `directions` — shape `(n_proj, dim_r)`. Each row is a direction weight vector.
+    ///
+    /// # Returns
+    /// `(v_proj, hamk)` where `v_proj` has shape `(n_proj, nsta, nsta)` and
+    /// `hamk` is the Bloch Hamiltonian `H(k)`.
+    #[allow(non_snake_case)]
+    pub fn gen_v_projected<S: Data<Elem = f64>>(
+        &self,
+        kvec: &ArrayBase<S, Ix1>,
+        gauge: Gauge,
+        directions: &Array2<f64>,
+    ) -> (Array3<Complex<f64>>, Array2<Complex<f64>>) {
+        assert_eq!(
+            kvec.len(),
+            DIM,
+            "kvec length {} != dim_r={}",
+            kvec.len(),
+            DIM
+        );
+        assert_eq!(
+            directions.len_of(Axis(1)),
+            DIM,
+            "directions has {} columns, expected dim_r={}",
+            directions.len_of(Axis(1)),
+            DIM
+        );
+
+        let n_proj = directions.len_of(Axis(0));
+        let nsta = self.nsta();
+
+        // Phase factors exp(i 2π k·R)
+        let Us: Vec<Complex<f64>> = match DIM {
+            1 => self
+                .hamR
+                .outer_iter()
+                .map(|r| Complex::new(0.0, 2.0 * PI * r[0] as f64 * kvec[0]).exp())
+                .collect(),
+            2 => self
+                .hamR
+                .outer_iter()
+                .map(|r| {
+                    Complex::new(
+                        0.0,
+                        2.0 * PI * (r[0] as f64 * kvec[0] + r[1] as f64 * kvec[1]),
+                    )
+                    .exp()
+                })
+                .collect(),
+            3 => self
+                .hamR
+                .outer_iter()
+                .map(|r| {
+                    Complex::new(
+                        0.0,
+                        2.0 * PI
+                            * (r[0] as f64 * kvec[0]
+                                + r[1] as f64 * kvec[1]
+                                + r[2] as f64 * kvec[2]),
+                    )
+                    .exp()
+                })
+                .collect(),
+            _ => unreachable!(),
+        };
+
+        // R in Cartesian
+        let hamR_f64 = self.hamR.mapv(|x| x as f64);
+        let R0: Array2<f64> = hamR_f64.dot(&self.lat);
+
+        let mut v_proj = Array3::<Complex<f64>>::zeros((n_proj, nsta, nsta));
+
+        // Build H(k)
+        let mut hamk = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        let hamk_slice = hamk.as_slice_mut().unwrap();
+        for (iR, &u) in Us.iter().enumerate() {
+            let hm = self.ham.index_axis(Axis(0), iR);
+            crate::ndarray_lapack::zaxpy(u, hm.as_slice().unwrap(), hamk_slice);
+        }
+
+        match gauge {
+            Gauge::Atom => {
+                let orb_sta = if SPIN {
+                    let orb0 =
+                        concatenate(Axis(0), &[self.orb.view(), self.orb.view()]).unwrap();
+                    orb0
+                } else {
+                    self.orb.to_owned()
+                };
+                let orb_phase: Vec<Complex<f64>> = match DIM {
+                    1 => orb_sta
+                        .outer_iter()
+                        .map(|tau| Complex::new(0.0, 2.0 * PI * tau[0] * kvec[0]).exp())
+                        .collect(),
+                    2 => orb_sta
+                        .outer_iter()
+                        .map(|tau| {
+                            Complex::new(
+                                0.0,
+                                2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1]),
+                            )
+                            .exp()
+                        })
+                        .collect(),
+                    3 => orb_sta
+                        .outer_iter()
+                        .map(|tau| {
+                            Complex::new(
+                                0.0,
+                                2.0 * PI
+                                    * (tau[0] * kvec[0]
+                                        + tau[1] * kvec[1]
+                                        + tau[2] * kvec[2]),
+                            )
+                            .exp()
+                        })
+                        .collect(),
+                    _ => unreachable!(),
+                };
+                let orb_real = orb_sta.dot(&self.lat);
+
+                // tau_proj[p, m] = Σ_d directions[p,d] * τ_cart[m,d]
+                // shapes: directions (n_proj, DIM), orb_real (nsta, DIM) → (n_proj, nsta)
+                let tau_proj = directions.dot(&orb_real.t());
+
+                for p in 0..n_proj {
+                    let dir = directions.row(p);
+                    let mut vv = Array2::<Complex<f64>>::zeros((nsta, nsta));
+                    let vv_slice = vv.as_slice_mut().unwrap();
+
+                    // R-term: Σ_R i*(dir·R_cart) * H(R) * e^{ikR}
+                    for (iR, &u) in Us.iter().enumerate() {
+                        let r_dot_w: f64 = match DIM {
+                            1 => dir[0] * R0[[iR, 0]],
+                            2 => dir[0] * R0[[iR, 0]] + dir[1] * R0[[iR, 1]],
+                            3 => {
+                                dir[0] * R0[[iR, 0]]
+                                    + dir[1] * R0[[iR, 1]]
+                                    + dir[2] * R0[[iR, 2]]
+                            }
+                            _ => unreachable!(),
+                        };
+                        if r_dot_w != 0.0 {
+                            let alpha = u * Complex::i() * r_dot_w;
+                            let hm = self.ham.index_axis(Axis(0), iR);
+                            crate::ndarray_lapack::zaxpy(
+                                alpha,
+                                hm.as_slice().unwrap(),
+                                vv_slice,
+                            );
+                        }
+                    }
+
+                    // τ-term + gauge transform fused into one pass
+                    for m in 0..nsta {
+                        let conj_pm = orb_phase[m].conj();
+                        for n in 0..nsta {
+                            let diff = tau_proj[[p, n]] - tau_proj[[p, m]];
+                            vv[[m, n]] = (vv[[m, n]]
+                                + Complex::i() * diff * hamk[[m, n]])
+                                * conj_pm
+                                * orb_phase[n];
+                        }
+                    }
+
+                    v_proj.slice_mut(s![p, .., ..]).assign(&vv);
+                }
+
+                // Gauge transform hamk
+                for m in 0..nsta {
+                    let conj_pm = orb_phase[m].conj();
+                    let mut row = hamk.slice_mut(s![m, ..]);
+                    Zip::from(&mut row)
+                        .and(orb_phase.as_slice())
+                        .for_each(|h, &pn| *h *= conj_pm * pn);
+                }
+
+                // Rmatrix commutator: i*[hamk, Σ_d w_d * A_d]
+                // Build full rk first (DIM * n_rmat zaxpy calls, same as gen_v),
+                // then project onto direction vectors (n_proj * DIM zaxpy calls).
+                if <R as RMatrixData>::HAS_RMATRIX {
+                    let n_rmat = self.rmatrix.as_array4().len_of(Axis(0));
+                    let mut rk =
+                        Array3::<Complex<f64>>::zeros((DIM, nsta, nsta));
+                    for (iR, &u) in Us[..n_rmat].iter().enumerate() {
+                        let rm = self.rmatrix.as_array4().index_axis(Axis(0), iR);
+                        for d in 0..DIM {
+                            crate::ndarray_lapack::zaxpy(
+                                u,
+                                rm.slice(s![d, .., ..]).as_slice().unwrap(),
+                                rk.slice_mut(s![d, .., ..])
+                                    .as_slice_mut()
+                                    .unwrap(),
+                            );
+                        }
+                    }
+
+                    for p in 0..n_proj {
+                        let dir = directions.row(p);
+                        // Project rk onto dir[p]: rk_p = Σ_d dir[d] * rk[d]
+                        let mut rk_p =
+                            Array2::<Complex<f64>>::zeros((nsta, nsta));
+                        let rk_p_slice = rk_p.as_slice_mut().unwrap();
+                        for d in 0..DIM {
+                            let w = dir[d];
+                            if w != 0.0 {
+                                crate::ndarray_lapack::zaxpy(
+                                    Complex::new(w, 0.0),
+                                    rk.slice(s![d, .., ..])
+                                        .as_slice()
+                                        .unwrap(),
+                                    rk_p_slice,
+                                );
+                            }
+                        }
+                        // Gauge transform + zero diagonal
+                        for m in 0..nsta {
+                            let conj_pm = orb_phase[m].conj();
+                            let mut row = rk_p.slice_mut(s![m, ..]);
+                            Zip::from(&mut row)
+                                .and(orb_phase.as_slice())
+                                .for_each(|h, &pn| *h *= conj_pm * pn);
+                        }
+                        rk_p.diag_mut().assign(&Array1::zeros(nsta));
+                        let a_comm = comm(&hamk, &rk_p) * Complex::i();
+                        v_proj.slice_mut(s![p, .., ..]).add_assign(&a_comm);
+                    }
+                }
+            }
+            Gauge::Lattice => {
+                for p in 0..n_proj {
+                    let dir = directions.row(p);
+                    let mut vv = Array2::<Complex<f64>>::zeros((nsta, nsta));
+                    let vv_slice = vv.as_slice_mut().unwrap();
+
+                    // R-term
+                    for (iR, &u) in Us.iter().enumerate() {
+                        let r_dot_w: f64 = match DIM {
+                            1 => dir[0] * R0[[iR, 0]],
+                            2 => dir[0] * R0[[iR, 0]] + dir[1] * R0[[iR, 1]],
+                            3 => {
+                                dir[0] * R0[[iR, 0]]
+                                    + dir[1] * R0[[iR, 1]]
+                                    + dir[2] * R0[[iR, 2]]
+                            }
+                            _ => unreachable!(),
+                        };
+                        if r_dot_w != 0.0 {
+                            let alpha = u * Complex::i() * r_dot_w;
+                            let hm = self.ham.index_axis(Axis(0), iR);
+                            crate::ndarray_lapack::zaxpy(
+                                alpha,
+                                hm.as_slice().unwrap(),
+                                vv_slice,
+                            );
+                        }
+                    }
+
+                    v_proj.slice_mut(s![p, .., ..]).assign(&vv);
+                }
+
+                // Rmatrix commutator (no gauge transform, no diagonal zeroing)
+                if <R as RMatrixData>::HAS_RMATRIX {
+                    let n_rmat = self.rmatrix.as_array4().len_of(Axis(0));
+                    let mut rk =
+                        Array3::<Complex<f64>>::zeros((DIM, nsta, nsta));
+                    for (iR, &u) in Us[..n_rmat].iter().enumerate() {
+                        let rm = self.rmatrix.as_array4().index_axis(Axis(0), iR);
+                        for d in 0..DIM {
+                            crate::ndarray_lapack::zaxpy(
+                                u,
+                                rm.slice(s![d, .., ..]).as_slice().unwrap(),
+                                rk.slice_mut(s![d, .., ..])
+                                    .as_slice_mut()
+                                    .unwrap(),
+                            );
+                        }
+                    }
+
+                    for p in 0..n_proj {
+                        let dir = directions.row(p);
+                        let mut rk_p =
+                            Array2::<Complex<f64>>::zeros((nsta, nsta));
+                        let rk_p_slice = rk_p.as_slice_mut().unwrap();
+                        for d in 0..DIM {
+                            let w = dir[d];
+                            if w != 0.0 {
+                                crate::ndarray_lapack::zaxpy(
+                                    Complex::new(w, 0.0),
+                                    rk.slice(s![d, .., ..])
+                                        .as_slice()
+                                        .unwrap(),
+                                    rk_p_slice,
+                                );
+                            }
+                        }
+                        let a_comm = comm(&hamk, &rk_p) * Complex::i();
+                        v_proj.slice_mut(s![p, .., ..]).add_assign(&a_comm);
+                    }
+                }
+            }
+        }
+
+        (v_proj, hamk)
+    }
+}

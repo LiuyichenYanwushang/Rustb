@@ -117,21 +117,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry for Mod
     ) -> (Array1<Complex<f64>>, Array1<Complex<f64>>, Array1<f64>) {
         let li: Complex<f64> = 1.0 * Complex::i();
 
-        // Velocity operator v_a(k) at this k-point
-        let (v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
-            self.gen_v(&k_vec, Gauge::Atom);
+        // Build direction matrix: [dir_1, dir_2]
+        let directions = {
+            let mut d = Array2::<f64>::zeros((2, self.dim_r()));
+            d.row_mut(0).assign(dir_1);
+            d.row_mut(1).assign(dir_2);
+            d
+        };
+        let (v_proj, hamk) =
+            self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
 
-        // Project velocity along dir_1 (α direction): v_α = Σ_d dir_1[d] · v_d
-        let v_alpha = v.outer_iter().zip(dir_1.iter()).fold(
-            Array2::zeros((self.nsta(), self.nsta())),
-            |acc, (v_d, &d)| acc + &v_d * (d + 0.0 * li),
-        );
-
-        // Project velocity along dir_2 (β direction): v_β = Σ_d dir_2[d] · v_d
-        let v_beta = v.outer_iter().zip(dir_2.iter()).fold(
-            Array2::zeros((self.nsta(), self.nsta())),
-            |acc, (v_d, &d)| acc + &v_d * (d + 0.0 * li),
-        );
+        // Projected velocity matrices
+        let v_alpha: Array2<Complex<f64>> = v_proj.slice(s![0, .., ..]).to_owned();
+        let v_beta: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
 
         // Diagonalize H(k)
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {

@@ -28,7 +28,7 @@ pub trait OrbitalAngular: Velocity {
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OrbitalAngular for Model<SPIN, DIM, R> {
     fn orbital_angular_momentum_onek(&self, kvec: &Array1<f64>) -> Array3<Complex<f64>> {
         let li = Complex::<f64>::new(0.0, 1.0);
-        let (v, hamk) = self.gen_v(kvec, Gauge::Atom);
+        let hamk = self.gen_ham(kvec, Gauge::Atom);
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)
         } else {
