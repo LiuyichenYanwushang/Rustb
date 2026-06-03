@@ -291,6 +291,9 @@ impl<const DIM: usize> Model<false, DIM> {
                 let n_og=og.len();
                 assert_eq!(band.len(), self.nsta(), "this is strange for band's length is not equal to self.nsta()");
 
+                // Precompute U0^2 once: avoids per-frequency x*x
+                let U0_sq: Array2<f64> = U0.mapv(|x| x.re * x.re);
+
                 let (matric_n,omega_n)=match self.dim_r(){
                     3=>{
                         let mut matric_n=Array2::zeros((6,n_og));
@@ -313,43 +316,35 @@ impl<const DIM: usize> Model<false, DIM> {
                         let Complex { re, im } = A_xz.view().split_complex();
                         let re_xz:Array2<Complex<f64>> = re.mapv(|x| Complex::new(2.0*x, 0.0));
                         let im_xz:Array2<Complex<f64>> = im.mapv(|x| Complex::new(0.0, -2.0*x));
-                        // Calculate the matrices for each frequency
+
+                        #[inline]
+                        fn accumulate(mat: &Array2<Complex<f64>>, kernel: &Array2<Complex<f64>>, fermi: &Array1<Complex<f64>>) -> Complex<f64> {
+                            let mut sum = Complex::new(0.0, 0.0);
+                            for (i, (mr, kr)) in mat.outer_iter().zip(kernel.outer_iter()).enumerate() {
+                                sum += mr.dot(&kr) * fermi[i];
+                            }
+                            sum
+                        }
+
                         Zip::from(omega_n.axis_iter_mut(Axis(1)))
                             .and(matric_n.axis_iter_mut(Axis(1)))
                             .and(og.view())
                             .par_for_each(|mut omega, mut matric, a0| {
                                 let li_eta = a0 + li * eta;
-                                let UU = U0.mapv(|x| (x*x - li_eta*li_eta).finv());
-                                let U1:Array2<Complex<f64>> = &UU * &Us * li_eta;
+                                let li_eta_sq = li_eta * li_eta;
+                                let UU = U0_sq.mapv(|x| (Complex::new(x, 0.0) - li_eta_sq).finv());
+                                let U1: Array2<Complex<f64>> = &UU * &Us * li_eta;
 
-                                let m = re_xx.outer_iter().zip(U1.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let m = Array1::from_vec(m).dot(&fermi_dirac);
-                                matric[[0]]=m;
-                                let m = re_yy.outer_iter().zip(U1.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let m = Array1::from_vec(m).dot(&fermi_dirac);
-                                matric[[1]]=m;
-                                let m = re_zz.outer_iter().zip(U1.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let m = Array1::from_vec(m).dot(&fermi_dirac);
-                                matric[[2]]=m;
+                                matric[[0]] = accumulate(&re_xx, &U1, &fermi_dirac);
+                                matric[[1]] = accumulate(&re_yy, &U1, &fermi_dirac);
+                                matric[[2]] = accumulate(&re_zz, &U1, &fermi_dirac);
 
-                                let o = im_xy.outer_iter().zip(UU.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let m = re_xy.outer_iter().zip(U1.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let o = Array1::from_vec(o).dot(&fermi_dirac);
-                                let m = Array1::from_vec(m).dot(&fermi_dirac);
-                                omega[[0]]=o;
-                                matric[[3]]=m;
-                                let o = im_yz.outer_iter().zip(UU.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let m = re_yz.outer_iter().zip(U1.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let o = Array1::from_vec(o).dot(&fermi_dirac);
-                                let m = Array1::from_vec(m).dot(&fermi_dirac);
-                                omega[[1]]=o;
-                                matric[[4]]=m;
-                                let o = im_xz.outer_iter().zip(UU.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let m = re_xz.outer_iter().zip(U1.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let o = Array1::from_vec(o).dot(&fermi_dirac);
-                                let m = Array1::from_vec(m).dot(&fermi_dirac);
-                                omega[[2]]=o;
-                                matric[[5]]=m;
+                                omega[[0]]  = accumulate(&im_xy, &UU, &fermi_dirac);
+                                matric[[3]] = accumulate(&re_xy, &U1, &fermi_dirac);
+                                omega[[1]]  = accumulate(&im_yz, &UU, &fermi_dirac);
+                                matric[[4]] = accumulate(&re_yz, &U1, &fermi_dirac);
+                                omega[[2]]  = accumulate(&im_xz, &UU, &fermi_dirac);
+                                matric[[5]] = accumulate(&re_xz, &U1, &fermi_dirac);
                             });
                         (matric_n,omega_n)
                     },
@@ -364,28 +359,30 @@ impl<const DIM: usize> Model<false, DIM> {
                         let Complex { re, im } = A_xy.view().split_complex();
                         let re_xy:Array2<Complex<f64>> = re.mapv(|x| Complex::new(2.0*x, 0.0));
                         let im_xy:Array2<Complex<f64>> = im.mapv(|x| Complex::new(0.0, -2.0*x));
-                        // Calculate the matrices for each frequency
+
+                        #[inline]
+                        fn accumulate(mat: &Array2<Complex<f64>>, kernel: &Array2<Complex<f64>>, fermi: &Array1<Complex<f64>>) -> Complex<f64> {
+                            let mut sum = Complex::new(0.0, 0.0);
+                            for (i, (mr, kr)) in mat.outer_iter().zip(kernel.outer_iter()).enumerate() {
+                                sum += mr.dot(&kr) * fermi[i];
+                            }
+                            sum
+                        }
+
                         Zip::from(omega_n.axis_iter_mut(Axis(1)))
                             .and(matric_n.axis_iter_mut(Axis(1)))
                             .and(og.view())
                             .par_for_each(|mut omega, mut matric, a0| {
                                 let li_eta = a0 + li * eta;
-                                let UU = U0.mapv(|x| (x*x - li_eta*li_eta).finv());
-                                let U1:Array2<Complex<f64>> = &UU * &Us * li_eta;
+                                let li_eta_sq = li_eta * li_eta;
+                                let UU = U0_sq.mapv(|x| (Complex::new(x, 0.0) - li_eta_sq).finv());
+                                let U1: Array2<Complex<f64>> = &UU * &Us * li_eta;
 
-                                let m = re_xx.outer_iter().zip(U1.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let m = Array1::from_vec(m).dot(&fermi_dirac);
-                                matric[[0]]=m;
-                                let m = re_yy.outer_iter().zip(U1.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let m = Array1::from_vec(m).dot(&fermi_dirac);
-                                matric[[1]]=m;
+                                matric[[0]] = accumulate(&re_xx, &U1, &fermi_dirac);
+                                matric[[1]] = accumulate(&re_yy, &U1, &fermi_dirac);
 
-                                let o = im_xy.outer_iter().zip(UU.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let m = re_xy.outer_iter().zip(U1.outer_iter()).map(|(a, b)| a.dot(&b)).collect();
-                                let o = Array1::from_vec(o).dot(&fermi_dirac);
-                                let m = Array1::from_vec(m).dot(&fermi_dirac);
-                                omega[[0]]=o;
-                                matric[[2]]=m;
+                                omega[[0]]  = accumulate(&im_xy, &UU, &fermi_dirac);
+                                matric[[2]] = accumulate(&re_xy, &U1, &fermi_dirac);
                             });
                         (matric_n,omega_n)
                     },
