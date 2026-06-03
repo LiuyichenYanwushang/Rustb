@@ -1170,10 +1170,20 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         dir_3: &Array1<f64>,
         spin: Option<SpinDirection>,
     ) -> (Array1<f64>, Array1<f64>, Option<Array1<f64>>) {
-        let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
-            self.gen_v(&k_vec, Gauge::Atom); //这是速度算符
-        let mut J = v.clone();
-        //let (band, evec) = self.solve_onek(&k_vec); //能带和本征值
+        // Build direction matrix: [current_dir, dir_2, dir_3]
+        let directions = {
+            let mut d = Array2::<f64>::zeros((3, self.dim_r()));
+            d.row_mut(0).assign(current_dir);
+            d.row_mut(1).assign(dir_2);
+            d.row_mut(2).assign(dir_3);
+            d
+        };
+        let (v_proj, hamk) =
+            self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
+        // v_proj[0] = Σ_d current_dir[d] * v_raw[d]
+        // v_proj[1] = Σ_d dir_2[d] * v_raw[d]
+        // v_proj[2] = Σ_d dir_3[d] * v_raw[d]
+
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)
         } else {
@@ -1181,23 +1191,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
         let evec_conj = evec.t();
         let evec = evec.map(|x| x.conj());
-        for i in 0..self.dim_r() {
-            let v_s = v.slice(s![i, .., ..]).to_owned();
-            let v_s = evec_conj
-                .clone()
-                .dot(&(v_s.dot(&evec.clone().reversed_axes()))); //变换到本征态基函数
-            v.slice_mut(s![i, .., ..]).assign(&v_s); //将 v 变换到以本征态为基底
-        }
-        //现在速度算符已经是以本征态为基函数
-        let mut v_1 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta())); //三个方向的速度算符
-        let mut v_2 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-        let mut v_3 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-        for i in 0..self.dim_r() {
-            v_1 = v_1.clone()
-                + v.slice(s![i, .., ..]).to_owned() * Complex::new(current_dir[[i]], 0.0);
-            v_2 = v_2.clone() + v.slice(s![i, .., ..]).to_owned() * Complex::new(dir_2[[i]], 0.0);
-            v_3 = v_3.clone() + v.slice(s![i, .., ..]).to_owned() * Complex::new(dir_3[[i]], 0.0);
-        }
+        // Precompute transposed evec once — avoids per-direction clone in original
+        let evec_t: Array2<Complex<f64>> = evec.t().to_owned();
+
+        // Transform projected matrices to eigenbasis in one shot per projection
+        let v0: Array2<Complex<f64>> = v_proj.slice(s![0, .., ..]).to_owned();
+        let v1: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
+        let v2: Array2<Complex<f64>> = v_proj.slice(s![2, .., ..]).to_owned();
+        let v_1 = evec_conj.dot(&v0.dot(&evec_t));
+        let v_2 = evec_conj.dot(&v1.dot(&evec_t));
+        let v_3 = evec_conj.dot(&v2.dot(&evec_t));
         //三个方向的速度算符都得到了
         let mut U0 = Array2::<f64>::zeros((self.nsta(), self.nsta()));
         for i in 0..self.nsta() {
@@ -1220,28 +1223,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         //开始最后的计算
         if SPIN {
-            //如果考虑自旋, 我们就计算 \partial_h G_{ij}
+            // Anti-commute on projected raw matrices (once each, not per-direction)
             let X = build_spin_matrix(self.norb(), spin);
-            let mut S = Array3::<Complex<f64>>::zeros((self.dim_r(), self.nsta(), self.nsta()));
-            for i in 0..self.dim_r() {
-                let v0 = J.slice(s![i, .., ..]).to_owned();
-                let v0 = anti_comm(&X, &v0) / 2.0;
-                let v0 = evec_conj
-                    .clone()
-                    .dot(&(v0.dot(&evec.clone().reversed_axes()))); //变换到本征态基函数
-                S.slice_mut(s![i, .., ..]).assign(&v0);
-            }
-            let mut s_1 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta())); //三个方向的速度算符
-            let mut s_2 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-            let mut s_3 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
-            for i in 0..self.dim_r() {
-                s_1 = s_1.clone()
-                    + S.slice(s![i, .., ..]).to_owned() * Complex::new(current_dir[[i]], 0.0);
-                s_2 =
-                    s_2.clone() + S.slice(s![i, .., ..]).to_owned() * Complex::new(dir_2[[i]], 0.0);
-                s_3 =
-                    s_3.clone() + S.slice(s![i, .., ..]).to_owned() * Complex::new(dir_3[[i]], 0.0);
-            }
+            let s_1_raw = anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5;
+            let s_2_raw = anti_comm(&X, &v_proj.slice(s![1, .., ..])) * 0.5;
+            let s_3_raw = anti_comm(&X, &v_proj.slice(s![2, .., ..])) * 0.5;
+            // Transform to eigenbasis
+            let s_1 = evec_conj.dot(&s_1_raw.dot(&evec_t));
+            let s_2 = evec_conj.dot(&s_2_raw.dot(&evec_t));
+            let s_3 = evec_conj.dot(&s_3_raw.dot(&evec_t));
             let G_23: Array1<f64> = {
                 //用来计算  beta gamma 的 G
                 let A = &v_2 * (U0.map(|x| Complex::<f64>::new(x.powi(3), 0.0)));
@@ -1260,17 +1250,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
                 G
             };
-            //开始计算partial_s
-            let partial_s_1 = s_1.clone().diag().map(|x| x.re);
-            let partial_s_2 = s_2.clone().diag().map(|x| x.re);
-            let partial_s_3 = s_3.clone().diag().map(|x| x.re);
-            let mut partial_s = Array2::<f64>::zeros((self.dim_r(), self.nsta()));
-            for r in 0..self.dim_r() {
-                let s0 = S.slice(s![r, .., ..]).to_owned();
-                partial_s
-                    .slice_mut(s![r, ..])
-                    .assign(&s0.diag().map(|x| x.re)); //\p_i s算符的对角项
-            }
+            let partial_s_1 = s_1.diag().map(|x| x.re);
+            let partial_s_2 = s_2.diag().map(|x| x.re);
+            let partial_s_3 = s_3.diag().map(|x| x.re);
             //开始计算partial G
             let partial_G: Array1<f64> = {
                 let mut A = Array1::<Complex<f64>>::zeros(self.nsta()); //第一项
