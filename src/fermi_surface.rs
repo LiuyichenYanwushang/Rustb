@@ -493,15 +493,16 @@ impl<const SPIN: bool, R: RMatrixData> BxsfExport for Model<SPIN, 3, R> {
 
         for ib in 0..nsta {
             writeln!(f, "    BAND: {b0}", b0 = ib + 1)?;
-            // Row‑major: ix slowest, iz fastest (XCrySDen convention)
+            // gen_kmesh generates rows in ix-slowest, iz-fastest order,
+            // which matches XCrySDen's BXSF convention for each band.
             let mut line_buf = String::with_capacity(256);
-            for ix in 0..nx {
-                for iy in 0..ny {
-                    for iz in 0..nz {
-                        let idx = ix + iy * nx + iz * (nx * ny);
-                        let e = eval[[idx, ib]];
-                        // Use fixed-format for clean alignment
-                        if iz % 10 == 0 && iz > 0 {
+            let mut row = 0;
+            for _ix in 0..nx {
+                for _iy in 0..ny {
+                    for _iz in 0..nz {
+                        let e = eval[[row, ib]];
+                        row += 1;
+                        if _iz % 10 == 0 && _iz > 0 {
                             line_buf.push('\n');
                         }
                         use std::fmt::Write;
@@ -527,19 +528,16 @@ impl<const SPIN: bool, R: RMatrixData> BxsfExport for Model<SPIN, 3, R> {
 /// FRMSF nest order (Fortran):
 /// `do ibnd; do ik1; do ik2; do ik3; write`
 /// i.e. `ibnd` outermost, `ik3` (z) fastest.
+///
+/// `gen_kmesh` generates rows in the same (ik1,ik2,ik3) order with ik3
+/// fastest, so for each band the eval rows are already in FRMSF order.
 fn frmsf_order(eval: &Array2<f64>, nk: &[usize; 3]) -> Vec<f64> {
-    let [nx, ny, nz] = *nk;
+    let nk_total = nk[0] * nk[1] * nk[2];
     let nbnd = eval.ncols();
-    let nk_total = nx * ny * nz;
     let mut out = Vec::with_capacity(nk_total * nbnd);
     for ib in 0..nbnd {
-        for ik1 in 0..nx {
-            for ik2 in 0..ny {
-                for ik3 in 0..nz {
-                    let idx = ik1 + ik2 * nx + ik3 * (nx * ny);
-                    out.push(eval[[idx, ib]]);
-                }
-            }
+        for row in 0..nk_total {
+            out.push(eval[[row, ib]]);
         }
     }
     out
