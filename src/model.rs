@@ -351,19 +351,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     pub fn dim_r(&self) -> usize {
         DIM
     }
-    /// Reciprocal lattice vectors satisfying `Bᵀ A = 2π·I`, where `A` is the
+    /// Reciprocal lattice vectors satisfying `B A = 2π·I`, where `A` is the
     /// real-space lattice (columns = lattice vectors, stored in [`Model::lat`]).
     ///
-    /// Each column of the returned matrix is a reciprocal lattice vector
+    /// Each row of the returned matrix is a reciprocal lattice vector
     /// `bᵢ`.  The inversion can fail for a degenerate real-space lattice.
     pub fn rec_lat(&self) -> Result<Array2<f64>> {
-        let inv_t = self
+        let inv = self
             .lat
-            .t()
-            .to_owned()
             .inv()
             .map_err(|e| TbError::Other(format!("Failed to invert lattice: {e}")))?;
-        Ok(std::f64::consts::TAU * inv_t)
+        Ok(std::f64::consts::TAU * inv)
     }
     #[inline(always)]
     pub fn atom_list(&self) -> Vec<usize> {

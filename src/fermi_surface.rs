@@ -487,9 +487,9 @@ impl<const SPIN: bool, R: RMatrixData> BxsfExport for Model<SPIN, 3, R> {
         writeln!(f, "    {nsta}")?;
         writeln!(f, "    {nx} {ny} {nz}")?;
         writeln!(f, "    0.0 0.0 0.0")?; // origin = Γ point
-        writeln!(f, "    {:.10} {:.10} {:.10}", b[[0, 0]], b[[1, 0]], b[[2, 0]])?;
-        writeln!(f, "    {:.10} {:.10} {:.10}", b[[0, 1]], b[[1, 1]], b[[2, 1]])?;
-        writeln!(f, "    {:.10} {:.10} {:.10}", b[[0, 2]], b[[1, 2]], b[[2, 2]])?;
+        writeln!(f, "    {:.10} {:.10} {:.10}", b[[0, 0]], b[[0, 1]], b[[0, 2]])?;
+        writeln!(f, "    {:.10} {:.10} {:.10}", b[[1, 0]], b[[1, 1]], b[[1, 2]])?;
+        writeln!(f, "    {:.10} {:.10} {:.10}", b[[2, 0]], b[[2, 1]], b[[2, 2]])?;
 
         for ib in 0..nsta {
             writeln!(f, "    BAND: {b0}", b0 = ib + 1)?;
@@ -664,9 +664,9 @@ pub fn write_spin_frmsf<const SPIN: bool, R: RMatrixData>(
     writeln!(f, "{nx} {ny} {nz}")?;
     writeln!(f, "1")?; // gen_kmesh uses i/N grid (i = 0..N-1), matches ishift=1
     writeln!(f, "{nbnd_total}")?;
-    writeln!(f, "{:.10} {:.10} {:.10}", b[[0, 0]], b[[1, 0]], b[[2, 0]])?;
-    writeln!(f, "{:.10} {:.10} {:.10}", b[[0, 1]], b[[1, 1]], b[[2, 1]])?;
-    writeln!(f, "{:.10} {:.10} {:.10}", b[[0, 2]], b[[1, 2]], b[[2, 2]])?;
+    writeln!(f, "{:.10} {:.10} {:.10}", b[[0, 0]], b[[0, 1]], b[[0, 2]])?;
+    writeln!(f, "{:.10} {:.10} {:.10}", b[[1, 0]], b[[1, 1]], b[[1, 2]])?;
+    writeln!(f, "{:.10} {:.10} {:.10}", b[[2, 0]], b[[2, 1]], b[[2, 2]])?;
 
     // Energy block
     let energy_flat = frmsf_order(&eval_merged, k_mesh);
