@@ -35,8 +35,6 @@ use ndarray::*;
 use rayon::prelude::*;
 use std::fs;
 use std::io::Write;
-use ndarray_linalg::Inverse;
-use std::f64::consts::PI as PI_64;
 use std::process::Command;
 
 // ── Marching squares (2D) ────────────────────────────────────────────
@@ -394,16 +392,6 @@ fn render_fermi_3d(triangles: &[[Array1<f64>; 3]], name: &str) -> Result<()> {
 
 // ── BXSF export (FermiSurfer / XCrySDen) ─────────────────────────────
 
-/// Compute the reciprocal lattice vectors whose columns satisfy
-/// BᵀA = 2π·I, where A is the real-space lattice (columns = lattice vectors).
-fn rec_lat(lat: &Array2<f64>) -> Result<Array2<f64>> {
-    let lat_t = lat.t().to_owned();
-    let lat_t_inv = lat_t
-        .inv()
-        .map_err(|e| TbError::Other(format!("Failed to invert lattice for reciprocal vectors: {e}")))?;
-    Ok(PI_64 * 2.0 * lat_t_inv)
-}
-
 /// Trait for exporting band energies in BXSF format (XCrySDen / FermiSurfer).
 ///
 /// # Overview
@@ -468,7 +456,7 @@ impl<const SPIN: bool, R: RMatrixData> BxsfExport for Model<SPIN, 3, R> {
         let nk = nx * ny * nz;
 
         // 1. Reciprocal lattice (spanning vectors for the grid)
-        let b = rec_lat(&self.lat)?;
+        let b = self.rec_lat()?;
 
         // 2. Generate k‑mesh and solve band energies
         let kvec: Array2<f64> = gen_kmesh(&arr1(&[nx, ny, nz]))?;
@@ -649,7 +637,7 @@ pub fn write_spin_frmsf<const SPIN: bool, R: RMatrixData>(
         )));
     }
 
-    let b = rec_lat(&up_model.lat)?;
+    let b = up_model.rec_lat()?;
     let kvec: Array2<f64> = gen_kmesh(&arr1(&[nx, ny, nz]))?;
     let eval_up = up_model.solve_band_all_parallel(&kvec)-e_fermi;
     let eval_dn = dn_model.solve_band_all_parallel(&kvec)-e_fermi;

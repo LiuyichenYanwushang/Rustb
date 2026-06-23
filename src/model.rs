@@ -5,6 +5,7 @@ pub use crate::model_utils::{find_R, remove_col, remove_row};
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{Result, TbError};
 use ndarray::*;
+use ndarray_linalg::Inverse;
 use num_complex::Complex;
 use serde::de;
 use serde::ser::SerializeStruct;
@@ -349,6 +350,20 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     }
     pub fn dim_r(&self) -> usize {
         DIM
+    }
+    /// Reciprocal lattice vectors satisfying `Bᵀ A = 2π·I`, where `A` is the
+    /// real-space lattice (columns = lattice vectors, stored in [`Model::lat`]).
+    ///
+    /// Each column of the returned matrix is a reciprocal lattice vector
+    /// `bᵢ`.  The inversion can fail for a degenerate real-space lattice.
+    pub fn rec_lat(&self) -> Result<Array2<f64>> {
+        let inv_t = self
+            .lat
+            .t()
+            .to_owned()
+            .inv()
+            .map_err(|e| TbError::Other(format!("Failed to invert lattice: {e}")))?;
+        Ok(std::f64::consts::TAU * inv_t)
     }
     #[inline(always)]
     pub fn atom_list(&self) -> Vec<usize> {
