@@ -629,7 +629,7 @@ pub fn write_spin_frmsf<const SPIN: bool, R: RMatrixData>(
     up_model: &Model<SPIN, 3, R>,
     dn_model: &Model<SPIN, 3, R>,
     k_mesh: &[usize; 3],
-    _e_fermi: f64,
+    e_fermi: f64,
     filename: &str,
 ) -> Result<()> {
     let [nx, ny, nz] = *k_mesh;
@@ -642,10 +642,17 @@ pub fn write_spin_frmsf<const SPIN: bool, R: RMatrixData>(
         )));
     }
 
+    let lat_diff = (&up_model.lat - &dn_model.lat).mapv(|x| x.abs()).sum();
+    if lat_diff > 1e-10 {
+        return Err(TbError::Other(format!(
+            "up_model and dn_model must have the same lattice, diff = {lat_diff}"
+        )));
+    }
+
     let b = rec_lat(&up_model.lat)?;
     let kvec: Array2<f64> = gen_kmesh(&arr1(&[nx, ny, nz]))?;
-    let eval_up = up_model.solve_band_all_parallel(&kvec);
-    let eval_dn = dn_model.solve_band_all_parallel(&kvec);
+    let eval_up = up_model.solve_band_all_parallel(&kvec)-e_fermi;
+    let eval_dn = dn_model.solve_band_all_parallel(&kvec)-e_fermi;
 
     // Merge: up bands first, then down
     let nk = nx * ny * nz;
@@ -667,7 +674,7 @@ pub fn write_spin_frmsf<const SPIN: bool, R: RMatrixData>(
 
     // Header
     writeln!(f, "{nx} {ny} {nz}")?;
-    writeln!(f, "0")?;
+    writeln!(f, "1")?; // gen_kmesh uses i/N grid (i = 0..N-1), matches ishift=1
     writeln!(f, "{nbnd_total}")?;
     writeln!(f, "{:.10} {:.10} {:.10}", b[[0, 0]], b[[1, 0]], b[[2, 0]])?;
     writeln!(f, "{:.10} {:.10} {:.10}", b[[0, 1]], b[[1, 1]], b[[2, 1]])?;
