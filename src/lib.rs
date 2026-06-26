@@ -228,6 +228,7 @@ pub mod surfgreen;
 pub mod unfold;
 pub mod velocity;
 pub mod wannier90;
+pub mod tetrahedron;
 pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
 pub use crate::atom_struct::{Atom, OrbProj};
 pub use crate::conductivity::*;

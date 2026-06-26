@@ -1130,10 +1130,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
             conductivity = conductivity.clone() / (nk as f64) / self.lat.det().unwrap();
         } else {
-            //采用四面体积分法, 或者对于二维体系, 采用三角形积分法
-            //积分的思路是, 通过将一个六面体变成5个四面体, 然后用线性插值的方法, 得到费米面,
-            //以及费米面上的数, 最后, 通过积分算出来结果
-            panic!("When T=0, the algorithm have not been writed, please wait for next version");
+            // T=0: Blochl tetrahedron integration
+            let omega_2d =
+                Array2::<f64>::from_shape_vec((nk, self.nsta()), omega).unwrap();
+            let band_2d =
+                Array2::<f64>::from_shape_vec((nk, self.nsta()), band).unwrap();
+            conductivity =
+                crate::tetrahedron::tetrahedron_integrate(&band_2d, &omega_2d, k_mesh, mu)
+                    / self.lat.det().unwrap();
         }
         Ok(conductivity)
     }
@@ -1566,10 +1570,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
             conductivity = conductivity.clone() / (nk as f64) / self.lat.det().unwrap();
         } else {
-            //采用四面体积分法, 或者对于二维体系, 采用三角形积分法
-            //积分的思路是, 通过将一个六面体变成5个四面体, 然后用线性插值的方法, 得到费米面,
-            //以及费米面上的数, 最后, 通过积分算出来结果
-            panic!("the code can not support for T=0");
+            // T=0: Blochl tetrahedron integration (main term only)
+            let omega_2d = omega.into_shape((nk, self.nsta())).unwrap();
+            conductivity =
+                crate::tetrahedron::tetrahedron_integrate(&band0, &omega_2d, k_mesh, mu)
+                    / self.lat.det().unwrap();
+            // TODO: partial_G term at T=0 requires cumulative tetrahedron
+            // weights (volume integral of θ(μ−ε)), not yet implemented.
         }
         Ok(conductivity)
     }
