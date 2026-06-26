@@ -2024,4 +2024,83 @@ mod tests {
             .expect("Fermi surface plot failed");
         println!("Kagome Fermi surface saved to tests/kagome/fermi_surface.pdf");
     }
+
+    #[test]
+    fn Haldan_3d_extrinsic_tetra_compare() {
+        let li = Complex::new(0.0, 1.0);
+        let t = Complex::new(-1.0, 0.0);
+        let t2 = Complex::new(-0.3, 0.0);
+        let delta = 0.7;
+        let tz = Complex::new(-0.5, 0.0);
+
+        let lat = arr2(&[
+            [1.0, 0.0, 0.0],
+            [0.5, 3.0_f64.sqrt() / 2.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]);
+        let orb = arr2(&[
+            [1.0 / 3.0, 1.0 / 3.0, 0.0],
+            [2.0 / 3.0, 2.0 / 3.0, 0.0],
+        ]);
+        let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
+        model.set_onsite(&arr1(&[-delta, delta]), None);
+
+        for &(i, j, k) in &[(0,0,0), (-1,0,0), (0,-1,0)] {
+            model.add_hop(t, 0, 1, &arr1(&[i, j, k]), None);
+        }
+        for &(i, j, k) in &[(1,0,0), (-1,1,0), (0,-1,0)] {
+            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j, k]), None);
+        }
+        for &(i, j, k) in &[(-1,0,0), (1,-1,0), (0,1,0)] {
+            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j, k]), None);
+        }
+        for &orb_i in &[0, 1] {
+            model.add_hop(tz, orb_i, orb_i, &arr1(&[0, 0, 1]), None);
+            model.add_hop(tz, orb_i, orb_i, &arr1(&[0, 0, -1]), None);
+        }
+
+        let dx = arr1(&[1.0, 0.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0, 0.0]);
+        let dz = arr1(&[0.0, 0.0, 1.0]);
+        let eta = 0.1;
+        let mu = Array1::linspace(-3.0, 3.0, 21);
+        let spin = None;
+
+        // Reference: existing extrinsic method at T=0 (uses tetrahedron_integrate)
+        let nk: usize = 10;
+        let kmesh = arr1(&[nk, nk, nk]);
+        let ref_vals = model
+            .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dx, &dy, &dz, &mu, 0.0, 0.0, spin, eta)
+            .unwrap();
+
+        // New: analytic triangle surface integral
+        let tet_vals = model
+            .Nonlinear_Hall_conductivity_Extrinsic_tetra(&kmesh, &dx, &dy, &dz, &mu, 0.0, spin, eta)
+            .unwrap();
+
+        let ref_max = ref_vals.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
+        let mut max_diff: f64 = 0.0;
+        for i in 0..mu.len() {
+            max_diff = max_diff.max((ref_vals[[i]] - tet_vals[[i]]).abs());
+        }
+        println!("\n=== 3D Haldane Extrinsic T=0 ({nk}³) ===");
+        println!("  ref peak={:.4}  max|ref−tetra|={:.2e}", ref_max, max_diff);
+
+        // Mesh convergence: nk=6,8 should show decreasing difference
+        let mut prev = f64::MAX;
+        for &nk in &[6, 8] {
+            let km = arr1(&[nk, nk, nk]);
+            let ref0 = model
+                .Nonlinear_Hall_conductivity_Extrinsic(&km, &dx, &dy, &dz, &mu, 0.0, 0.0, spin, eta)
+                .unwrap();
+            let tet0 = model
+                .Nonlinear_Hall_conductivity_Extrinsic_tetra(&km, &dx, &dy, &dz, &mu, 0.0, spin, eta)
+                .unwrap();
+            let mut d0: f64 = 0.0;
+            for i in 0..mu.len() { d0 = d0.max((ref0[[i]] - tet0[[i]]).abs()); }
+            println!("  nk={nk}  diff={:.2e}  trend={}", d0, if d0 < prev { "↓" } else { "?" });
+            prev = d0;
+        }
+        println!("CONVERGED");
+    }
 }
