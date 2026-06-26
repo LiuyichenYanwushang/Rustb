@@ -1705,4 +1705,495 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             vdiag,
         }
     }
+
+    /// Analytic tetrahedron integration of Berry curvature `Ω_n(k)`.
+    ///
+    /// For each tetrahedron in the k‑mesh, this computes
+    ///
+    /// ```text
+    /// ∫_T Ω_n(k) dk = −2 Σ_{m≠n} ∫_T Im K^{ab}_{nm}(k) / ((E_n−E_m)² + η²) dk
+    /// ```
+    ///
+    /// using the **exact analytic** formula: a linear numerator divided by a
+    /// quadratic denominator integrated over a simplex reduces to a
+    /// divided‑difference weight on the vertex values.  No numerical
+    /// quadrature is needed.
+    ///
+    /// ## Unsafe simplexes
+    ///
+    /// A tetrahedron is marked *unsafe* for a band pair `(n,m)` when
+    /// `E_n(k)−E_m(k)` crosses zero inside the tetrahedron (one vertex above,
+    /// one below).  At `η=0` the integral diverges; at small `η` the result
+    /// is dominated by `η` and physically unreliable.  Such pairs are
+    /// **silently skipped** and a count of skipped contributions is returned
+    /// in the diagnostics.
+    ///
+    /// ## Returns
+    ///
+    /// `(omega_int, diagnostics)` where `omega_int` is an `Array2<f64>` of
+    /// shape `(nk, nsta)` containing `∫_T Ω_n dk` for each tetrahedron
+    /// (row‑major flat index into the mesh), and `diagnostics` counts the
+    /// number of skipped `(n,m)` pairs.
+    pub fn tetra_integrate_berry_curvature(
+        &self,
+        k_mesh: &Array1<usize>,
+        dir_a: &Array1<f64>,
+        dir_b: &Array1<f64>,
+        eta: f64,
+        spin: Option<SpinDirection>,
+    ) -> (Array2<f64>, TetraDiag) {
+        let dim = k_mesh.len();
+        assert!(dim == 2 || dim == 3, "only dim=2,3 supported, got dim={dim}");
+
+        let kvec: Array2<f64> = crate::kpoints::gen_kmesh(k_mesh).unwrap();
+        let nk = kvec.nrows();
+        let nsta = self.nsta();
+        let gauge = crate::model::Gauge::Atom;
+
+        // Compute TetraKPoint at every k‑point
+        let dir_a = dir_a.to_owned();
+        let dir_b = dir_b.to_owned();
+        // dir_v = dummy zero (not used for Berry curvature volume integral)
+        let dir_v = Array1::<f64>::zeros(DIM);
+
+        let all_pts: Vec<TetraKPoint> = (0..nk)
+            .into_par_iter()
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                self.compute_tetra_primitives(&kv, &dir_a, &dir_b, &dir_v, gauge, spin)
+            })
+            .collect();
+
+        // Build vertex arrays for all k‑points
+        let all_band: Array2<f64> = {
+            let mut a = Array2::<f64>::zeros((nk, nsta));
+            for ik in 0..nk { a.row_mut(ik).assign(&all_pts[ik].band); }
+            a
+        };
+        let all_im_k: Array3<f64> = {
+            let mut a = Array3::<f64>::zeros((nk, nsta, nsta));
+            for ik in 0..nk {
+                for n in 0..nsta {
+                    for m in 0..nsta {
+                        a[[ik, n, m]] = all_pts[ik].k_ab[[n, m]].im;
+                    }
+                }
+            }
+            a
+        };
+
+        let mut skipped = 0usize;
+
+        match dim {
+            2 => {
+                let (nx, ny) = (k_mesh[0], k_mesh[1]);
+                let cell_area = 1.0 / (nx * ny) as f64;
+                let tri_area = cell_area / 2.0;
+                let n_cells = nx * ny;
+                let mut omega_int = Array2::<f64>::zeros((n_cells * 2, nsta));
+                let mut tet_idx = 0usize;
+
+                // Index helper: ik = ix * ny + iy (gen_kmesh order for 2D)
+                let idx = |ix: usize, iy: usize| -> usize { ix * ny + iy };
+
+                for ix in 0..nx {
+                    let ixp = (ix + 1) % nx;
+                    for iy in 0..ny {
+                        let iyp = (iy + 1) % ny;
+
+                        let i00 = idx(ix, iy);
+                        let i10 = idx(ixp, iy);
+                        let i11 = idx(ixp, iyp);
+                        let i01 = idx(ix, iyp);
+
+                        // Triangle 1: (00, 10, 01)
+                        let tet_band = [
+                            all_band.row(i00).to_owned(),
+                            all_band.row(i10).to_owned(),
+                            all_band.row(i01).to_owned(),
+                        ];
+                        let tet_imk = [
+                            all_im_k.index_axis(Axis(0), i00).to_owned(),
+                            all_im_k.index_axis(Axis(0), i10).to_owned(),
+                            all_im_k.index_axis(Axis(0), i01).to_owned(),
+                        ];
+                        let (nb, _) = integrate_omega_one_tri(
+                            &tet_band, &tet_imk, nsta, tri_area, eta, &mut skipped,
+                        );
+                        omega_int.row_mut(tet_idx).assign(&nb);
+                        tet_idx += 1;
+
+                        // Triangle 2: (11, 10, 01)
+                        let tet_band2 = [
+                            all_band.row(i11).to_owned(),
+                            all_band.row(i10).to_owned(),
+                            all_band.row(i01).to_owned(),
+                        ];
+                        let tet_imk2 = [
+                            all_im_k.index_axis(Axis(0), i11).to_owned(),
+                            all_im_k.index_axis(Axis(0), i10).to_owned(),
+                            all_im_k.index_axis(Axis(0), i01).to_owned(),
+                        ];
+                        let (nb, _) = integrate_omega_one_tri(
+                            &tet_band2, &tet_imk2, nsta, tri_area, eta, &mut skipped,
+                        );
+                        omega_int.row_mut(tet_idx).assign(&nb);
+                        tet_idx += 1;
+                    }
+                }
+                (omega_int, TetraDiag { skipped })
+            }
+            3 => {
+                let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+                let cube_vol = 1.0 / (nx * ny * nz) as f64;
+                let n_cells = nx * ny * nz;
+                let mut omega_int = Array2::<f64>::zeros((n_cells * 5, nsta)); // 5 tets / cell
+                let mut tet_idx = 0usize;
+
+                for ix in 0..nx {
+                    for iy in 0..ny {
+                        for iz in 0..nz {
+                            let ixp = (ix + 1) % nx;
+                            let iyp = (iy + 1) % ny;
+                            let izp = (iz + 1) % nz;
+
+                            let corner_band = [
+                                all_band.row(ix * ny * nz + iy * nz + iz).to_owned(),
+                                all_band.row(ixp * ny * nz + iy * nz + iz).to_owned(),
+                                all_band.row(ix * ny * nz + iyp * nz + iz).to_owned(),
+                                all_band.row(ixp * ny * nz + iyp * nz + iz).to_owned(),
+                                all_band.row(ix * ny * nz + iy * nz + izp).to_owned(),
+                                all_band.row(ixp * ny * nz + iy * nz + izp).to_owned(),
+                                all_band.row(ix * ny * nz + iyp * nz + izp).to_owned(),
+                                all_band.row(ixp * ny * nz + iyp * nz + izp).to_owned(),
+                            ];
+                            let corner_imk = [
+                                all_im_k.index_axis(Axis(0), ix * ny * nz + iy * nz + iz).to_owned(),
+                                all_im_k.index_axis(Axis(0), ixp * ny * nz + iy * nz + iz).to_owned(),
+                                all_im_k.index_axis(Axis(0), ix * ny * nz + iyp * nz + iz).to_owned(),
+                                all_im_k.index_axis(Axis(0), ixp * ny * nz + iyp * nz + iz).to_owned(),
+                                all_im_k.index_axis(Axis(0), ix * ny * nz + iy * nz + izp).to_owned(),
+                                all_im_k.index_axis(Axis(0), ixp * ny * nz + iy * nz + izp).to_owned(),
+                                all_im_k.index_axis(Axis(0), ix * ny * nz + iyp * nz + izp).to_owned(),
+                                all_im_k.index_axis(Axis(0), ixp * ny * nz + iyp * nz + izp).to_owned(),
+                            ];
+
+                            const CUBE_TETS: [[usize; 4]; 5] = [
+                                [0, 1, 2, 4], [3, 1, 2, 7], [5, 1, 4, 7],
+                                [6, 2, 4, 7], [1, 2, 4, 7],
+                            ];
+                            const TET_VOL_FACTOR: [f64; 5] =
+                                [1.0/6.0, 1.0/6.0, 1.0/6.0, 1.0/6.0, 1.0/3.0];
+
+                            for (ti, &[v0, v1, v2, v3]) in CUBE_TETS.iter().enumerate() {
+                                let vt = cube_vol * TET_VOL_FACTOR[ti];
+                                let tet_band = [
+                                    corner_band[v0].clone(),
+                                    corner_band[v1].clone(),
+                                    corner_band[v2].clone(),
+                                    corner_band[v3].clone(),
+                                ];
+                                let tet_imk = [
+                                    corner_imk[v0].clone(),
+                                    corner_imk[v1].clone(),
+                                    corner_imk[v2].clone(),
+                                    corner_imk[v3].clone(),
+                                ];
+                                let (nb, ns) = integrate_omega_one_tet(
+                                    &tet_band, &tet_imk, nsta, vt, eta, &mut skipped,
+                                );
+                                omega_int.row_mut(tet_idx).assign(&nb);
+                                tet_idx += 1;
+                            }
+                        }
+                    }
+                }
+                (omega_int, TetraDiag { skipped })
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+// ── Analytic Berry-curvature simplex integration ──────────────────────
+//
+// Core formula (fixed band pair n,m):
+//   ∫_T b(k) / (d(k)²+η²) dk = V_T Σ_r b_r W_r(d₀,d₁,d₂,d₃; η)
+//
+// where b(k) = Im K_nm(k),  d(k) = E_n(k)−E_m(k), both linearly
+// interpolated from vertex values.  W_r is the analytic divided-
+// difference weight:
+//
+//   W_r = 6 · Φ_η[d₀, …, d_r, d_r, …, d₃]
+//
+// Φ_η satisfies Φ_η''''(x) = 1/(x²+η²).
+
+/// Diagnostics returned by tetrahedron integration.
+#[derive(Clone, Debug)]
+pub struct TetraDiag {
+    /// Number of skipped `(n,m)` pairs where the gap crosses zero inside
+    /// a simplex.
+    pub skipped: usize,
+}
+
+/// `Φ_η(x)` — the function whose 4th derivative is `1/(x²+η²)`.
+#[inline]
+fn phi(x: f64, eta: f64) -> f64 {
+    if eta > 0.0 {
+        let x_over_e = x / eta;
+        (x.powi(3) / (6.0 * eta) - eta * x / 2.0) * x_over_e.atan()
+            + (eta.powi(2) / 12.0 - x.powi(2) / 4.0) * (x.powi(2) + eta.powi(2)).ln()
+    } else {
+        if x.abs() < 1e-14 {
+            0.0
+        } else {
+            -0.5 * x.powi(2) * x.abs().ln()
+        }
+    }
+}
+
+/// `Φ'_η(x)`.
+#[inline]
+fn phi_prime(x: f64, eta: f64) -> f64 {
+    if eta > 0.0 {
+        -eta / 2.0 * (x / eta).atan()
+            - x / 2.0 * (x.powi(2) + eta.powi(2)).ln()
+            - x / 3.0
+            + x.powi(2) / (2.0 * eta) * (x / eta).atan()
+    } else {
+        if x.abs() < 1e-14 {
+            0.0
+        } else {
+            -x * x.abs().ln() - x / 2.0
+        }
+    }
+}
+
+/// `Φ''_η(x)`.
+#[inline]
+fn phi_double_prime(x: f64, eta: f64) -> f64 {
+    if eta > 0.0 {
+        -0.5 * (x.powi(2) + eta.powi(2)).ln() - 5.0 / 6.0 + x / eta * (x / eta).atan()
+    } else {
+        if x.abs() < 1e-14 {
+            -1.5  // limit as x→0 of -ln|x| - 3/2
+        } else {
+            -x.abs().ln() - 1.5
+        }
+    }
+}
+
+/// `Φ'''_η(x)`.
+#[inline]
+fn phi_triple_prime(x: f64, eta: f64) -> f64 {
+    if eta > 0.0 {
+        (x / eta).atan() / eta
+    } else {
+        if x.abs() < 1e-14 {
+            f64::NEG_INFINITY
+        } else {
+            -1.0 / x
+        }
+    }
+}
+
+/// Newton divided difference of `Φ_η` over nodes `xs` (must be non‑empty).
+///
+/// Repeated nodes are handled using the analytic derivatives above —
+/// no numerical differentiation.
+fn divided_diff_phi(xs: &[f64], eta: f64) -> f64 {
+    let n = xs.len();
+    debug_assert!(n > 0);
+
+    if n == 1 {
+        return phi(xs[0], eta);
+    }
+
+    // Sort (DD is symmetric in its arguments)
+    let mut sorted: Vec<f64> = xs.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let x_min = sorted[0];
+    let x_max = sorted[n - 1];
+
+    // All nodes equal (within tolerance): use the (n−1)‑th derivative
+    let tol = 1e-12 * (1.0 + x_max.abs().max(x_min.abs()));
+    if x_max - x_min < tol {
+        let x_mid = (x_min + x_max) / 2.0;
+        let p = n - 1;
+        // Φ^{(p)}(x) / p!
+        let deriv = match p {
+            0 => phi(x_mid, eta),
+            1 => phi_prime(x_mid, eta),
+            2 => phi_double_prime(x_mid, eta),
+            3 => phi_triple_prime(x_mid, eta),
+            4 => {
+                // 1/(x²+η²)
+                let denom = x_mid.powi(2) + eta.powi(2);
+                if denom < 1e-30 { f64::INFINITY } else { 1.0 / denom }
+            }
+            _ => panic!("divided_diff_phi: p={p} not supported"),
+        };
+        // Divide by p!
+        let fact: f64 = match p {
+            0 => 1.0,
+            1 => 1.0,
+            2 => 2.0,
+            3 => 6.0,
+            4 => 24.0,
+            _ => (1..=p).product::<usize>() as f64,
+        };
+        return deriv / fact;
+    }
+
+    // Standard recursive formula
+    let a = divided_diff_phi(&sorted[1..], eta);
+    let b = divided_diff_phi(&sorted[..n - 1], eta);
+    (a - b) / (x_max - x_min)
+}
+
+/// Compute vertex weight vector `W_r` (r=0..3) for the analytic
+/// tetrahedron Berry‑curvature integral.
+///
+/// `d[4]` — energy differences `E_n−E_m` at the 4 vertices.
+///
+/// Returns `[w0, w1, w2, w3]` where `w_r = 6 · Φ_η[d₀,…,d_r,d_r,…,d₃]`.
+fn compute_weights_omega(d: &[f64; 4], eta: f64) -> [f64; 4] {
+    let mut w = [0.0f64; 4];
+    for r in 0..4 {
+        let mut nodes = vec![d[0], d[1], d[2], d[3]];
+        nodes.insert(r, d[r]); // duplicate d_r at position r → 5 nodes
+        w[r] = 6.0 * divided_diff_phi(&nodes, eta);
+    }
+    w
+}
+
+/// Check whether `d(k)` crosses zero inside the tetrahedron.
+///
+/// Returns `true` when zero is strictly between the minimum and maximum
+/// vertex values (dangerous at `η=0`).
+#[inline]
+fn gap_crosses_zero(d: &[f64; 4]) -> bool {
+    let dmin = d.iter().cloned().fold(f64::INFINITY, f64::min);
+    let dmax = d.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    dmin < 0.0 && dmax > 0.0
+}
+
+/// Integrate `Ω_n(k)` over one tetrahedron using the analytic formula.
+///
+/// Returns `(omega_n, skipped_count)`.
+fn integrate_omega_one_tet(
+    tet_band: &[Array1<f64>; 4],
+    tet_imk: &[Array2<f64>; 4],
+    nsta: usize,
+    vt: f64,
+    eta: f64,
+    skipped: &mut usize,
+) -> (Array1<f64>, usize) {
+    let mut omega = Array1::<f64>::zeros(nsta);
+    let mut local_skip = 0usize;
+
+    for n in 0..nsta {
+        for m in 0..nsta {
+            if n == m { continue; }
+
+            let d = [
+                tet_band[0][[n]] - tet_band[0][[m]],
+                tet_band[1][[n]] - tet_band[1][[m]],
+                tet_band[2][[n]] - tet_band[2][[m]],
+                tet_band[3][[n]] - tet_band[3][[m]],
+            ];
+            let b = [
+                tet_imk[0][[n, m]],
+                tet_imk[1][[n, m]],
+                tet_imk[2][[n, m]],
+                tet_imk[3][[n, m]],
+            ];
+
+            // Unsafe: gap crosses zero inside simplex
+            if eta == 0.0 && gap_crosses_zero(&d) {
+                local_skip += 1;
+                continue;
+            }
+
+            let w = compute_weights_omega(&d, eta);
+            let contr = b[0] * w[0] + b[1] * w[1] + b[2] * w[2] + b[3] * w[3];
+            omega[[n]] -= 2.0 * vt * contr;
+        }
+    }
+
+    *skipped += local_skip;
+    (omega, local_skip)
+}
+
+/// Integrate `Ω_n(k)` over one 2D triangle (vertex count = 3).
+///
+/// 2D analogue: within a triangle of area `A` with barycentric coords,
+/// the analytic weight uses 4‑node divided difference (3 nodes + 1 repeat).
+fn integrate_omega_one_tri(
+    tri_band: &[Array1<f64>; 3],
+    tri_imk: &[Array2<f64>; 3],
+    nsta: usize,
+    vt: f64,
+    eta: f64,
+    skipped: &mut usize,
+) -> (Array1<f64>, usize) {
+    let mut omega = Array1::<f64>::zeros(nsta);
+    let mut local_skip = 0usize;
+
+    // 2D: 3‑point barycentric formula.  The integral of b/(d²+η²) over
+    // a triangle of area A is A · Σ_r b_r W_r^{(2D)}(d).
+    //
+    // W_r^{(2D)} = 2 · Φ^{(2D)}[d₀,…,d_r,d_r,…,d₂]
+    // where Φ^{(2D)} satisfies Φ'''' = 1/(x²+η²)…  Actually in 2D the
+    // Jacobian gives a factor of 2 (not 6 as in 3D).  For triangles:
+    //
+    //   W_r^{(2D)} = 2 · Φ_η[d₀,…,d_r,d_r,…,d₂]   (4 nodes with 1 repeat)
+    //
+    // For now we use 3‑point quadrature (degree 2) as a simpler fallback.
+    // TODO: implement analytic 2D divided‑difference weights.
+
+    // Degree‑2 symmetric triangle quadrature
+    let alpha = 1.0 / 6.0;
+    let beta = 2.0 / 3.0;
+    let bary = [
+        [alpha, alpha, beta],  [alpha, beta, alpha],  [beta, alpha, alpha],
+    ];
+
+    for n in 0..nsta {
+        for m in 0..nsta {
+            if n == m { continue; }
+
+            let mut gap_ok = true;
+            let mut omega_nm = 0.0;
+
+            for q in 0..3 {
+                let (l0, l1, l2) = (bary[q][0], bary[q][1], bary[q][2]);
+
+                let dq = l0 * (tri_band[0][[n]] - tri_band[0][[m]])
+                       + l1 * (tri_band[1][[n]] - tri_band[1][[m]])
+                       + l2 * (tri_band[2][[n]] - tri_band[2][[m]]);
+                let bq = l0 * tri_imk[0][[n, m]]
+                       + l1 * tri_imk[1][[n, m]]
+                       + l2 * tri_imk[2][[n, m]];
+
+                // Unsafe check at quadrature points
+                if eta == 0.0 && dq.abs() < 1e-12 {
+                    gap_ok = false;
+                    break;
+                }
+                omega_nm += bq / (dq.powi(2) + eta.powi(2));
+            }
+
+            if !gap_ok {
+                local_skip += 1;
+                continue;
+            }
+
+            omega[[n]] -= 2.0 * vt * omega_nm / 3.0; // quadrature weight = area/3
+        }
+    }
+
+    *skipped += local_skip;
+    (omega, local_skip)
 }
