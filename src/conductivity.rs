@@ -1910,14 +1910,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .into_par_iter()
                     .fold(
                         || Array1::<f64>::zeros(n_mu),
-                        |acc, cell_id| {
+                        |mut acc, cell_id| {
                             let ix = cell_id / ny;
                             let iy = cell_id % ny;
-                            let cell_acc = accum_hall_cell_2d(
+                            accum_hall_cell_2d(
                                 ix, iy, nx, ny, nsta, n_mu, eta,
-                                mu, &all_band, &all_pts,
+                                mu, &all_band, &all_pts, &mut acc,
                             );
-                            acc + cell_acc
+                            acc
                         },
                     )
                     .reduce(
@@ -1932,16 +1932,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .into_par_iter()
                     .fold(
                         || Array1::<f64>::zeros(n_mu),
-                        |acc, cell_id| {
+                        |mut acc, cell_id| {
                             let ix = cell_id / (ny * nz);
                             let rem = cell_id % (ny * nz);
                             let iy = rem / nz;
                             let iz = rem % nz;
-                            let cell_acc = accum_hall_cell_3d(
+                            accum_hall_cell_3d(
                                 ix, iy, iz, nx, ny, nz,
-                                nsta, n_mu, eta, mu, &all_band, &all_pts,
+                                nsta, n_mu, eta, mu, &all_band, &all_pts, &mut acc,
                             );
-                            acc + cell_acc
+                            acc
                         },
                     )
                     .reduce(
@@ -2431,14 +2431,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .into_par_iter()
                     .fold(
                         || Array1::<f64>::zeros(n_mu),
-                        |acc, cell_id| {
+                        |mut acc, cell_id| {
                             let ix = cell_id / ny;
                             let iy = cell_id % ny;
-                            let cell_acc = accum_extrinsic_cell_2d(
+                            accum_extrinsic_cell_2d(
                                 ix, iy, nx, ny, inv_nx, inv_ny,
-                                nsta, n_mu, eta, mu, &all_pts,
+                                nsta, n_mu, eta, mu, &all_pts, &mut acc,
                             );
-                            acc + cell_acc
+                            acc
                         },
                     )
                     .reduce(
@@ -2457,17 +2457,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .into_par_iter()
                     .fold(
                         || Array1::<f64>::zeros(n_mu),
-                        |acc, cell_id| {
+                        |mut acc, cell_id| {
                             let ix = cell_id / (ny * nz);
                             let rem = cell_id % (ny * nz);
                             let iy = rem / nz;
                             let iz = rem % nz;
-                            let cell_acc = accum_extrinsic_cell_3d(
+                            accum_extrinsic_cell_3d(
                                 ix, iy, iz, nx, ny, nz,
                                 inv_nx, inv_ny, inv_nz,
-                                nsta, n_mu, eta, mu, &all_pts,
+                                nsta, n_mu, eta, mu, &all_pts, &mut acc,
                             );
-                            acc + cell_acc
+                            acc
                         },
                     )
                     .reduce(
@@ -2520,8 +2520,8 @@ fn accum_extrinsic_cell_2d(
     inv_nx: f64, inv_ny: f64,
     nsta: usize, n_mu: usize, eta: f64,
     mu: &Array1<f64>, all_pts: &[TetraKPoint],
-) -> Array1<f64> {
-    let mut acc = Array1::<f64>::zeros(n_mu);
+    acc: &mut Array1<f64>,
+) {
     let ixp = (ix + 1) % nx;
     let iyp = (iy + 1) % ny;
     let i00 = ix * ny + iy;
@@ -2602,7 +2602,6 @@ fn accum_extrinsic_cell_2d(
             }
         }
     }
-    acc
 }
 
 /// Thread-local accumulator for one 3D cell (extrinsic NLH).
@@ -2612,11 +2611,11 @@ fn accum_extrinsic_cell_3d(
     inv_nx: f64, inv_ny: f64, inv_nz: f64,
     nsta: usize, n_mu: usize, eta: f64,
     mu: &Array1<f64>, all_pts: &[TetraKPoint],
-) -> Array1<f64> {
+    acc: &mut Array1<f64>,
+) {
     const TETS: [[usize; 4]; 5] = [
         [0, 1, 2, 4], [3, 1, 2, 7], [5, 1, 4, 7], [6, 2, 4, 7], [1, 2, 4, 7],
     ];
-    let mut acc = Array1::<f64>::zeros(n_mu);
     let ixp = (ix + 1) % nx;
     let iyp = (iy + 1) % ny;
     let izp = (iz + 1) % nz;
@@ -2698,7 +2697,6 @@ fn accum_extrinsic_cell_3d(
             }
         }
     }
-    acc
 }
 
 /// Thread-local accumulator for one 2D cell (Hall conductivity).
@@ -2706,14 +2704,13 @@ fn accum_hall_cell_2d(
     ix: usize, iy: usize, nx: usize, ny: usize,
     nsta: usize, n_mu: usize, eta: f64,
     mu: &Array1<f64>, all_band: &Array2<f64>, all_pts: &[TetraKPoint],
-) -> Array1<f64> {
+    acc: &mut Array1<f64>,
+) {
     let cell_area = 1.0 / (nx * ny) as f64;
     let tri_area = cell_area / 2.0;
     let alpha = 1.0 / 6.0;
     let beta = 2.0 / 3.0;
     let bary = [[alpha, alpha, beta], [alpha, beta, alpha], [beta, alpha, alpha]];
-
-    let mut acc = Array1::<f64>::zeros(n_mu);
     let ixp = (ix + 1) % nx;
     let iyp = (iy + 1) % ny;
     let i00 = ix * ny + iy;
@@ -2752,7 +2749,6 @@ fn accum_hall_cell_2d(
             }
         }
     }
-    acc
 }
 
 /// Thread-local accumulator for one 3D cell (Hall conductivity).
@@ -2761,13 +2757,13 @@ fn accum_hall_cell_3d(
     nx: usize, ny: usize, nz: usize,
     nsta: usize, n_mu: usize, eta: f64,
     mu: &Array1<f64>, all_band: &Array2<f64>, all_pts: &[TetraKPoint],
-) -> Array1<f64> {
+    acc: &mut Array1<f64>,
+) {
     const TETS: [[usize; 4]; 5] = [
         [0, 1, 2, 4], [3, 1, 2, 7], [5, 1, 4, 7], [6, 2, 4, 7], [1, 2, 4, 7],
     ];
     const TVF: [f64; 5] = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0];
     let cube_vol = 1.0 / (nx * ny * nz) as f64;
-    let mut acc = Array1::<f64>::zeros(n_mu);
     let ixp = (ix + 1) % nx;
     let iyp = (iy + 1) % ny;
     let izp = (iz + 1) % nz;
@@ -2801,5 +2797,4 @@ fn accum_hall_cell_3d(
             }
         }
     }
-    acc
 }

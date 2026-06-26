@@ -609,13 +609,13 @@ Root causes (not yet fixed):
 Both tetra methods follow the same pattern:
 ```rust
 let result = (0..ncell).into_par_iter()
-    .fold(|| Array1::zeros(n_mu), |acc, cell_id| {
-        let cell_acc = accum_xxx_cell_xx(...);
-        acc + cell_acc
+    .fold(|| Array1::zeros(n_mu), |mut acc, cell_id| {
+        accum_xxx_cell_xx(..., &mut acc);  // writes directly into thread-local acc
+        acc
     })
-    .reduce(|| Array1::zeros(n_mu), |a, b| a + b);
+    .reduce(|| Array1::zeros(n_mu), |mut a, b| { a += &b; a });
 ```
 - k-point computation (`compute_tetra_primitives`) is parallelized via `into_par_iter()` on k-vector iteration
-- Cell accumulation helpers are free functions that take shared read-only references (`&all_pts`, `&mu`, `&all_band`)
-- Each thread builds its own `Array1<f64>` accumulator; final reduce by `a + b`
+- Cell accumulation helpers take `&mut Array1<f64>` and write directly (no per-cell allocation)
+- Each thread builds its own `Array1<f64>` accumulator; final reduce by `a += &b`
 - Floating-point addition order varies between serial/parallel runs → last few bits may differ (not physically significant)
