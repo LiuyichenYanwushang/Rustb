@@ -2126,10 +2126,26 @@ fn integrate_omega_one_tet(
     (omega, local_skip)
 }
 
-/// Integrate `Ω_n(k)` over one 2D triangle (vertex count = 3).
+/// Compute vertex weights for 2D triangle (3 vertices, 1 repeat → 4 nodes).
 ///
-/// 2D analogue: within a triangle of area `A` with barycentric coords,
-/// the analytic weight uses 4‑node divided difference (3 nodes + 1 repeat).
+/// `W_r^{(2D)} = 2 · Φ_η[d₀, …, d_r, d_r, …, d₂]`  (4‑node DD)
+fn compute_weights_omega_2d(d: &[f64; 3], eta: f64) -> [f64; 3] {
+    let mut w = [0.0f64; 3];
+    for r in 0..3 {
+        let mut nodes = vec![d[0], d[1], d[2]];
+        nodes.insert(r, d[r]); // 4 nodes with d_r repeated
+        w[r] = 2.0 * divided_diff_phi(&nodes, eta);
+    }
+    w
+}
+
+/// Integrate `Ω_n(k)` over one 2D triangle using the analytic formula.
+///
+/// ```text
+/// ∫_T b(k)/(d(k)²+η²) d²k = A · Σ_r b_r · W_r^{(2D)}(d; η)
+/// ```
+///
+/// where `W_r^{(2D)} = 2 · Φ_η[4‑node DD with d_r repeated]`.
 fn integrate_omega_one_tri(
     tri_band: &[Array1<f64>; 3],
     tri_imk: &[Array2<f64>; 3],
@@ -2141,59 +2157,325 @@ fn integrate_omega_one_tri(
     let mut omega = Array1::<f64>::zeros(nsta);
     let mut local_skip = 0usize;
 
-    // 2D: 3‑point barycentric formula.  The integral of b/(d²+η²) over
-    // a triangle of area A is A · Σ_r b_r W_r^{(2D)}(d).
-    //
-    // W_r^{(2D)} = 2 · Φ^{(2D)}[d₀,…,d_r,d_r,…,d₂]
-    // where Φ^{(2D)} satisfies Φ'''' = 1/(x²+η²)…  Actually in 2D the
-    // Jacobian gives a factor of 2 (not 6 as in 3D).  For triangles:
-    //
-    //   W_r^{(2D)} = 2 · Φ_η[d₀,…,d_r,d_r,…,d₂]   (4 nodes with 1 repeat)
-    //
-    // For now we use 3‑point quadrature (degree 2) as a simpler fallback.
-    // TODO: implement analytic 2D divided‑difference weights.
-
-    // Degree‑2 symmetric triangle quadrature
-    let alpha = 1.0 / 6.0;
-    let beta = 2.0 / 3.0;
-    let bary = [
-        [alpha, alpha, beta],  [alpha, beta, alpha],  [beta, alpha, alpha],
-    ];
-
     for n in 0..nsta {
         for m in 0..nsta {
             if n == m { continue; }
 
-            let mut gap_ok = true;
-            let mut omega_nm = 0.0;
+            let d = [
+                tri_band[0][[n]] - tri_band[0][[m]],
+                tri_band[1][[n]] - tri_band[1][[m]],
+                tri_band[2][[n]] - tri_band[2][[m]],
+            ];
+            let b = [
+                tri_imk[0][[n, m]],
+                tri_imk[1][[n, m]],
+                tri_imk[2][[n, m]],
+            ];
 
-            for q in 0..3 {
-                let (l0, l1, l2) = (bary[q][0], bary[q][1], bary[q][2]);
-
-                let dq = l0 * (tri_band[0][[n]] - tri_band[0][[m]])
-                       + l1 * (tri_band[1][[n]] - tri_band[1][[m]])
-                       + l2 * (tri_band[2][[n]] - tri_band[2][[m]]);
-                let bq = l0 * tri_imk[0][[n, m]]
-                       + l1 * tri_imk[1][[n, m]]
-                       + l2 * tri_imk[2][[n, m]];
-
-                // Unsafe check at quadrature points
-                if eta == 0.0 && dq.abs() < 1e-12 {
-                    gap_ok = false;
-                    break;
-                }
-                omega_nm += bq / (dq.powi(2) + eta.powi(2));
-            }
-
-            if !gap_ok {
+            if eta == 0.0 && gap_crosses_zero_2d(&d) {
                 local_skip += 1;
                 continue;
             }
 
-            omega[[n]] -= 2.0 * vt * omega_nm / 3.0; // quadrature weight = area/3
+            let w = compute_weights_omega_2d(&d, eta);
+            let contr = b[0] * w[0] + b[1] * w[1] + b[2] * w[2];
+            omega[[n]] -= 2.0 * vt * contr;
         }
     }
 
     *skipped += local_skip;
     (omega, local_skip)
+}
+
+/// Zero-crossing check for 2D (3 vertices).
+#[inline]
+fn gap_crosses_zero_2d(d: &[f64; 3]) -> bool {
+    let dmin = d.iter().cloned().fold(f64::INFINITY, f64::min);
+    let dmax = d.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    dmin < 0.0 && dmax > 0.0
+}
+
+// ── Hall conductivity via tetrahedron integration ─────────────────────
+//
+// Blochl sub‑tetrahedron decomposition for T=0, thermal convolution for T>0.
+
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    /// Hall conductivity using analytic tetrahedron integration.
+    ///
+    /// T=0: Blochl sub‑tet decomposition for partial occupation.
+    /// T>0: thermal convolution of the T=0 result.
+    pub fn Hall_conductivity_tetra(
+        &self,
+        k_mesh: &Array1<usize>,
+        current_dir: &Array1<f64>,
+        dir_2: &Array1<f64>,
+        mu: &Array1<f64>,
+        T: f64,
+        spin: Option<SpinDirection>,
+        eta: f64,
+    ) -> Result<Array1<f64>> {
+        let dim = k_mesh.len();
+        assert!(dim == 2 || dim == 3);
+
+        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
+        let nk = kvec.nrows();
+        let nsta = self.nsta();
+        let gauge = Gauge::Atom;
+        let dir_v = Array1::<f64>::zeros(DIM);
+
+        let all_pts: Vec<TetraKPoint> = (0..nk)
+            .into_par_iter()
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                self.compute_tetra_primitives(
+                    &kv, current_dir, dir_2, &dir_v, gauge, spin,
+                )
+            })
+            .collect();
+
+        let all_band: Array2<f64> = {
+            let mut a = Array2::zeros((nk, nsta));
+            for ik in 0..nk { a.row_mut(ik).assign(&all_pts[ik].band); }
+            a
+        };
+
+        let n_mu = mu.len();
+        let det = self.lat.det().unwrap();
+
+        let mut result_t0 = Array1::<f64>::zeros(n_mu);
+
+        match dim {
+            2 => {
+                // Simplified 2D: full occupancy only (TODO: triangle decomp)
+                let (nx, ny) = (k_mesh[0], k_mesh[1]);
+                let tri_area = 0.5 / (nx * ny) as f64;
+                for ix in 0..nx {
+                    let ixp = (ix + 1) % nx;
+                    for iy in 0..ny {
+                        let iyp = (iy + 1) % ny;
+                        let i00 = ix * ny + iy;
+                        let i10 = ixp * ny + iy;
+                        let i11 = ixp * ny + iyp;
+                        let i01 = ix * ny + iyp;
+                        for &(v0, v1, v2) in &[(i00, i10, i01), (i11, i10, i01)] {
+                            for n in 0..nsta {
+                                let e = [
+                                    all_band[[v0, n]], all_band[[v1, n]], all_band[[v2, n]],
+                                ];
+                                for im in 0..n_mu {
+                                    let muv = mu[[im]];
+                                    if e.iter().all(|&ei| ei <= muv) {
+                                        // Fully occupied triangle
+                                        let mut t = 0.0;
+                                        for m in 0..nsta {
+                                            if m == n { continue; }
+                                            let p = [
+                                                all_pts[v0].k_ab[[n, m]].im,
+                                                all_pts[v1].k_ab[[n, m]].im,
+                                                all_pts[v2].k_ab[[n, m]].im,
+                                            ];
+                                            let d = [
+                                                all_pts[v0].band[[n]] - all_pts[v0].band[[m]],
+                                                all_pts[v1].band[[n]] - all_pts[v1].band[[m]],
+                                                all_pts[v2].band[[n]] - all_pts[v2].band[[m]],
+                                            ];
+                                            if eta == 0.0 && gap_crosses_zero_2d(&d) { continue; }
+                                            let w = compute_weights_omega_2d(&d, eta);
+                                            t += p[0]*w[0] + p[1]*w[1] + p[2]*w[2];
+                                        }
+                                        result_t0[[im]] -= 2.0 * tri_area * t;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            3 => {
+                let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+                let cube_vol = 1.0 / (nx * ny * nz) as f64;
+                const TETS: [[usize; 4]; 5] = [
+                    [0,1,2,4], [3,1,2,7], [5,1,4,7], [6,2,4,7], [1,2,4,7],
+                ];
+                const TVF: [f64; 5] = [1.0/6.0, 1.0/6.0, 1.0/6.0, 1.0/6.0, 1.0/3.0];
+                let idx3 = |x: usize, y: usize, z: usize| x * ny * nz + y * nz + z;
+
+                for ix in 0..nx {
+                    let ixp = (ix + 1) % nx;
+                    for iy in 0..ny {
+                        let iyp = (iy + 1) % ny;
+                        for iz in 0..nz {
+                            let izp = (iz + 1) % nz;
+                            let c = [
+                                idx3(ix,iy,iz), idx3(ixp,iy,iz),
+                                idx3(ix,iyp,iz), idx3(ixp,iyp,iz),
+                                idx3(ix,iy,izp), idx3(ixp,iy,izp),
+                                idx3(ix,iyp,izp), idx3(ixp,iyp,izp),
+                            ];
+                            for (ti, &[v0,v1,v2,v3]) in TETS.iter().enumerate() {
+                                let vt = cube_vol * TVF[ti];
+                                let cr = [c[v0], c[v1], c[v2], c[v3]];
+                                for n in 0..nsta {
+                                    let e = [
+                                        all_band[[cr[0],n]], all_band[[cr[1],n]],
+                                        all_band[[cr[2],n]], all_band[[cr[3],n]],
+                                    ];
+                                    let srt = sort_by_energy(&e);
+                                    let es0 = e[srt[0]]; let es3 = e[srt[3]];
+                                    for im in 0..n_mu {
+                                        if mu[[im]] <= es0 { continue; }
+                                        result_t0[[im]] += compute_occ_omega(
+                                            all_pts.as_ref(), &cr, n, nsta, vt, eta,
+                                            &e, &srt, mu[[im]], mu[[im]] >= es3,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        let raw = result_t0 / det;
+
+        // T>0: thermal convolution
+        if T > 0.0 && n_mu > 1 {
+            let beta = 1.0 / (T * 8.617e-5);
+            let dmu = mu[1] - mu[0];
+            let mut conv = Array1::<f64>::zeros(n_mu);
+            for i in 0..n_mu {
+                let mut s = 0.0;
+                for j in 0..n_mu {
+                    let x = beta * (mu[[j]] - mu[[i]]);
+                    if x.abs() > 50.0 { continue; }
+                    let f = 1.0 / (x.exp() + 1.0);
+                    s += raw[[j]] * beta * f * (1.0 - f) * dmu;
+                }
+                conv[[i]] = s;
+            }
+            Ok(conv)
+        } else {
+            Ok(raw)
+        }
+    }
+}
+
+// ── helpers for Hall_conductivity_tetra ────────────────────────────────
+
+#[inline]
+fn sort_by_energy(e: &[f64; 4]) -> [usize; 4] {
+    let mut idx = [0usize, 1, 2, 3];
+    idx.sort_by(|&a, &b| e[a].partial_cmp(&e[b]).unwrap());
+    idx
+}
+
+#[inline]
+fn interp_t(mu: f64, ei: f64, ej: f64) -> f64 {
+    let d = ej - ei;
+    if d.abs() < 1e-14 { 0.5 } else { (mu - ei) / d }
+}
+
+#[inline]
+fn full_tet_one_pair(p: &[f64; 4], d: &[f64; 4], vt: f64, eta: f64) -> f64 {
+    if eta == 0.0 && gap_crosses_zero(d) { return 0.0; }
+    let w = compute_weights_omega(d, eta);
+    vt * (p[0]*w[0] + p[1]*w[1] + p[2]*w[2] + p[3]*w[3])
+}
+
+fn sub_tet_omega(
+    all_pts: &[TetraKPoint], corners: &[usize; 4], srt: &[usize; 4],
+    n: usize, nsta: usize, v_sub: f64, eta: f64,
+    verts: &[(usize, Option<f64>)],
+) -> f64 {
+    let base = verts[0].0;
+    let bc = corners[srt[base]];
+    let mut total = 0.0;
+    for m in 0..nsta {
+        if m == n { continue; }
+        let mut p_sub = [0.0f64; 4];
+        let mut d_sub = [0.0f64; 4];
+        for (vi, &(orig, t)) in verts.iter().enumerate() {
+            let cr = corners[srt[orig]];
+            if let Some(tv) = t {
+                p_sub[vi] = all_pts[bc].k_ab[[n,m]].im + tv * (all_pts[cr].k_ab[[n,m]].im - all_pts[bc].k_ab[[n,m]].im);
+                d_sub[vi] = (all_pts[bc].band[[n]]-all_pts[bc].band[[m]]) + tv * ((all_pts[cr].band[[n]]-all_pts[cr].band[[m]]) - (all_pts[bc].band[[n]]-all_pts[bc].band[[m]]));
+            } else {
+                p_sub[vi] = all_pts[cr].k_ab[[n,m]].im;
+                d_sub[vi] = all_pts[cr].band[[n]] - all_pts[cr].band[[m]];
+            }
+        }
+        total += full_tet_one_pair(&p_sub, &d_sub, v_sub, eta);
+    }
+    -2.0 * total
+}
+
+fn compute_occ_omega(
+    all_pts: &[TetraKPoint], corners: &[usize; 4],
+    n: usize, nsta: usize, vt: f64, eta: f64,
+    e_unsorted: &[f64; 4], srt: &[usize; 4], mu: f64, fully_occ: bool,
+) -> f64 {
+    let es = [e_unsorted[srt[0]], e_unsorted[srt[1]], e_unsorted[srt[2]], e_unsorted[srt[3]]];
+
+    if fully_occ || mu >= es[3] {
+        let mut total = 0.0;
+        for m in 0..nsta {
+            if m == n { continue; }
+            let p = [
+                all_pts[corners[0]].k_ab[[n,m]].im, all_pts[corners[1]].k_ab[[n,m]].im,
+                all_pts[corners[2]].k_ab[[n,m]].im, all_pts[corners[3]].k_ab[[n,m]].im,
+            ];
+            let d = [
+                e_unsorted[0]-all_pts[corners[0]].band[[m]], e_unsorted[1]-all_pts[corners[1]].band[[m]],
+                e_unsorted[2]-all_pts[corners[2]].band[[m]], e_unsorted[3]-all_pts[corners[3]].band[[m]],
+            ];
+            total += full_tet_one_pair(&p, &d, vt, eta);
+        }
+        return -2.0 * total;
+    }
+    if mu <= es[0] { return 0.0; }
+
+    if mu < es[1] {
+        let t01 = interp_t(mu, es[0], es[1]);
+        let t02 = interp_t(mu, es[0], es[2]);
+        let t03 = interp_t(mu, es[0], es[3]);
+        sub_tet_omega(all_pts, corners, srt, n, nsta, vt*t01*t02*t03, eta,
+            &[(0,None),(1,Some(t01)),(2,Some(t02)),(3,Some(t03))])
+    } else if mu < es[2] {
+        let t02 = interp_t(mu, es[0], es[2]);
+        let t03 = interp_t(mu, es[0], es[3]);
+        let t12 = interp_t(mu, es[1], es[2]);
+        let t13 = interp_t(mu, es[1], es[3]);
+        let v1 = t02 * t03;
+        let v2 = t12 * t03 * (1.0 - t02);
+        let v3 = t12 * t13 * (1.0 - t03);
+        sub_tet_omega(all_pts,corners,srt,n,nsta,vt*v1,eta,&[(0,None),(1,None),(2,Some(t02)),(3,Some(t03))])
+        + sub_tet_omega(all_pts,corners,srt,n,nsta,vt*v2,eta,&[(1,None),(2,Some(t02)),(2,Some(t12)),(3,Some(t03))])
+        + sub_tet_omega(all_pts,corners,srt,n,nsta,vt*v3,eta,&[(1,None),(2,Some(t12)),(3,Some(t03)),(3,Some(t13))])
+    } else {
+        let full = {
+            let mut t = 0.0;
+            for m in 0..nsta {
+                if m == n { continue; }
+                let p = [
+                    all_pts[corners[0]].k_ab[[n,m]].im, all_pts[corners[1]].k_ab[[n,m]].im,
+                    all_pts[corners[2]].k_ab[[n,m]].im, all_pts[corners[3]].k_ab[[n,m]].im,
+                ];
+                let d = [
+                    e_unsorted[0]-all_pts[corners[0]].band[[m]], e_unsorted[1]-all_pts[corners[1]].band[[m]],
+                    e_unsorted[2]-all_pts[corners[2]].band[[m]], e_unsorted[3]-all_pts[corners[3]].band[[m]],
+                ];
+                t += full_tet_one_pair(&p, &d, vt, eta);
+            }
+            -2.0 * t
+        };
+        let t03 = interp_t(mu, es[0], es[3]);
+        let t13 = interp_t(mu, es[1], es[3]);
+        let t23 = interp_t(mu, es[2], es[3]);
+        let cv = (1.0-t03)*(1.0-t13)*(1.0-t23);
+        let cap = sub_tet_omega(all_pts,corners,srt,n,nsta,vt*cv,eta,
+            &[(3,None),(0,Some(1.0-t03)),(1,Some(1.0-t13)),(2,Some(1.0-t23))]);
+        full - cap
+    }
 }
