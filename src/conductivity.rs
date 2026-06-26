@@ -2268,6 +2268,9 @@ fn grad_linear_tri_2d(coords: &[[f64; 2]; 3], e: &[f64; 3]) -> f64 {
 ///
 /// u(ξ) = (1−ξ)u₀ + ξu₁,  P(ξ) = (1−ξ)P₀ + ξP₁,
 /// d(ξ) = (1−ξ)d₀ + ξd₁ = d₀ + ξ(d₁−d₀).
+///
+/// Uses separate analytic branches for η>0 (atan/log) and η=0 (ln, 1/d).
+/// Caller must ensure d₀,d₁ have the same sign when η=0.
 fn segment_integral_1d(
     u0: f64, u1: f64, p0: f64, p1: f64, d0: f64, d1: f64, eta: f64,
 ) -> f64 {
@@ -2281,20 +2284,31 @@ fn segment_integral_1d(
     let b = u0 * p1 + u1 * p0 - 2.0 * u0 * p0;
     let c = u0 * p0;
 
+    if eta == 0.0 {
+        // d₀,d₁ same-sign guaranteed by caller (zero-crossing pre-filtered).
+        // ψ₀ = ∫₀¹ 1/(d₀+ξΔ)² dξ = 1/(d₀d₁)
+        let psi0 = 1.0 / (d0 * d1);
+        // ψ₁ = (ln|d₁/d₀| + d₀/d₁ − 1) / Δ²
+        let ln_ratio = (d1 / d0).abs().ln();
+        let psi1 = (ln_ratio + d0 / d1 - 1.0) / (dd * dd);
+        // ψ₂ = (Δ − 2d₀ ln|d₁/d₀| − d₀²(1/d₁ − 1/d₀)) / Δ³
+        let psi2 = (dd - 2.0 * d0 * ln_ratio - d0 * d0 * (1.0 / d1 - 1.0 / d0))
+            / (dd * dd * dd);
+        return a * psi2 + b * psi1 + c * psi0;
+    }
+
+    // η > 0
     let at0 = (d0 / eta).atan();
     let at1 = (d1 / eta).atan();
     let dat = at1 - at0;
-    // ψ₀ = ∫₀¹ 1/(d(ξ)²+η²) dξ
     let psi0 = dat / (eta * dd);
 
     let ln0 = (d0 * d0 + eta * eta).ln();
     let ln1 = (d1 * d1 + eta * eta).ln();
     let dln = ln1 - ln0;
-    // ψ₁ = ∫₀¹ ξ/(d(ξ)²+η²) dξ
     let psi1 = dln / (2.0 * dd * dd) - d0 * psi0 / dd;
 
-    // ψ₂ = ∫₀¹ ξ²/(d(ξ)²+η²) dξ
-    // Antiderivative F(y) = y − d₀ln(y²+η²) + (d₀²/η−η)atan(y/η)
+    // ψ₂: Antiderivative F(y) = y − d₀ln(y²+η²) + (d₀²/η−η)atan(y/η)
     let coeff = d0 * d0 / eta - eta;
     let f1 = d1 - d0 * ln1 + coeff * at1;
     let f0 = d0 - d0 * ln0 + coeff * at0;
@@ -2413,15 +2427,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// σ^{abc}(μ,T) = Σ_n ∫_BZ (-∂f/∂E_n) v^c_n(k) Ω^{ab}_n(k) d³k
     /// ```
     ///
-    /// **T=0**: δ‑function Fermi‑surface integral with analytic triangle
-    /// weights (divided‑difference formula).  The μ‑plane intersection of
-    /// each tetrahedron is cut into 1–2 triangles; the surface integral of
-    /// u·P/(d²+η²) is evaluated analytically.
+    /// **2D**: each rectangular cell is split into two triangles; the μ‑plane
+    /// intersects each triangle in 0 or 1 line segment.  The 1D integral
+    /// of u·P/(d²+η²) along the segment is evaluated analytically
+    /// (elementary antiderivatives for η>0, ln/1/d for η=0).
+    ///
+    /// **3D**: each cubic cell is split into 5 tetrahedra; the μ‑plane
+    /// intersection of each tetrahedron is cut into 0–2 triangles.  The
+    /// 2D surface integral uses divided‑difference triangle weights.
     ///
     /// **T>0**: thermal convolution of the T=0 result.
     ///
     /// `current_dir` = a, `dir_2` = b for Ω^{ab}, `dir_c` = c for v^c.
-    /// Only 3D is supported (tetrahedron decomposition).
     pub fn Nonlinear_Hall_conductivity_Extrinsic_tetra(
         &self,
         k_mesh: &Array1<usize>,

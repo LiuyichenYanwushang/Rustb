@@ -2064,9 +2064,12 @@ mod tests {
         println!("\n=== 2D Staggered Graphene Extrinsic T=0 ({nk}×{nk}) ===");
         println!("  ref peak={:.4}  max|ref−tetra|={:.2e}", ref_max, max_diff);
         assert!(ref_max > 1e-6, "extrinsic signal too small: {ref_max:.2e}");
+        assert!(max_diff < 0.02, "tetra-ref mismatch too large: {:.2e}", max_diff);
 
-        // Mesh convergence
+        // Mesh convergence: diff must shrink from coarsest to finest
         let mut prev = f64::MAX;
+        let mut d_first: f64 = 0.0;
+        let mut d_last: f64 = 0.0;
         for &n in &[30, 40, 50] {
             let km = arr1(&[n, n]);
             let ref0 = model
@@ -2077,9 +2080,12 @@ mod tests {
                 .unwrap();
             let mut d0: f64 = 0.0;
             for i in 0..mu.len() { d0 = d0.max((ref0[[i]] - tet0[[i]]).abs()); }
+            if n == 30 { d_first = d0; }
+            if n == 50 { d_last = d0; }
             println!("  nk={n}  diff={:.2e}  trend={}", d0, if d0 < prev { "↓" } else { "?" });
             prev = d0;
         }
+        assert!(d_last < d_first * 1.1, "not converging: first={:.2e} last={:.2e}", d_first, d_last);
         println!("CONVERGED");
     }
 
@@ -2132,9 +2138,12 @@ mod tests {
         println!("\n=== 3D Staggered Graphene Extrinsic T=0 ({nk}³) ===");
         println!("  ref peak={:.4}  max|ref−tetra|={:.2e}", ref_max, max_diff);
         assert!(ref_max > 1e-6, "extrinsic signal too small: {ref_max:.2e}");
+        assert!(max_diff < 0.01, "tetra-ref mismatch too large: {:.2e}", max_diff);
 
-        // Mesh convergence
+        // Mesh convergence: diff must shrink from coarsest to finest
         let mut prev = f64::MAX;
+        let mut d_first: f64 = 0.0;
+        let mut d_last: f64 = 0.0;
         for &n in &[6, 8, 10] {
             let km = arr1(&[n, n, n]);
             let ref0 = model
@@ -2145,9 +2154,12 @@ mod tests {
                 .unwrap();
             let mut d0: f64 = 0.0;
             for i in 0..mu.len() { d0 = d0.max((ref0[[i]] - tet0[[i]]).abs()); }
+            if n == 6 { d_first = d0; }
+            if n == 10 { d_last = d0; }
             println!("  nk={n}  diff={:.2e}  trend={}", d0, if d0 < prev { "↓" } else { "?" });
             prev = d0;
         }
+        assert!(d_last < d_first * 1.1, "not converging: first={:.2e} last={:.2e}", d_first, d_last);
         println!("CONVERGED");
     }
 }
