@@ -881,6 +881,70 @@ mod tests {
         }
         println!("evec_transform_sanity: U^T H U^* = diag(band) ✓");
     }
+
+    /// Full mu-range comparison of Hall_conductivity_mu vs Hall_conductivity_tetra
+    /// on the Haldane model at T=0 and T=300K.
+    #[test]
+    fn Haldan_tetra_full_compare() {
+        let li = Complex::new(0.0, 1.0);
+        let t = Complex::new(-1.0, 0.0);
+        let t2 = Complex::new(-1.0, 0.0);
+        let delta = 0.7;
+        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+        let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_onsite(&arr1(&[-delta, delta]), None);
+        for &(i, j) in &[(0, 0), (-1, 0), (0, -1)] {
+            model.add_hop(t, 0, 1, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(1, 0), (-1, 1), (0, -1)] {
+            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(-1, 0), (1, -1), (0, 1)] {
+            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j]), None);
+        }
+
+        let nk = 21;
+        let kmesh = arr1(&[nk, nk]);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let eta = 0.01;
+        let mu = Array1::linspace(-2.0, 2.0, 51);
+        let spin = None;
+
+        for &(T, label) in &[(0.0, "T=0"), (300.0, "T=300K")] {
+            println!("\n=== Haldane {label} ({nk}x{nk}) ===");
+            let ref_vals = model
+                .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, T, spin, eta)
+                .unwrap();
+            let tet_vals = model
+                .Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu, T, spin, eta)
+                .unwrap();
+
+            let mut max_d = 0.0;
+            let mut mean_d = 0.0;
+            for i in 0..mu.len() {
+                let d = (ref_vals[[i]] - tet_vals[[i]]).abs();
+                if d > max_d { max_d = d; }
+                mean_d += d;
+            }
+            mean_d /= mu.len() as f64;
+            let ref_max = ref_vals.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
+            println!("  ref peak = {:.4}", ref_max);
+            println!("  max  |ref - tetra| = {:.2e}", max_d);
+            println!("  mean |ref - tetra| = {:.2e}", mean_d);
+            // Print a few sample values
+            for &i in &[10, 20, 25, 30, 40] {
+                println!("  mu[{i:>2}]={:+.2}  ref={:+.4}  tetra={:+.4}",
+                    mu[[i]], ref_vals[[i]], tet_vals[[i]]);
+            }
+            // Allow ~10% relative error at worst
+            let tol = 0.15 * ref_max.max(0.02);
+            assert!(max_d < tol,
+                "{label}: max diff {:.2e} > tol {:.2e}", max_d, tol);
+        }
+        println!("\nHaldane full compare: PASSED");
+    }
     #[test]
     fn graphene() {
         let li: Complex<f64> = 1.0 * Complex::i();
