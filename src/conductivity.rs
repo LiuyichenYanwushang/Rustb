@@ -1669,16 +1669,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let (v_proj, hamk) = self.gen_v_projected(k_vec, gauge, &directions);
         let (band, evec) = hamk.eigh(UPLO::Lower).unwrap();
-        let evec_conj = evec.t().map(|x| x.conj());
+        // Convention: U^T · O · U^*  (matches berry_curvature_n_onek).
+        // U^T = evec.t(),  U^* = evec.map(|x| x.conj()).
+        let ut = evec.t();
+        let uc = evec.map(|x| x.conj());
 
         let to_band = |d: usize, spin_dress: bool| -> Array2<Complex<f64>> {
             let v_raw = v_proj.slice(s![d, .., ..]).to_owned();
             if spin_dress && SPIN && spin.is_some() {
                 let x = build_spin_matrix(self.norb(), spin);
                 let s = anti_comm(&x, &v_raw) * 0.5;
-                evec_conj.dot(&s.dot(&evec))
+                ut.dot(&s.dot(&uc))
             } else {
-                evec_conj.dot(&v_raw.dot(&evec))
+                ut.dot(&v_raw.dot(&uc))
             }
         };
 
@@ -2134,7 +2137,9 @@ fn compute_weights_omega_2d(d: &[f64; 3], eta: f64) -> [f64; 3] {
     for r in 0..3 {
         let mut nodes = vec![d[0], d[1], d[2]];
         nodes.insert(r, d[r]); // 4 nodes with d_r repeated
-        w[r] = 2.0 * divided_diff_phi(&nodes, eta);
+        // Factor: (1/d!) = 1/2! = 1/2 for 2-simplex, then A-weight = 2A,
+        // net = 1.0 * Phi[4-node DD]. No extra factor.
+        w[r] = divided_diff_phi(&nodes, eta);
     }
     w
 }
@@ -2246,9 +2251,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         match dim {
             2 => {
-                // Simplified 2D: full occupancy only (TODO: triangle decomp)
+                // 2D: 3‑point degree‑2 triangle quadrature (exact for linear P
+                // and quadratic denominator d²).
                 let (nx, ny) = (k_mesh[0], k_mesh[1]);
-                let tri_area = 0.5 / (nx * ny) as f64;
+                let cell_area = 1.0 / (nx * ny) as f64;
+                let tri_area = cell_area / 2.0;
+                // Barycentric quadrature points (degree 2, 3-point)
+                let alpha = 1.0 / 6.0;
+                let beta = 2.0 / 3.0;
+                let bary = [[alpha, alpha, beta], [alpha, beta, alpha], [beta, alpha, alpha]];
+
                 for ix in 0..nx {
                     let ixp = (ix + 1) % nx;
                     for iy in 0..ny {
@@ -2259,32 +2271,33 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         let i01 = ix * ny + iyp;
                         for &(v0, v1, v2) in &[(i00, i10, i01), (i11, i10, i01)] {
                             for n in 0..nsta {
-                                let e = [
-                                    all_band[[v0, n]], all_band[[v1, n]], all_band[[v2, n]],
-                                ];
                                 for im in 0..n_mu {
                                     let muv = mu[[im]];
-                                    if e.iter().all(|&ei| ei <= muv) {
-                                        // Fully occupied triangle
-                                        let mut t = 0.0;
-                                        for m in 0..nsta {
-                                            if m == n { continue; }
-                                            let p = [
-                                                all_pts[v0].k_ab[[n, m]].im,
-                                                all_pts[v1].k_ab[[n, m]].im,
-                                                all_pts[v2].k_ab[[n, m]].im,
-                                            ];
-                                            let d = [
-                                                all_pts[v0].band[[n]] - all_pts[v0].band[[m]],
-                                                all_pts[v1].band[[n]] - all_pts[v1].band[[m]],
-                                                all_pts[v2].band[[n]] - all_pts[v2].band[[m]],
-                                            ];
-                                            if eta == 0.0 && gap_crosses_zero_2d(&d) { continue; }
-                                            let w = compute_weights_omega_2d(&d, eta);
-                                            t += p[0]*w[0] + p[1]*w[1] + p[2]*w[2];
+                                    let mut omega_n = 0.0;
+                                    for m in 0..nsta {
+                                        if m == n { continue; }
+                                        let mut ok = true;
+                                        let mut pair_contrib = 0.0;
+                                        for q in 0..3 {
+                                            let (l0, l1, l2) = (bary[q][0], bary[q][1], bary[q][2]);
+                                            let eq = l0 * all_band[[v0, n]]
+                                                   + l1 * all_band[[v1, n]]
+                                                   + l2 * all_band[[v2, n]];
+                                            // Step function at T=0
+                                            if eq > muv { continue; }
+                                            let dq = l0 * (all_band[[v0, n]] - all_band[[v0, m]])
+                                                   + l1 * (all_band[[v1, n]] - all_band[[v1, m]])
+                                                   + l2 * (all_band[[v2, n]] - all_band[[v2, m]]);
+                                            let pq = l0 * all_pts[v0].k_ab[[n, m]].im
+                                                   + l1 * all_pts[v1].k_ab[[n, m]].im
+                                                   + l2 * all_pts[v2].k_ab[[n, m]].im;
+                                            if eta == 0.0 && dq.abs() < 1e-12 { ok = false; break; }
+                                            pair_contrib += pq / (dq.powi(2) + eta.powi(2));
                                         }
-                                        result_t0[[im]] -= 2.0 * tri_area * t;
+                                        if !ok { continue; }
+                                        omega_n -= 2.0 * pair_contrib / 3.0; // quadrature weight = tri_area/3
                                     }
+                                    result_t0[[im]] += omega_n * tri_area;
                                 }
                             }
                         }

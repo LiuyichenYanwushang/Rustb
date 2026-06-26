@@ -786,6 +786,101 @@ mod tests {
             / 2.0;
         println!("The Chern number of Haldan model is {}", C);
     }
+
+    /// Sanity check: at a single k-point, compute_tetra_primitives
+    /// gives the same Berry curvature as berry_curvature_n_onek.
+    #[test]
+    fn tetra_primitives_sanity() {
+        let li = Complex::new(0.0, 1.0);
+        let t = Complex::new(-1.0, 0.0);
+        let t2 = Complex::new(-1.0, 0.0);
+        let delta = 0.7;
+        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+        let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_onsite(&arr1(&[-delta, delta]), None);
+        for &(i, j) in &[(0, 0), (-1, 0), (0, -1)] {
+            model.add_hop(t, 0, 1, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(1, 0), (-1, 1), (0, -1)] {
+            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(-1, 0), (1, -1), (0, 1)] {
+            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j]), None);
+        }
+
+        let k = arr1(&[0.3, 0.4]);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let eta = 0.01;
+
+        // Reference: berry_curvature_n_onek
+        let (omega_ref, _band_ref) =
+            model.berry_curvature_n_onek(&k, &dx, &dy, None, eta);
+        // Tetra primitives
+        let dv = Array1::zeros(2);
+        let pt = model.compute_tetra_primitives(&k, &dx, &dy, &dv, Gauge::Atom, None);
+
+        // Compute Omega from tetra primitives for each band n
+        let nsta = model.nsta();
+        for n in 0..nsta {
+            let mut omega_n = 0.0;
+            for m in 0..nsta {
+                if m == n { continue; }
+                let d = pt.band[[n]] - pt.band[[m]];
+                omega_n -= 2.0 * pt.k_ab[[n, m]].im / (d.powi(2) + eta.powi(2));
+            }
+            println!("band {n}: ref={:.6}, tetra={:.6}, diff={:.2e}",
+                omega_ref[[n]], omega_n, (omega_ref[[n]]-omega_n).abs());
+            assert!((omega_ref[[n]] - omega_n).abs() < 1e-6,
+                "band {n}: ref={}, tetra={}", omega_ref[[n]], omega_n);
+        }
+        println!("PASSED");
+    }
+
+    /// Verify eigenbasis convention: `U^T · H · U^*` gives diag = band.
+    /// If this test ever fails, the convention is broken everywhere.
+    #[test]
+    fn evec_transform_sanity() {
+        let li = Complex::new(0.0, 1.0);
+        let t = Complex::new(-1.0, 0.0);
+        let t2 = Complex::new(-1.0, 0.0);
+        let delta = 0.7;
+        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+        let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_onsite(&arr1(&[-delta, delta]), None);
+        for &(i, j) in &[(0, 0), (-1, 0), (0, -1)] {
+            model.add_hop(t, 0, 1, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(1, 0), (-1, 1), (0, -1)] {
+            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(-1, 0), (1, -1), (0, 1)] {
+            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j]), None);
+        }
+
+        let k = arr1(&[0.3, 0.4]);
+        let ham = model.gen_ham(&k, Gauge::Atom);
+        let (band, evec) = ham.eigh(UPLO::Lower).unwrap();
+        let ut = evec.t();
+        let uc = evec.map(|x| x.conj());
+
+        // U^T · H · U^* should be diagonal with eigenvalues
+        let diag = ut.dot(&ham.dot(&uc));
+        for i in 0..model.nsta() {
+            for j in 0..model.nsta() {
+                if i == j {
+                    assert!((diag[[i, j]].re - band[[i]]).abs() < 1e-10,
+                        "diag[{i},{i}]={} != band[{i}]={}", diag[[i,i]].re, band[[i]]);
+                } else {
+                    assert!(diag[[i, j]].norm() < 1e-10,
+                        "off-diag[{i},{j}]={} != 0", diag[[i,j]]);
+                }
+            }
+        }
+        println!("evec_transform_sanity: U^T H U^* = diag(band) ✓");
+    }
     #[test]
     fn graphene() {
         let li: Complex<f64> = 1.0 * Complex::i();
