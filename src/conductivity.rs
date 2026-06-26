@@ -1844,13 +1844,13 @@ fn compute_weights_omega(d: &[f64; 4], eta: f64) -> [f64; 4] {
 
 /// Check whether `d(k)` crosses zero inside the tetrahedron.
 ///
-/// Returns `true` when zero is strictly between the minimum and maximum
-/// vertex values (dangerous at `η=0`).
+/// Uses a small tolerance so that d=0 exactly at a vertex/edge/face
+/// is also flagged (dangerous at `η=0`).
 #[inline]
-fn gap_crosses_zero(d: &[f64; 4]) -> bool {
+fn gap_crosses_zero(d: &[f64; 4], tol: f64) -> bool {
     let dmin = d.iter().cloned().fold(f64::INFINITY, f64::min);
     let dmax = d.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    dmin < 0.0 && dmax > 0.0
+    dmin <= tol && dmax >= -tol
 }
 
 // ── Hall conductivity via tetrahedron integration ─────────────────────
@@ -2045,7 +2045,7 @@ fn interp_t(mu: f64, ei: f64, ej: f64) -> f64 {
 
 #[inline]
 fn full_tet_one_pair(p: &[f64; 4], d: &[f64; 4], vt: f64, eta: f64) -> f64 {
-    if eta == 0.0 && gap_crosses_zero(d) { return 0.0; }
+    if eta == 0.0 && gap_crosses_zero(d, 1e-12) { return 0.0; }
     let w = compute_weights_omega(d, eta);
     vt * (p[0]*w[0] + p[1]*w[1] + p[2]*w[2] + p[3]*w[3])
 }
