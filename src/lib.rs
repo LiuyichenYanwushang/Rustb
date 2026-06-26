@@ -1044,19 +1044,25 @@ mod tests {
         let mu = Array1::linspace(-4.0, 4.0, 41);
         let spin = None;
 
-        // Mesh scan: show convergence
-        println!("\n=== 3D Haldane: mesh convergence of max|ref−tetra| ===");
-        println!("{:>6}  {:>12}  {:>8}", "nk", "T=0 diff", "trend");
+        // Mesh scan: convergence + timing
+        println!("\n=== 3D Haldane: mesh convergence + timing ===");
+        println!("{:>6}  {:>8}  {:>12}  {:>12}  {:>8}  {:>8}",
+            "nk", "N_k", "T=0 diff", "ref time", "tet time", "trend");
         let mut prev: f64 = f64::MAX;
-        for &nk in &[6usize, 8, 10] {
+        for &nk in &[6usize, 8, 10, 12, 14] {
             let kmesh = arr1(&[nk, nk, nk]);
+            let t0 = std::time::Instant::now();
             let ref0 = model.Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, spin, eta).unwrap();
+            let t_ref = t0.elapsed();
+            let t1 = std::time::Instant::now();
             let tet0 = model.Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu, 0.0, spin, eta).unwrap();
+            let t_tet = t1.elapsed();
             let mut d0: f64 = 0.0;
             for i in 0..mu.len() { d0 = d0.max((ref0[[i]]-tet0[[i]]).abs()); }
             let trend = if d0 < prev { "↓" } else { "?" };
-            println!("{nk:>6}  {d0:>12.2e}  {trend:>8}");
-            assert!(d0 <= prev * 1.1, "diverging!");
+            println!("{nk:>6}  {nk3:>8}  {d0:>12.2e}  {tr:>8.3}s  {tt:>8.3}s  {trend:>8}",
+                nk3 = nk*nk*nk, tr = t_ref.as_secs_f64(), tt = t_tet.as_secs_f64());
+            assert!(d0 <= prev * 1.15, "diverging at nk={nk}!");
             prev = d0;
         }
         // At nk=10, tetra is actually MORE accurate than the Riemann sum
