@@ -228,6 +228,254 @@ FermiSurfer assumes `E_F = 0` by default; the export code computes
 band count and lattice (element‑wise diff < 1e‑10). Both models use the
 same k‑mesh and energy shift.
 
+## Planned: Tetrahedron Integration for Berry / Quantum-Geometry Kernels
+
+> **Status**: design plan only. Do not treat the current
+> `tetrahedron_volume_integrate()` as a high-accuracy Berry-curvature
+> integrator; it linearly interpolates the final scalar integrand, which is
+> unsafe near small gaps because Berry/QGT formulas contain energy denominators.
+
+### Goal
+
+Implement a simplex integration path for Berry curvature, quantum metric,
+Berry-curvature dipole, Berry-connection dipole, and related response kernels
+under this narrower assumption:
+
+1. Band energies `E_n(k)` are linearly interpolated inside each simplex.
+2. Gauge-invariant velocity kernels are linearly interpolated inside each
+   simplex.
+3. The nonlinear denominators are evaluated from the interpolated energies at
+   quadrature points; the final Berry/QGT scalar is **not** linearly
+   interpolated from vertex values.
+
+This keeps the singular / near-singular structure from
+`1 / (E_n - E_m)^p` in the integrand instead of hiding it inside a vertex
+average.
+
+### Basic formulas
+
+At each k-point, use `gen_v_projected(k, Gauge::Atom, directions)` and
+diagonalize `H(k)`.
+
+For directions `a`, `b`, define band-basis velocity matrices
+
+```text
+A^a_nm(k) = <u_n(k)|v_a(k)|u_m(k)>
+A^b_mn(k) = <u_m(k)|v_b(k)|u_n(k)>
+```
+
+Do **not** interpolate `A^a_nm` directly: eigenvectors have arbitrary U(1)
+phases, so individual matrix elements are not smooth or gauge invariant.
+Instead store and interpolate the product
+
+```text
+K^ab_nm(k) = A^a_nm(k) A^b_mn(k)
+```
+
+which is invariant under independent phase rotations of bands `n` and `m`
+when the bands are isolated.
+
+For quantum geometry:
+
+```text
+G^ab_n(k) = sum_{m != n} K^ab_nm(k) / ((E_n(k) - E_m(k))^2 + eta^2)
+g^ab_n(k) = Re G^ab_n(k)
+Omega^ab_n(k) = -2 Im G^ab_n(k)
+```
+
+For DC Berry curvature this is the same kernel with `eta -> 0` when safe.
+For optical / finite-frequency variants, keep the denominator form used by the
+calling routine, for example
+
+```text
+D_nm(k, omega, eta) =
+    1 / ((E_n(k) - E_m(k))^2 - (omega + i eta)^2)
+```
+
+and evaluate `K_nm(k) * D_nm(k, omega, eta)` at quadrature points.
+
+For velocity-weighted quantities such as Berry-curvature dipole, also store
+the diagonal projected velocity
+
+```text
+v^c_n(k) = <u_n(k)|v_c(k)|u_n(k)> = dE_n / dk_c
+```
+
+and linearly interpolate `v^c_n(k)` as another vertex quantity. The quadrature
+point integrand is then built as
+
+```text
+v^c_n(q) * Omega^ab_n(q)
+```
+
+or with the exact formula required by the target response.
+
+### Simplex interpolation
+
+For a simplex with vertices `r = 0..d` and barycentric coordinates `lambda_r`,
+interpolate only primitive vertex data:
+
+```text
+E_n(q)       = sum_r lambda_r E_{r,n}
+K^ab_nm(q)  = sum_r lambda_r K^ab_{r,nm}
+v^c_n(q)    = sum_r lambda_r v^c_{r,n}
+```
+
+Then evaluate the response formula at `q`:
+
+```text
+Delta_nm(q) = E_n(q) - E_m(q)
+G^ab_n(q)   = sum_{m != n} K^ab_nm(q) / (Delta_nm(q)^2 + eta^2)
+```
+
+The simplex contribution is a weighted quadrature sum:
+
+```text
+I_simplex = V_simplex * sum_q w_q F(q)
+```
+
+Start with fixed symmetric simplex quadrature rather than closed-form analytic
+integration. Suggested rules:
+
+- 2D triangles: degree-2 or degree-3 symmetric Gaussian rule.
+- 3D tetrahedra: 4-point degree-2 rule as the first implementation; add
+  higher-order rules later if convergence needs it.
+
+This is easier to verify and works for all denominator variants. Analytic
+integration of `linear numerator / (linear energy difference)^p` can be added
+later only if benchmarks show the quadrature is a bottleneck.
+
+### Band tracking inside the simplex
+
+The interpolation requires the same band label at every vertex of the simplex.
+Energy sorting alone can fail near crossings. Use eigenvector overlap to align
+vertex bands.
+
+For simplex vertex `0` as the local reference and another vertex `r`, compute
+
+```text
+O_nm = | <u_n(k_0) | u_m(k_r)> |^2
+```
+
+Find a one-to-one permutation `p_r` maximizing
+
+```text
+sum_n O_{n,p_r(n)}
+```
+
+Then reorder all vertex data from vertex `r` into the reference labeling:
+
+```text
+E_{r,n}          <- E_raw_{r,p_r(n)}
+K_{r,nm}         <- K_raw_{r,p_r(n),p_r(m)}
+vdiag_{r,n}      <- vdiag_raw_{r,p_r(n)}
+eigenvector_{r,n} <- eigenvector_raw_{r,p_r(n)}
+```
+
+For small `nsta`, an exact assignment search or Hungarian algorithm is fine.
+A row-wise greedy maximum is not sufficient because two reference bands can
+choose the same target band.
+
+Optional global tracking can be added as a preprocessing and diagnostic pass:
+start from Gamma, propagate labels through nearest-neighbor k-mesh edges using
+the same overlap assignment, and record loop/path conflicts. Do not rely on
+global tracking alone. Each simplex should still perform a local consistency
+check because Berry/QGT interpolation only needs local smoothness.
+
+### Degeneracy and reliability checks
+
+Single-band Berry curvature / QGT is not reliable when the target band is not
+isolated. Mark a simplex as unsafe for single-band interpolation if any of the
+following holds:
+
+```text
+min_{q estimate, m != n} |E_n - E_m| < gap_tol
+max_assignment_overlap < overlap_tol
+different neighbor paths imply different band permutations
+```
+
+Initial practical checks can use only vertex data:
+
+```text
+min_vertex_gap = min_{r,n != m} |E_{r,n} - E_{r,m}|
+```
+
+If `min_vertex_gap < gap_tol`, choose one of these policies:
+
+1. Use finite `eta` and emit a warning / diagnostic count.
+2. Refine the k-mesh around the simplex.
+3. Merge near-degenerate bands into a band group and use a non-Abelian /
+   occupied-subspace expression instead of a single-band formula.
+
+Do not silently force a single-band label through a near-degenerate subspace.
+The eigenvectors inside that subspace can rotate arbitrarily, making
+single-band `K_nm` non-smooth even when the subspace is smooth.
+
+### Data structures to add
+
+Add internal structs in `src/tetrahedron.rs` or a new module such as
+`src/simplex_response.rs`:
+
+```rust
+struct VertexKernel {
+    band: Array1<f64>,                 // nsta
+    kernel_ab: Array2<Complex<f64>>,   // nsta x nsta, K_nm
+    vdiag_c: Option<Array1<f64>>,      // nsta, for dipoles
+    evec: Array2<Complex<f64>>,        // norb x nsta, for overlap tracking
+}
+
+struct TrackedSimplex {
+    vertices: Vec<VertexKernel>,       // already label-aligned
+    volume: f64,
+    diagnostics: SimplexDiagnostics,
+}
+
+struct SimplexDiagnostics {
+    min_gap: f64,
+    min_assignment_overlap: f64,
+    tracking_conflict: bool,
+}
+```
+
+Keep these internal at first. Public API should expose only higher-level
+methods once the numerical behavior is tested.
+
+### Implementation sequence
+
+1. Add a helper that computes one-k-point primitive data:
+   `band`, `evec`, projected band-basis velocity matrices, `K_nm`, and optional
+   diagonal velocity.
+2. Add assignment/permutation utilities based on overlap matrices.
+3. Add simplex builders for the existing 2D triangle and 3D tetrahedron
+   decompositions, reusing the current cell ordering and volume factors.
+4. Add fixed simplex quadrature rules and interpolation helpers.
+5. Implement a generic quadrature evaluator for kernels of the form
+   `sum_m K_nm(q) * denom(E_n(q)-E_m(q))`.
+6. Wire the evaluator first into quantum geometry / Berry curvature at fixed
+   `mu` or full occupied-band sums, where the formula is simplest.
+7. Extend to Berry-curvature dipole and optical kernels after the base path has
+   convergence tests.
+8. Add diagnostics returned or logged: number of unsafe simplexes, minimum gap,
+   minimum assignment overlap, and optional global-tracking conflicts.
+
+### Tests and validation
+
+Minimum tests before using this path as a default:
+
+- Constant / linear toy kernels where simplex quadrature has an exact answer.
+- Two-band massive Dirac model with known Berry curvature trend; compare mesh
+  convergence against dense direct summation.
+- Gauge phase test: multiply eigenvectors at vertices by random phases and
+  verify `K_nm`-based integration is unchanged.
+- Band reordering test: artificially permute vertex bands and verify overlap
+  tracking restores the same integral.
+- Near-degeneracy diagnostic test: force a small gap and verify the unsafe
+  simplex count is nonzero.
+
+Default behavior should remain conservative until these tests pass. The current
+direct k-mesh summation with finite `eta` is still the reference fallback for
+Berry/QGT quantities.
+
 ## Hot-Path Optimization Notes
 
 ### `zaxpy` candidates in conductivity code

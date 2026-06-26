@@ -1581,3 +1581,143 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(conductivity)
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Tetrahedron quadrature for Hall-effect integrals
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ## Assumptions
+//
+// 1. **Band energies `E_n(k)` are linearly interpolated** inside each simplex
+//    (triangle in 2D, tetrahedron in 3D).
+//
+// 2. **Gauge-invariant velocity kernels are linearly interpolated**:
+//    `K^ab_nm(k) = v^a_nm(k) · v^b_mn(k)` is stored at each vertex and
+//    interpolated to quadrature points.  This quantity is invariant under
+//    independent U(1) phase rotations of bands n and m (when bands are
+//    isolated), so it is smooth across the BZ and safe to interpolate.
+//
+// 3. **Response formulas are evaluated at quadrature points** from
+//    interpolated primitives.  The Berry curvature / quantum‑geometry
+//    scalar with its singular denominators `1/(E_n−E_m)^p` is assembled
+//    *after* interpolation — the singularity structure is preserved,
+//    not averaged away at the vertices.
+//
+// 4. **This section provides BZ *integrals*** — it yields `∫ dk …` for
+//    the desired response.  The caller receives `∫ δ(ε−μ) Ω_n(k) dk`
+//    (or the step‑function / Fermi‑Dirac weighted counterpart), NOT
+//    per‑k‑point values.
+//
+// 5. **Quadrature rules** (initial implementation):
+//    - 2D: degree‑2 symmetric triangle rule (3‑point).
+//    - 3D: 4‑point degree‑2 tetrahedron rule.
+//
+// The primitive data computed below (`TetraKPoint`) is the foundation
+// for all tetrahedron‑based Hall effect implementations (linear AHC,
+// nonlinear extrinsic / intrinsic).
+
+
+/// Per‑k‑point primitive data for tetrahedron quadrature.
+///
+/// All velocity quantities are expressed in the band eigenbasis at
+/// this k‑point.  The gauge‑invariant products `K_nm` are safe to
+/// linearly interpolate within a simplex.
+#[derive(Clone)]
+pub struct TetraKPoint {
+    /// Band energies `ε_n`, length `nsta`.
+    pub band: Array1<f64>,
+    /// Eigenvectors `U[:, n]` (column = band), shape `(nsta, nsta)`.
+    pub evec: Array2<Complex<f64>>,
+    /// Diagonal velocities `v^d_n = <n|v_d|n>`, shape `(n_dir, nsta)`.
+    pub vdiag: Array2<f64>,
+    /// Gauge‑invariant products `K^{d,e}_{nm} = v^d_{nm} · v^e_{mn}`,
+    /// shape `(n_pairs, nsta, nsta)`.
+    ///
+    /// Pair `p` corresponds to direction indices `(pair_list[p].0, pair_list[p].1)`.
+    pub k_nm: Array3<Complex<f64>>,
+    /// Direction index pairs encoded in `k_nm`.
+    pub pair_list: Vec<(usize, usize)>,
+}
+
+/// Compute per‑k‑point primitive data for tetrahedron quadrature.
+///
+/// # Arguments
+/// * `k_vec` — single k‑point in fractional reciprocal coordinates.
+/// * `directions` — `(n_dir, DIM)` matrix; each row is a direction
+///   vector for velocity projection (e.g. `[1,0,0]` for x‑direction).
+/// * `gauge` — `Gauge::Atom` or `Gauge::Lattice`.
+/// * `spin` — optional spin direction for spin‑current evaluation.
+///
+/// # Returns
+/// `TetraKPoint` containing band energies, eigenvectors, diagonal
+/// velocities, and gauge‑invariant velocity products for **all**
+/// direction pairs among `directions`.
+///
+/// # Notes
+/// The `k_nm` array contains products for all `n_dir × n_dir` pairs,
+/// including the diagonal (same‑direction) pairs.  The caller selects
+/// the pairs relevant to the desired response tensor.
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    pub fn compute_tetra_primitives(
+        &self,
+        k_vec: &Array1<f64>,
+        directions: &Array2<f64>,
+        gauge: Gauge,
+        spin: Option<SpinDirection>,
+    ) -> TetraKPoint {
+        let n_dir = directions.nrows();
+        let nsta = self.nsta();
+
+        let (v_proj, hamk) = self.gen_v_projected(k_vec, gauge, directions);
+        // v_proj: (n_dir, nsta, nsta) — raw orbital‑basis velocities
+        let (band, evec) = hamk.eigh(UPLO::Lower).unwrap();
+        let evec_conj = evec.t().map(|x| x.conj());
+
+        // Transform each direction to the band eigenbasis
+        let v_band: Vec<Array2<Complex<f64>>> = (0..n_dir)
+            .map(|d| {
+                let v_raw = v_proj.slice(s![d, .., ..]).to_owned();
+                if SPIN && spin.is_some() {
+                    let x = build_spin_matrix(self.norb(), spin);
+                    let s = anti_comm(&x, &v_raw) * 0.5;
+                    evec_conj.dot(&s.dot(&evec))
+                } else {
+                    evec_conj.dot(&v_raw.dot(&evec))
+                }
+            })
+            .collect();
+
+        // Diagonal velocities v^d_n = diag(v_band[d])
+        let mut vdiag = Array2::<f64>::zeros((n_dir, nsta));
+        for d in 0..n_dir {
+            for n in 0..nsta {
+                vdiag[[d, n]] = v_band[d][[n, n]].re;
+            }
+        }
+
+        // Gauge‑invariant products K^{d,e}_{nm} for all direction pairs
+        let n_pairs = n_dir * n_dir;
+        let mut k_nm = Array3::<Complex<f64>>::zeros((n_pairs, nsta, nsta));
+        let mut pair_list = Vec::with_capacity(n_pairs);
+
+        for da in 0..n_dir {
+            for db in 0..n_dir {
+                let p = da * n_dir + db;
+                pair_list.push((da, db));
+                for n in 0..nsta {
+                    for m in 0..nsta {
+                        k_nm[[p, n, m]] = v_band[da][[n, m]] * v_band[db][[m, n]];
+                    }
+                }
+            }
+        }
+
+        TetraKPoint {
+            band,
+            evec,
+            vdiag,
+            k_nm,
+            pair_list,
+        }
+    }
+}

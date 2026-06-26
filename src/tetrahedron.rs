@@ -95,6 +95,15 @@ pub fn tetrahedron_integrate(
     mu: &Array1<f64>,
 ) -> Array1<f64> {
     let dim = k_mesh.len();
+    let nk_mesh: usize = k_mesh.iter().product();
+    assert_eq!(
+        band.nrows(),
+        nk_mesh,
+        "band.nrows()={} does not match k_mesh product={} ({:?})",
+        band.nrows(),
+        nk_mesh,
+        k_mesh
+    );
     assert_eq!(band.nrows(), integrand.nrows());
     assert_eq!(band.ncols(), integrand.ncols());
     let nsta = band.ncols();
