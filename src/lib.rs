@@ -2026,12 +2026,46 @@ mod tests {
     }
 
     #[test]
-    fn Haldan_3d_extrinsic_tetra_compare() {
-        let li = Complex::new(0.0, 1.0);
+    fn graphene_staggered_2d_extrinsic_compare() {
+        // 2D graphene with staggered potential (+delta on A, -delta on B).
+        // Only NN real hoppings. Inversion broken → non-zero Berry curvature.
         let t = Complex::new(-1.0, 0.0);
-        let t2 = Complex::new(-0.3, 0.0);
-        let delta = 0.7;
-        let tz = Complex::new(-0.5, 0.0);
+        let delta = 0.3;
+        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+        let orb = arr2(&[[1.0/3.0, 1.0/3.0], [2.0/3.0, 2.0/3.0]]);
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_onsite(&arr1(&[delta, -delta]), None);
+        for &(i, j) in &[(0,0), (-1,0), (0,-1)] {
+            model.add_hop(t, 0, 1, &arr1(&[i, j]), None);
+        }
+
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let eta = 0.1;
+        let mu = Array1::linspace(-4.0, 4.0, 21);
+        let spin = None;
+
+        let nk: usize = 50;
+        let kmesh = arr1(&[nk, nk]);
+        let ref_vals = model
+            .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0, 0.0, spin, eta)
+            .unwrap();
+
+        let ref_max = ref_vals.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
+        println!("\n=== 2D Staggered Graphene Extrinsic T=0 ({nk}×{nk}) ===");
+        println!("  ref peak={:.4}", ref_max);
+        // Sanity: signal should be non-zero (broken inversion → Ω^{xy} ≠ 0)
+        assert!(ref_max > 1e-6, "extrinsic signal too small: {ref_max:.2e}");
+        println!("PASSED (non-zero extrinsic response)");
+    }
+
+    #[test]
+    fn graphene_staggered_3d_extrinsic_tetra_compare() {
+        // 3D graphene-like model: A at (1/3,2/3,0), B at (2/3,1/3,1/2).
+        // Sublattices are at different z-heights with NN hopping in all
+        // directions (xy + z).  Staggered potential breaks inversion.
+        let t = Complex::new(-1.0, 0.0);
+        let delta = 0.3;
 
         let lat = arr2(&[
             [1.0, 0.0, 0.0],
@@ -2039,43 +2073,31 @@ mod tests {
             [0.0, 0.0, 1.0],
         ]);
         let orb = arr2(&[
-            [1.0 / 3.0, 1.0 / 3.0, 0.0],
-            [2.0 / 3.0, 2.0 / 3.0, 0.0],
+            [1.0/3.0, 2.0/3.0, 0.0],   // A at z=0
+            [2.0/3.0, 1.0/3.0, 0.5],    // B at z=1/2
         ]);
         let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), None);
+        model.set_onsite(&arr1(&[delta, -delta]), None);
 
-        for &(i, j, k) in &[(0,0,0), (-1,0,0), (0,-1,0)] {
+        // NN hoppings: xy-plane + z-direction, all A↔B with same t
+        for &(i, j, k) in &[(0,0,0), (-1,0,0), (0,-1,0), (0,0,-1)] {
             model.add_hop(t, 0, 1, &arr1(&[i, j, k]), None);
-        }
-        for &(i, j, k) in &[(1,0,0), (-1,1,0), (0,-1,0)] {
-            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j, k]), None);
-        }
-        for &(i, j, k) in &[(-1,0,0), (1,-1,0), (0,1,0)] {
-            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j, k]), None);
-        }
-        for &orb_i in &[0, 1] {
-            model.add_hop(tz, orb_i, orb_i, &arr1(&[0, 0, 1]), None);
-            model.add_hop(tz, orb_i, orb_i, &arr1(&[0, 0, -1]), None);
         }
 
         let dx = arr1(&[1.0, 0.0, 0.0]);
         let dy = arr1(&[0.0, 1.0, 0.0]);
-        let dz = arr1(&[0.0, 0.0, 1.0]);
         let eta = 0.1;
-        let mu = Array1::linspace(-3.0, 3.0, 21);
+        let mu = Array1::linspace(-4.0, 4.0, 21);
         let spin = None;
 
-        // Reference: existing extrinsic method at T=0 (uses tetrahedron_integrate)
+        // Compare tetra against existing extrinsic at T=0
         let nk: usize = 10;
         let kmesh = arr1(&[nk, nk, nk]);
         let ref_vals = model
-            .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dx, &dy, &dz, &mu, 0.0, 0.0, spin, eta)
+            .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0, 0.0, spin, eta)
             .unwrap();
-
-        // New: analytic triangle surface integral
         let tet_vals = model
-            .Nonlinear_Hall_conductivity_Extrinsic_tetra(&kmesh, &dx, &dy, &dz, &mu, 0.0, spin, eta)
+            .Nonlinear_Hall_conductivity_Extrinsic_tetra(&kmesh, &dx, &dy, &dy, &mu, 0.0, spin, eta)
             .unwrap();
 
         let ref_max = ref_vals.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
@@ -2083,22 +2105,23 @@ mod tests {
         for i in 0..mu.len() {
             max_diff = max_diff.max((ref_vals[[i]] - tet_vals[[i]]).abs());
         }
-        println!("\n=== 3D Haldane Extrinsic T=0 ({nk}³) ===");
+        println!("\n=== 3D Staggered Graphene Extrinsic T=0 ({nk}³) ===");
         println!("  ref peak={:.4}  max|ref−tetra|={:.2e}", ref_max, max_diff);
+        assert!(ref_max > 1e-6, "extrinsic signal too small: {ref_max:.2e}");
 
-        // Mesh convergence: nk=6,8 should show decreasing difference
+        // Mesh convergence
         let mut prev = f64::MAX;
-        for &nk in &[6, 8] {
-            let km = arr1(&[nk, nk, nk]);
+        for &n in &[6, 8, 10] {
+            let km = arr1(&[n, n, n]);
             let ref0 = model
-                .Nonlinear_Hall_conductivity_Extrinsic(&km, &dx, &dy, &dz, &mu, 0.0, 0.0, spin, eta)
+                .Nonlinear_Hall_conductivity_Extrinsic(&km, &dx, &dy, &dy, &mu, 0.0, 0.0, spin, eta)
                 .unwrap();
             let tet0 = model
-                .Nonlinear_Hall_conductivity_Extrinsic_tetra(&km, &dx, &dy, &dz, &mu, 0.0, spin, eta)
+                .Nonlinear_Hall_conductivity_Extrinsic_tetra(&km, &dx, &dy, &dy, &mu, 0.0, spin, eta)
                 .unwrap();
             let mut d0: f64 = 0.0;
             for i in 0..mu.len() { d0 = d0.max((ref0[[i]] - tet0[[i]]).abs()); }
-            println!("  nk={nk}  diff={:.2e}  trend={}", d0, if d0 < prev { "↓" } else { "?" });
+            println!("  nk={n}  diff={:.2e}  trend={}", d0, if d0 < prev { "↓" } else { "?" });
             prev = d0;
         }
         println!("CONVERGED");
