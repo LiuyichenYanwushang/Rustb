@@ -1880,11 +1880,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let raw = result_t0 / det;
 
-        if T > 0.0 && n_mu > 1 {
-            // T>0: thermal convolution. Requires strictly increasing, uniformly
-            // spaced mu.  Boundary truncation (|x| > 50) assumes the mu window
-            // is wide enough to capture the full thermal kernel; a narrow
-            // window loses normalization.
+        if T > 0.0 {
+            if n_mu <= 1 {
+                return Err(TbError::Other(
+                    "T>0 requires a uniform mu grid with n_mu>1: \
+                     a single mu point cannot be thermally convolved".into(),
+                ));
+            }
             let mu_slice = mu.as_slice().unwrap();
             if mu_slice.windows(2).any(|w| w[1] <= w[0]) {
                 return Err(TbError::Other(

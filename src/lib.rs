@@ -2226,4 +2226,58 @@ mod tests {
         }
         println!("CONVERGED");
     }
+
+    #[test]
+    fn H_wave_AM_Intrinsic_test(){
+        let li: Complex<f64> = Complex::new(0.0, 1.0);
+        let theta = PI/4.0;
+        let lat=array![[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
+        let orb=array![[0.0,0.0,0.0],[0.5,0.5,0.5]];
+        let mut model=Model::<false, 3>::tb_model(lat.clone(),orb.clone(),None).unwrap();
+        let t=1.0;
+        let J= 1.0;
+        model.add_hop(t,0,1,&array![ 0, 0, 0],None);
+        model.add_hop(t,0,1,&array![-1, 0, 0],None);
+        model.add_hop(t,0,1,&array![ 0,-1, 0],None);
+        model.add_hop(t,0,1,&array![-1,-1, 0],None);
+        model.add_hop(t,0,1,&array![ 0, 0,-1],None);
+        model.add_hop(t,0,1,&array![-1, 0,-1],None);
+        model.add_hop(t,0,1,&array![ 0,-1,-1],None);
+        model.add_hop(t,0,1,&array![-1,-1,-1],None);
+
+        let t0=Complex::new(0.0,0.5);
+
+        model.add_hop( t0,0,0,&array![ 2, 1, 1],None);
+        model.add_hop(-t0,0,0,&array![ 2, 1,-1],None);
+        model.add_hop(-t0,0,0,&array![ 2,-1, 1],None);
+        model.add_hop( t0,0,0,&array![ 2,-1,-1],None);
+        model.add_hop(-t0,0,0,&array![ 1, 2, 1],None);
+        model.add_hop( t0,0,0,&array![ 1, 2,-1],None);
+        model.add_hop( t0,0,0,&array![-1, 2, 1],None);
+        model.add_hop(-t0,0,0,&array![-1, 2,-1],None);
+
+        let t0 = -t0;
+        model.add_hop( t0,1,1,&array![ 2, 1, 1],None);
+        model.add_hop(-t0,1,1,&array![ 2, 1,-1],None);
+        model.add_hop(-t0,1,1,&array![ 2,-1, 1],None);
+        model.add_hop( t0,1,1,&array![ 2,-1,-1],None);
+        model.add_hop(-t0,1,1,&array![ 1, 2, 1],None);
+        model.add_hop( t0,1,1,&array![ 1, 2,-1],None);
+        model.add_hop( t0,1,1,&array![-1, 2, 1],None);
+        model.add_hop(-t0,1,1,&array![-1, 2,-1],None);
+
+        model.add_onsite(&array![J,-J],None);
+        let current_dir=array![1.0,0.0,0.0];
+        let dir_1=array![0.0,1.0,0.0];
+        let dir_2=array![0.0,0.0,1.0];
+        let mu=Array1::linspace(-1.0,1.0,1001);
+        let kmesh=array![100,100,100];
+        let og=0.0;
+        let spin=None;
+        let eta=1e-3;
+        //let sigma_up=model_up.Hall_conductivity_mu(&kmesh, &current_dir, &dir_2, &mu, 0.0, None, 1e-3).unwrap();
+        //let sigma_dn=model_dn.Hall_conductivity_mu(&kmesh, &current_dir, &dir_2, &mu, 0.0, None, 1e-3).unwrap();
+        let sigma_0=model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &current_dir, &dir_1, &dir_2, &mu, 100.0).unwrap();
+        let sigma_1=model.Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &current_dir, &dir_1, &dir_2, &mu, 100.0).unwrap();
+    }
 }
