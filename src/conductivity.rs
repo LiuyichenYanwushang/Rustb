@@ -1441,85 +1441,29 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
     }
 
-    /// Computes the intrinsic nonlinear Hall conductivity.
+    /// Charge intrinsic nonlinear Hall conductivity (k‑point sum).
     ///
-    /// The intrinsic nonlinear Hall conductivity arises from the correction of the Berry connection
-    /// by electric and magnetic fields [PRL 112, 166601 (2014)]. The modified Berry curvature is:
-    /// $$ \tilde{\bm\Omega}_{\mathbf k} = \nabla_{\mathbf k} \times (\bm A_{\mathbf k} + \bm A_{\mathbf k}^\prime) $$
-    /// where $\bm A_{i,\mathbf k}^\prime = F_{ij} B_j + G_{ij} E_j$, with
-    /// $$
-    /// \begin{aligned}
-    /// F_{ij} &= \text{Im} \sum_{m\neq n} \f{v_{i,nm} \omega_{j,mn}}{(\varepsilon_n - \varepsilon_m)^2} \\
-    /// G_{ij} &= 2\,\text{Re} \sum_{m\neq n} \f{v_{i,nm} v_{j,mn}}{(\varepsilon_n - \varepsilon_m)^3} \\
-    /// \omega_{\alpha,mn} &= -i \varepsilon_{\alpha\beta\gamma} \sum_{l\neq n}
-    ///    \f{(v_{\beta,ml} + \partial_\beta \varepsilon_{\mathbf k} \delta_{ml}) v_{\gamma,ln}}{\varepsilon_l - \varepsilon_n}
-    /// \end{aligned}
-    /// $$
+    /// ```text
+    /// σ^{ab;c}_{int}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) Q^{ab;c}_n(k) dk
+    /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
+    /// G^{ij}_n = 2 Re Σ_{m≠n} v^i_{nm} v^j_{mn} / (E_n−E_m)³
+    /// ```
     ///
-    /// The current response is:
-    /// $$
-    /// \begin{aligned}
-    /// \f{\partial^2 j_\alpha^\prime}{\partial E_\beta \partial E_\gamma}
-    ///    &= \int \f{\dd\mathbf k}{(2\pi)^3}
-    ///       (\partial_\alpha \varepsilon_{\mathbf k} G_{\beta\gamma} -
-    ///        \partial_\beta \varepsilon_{\mathbf k} G_{\alpha\gamma})
-    ///       \pdv{f_{\mathbf k}}{\varepsilon} \\
-    /// \f{\partial^2 j_\alpha^\prime}{\partial E_\beta \partial B_\gamma}
-    ///    &= \int \f{\dd\mathbf k}{(2\pi)^3}
-    ///       (\partial_\alpha \varepsilon_{\mathbf k} F_{\beta\gamma} -
-    ///        \partial_\beta \varepsilon_{\mathbf k} F_{\alpha\gamma} +
-    ///        \varepsilon_{\alpha\beta\ell} \Omega_\ell m_\gamma)
-    ///       \pdv{f_{\mathbf k}}{\varepsilon}
-    /// \end{aligned}
-    /// $$
+    /// **T>0**: direct k‑point sum with Fermi window.
+    /// **T=0**: Blochl tetrahedron integration (`tetrahedron_integrate`).
     ///
-    /// Because of the $\partial f_{\mathbf k}/\partial\varepsilon$ factor, it is recommended to
-    /// use $T \neq 0$. The $T=0$ case (using Gauss's theorem to integrate over the Fermi surface)
-    /// is not yet implemented.
+    /// For tetrahedron pair‑decomposition (more accurate near band
+    /// degeneracies), use [`Nonlinear_Hall_conductivity_Intrinsic_tetra`].
     ///
-    /// For spin Hall conductivity, the formula is [PRL 112, 166601 (2014)]:
-    /// $$ \sigma_{\alpha\beta\gamma}^i = -\int \dd\mathbf k \left[
-    ///    \f{1}{2} f_{\mathbf k} \pdv{G_{\beta\gamma}}{h_\alpha} +
-    ///    \pdv{f_{\mathbf k}}{\varepsilon}
-    ///    (\partial_\alpha s_{\mathbf k}^i G_{\beta\gamma} -
-    ///     \partial_\beta \varepsilon_{\mathbf k} G_{\alpha\gamma}^h) \right] $$
-    /// where
-    /// $$ \f{\partial G_{\beta\gamma,n}}{\partial h_\alpha} =
-    ///    2\,\text{Re} \sum_{n'\neq n}
-    ///    \f{3 (s_{\alpha,n}^i - s_{\alpha,n_1}^i) v_{\beta,nn_1} v_{\gamma,n'n}}
-    ///      {(\varepsilon_n - \varepsilon_{n'})^4}
-    ///    - 2\,\text{Re} \sum_{n_1\neq n} \sum_{n_2\neq n}
-    ///      \left[ \f{s_{\alpha,nn_2}^i v_{\beta,n_2n_1} v_{\gamma,n_1n}}
-    ///              {(\varepsilon_n - \varepsilon_{n_1})^3 (\varepsilon_n - \varepsilon_{n_2})}
-    ///      + (\beta \leftrightarrow \gamma) \right]
-    ///    - 2\,\text{Re} \sum_{n_1\neq n} \sum_{n_2\neq n_1}
-    ///      \left[ \f{s_{\alpha,n_1n_2}^i v_{\beta,n_2n} v_{\gamma,nn_1}}
-    ///              {(\varepsilon_n - \varepsilon_{n_1})^3 (\varepsilon_{n_1} - \varepsilon_{n_2})}
-    ///      + (\beta \leftrightarrow \gamma) \right] $$
-    /// and
-    /// $$
-    /// \begin{aligned}
-    /// G_{\alpha\beta}   &= 2\,\text{Re} \sum_{m\neq n} \f{v_{\alpha,nm} v_{\beta,mn}}{(\varepsilon_n - \varepsilon_m)^3} \\
-    /// G_{\alpha\beta}^h &= 2\,\text{Re} \sum_{m\neq n} \f{s_{\alpha,nm}^i v_{\beta,mn}}{(\varepsilon_n - \varepsilon_m)^3}
-    /// \end{aligned}
-    /// $$
-    /// where $s_{\alpha,mn}^i = \{ \hat{s}^i, v_\alpha \}$ is the anti-commutator of the spin and velocity operators.
+    /// Spinful / partial_G branch is not yet correctly implemented;
+    /// use the charge‑only tetra version for now.
     ///
     /// # Arguments
     ///
     /// * `k_mesh` - Number of k-points along each direction.
-    /// * `current_dir`, `dir_2`, `dir_3` - Direction vectors for the three tensor indices.
+    /// * `current_dir`, `dir_2`, `dir_3` - Direction vectors (indices a,b,c).
     /// * `mu` - Array of chemical potential values (in eV).
-    /// * `T` - Temperature (in K). Must be non-zero.
-    /// * `spin` - Spin operator index (0, 1, 2, 3).
-    ///
-    /// # Returns
-    ///
-    /// The intrinsic nonlinear Hall conductivity for each $\mu$ value.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `T == 0` (not yet supported).
+    /// * `T` - Temperature (in K).
     pub fn Nonlinear_Hall_conductivity_Intrinsic(
         &self,
         k_mesh: &Array1<usize>,
@@ -3148,10 +3092,6 @@ fn accum_intrinsic_cell_3d(
                         all_pts[cr[3]].band[[n]] - all_pts[cr[3]].band[[m]],
                     ];
 
-                    // Check for d crossing zero at vertices (unsafe for 1/d³)
-                    if d_raw.iter().any(|&x| x.abs() < 1e-12) { continue; }
-                    if d_raw.iter().any(|&x| x < 0.0) && d_raw.iter().any(|&x| x > 0.0) { continue; }
-
                     for edges in &edge_tris {
                         let u_tri = [
                             interp_scalar(&vc_d, &srt, edges[0].0, edges[0].1, edges[0].2),
@@ -3229,10 +3169,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Intrinsic nonlinear Hall conductivity via tetrahedron integration.
     ///
     /// ```text
-    /// σ^{ab;c}_{int}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) Q^{ab;c}_n(k) dk
+    /// σ^{ab;c}_{int}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) (−Q^{ab;c}_n(k)) dk
     /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
-    /// G^{ij}_n = Σ_{m≠n} Re[v^i_{nm} v^j_{mn}] / (E_n−E_m)³
+    /// G^{ij}_n = Re Σ_{m≠n} v^i_{nm} v^j_{mn} / (E_n−E_m)³
     /// ```
+    /// The extra minus sign matches the convention in
+    /// [`Nonlinear_Hall_conductivity_Intrinsic`] (overall −e³/ħ factor).
     ///
     /// **2D**: line‑segment Fermi‑surface cut with analytic 1/d³ integral.
     /// **3D**: triangle Fermi‑surface cut with divided‑difference K³ weights.

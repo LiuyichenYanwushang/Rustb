@@ -110,7 +110,7 @@ fn main() {
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let sigma: Array1<f64> = model
-        .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T, None)
+        .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T)
         .unwrap();
     //开始绘制非线性电导
     let mut fg = Figure::new();
