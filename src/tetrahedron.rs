@@ -115,6 +115,86 @@ pub fn tetrahedron_integrate(
     }
 }
 
+/// Regular volume integration over the BZ k-mesh using simplex quadrature.
+///
+/// Approximates `∫_{BZ} f(k) dk` by linearly interpolating `f` within each
+/// simplex (triangle in 2D, tetrahedron in 3D) and integrating analytically.
+///
+/// The BZ is periodic: the mesh wraps around, covering the full [0,1]^dim
+/// domain with `nx*ny[*nz]` cells.
+///
+/// # Arguments
+/// * `f` — shape `(nk,)`: function values at every k‑point.
+/// * `k_mesh` — `[nx, ny]` or `[nx, ny, nz]`.
+///
+/// # Returns
+/// The integrated value over the full periodic BZ.
+pub fn tetrahedron_volume_integrate(
+    f: &Array1<f64>,
+    k_mesh: &Array1<usize>,
+) -> f64 {
+    let dim = k_mesh.len();
+    match dim {
+        2 => {
+            let (nx, ny) = (k_mesh[0], k_mesh[1]);
+            let cell_area = 1.0 / (nx * ny) as f64;
+            let tri_area = cell_area / 2.0;
+            let f_2d = Array2::from_shape_vec((nx, ny), f.to_vec()).unwrap();
+            let mut total = 0.0;
+
+            for ix in 0..nx {
+                let ixp = (ix + 1) % nx;
+                for iy in 0..ny {
+                    let iyp = (iy + 1) % ny;
+                    let f00 = f_2d[[ix, iy]];
+                    let f10 = f_2d[[ixp, iy]];
+                    let f11 = f_2d[[ixp, iyp]];
+                    let f01 = f_2d[[ix, iyp]];
+                    // Triangle 1: (00, 10, 01)
+                    total += tri_area * (f00 + f10 + f01) / 3.0;
+                    // Triangle 2: (11, 10, 01)
+                    total += tri_area * (f11 + f10 + f01) / 3.0;
+                }
+            }
+            total
+        }
+        3 => {
+            let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+            let cube_vol = 1.0 / (nx * ny * nz) as f64;
+            let f_3d = Array3::from_shape_vec((nx, ny, nz), f.to_vec()).unwrap();
+            let mut total = 0.0;
+
+            for ix in 0..nx {
+                let ixp = (ix + 1) % nx;
+                for iy in 0..ny {
+                    let iyp = (iy + 1) % ny;
+                    for iz in 0..nz {
+                        let izp = (iz + 1) % nz;
+                        let c000 = f_3d[[ix, iy, iz]];
+                        let c100 = f_3d[[ixp, iy, iz]];
+                        let c010 = f_3d[[ix, iyp, iz]];
+                        let c110 = f_3d[[ixp, iyp, iz]];
+                        let c001 = f_3d[[ix, iy, izp]];
+                        let c101 = f_3d[[ixp, iy, izp]];
+                        let c011 = f_3d[[ix, iyp, izp]];
+                        let c111 = f_3d[[ixp, iyp, izp]];
+                        let corner = [c000, c100, c010, c110, c001, c101, c011, c111];
+                        for (teti, &[v0, v1, v2, v3]) in CUBE_TETS.iter().enumerate() {
+                            let vt = cube_vol * TET_VOL_FACTOR[teti];
+                            total +=
+                                vt * (corner[v0] + corner[v1] + corner[v2] + corner[v3]) * 0.25;
+                        }
+                    }
+                }
+            }
+            total
+        }
+        _ => panic!(
+            "tetrahedron_volume_integrate: only dim=2,3 supported, got dim={dim}"
+        ),
+    }
+}
+
 // ── 3D integration ────────────────────────────────────────────────────
 
 fn tetrahedron_integrate_3d(
@@ -579,5 +659,44 @@ mod tests {
 
         assert!((r1[[0]] - r2[[0]]).abs() < 1e-10,
             "permuted corners gave different results: {} vs {}", r1[[0]], r2[[0]]);
+    }
+
+    /// Volume integration: ∫[0,1]³ cos²(2π·kx)·cos²(2π·ky)·cos²(2π·kz) = 1/8
+    #[test]
+    fn test_volume_integrate_3d_cos2() {
+        let nx = 40;
+        let ny = 40;
+        let nz = 40;
+        let nk = nx * ny * nz;
+
+        let mut f = Array1::<f64>::zeros(nk);
+        for ix in 0..nx {
+            for iy in 0..ny {
+                for iz in 0..nz {
+                    let ik = ix * ny * nz + iy * nz + iz;
+                    let kx = ix as f64 / nx as f64;
+                    let ky = iy as f64 / ny as f64;
+                    let kz = iz as f64 / nz as f64;
+                    let cs = |t: f64| (2.0 * std::f64::consts::PI * t).cos().powi(2);
+                    f[[ik]] = cs(kx) * cs(ky) * cs(kz);
+                }
+            }
+        }
+
+        let k_mesh = arr1(&[nx, ny, nz]);
+        let result = tetrahedron_volume_integrate(&f, &k_mesh);
+        let exact = 1.0 / 8.0;
+        let err = (result - exact).abs();
+        println!("volume integral: {:.10}, exact: {:.10}, err: {:.2e}", result, exact, err);
+        assert!(err < 1e-4, "error {:.2e} too large", err);
+    }
+
+    /// Volume integration: ∫[0,1]² 1 dk = 1 (constant function)
+    #[test]
+    fn test_volume_integrate_2d_constant() {
+        let (nx, ny) = (11, 11);
+        let f = Array1::<f64>::ones(nx * ny);
+        let result = tetrahedron_volume_integrate(&f, &arr1(&[nx, ny]));
+        assert!((result - 1.0).abs() < 1e-10, "got {result}, expected 1.0");
     }
 }
