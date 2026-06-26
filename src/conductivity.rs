@@ -2007,8 +2007,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let raw = result_t0 / det;
 
-        // T>0: thermal convolution
+        // T>0: thermal convolution of the T=0 result.
+        // Requires strictly increasing mu; uses uniform dmu = mu[1]-mu[0].
+        // Boundary truncation (|x|>50 skip) assumes the mu window is wide
+        // enough to capture the full thermal kernel; a narrow window loses
+        // normalization.
         if T > 0.0 && n_mu > 1 {
+            debug_assert!(
+                mu.as_slice().unwrap().windows(2).all(|w| w[1] > w[0]),
+                "mu must be strictly increasing for thermal convolution"
+            );
             let beta = 1.0 / (T * 8.617e-5);
             let dmu = mu[1] - mu[0];
             let mut conv = Array1::<f64>::zeros(n_mu);
