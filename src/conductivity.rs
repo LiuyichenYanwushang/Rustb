@@ -2164,3 +2164,336 @@ fn compute_occ_omega(
         full - cap
     }
 }
+
+// ── Extrinsic NLH via tetrahedron Fermi-surface integration ──────────
+
+/// Lightweight vertex data for a Fermi-surface triangle cut vertex.
+struct CutVertex {
+    u: f64,       // diagonal velocity v^c_n
+    p: f64,       // Im K^{ab}_{nm}
+    d: f64,       // E_n - E_m
+    k: [f64; 3],  // fractional k-space coordinate
+}
+
+/// Compute |∇_k e| from tetrahedron vertex positions and band energies.
+/// Uses Cramer's rule on the 3×3 system: (r_{i+1}−r_0)·g = e_{i+1}−e_0.
+/// Returns 0.0 for degenerate (flat) tetrahedra.
+fn grad_linear_tet_3d(coords: &[[f64; 3]; 4], e: &[f64; 4]) -> f64 {
+    let m = [
+        [coords[1][0]-coords[0][0], coords[1][1]-coords[0][1], coords[1][2]-coords[0][2]],
+        [coords[2][0]-coords[0][0], coords[2][1]-coords[0][1], coords[2][2]-coords[0][2]],
+        [coords[3][0]-coords[0][0], coords[3][1]-coords[0][1], coords[3][2]-coords[0][2]],
+    ];
+    let b = [e[1]-e[0], e[2]-e[0], e[3]-e[0]];
+    let det = m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])
+            - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])
+            + m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+    if det.abs() < 1e-30 { return 0.0; }
+    let g0 = (b[0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])
+            - m[0][1]*(b[1]*m[2][2]-m[1][2]*b[2])
+            + m[0][2]*(b[1]*m[2][1]-m[1][1]*b[2])) / det;
+    let g1 = (m[0][0]*(b[1]*m[2][2]-m[1][2]*b[2])
+            - b[0]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])
+            + m[0][2]*(m[1][0]*b[2]-b[1]*m[2][0])) / det;
+    let g2 = (m[0][0]*(m[1][1]*b[2]-b[1]*m[2][1])
+            - m[0][1]*(m[1][0]*b[2]-b[1]*m[2][0])
+            + b[0]*(m[1][0]*m[2][1]-m[1][1]*m[2][0])) / det;
+    (g0*g0 + g1*g1 + g2*g2).sqrt()
+}
+
+/// K_αβ weight for the triangle surface integral.
+///
+/// ```text
+/// K_αβ =     Φ_η[d₀,d₁,d₂,dα,dβ]   if α≠β  (5‑node DD)
+/// K_αβ = 2 · Φ_η[d₀,d₁,d₂,dα,dα]   if α=β
+/// ```
+/// where Φ_η''''(x) = 1/(x²+η²).
+fn k_weight_triangle(alpha: usize, beta: usize, d: &[f64; 3], eta: f64) -> f64 {
+    let mut nodes = vec![d[0], d[1], d[2], d[alpha], d[beta]];
+    let dd = divided_diff_phi(&nodes, eta);
+    if alpha == beta { 2.0 * dd } else { dd }
+}
+
+/// Analytic surface integral over one triangle:
+///
+/// ```text
+/// ∫_Δ dS  u(q) P(q) / (d(q)²+η²)  =  2 A_Δ · Σ_{α,β} u_α P_β K_αβ
+/// ```
+///
+/// This function returns `Σ u_α P_β K_αβ` (without the 2·A_Δ prefactor).
+fn triangle_surface_integral(u: &[f64; 3], p: &[f64; 3], d: &[f64; 3], eta: f64) -> f64 {
+    let mut sum = 0.0;
+    for alpha in 0..3 {
+        for beta in 0..3 {
+            sum += u[alpha] * p[beta] * k_weight_triangle(alpha, beta, d, eta);
+        }
+    }
+    sum
+}
+
+/// Triangle area in 3D.
+fn triangle_area_3d(q: &[[f64; 3]; 3]) -> f64 {
+    let v1 = [q[1][0]-q[0][0], q[1][1]-q[0][1], q[1][2]-q[0][2]];
+    let v2 = [q[2][0]-q[0][0], q[2][1]-q[0][1], q[2][2]-q[0][2]];
+    let cx = v1[1]*v2[2] - v1[2]*v2[1];
+    let cy = v1[2]*v2[0] - v1[0]*v2[2];
+    let cz = v1[0]*v2[1] - v1[1]*v2[0];
+    0.5 * (cx*cx + cy*cy + cz*cz).sqrt()
+}
+
+/// Sort indices by energy value.
+#[inline]
+fn sort4_by_energy(e: &[f64; 4]) -> [usize; 4] {
+    let mut idx = [0usize, 1, 2, 3];
+    idx.sort_by(|&a, &b| e[a].partial_cmp(&e[b]).unwrap());
+    idx
+}
+
+/// Edge interpolation specification: (sorted_vertex_from, sorted_vertex_to, t).
+type EdgeSpec = (usize, usize, f64);
+
+/// Cut a tetrahedron by the energy plane e(k)=μ.
+/// Returns a list of triangles, each as 3 edge specs.
+/// Does NOT depend on per-pair quantities (u, P, d) — only on band energies.
+fn cut_tet_fermi_surface_edges(
+    e_sorted: &[f64; 4], mu: f64,
+) -> Vec<[EdgeSpec; 3]> {
+    let mut tris = Vec::new();
+    if mu <= e_sorted[0] || mu >= e_sorted[3] { return tris; }
+
+    if mu < e_sorted[1] {
+        let t01 = (mu - e_sorted[0]) / (e_sorted[1] - e_sorted[0]);
+        let t02 = (mu - e_sorted[0]) / (e_sorted[2] - e_sorted[0]);
+        let t03 = (mu - e_sorted[0]) / (e_sorted[3] - e_sorted[0]);
+        tris.push([(0,1,t01), (0,2,t02), (0,3,t03)]);
+    } else if mu < e_sorted[2] {
+        let t02 = (mu - e_sorted[0]) / (e_sorted[2] - e_sorted[0]);
+        let t03 = (mu - e_sorted[0]) / (e_sorted[3] - e_sorted[0]);
+        let t12 = (mu - e_sorted[1]) / (e_sorted[2] - e_sorted[1]);
+        let t13 = (mu - e_sorted[1]) / (e_sorted[3] - e_sorted[1]);
+        tris.push([(0,2,t02), (1,2,t12), (0,3,t03)]);
+        tris.push([(1,2,t12), (1,3,t13), (0,3,t03)]);
+    } else {
+        let t03 = (mu - e_sorted[0]) / (e_sorted[3] - e_sorted[0]);
+        let t13 = (mu - e_sorted[1]) / (e_sorted[3] - e_sorted[1]);
+        let t23 = (mu - e_sorted[2]) / (e_sorted[3] - e_sorted[2]);
+        tris.push([(0,3,t03), (1,3,t13), (2,3,t23)]);
+    }
+    tris
+}
+
+/// Build a triangle of CutVertex from edge specs and per-vertex data.
+fn make_cut_tri_from_specs(
+    coords: &[[f64; 3]; 4], u: &[f64; 4], p: &[f64; 4], d: &[f64; 4],
+    srt: &[usize; 4], edges: &[EdgeSpec; 3],
+) -> [CutVertex; 3] {
+    let cv = |i: usize, j: usize, t: f64| -> CutVertex {
+        let ii = srt[i]; let jj = srt[j];
+        CutVertex {
+            u: u[ii] + t * (u[jj] - u[ii]),
+            p: p[ii] + t * (p[jj] - p[ii]),
+            d: d[ii] + t * (d[jj] - d[ii]),
+            k: [
+                coords[ii][0] + t * (coords[jj][0] - coords[ii][0]),
+                coords[ii][1] + t * (coords[jj][1] - coords[ii][1]),
+                coords[ii][2] + t * (coords[jj][2] - coords[ii][2]),
+            ],
+        }
+    };
+    [cv(edges[0].0,edges[0].1,edges[0].2), cv(edges[1].0,edges[1].1,edges[1].2), cv(edges[2].0,edges[2].1,edges[2].2)]
+}
+
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    /// Extrinsic nonlinear Hall conductivity via tetrahedron Fermi‑surface
+    /// integration.
+    ///
+    /// ```text
+    /// σ^{abc}(μ,T) = Σ_n ∫_BZ (-∂f/∂E_n) v^c_n(k) Ω^{ab}_n(k) d³k
+    /// ```
+    ///
+    /// **T=0**: δ‑function Fermi‑surface integral with analytic triangle
+    /// weights (divided‑difference formula).  The μ‑plane intersection of
+    /// each tetrahedron is cut into 1–2 triangles; the surface integral of
+    /// u·P/(d²+η²) is evaluated analytically.
+    ///
+    /// **T>0**: thermal convolution of the T=0 result.
+    ///
+    /// `current_dir` = a, `dir_2` = b for Ω^{ab}, `dir_c` = c for v^c.
+    /// Only 3D is supported (tetrahedron decomposition).
+    pub fn Nonlinear_Hall_conductivity_Extrinsic_tetra(
+        &self,
+        k_mesh: &Array1<usize>,
+        current_dir: &Array1<f64>,
+        dir_2: &Array1<f64>,
+        dir_c: &Array1<f64>,
+        mu: &Array1<f64>,
+        T: f64,
+        spin: Option<SpinDirection>,
+        eta: f64,
+    ) -> Result<Array1<f64>> {
+        assert_eq!(k_mesh.len(), 3, "only 3D supported");
+        let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+
+        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
+        let nk = kvec.nrows();
+        let nsta = self.nsta();
+        let gauge = Gauge::Atom;
+
+        // Compute TetraKPoint at every k‑point (dir_v = dir_c for vdiag)
+        let all_pts: Vec<TetraKPoint> = (0..nk)
+            .into_par_iter()
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                self.compute_tetra_primitives(
+                    &kv, current_dir, dir_2, dir_c, gauge, spin,
+                )
+            })
+            .collect();
+
+        let n_mu = mu.len();
+        let det = self.lat.det().unwrap();
+        let inv_nx = 1.0 / nx as f64;
+        let inv_ny = 1.0 / ny as f64;
+        let inv_nz = 1.0 / nz as f64;
+
+        let mut result_t0 = Array1::<f64>::zeros(n_mu);
+
+        let idx3 = |ix: usize, iy: usize, iz: usize| ix * ny * nz + iy * nz + iz;
+
+        const TETS: [[usize; 4]; 5] = [
+            [0,1,2,4], [3,1,2,7], [5,1,4,7], [6,2,4,7], [1,2,4,7],
+        ];
+
+        for ix in 0..nx {
+            let ixp = (ix + 1) % nx;
+            for iy in 0..ny {
+                let iyp = (iy + 1) % ny;
+                for iz in 0..nz {
+                    let izp = (iz + 1) % nz;
+
+                    let c = [
+                        idx3(ix, iy, iz), idx3(ixp, iy, iz),
+                        idx3(ix, iyp, iz), idx3(ixp, iyp, iz),
+                        idx3(ix, iy, izp), idx3(ixp, iy, izp),
+                        idx3(ix, iyp, izp), idx3(ixp, iyp, izp),
+                    ];
+
+                    // Unwrapped fractional coordinates for the 8 cube corners
+                    let corners_frac: [[f64; 3]; 8] = [
+                        [ix as f64 * inv_nx,        iy as f64 * inv_ny,        iz as f64 * inv_nz       ],
+                        [(ix+1) as f64 * inv_nx,    iy as f64 * inv_ny,        iz as f64 * inv_nz       ],
+                        [ix as f64 * inv_nx,        (iy+1) as f64 * inv_ny,    iz as f64 * inv_nz       ],
+                        [(ix+1) as f64 * inv_nx,    (iy+1) as f64 * inv_ny,    iz as f64 * inv_nz       ],
+                        [ix as f64 * inv_nx,        iy as f64 * inv_ny,        (iz+1) as f64 * inv_nz   ],
+                        [(ix+1) as f64 * inv_nx,    iy as f64 * inv_ny,        (iz+1) as f64 * inv_nz   ],
+                        [ix as f64 * inv_nx,        (iy+1) as f64 * inv_ny,    (iz+1) as f64 * inv_nz   ],
+                        [(ix+1) as f64 * inv_nx,    (iy+1) as f64 * inv_ny,    (iz+1) as f64 * inv_nz   ],
+                    ];
+
+                    for &[v0, v1, v2, v3] in TETS.iter() {
+                        let cr = [c[v0], c[v1], c[v2], c[v3]];
+                        let coords: [[f64; 3]; 4] = [
+                            corners_frac[v0], corners_frac[v1],
+                            corners_frac[v2], corners_frac[v3],
+                        ];
+
+                        for n in 0..nsta {
+                            let e_raw: [f64; 4] = [
+                                all_pts[cr[0]].band[[n]], all_pts[cr[1]].band[[n]],
+                                all_pts[cr[2]].band[[n]], all_pts[cr[3]].band[[n]],
+                            ];
+                            let srt = sort4_by_energy(&e_raw);
+                            let es = [e_raw[srt[0]], e_raw[srt[1]], e_raw[srt[2]], e_raw[srt[3]]];
+                            let grad = grad_linear_tet_3d(&coords, &e_raw);
+                            if grad < 1e-14 { continue; }
+
+                            let udata: [f64; 4] = [
+                                all_pts[cr[0]].vdiag[[n]], all_pts[cr[1]].vdiag[[n]],
+                                all_pts[cr[2]].vdiag[[n]], all_pts[cr[3]].vdiag[[n]],
+                            ];
+
+                            for im in 0..n_mu {
+                                let mu_val = mu[[im]];
+                                if mu_val <= es[0] || mu_val >= es[3] { continue; }
+
+                                // Cut geometry depends only on band energies — do once
+                                let edge_tris = cut_tet_fermi_surface_edges(&es, mu_val);
+                                if edge_tris.is_empty() { continue; }
+
+                                for m in 0..nsta {
+                                    if m == n { continue; }
+
+                                    let pdata: [f64; 4] = [
+                                        all_pts[cr[0]].k_ab[[n,m]].im,
+                                        all_pts[cr[1]].k_ab[[n,m]].im,
+                                        all_pts[cr[2]].k_ab[[n,m]].im,
+                                        all_pts[cr[3]].k_ab[[n,m]].im,
+                                    ];
+                                    let ddata: [f64; 4] = [
+                                        all_pts[cr[0]].band[[n]] - all_pts[cr[0]].band[[m]],
+                                        all_pts[cr[1]].band[[n]] - all_pts[cr[1]].band[[m]],
+                                        all_pts[cr[2]].band[[n]] - all_pts[cr[2]].band[[m]],
+                                        all_pts[cr[3]].band[[n]] - all_pts[cr[3]].band[[m]],
+                                    ];
+
+                                    for edges in &edge_tris {
+                                        let tri = make_cut_tri_from_specs(
+                                            &coords, &udata, &pdata, &ddata, &srt, edges,
+                                        );
+                                        let u_tri = [tri[0].u, tri[1].u, tri[2].u];
+                                        let p_tri = [tri[0].p, tri[1].p, tri[2].p];
+                                        let d_tri = [tri[0].d, tri[1].d, tri[2].d];
+                                        let q_tri = [tri[0].k, tri[1].k, tri[2].k];
+
+                                        if eta == 0.0 {
+                                            let dmin = d_tri.iter().cloned().fold(f64::INFINITY, f64::min);
+                                            let dmax = d_tri.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                                            if dmin <= 1e-12 && dmax >= -1e-12 { continue; }
+                                        }
+
+                                        let surf_int = triangle_surface_integral(&u_tri, &p_tri, &d_tri, eta);
+                                        let area = triangle_area_3d(&q_tri);
+                                        result_t0[[im]] += -4.0 * area * surf_int / grad;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let raw = result_t0 / det;
+
+        if T > 0.0 && n_mu > 1 {
+            let mu_slice = mu.as_slice().unwrap();
+            if mu_slice.windows(2).any(|w| w[1] <= w[0]) {
+                return Err(TbError::Other(
+                    "mu must be strictly increasing for thermal convolution".into(),
+                ));
+            }
+            let dmu = mu[1] - mu[0];
+            let tol = 1e-12 * (1.0 + dmu.abs());
+            if mu_slice.windows(2).any(|w| (w[1] - w[0] - dmu).abs() > tol) {
+                return Err(TbError::Other(
+                    "mu must have uniform spacing for thermal convolution".into(),
+                ));
+            }
+            let beta = 1.0 / (T * 8.617e-5);
+            let mut conv = Array1::<f64>::zeros(n_mu);
+            for i in 0..n_mu {
+                let mut s = 0.0;
+                for j in 0..n_mu {
+                    let x = beta * (mu[[j]] - mu[[i]]);
+                    if x.abs() > 50.0 { continue; }
+                    let f = 1.0 / (x.exp() + 1.0);
+                    s += raw[[j]] * beta * f * (1.0 - f) * dmu;
+                }
+                conv[[i]] = s;
+            }
+            Ok(conv)
+        } else {
+            Ok(raw)
+        }
+    }
+}
