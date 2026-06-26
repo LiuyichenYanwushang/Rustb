@@ -2241,7 +2241,109 @@ fn triangle_area_3d(q: &[[f64; 3]; 3]) -> f64 {
     0.5 * (cx*cx + cy*cy + cz*cz).sqrt()
 }
 
-/// Sort indices by energy value.
+/// Sort indices by 3 energy values.
+#[inline]
+fn sort3_by_energy(e: &[f64; 3]) -> [usize; 3] {
+    let mut idx = [0usize, 1, 2];
+    idx.sort_by(|&a, &b| e[a].partial_cmp(&e[b]).unwrap());
+    idx
+}
+
+/// Compute |∇_k e| for a 2D triangle.
+fn grad_linear_tri_2d(coords: &[[f64; 2]; 3], e: &[f64; 3]) -> f64 {
+    let dx1 = coords[1][0] - coords[0][0];
+    let dy1 = coords[1][1] - coords[0][1];
+    let dx2 = coords[2][0] - coords[0][0];
+    let dy2 = coords[2][1] - coords[0][1];
+    let det = dx1 * dy2 - dy1 * dx2;
+    if det.abs() < 1e-30 { return 0.0; }
+    let de1 = e[1] - e[0];
+    let de2 = e[2] - e[0];
+    let gx = (de1 * dy2 - dy1 * de2) / det;
+    let gy = (dx1 * de2 - de1 * dx2) / det;
+    (gx * gx + gy * gy).sqrt()
+}
+
+/// Analytic 1D integral ∫₀¹ u(ξ)P(ξ)/(d(ξ)²+η²) dξ along a segment.
+///
+/// u(ξ) = (1−ξ)u₀ + ξu₁,  P(ξ) = (1−ξ)P₀ + ξP₁,
+/// d(ξ) = (1−ξ)d₀ + ξd₁ = d₀ + ξ(d₁−d₀).
+fn segment_integral_1d(
+    u0: f64, u1: f64, p0: f64, p1: f64, d0: f64, d1: f64, eta: f64,
+) -> f64 {
+    let dd = d1 - d0;
+    if dd.abs() < 1e-14 {
+        let denom = d0 * d0 + eta * eta;
+        // ∫₀¹ ((1-ξ)u₀+ξu₁)((1-ξ)P₀+ξP₁) dξ = (2u₀P₀+u₀P₁+u₁P₀+2u₁P₁)/6
+        return (2.0 * u0 * p0 + u0 * p1 + u1 * p0 + 2.0 * u1 * p1) / (6.0 * denom);
+    }
+    let a = (u1 - u0) * (p1 - p0);
+    let b = u0 * p1 + u1 * p0 - 2.0 * u0 * p0;
+    let c = u0 * p0;
+
+    let at0 = (d0 / eta).atan();
+    let at1 = (d1 / eta).atan();
+    let dat = at1 - at0;
+    // ψ₀ = ∫₀¹ 1/(d(ξ)²+η²) dξ
+    let psi0 = dat / (eta * dd);
+
+    let ln0 = (d0 * d0 + eta * eta).ln();
+    let ln1 = (d1 * d1 + eta * eta).ln();
+    let dln = ln1 - ln0;
+    // ψ₁ = ∫₀¹ ξ/(d(ξ)²+η²) dξ
+    let psi1 = dln / (2.0 * dd * dd) - d0 * psi0 / dd;
+
+    // ψ₂ = ∫₀¹ ξ²/(d(ξ)²+η²) dξ
+    // Antiderivative F(y) = y − d₀ln(y²+η²) + (d₀²/η−η)atan(y/η)
+    let coeff = d0 * d0 / eta - eta;
+    let f1 = d1 - d0 * ln1 + coeff * at1;
+    let f0 = d0 - d0 * ln0 + coeff * at0;
+    let psi2 = (f1 - f0) / (dd * dd * dd);
+
+    a * psi2 + b * psi1 + c * psi0
+}
+
+/// Segment length in 2D fractional k-space.
+fn segment_length_2d(q0: &[f64; 2], q1: &[f64; 2]) -> f64 {
+    let dx = q1[0] - q0[0];
+    let dy = q1[1] - q0[1];
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Cut a 2D triangle (3 vertices, sorted energies e0≤e1≤e2) at energy μ.
+/// Returns 0 or 1 segment as two edge-interpolation specs.
+fn cut_tri_fermi_contour_2d(
+    e_sorted: &[f64; 3], mu: f64,
+) -> Option<[(usize, usize, f64); 2]> {
+    if mu <= e_sorted[0] || mu >= e_sorted[2] { return None; }
+    if mu < e_sorted[1] {
+        let t01 = (mu - e_sorted[0]) / (e_sorted[1] - e_sorted[0]);
+        let t02 = (mu - e_sorted[0]) / (e_sorted[2] - e_sorted[0]);
+        Some([(0, 1, t01), (0, 2, t02)])
+    } else {
+        let t02 = (mu - e_sorted[0]) / (e_sorted[2] - e_sorted[0]);
+        let t12 = (mu - e_sorted[1]) / (e_sorted[2] - e_sorted[1]);
+        Some([(0, 2, t02), (1, 2, t12)])
+    }
+}
+
+/// Interpolate a scalar value at edge intersection.
+#[inline]
+fn interp_scalar(vals: &[f64], srt: &[usize], i: usize, j: usize, t: f64) -> f64 {
+    let vi = vals[srt[i]];
+    let vj = vals[srt[j]];
+    vi + t * (vj - vi)
+}
+
+/// Interpolate a 2D coordinate at edge intersection.
+#[inline]
+fn interp_coord_2d(coords: &[[f64; 2]], srt: &[usize], i: usize, j: usize, t: f64) -> [f64; 2] {
+    let ci = coords[srt[i]];
+    let cj = coords[srt[j]];
+    [ci[0] + t * (cj[0] - ci[0]), ci[1] + t * (cj[1] - ci[1])]
+}
+
+/// Sort indices by 4 energy values.
 #[inline]
 fn sort4_by_energy(e: &[f64; 4]) -> [usize; 4] {
     let mut idx = [0usize, 1, 2, 3];
@@ -2331,8 +2433,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         spin: Option<SpinDirection>,
         eta: f64,
     ) -> Result<Array1<f64>> {
-        assert_eq!(k_mesh.len(), 3, "only 3D supported");
-        let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+        let dim = k_mesh.len();
+        assert!(dim == 2 || dim == 3, "only dim=2,3 supported, got dim={dim}");
 
         let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
         let nk = kvec.nrows();
@@ -2352,108 +2454,106 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let n_mu = mu.len();
         let det = self.lat.det().unwrap();
-        let inv_nx = 1.0 / nx as f64;
-        let inv_ny = 1.0 / ny as f64;
-        let inv_nz = 1.0 / nz as f64;
-
         let mut result_t0 = Array1::<f64>::zeros(n_mu);
 
-        let idx3 = |ix: usize, iy: usize, iz: usize| ix * ny * nz + iy * nz + iz;
+        match dim {
+            2 => {
+                let (nx, ny) = (k_mesh[0], k_mesh[1]);
+                let inv_nx = 1.0 / nx as f64;
+                let inv_ny = 1.0 / ny as f64;
 
-        const TETS: [[usize; 4]; 5] = [
-            [0,1,2,4], [3,1,2,7], [5,1,4,7], [6,2,4,7], [1,2,4,7],
-        ];
+                for ix in 0..nx {
+                    let ixp = (ix + 1) % nx;
+                    for iy in 0..ny {
+                        let iyp = (iy + 1) % ny;
+                        let i00 = ix * ny + iy;
+                        let i10 = ixp * ny + iy;
+                        let i11 = ixp * ny + iyp;
+                        let i01 = ix * ny + iyp;
 
-        for ix in 0..nx {
-            let ixp = (ix + 1) % nx;
-            for iy in 0..ny {
-                let iyp = (iy + 1) % ny;
-                for iz in 0..nz {
-                    let izp = (iz + 1) % nz;
-
-                    let c = [
-                        idx3(ix, iy, iz), idx3(ixp, iy, iz),
-                        idx3(ix, iyp, iz), idx3(ixp, iyp, iz),
-                        idx3(ix, iy, izp), idx3(ixp, iy, izp),
-                        idx3(ix, iyp, izp), idx3(ixp, iyp, izp),
-                    ];
-
-                    // Unwrapped fractional coordinates for the 8 cube corners
-                    let corners_frac: [[f64; 3]; 8] = [
-                        [ix as f64 * inv_nx,        iy as f64 * inv_ny,        iz as f64 * inv_nz       ],
-                        [(ix+1) as f64 * inv_nx,    iy as f64 * inv_ny,        iz as f64 * inv_nz       ],
-                        [ix as f64 * inv_nx,        (iy+1) as f64 * inv_ny,    iz as f64 * inv_nz       ],
-                        [(ix+1) as f64 * inv_nx,    (iy+1) as f64 * inv_ny,    iz as f64 * inv_nz       ],
-                        [ix as f64 * inv_nx,        iy as f64 * inv_ny,        (iz+1) as f64 * inv_nz   ],
-                        [(ix+1) as f64 * inv_nx,    iy as f64 * inv_ny,        (iz+1) as f64 * inv_nz   ],
-                        [ix as f64 * inv_nx,        (iy+1) as f64 * inv_ny,    (iz+1) as f64 * inv_nz   ],
-                        [(ix+1) as f64 * inv_nx,    (iy+1) as f64 * inv_ny,    (iz+1) as f64 * inv_nz   ],
-                    ];
-
-                    for &[v0, v1, v2, v3] in TETS.iter() {
-                        let cr = [c[v0], c[v1], c[v2], c[v3]];
-                        let coords: [[f64; 3]; 4] = [
-                            corners_frac[v0], corners_frac[v1],
-                            corners_frac[v2], corners_frac[v3],
-                        ];
-
-                        for n in 0..nsta {
-                            let e_raw: [f64; 4] = [
-                                all_pts[cr[0]].band[[n]], all_pts[cr[1]].band[[n]],
-                                all_pts[cr[2]].band[[n]], all_pts[cr[3]].band[[n]],
+                        // 2 triangles per rectangular cell
+                        for &(v0, v1, v2) in &[(i00, i10, i01), (i11, i10, i01)] {
+                            let cr = [v0, v1, v2];
+                            let corners_frac: [[f64; 2]; 4] = [
+                                [ix as f64 * inv_nx, iy as f64 * inv_ny],
+                                [(ix+1) as f64 * inv_nx, iy as f64 * inv_ny],
+                                [(ix+1) as f64 * inv_nx, (iy+1) as f64 * inv_ny],
+                                [ix as f64 * inv_nx, (iy+1) as f64 * inv_ny],
                             ];
-                            let srt = sort4_by_energy(&e_raw);
-                            let es = [e_raw[srt[0]], e_raw[srt[1]], e_raw[srt[2]], e_raw[srt[3]]];
-                            let grad = grad_linear_tet_3d(&coords, &e_raw);
-                            if grad < 1e-14 { continue; }
+                            // Map cell-relative corner index to actual corner
+                            let tri_coords: [[f64; 2]; 3] = {
+                                let ci = |cell_idx: usize| -> [f64; 2] {
+                                    match cell_idx {
+                                        _ if cell_idx == i00 => corners_frac[0],
+                                        _ if cell_idx == i10 => corners_frac[1],
+                                        _ if cell_idx == i11 => corners_frac[2],
+                                        _ /* i01 */         => corners_frac[3],
+                                    }
+                                };
+                                [ci(v0), ci(v1), ci(v2)]
+                            };
 
-                            let udata: [f64; 4] = [
-                                all_pts[cr[0]].vdiag[[n]], all_pts[cr[1]].vdiag[[n]],
-                                all_pts[cr[2]].vdiag[[n]], all_pts[cr[3]].vdiag[[n]],
-                            ];
+                            for n in 0..nsta {
+                                let e_raw: [f64; 3] = [
+                                    all_pts[cr[0]].band[[n]],
+                                    all_pts[cr[1]].band[[n]],
+                                    all_pts[cr[2]].band[[n]],
+                                ];
+                                let srt = sort3_by_energy(&e_raw);
+                                let es = [e_raw[srt[0]], e_raw[srt[1]], e_raw[srt[2]]];
+                                let grad = grad_linear_tri_2d(&tri_coords, &e_raw);
+                                if grad < 1e-14 { continue; }
 
-                            for im in 0..n_mu {
-                                let mu_val = mu[[im]];
-                                if mu_val <= es[0] || mu_val >= es[3] { continue; }
+                                let udata: [f64; 3] = [
+                                    all_pts[cr[0]].vdiag[[n]],
+                                    all_pts[cr[1]].vdiag[[n]],
+                                    all_pts[cr[2]].vdiag[[n]],
+                                ];
 
-                                // Cut geometry depends only on band energies — do once
-                                let edge_tris = cut_tet_fermi_surface_edges(&es, mu_val);
-                                if edge_tris.is_empty() { continue; }
+                                for im in 0..n_mu {
+                                    let mu_val = mu[[im]];
+                                    if mu_val <= es[0] || mu_val >= es[2] { continue; }
 
-                                for m in 0..nsta {
-                                    if m == n { continue; }
+                                    let seg = match cut_tri_fermi_contour_2d(&es, mu_val) {
+                                        Some(s) => s,
+                                        None => continue,
+                                    };
 
-                                    let pdata: [f64; 4] = [
-                                        all_pts[cr[0]].k_ab[[n,m]].im,
-                                        all_pts[cr[1]].k_ab[[n,m]].im,
-                                        all_pts[cr[2]].k_ab[[n,m]].im,
-                                        all_pts[cr[3]].k_ab[[n,m]].im,
-                                    ];
-                                    let ddata: [f64; 4] = [
-                                        all_pts[cr[0]].band[[n]] - all_pts[cr[0]].band[[m]],
-                                        all_pts[cr[1]].band[[n]] - all_pts[cr[1]].band[[m]],
-                                        all_pts[cr[2]].band[[n]] - all_pts[cr[2]].band[[m]],
-                                        all_pts[cr[3]].band[[n]] - all_pts[cr[3]].band[[m]],
-                                    ];
+                                    for m in 0..nsta {
+                                        if m == n { continue; }
 
-                                    for edges in &edge_tris {
-                                        let tri = make_cut_tri_from_specs(
-                                            &coords, &udata, &pdata, &ddata, &srt, edges,
-                                        );
-                                        let u_tri = [tri[0].u, tri[1].u, tri[2].u];
-                                        let p_tri = [tri[0].p, tri[1].p, tri[2].p];
-                                        let d_tri = [tri[0].d, tri[1].d, tri[2].d];
-                                        let q_tri = [tri[0].k, tri[1].k, tri[2].k];
+                                        let pdata: [f64; 3] = [
+                                            all_pts[cr[0]].k_ab[[n,m]].im,
+                                            all_pts[cr[1]].k_ab[[n,m]].im,
+                                            all_pts[cr[2]].k_ab[[n,m]].im,
+                                        ];
+                                        let ddata: [f64; 3] = [
+                                            all_pts[cr[0]].band[[n]] - all_pts[cr[0]].band[[m]],
+                                            all_pts[cr[1]].band[[n]] - all_pts[cr[1]].band[[m]],
+                                            all_pts[cr[2]].band[[n]] - all_pts[cr[2]].band[[m]],
+                                        ];
+
+                                        // Interpolate at segment endpoints
+                                        let (i0, j0, t0) = seg[0];
+                                        let (i1, j1, t1) = seg[1];
+                                        let u0 = interp_scalar(&udata, &srt, i0, j0, t0);
+                                        let u1 = interp_scalar(&udata, &srt, i1, j1, t1);
+                                        let p0 = interp_scalar(&pdata, &srt, i0, j0, t0);
+                                        let p1 = interp_scalar(&pdata, &srt, i1, j1, t1);
+                                        let d0 = interp_scalar(&ddata, &srt, i0, j0, t0);
+                                        let d1 = interp_scalar(&ddata, &srt, i1, j1, t1);
 
                                         if eta == 0.0 {
-                                            let dmin = d_tri.iter().cloned().fold(f64::INFINITY, f64::min);
-                                            let dmax = d_tri.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                                            let dmin = d0.min(d1);
+                                            let dmax = d0.max(d1);
                                             if dmin <= 1e-12 && dmax >= -1e-12 { continue; }
                                         }
 
-                                        let surf_int = triangle_surface_integral(&u_tri, &p_tri, &d_tri, eta);
-                                        let area = triangle_area_3d(&q_tri);
-                                        result_t0[[im]] += -4.0 * area * surf_int / grad;
+                                        let q0 = interp_coord_2d(&tri_coords, &srt, i0, j0, t0);
+                                        let q1 = interp_coord_2d(&tri_coords, &srt, i1, j1, t1);
+                                        let seg_len = segment_length_2d(&q0, &q1);
+                                        let seg_int = segment_integral_1d(u0, u1, p0, p1, d0, d1, eta);
+                                        result_t0[[im]] += -2.0 * seg_len * seg_int / grad;
                                     }
                                 }
                             }
@@ -2461,6 +2561,114 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     }
                 }
             }
+            3 => {
+                let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+                let inv_nx = 1.0 / nx as f64;
+                let inv_ny = 1.0 / ny as f64;
+                let inv_nz = 1.0 / nz as f64;
+                let idx3 = |ix: usize, iy: usize, iz: usize| ix * ny * nz + iy * nz + iz;
+
+                const TETS: [[usize; 4]; 5] = [
+                    [0,1,2,4], [3,1,2,7], [5,1,4,7], [6,2,4,7], [1,2,4,7],
+                ];
+
+                for ix in 0..nx {
+                    let ixp = (ix + 1) % nx;
+                    for iy in 0..ny {
+                        let iyp = (iy + 1) % ny;
+                        for iz in 0..nz {
+                            let izp = (iz + 1) % nz;
+
+                            let c = [
+                                idx3(ix, iy, iz), idx3(ixp, iy, iz),
+                                idx3(ix, iyp, iz), idx3(ixp, iyp, iz),
+                                idx3(ix, iy, izp), idx3(ixp, iy, izp),
+                                idx3(ix, iyp, izp), idx3(ixp, iyp, izp),
+                            ];
+                            let corners_frac: [[f64; 3]; 8] = [
+                                [ix as f64 * inv_nx,        iy as f64 * inv_ny,        iz as f64 * inv_nz       ],
+                                [(ix+1) as f64 * inv_nx,    iy as f64 * inv_ny,        iz as f64 * inv_nz       ],
+                                [ix as f64 * inv_nx,        (iy+1) as f64 * inv_ny,    iz as f64 * inv_nz       ],
+                                [(ix+1) as f64 * inv_nx,    (iy+1) as f64 * inv_ny,    iz as f64 * inv_nz       ],
+                                [ix as f64 * inv_nx,        iy as f64 * inv_ny,        (iz+1) as f64 * inv_nz   ],
+                                [(ix+1) as f64 * inv_nx,    iy as f64 * inv_ny,        (iz+1) as f64 * inv_nz   ],
+                                [ix as f64 * inv_nx,        (iy+1) as f64 * inv_ny,    (iz+1) as f64 * inv_nz   ],
+                                [(ix+1) as f64 * inv_nx,    (iy+1) as f64 * inv_ny,    (iz+1) as f64 * inv_nz   ],
+                            ];
+
+                            for &[v0, v1, v2, v3] in TETS.iter() {
+                                let cr = [c[v0], c[v1], c[v2], c[v3]];
+                                let coords: [[f64; 3]; 4] = [
+                                    corners_frac[v0], corners_frac[v1],
+                                    corners_frac[v2], corners_frac[v3],
+                                ];
+
+                                for n in 0..nsta {
+                                    let e_raw: [f64; 4] = [
+                                        all_pts[cr[0]].band[[n]], all_pts[cr[1]].band[[n]],
+                                        all_pts[cr[2]].band[[n]], all_pts[cr[3]].band[[n]],
+                                    ];
+                                    let srt = sort4_by_energy(&e_raw);
+                                    let es = [e_raw[srt[0]], e_raw[srt[1]], e_raw[srt[2]], e_raw[srt[3]]];
+                                    let grad = grad_linear_tet_3d(&coords, &e_raw);
+                                    if grad < 1e-14 { continue; }
+
+                                    let udata: [f64; 4] = [
+                                        all_pts[cr[0]].vdiag[[n]], all_pts[cr[1]].vdiag[[n]],
+                                        all_pts[cr[2]].vdiag[[n]], all_pts[cr[3]].vdiag[[n]],
+                                    ];
+
+                                    for im in 0..n_mu {
+                                        let mu_val = mu[[im]];
+                                        if mu_val <= es[0] || mu_val >= es[3] { continue; }
+
+                                        let edge_tris = cut_tet_fermi_surface_edges(&es, mu_val);
+                                        if edge_tris.is_empty() { continue; }
+
+                                        for m in 0..nsta {
+                                            if m == n { continue; }
+
+                                            let pdata: [f64; 4] = [
+                                                all_pts[cr[0]].k_ab[[n,m]].im,
+                                                all_pts[cr[1]].k_ab[[n,m]].im,
+                                                all_pts[cr[2]].k_ab[[n,m]].im,
+                                                all_pts[cr[3]].k_ab[[n,m]].im,
+                                            ];
+                                            let ddata: [f64; 4] = [
+                                                all_pts[cr[0]].band[[n]] - all_pts[cr[0]].band[[m]],
+                                                all_pts[cr[1]].band[[n]] - all_pts[cr[1]].band[[m]],
+                                                all_pts[cr[2]].band[[n]] - all_pts[cr[2]].band[[m]],
+                                                all_pts[cr[3]].band[[n]] - all_pts[cr[3]].band[[m]],
+                                            ];
+
+                                            for edges in &edge_tris {
+                                                let tri = make_cut_tri_from_specs(
+                                                    &coords, &udata, &pdata, &ddata, &srt, edges,
+                                                );
+                                                let u_tri = [tri[0].u, tri[1].u, tri[2].u];
+                                                let p_tri = [tri[0].p, tri[1].p, tri[2].p];
+                                                let d_tri = [tri[0].d, tri[1].d, tri[2].d];
+                                                let q_tri = [tri[0].k, tri[1].k, tri[2].k];
+
+                                                if eta == 0.0 {
+                                                    let dmin = d_tri.iter().cloned().fold(f64::INFINITY, f64::min);
+                                                    let dmax = d_tri.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                                                    if dmin <= 1e-12 && dmax >= -1e-12 { continue; }
+                                                }
+
+                                                let surf_int = triangle_surface_integral(&u_tri, &p_tri, &d_tri, eta);
+                                                let area = triangle_area_3d(&q_tri);
+                                                result_t0[[im]] += -4.0 * area * surf_int / grad;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => unreachable!(),
         }
 
         let raw = result_t0 / det;

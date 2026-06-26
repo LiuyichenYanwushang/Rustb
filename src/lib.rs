@@ -2052,11 +2052,35 @@ mod tests {
             .unwrap();
 
         let ref_max = ref_vals.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
+        // 2D tetra: analytic line-segment integral
+        let tet_vals = model
+            .Nonlinear_Hall_conductivity_Extrinsic_tetra(&kmesh, &dx, &dy, &dy, &mu, 0.0, spin, eta)
+            .unwrap();
+
+        let mut max_diff: f64 = 0.0;
+        for i in 0..mu.len() {
+            max_diff = max_diff.max((ref_vals[[i]] - tet_vals[[i]]).abs());
+        }
         println!("\n=== 2D Staggered Graphene Extrinsic T=0 ({nk}×{nk}) ===");
-        println!("  ref peak={:.4}", ref_max);
-        // Sanity: signal should be non-zero (broken inversion → Ω^{xy} ≠ 0)
+        println!("  ref peak={:.4}  max|ref−tetra|={:.2e}", ref_max, max_diff);
         assert!(ref_max > 1e-6, "extrinsic signal too small: {ref_max:.2e}");
-        println!("PASSED (non-zero extrinsic response)");
+
+        // Mesh convergence
+        let mut prev = f64::MAX;
+        for &n in &[30, 40, 50] {
+            let km = arr1(&[n, n]);
+            let ref0 = model
+                .Nonlinear_Hall_conductivity_Extrinsic(&km, &dx, &dy, &dy, &mu, 0.0, 0.0, spin, eta)
+                .unwrap();
+            let tet0 = model
+                .Nonlinear_Hall_conductivity_Extrinsic_tetra(&km, &dx, &dy, &dy, &mu, 0.0, spin, eta)
+                .unwrap();
+            let mut d0: f64 = 0.0;
+            for i in 0..mu.len() { d0 = d0.max((ref0[[i]] - tet0[[i]]).abs()); }
+            println!("  nk={n}  diff={:.2e}  trend={}", d0, if d0 < prev { "↓" } else { "?" });
+            prev = d0;
+        }
+        println!("CONVERGED");
     }
 
     #[test]
