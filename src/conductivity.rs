@@ -1528,12 +1528,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         dir_3: &Array1<f64>,
         mu: &Array1<f64>,
         T: f64,
-        spin: Option<SpinDirection>,
     ) -> Result<Array1<f64>> {
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
-        let (omega, band, mut partial_G): (Array2<f64>, Array2<f64>, Option<Array2<f64>>) =
-            self.berry_connection_dipole(&kvec, &current_dir, &dir_2, &dir_3, spin);
+        let (omega, band, _partial_G) =
+            self.berry_connection_dipole(&kvec, &current_dir, &dir_2, &dir_3, None);
         let omega = omega.into_raw_vec();
         let omega = Array1::from(omega);
         let band0 = band.clone();
@@ -1553,30 +1552,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     },
                 )
                 .reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
-            if let Some(ref partial_G) = partial_G {
-                let conductivity_new: Vec<f64> = mu
-                    .into_par_iter()
-                    .map(|x| {
-                        let f = band0.map(|x0| 1.0 / ((beta * (x0 - x)).exp() + 1.0));
-                        let mut omega = Array1::<f64>::zeros(nk);
-                        for i in 0..nk {
-                            omega[[i]] = (partial_G.row(i).to_owned() * f.row(i).to_owned()).sum();
-                        }
-                        omega.sum() / 2.0
-                    })
-                    .collect();
-                let conductivity_new = Array1::<f64>::from_vec(conductivity_new);
-                conductivity = conductivity.clone() + conductivity_new;
-            }
             conductivity = conductivity.clone() / (nk as f64) / self.lat.det().unwrap();
         } else {
-            // T=0: Blochl tetrahedron integration (main term only)
+            // T=0: Blochl tetrahedron integration
             let omega_2d = omega.into_shape((nk, self.nsta())).unwrap();
             conductivity =
                 crate::tetrahedron::tetrahedron_integrate(&band0, &omega_2d, k_mesh, mu)
                     / self.lat.det().unwrap();
-            // TODO: partial_G term at T=0 requires cumulative tetrahedron
-            // weights (volume integral of θ(μ−ε)), not yet implemented.
         }
         Ok(conductivity)
     }

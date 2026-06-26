@@ -1617,7 +1617,6 @@ mod tests {
                 &dir_3,
                 &mu,
                 T,
-                Some(SpinDirection::Z),
             )
             .unwrap();
         //开始绘制非线性电导
@@ -2187,12 +2186,11 @@ mod tests {
         let dx = arr1(&[1.0, 0.0]);
         let dy = arr1(&[0.0, 1.0]);
         let mu = Array1::linspace(-3.0, 3.0, 21);
-        let spin: Option<SpinDirection> = None;
 
         let nk: usize = 50;
         let kmesh = arr1(&[nk, nk]);
         let ref_vals = model
-            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0, spin)
+            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0)
             .unwrap();
         let tet_vals = model
             .Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dx, &dy, &dy, &mu, 0.0)
@@ -2216,7 +2214,7 @@ mod tests {
         for &n in &[30, 40, 50] {
             let km = arr1(&[n, n]);
             let ref0 = model
-                .Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dy, &mu, 0.0, spin)
+                .Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dy, &mu, 0.0)
                 .unwrap();
             let tet0 = model
                 .Nonlinear_Hall_conductivity_Intrinsic_tetra(&km, &dx, &dy, &dy, &mu, 0.0)
