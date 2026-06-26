@@ -2007,18 +2007,25 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let raw = result_t0 / det;
 
-        // T>0: thermal convolution of the T=0 result.
-        // Requires strictly increasing mu; uses uniform dmu = mu[1]-mu[0].
-        // Boundary truncation (|x|>50 skip) assumes the mu window is wide
-        // enough to capture the full thermal kernel; a narrow window loses
-        // normalization.
         if T > 0.0 && n_mu > 1 {
-            debug_assert!(
-                mu.as_slice().unwrap().windows(2).all(|w| w[1] > w[0]),
-                "mu must be strictly increasing for thermal convolution"
-            );
-            let beta = 1.0 / (T * 8.617e-5);
+            // T>0: thermal convolution. Requires strictly increasing, uniformly
+            // spaced mu.  Boundary truncation (|x| > 50) assumes the mu window
+            // is wide enough to capture the full thermal kernel; a narrow
+            // window loses normalization.
+            let mu_slice = mu.as_slice().unwrap();
+            if mu_slice.windows(2).any(|w| w[1] <= w[0]) {
+                return Err(TbError::Other(
+                    "mu must be strictly increasing for thermal convolution".into(),
+                ));
+            }
             let dmu = mu[1] - mu[0];
+            let tol = 1e-12 * (1.0 + dmu.abs());
+            if mu_slice.windows(2).any(|w| (w[1] - w[0] - dmu).abs() > tol) {
+                return Err(TbError::Other(
+                    "mu must have uniform spacing for thermal convolution".into(),
+                ));
+            }
+            let beta = 1.0 / (T * 8.617e-5);
             let mut conv = Array1::<f64>::zeros(n_mu);
             for i in 0..n_mu {
                 let mut s = 0.0;
@@ -2153,7 +2160,7 @@ fn compute_occ_omega(
         let t23 = interp_t(mu, es[2], es[3]);
         let cv = (1.0-t03)*(1.0-t13)*(1.0-t23);
         let cap = sub_tet_omega(all_pts,corners,srt,n,nsta,vt*cv,eta,
-            &[(3,3,None),(0,3,Some(1.0-t03)),(1,3,Some(1.0-t13)),(2,3,Some(1.0-t23))]);
+            &[(3,3,None),(0,3,Some(t03)),(1,3,Some(t13)),(2,3,Some(t23))]);
         full - cap
     }
 }
