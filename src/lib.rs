@@ -461,6 +461,13 @@ mod tests {
             (result2 - result1).abs() < 1e-4,
             "Wrong!, the berry_curvature or berry_flux mut be false"
         );
+        //测试Hall_conductivity 和 Hall_conductivity_mu
+        let kmesh=array![100,100];
+        let mu = -1.0;
+        let a1=model.Hall_conductivity(&kmesh,&dir_2,&dir_1,mu,T,spin,eta).unwrap();
+        let a2=model.Hall_conductivity_mu(&kmesh,&dir_2,&dir_1,&array![mu],T,spin,eta).unwrap()[[0]];
+        assert!((a2-a1).abs()<1e-5,"Wrong!, Hall_conductivity_mu and Hall_conductivity is not equal!")
+
     }
     #[test]
     fn gen_v_speed_test() {

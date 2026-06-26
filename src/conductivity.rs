@@ -1222,7 +1222,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let partial_ve_3 = v_3.diag().map(|x| x.re);
 
         //开始最后的计算
-        if SPIN {
+        // Only enter spin branch when model is spinful AND spin requested
+        if SPIN && spin.is_some() {
             // Anti-commute on projected raw matrices (once each, not per-direction)
             let X = build_spin_matrix(self.norb(), spin);
             let s_1_raw = anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5;
@@ -1297,27 +1298,43 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 Some(partial_G),
             );
         } else {
-            //开始计算 G_{ij}
-            //G_{ij}=2Re\sum_{m\neq n} v_{i,nm}v_{j,mn}/(E_n-E_m)^3
-            let G_23: Array1<f64> = {
-                //用来计算  beta gamma 的 G
-                let A = &v_2 * (U0.map(|x| Complex::<f64>::new(x.powi(3), 0.0)));
+            // —— SM Eq. (43): charge intrinsic nonlinear Hall ——
+            // Original: σ^{ab;c}_{int} = -e³/ħ Σ_n ∫_k f_n
+            //   [2 ∂_c G^{ab}_n − 1/2 (∂_a G^{bc}_n + ∂_b G^{ac}_n)]
+            //
+            // Integration by parts (surface term vanishes):
+            //   ∫ f_n ∂_i G = −∫ (∂_i f_n) G = ∫ (−∂f/∂ε_n) v_i G
+            //
+            // After ibp → kernel:
+            //   Q^{ab;c}_n = 2 v_c G^{ab}_n − ½ (v_a G^{bc}_n + v_b G^{ac}_n)
+            //
+            // Conductivity (+ overall −e³/ħ sign):
+            //   σ = −e³/ħ · Σ_{k,n} (−∂f/∂ε_n) · Q_n / (N_k · det(lat))
+            //
+            // G^{ij}_n = Re Σ_{m≠n} v^i_{nm} v^j_{mn} / (ε_n − ε_m)³
+            let calc_G = |va: &Array2<Complex<f64>>,
+                          vb: &Array2<Complex<f64>>|
+             -> Array1<f64> {
+                let U3 = U0.map(|x| Complex::<f64>::new(x.powi(3), 0.0));
+                let A = va * &U3;
                 let mut G = Array1::<f64>::zeros(self.nsta());
                 for i in 0..self.nsta() {
-                    G[[i]] = A.slice(s![i, ..]).dot(&v_3.slice(s![.., i])).re * 2.0
+                    G[[i]] = A.slice(s![i, ..]).dot(&vb.slice(s![.., i])).re;
                 }
                 G
             };
-            let G_13: Array1<f64> = {
-                //用来计算 alpha gamma 的 G
-                let A = &v_1 * (U0.map(|x| Complex::<f64>::new(x.powi(3), 0.0)));
-                let mut G = Array1::<f64>::zeros(self.nsta());
-                for i in 0..self.nsta() {
-                    G[[i]] = A.slice(s![i, ..]).dot(&v_3.slice(s![.., i])).re * 2.0
-                }
-                G
-            };
-            return (partial_ve_1 * G_23 - partial_ve_2 * G_13, band, None);
+
+            let G_12 = calc_G(&v_1, &v_2); // G_{ab}
+            let G_13 = calc_G(&v_1, &v_3); // G_{ac}
+            let G_23 = calc_G(&v_2, &v_3); // G_{bc}
+
+            // Q^{ab;c}_n = 2 v_c G_{ab} − ½ (v_a G_{bc} + v_b G_{ac})
+            // v_1 = v_a,  v_2 = v_b,  v_3 = v_c
+            let omega = &partial_ve_3 * &G_12 * 2.0
+                - (&partial_ve_1 * &G_23 + &partial_ve_2 * &G_13) * 0.5;
+            // −e³/ħ overall factor (only the minus sign; physical prefactor
+            // left to the caller)
+            return (-omega, band, None);
         }
     }
 
@@ -1527,17 +1544,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .fold(
                     || Array1::<f64>::zeros(n_e),
                     |acc, (energy, omega0)| {
-                        let f = 1.0 / ((beta * (mu - *energy)).mapv(|x| x.exp() + 1.0));
+                        let f = 1.0 / ((beta * (*energy - mu)).mapv(|x| x.exp() + 1.0));
                         acc + &f * (1.0 - &f) * beta * *omega0
                     },
                 )
                 .reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
-            if SPIN {
-                let partial_G = partial_G.unwrap();
+            if let Some(ref partial_G) = partial_G {
                 let conductivity_new: Vec<f64> = mu
                     .into_par_iter()
                     .map(|x| {
-                        let f = band0.map(|x0| 1.0 / ((beta * (x - x0)).exp() + 1.0));
+                        let f = band0.map(|x0| 1.0 / ((beta * (x0 - x)).exp() + 1.0));
                         let mut omega = Array1::<f64>::zeros(nk);
                         for i in 0..nk {
                             omega[[i]] = (partial_G.row(i).to_owned() * f.row(i).to_owned()).sum();
