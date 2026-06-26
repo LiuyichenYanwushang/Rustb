@@ -568,3 +568,54 @@ While agents run, review code already modified. Check for non-exhaustive matches
 ### Commit after each successful build
 
 `git add -A && git commit -m "intermediate: <description>"` prevents data loss.
+
+---
+
+# Tetrahedron Integration: Current Status & Known Issues
+
+> **Last updated**: 2026-06-26.
+
+## What's implemented
+
+### `Hall_conductivity_tetra` (intrinsic AHC)
+- 2D: 3-point triangle quadrature (approximate for rational integrand)
+- 3D: Blochl sub-tet decomposition with analytic `compute_occ_omega`
+- T>0: thermal convolution of T=0 result
+- **Parallelized**: cell loops use `rayon::par_iter().fold().reduce()`
+
+### `Nonlinear_Hall_conductivity_Extrinsic_tetra` (extrinsic NLH)
+- 2D: triangle → line-segment Fermi-surface cut with analytic 1D integral (`segment_integral_1d`, elementary antiderivatives for η>0, ln/1/d for η=0)
+- 3D: tetrahedron → triangle Fermi-surface cut with divided-difference K_αβ weights
+- T>0: thermal convolution of T=0 result
+- **Parallelized**: cell loops use `rayon::par_iter().fold().reduce()`
+
+## Known issues
+
+### 2D convergence oscillates
+Comparing `Nonlinear_Hall_conductivity_Extrinsic_tetra` against the reference (`Nonlinear_Hall_conductivity_Extrinsic` at T=0, which uses `tetrahedron_integrate_2d`), the max-diff does not decrease monotonically with mesh size:
+- nk=30: 3.99e-3, nk=40: 2.28e-2, nk=50: 3.25e-3, nk=100: 6.82e-3
+
+Root causes (not yet fixed):
+1. **Different triangulations**: The reference `tetrahedron_integrate_2d` uses `nx.saturating_sub(1)` (no periodic wrap, missing boundary cells). The tetra method uses periodic wrapping (`(ix+1)%nx`), covering the full BZ.
+2. **Different interpolation strategies**: Reference interpolates the scalar `omega[n] = v^c_n * Ω_n` linearly, then applies Blochl δ-function weights. Tetra method does band-pair decomposition inside each simplex: interpolates u (=v^c), P (=Im K_nm), and d (=E_n-E_m) separately, then evaluates u·P/(d²+η²) analytically.
+3. Both methods have different discretization error patterns at moderate mesh sizes. In 2D, there are only 2 triangles per cell (vs 5 tets in 3D), making the error more oscillatory.
+
+3D converges well: nk=6: 1.84e-3, nk=8: 2.21e-3, nk=10: 5.96e-4 (monotonically improving overall).
+
+### No band tracking
+`TetraKPoint` stores `evec` but integration uses raw band indices. If band ordering swaps inside a simplex, E_n and K_nm interpolation is across bands. Haldane/graphene tests may avoid this because bands are sufficiently isolated.
+
+## Parallelization pattern
+Both tetra methods follow the same pattern:
+```rust
+let result = (0..ncell).into_par_iter()
+    .fold(|| Array1::zeros(n_mu), |acc, cell_id| {
+        let cell_acc = accum_xxx_cell_xx(...);
+        acc + cell_acc
+    })
+    .reduce(|| Array1::zeros(n_mu), |a, b| a + b);
+```
+- k-point computation (`compute_tetra_primitives`) is parallelized via `into_par_iter()` on k-vector iteration
+- Cell accumulation helpers are free functions that take shared read-only references (`&all_pts`, `&mu`, `&all_band`)
+- Each thread builds its own `Array1<f64>` accumulator; final reduce by `a + b`
+- Floating-point addition order varies between serial/parallel runs → last few bits may differ (not physically significant)
