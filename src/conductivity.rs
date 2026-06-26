@@ -2053,23 +2053,26 @@ fn full_tet_one_pair(p: &[f64; 4], d: &[f64; 4], vt: f64, eta: f64) -> f64 {
 fn sub_tet_omega(
     all_pts: &[TetraKPoint], corners: &[usize; 4], srt: &[usize; 4],
     n: usize, nsta: usize, v_sub: f64, eta: f64,
-    verts: &[(usize, Option<f64>)],
+    verts: &[(usize, usize, Option<f64>)],
 ) -> f64 {
-    let base = verts[0].0;
-    let bc = corners[srt[base]];
     let mut total = 0.0;
     for m in 0..nsta {
         if m == n { continue; }
         let mut p_sub = [0.0f64; 4];
         let mut d_sub = [0.0f64; 4];
-        for (vi, &(orig, t)) in verts.iter().enumerate() {
-            let cr = corners[srt[orig]];
+        for (vi, &(from, to, t)) in verts.iter().enumerate() {
+            let from_pt = corners[srt[from]];
             if let Some(tv) = t {
-                p_sub[vi] = all_pts[bc].k_ab[[n,m]].im + tv * (all_pts[cr].k_ab[[n,m]].im - all_pts[bc].k_ab[[n,m]].im);
-                d_sub[vi] = (all_pts[bc].band[[n]]-all_pts[bc].band[[m]]) + tv * ((all_pts[cr].band[[n]]-all_pts[cr].band[[m]]) - (all_pts[bc].band[[n]]-all_pts[bc].band[[m]]));
+                let to_pt = corners[srt[to]];
+                let p_from = all_pts[from_pt].k_ab[[n,m]].im;
+                let p_to = all_pts[to_pt].k_ab[[n,m]].im;
+                let d_from = all_pts[from_pt].band[[n]] - all_pts[from_pt].band[[m]];
+                let d_to = all_pts[to_pt].band[[n]] - all_pts[to_pt].band[[m]];
+                p_sub[vi] = p_from + tv * (p_to - p_from);
+                d_sub[vi] = d_from + tv * (d_to - d_from);
             } else {
-                p_sub[vi] = all_pts[cr].k_ab[[n,m]].im;
-                d_sub[vi] = all_pts[cr].band[[n]] - all_pts[cr].band[[m]];
+                p_sub[vi] = all_pts[from_pt].k_ab[[n,m]].im;
+                d_sub[vi] = all_pts[from_pt].band[[n]] - all_pts[from_pt].band[[m]];
             }
         }
         total += full_tet_one_pair(&p_sub, &d_sub, v_sub, eta);
@@ -2107,7 +2110,7 @@ fn compute_occ_omega(
         let t02 = interp_t(mu, es[0], es[2]);
         let t03 = interp_t(mu, es[0], es[3]);
         sub_tet_omega(all_pts, corners, srt, n, nsta, vt*t01*t02*t03, eta,
-            &[(0,None),(1,Some(t01)),(2,Some(t02)),(3,Some(t03))])
+            &[(0,0,None),(0,1,Some(t01)),(0,2,Some(t02)),(0,3,Some(t03))])
     } else if mu < es[2] {
         let t02 = interp_t(mu, es[0], es[2]);
         let t03 = interp_t(mu, es[0], es[3]);
@@ -2116,9 +2119,9 @@ fn compute_occ_omega(
         let v1 = t02 * t03;
         let v2 = t12 * t03 * (1.0 - t02);
         let v3 = t12 * t13 * (1.0 - t03);
-        sub_tet_omega(all_pts,corners,srt,n,nsta,vt*v1,eta,&[(0,None),(1,None),(2,Some(t02)),(3,Some(t03))])
-        + sub_tet_omega(all_pts,corners,srt,n,nsta,vt*v2,eta,&[(1,None),(2,Some(t02)),(2,Some(t12)),(3,Some(t03))])
-        + sub_tet_omega(all_pts,corners,srt,n,nsta,vt*v3,eta,&[(1,None),(2,Some(t12)),(3,Some(t03)),(3,Some(t13))])
+        sub_tet_omega(all_pts,corners,srt,n,nsta,vt*v1,eta,&[(0,0,None),(1,1,None),(0,2,Some(t02)),(0,3,Some(t03))])
+        + sub_tet_omega(all_pts,corners,srt,n,nsta,vt*v2,eta,&[(1,1,None),(0,2,Some(t02)),(1,2,Some(t12)),(0,3,Some(t03))])
+        + sub_tet_omega(all_pts,corners,srt,n,nsta,vt*v3,eta,&[(1,1,None),(1,2,Some(t12)),(0,3,Some(t03)),(1,3,Some(t13))])
     } else {
         let full = {
             let mut t = 0.0;
@@ -2141,7 +2144,7 @@ fn compute_occ_omega(
         let t23 = interp_t(mu, es[2], es[3]);
         let cv = (1.0-t03)*(1.0-t13)*(1.0-t23);
         let cap = sub_tet_omega(all_pts,corners,srt,n,nsta,vt*cv,eta,
-            &[(3,None),(0,Some(1.0-t03)),(1,Some(1.0-t13)),(2,Some(1.0-t23))]);
+            &[(3,3,None),(0,3,Some(1.0-t03)),(1,3,Some(1.0-t13)),(2,3,Some(1.0-t23))]);
         full - cap
     }
 }
