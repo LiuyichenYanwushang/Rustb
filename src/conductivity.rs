@@ -1750,7 +1750,7 @@ fn phi_double_prime(x: f64, eta: f64) -> f64 {
         -0.5 * (x.powi(2) + eta.powi(2)).ln() - 5.0 / 6.0 + x / eta * (x / eta).atan()
     } else {
         if x.abs() < 1e-14 {
-            -1.5  // limit as x→0 of -ln|x| - 3/2
+            -1.5  // regularized cutoff at x≈0 (true limit is +∞)
         } else {
             -x.abs().ln() - 1.5
         }
@@ -1904,8 +1904,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         match dim {
             2 => {
-                // 2D: 3‑point degree‑2 triangle quadrature (exact for linear P
-                // and quadratic denominator d²).
+                // 2D: 3‑point degree‑2 triangle quadrature.
+                // Note: P(λ)/(d(λ)²+η²) is rational, so quadrature is approximate;
+                // θ(μ−E) is sampled at quadrature points, not analytically treated.
                 let (nx, ny) = (k_mesh[0], k_mesh[1]);
                 let cell_area = 1.0 / (nx * ny) as f64;
                 let tri_area = cell_area / 2.0;
