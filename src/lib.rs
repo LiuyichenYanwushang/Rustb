@@ -945,6 +945,58 @@ mod tests {
         }
         println!("\nHaldane full compare: PASSED");
     }
+
+    /// Convergence check: as mesh increases, tetra vs reference difference
+    /// should shrink — proving the ~10% gap is mesh error, not formula error.
+    #[test]
+    fn Haldan_tetra_convergence() {
+        let li = Complex::new(0.0, 1.0);
+        let t = Complex::new(-1.0, 0.0);
+        let t2 = Complex::new(-1.0, 0.0);
+        let delta = 0.7;
+        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+        let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_onsite(&arr1(&[-delta, delta]), None);
+        for &(i, j) in &[(0, 0), (-1, 0), (0, -1)] {
+            model.add_hop(t, 0, 1, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(1, 0), (-1, 1), (0, -1)] {
+            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(-1, 0), (1, -1), (0, 1)] {
+            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j]), None);
+        }
+
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let eta = 0.01;
+        let mu = Array1::linspace(-2.0, 2.0, 51);
+        let spin = None;
+
+        println!("\n=== Convergence: max |Hall_conductivity_mu - Hall_conductivity_tetra| ===");
+        println!("{:>6}  {:>12}  {:>12}  {:>8}", "nk", "T=0 diff", "T=300K diff", "trend");
+        let mut prev: f64 = f64::MAX;
+        for &nk in &[15usize, 21, 31, 51, 71] {
+            let kmesh = arr1(&[nk, nk]);
+            let ref0 = model.Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, spin, eta).unwrap();
+            let tet0 = model.Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu, 0.0, spin, eta).unwrap();
+            let ref300 = model.Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 300.0, spin, eta).unwrap();
+            let tet300 = model.Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu, 300.0, spin, eta).unwrap();
+
+            let mut d0: f64 = 0.0;
+            let mut d300: f64 = 0.0;
+            for i in 0..mu.len() {
+                d0 = d0.max((ref0[[i]] - tet0[[i]]).abs());
+                d300 = d300.max((ref300[[i]] - tet300[[i]]).abs());
+            }
+            let trend = if d0 < prev { "↓" } else { "?" };
+            println!("{nk:>6}  {d0:>12.2e}  {d300:>12.2e}  {trend:>8}");
+            prev = d0;
+        }
+        assert!(prev < 0.015, "should converge below 0.015 at nk=71, got {:.2e}", prev);
+        println!("CONVERGED: error decreases with mesh size ✓");
+    }
     #[test]
     fn graphene() {
         let li: Complex<f64> = 1.0 * Complex::i();
