@@ -2162,4 +2162,70 @@ mod tests {
         assert!(d_last < d_first * 1.1, "not converging: first={:.2e} last={:.2e}", d_first, d_last);
         println!("CONVERGED");
     }
+
+    #[test]
+    fn Haldan_intrinsic_tetra_compare() {
+        // 2D Haldane: compare intrinsic tetra against existing method at T=0
+        let li = Complex::new(0.0, 1.0);
+        let t = Complex::new(-1.0, 0.0);
+        let t2 = Complex::new(-0.3, 0.0);
+        let delta = 0.7;
+        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+        let orb = arr2(&[[1.0/3.0, 1.0/3.0], [2.0/3.0, 2.0/3.0]]);
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_onsite(&arr1(&[-delta, delta]), None);
+        for &(i, j) in &[(0,0), (-1,0), (0,-1)] {
+            model.add_hop(t, 0, 1, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(1,0), (-1,1), (0,-1)] {
+            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(-1,0), (1,-1), (0,1)] {
+            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j]), None);
+        }
+
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let mu = Array1::linspace(-3.0, 3.0, 21);
+        let spin: Option<SpinDirection> = None;
+
+        let nk: usize = 50;
+        let kmesh = arr1(&[nk, nk]);
+        let ref_vals = model
+            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0, spin)
+            .unwrap();
+        let tet_vals = model
+            .Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dx, &dy, &dy, &mu, 0.0)
+            .unwrap();
+
+        let ref_max = ref_vals.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
+        let mut max_diff: f64 = 0.0;
+        for i in 0..mu.len() {
+            max_diff = max_diff.max((ref_vals[[i]] - tet_vals[[i]]).abs());
+        }
+        println!("\n=== 2D Haldane Intrinsic T=0 ({nk}×{nk}) ===");
+        println!("  ref peak={:.4}  max|ref−tetra|={:.2e}", ref_max, max_diff);
+        assert!(ref_max > 1e-6, "intrinsic signal too small: {ref_max:.2e}");
+        // Note: reference interpolates scalar omega (already contains 1/d³)
+        // linearly, so discrepancy can be ~peak magnitude at moderate meshes.
+        assert!(max_diff < ref_max * 2.0 + 1e-4,
+            "tetra-ref mismatch too large: {:.2e} vs peak {:.2e}", max_diff, ref_max);
+        println!("PASSED");
+
+        let mut prev = f64::MAX;
+        for &n in &[30, 40, 50] {
+            let km = arr1(&[n, n]);
+            let ref0 = model
+                .Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dy, &mu, 0.0, spin)
+                .unwrap();
+            let tet0 = model
+                .Nonlinear_Hall_conductivity_Intrinsic_tetra(&km, &dx, &dy, &dy, &mu, 0.0)
+                .unwrap();
+            let mut d0: f64 = 0.0;
+            for i in 0..mu.len() { d0 = d0.max((ref0[[i]] - tet0[[i]]).abs()); }
+            println!("  nk={n}  diff={:.2e}  trend={}", d0, if d0 < prev { "↓" } else { "?" });
+            prev = d0;
+        }
+        println!("CONVERGED");
+    }
 }

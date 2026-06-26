@@ -2798,3 +2798,584 @@ fn accum_hall_cell_3d(
         }
     }
 }
+
+// ── Intrinsic NLH tetrahedron integration ────────────────────────────
+
+/// Per‑k‑point primitives for intrinsic NLH.
+struct IntrinsicTetraPoint {
+    band: Array1<f64>,       // nsta
+    v_a_diag: Array1<f64>,   // diag(v^a) in eigenbasis
+    v_b_diag: Array1<f64>,   // diag(v^b)
+    v_c_diag: Array1<f64>,   // diag(v^c)
+    p_ab: Array2<f64>,       // Re[v^a_nm * v^b_mn], (nsta,nsta)
+    p_ac: Array2<f64>,       // Re[v^a_nm * v^c_mn]
+    p_bc: Array2<f64>,       // Re[v^b_nm * v^c_mn]
+}
+
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    /// Compute per‑k‑point primitives for intrinsic NLH tetra integration.
+    fn compute_intrinsic_tetra_primitives(
+        &self,
+        k_vec: &Array1<f64>,
+        dir_a: &Array1<f64>,
+        dir_b: &Array1<f64>,
+        dir_c: &Array1<f64>,
+        gauge: Gauge,
+    ) -> IntrinsicTetraPoint {
+        let directions = {
+            let mut d = Array2::<f64>::zeros((3, DIM));
+            d.row_mut(0).assign(dir_a);
+            d.row_mut(1).assign(dir_b);
+            d.row_mut(2).assign(dir_c);
+            d
+        };
+        let (v_proj, hamk) = self.gen_v_projected(k_vec, gauge, &directions);
+        let (band, evec) = hamk.eigh(UPLO::Lower).unwrap();
+        let nsta = self.nsta();
+
+        // U^T · v · U^* convention
+        let ut = evec.t();
+        let uc = evec.map(|x| x.conj());
+        let to_band = |d: usize| -> Array2<Complex<f64>> {
+            let v_raw = v_proj.slice(s![d, .., ..]).to_owned();
+            ut.dot(&v_raw.dot(&uc))
+        };
+
+        let va = to_band(0);
+        let vb = to_band(1);
+        let vc = to_band(2);
+
+        let v_a_diag = va.diag().map(|x| x.re).to_owned();
+        let v_b_diag = vb.diag().map(|x| x.re).to_owned();
+        let v_c_diag = vc.diag().map(|x| x.re).to_owned();
+
+        let mut p_ab = Array2::<f64>::zeros((nsta, nsta));
+        let mut p_ac = Array2::<f64>::zeros((nsta, nsta));
+        let mut p_bc = Array2::<f64>::zeros((nsta, nsta));
+        for n in 0..nsta {
+            for m in 0..nsta {
+                p_ab[[n, m]] = (va[[n, m]] * vb[[m, n]]).re;
+                p_ac[[n, m]] = (va[[n, m]] * vc[[m, n]]).re;
+                p_bc[[n, m]] = (vb[[n, m]] * vc[[m, n]]).re;
+            }
+        }
+
+        IntrinsicTetraPoint {
+            band,
+            v_a_diag,
+            v_b_diag,
+            v_c_diag,
+            p_ab,
+            p_ac,
+            p_bc,
+        }
+    }
+}
+
+// ── φ₃ divided differences (φ₃'''' = 1/x³) ─────────────────────────────
+
+/// φ₃(x) = ½ x ln|x|  (satisfies φ₃''''(x) = 1/x³).
+#[inline]
+fn phi3(x: f64) -> f64 {
+    if x.abs() < 1e-14 { 0.0 } else { 0.5 * x * x.abs().ln() }
+}
+
+/// φ₃'(x) = ½ ln|x| + ½.
+#[inline]
+fn phi3_prime(x: f64) -> f64 {
+    if x.abs() < 1e-14 { f64::NEG_INFINITY } else { 0.5 * x.abs().ln() + 0.5 }
+}
+
+/// φ₃''(x) = 1/(2x).
+#[inline]
+fn phi3_double_prime(x: f64) -> f64 {
+    if x.abs() < 1e-14 { f64::INFINITY } else { 0.5 / x }
+}
+
+/// φ₃'''(x) = −1/(2x²).
+#[inline]
+fn phi3_triple_prime(x: f64) -> f64 {
+    if x.abs() < 1e-14 { f64::NEG_INFINITY } else { -0.5 / (x * x) }
+}
+
+/// Newton divided difference of φ₃ over nodes `xs`.
+fn divided_diff_phi3(xs: &[f64]) -> f64 {
+    let n = xs.len();
+    if n == 1 { return phi3(xs[0]); }
+
+    let mut sorted: Vec<f64> = xs.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let x_min = sorted[0];
+    let x_max = sorted[n - 1];
+    let tol = 1e-12 * (1.0 + x_max.abs().max(x_min.abs()));
+
+    if x_max - x_min < tol {
+        let x_mid = (x_min + x_max) / 2.0;
+        let p = n - 1;
+        let deriv = match p {
+            0 => phi3(x_mid),
+            1 => phi3_prime(x_mid),
+            2 => phi3_double_prime(x_mid),
+            3 => phi3_triple_prime(x_mid),
+            4 => {
+                // φ₃''''(x) = 1/x³
+                let a = x_mid.abs();
+                if a < 1e-14 { f64::INFINITY } else { 1.0 / (x_mid * x_mid * x_mid) }
+            }
+            _ => panic!("divided_diff_phi3: p={p} not supported"),
+        };
+        let fact: f64 = match p {
+            0 => 1.0, 1 => 1.0, 2 => 2.0, 3 => 6.0, 4 => 24.0,
+            _ => panic!(),
+        };
+        return deriv / fact;
+    }
+
+    let a = divided_diff_phi3(&sorted[1..]);
+    let b = divided_diff_phi3(&sorted[..n - 1]);
+    (a - b) / (x_max - x_min)
+}
+
+/// K³_{αβ} weight for triangle surface integral with 1/d³ denominator.
+fn k3_weight_triangle(alpha: usize, beta: usize, d: &[f64; 3]) -> f64 {
+    let mut nodes = vec![d[0], d[1], d[2], d[alpha], d[beta]];
+    let dd = divided_diff_phi3(&nodes);
+    if alpha == beta { 2.0 * dd } else { dd }
+}
+
+/// Surface integral B_Δ[u, P, d] over one triangle (without 2A_Δ prefactor).
+fn triangle_integral_d3(u: &[f64; 3], p: &[f64; 3], d: &[f64; 3]) -> f64 {
+    let mut sum = 0.0;
+    for alpha in 0..3 {
+        for beta in 0..3 {
+            sum += u[alpha] * p[beta] * k3_weight_triangle(alpha, beta, d);
+        }
+    }
+    sum
+}
+
+// ── 2D segment integral with 1/d³ denominator ────────────────────────
+
+/// ∫₀¹ u(ξ)P(ξ)/d(ξ)³ dξ for a line segment.
+///
+/// Returns `None` if d crosses or touches zero (integral diverges).
+fn segment_integral_d3(
+    u0: f64, u1: f64, p0: f64, p1: f64, d0: f64, d1: f64,
+) -> Option<f64> {
+    // Divergence check: d must not cross or touch zero
+    if d0 * d1 <= 0.0 { return None; }
+
+    let dd = d1 - d0;
+    let a = (u1 - u0) * (p1 - p0);
+    let b = u0 * p1 + u1 * p0 - 2.0 * u0 * p0;
+    let c = u0 * p0;
+
+    if dd.abs() < 1e-14 * (1.0 + d0.abs()) {
+        // Constant d limit: ∫₀¹ (aξ²+bξ+c)/d³ dξ = (c + b/2 + a/3)/d³
+        return Some((c + 0.5 * b + a / 3.0) / (d0 * d0 * d0));
+    }
+
+    // χ₀ = (d₀+d₁) / (2 d₀² d₁²)
+    let chi0 = (d0 + d1) / (2.0 * d0 * d0 * d1 * d1);
+    // χ₁ = [1/(2d₀) − 1/d₁ + d₀/(2d₁²)] / Δ²
+    let chi1 = (0.5 / d0 - 1.0 / d1 + 0.5 * d0 / (d1 * d1)) / (dd * dd);
+    // χ₂ = [ln|d₁/d₀| + 2d₀/d₁ − d₀²/(2d₁²) − 3/2] / Δ³
+    let ln_ratio = (d1 / d0).abs().ln();
+    let chi2 = (ln_ratio + 2.0 * d0 / d1 - 0.5 * d0 * d0 / (d1 * d1) - 1.5)
+        / (dd * dd * dd);
+
+    Some(a * chi2 + b * chi1 + c * chi0)
+}
+
+// ── Cell accumulators ──────────────────────────────────────────────────
+
+/// Thread-local accumulator for one 2D cell (intrinsic NLH).
+fn accum_intrinsic_cell_2d(
+    ix: usize, iy: usize, nx: usize, ny: usize,
+    inv_nx: f64, inv_ny: f64,
+    nsta: usize, n_mu: usize,
+    mu: &Array1<f64>, all_pts: &[IntrinsicTetraPoint],
+    acc: &mut Array1<f64>,
+) {
+    let ixp = (ix + 1) % nx;
+    let iyp = (iy + 1) % ny;
+    let i00 = ix * ny + iy;
+    let i10 = ixp * ny + iy;
+    let i11 = ixp * ny + iyp;
+    let i01 = ix * ny + iyp;
+
+    let corners_frac: [[f64; 2]; 4] = [
+        [ix as f64 * inv_nx, iy as f64 * inv_ny],
+        [(ix + 1) as f64 * inv_nx, iy as f64 * inv_ny],
+        [(ix + 1) as f64 * inv_nx, (iy + 1) as f64 * inv_ny],
+        [ix as f64 * inv_nx, (iy + 1) as f64 * inv_ny],
+    ];
+    let coord_of = |idx: usize| -> [f64; 2] {
+        if idx == i00 { corners_frac[0] }
+        else if idx == i10 { corners_frac[1] }
+        else if idx == i11 { corners_frac[2] }
+        else { corners_frac[3] }
+    };
+
+    for &(v0, v1, v2) in &[(i00, i10, i01), (i11, i10, i01)] {
+        let cr = [v0, v1, v2];
+        let tri_coords = [coord_of(v0), coord_of(v1), coord_of(v2)];
+
+        for n in 0..nsta {
+            let e_raw: [f64; 3] = [
+                all_pts[cr[0]].band[[n]], all_pts[cr[1]].band[[n]],
+                all_pts[cr[2]].band[[n]],
+            ];
+            let srt = sort3_by_energy(&e_raw);
+            let es = [e_raw[srt[0]], e_raw[srt[1]], e_raw[srt[2]]];
+            let grad = grad_linear_tri_2d(&tri_coords, &e_raw);
+            if grad < 1e-14 { continue; }
+
+            let va_d: [f64; 3] = [all_pts[cr[0]].v_a_diag[[n]], all_pts[cr[1]].v_a_diag[[n]], all_pts[cr[2]].v_a_diag[[n]]];
+            let vb_d: [f64; 3] = [all_pts[cr[0]].v_b_diag[[n]], all_pts[cr[1]].v_b_diag[[n]], all_pts[cr[2]].v_b_diag[[n]]];
+            let vc_d: [f64; 3] = [all_pts[cr[0]].v_c_diag[[n]], all_pts[cr[1]].v_c_diag[[n]], all_pts[cr[2]].v_c_diag[[n]]];
+
+            for im in 0..n_mu {
+                let mu_val = mu[[im]];
+                if mu_val <= es[0] || mu_val >= es[2] { continue; }
+                let seg = match cut_tri_fermi_contour_2d(&es, mu_val) {
+                    Some(s) => s, None => continue,
+                };
+                let (i0, j0, t0) = seg[0];
+                let (i1, j1, t1) = seg[1];
+                let q0 = interp_coord_2d(&tri_coords, &srt, i0, j0, t0);
+                let q1 = interp_coord_2d(&tri_coords, &srt, i1, j1, t1);
+                let seg_len = segment_length_2d(&q0, &q1);
+
+                for m in 0..nsta {
+                    if m == n { continue; }
+
+                    let pab: [f64; 3] = [all_pts[cr[0]].p_ab[[n,m]], all_pts[cr[1]].p_ab[[n,m]], all_pts[cr[2]].p_ab[[n,m]]];
+                    let pac: [f64; 3] = [all_pts[cr[0]].p_ac[[n,m]], all_pts[cr[1]].p_ac[[n,m]], all_pts[cr[2]].p_ac[[n,m]]];
+                    let pbc: [f64; 3] = [all_pts[cr[0]].p_bc[[n,m]], all_pts[cr[1]].p_bc[[n,m]], all_pts[cr[2]].p_bc[[n,m]]];
+                    let d_raw: [f64; 3] = [
+                        all_pts[cr[0]].band[[n]] - all_pts[cr[0]].band[[m]],
+                        all_pts[cr[1]].band[[n]] - all_pts[cr[1]].band[[m]],
+                        all_pts[cr[2]].band[[n]] - all_pts[cr[2]].band[[m]],
+                    ];
+
+                    let u0_ab = interp_scalar(&pab, &srt, i0, j0, t0);
+                    let u1_ab = interp_scalar(&pab, &srt, i1, j1, t1);
+                    let u0_ac = interp_scalar(&pac, &srt, i0, j0, t0);
+                    let u1_ac = interp_scalar(&pac, &srt, i1, j1, t1);
+                    let u0_bc = interp_scalar(&pbc, &srt, i0, j0, t0);
+                    let u1_bc = interp_scalar(&pbc, &srt, i1, j1, t1);
+                    let d0_v = interp_scalar(&d_raw, &srt, i0, j0, t0);
+                    let d1_v = interp_scalar(&d_raw, &srt, i1, j1, t1);
+
+                    // Block B(v_c, P_ab, d)
+                    let vc0 = interp_scalar(&vc_d, &srt, i0, j0, t0);
+                    let vc1 = interp_scalar(&vc_d, &srt, i1, j1, t1);
+                    let b1 = match segment_integral_d3(vc0, vc1, u0_ab, u1_ab, d0_v, d1_v) {
+                        Some(v) => v, None => continue,
+                    };
+                    // Block B(v_a, P_bc, d)
+                    let va0 = interp_scalar(&va_d, &srt, i0, j0, t0);
+                    let va1 = interp_scalar(&va_d, &srt, i1, j1, t1);
+                    let b2 = match segment_integral_d3(va0, va1, u0_bc, u1_bc, d0_v, d1_v) {
+                        Some(v) => v, None => continue,
+                    };
+                    // Block B(v_b, P_ac, d)
+                    let vb0 = interp_scalar(&vb_d, &srt, i0, j0, t0);
+                    let vb1 = interp_scalar(&vb_d, &srt, i1, j1, t1);
+                    let b3 = match segment_integral_d3(vb0, vb1, u0_ac, u1_ac, d0_v, d1_v) {
+                        Some(v) => v, None => continue,
+                    };
+
+                    // Reference integrates −Q = −2 v_c·G_ab + ½ v_a·G_bc + ½ v_b·G_ac
+                    let q = -2.0 * b1 + 0.5 * b2 + 0.5 * b3;
+                    acc[[im]] += q * seg_len / grad;
+                }
+            }
+        }
+    }
+}
+
+/// Thread-local accumulator for one 3D cell (intrinsic NLH).
+fn accum_intrinsic_cell_3d(
+    ix: usize, iy: usize, iz: usize,
+    nx: usize, ny: usize, nz: usize,
+    inv_nx: f64, inv_ny: f64, inv_nz: f64,
+    nsta: usize, n_mu: usize,
+    mu: &Array1<f64>, all_pts: &[IntrinsicTetraPoint],
+    acc: &mut Array1<f64>,
+) {
+    const TETS: [[usize; 4]; 5] = [
+        [0, 1, 2, 4], [3, 1, 2, 7], [5, 1, 4, 7], [6, 2, 4, 7], [1, 2, 4, 7],
+    ];
+    let ixp = (ix + 1) % nx;
+    let iyp = (iy + 1) % ny;
+    let izp = (iz + 1) % nz;
+    let idx3 = |x: usize, y: usize, z: usize| x * ny * nz + y * nz + z;
+    let c = [
+        idx3(ix, iy, iz), idx3(ixp, iy, iz),
+        idx3(ix, iyp, iz), idx3(ixp, iyp, iz),
+        idx3(ix, iy, izp), idx3(ixp, iy, izp),
+        idx3(ix, iyp, izp), idx3(ixp, iyp, izp),
+    ];
+    let corners_frac: [[f64; 3]; 8] = [
+        [ix as f64 * inv_nx, iy as f64 * inv_ny, iz as f64 * inv_nz],
+        [(ix + 1) as f64 * inv_nx, iy as f64 * inv_ny, iz as f64 * inv_nz],
+        [ix as f64 * inv_nx, (iy + 1) as f64 * inv_ny, iz as f64 * inv_nz],
+        [(ix + 1) as f64 * inv_nx, (iy + 1) as f64 * inv_ny, iz as f64 * inv_nz],
+        [ix as f64 * inv_nx, iy as f64 * inv_ny, (iz + 1) as f64 * inv_nz],
+        [(ix + 1) as f64 * inv_nx, iy as f64 * inv_ny, (iz + 1) as f64 * inv_nz],
+        [ix as f64 * inv_nx, (iy + 1) as f64 * inv_ny, (iz + 1) as f64 * inv_nz],
+        [(ix + 1) as f64 * inv_nx, (iy + 1) as f64 * inv_ny, (iz + 1) as f64 * inv_nz],
+    ];
+
+    for &[v0, v1, v2, v3] in TETS.iter() {
+        let cr = [c[v0], c[v1], c[v2], c[v3]];
+        let coords = [corners_frac[v0], corners_frac[v1], corners_frac[v2], corners_frac[v3]];
+
+        for n in 0..nsta {
+            let e_raw: [f64; 4] = [
+                all_pts[cr[0]].band[[n]], all_pts[cr[1]].band[[n]],
+                all_pts[cr[2]].band[[n]], all_pts[cr[3]].band[[n]],
+            ];
+            let srt = sort4_by_energy(&e_raw);
+            let es = [e_raw[srt[0]], e_raw[srt[1]], e_raw[srt[2]], e_raw[srt[3]]];
+            let grad = grad_linear_tet_3d(&coords, &e_raw);
+            if grad < 1e-14 { continue; }
+
+            let va_d: [f64; 4] = [all_pts[cr[0]].v_a_diag[[n]], all_pts[cr[1]].v_a_diag[[n]], all_pts[cr[2]].v_a_diag[[n]], all_pts[cr[3]].v_a_diag[[n]]];
+            let vb_d: [f64; 4] = [all_pts[cr[0]].v_b_diag[[n]], all_pts[cr[1]].v_b_diag[[n]], all_pts[cr[2]].v_b_diag[[n]], all_pts[cr[3]].v_b_diag[[n]]];
+            let vc_d: [f64; 4] = [all_pts[cr[0]].v_c_diag[[n]], all_pts[cr[1]].v_c_diag[[n]], all_pts[cr[2]].v_c_diag[[n]], all_pts[cr[3]].v_c_diag[[n]]];
+
+            for im in 0..n_mu {
+                let mu_val = mu[[im]];
+                if mu_val <= es[0] || mu_val >= es[3] { continue; }
+                let edge_tris = cut_tet_fermi_surface_edges(&es, mu_val);
+                if edge_tris.is_empty() { continue; }
+
+                for m in 0..nsta {
+                    if m == n { continue; }
+
+                    let pab: [f64; 4] = [all_pts[cr[0]].p_ab[[n,m]], all_pts[cr[1]].p_ab[[n,m]], all_pts[cr[2]].p_ab[[n,m]], all_pts[cr[3]].p_ab[[n,m]]];
+                    let pac: [f64; 4] = [all_pts[cr[0]].p_ac[[n,m]], all_pts[cr[1]].p_ac[[n,m]], all_pts[cr[2]].p_ac[[n,m]], all_pts[cr[3]].p_ac[[n,m]]];
+                    let pbc: [f64; 4] = [all_pts[cr[0]].p_bc[[n,m]], all_pts[cr[1]].p_bc[[n,m]], all_pts[cr[2]].p_bc[[n,m]], all_pts[cr[3]].p_bc[[n,m]]];
+                    let d_raw: [f64; 4] = [
+                        all_pts[cr[0]].band[[n]] - all_pts[cr[0]].band[[m]],
+                        all_pts[cr[1]].band[[n]] - all_pts[cr[1]].band[[m]],
+                        all_pts[cr[2]].band[[n]] - all_pts[cr[2]].band[[m]],
+                        all_pts[cr[3]].band[[n]] - all_pts[cr[3]].band[[m]],
+                    ];
+
+                    // Check for d crossing zero at vertices (unsafe for 1/d³)
+                    if d_raw.iter().any(|&x| x.abs() < 1e-12) { continue; }
+                    if d_raw.iter().any(|&x| x < 0.0) && d_raw.iter().any(|&x| x > 0.0) { continue; }
+
+                    for edges in &edge_tris {
+                        let u_tri = [
+                            interp_scalar(&vc_d, &srt, edges[0].0, edges[0].1, edges[0].2),
+                            interp_scalar(&vc_d, &srt, edges[1].0, edges[1].1, edges[1].2),
+                            interp_scalar(&vc_d, &srt, edges[2].0, edges[2].1, edges[2].2),
+                        ];
+                        let pab_tri = [
+                            interp_scalar(&pab, &srt, edges[0].0, edges[0].1, edges[0].2),
+                            interp_scalar(&pab, &srt, edges[1].0, edges[1].1, edges[1].2),
+                            interp_scalar(&pab, &srt, edges[2].0, edges[2].1, edges[2].2),
+                        ];
+                        let pac_tri = [
+                            interp_scalar(&pac, &srt, edges[0].0, edges[0].1, edges[0].2),
+                            interp_scalar(&pac, &srt, edges[1].0, edges[1].1, edges[1].2),
+                            interp_scalar(&pac, &srt, edges[2].0, edges[2].1, edges[2].2),
+                        ];
+                        let pbc_tri = [
+                            interp_scalar(&pbc, &srt, edges[0].0, edges[0].1, edges[0].2),
+                            interp_scalar(&pbc, &srt, edges[1].0, edges[1].1, edges[1].2),
+                            interp_scalar(&pbc, &srt, edges[2].0, edges[2].1, edges[2].2),
+                        ];
+                        let va_tri = [
+                            interp_scalar(&va_d, &srt, edges[0].0, edges[0].1, edges[0].2),
+                            interp_scalar(&va_d, &srt, edges[1].0, edges[1].1, edges[1].2),
+                            interp_scalar(&va_d, &srt, edges[2].0, edges[2].1, edges[2].2),
+                        ];
+                        let vb_tri = [
+                            interp_scalar(&vb_d, &srt, edges[0].0, edges[0].1, edges[0].2),
+                            interp_scalar(&vb_d, &srt, edges[1].0, edges[1].1, edges[1].2),
+                            interp_scalar(&vb_d, &srt, edges[2].0, edges[2].1, edges[2].2),
+                        ];
+                        let d_tri = [
+                            interp_scalar(&d_raw, &srt, edges[0].0, edges[0].1, edges[0].2),
+                            interp_scalar(&d_raw, &srt, edges[1].0, edges[1].1, edges[1].2),
+                            interp_scalar(&d_raw, &srt, edges[2].0, edges[2].1, edges[2].2),
+                        ];
+                        // Check d doesn't cross zero on cut triangle
+                        let dmin = d_tri.iter().cloned().fold(f64::INFINITY, f64::min);
+                        let dmax = d_tri.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                        if dmin * dmax <= 0.0 { continue; }
+
+                        let q_tri = [
+                            interp_coord_3d(&coords, &srt, edges[0].0, edges[0].1, edges[0].2),
+                            interp_coord_3d(&coords, &srt, edges[1].0, edges[1].1, edges[1].2),
+                            interp_coord_3d(&coords, &srt, edges[2].0, edges[2].1, edges[2].2),
+                        ];
+                        let area = triangle_area_3d(&q_tri);
+
+                        // B(v_c, P_ab)
+                        let b1 = triangle_integral_d3(&u_tri, &pab_tri, &d_tri);
+                        // B(v_a, P_bc)
+                        let b2 = triangle_integral_d3(&va_tri, &pbc_tri, &d_tri);
+                        // B(v_b, P_ac)
+                        let b3 = triangle_integral_d3(&vb_tri, &pac_tri, &d_tri);
+
+                        // Reference integrates −Q = −2 v_c·G_ab + ½ v_a·G_bc + ½ v_b·G_ac
+                        let q = -2.0 * b1 + 0.5 * b2 + 0.5 * b3;
+                        acc[[im]] += 2.0 * area * q / grad;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Interpolate 3D coordinate at edge intersection.
+#[inline]
+fn interp_coord_3d(coords: &[[f64; 3]], srt: &[usize], i: usize, j: usize, t: f64) -> [f64; 3] {
+    let ci = coords[srt[i]];
+    let cj = coords[srt[j]];
+    [ci[0] + t * (cj[0] - ci[0]), ci[1] + t * (cj[1] - ci[1]), ci[2] + t * (cj[2] - ci[2])]
+}
+
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    /// Intrinsic nonlinear Hall conductivity via tetrahedron integration.
+    ///
+    /// ```text
+    /// σ^{ab;c}_{int}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) Q^{ab;c}_n(k) dk
+    /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
+    /// G^{ij}_n = Σ_{m≠n} Re[v^i_{nm} v^j_{mn}] / (E_n−E_m)³
+    /// ```
+    ///
+    /// **2D**: line‑segment Fermi‑surface cut with analytic 1/d³ integral.
+    /// **3D**: triangle Fermi‑surface cut with divided‑difference K³ weights.
+    /// **T>0**: thermal convolution of T=0 result.
+    ///
+    /// Only charge (spinless) branch is supported; spinful partial_G term
+    /// requires occupied‑volume tetrahedron integration (future work).
+    pub fn Nonlinear_Hall_conductivity_Intrinsic_tetra(
+        &self,
+        k_mesh: &Array1<usize>,
+        current_dir: &Array1<f64>,
+        dir_2: &Array1<f64>,
+        dir_3: &Array1<f64>,
+        mu: &Array1<f64>,
+        T: f64,
+    ) -> Result<Array1<f64>> {
+        let dim = k_mesh.len();
+        assert!(dim == 2 || dim == 3, "only dim=2,3 supported, got dim={dim}");
+
+        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
+        let nk = kvec.nrows();
+        let nsta = self.nsta();
+        let gauge = Gauge::Atom;
+
+        let all_pts: Vec<IntrinsicTetraPoint> = (0..nk)
+            .into_par_iter()
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                self.compute_intrinsic_tetra_primitives(
+                    &kv, current_dir, dir_2, dir_3, gauge,
+                )
+            })
+            .collect();
+
+        let n_mu = mu.len();
+        let det = self.lat.det().unwrap();
+        let mut result_t0 = Array1::<f64>::zeros(n_mu);
+
+        match dim {
+            2 => {
+                let (nx, ny) = (k_mesh[0], k_mesh[1]);
+                let inv_nx = 1.0 / nx as f64;
+                let inv_ny = 1.0 / ny as f64;
+                let ncell = nx * ny;
+                result_t0 = (0..ncell)
+                    .into_par_iter()
+                    .fold(
+                        || Array1::<f64>::zeros(n_mu),
+                        |mut acc, cell_id| {
+                            let ix = cell_id / ny;
+                            let iy = cell_id % ny;
+                            accum_intrinsic_cell_2d(
+                                ix, iy, nx, ny, inv_nx, inv_ny,
+                                nsta, n_mu, mu, &all_pts, &mut acc,
+                            );
+                            acc
+                        },
+                    )
+                    .reduce(
+                        || Array1::<f64>::zeros(n_mu),
+                        |mut a, b| { a += &b; a },
+                    );
+            }
+            3 => {
+                let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+                let inv_nx = 1.0 / nx as f64;
+                let inv_ny = 1.0 / ny as f64;
+                let inv_nz = 1.0 / nz as f64;
+                let ncell = nx * ny * nz;
+                result_t0 = (0..ncell)
+                    .into_par_iter()
+                    .fold(
+                        || Array1::<f64>::zeros(n_mu),
+                        |mut acc, cell_id| {
+                            let ix = cell_id / (ny * nz);
+                            let rem = cell_id % (ny * nz);
+                            let iy = rem / nz;
+                            let iz = rem % nz;
+                            accum_intrinsic_cell_3d(
+                                ix, iy, iz, nx, ny, nz,
+                                inv_nx, inv_ny, inv_nz,
+                                nsta, n_mu, mu, &all_pts, &mut acc,
+                            );
+                            acc
+                        },
+                    )
+                    .reduce(
+                        || Array1::<f64>::zeros(n_mu),
+                        |mut a, b| { a += &b; a },
+                    );
+            }
+            _ => unreachable!(),
+        }
+
+        let raw = result_t0 / det;
+
+        if T > 0.0 && n_mu > 1 {
+            let mu_slice = mu.as_slice().unwrap();
+            if mu_slice.windows(2).any(|w| w[1] <= w[0]) {
+                return Err(TbError::Other(
+                    "mu must be strictly increasing for thermal convolution".into(),
+                ));
+            }
+            let dmu = mu[1] - mu[0];
+            let tol = 1e-12 * (1.0 + dmu.abs());
+            if mu_slice.windows(2).any(|w| (w[1] - w[0] - dmu).abs() > tol) {
+                return Err(TbError::Other(
+                    "mu must have uniform spacing for thermal convolution".into(),
+                ));
+            }
+            let beta = 1.0 / (T * 8.617e-5);
+            let mut conv = Array1::<f64>::zeros(n_mu);
+            for i in 0..n_mu {
+                let mut s = 0.0;
+                for j in 0..n_mu {
+                    let x = beta * (mu[[j]] - mu[[i]]);
+                    if x.abs() > 50.0 { continue; }
+                    let f = 1.0 / (x.exp() + 1.0);
+                    s += raw[[j]] * beta * f * (1.0 - f) * dmu;
+                }
+                conv[[i]] = s;
+            }
+            Ok(conv)
+        } else {
+            Ok(raw)
+        }
+    }
+}
