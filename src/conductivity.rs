@@ -1671,9 +1671,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let (band, evec) = hamk.eigh(UPLO::Lower).unwrap();
         let evec_conj = evec.t().map(|x| x.conj());
 
-        let to_band = |d: usize| -> Array2<Complex<f64>> {
+        let to_band = |d: usize, spin_dress: bool| -> Array2<Complex<f64>> {
             let v_raw = v_proj.slice(s![d, .., ..]).to_owned();
-            if SPIN && spin.is_some() {
+            if spin_dress && SPIN && spin.is_some() {
                 let x = build_spin_matrix(self.norb(), spin);
                 let s = anti_comm(&x, &v_raw) * 0.5;
                 evec_conj.dot(&s.dot(&evec))
@@ -1682,9 +1682,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         };
 
-        let va = to_band(0);
-        let vb = to_band(1);
-        let vv = to_band(2);
+        // Only dir_a (Berry curvature α index) gets spin‑dressed.
+        // dir_b and dir_v are plain velocities — same convention as
+        // berry_curvature_n_onek and berry_curvature_dipole_n_onek.
+        let va = to_band(0, true);
+        let vb = to_band(1, false);
+        let vv = to_band(2, false);
 
         let vdiag = vv.diag().map(|x| x.re).to_owned();
 
