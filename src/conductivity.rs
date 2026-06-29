@@ -1689,6 +1689,60 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     }
 }
 
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    /// Berry curvature and quantum metric via simplex quadrature.
+    ///
+    /// Uses gauge‑invariant primitive interpolation *inside* each simplex
+    /// (rather than interpolating the final scalar integrand), which
+    /// correctly preserves the singular `1/(E_n−E_m)²` structure near
+    /// small gaps.
+    ///
+    /// # Arguments
+    /// * `k_mesh` — `[nx, ny]` (2D) or `[nx, ny, nz]` (3D).
+    /// * `dir_a`, `dir_b` — direction vectors for Berry‑curvature indices.
+    /// * `eta` — smearing (eV) for the denominator `(E_n−E_m)² + η²`.
+    ///
+    /// # Returns
+    /// `(total_metric, total_berry, unsafe_count)` where the totals are
+    /// `Σ_n ∫ g_n(k) dk` and `Σ_n ∫ Ω_n(k) dk` (fractional‑coordinate
+    /// volume; divide by `det(lat)` for Cartesian).
+    pub fn berry_curvature_simplex(
+        &self,
+        k_mesh: &Array1<usize>,
+        dir_a: &Array1<f64>,
+        dir_b: &Array1<f64>,
+        eta: f64,
+    ) -> Result<(f64, f64, usize)> {
+        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
+        let nk = kvec.nrows();
+        let gauge = Gauge::Atom;
+        // Dummy direction for vdiag — not used by the simplex Berry kernel.
+        let dummy_dir = dir_a.clone();
+
+        let all_pts: Vec<crate::tetrahedron::VertexKernel> = (0..nk)
+            .into_par_iter()
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                let tk = self.compute_tetra_primitives(
+                    &kv, dir_a, dir_b, &dummy_dir, gauge, None,
+                );
+                crate::tetrahedron::VertexKernel {
+                    band: tk.band,
+                    k_ab: tk.k_ab,
+                    vdiag: None, // not needed for Ω/g evaluation
+                    evec: tk.evec,
+                }
+            })
+            .collect();
+
+        let (total_g, total_o, unsafe_count) =
+            crate::tetrahedron::simplex_berry_integrate(&all_pts, k_mesh, eta);
+
+        let det = self.lat.det().unwrap();
+        Ok((total_g / det, total_o / det, unsafe_count))
+    }
+}
+
 /// `Φ_η(x)` — the function whose 4th derivative is `1/(x²+η²)`.
 #[inline]
 fn phi(x: f64, eta: f64) -> f64 {
