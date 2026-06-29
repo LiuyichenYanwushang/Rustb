@@ -1213,27 +1213,41 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// - `omega`: `-Q^{ab;c}` per band for the charge branch.
     /// - `band`: Band energies.
     /// - `partial_G`: $\partial_{h} G$ per band (only `Some` for spinful models, `None` for spinless).
+    /// Compute Berry connection dipole integrand at one k-point.
+    ///
+    /// The three direction vectors `(dir_a, dir_b, dir_c)` are treated as
+    /// field indices `(a, b, c)` of the intrinsic NLH kernel.  The charge
+    /// branch returns `−Q^{ab;c}` where
+    ///
+    /// ```text
+    /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
+    /// G^{ij}_n    = Re Σ_{m≠n} v^i_{nm} v^j_{mn} / (E_n−E_m)³
+    /// ```
+    ///
+    /// Callers must pass directions in `(dir_a, dir_b, dir_c)` order.
+    /// E.g. `Nonlinear_Hall_conductivity_Intrinsic` maps its public
+    /// `(current=c, field_1=a, field_2=b)` → `(dir_a=a, dir_b=b, dir_c=c)`.
     pub fn berry_connection_dipole_onek(
         &self,
         k_vec: &Array1<f64>,
-        current_dir: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        dir_3: &Array1<f64>,
+        dir_a: &Array1<f64>,
+        dir_b: &Array1<f64>,
+        dir_c: &Array1<f64>,
         spin: Option<SpinDirection>,
     ) -> (Array1<f64>, Array1<f64>, Option<Array1<f64>>) {
-        // Build direction matrix: [current_dir, dir_2, dir_3]
+        // Build direction matrix: [dir_a, dir_b, dir_c]
         let directions = {
             let mut d = Array2::<f64>::zeros((3, self.dim_r()));
-            d.row_mut(0).assign(current_dir);
-            d.row_mut(1).assign(dir_2);
-            d.row_mut(2).assign(dir_3);
+            d.row_mut(0).assign(dir_a);
+            d.row_mut(1).assign(dir_b);
+            d.row_mut(2).assign(dir_c);
             d
         };
         let (v_proj, hamk) =
             self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
-        // v_proj[0] = Σ_d current_dir[d] * v_raw[d]
-        // v_proj[1] = Σ_d dir_2[d] * v_raw[d]
-        // v_proj[2] = Σ_d dir_3[d] * v_raw[d]
+        // v_proj[0] = Σ_d dir_a[d] * v_raw[d]  →  v^a
+        // v_proj[1] = Σ_d dir_b[d] * v_raw[d]  →  v^b
+        // v_proj[2] = Σ_d dir_c[d] * v_raw[d]  →  v^c
 
         let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)
@@ -1250,10 +1264,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let v0: Array2<Complex<f64>> = v_proj.slice(s![0, .., ..]).to_owned();
         let v1: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
         let v2: Array2<Complex<f64>> = v_proj.slice(s![2, .., ..]).to_owned();
-        let v_1 = to_band(&v0);
-        let v_2 = to_band(&v1);
-        let v_3 = to_band(&v2);
-        //三个方向的速度算符都得到了
+        let v_1 = to_band(&v0); // v^a  (dir_a)
+        let v_2 = to_band(&v1); // v^b  (dir_b)
+        let v_3 = to_band(&v2); // v^c  (dir_c)
         let mut U0 = Array2::<f64>::zeros((self.nsta(), self.nsta()));
         for i in 0..self.nsta() {
             for j in 0..self.nsta() {
@@ -1351,19 +1364,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             );
         } else {
             // —— SM Eq. (43): charge intrinsic nonlinear Hall ——
-            // Original: σ^{ab;c}_{int} = -e³/ħ Σ_n ∫_k f_n
+            // σ^{ab;c}_{int} = -e³/ħ Σ_n ∫_k f_n
             //   [2 ∂_c G^{ab}_n − 1/2 (∂_a G^{bc}_n + ∂_b G^{ac}_n)]
             //
-            // Integration by parts (surface term vanishes):
-            //   ∫ f_n ∂_i G = −∫ (∂_i f_n) G = ∫ (−∂f/∂ε_n) v_i G
+            // After ibp → integrand:
+            //   Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½ (v^a_n G^{bc}_n + v^b_n G^{ac}_n)
             //
-            // After ibp → kernel:
-            //   Q^{ab;c}_n = 2 v_c G^{ab}_n − ½ (v_a G^{bc}_n + v_b G^{ac}_n)
-            //
-            // Conductivity (+ overall −e³/ħ sign):
-            //   σ = −e³/ħ · Σ_{k,n} (−∂f/∂ε_n) · Q_n / (N_k · det(lat))
-            //
-            // G^{ij}_n = Re Σ_{m≠n} v^i_{nm} v^j_{mn} / (ε_n − ε_m)³
+            // With v_1=v^a, v_2=v^b, v_3=v^c and G_12=G^{ab}, G_13=G^{ac}, G_23=G^{bc}:
+            //   omega = 2·v_3·G_12 − ½(v_1·G_23 + v_2·G_13)
+            //         = 2·v^c·G^{ab} − ½(v^a·G^{bc} + v^b·G^{ac})
+            //         = Q^{ab;c}
+            // Return −omega = −Q^{ab;c} (overall −e³/ħ factor separate).
             let calc_G = |va: &Array2<Complex<f64>>,
                           vb: &Array2<Complex<f64>>|
              -> Array1<f64> {
@@ -1376,52 +1387,38 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 G
             };
 
-            let G_12 = calc_G(&v_1, &v_2); // G_{ab}
-            let G_13 = calc_G(&v_1, &v_3); // G_{ac}
-            let G_23 = calc_G(&v_2, &v_3); // G_{bc}
+            let G_12 = calc_G(&v_1, &v_2); // G^{ab}
+            let G_13 = calc_G(&v_1, &v_3); // G^{ac}
+            let G_23 = calc_G(&v_2, &v_3); // G^{bc}
 
-            // Q^{ab;c}_n = 2 v_c G_{ab} − ½ (v_a G_{bc} + v_b G_{ac})
-            // v_1 = v_a,  v_2 = v_b,  v_3 = v_c
             let omega = &partial_ve_3 * &G_12 * 2.0
                 - (&partial_ve_1 * &G_23 + &partial_ve_2 * &G_13) * 0.5;
-            // −e³/ħ overall factor (only the minus sign; physical prefactor
-            // left to the caller)
             return (-omega, band, None);
         }
     }
 
-    /// Computes the Berry connection dipole at multiple k-points in parallel.
+    /// Parallel version of [`berry_connection_dipole_onek`].
     ///
-    /// This is a parallelized version of [`berry_connection_dipole_onek`].
-    ///
-    /// # Arguments
-    ///
-    /// * `k_vec` - Array of k-points, shape `(nk, dim_r)`.
-    /// * `current_dir`, `dir_2`, `dir_3` - Direction vectors for the three indices.
-    /// * `spin` - Spin operator index (0, 1, 2, 3).
-    ///
-    /// # Returns
-    ///
-    /// `(omega, band, partial_G)` where `omega` and `band` have shape `(nk, nsta)`.
-    /// For spinful models, `partial_G` is `Some` with shape `(nk, nsta)`.
-    /// For spinless models, `partial_G` is `None`.
+    /// The three direction vectors `(dir_a, dir_b, dir_c)` are passed directly
+    /// to the one‑k‑point kernel — see its docstring for the index convention.
     pub fn berry_connection_dipole(
         &self,
         k_vec: &Array2<f64>,
-        current_dir: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        dir_3: &Array1<f64>,
+        dir_a: &Array1<f64>,
+        dir_b: &Array1<f64>,
+        dir_c: &Array1<f64>,
         spin: Option<SpinDirection>,
     ) -> (Array2<f64>, Array2<f64>, Option<Array2<f64>>) {
-        if current_dir.len() != self.dim_r()
-            || dir_2.len() != self.dim_r()
-            || dir_3.len() != self.dim_r()
+        if dir_a.len() != self.dim_r()
+            || dir_b.len() != self.dim_r()
+            || dir_c.len() != self.dim_r()
         {
             panic!(
-                "Wrong, the current_dir or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {} and {}",
+                "Wrong, the dir_a or dir_b you input has wrong length, it must equal to dim_r={}, but you input {}, {} and {}",
                 self.dim_r(),
-                current_dir.len(),
-                dir_2.len()
+                dir_a.len(),
+                dir_b.len(),
+                dir_c.len()
             )
         }
         let nk = k_vec.len_of(Axis(0));
@@ -1433,9 +1430,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .map(|x| {
                     let (omega_one, band, partial_G) = self.berry_connection_dipole_onek(
                         &x.to_owned(),
-                        &current_dir,
-                        &dir_2,
-                        &dir_3,
+                        dir_a,
+                        dir_b,
+                        dir_c,
                         spin,
                     );
                     let partial_G = partial_G.unwrap();
@@ -1467,9 +1464,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .map(|x| {
                     let (omega_one, band, partial_G) = self.berry_connection_dipole_onek(
                         &x.to_owned(),
-                        &current_dir,
-                        &dir_2,
-                        &dir_3,
+                        dir_a,
+                        dir_b,
+                        dir_c,
                         spin,
                     );
                     (omega_one, band)
@@ -1529,6 +1526,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ) -> Result<Array1<f64>> {
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
+        // public API (current=c, field_1=a, field_2=b) → helper (dir_a=a, dir_b=b, dir_c=c)
         let (omega, band, _partial_G) =
             self.berry_connection_dipole(&kvec, &dir_2, &dir_3, &current_dir, None);
         let omega = omega.into_raw_vec();
