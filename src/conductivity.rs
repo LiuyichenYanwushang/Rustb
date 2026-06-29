@@ -1741,6 +1741,67 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let det = self.lat.det().unwrap();
         Ok((total_g / det, total_o / det, unsafe_count))
     }
+
+    /// Berry‑curvature dipole via simplex quadrature (T > 0 only).
+    ///
+    /// ```text
+    /// D^{ab;c}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) v^c_n(k) Ω^{ab}_n(k) dk
+    /// ```
+    ///
+    /// At T = 0 the δ‑function Fermi‑surface integral is better handled
+    /// by [`Nonlinear_Hall_conductivity_Extrinsic_tetra`]; this function
+    /// requires T > 0.
+    ///
+    /// # Arguments
+    /// * `k_mesh` — `[nx, ny]` (2D) or `[nx, ny, nz]` (3D).
+    /// * `dir_a`, `dir_b` — Berry‑curvature indices.
+    /// * `dir_c` — velocity / dipole direction.
+    /// * `mu` — chemical potentials (eV).
+    /// * `T` — temperature (K), must be > 0.
+    /// * `eta` — smearing (eV) for the denominator.
+    ///
+    /// # Returns
+    /// `(dipole_per_mu, unsafe_count)`, Cartesian volume included
+    /// (divided by `det(lat)`).
+    pub fn berry_curvature_dipole_simplex(
+        &self,
+        k_mesh: &Array1<usize>,
+        dir_a: &Array1<f64>,
+        dir_b: &Array1<f64>,
+        dir_c: &Array1<f64>,
+        mu: &Array1<f64>,
+        T: f64,
+        eta: f64,
+    ) -> Result<(Array1<f64>, usize)> {
+        assert!(T > 0.0, "berry_curvature_dipole_simplex requires T>0");
+        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
+        let nk = kvec.nrows();
+        let gauge = Gauge::Atom;
+
+        let all_pts: Vec<crate::tetrahedron::VertexKernel> = (0..nk)
+            .into_par_iter()
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                let tk = self.compute_tetra_primitives(
+                    &kv, dir_a, dir_b, dir_c, gauge, None,
+                );
+                crate::tetrahedron::VertexKernel {
+                    band: tk.band,
+                    k_ab: tk.k_ab,
+                    vdiag: Some(tk.vdiag),
+                    evec: tk.evec,
+                }
+            })
+            .collect();
+
+        let (dipole, unsafe_count) =
+            crate::tetrahedron::simplex_dipole_integrate(
+                &all_pts, k_mesh, mu, T, eta,
+            );
+
+        let det = self.lat.det().unwrap();
+        Ok((dipole / det, unsafe_count))
+    }
 }
 
 /// `Φ_η(x)` — the function whose 4th derivative is `1/(x²+η²)`.

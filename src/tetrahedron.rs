@@ -973,6 +973,164 @@ fn quadrature_over_simplex(sim: &TrackedSimplex, eta: f64) -> (f64, f64) {
     (total_g * sim.volume, total_o * sim.volume)
 }
 
+/// Quadrature over a single simplex with `vdiag` weighting for dipoles.
+///
+/// Returns per-μ contributions `Σ_n v^c_n(q) Ω_n(q) (−∂f/∂E_n)` at each
+/// quadrature point, accumulated over the simplex volume.
+fn dipole_quadrature_over_simplex(
+    sim: &TrackedSimplex,
+    eta: f64,
+    mu: &Array1<f64>,
+    beta: f64,
+) -> Array1<f64> {
+    let d = sim.vertices.len() - 1;
+    let nsta = sim.vertices[0].band.len();
+    let nv = d + 1;
+    let n_mu = mu.len();
+
+    let bands: Vec<Vec<f64>> = (0..nv).map(|v| sim.vertices[v].band.to_vec()).collect();
+    let kmats: Vec<Array2<Complex<f64>>> = (0..nv).map(|v| sim.vertices[v].k_ab.clone()).collect();
+    let vdiags: Vec<Vec<f64>> = (0..nv)
+        .map(|v| {
+            sim.vertices[v]
+                .vdiag
+                .as_ref()
+                .map(|vd| vd.to_vec())
+                .unwrap_or_else(|| vec![0.0; nsta])
+        })
+        .collect();
+
+    let mut acc = Array1::<f64>::zeros(n_mu);
+
+    if d == 2 {
+        for iq in 0..3 {
+            let lam: &[f64; 3] = &TRI_QUAD_PTS_3[iq];
+            let w = TRI_QUAD_WTS_3[iq];
+            let lam_slice: &[f64] = lam.as_slice();
+            let band_q = bary_interp_band(&bands, lam_slice, nsta);
+            let k_ab_q = bary_interp_matrix(&kmats, lam_slice);
+            let vdiag_q = bary_interp_band(&vdiags, lam_slice, nsta);
+            let (_g_n, o_n) = eval_berry_kernel(&band_q, &k_ab_q, eta, nsta);
+            for im in 0..n_mu {
+                for n in 0..nsta {
+                    let df = fermi_deriv(band_q[n], mu[im], beta);
+                    acc[[im]] += w * df * vdiag_q[n] * o_n[n];
+                }
+            }
+        }
+    } else {
+        for iq in 0..4 {
+            let lam: &[f64; 4] = &TET_QUAD_PTS_4[iq];
+            let w = TET_QUAD_WTS_4[iq];
+            let lam_slice: &[f64] = lam.as_slice();
+            let band_q = bary_interp_band(&bands, lam_slice, nsta);
+            let k_ab_q = bary_interp_matrix(&kmats, lam_slice);
+            let vdiag_q = bary_interp_band(&vdiags, lam_slice, nsta);
+            let (_g_n, o_n) = eval_berry_kernel(&band_q, &k_ab_q, eta, nsta);
+            for im in 0..n_mu {
+                for n in 0..nsta {
+                    let df = fermi_deriv(band_q[n], mu[im], beta);
+                    acc[[im]] += w * df * vdiag_q[n] * o_n[n];
+                }
+            }
+        }
+    }
+
+    acc * sim.volume
+}
+
+/// `−∂f/∂E` at energy `e` for chemical potential `mu` and inverse
+/// temperature `beta`.  β=0 → delta‑function (not handled here).
+#[inline]
+fn fermi_deriv(e: f64, mu: f64, beta: f64) -> f64 {
+    let x = beta * (e - mu);
+    if x > 50.0 {
+        // exp(−x) → 0,  f → 0,  f(1−f) ≈ β exp(−x) → 0
+        0.0
+    } else if x < -50.0 {
+        0.0
+    } else {
+        let ex = x.exp();
+        beta * ex / ((1.0 + ex) * (1.0 + ex))
+    }
+}
+
+/// Integrate the Berry‑curvature dipole over the BZ using simplex quadrature.
+///
+/// ```text
+/// D^{ab;c}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) v^c_n(k) Ω^{ab}_n(k) dk
+/// ```
+///
+/// # Arguments
+/// * `all_pts` — per‑k‑point `VertexKernel` (must have `vdiag = Some(v^c_n)`).
+/// * `k_mesh` — `[nx, ny]` (2D) or `[nx, ny, nz]` (3D).
+/// * `mu` — array of chemical potentials (eV).
+/// * `T` — temperature (K).  `T=0` falls back to the existing
+///   Fermi‑surface tetrahedron method; use `Nonlinear_Hall_conductivity_Extrinsic_tetra`
+///   for that case.
+/// * `eta` — smearing (eV) for the denominator `(E_n−E_m)² + η²`.
+///
+/// # Returns
+/// `(dipole_per_mu, unsafe_count)` where `dipole_per_mu` has length `mu.len()`.
+pub fn simplex_dipole_integrate(
+    all_pts: &[VertexKernel],
+    k_mesh: &Array1<usize>,
+    mu: &Array1<f64>,
+    T: f64,
+    eta: f64,
+) -> (Array1<f64>, usize) {
+    let dim = k_mesh.len();
+    let n_mu = mu.len();
+    let beta = if T > 0.0 { 1.0 / (T * 8.617333262e-5) } else { f64::INFINITY };
+    let mut acc = Array1::<f64>::zeros(n_mu);
+    let mut unsafe_count = 0usize;
+
+    match dim {
+        2 => {
+            let (nx, ny) = (k_mesh[0], k_mesh[1]);
+            let inv_nx = 1.0 / nx as f64;
+            let inv_ny = 1.0 / ny as f64;
+            for ix in 0..nx {
+                for iy in 0..ny {
+                    let sims = build_triangles_2d(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+                    for sim in &sims {
+                        if sim.diag.min_gap < SIMPLEX_GAP_TOL {
+                            unsafe_count += 1;
+                        }
+                        acc += &dipole_quadrature_over_simplex(sim, eta, mu, beta);
+                    }
+                }
+            }
+        }
+        3 => {
+            let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+            let inv_nx = 1.0 / nx as f64;
+            let inv_ny = 1.0 / ny as f64;
+            let inv_nz = 1.0 / nz as f64;
+            for ix in 0..nx {
+                for iy in 0..ny {
+                    for iz in 0..nz {
+                        let sims = build_tetrahedra_3d(
+                            ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
+                        );
+                        for sim in &sims {
+                            if sim.diag.min_gap < SIMPLEX_GAP_TOL {
+                                unsafe_count += 1;
+                            }
+                            acc += &dipole_quadrature_over_simplex(sim, eta, mu, beta);
+                        }
+                    }
+                }
+            }
+        }
+        _ => panic!(
+            "simplex_dipole_integrate: only dim=2,3 supported, got dim={dim}"
+        ),
+    }
+
+    (acc, unsafe_count)
+}
+
 /// Interpolate band energies at barycentric coords `lam`.
 fn bary_interp_band(bands: &[Vec<f64>], lam: &[f64], nsta: usize) -> Vec<f64> {
     let mut out = vec![0.0; nsta];
