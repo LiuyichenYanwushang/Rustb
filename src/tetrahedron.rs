@@ -1144,6 +1144,152 @@ fn bary_interp_band(bands: &[Vec<f64>], lam: &[f64], nsta: usize) -> Vec<f64> {
     out
 }
 
+// ── Optical conductivity kernel ─────────────────────────────────────────
+
+/// Evaluate the optical conductivity kernel at one quadrature point.
+///
+/// ```text
+/// σ^{ab}_{nm}(ω) = (f_n − f_m) · K^{ab}_{nm} / (d²_{nm} − (ω+iη)²)
+/// ```
+///
+/// Returns the sum over all band pairs `(n≠m)` as a complex number.
+fn eval_optical_kernel(
+    band_q: &[f64],
+    k_ab_q: &Array2<Complex<f64>>,
+    omega: f64,
+    eta: f64,
+    mu: f64,
+    beta: f64,
+    nsta: usize,
+) -> Complex<f64> {
+    let mut total = Complex::new(0.0, 0.0);
+    let w_plus_ieta = Complex::new(omega, eta);
+    let denom_shift = w_plus_ieta * w_plus_ieta; // (ω+iη)² = ω²−η² + 2iωη
+    for n in 0..nsta {
+        let fn_val = fermi(band_q[n], mu, beta);
+        for m in 0..nsta {
+            if m == n { continue; }
+            let fm_val = fermi(band_q[m], mu, beta);
+            let df = fn_val - fm_val;
+            if df.abs() < 1e-30 { continue; }
+            let d = band_q[n] - band_q[m];
+            let denom = d * d - denom_shift; // d² − (ω+iη)²
+            if denom.norm_sqr() < 1e-30 { continue; }
+            total += df * k_ab_q[[n, m]] / denom;
+        }
+    }
+    total
+}
+
+/// Fermi‑Dirac occupation `f(E, μ, β)`.
+#[inline]
+fn fermi(e: f64, mu: f64, beta: f64) -> f64 {
+    if beta == 0.0 {
+        0.5 // T→∞ limit
+    } else {
+        let x = beta * (e - mu);
+        if x > 50.0 { 0.0 } else if x < -50.0 { 1.0 } else { 1.0 / (1.0 + x.exp()) }
+    }
+}
+
+/// Quadrature over a single simplex for the optical conductivity kernel.
+fn optical_quadrature_over_simplex(
+    sim: &TrackedSimplex,
+    omega: f64,
+    eta: f64,
+    mu: f64,
+    beta: f64,
+) -> Complex<f64> {
+    let d = sim.vertices.len() - 1;
+    let nsta = sim.vertices[0].band.len();
+    let nv = d + 1;
+
+    let bands: Vec<Vec<f64>> = (0..nv).map(|v| sim.vertices[v].band.to_vec()).collect();
+    let kmats: Vec<Array2<Complex<f64>>> = (0..nv).map(|v| sim.vertices[v].k_ab.clone()).collect();
+
+    let mut total = Complex::new(0.0, 0.0);
+
+    if d == 2 {
+        for iq in 0..3 {
+            let lam = TRI_QUAD_PTS_3[iq].as_slice();
+            let w = TRI_QUAD_WTS_3[iq];
+            let band_q = bary_interp_band(&bands, lam, nsta);
+            let k_ab_q = bary_interp_matrix(&kmats, lam);
+            total += w * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, beta, nsta);
+        }
+    } else {
+        for iq in 0..4 {
+            let lam = TET_QUAD_PTS_4[iq].as_slice();
+            let w = TET_QUAD_WTS_4[iq];
+            let band_q = bary_interp_band(&bands, lam, nsta);
+            let k_ab_q = bary_interp_matrix(&kmats, lam);
+            total += w * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, beta, nsta);
+        }
+    }
+
+    total * sim.volume
+}
+
+/// Optical conductivity via simplex quadrature.
+///
+/// ```text
+/// σ^{ab}(ω,μ,T) = Σ_{n≠m} ∫_BZ (f_n−f_m)
+///     · v^a_{nm} v^b_{mn} / ((E_n−E_m)² − (ω+iη)²) dk
+/// ```
+///
+/// # Returns
+/// `σ^{ab}` (complex, fractional‑coordinate volume; divide by `det(lat)`
+/// for Cartesian).
+pub fn simplex_optical_integrate(
+    all_pts: &[VertexKernel],
+    k_mesh: &Array1<usize>,
+    omega: f64,
+    eta: f64,
+    mu: f64,
+    T: f64,
+) -> Complex<f64> {
+    let dim = k_mesh.len();
+    let beta = if T > 0.0 { 1.0 / (T * 8.617333262e-5) } else { 0.0 };
+    let mut total = Complex::new(0.0, 0.0);
+
+    match dim {
+        2 => {
+            let (nx, ny) = (k_mesh[0], k_mesh[1]);
+            let inv_nx = 1.0 / nx as f64;
+            let inv_ny = 1.0 / ny as f64;
+            for ix in 0..nx {
+                for iy in 0..ny {
+                    for sim in &build_triangles_2d(ix, iy, nx, ny, inv_nx, inv_ny, all_pts) {
+                        total += optical_quadrature_over_simplex(sim, omega, eta, mu, beta);
+                    }
+                }
+            }
+        }
+        3 => {
+            let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+            let inv_nx = 1.0 / nx as f64;
+            let inv_ny = 1.0 / ny as f64;
+            let inv_nz = 1.0 / nz as f64;
+            for ix in 0..nx {
+                for iy in 0..ny {
+                    for iz in 0..nz {
+                        for sim in &build_tetrahedra_3d(
+                            ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
+                        ) {
+                            total += optical_quadrature_over_simplex(sim, omega, eta, mu, beta);
+                        }
+                    }
+                }
+            }
+        }
+        _ => panic!(
+            "simplex_optical_integrate: only dim=2,3 supported, got dim={dim}"
+        ),
+    }
+
+    total
+}
+
 // ── Public API ──────────────────────────────────────────────────────────
 
 /// Safety threshold: simplexes with `min_gap < GAP_TOL` are skipped for

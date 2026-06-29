@@ -1802,6 +1802,54 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let det = self.lat.det().unwrap();
         Ok((dipole / det, unsafe_count))
     }
+
+    /// Optical conductivity via simplex quadrature.
+    ///
+    /// ```text
+    /// σ^{ab}(ω,μ,T) = Σ_{n≠m} ∫_BZ (f_n−f_m)
+    ///     · v^a_{nm} v^b_{mn} / ((E_n−E_m)² − (ω+iη)²) dk
+    /// ```
+    ///
+    /// # Returns
+    /// Complex conductivity `σ` (Cartesian volume included).
+    pub fn optical_conductivity_simplex(
+        &self,
+        k_mesh: &Array1<usize>,
+        dir_a: &Array1<f64>,
+        dir_b: &Array1<f64>,
+        omega: f64,
+        eta: f64,
+        mu: f64,
+        T: f64,
+    ) -> Result<Complex<f64>> {
+        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
+        let nk = kvec.nrows();
+        let gauge = Gauge::Atom;
+        let dummy_dir = dir_a.clone();
+
+        let all_pts: Vec<crate::tetrahedron::VertexKernel> = (0..nk)
+            .into_par_iter()
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                let tk = self.compute_tetra_primitives(
+                    &kv, dir_a, dir_b, &dummy_dir, gauge, None,
+                );
+                crate::tetrahedron::VertexKernel {
+                    band: tk.band,
+                    k_ab: tk.k_ab,
+                    vdiag: None,
+                    evec: tk.evec,
+                }
+            })
+            .collect();
+
+        let sigma = crate::tetrahedron::simplex_optical_integrate(
+            &all_pts, k_mesh, omega, eta, mu, T,
+        );
+
+        let det = self.lat.det().unwrap();
+        Ok(sigma / det)
+    }
 }
 
 /// `Φ_η(x)` — the function whose 4th derivative is `1/(x²+η²)`.
