@@ -557,6 +557,516 @@ fn add_tri_delta(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Berry / Quantum-Geometry Simplex Quadrature
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Replaces the old `tetrahedron_volume_integrate` path (which linearly
+// interpolates the final scalar integrand) with a quadrature over
+// per‑simplex primitives.  The gauge‑invariant velocity product
+// `K^ab_nm = v^a_nm·v^b_mn` and band energies `E_n` are interpolated
+// linearly inside each simplex; the singular denominator
+// `1/((E_n−E_m)² + η²)` is evaluated at each quadrature point.
+
+use num_complex::Complex;
+
+/// Per‑k‑point primitive data for one direction pair `(a,b)`.
+///
+/// `k_ab[n,m] = v^a_nm · v^b_mn` is gauge‑invariant under independent
+/// U(1) rotations of bands n and m (when both bands are isolated).
+#[derive(Clone)]
+pub struct VertexKernel {
+    /// Band energies `ε_n`, length `nsta`.
+    pub band: Array1<f64>,
+    /// `K^{ab}_{nm}`, shape `(nsta, nsta)`.
+    pub k_ab: Array2<Complex<f64>>,
+    /// Diagonal velocity `v^c_n = ⟨n|∂_c H|n⟩` (only when dipole needed).
+    pub vdiag: Option<Array1<f64>>,
+    /// Eigenvectors `U[:, n]`, shape `(norb, nsta)` — for band tracking.
+    pub evec: Array2<Complex<f64>>,
+}
+
+/// A simplex whose vertices have been band‑tracked (label‑aligned).
+pub struct TrackedSimplex {
+    /// `d + 1` vertices, already label‑aligned.
+    pub vertices: Vec<VertexKernel>,
+    /// Physical volume of this simplex (fractional coordinates).
+    pub volume: f64,
+    /// Fractional coordinates of each vertex, shape `(d+1, dim)`.
+    pub coords: Array2<f64>,
+    /// Diagnostic counters for this simplex.
+    pub diag: SimplexDiagnostics,
+}
+
+/// Per‑simplex safety / quality diagnostics.
+#[derive(Clone, Default)]
+pub struct SimplexDiagnostics {
+    /// Minimum band gap `min_{n≠m} |E_n − E_m|` across all vertices.
+    pub min_gap: f64,
+    /// Minimum assignment overlap from band tracking (1.0 = perfect).
+    pub min_assignment_overlap: f64,
+    /// True if different neighbour paths imply inconsistent band permutations.
+    pub tracking_conflict: bool,
+}
+
+// ── Quadrature rules ────────────────────────────────────────────────────
+
+/// Degree‑2 symmetric 3‑point rule for the reference triangle.
+/// Barycentric coordinates; weights sum to 1.
+const TRI_QUAD_PTS_3: [[f64; 3]; 3] = [
+    [2.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0],
+    [1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0],
+    [1.0 / 6.0, 1.0 / 6.0, 2.0 / 3.0],
+];
+const TRI_QUAD_WTS_3: [f64; 3] = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+
+/// Degree‑2 symmetric 4‑point rule for the reference tetrahedron.
+/// Barycentric coordinates; weights sum to 1.
+const TET_QUAD_PTS_4: [[f64; 4]; 4] = [
+    [0.5854101966249685, 0.1381966011250105, 0.1381966011250105, 0.1381966011250105],
+    [0.1381966011250105, 0.5854101966249685, 0.1381966011250105, 0.1381966011250105],
+    [0.1381966011250105, 0.1381966011250105, 0.5854101966249685, 0.1381966011250105],
+    [0.1381966011250105, 0.1381966011250105, 0.1381966011250105, 0.5854101966249685],
+];
+const TET_QUAD_WTS_4: [f64; 4] = [0.25, 0.25, 0.25, 0.25];
+
+// ── Band tracking ───────────────────────────────────────────────────────
+
+/// Build the overlap matrix `O_nm = |⟨u_n(ref)|u_m(other)⟩|²`.
+fn build_overlap_matrix(
+    evec_ref: &Array2<Complex<f64>>,
+    evec_other: &Array2<Complex<f64>>,
+) -> Array2<f64> {
+    let nsta = evec_ref.ncols();
+    let norb = evec_ref.nrows();
+    let mut ov = Array2::<f64>::zeros((nsta, nsta));
+    for n in 0..nsta {
+        for m in 0..nsta {
+            let mut s = Complex::new(0.0, 0.0);
+            for orb in 0..norb {
+                s += evec_ref[[orb, n]].conj() * evec_other[[orb, m]];
+            }
+            ov[[n, m]] = s.norm_sqr();
+        }
+    }
+    ov
+}
+
+/// Greedy assignment that finds a one‑to‑one band permutation maximising
+/// `Σ_n O_{n, p(n)}`.  For small `nsta` with diagonally‑dominant overlap
+/// this is exact; for larger problems an optimal assignment (Hungarian)
+/// can be substituted without changing the interface.
+fn greedy_assign(overlap: &Array2<f64>) -> Vec<usize> {
+    let n = overlap.nrows();
+    let mut assigned = vec![false; n];
+    let mut perm = vec![0usize; n];
+    // Process rows ordered by their best available overlap
+    let mut rows: Vec<(usize, f64)> = (0..n)
+        .map(|i| {
+            let best = (0..n).map(|j| overlap[[i, j]]).fold(-1.0, f64::max);
+            (i, best)
+        })
+        .collect();
+    rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    for (i, _) in rows {
+        let mut best_j = 0;
+        let mut best_val = -1.0;
+        for j in 0..n {
+            if !assigned[j] && overlap[[i, j]] > best_val {
+                best_val = overlap[[i, j]];
+                best_j = j;
+            }
+        }
+        assigned[best_j] = true;
+        perm[i] = best_j;
+    }
+    perm
+}
+
+/// Reorder a single `VertexKernel` according to band permutation `p`
+/// (band `pn` at the original vertex → band `n` at the reference vertex).
+fn permute_vertex(v: &VertexKernel, p: &[usize]) -> VertexKernel {
+    let nsta = v.band.len();
+    let norb = v.evec.nrows();
+    let mut band = Array1::<f64>::zeros(nsta);
+    let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
+    let mut evec = Array2::<Complex<f64>>::zeros((norb, nsta));
+    let mut vdiag = v.vdiag.as_ref().map(|_| Array1::<f64>::zeros(nsta));
+
+    for n in 0..nsta {
+        let pn = p[n];
+        band[[n]] = v.band[[pn]];
+        if let Some(ref mut vd) = vdiag {
+            vd[[n]] = v.vdiag.as_ref().unwrap()[[pn]];
+        }
+        for orb in 0..norb {
+            evec[[orb, n]] = v.evec[[orb, pn]];
+        }
+    }
+    for n in 0..nsta {
+        for m in 0..nsta {
+            k_ab[[n, m]] = v.k_ab[[p[n], p[m]]];
+        }
+    }
+    VertexKernel { band, k_ab, vdiag, evec }
+}
+
+/// Track band labels across a set of simplex vertices using the first
+/// vertex as reference.  Returns label‑aligned copies and populates
+/// diagnostics.
+fn track_simplex_vertices(
+    vertices: &[VertexKernel],
+) -> (Vec<VertexKernel>, SimplexDiagnostics) {
+    let nv = vertices.len();
+    if nv <= 1 {
+        let diag = SimplexDiagnostics {
+            min_gap: min_vertex_gap(&vertices[0]),
+            min_assignment_overlap: 1.0,
+            tracking_conflict: false,
+        };
+        return (vertices.to_vec(), diag);
+    }
+
+    let mut aligned: Vec<VertexKernel> = vec![vertices[0].clone()];
+    let mut min_ov = 1.0f64;
+
+    for vi in 1..nv {
+        let ov = build_overlap_matrix(&aligned[0].evec, &vertices[vi].evec);
+        let p = greedy_assign(&ov);
+        let ov_score: f64 = (0..ov.nrows()).map(|n| ov[[n, p[n]]]).sum::<f64>()
+            / ov.nrows() as f64;
+        min_ov = min_ov.min(ov_score);
+        aligned.push(permute_vertex(&vertices[vi], &p));
+    }
+
+    let mut min_gap = f64::INFINITY;
+    for v in &aligned {
+        min_gap = min_gap.min(min_vertex_gap(v));
+    }
+
+    let diag = SimplexDiagnostics {
+        min_gap,
+        min_assignment_overlap: min_ov,
+        tracking_conflict: false,
+    };
+    (aligned, diag)
+}
+
+/// Minimum band gap at a single vertex.
+fn min_vertex_gap(v: &VertexKernel) -> f64 {
+    let n = v.band.len();
+    let mut g = f64::INFINITY;
+    for i in 0..n {
+        for j in i + 1..n {
+            g = g.min((v.band[[i]] - v.band[[j]]).abs());
+        }
+    }
+    g
+}
+
+// ── Simplex builders ────────────────────────────────────────────────────
+
+/// Build the two tracked triangles of a 2D cell.
+fn build_triangles_2d(
+    ix: usize, iy: usize, nx: usize, ny: usize,
+    inv_nx: f64, inv_ny: f64,
+    all_pts: &[VertexKernel],
+) -> Vec<TrackedSimplex> {
+    let ixp = (ix + 1) % nx;
+    let iyp = (iy + 1) % ny;
+    let i00 = ix * ny + iy;
+    let i10 = ixp * ny + iy;
+    let i11 = ixp * ny + iyp;
+    let i01 = ix * ny + iyp;
+
+    let frac = |ixv: usize, iyv: usize| -> [f64; 2] {
+        [ixv as f64 * inv_nx, iyv as f64 * inv_ny]
+    };
+    // NOTE: for wrapped corners we use the actual fractional coords, not
+    // the modulo‑reduced ones.  This matters for the triangle area sign.
+    let coord_of = |idx: usize| -> [f64; 2] {
+        if idx == i00 { frac(ix, iy) }
+        else if idx == i10 { frac(ix + 1, iy) }
+        else if idx == i11 { frac(ix + 1, iy + 1) }
+        else { frac(ix, iy + 1) }
+    };
+
+    let cell_area = inv_nx * inv_ny;
+    let tri_area = cell_area / 2.0;
+    let mut out = Vec::new();
+
+    for &(v0, v1, v2) in &[(i00, i10, i01), (i11, i10, i01)] {
+        let raw = vec![
+            all_pts[v0].clone(),
+            all_pts[v1].clone(),
+            all_pts[v2].clone(),
+        ];
+        let (aligned, diag) = track_simplex_vertices(&raw);
+        let coords = Array2::from_shape_vec((3, 2), {
+            let c0 = coord_of(v0); let c1 = coord_of(v1); let c2 = coord_of(v2);
+            vec![c0[0], c0[1], c1[0], c1[1], c2[0], c2[1]]
+        }).unwrap();
+        out.push(TrackedSimplex {
+            vertices: aligned,
+            volume: tri_area,
+            coords,
+            diag,
+        });
+    }
+    out
+}
+
+/// Build the five tracked tetrahedra of a 3D cell.
+fn build_tetrahedra_3d(
+    ix: usize, iy: usize, iz: usize,
+    nx: usize, ny: usize, nz: usize,
+    inv_nx: f64, inv_ny: f64, inv_nz: f64,
+    all_pts: &[VertexKernel],
+) -> Vec<TrackedSimplex> {
+    let ixp = (ix + 1) % nx;
+    let iyp = (iy + 1) % ny;
+    let izp = (iz + 1) % nz;
+    let idx3 = |x: usize, y: usize, z: usize| x * ny * nz + y * nz + z;
+    let c = [
+        idx3(ix, iy, iz), idx3(ixp, iy, iz),
+        idx3(ix, iyp, iz), idx3(ixp, iyp, iz),
+        idx3(ix, iy, izp), idx3(ixp, iy, izp),
+        idx3(ix, iyp, izp), idx3(ixp, iyp, izp),
+    ];
+
+    let frac = |ixv: usize, iyv: usize, izv: usize| -> [f64; 3] {
+        [ixv as f64 * inv_nx, iyv as f64 * inv_ny, izv as f64 * inv_nz]
+    };
+
+    let corners_frac: [[f64; 3]; 8] = [
+        frac(ix, iy, iz), frac(ix + 1, iy, iz),
+        frac(ix, iyp, iz), frac(ix + 1, iy + 1, iz),
+        frac(ix, iy, izp), frac(ix + 1, iy, izp),
+        frac(ix, iyp, izp), frac(ix + 1, iy + 1, izp),
+    ];
+
+    let cube_vol = inv_nx * inv_ny * inv_nz;
+    let mut out = Vec::new();
+
+    for (teti, &[v0, v1, v2, v3]) in CUBE_TETS.iter().enumerate() {
+        let raw = vec![
+            all_pts[c[v0]].clone(),
+            all_pts[c[v1]].clone(),
+            all_pts[c[v2]].clone(),
+            all_pts[c[v3]].clone(),
+        ];
+        let (aligned, diag) = track_simplex_vertices(&raw);
+        let coords = Array2::from_shape_vec((4, 3), {
+            let c0 = corners_frac[v0]; let c1 = corners_frac[v1];
+            let c2 = corners_frac[v2]; let c3 = corners_frac[v3];
+            vec![c0[0], c0[1], c0[2], c1[0], c1[1], c1[2],
+                 c2[0], c2[1], c2[2], c3[0], c3[1], c3[2]]
+        }).unwrap();
+        out.push(TrackedSimplex {
+            vertices: aligned,
+            volume: cube_vol * TET_VOL_FACTOR[teti],
+            coords,
+            diag,
+        });
+    }
+    out
+}
+
+// ── Generic quadrature evaluator ────────────────────────────────────────
+
+/// Interpolate a scalar field `vals[d+1]` at barycentric coords `lam[d+1]`.
+#[inline]
+fn bary_interp_scalar(vals: &[f64], lam: &[f64]) -> f64 {
+    vals.iter().zip(lam.iter()).map(|(v, l)| v * l).sum()
+}
+
+/// Interpolate a matrix field `mats[d+1]` each `(nsta, nsta)` at
+/// barycentric coords `lam`.
+fn bary_interp_matrix(
+    mats: &[Array2<Complex<f64>>], lam: &[f64],
+) -> Array2<Complex<f64>> {
+    let n = mats[0].nrows();
+    let mut out = Array2::<Complex<f64>>::zeros((n, n));
+    for (mat, &w) in mats.iter().zip(lam.iter()) {
+        if w == 0.0 { continue; }
+        for i in 0..n {
+            for j in 0..n {
+                out[[i, j]] += mat[[i, j]] * w;
+            }
+        }
+    }
+    out
+}
+
+/// Evaluate the Berry‑curvature / quantum‑geometry kernel at one
+/// quadrature point (barycentric coordinates `lam`).
+///
+/// Returns per‑band `(g_n, Ω_n)` where
+/// `G_n = g_n + i·Ω_n = Σ_{m≠n} K_nm / ((E_n−E_m)² + η²)`.
+fn eval_berry_kernel(
+    band_q: &[f64],
+    k_ab_q: &Array2<Complex<f64>>,
+    eta: f64,
+    nsta: usize,
+) -> (Array1<f64>, Array1<f64>) {
+    let mut metric = Array1::<f64>::zeros(nsta);
+    let mut berry = Array1::<f64>::zeros(nsta);
+    let eta2 = eta * eta;
+    for n in 0..nsta {
+        let mut g_sum = Complex::new(0.0, 0.0);
+        for m in 0..nsta {
+            if m == n { continue; }
+            let de = band_q[n] - band_q[m];
+            let denom = de * de + eta2;
+            if denom < 1e-30 { continue; }
+            g_sum += k_ab_q[[n, m]] / denom;
+        }
+        metric[n] = g_sum.re;
+        berry[n] = -2.0 * g_sum.im;
+    }
+    (metric, berry)
+}
+
+/// Quadrature over a single `TrackedSimplex` for the Berry‑curvature /
+/// quantum‑metric kernel.
+///
+/// Returns `(∫g_n dk, ∫Ω_n dk)` summed over all bands.
+fn quadrature_over_simplex(sim: &TrackedSimplex, eta: f64) -> (f64, f64) {
+    let d = sim.vertices.len() - 1; // 2 = triangle, 3 = tetrahedron
+    let nsta = sim.vertices[0].band.len();
+    let nv = d + 1;
+
+    let bands: Vec<Vec<f64>> = (0..nv)
+        .map(|v| sim.vertices[v].band.to_vec())
+        .collect();
+    let kmats: Vec<Array2<Complex<f64>>> = (0..nv)
+        .map(|v| sim.vertices[v].k_ab.clone())
+        .collect();
+
+    let mut total_g = 0.0;
+    let mut total_o = 0.0;
+
+    if d == 2 {
+        for iq in 0..3 {
+            let lam: &[f64; 3] = &TRI_QUAD_PTS_3[iq];
+            let w = TRI_QUAD_WTS_3[iq];
+            let lam_slice: &[f64] = lam.as_slice();
+            let band_q = bary_interp_band(&bands, lam_slice, nsta);
+            let k_ab_q = bary_interp_matrix(&kmats, lam_slice);
+            let (g_n, o_n) = eval_berry_kernel(&band_q, &k_ab_q, eta, nsta);
+            total_g += w * g_n.iter().copied().sum::<f64>();
+            total_o += w * o_n.iter().copied().sum::<f64>();
+        }
+    } else {
+        for iq in 0..4 {
+            let lam: &[f64; 4] = &TET_QUAD_PTS_4[iq];
+            let w = TET_QUAD_WTS_4[iq];
+            let lam_slice: &[f64] = lam.as_slice();
+            let band_q = bary_interp_band(&bands, lam_slice, nsta);
+            let k_ab_q = bary_interp_matrix(&kmats, lam_slice);
+            let (g_n, o_n) = eval_berry_kernel(&band_q, &k_ab_q, eta, nsta);
+            total_g += w * g_n.iter().copied().sum::<f64>();
+            total_o += w * o_n.iter().copied().sum::<f64>();
+        }
+    }
+
+    (total_g * sim.volume, total_o * sim.volume)
+}
+
+/// Interpolate band energies at barycentric coords `lam`.
+fn bary_interp_band(bands: &[Vec<f64>], lam: &[f64], nsta: usize) -> Vec<f64> {
+    let mut out = vec![0.0; nsta];
+    for v in 0..bands.len() {
+        let lv = lam[v];
+        if lv == 0.0 { continue; }
+        for n in 0..nsta {
+            out[n] += bands[v][n] * lv;
+        }
+    }
+    out
+}
+
+// ── Public API ──────────────────────────────────────────────────────────
+
+/// Safety threshold: simplexes with `min_gap < GAP_TOL` are skipped for
+/// single‑band Berry/QGT evaluation.
+pub const SIMPLEX_GAP_TOL: f64 = 1e-4;
+
+/// Integrate the Berry curvature `Ω_{ab}` and quantum metric `g_{ab}` over
+/// the full BZ using simplex quadrature.
+///
+/// # Arguments
+/// * `all_pts` — per‑k‑point `VertexKernel` primitives (nk points).
+/// * `k_mesh` — `[nx, ny]` (2D) or `[nx, ny, nz]` (3D).
+/// * `eta` — smearing width (eV) for the denominator `(E_n−E_m)² + η²`.
+///
+/// # Returns
+/// `(total_g, total_o, unsafe_count)` where `total_g = Σ_n ∫ g_n dk`,
+/// `total_o = Σ_n ∫ Ω_n dk`, and `unsafe_count` is the number of simplexes
+/// skipped due to near‑degeneracy.
+pub fn simplex_berry_integrate(
+    all_pts: &[VertexKernel],
+    k_mesh: &Array1<usize>,
+    eta: f64,
+) -> (f64, f64, usize) {
+    let dim = k_mesh.len();
+    let mut total_g = 0.0;
+    let mut total_o = 0.0;
+    let mut unsafe_count = 0usize;
+
+    match dim {
+        2 => {
+            let (nx, ny) = (k_mesh[0], k_mesh[1]);
+            let inv_nx = 1.0 / nx as f64;
+            let inv_ny = 1.0 / ny as f64;
+            for ix in 0..nx {
+                for iy in 0..ny {
+                    let sims = build_triangles_2d(
+                        ix, iy, nx, ny, inv_nx, inv_ny, all_pts,
+                    );
+                    for sim in &sims {
+                        if sim.diag.min_gap < SIMPLEX_GAP_TOL {
+                            unsafe_count += 1;
+                        }
+                        let (g, o) = quadrature_over_simplex(sim, eta);
+                        total_g += g;
+                        total_o += o;
+                    }
+                }
+            }
+        }
+        3 => {
+            let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+            let inv_nx = 1.0 / nx as f64;
+            let inv_ny = 1.0 / ny as f64;
+            let inv_nz = 1.0 / nz as f64;
+            for ix in 0..nx {
+                for iy in 0..ny {
+                    for iz in 0..nz {
+                        let sims = build_tetrahedra_3d(
+                            ix, iy, iz, nx, ny, nz,
+                            inv_nx, inv_ny, inv_nz, all_pts,
+                        );
+                        for sim in &sims {
+                            if sim.diag.min_gap < SIMPLEX_GAP_TOL {
+                                unsafe_count += 1;
+                            }
+                            let (g, o) = quadrature_over_simplex(sim, eta);
+                            total_g += g;
+                            total_o += o;
+                        }
+                    }
+                }
+            }
+        }
+        _ => panic!(
+            "simplex_berry_integrate: only dim=2,3 supported, got dim={dim}"
+        ),
+    }
+
+    (total_g, total_o, unsafe_count)
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
