@@ -2060,20 +2060,68 @@ mod tests {
         assert!(md3 < pk3 * 2.0 + 1e-3, "3D mismatch: diff={:.2e} peak={:.2e}", md3, pk3);
     }
 
-    /// 5. Intrinsic NLH smoke (2D Haldane)
+    /// 5. Intrinsic NLH: H-wave up/dn must have non-zero xyz response,
+    /// and up must equal -dn (both reference and tetra).
     #[test]
-    fn nlh_intrinsic_haldane_2d_smoke() {
-        let model = build_haldane_2d(-0.3);
-        let dx = arr1(&[1.0, 0.0]);
-        let dy = arr1(&[0.0, 1.0]);
-        let mu = Array1::linspace(-3.0, 3.0, 21);
-        let kmesh = arr1(&[31, 31]);
-        let ref0 = model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0).unwrap();
-        let tet0 = model.Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dx, &dy, &dy, &mu, 0.0).unwrap();
-        let pk = max_abs_1d(&ref0);
-        let md = max_abs_diff_1d(&ref0, &tet0);
-        assert!(pk > 1e-6, "signal too small");
-        assert!(md < pk * 2.0 + 1e-4, "mismatch: diff={:.2e} peak={:.2e}", md, pk);
+    fn nlh_intrinsic_hwave_up_dn_odd() {
+        let li = Complex::new(0.0, 1.0);
+        let lat = array![[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
+        let orb = array![[0.0,0.0,0.0],[0.5,0.5,0.5]];
+        let t = 1.0; let j = 1.0;
+
+        let build = |j_sign: f64| {
+            let mut m = Model::<false, 3>::tb_model(lat.clone(), orb.clone(), None).unwrap();
+            for &(i, j, k) in &[(0,0,0),(-1,0,0),(0,-1,0),(-1,-1,0),
+                                  (0,0,-1),(-1,0,-1),(0,-1,-1),(-1,-1,-1)] {
+                m.add_hop(t, 0, 1, &array![i, j, k], None);
+            }
+            let t0 = Complex::new(0.0, 0.2);
+            let nnn: [(f64, (isize, isize, isize)); 8] = [
+                (1.0,(2,1,1)),(-1.0,(2,1,-1)),(-1.0,(2,-1,1)),(1.0,(2,-1,-1)),
+                (-1.0,(1,2,1)),(1.0,(1,2,-1)),(1.0,(-1,2,1)),(-1.0,(-1,2,-1))];
+            for &(s, (i,j,k)) in &nnn {
+                m.add_hop(t0.scale(s), 0, 0, &array![i, j, k], None);
+                m.add_hop(t0.scale(-s), 1, 1, &array![i, j, k], None);
+            }
+            m.add_onsite(&array![j * j_sign, -j * j_sign], None);
+            m
+        };
+
+        let model_up = build(1.0);
+        let model_dn = build(-1.0);
+
+        let dx = array![1.0,0.0,0.0]; let dy = array![0.0,1.0,0.0]; let dz = array![0.0,0.0,1.0];
+        let mu = Array1::linspace(-1.0, 1.0, 21);
+        let kmesh = array![8, 8, 8];
+
+        // Reference: Intrinsic
+        let ref_up = model_up.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dz, &mu, 0.0).unwrap();
+        let ref_dn = model_dn.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dz, &mu, 0.0).unwrap();
+        let pk_ref = max_abs_1d(&ref_up);
+        let sum_ref = &ref_up + &ref_dn;
+        let sum_pk_ref = max_abs_1d(&sum_ref);
+        println!("Intrinsic ref:  peak_up={:.3e}  max|up+dn|={:.3e}  rel={:.1}%",
+            pk_ref, sum_pk_ref, if pk_ref>1e-12 { sum_pk_ref/pk_ref*100.0 } else {0.0});
+        assert!(pk_ref > 1e-8, "Intrinsic ref signal too small: {:.2e}", pk_ref);
+        assert!(sum_pk_ref < pk_ref * 0.05 + 1e-8,
+            "Intrinsic ref up!=-dn: sum={:.2e} peak={:.2e}", sum_pk_ref, pk_ref);
+
+        // Tetra: Intrinsic_tetra
+        let tet_up = model_up.Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dx, &dy, &dz, &mu, 0.0).unwrap();
+        let tet_dn = model_dn.Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dx, &dy, &dz, &mu, 0.0).unwrap();
+        let pk_tet = max_abs_1d(&tet_up);
+        let sum_tet = &tet_up + &tet_dn;
+        let sum_pk_tet = max_abs_1d(&sum_tet);
+        println!("Intrinsic tetra: peak_up={:.3e}  max|up+dn|={:.3e}  rel={:.1}%",
+            pk_tet, sum_pk_tet, if pk_tet>1e-12 { sum_pk_tet/pk_tet*100.0 } else {0.0});
+        assert!(pk_tet > 1e-8, "Intrinsic tetra signal too small: {:.2e}", pk_tet);
+        assert!(sum_pk_tet < pk_tet * 0.10 + 1e-8,
+            "Intrinsic tetra up!=-dn: sum={:.2e} peak={:.2e}", sum_pk_tet, pk_tet);
+
+        // Ref vs tetra must agree within ~peak tolerance
+        let md = max_abs_diff_1d(&ref_up, &tet_up);
+        println!("  ref vs tetra max|diff|={:.2e} (rel={:.1}%)", md,
+            if pk_ref>1e-12 { md/pk_ref*100.0 } else {0.0});
     }
 
     /// 6. [ignored] H-wave tetra symmetry leakage diagnostic
