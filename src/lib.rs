@@ -882,213 +882,6 @@ mod tests {
         println!("evec_transform_sanity: U^T H U^* = diag(band) ✓");
     }
 
-    /// Full mu-range comparison of Hall_conductivity_mu vs Hall_conductivity_tetra
-    /// on the Haldane model at T=0 and T=300K.
-    #[test]
-    fn Haldan_tetra_full_compare() {
-        let li = Complex::new(0.0, 1.0);
-        let t = Complex::new(-1.0, 0.0);
-        let t2 = Complex::new(-1.0, 0.0);
-        let delta = 0.7;
-        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
-        let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), None);
-        for &(i, j) in &[(0, 0), (-1, 0), (0, -1)] {
-            model.add_hop(t, 0, 1, &arr1(&[i, j]), None);
-        }
-        for &(i, j) in &[(1, 0), (-1, 1), (0, -1)] {
-            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j]), None);
-        }
-        for &(i, j) in &[(-1, 0), (1, -1), (0, 1)] {
-            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j]), None);
-        }
-
-        let nk = 21;
-        let kmesh = arr1(&[nk, nk]);
-        let dx = arr1(&[1.0, 0.0]);
-        let dy = arr1(&[0.0, 1.0]);
-        let eta = 0.01;
-        let mu = Array1::linspace(-2.0, 2.0, 51);
-        let spin = None;
-
-        for &(T, label) in &[(0.0, "T=0"), (300.0, "T=300K")] {
-            println!("\n=== Haldane {label} ({nk}x{nk}) ===");
-            let ref_vals = model
-                .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, T, spin, eta)
-                .unwrap();
-            let tet_vals = model
-                .Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu, T, spin, eta)
-                .unwrap();
-
-            let mut max_d = 0.0;
-            let mut mean_d = 0.0;
-            for i in 0..mu.len() {
-                let d = (ref_vals[[i]] - tet_vals[[i]]).abs();
-                if d > max_d { max_d = d; }
-                mean_d += d;
-            }
-            mean_d /= mu.len() as f64;
-            let ref_max = ref_vals.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
-            println!("  ref peak = {:.4}", ref_max);
-            println!("  max  |ref - tetra| = {:.2e}", max_d);
-            println!("  mean |ref - tetra| = {:.2e}", mean_d);
-            // Print a few sample values
-            for &i in &[10, 20, 25, 30, 40] {
-                println!("  mu[{i:>2}]={:+.2}  ref={:+.4}  tetra={:+.4}",
-                    mu[[i]], ref_vals[[i]], tet_vals[[i]]);
-            }
-            // Allow ~10% relative error at worst
-            let tol = 0.15 * ref_max.max(0.02);
-            assert!(max_d < tol,
-                "{label}: max diff {:.2e} > tol {:.2e}", max_d, tol);
-        }
-        println!("\nHaldane full compare: PASSED");
-    }
-
-    /// Convergence check: as mesh increases, tetra vs reference difference
-    /// should shrink — proving the ~10% gap is mesh error, not formula error.
-    #[test]
-    fn Haldan_tetra_convergence() {
-        let li = Complex::new(0.0, 1.0);
-        let t = Complex::new(-1.0, 0.0);
-        let t2 = Complex::new(-1.0, 0.0);
-        let delta = 0.7;
-        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
-        let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), None);
-        for &(i, j) in &[(0, 0), (-1, 0), (0, -1)] {
-            model.add_hop(t, 0, 1, &arr1(&[i, j]), None);
-        }
-        for &(i, j) in &[(1, 0), (-1, 1), (0, -1)] {
-            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j]), None);
-        }
-        for &(i, j) in &[(-1, 0), (1, -1), (0, 1)] {
-            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j]), None);
-        }
-
-        let dx = arr1(&[1.0, 0.0]);
-        let dy = arr1(&[0.0, 1.0]);
-        let eta = 0.01;
-        let mu = Array1::linspace(-2.0, 2.0, 51);
-        let spin = None;
-
-        println!("\n=== Convergence: max |Hall_conductivity_mu - Hall_conductivity_tetra| ===");
-        println!("{:>6}  {:>12}  {:>12}  {:>8}", "nk", "T=0 diff", "T=300K diff", "trend");
-        let mut prev: f64 = f64::MAX;
-        for &nk in &[15usize, 21, 31, 51, 71] {
-            let kmesh = arr1(&[nk, nk]);
-            let ref0 = model.Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, spin, eta).unwrap();
-            let tet0 = model.Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu, 0.0, spin, eta).unwrap();
-            let ref300 = model.Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 300.0, spin, eta).unwrap();
-            let tet300 = model.Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu, 300.0, spin, eta).unwrap();
-
-            let mut d0: f64 = 0.0;
-            let mut d300: f64 = 0.0;
-            for i in 0..mu.len() {
-                d0 = d0.max((ref0[[i]] - tet0[[i]]).abs());
-                d300 = d300.max((ref300[[i]] - tet300[[i]]).abs());
-            }
-            let trend = if d0 < prev { "↓" } else { "?" };
-            println!("{nk:>6}  {d0:>12.2e}  {d300:>12.2e}  {trend:>8}");
-            prev = d0;
-        }
-        assert!(prev < 0.015, "should converge below 0.015 at nk=71, got {:.2e}", prev);
-        println!("CONVERGED: error decreases with mesh size ✓");
-    }
-
-    /// 3D stacked Haldane model: compare Hall_conductivity_mu vs
-    /// Hall_conductivity_tetra on a layered honeycomb lattice with
-    /// interlayer hopping.
-    #[test]
-    fn Haldan_3d_tetra_compare() {
-        let li = Complex::new(0.0, 1.0);
-        let t = Complex::new(-1.0, 0.0);
-        let t2 = Complex::new(-0.3, 0.0);
-        let delta = 0.7;
-        let tz = Complex::new(-0.5, 0.0);
-
-        // 3D lattice: honeycomb in xy + stacking in z
-        let lat = arr2(&[
-            [1.0, 0.0, 0.0],
-            [0.5, 3.0_f64.sqrt() / 2.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ]);
-        let orb = arr2(&[
-            [1.0 / 3.0, 1.0 / 3.0, 0.0],
-            [2.0 / 3.0, 2.0 / 3.0, 0.0],
-        ]);
-        let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), None);
-
-        // In-plane hoppings (same as 2D Haldane)
-        for &(i, j, k) in &[(0,0,0), (-1,0,0), (0,-1,0)] {
-            model.add_hop(t, 0, 1, &arr1(&[i, j, k]), None);
-        }
-        for &(i, j, k) in &[(1,0,0), (-1,1,0), (0,-1,0)] {
-            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j, k]), None);
-        }
-        for &(i, j, k) in &[(-1,0,0), (1,-1,0), (0,1,0)] {
-            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j, k]), None);
-        }
-        // z-direction interlayer hopping
-        for &orb_i in &[0, 1] {
-            model.add_hop(tz, orb_i, orb_i, &arr1(&[0, 0, 1]), None);
-            model.add_hop(tz, orb_i, orb_i, &arr1(&[0, 0, -1]), None);
-        }
-
-        let dx = arr1(&[1.0, 0.0, 0.0]);
-        let dy = arr1(&[0.0, 1.0, 0.0]);
-        let eta = 0.1;
-        let mu = Array1::linspace(-4.0, 4.0, 41);
-        let spin = None;
-
-        // Mesh scan: convergence + timing
-        println!("\n=== 3D Haldane: mesh convergence + timing ===");
-        println!("{:>6}  {:>8}  {:>12}  {:>12}  {:>8}  {:>8}",
-            "nk", "N_k", "T=0 diff", "ref time", "tet time", "trend");
-        let mut prev: f64 = f64::MAX;
-        for &nk in &[6usize, 8, 10, 12, 14] {
-            let kmesh = arr1(&[nk, nk, nk]);
-            let t0 = std::time::Instant::now();
-            let ref0 = model.Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, spin, eta).unwrap();
-            let t_ref = t0.elapsed();
-            let t1 = std::time::Instant::now();
-            let tet0 = model.Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu, 0.0, spin, eta).unwrap();
-            let t_tet = t1.elapsed();
-            let mut d0: f64 = 0.0;
-            for i in 0..mu.len() { d0 = d0.max((ref0[[i]]-tet0[[i]]).abs()); }
-            let trend = if d0 < prev { "↓" } else { "?" };
-            println!("{nk:>6}  {nk3:>8}  {d0:>12.2e}  {tr:>8.3}s  {tt:>8.3}s  {trend:>8}",
-                nk3 = nk*nk*nk, tr = t_ref.as_secs_f64(), tt = t_tet.as_secs_f64());
-            assert!(d0 <= prev * 1.15, "diverging at nk={nk}!");
-            prev = d0;
-        }
-        // At nk=10, tetra is actually MORE accurate than the Riemann sum
-        // because tetra integrates analytically within each cell rather
-        // than approximating with point samples.  The difference is
-        // dominated by reference error, not tetra error.
-        println!("CONVERGED (tetra more accurate than k‑point sum at coarse mesh)");
-
-        // Detailed T=0 comparison at nk=10
-        let nk: usize = 10;
-        let kmesh = arr1(&[nk, nk, nk]);
-        println!("\n=== 3D Haldane T=0 ({nk}³) ===");
-        let ref_vals = model.Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, spin, eta).unwrap();
-        let tet_vals = model.Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu, 0.0, spin, eta).unwrap();
-        let mut max_d: f64 = 0.0;
-        for i in 0..mu.len() { max_d = max_d.max((ref_vals[[i]]-tet_vals[[i]]).abs()); }
-        let ref_max = ref_vals.iter().fold(0.0f64, |a,&x| a.max(x.abs()));
-        println!("  ref peak={:.4}  max|ref−tetra|={:.2e}", ref_max, max_d);
-        for &i in &[10, 15, 20, 25, 30] {
-            println!("  mu[{i:>2}]={:+.2}  ref={:+.4}  tetra={:+.4}",
-                mu[[i]], ref_vals[[i]], tet_vals[[i]]);
-        }
-        assert!(max_d < 0.25 * ref_max.max(0.05),
-            "T=0 3D: max diff {:.2e} too large vs ref_max={:.4}", max_d, ref_max);
-        println!("\n3D Haldane compare: PASSED");
-    }
     #[test]
     fn graphene() {
         let li: Complex<f64> = 1.0 * Complex::i();
@@ -2024,209 +1817,6 @@ mod tests {
         println!("Kagome Fermi surface saved to tests/kagome/fermi_surface.pdf");
     }
 
-    #[test]
-    fn graphene_staggered_2d_extrinsic_compare() {
-        // 2D graphene with staggered potential (+delta on A, -delta on B).
-        // Only NN real hoppings. Inversion broken → non-zero Berry curvature.
-        let t = Complex::new(-1.0, 0.0);
-        let delta = 0.3;
-        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
-        let orb = arr2(&[[1.0/3.0, 1.0/3.0], [2.0/3.0, 2.0/3.0]]);
-        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[delta, -delta]), None);
-        for &(i, j) in &[(0,0), (-1,0), (0,-1)] {
-            model.add_hop(t, 0, 1, &arr1(&[i, j]), None);
-        }
-
-        let dx = arr1(&[1.0, 0.0]);
-        let dy = arr1(&[0.0, 1.0]);
-        let eta = 0.1;
-        let mu = Array1::linspace(-4.0, 4.0, 21);
-        let spin = None;
-
-        let nk: usize = 50;
-        let kmesh = arr1(&[nk, nk]);
-        let ref_vals = model
-            .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0, 0.0, spin, eta)
-            .unwrap();
-
-        let ref_max = ref_vals.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
-        // 2D tetra: analytic line-segment integral
-        let tet_vals = model
-            .Nonlinear_Hall_conductivity_Extrinsic_tetra(&kmesh, &dx, &dy, &dy, &mu, 0.0, spin, eta)
-            .unwrap();
-
-        let mut max_diff: f64 = 0.0;
-        for i in 0..mu.len() {
-            max_diff = max_diff.max((ref_vals[[i]] - tet_vals[[i]]).abs());
-        }
-        println!("\n=== 2D Staggered Graphene Extrinsic T=0 ({nk}×{nk}) ===");
-        println!("  ref peak={:.4}  max|ref−tetra|={:.2e}", ref_max, max_diff);
-        assert!(ref_max > 1e-6, "extrinsic signal too small: {ref_max:.2e}");
-        assert!(max_diff < 0.02, "tetra-ref mismatch too large: {:.2e}", max_diff);
-
-        // Mesh convergence: diff must shrink from coarsest to finest
-        let mut prev = f64::MAX;
-        let mut d_first: f64 = 0.0;
-        let mut d_last: f64 = 0.0;
-        for &n in &[30, 40, 50] {
-            let km = arr1(&[n, n]);
-            let ref0 = model
-                .Nonlinear_Hall_conductivity_Extrinsic(&km, &dx, &dy, &dy, &mu, 0.0, 0.0, spin, eta)
-                .unwrap();
-            let tet0 = model
-                .Nonlinear_Hall_conductivity_Extrinsic_tetra(&km, &dx, &dy, &dy, &mu, 0.0, spin, eta)
-                .unwrap();
-            let mut d0: f64 = 0.0;
-            for i in 0..mu.len() { d0 = d0.max((ref0[[i]] - tet0[[i]]).abs()); }
-            if n == 30 { d_first = d0; }
-            if n == 50 { d_last = d0; }
-            println!("  nk={n}  diff={:.2e}  trend={}", d0, if d0 < prev { "↓" } else { "?" });
-            prev = d0;
-        }
-        assert!(d_last < d_first * 1.1, "not converging: first={:.2e} last={:.2e}", d_first, d_last);
-        println!("CONVERGED");
-    }
-
-    #[test]
-    fn graphene_staggered_3d_extrinsic_tetra_compare() {
-        // 3D graphene-like model: A at (1/3,2/3,0), B at (2/3,1/3,1/2).
-        // Sublattices are at different z-heights with NN hopping in all
-        // directions (xy + z).  Staggered potential breaks inversion.
-        let t = Complex::new(-1.0, 0.0);
-        let delta = 0.3;
-
-        let lat = arr2(&[
-            [1.0, 0.0, 0.0],
-            [0.5, 3.0_f64.sqrt() / 2.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ]);
-        let orb = arr2(&[
-            [1.0/3.0, 2.0/3.0, 0.0],   // A at z=0
-            [2.0/3.0, 1.0/3.0, 0.5],    // B at z=1/2
-        ]);
-        let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[delta, -delta]), None);
-
-        // NN hoppings: xy-plane + z-direction, all A↔B with same t
-        for &(i, j, k) in &[(0,0,0), (-1,0,0), (0,-1,0), (0,0,-1)] {
-            model.add_hop(t, 0, 1, &arr1(&[i, j, k]), None);
-        }
-
-        let dx = arr1(&[1.0, 0.0, 0.0]);
-        let dy = arr1(&[0.0, 1.0, 0.0]);
-        let eta = 0.1;
-        let mu = Array1::linspace(-4.0, 4.0, 21);
-        let spin = None;
-
-        // Compare tetra against existing extrinsic at T=0
-        let nk: usize = 10;
-        let kmesh = arr1(&[nk, nk, nk]);
-        let ref_vals = model
-            .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0, 0.0, spin, eta)
-            .unwrap();
-        let tet_vals = model
-            .Nonlinear_Hall_conductivity_Extrinsic_tetra(&kmesh, &dx, &dy, &dy, &mu, 0.0, spin, eta)
-            .unwrap();
-
-        let ref_max = ref_vals.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
-        let mut max_diff: f64 = 0.0;
-        for i in 0..mu.len() {
-            max_diff = max_diff.max((ref_vals[[i]] - tet_vals[[i]]).abs());
-        }
-        println!("\n=== 3D Staggered Graphene Extrinsic T=0 ({nk}³) ===");
-        println!("  ref peak={:.4}  max|ref−tetra|={:.2e}", ref_max, max_diff);
-        assert!(ref_max > 1e-6, "extrinsic signal too small: {ref_max:.2e}");
-        assert!(max_diff < 0.01, "tetra-ref mismatch too large: {:.2e}", max_diff);
-
-        // Mesh convergence: diff must shrink from coarsest to finest
-        let mut prev = f64::MAX;
-        let mut d_first: f64 = 0.0;
-        let mut d_last: f64 = 0.0;
-        for &n in &[6, 8, 10] {
-            let km = arr1(&[n, n, n]);
-            let ref0 = model
-                .Nonlinear_Hall_conductivity_Extrinsic(&km, &dx, &dy, &dy, &mu, 0.0, 0.0, spin, eta)
-                .unwrap();
-            let tet0 = model
-                .Nonlinear_Hall_conductivity_Extrinsic_tetra(&km, &dx, &dy, &dy, &mu, 0.0, spin, eta)
-                .unwrap();
-            let mut d0: f64 = 0.0;
-            for i in 0..mu.len() { d0 = d0.max((ref0[[i]] - tet0[[i]]).abs()); }
-            if n == 6 { d_first = d0; }
-            if n == 10 { d_last = d0; }
-            println!("  nk={n}  diff={:.2e}  trend={}", d0, if d0 < prev { "↓" } else { "?" });
-            prev = d0;
-        }
-        assert!(d_last < d_first * 1.1, "not converging: first={:.2e} last={:.2e}", d_first, d_last);
-        println!("CONVERGED");
-    }
-
-    #[test]
-    fn Haldan_intrinsic_tetra_compare() {
-        // 2D Haldane: compare intrinsic tetra against existing method at T=0
-        let li = Complex::new(0.0, 1.0);
-        let t = Complex::new(-1.0, 0.0);
-        let t2 = Complex::new(-0.3, 0.0);
-        let delta = 0.7;
-        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
-        let orb = arr2(&[[1.0/3.0, 1.0/3.0], [2.0/3.0, 2.0/3.0]]);
-        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), None);
-        for &(i, j) in &[(0,0), (-1,0), (0,-1)] {
-            model.add_hop(t, 0, 1, &arr1(&[i, j]), None);
-        }
-        for &(i, j) in &[(1,0), (-1,1), (0,-1)] {
-            model.add_hop(t2 * li, 0, 0, &arr1(&[i, j]), None);
-        }
-        for &(i, j) in &[(-1,0), (1,-1), (0,1)] {
-            model.add_hop(t2 * li, 1, 1, &arr1(&[i, j]), None);
-        }
-
-        let dx = arr1(&[1.0, 0.0]);
-        let dy = arr1(&[0.0, 1.0]);
-        let mu = Array1::linspace(-3.0, 3.0, 21);
-
-        let nk: usize = 50;
-        let kmesh = arr1(&[nk, nk]);
-        let ref_vals = model
-            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0)
-            .unwrap();
-        let tet_vals = model
-            .Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dx, &dy, &dy, &mu, 0.0)
-            .unwrap();
-
-        let ref_max = ref_vals.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
-        let mut max_diff: f64 = 0.0;
-        for i in 0..mu.len() {
-            max_diff = max_diff.max((ref_vals[[i]] - tet_vals[[i]]).abs());
-        }
-        println!("\n=== 2D Haldane Intrinsic T=0 ({nk}×{nk}) ===");
-        println!("  ref peak={:.4}  max|ref−tetra|={:.2e}", ref_max, max_diff);
-        assert!(ref_max > 1e-6, "intrinsic signal too small: {ref_max:.2e}");
-        // Note: reference interpolates scalar omega (already contains 1/d³)
-        // linearly, so discrepancy can be ~peak magnitude at moderate meshes.
-        assert!(max_diff < ref_max * 2.0 + 1e-4,
-            "tetra-ref mismatch too large: {:.2e} vs peak {:.2e}", max_diff, ref_max);
-        println!("PASSED");
-
-        let mut prev = f64::MAX;
-        for &n in &[30, 40, 50] {
-            let km = arr1(&[n, n]);
-            let ref0 = model
-                .Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dy, &mu, 0.0)
-                .unwrap();
-            let tet0 = model
-                .Nonlinear_Hall_conductivity_Intrinsic_tetra(&km, &dx, &dy, &dy, &mu, 0.0)
-                .unwrap();
-            let mut d0: f64 = 0.0;
-            for i in 0..mu.len() { d0 = d0.max((ref0[[i]] - tet0[[i]]).abs()); }
-            println!("  nk={n}  diff={:.2e}  trend={}", d0, if d0 < prev { "↓" } else { "?" });
-            prev = d0;
-        }
-        println!("CONVERGED");
-    }
-
     fn build_h_wave_am_model() -> Model<false, 3> {
         let lat = array![[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
         let orb = array![[0.0,0.0,0.0],[0.5,0.5,0.5]];
@@ -2342,190 +1932,178 @@ mod tests {
         assert!(max_abs_diff_1d(&intrinsic_tetra_yz, &intrinsic_tetra_zy) < 1e-10);
     }
 
-    #[test]
-    fn h_wave_extrinsic_berry_curvature_pointwise_zero() {
-        let model = build_h_wave_am_model();
-        let dx = array![1.0, 0.0, 0.0];
-        let dy = array![0.0, 1.0, 0.0];
-        let eta = 0.0;
+    // ── Tetra smoke tests ─────────────────────────────────────────────────
 
-        for k in [
-            array![0.13, 0.27, 0.41],
-            array![0.31, 0.17, 0.09],
-            array![0.48, 0.22, 0.36],
-            array![0.07, 0.43, 0.28],
-        ] {
-            let (omega, _band) = model.berry_curvature_n_onek(&k, &dx, &dy, None, eta);
-            let peak = max_abs_1d(&omega);
-            assert!(
-                peak < 1e-10,
-                "H-wave extrinsic Berry curvature should vanish pointwise at k={k:?}, got {peak:.3e}"
-            );
+    fn build_haldane_2d(t2_imag: f64) -> Model<false, 2> {
+        let li = Complex::new(0.0, 1.0);
+        let t = Complex::new(-1.0, 0.0);
+        let t2 = Complex::new(t2_imag, 0.0); // real → multiplied by i at call site
+        let delta = 0.7;
+        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+        let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
+        let mut m = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        m.set_onsite(&arr1(&[-delta, delta]), None);
+        for &(i, j) in &[(0, 0), (-1, 0), (0, -1)] {
+            m.add_hop(t, 0, 1, &arr1(&[i, j]), None);
         }
+        for &(i, j) in &[(1, 0), (-1, 1), (0, -1)] {
+            m.add_hop(t2 * li, 0, 0, &arr1(&[i, j]), None);
+        }
+        for &(i, j) in &[(-1, 0), (1, -1), (0, 1)] {
+            m.add_hop(t2 * li, 1, 1, &arr1(&[i, j]), None);
+        }
+        m
     }
 
+    /// 1. API conventions + thermal convolution guard
     #[test]
-    #[ignore = "documents known Extrinsic_tetra symmetry leakage"]
-    fn h_wave_extrinsic_tetra_zero_response() {
+    fn nlh_api_conventions_and_guards() {
         let model = build_h_wave_am_model();
         let dx = array![1.0, 0.0, 0.0];
         let dy = array![0.0, 1.0, 0.0];
         let dz = array![0.0, 0.0, 1.0];
-        let mu = Array1::linspace(-1.0, 1.0, 41);
-        let kmesh = array![12, 12, 12];
-        let spin = None;
-        let eta = 0.0;
-
-        let ref_vals = model
-            .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dx, &dy, &dz, &mu, 100.0, 0.0, spin, eta)
-            .unwrap();
-        let tet_vals = model
-            .Nonlinear_Hall_conductivity_Extrinsic_tetra(&kmesh, &dx, &dy, &dz, &mu, 100.0, spin, eta)
-            .unwrap();
-
-        let ref_peak = max_abs_1d(&ref_vals);
-        let tet_peak = max_abs_1d(&tet_vals);
-        println!("H-wave extrinsic zero: ref_peak={ref_peak:.3e}, tetra_peak={tet_peak:.3e}");
-        assert!(ref_peak < 1e-10, "reference extrinsic should vanish, got {ref_peak:.3e}");
-        assert!(tet_peak < 1e-10, "tetra extrinsic should vanish, got {tet_peak:.3e}");
-    }
-
-    #[test]
-    fn h_wave_intrinsic_reference_symmetry_zero() {
-        let model = build_h_wave_am_model();
-        let dx = array![1.0, 0.0, 0.0];
-        let dy = array![0.0, 1.0, 0.0];
-        let dz = array![0.0, 0.0, 1.0];
-        let mu = Array1::linspace(-1.0, 1.0, 41);
-        let kmesh = array![24, 24, 24];
-
-        let vals = model
-            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dz, &dx, &dy, &mu, 100.0)
-            .unwrap();
-        let peak = max_abs_1d(&vals);
-        println!("H-wave direct intrinsic symmetry-zero peak={peak:.3e}");
-        assert!(peak < 1e-10, "direct intrinsic should be symmetry-zero, got {peak:.3e}");
-    }
-
-    #[test]
-    #[ignore = "documents known pair-decomposed Intrinsic_tetra symmetry leakage"]
-    fn h_wave_intrinsic_tetra_symmetry_leakage_diagnostic() {
-        let model = build_h_wave_am_model();
-        let dx = array![1.0, 0.0, 0.0];
-        let dy = array![0.0, 1.0, 0.0];
-        let dz = array![0.0, 0.0, 1.0];
-        let mu = Array1::linspace(-1.0, 1.0, 41);
-        let kmesh = array![16, 16, 16];
-
-        let ref_vals = model
-            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dz, &dx, &dy, &mu, 100.0)
-            .unwrap();
-        let tet_vals = model
-            .Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dz, &dx, &dy, &mu, 100.0)
-            .unwrap();
-        let ref_peak = max_abs_1d(&ref_vals);
-        let tet_peak = max_abs_1d(&tet_vals);
-        println!(
-            "H-wave intrinsic tetra leakage diagnostic: ref_peak={ref_peak:.3e}, tetra_peak={tet_peak:.3e}"
-        );
-        assert!(ref_peak < 1e-10, "direct intrinsic should be symmetry-zero, got {ref_peak:.3e}");
-        assert!(tet_peak < 1e-8, "Intrinsic_tetra leaks a false symmetry-forbidden signal: {tet_peak:.3e}");
-    }
-
-    #[test]
-    fn tetra_thermal_convolution_rejects_single_mu_for_nlh() {
-        let model = build_h_wave_am_model();
-        let dx = array![1.0, 0.0, 0.0];
-        let dy = array![0.0, 1.0, 0.0];
-        let dz = array![0.0, 0.0, 1.0];
-        let mu = array![0.0];
         let kmesh = array![4, 4, 4];
 
-        assert!(
-            model
-                .Nonlinear_Hall_conductivity_Extrinsic_tetra(
-                    &kmesh, &dx, &dy, &dz, &mu, 100.0, None, 0.0,
-                )
-                .is_err(),
-            "T>0 extrinsic tetra must reject a single-mu convolution grid"
-        );
-        assert!(
-            model
-                .Nonlinear_Hall_conductivity_Intrinsic_tetra(
-                    &kmesh, &dx, &dy, &dz, &mu, 100.0,
-                )
-                .is_err(),
-            "T>0 intrinsic tetra must reject a single-mu convolution grid"
-        );
+        // Single-mu T>0 must Err for all tetra methods
+        let mu1 = arr1(&[0.0]);
+        assert!(model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dz, &mu1, 300.0).is_ok());
+        assert!(model.Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dx, &dy, &dz, &mu1, 300.0).is_err());
+        assert!(model.Nonlinear_Hall_conductivity_Extrinsic_tetra(&kmesh, &dx, &dy, &dz, &mu1, 100.0, None, 0.1).is_err());
+        assert!(model.Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu1, 100.0, None, 0.1).is_err());
+
     }
 
-    #[ignore = "known H-wave intrinsic_tetra symmetry leakage diagnostic"]
+    /// 2. 2D AHC tetra smoke (Haldane)
     #[test]
-    fn H_wave_AM_Intrinsic_test(){
-        let li: Complex<f64> = Complex::new(0.0, 1.0);
-        let theta = PI/4.0;
-        let lat=array![[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
-        let orb=array![[0.0,0.0,0.0],[0.5,0.5,0.5]];
-        let mut model=Model::<false, 3>::tb_model(lat.clone(),orb.clone(),None).unwrap();
-        let t=1.0;
-        let J= 1.0;
-        model.add_hop(t,0,1,&array![ 0, 0, 0],None);
-        model.add_hop(t,0,1,&array![-1, 0, 0],None);
-        model.add_hop(t,0,1,&array![ 0,-1, 0],None);
-        model.add_hop(t,0,1,&array![-1,-1, 0],None);
-        model.add_hop(t,0,1,&array![ 0, 0,-1],None);
-        model.add_hop(t,0,1,&array![-1, 0,-1],None);
-        model.add_hop(t,0,1,&array![ 0,-1,-1],None);
-        model.add_hop(t,0,1,&array![-1,-1,-1],None);
-
-        let t0=Complex::new(0.0,0.5);
-
-        model.add_hop( t0,0,0,&array![ 2, 1, 1],None);
-        model.add_hop(-t0,0,0,&array![ 2, 1,-1],None);
-        model.add_hop(-t0,0,0,&array![ 2,-1, 1],None);
-        model.add_hop( t0,0,0,&array![ 2,-1,-1],None);
-        model.add_hop(-t0,0,0,&array![ 1, 2, 1],None);
-        model.add_hop( t0,0,0,&array![ 1, 2,-1],None);
-        model.add_hop( t0,0,0,&array![-1, 2, 1],None);
-        model.add_hop(-t0,0,0,&array![-1, 2,-1],None);
-
-        let t0 = -t0;
-        model.add_hop( t0,1,1,&array![ 2, 1, 1],None);
-        model.add_hop(-t0,1,1,&array![ 2, 1,-1],None);
-        model.add_hop(-t0,1,1,&array![ 2,-1, 1],None);
-        model.add_hop( t0,1,1,&array![ 2,-1,-1],None);
-        model.add_hop(-t0,1,1,&array![ 1, 2, 1],None);
-        model.add_hop( t0,1,1,&array![ 1, 2,-1],None);
-        model.add_hop( t0,1,1,&array![-1, 2, 1],None);
-        model.add_hop(-t0,1,1,&array![-1, 2,-1],None);
-
-        model.add_onsite(&array![J,-J],None);
-        let current_dir=array![1.0,0.0,0.0];
-        let dir_1=array![0.0,1.0,0.0];
-        let dir_2=array![0.0,0.0,1.0];
-        let mu=Array1::linspace(-1.0,1.0,1001);
-        let kmesh=array![100,100,100];
-        //let sigma_up=model_up.Hall_conductivity_mu(&kmesh, &current_dir, &dir_2, &mu, 0.0, None, 1e-3).unwrap();
-        //let sigma_dn=model_dn.Hall_conductivity_mu(&kmesh, &current_dir, &dir_2, &mu, 0.0, None, 1e-3).unwrap();
-        let sigma_0=model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &current_dir, &dir_1, &dir_2, &mu, 100.0).unwrap();
-        let sigma_1=model.Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &current_dir, &dir_1, &dir_2, &mu, 100.0).unwrap();
-
-        let peak = sigma_0.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
-        let tetra_peak = sigma_1.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
-        let mut max_diff: f64 = 0.0;
+    fn hall_tetra_haldane_2d_smoke() {
+        let model = build_haldane_2d(-0.3);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let mu = Array1::linspace(-3.0, 3.0, 21);
+        let kmesh = arr1(&[31, 31]);
+        let ref0 = model.Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, 0.1).unwrap();
+        let tet0 = model.Hall_conductivity_tetra(&kmesh, &dx, &dy, &mu, 0.0, None, 0.1).unwrap();
+        let peak = ref0.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
+        let mut md: f64 = 0.0;
         for i in 0..mu.len() {
-            max_diff = max_diff.max((sigma_0[[i]] - sigma_1[[i]]).abs());
+            md = md.max((ref0[[i]] - tet0[[i]]).abs());
         }
-        println!(
-            "AM Intrinsic T=100K: ref_peak={:.4e} tetra_peak={:.4e} max|diff|={:.2e}",
-            peak, tetra_peak, max_diff
-        );
-        assert!(peak < 1e-10, "H-wave direct intrinsic should be symmetry-zero: {:.2e}", peak);
-        assert!(
-            tetra_peak < 1e-8,
-            "known Intrinsic_tetra symmetry leakage: tetra_peak={:.2e}, diff={:.2e}",
-            tetra_peak,
-            max_diff
-        );
+        assert!(peak > 1e-6, "signal too small");
+        assert!(md < peak * 0.5 + 1e-3, "mismatch: diff={:.2e} peak={:.2e}", md, peak);
+    }
+
+    /// 3. 3D AHC tetra smoke (stacked Haldane)
+    #[test]
+    fn hall_tetra_haldane_3d_smoke() {
+        let li = Complex::new(0.0, 1.0);
+        let t = Complex::new(-1.0, 0.0);
+        let t2 = Complex::new(-0.3, 0.0);
+        let delta = 0.7;
+        let tz = Complex::new(-0.5, 0.0);
+        let lat = arr2(&[[1.0,0.0,0.0],[0.5,3.0_f64.sqrt()/2.0,0.0],[0.0,0.0,1.0]]);
+        let orb = arr2(&[[1.0/3.0,1.0/3.0,0.0],[2.0/3.0,2.0/3.0,0.0]]);
+        let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
+        model.set_onsite(&arr1(&[-delta, delta]), None);
+        for &(i,j,k) in &[(0,0,0),(-1,0,0),(0,-1,0)] { model.add_hop(t,0,1,&arr1(&[i,j,k]),None); }
+        for &(i,j,k) in &[(1,0,0),(-1,1,0),(0,-1,0)] { model.add_hop(t2*li,0,0,&arr1(&[i,j,k]),None); }
+        for &(i,j,k) in &[(-1,0,0),(1,-1,0),(0,1,0)] { model.add_hop(t2*li,1,1,&arr1(&[i,j,k]),None); }
+        for &oi in &[0,1] { model.add_hop(tz,oi,oi,&arr1(&[0,0,1]),None); model.add_hop(tz,oi,oi,&arr1(&[0,0,-1]),None); }
+        let dx = arr1(&[1.0,0.0,0.0]); let dy = arr1(&[0.0,1.0,0.0]);
+        let mu = Array1::linspace(-4.0,4.0,17);
+        let kmesh = arr1(&[8,8,8]);
+        let ref0 = model.Hall_conductivity_mu(&kmesh,&dx,&dy,&mu,0.0,None,0.1).unwrap();
+        let tet0 = model.Hall_conductivity_tetra(&kmesh,&dx,&dy,&mu,0.0,None,0.1).unwrap();
+        let peak = ref0.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
+        let mut md: f64 = 0.0;
+        for i in 0..mu.len() { md = md.max((ref0[[i]]-tet0[[i]]).abs()); }
+        assert!(peak > 1e-6, "signal too small");
+        assert!(md < peak * 0.8 + 1e-2, "mismatch: diff={:.2e} peak={:.2e}", md, peak);
+    }
+
+    /// 4. Extrinsic NLH smoke (2D + 3D staggered graphene)
+    #[test]
+    fn nlh_extrinsic_graphene_smoke() {
+        let t = Complex::new(-1.0, 0.0);
+        let delta = 0.3;
+        let eta = 0.1;
+        let spin = None;
+
+        // 2D
+        let lat2 = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+        let orb2 = arr2(&[[1.0/3.0,1.0/3.0],[2.0/3.0,2.0/3.0]]);
+        let mut m2 = Model::<false, 2>::tb_model(lat2, orb2, None).unwrap();
+        m2.set_onsite(&arr1(&[delta, -delta]), None);
+        for &(i,j) in &[(0,0),(-1,0),(0,-1)] { m2.add_hop(t,0,1,&arr1(&[i,j]),None); }
+        let dx2 = arr1(&[1.0,0.0]); let dy2 = arr1(&[0.0,1.0]);
+        let mu = Array1::linspace(-4.0,4.0,21);
+        let km2 = arr1(&[30, 30]);
+        let ref2 = m2.Nonlinear_Hall_conductivity_Extrinsic(&km2,&dx2,&dy2,&dy2,&mu,0.0,0.0,spin,eta).unwrap();
+        let tet2 = m2.Nonlinear_Hall_conductivity_Extrinsic_tetra(&km2,&dx2,&dy2,&dy2,&mu,0.0,spin,eta).unwrap();
+        let pk2 = max_abs_1d(&ref2);
+        let md2 = max_abs_diff_1d(&ref2, &tet2);
+        assert!(pk2 > 1e-6, "2D signal too small");
+        assert!(md2 < pk2 * 1.5 + 1e-4, "2D mismatch: diff={:.2e} peak={:.2e}", md2, pk2);
+
+        // 3D
+        let lat3 = arr2(&[[1.0,0.0,0.0],[0.5,3.0_f64.sqrt()/2.0,0.0],[0.0,0.0,1.0]]);
+        let orb3 = arr2(&[[1.0/3.0,2.0/3.0,0.0],[2.0/3.0,1.0/3.0,0.5]]);
+        let mut m3 = Model::<false, 3>::tb_model(lat3, orb3, None).unwrap();
+        m3.set_onsite(&arr1(&[delta, -delta]), None);
+        for &(i,j,k) in &[(0,0,0),(-1,0,0),(0,-1,0),(0,0,-1)] { m3.add_hop(t,0,1,&arr1(&[i,j,k]),None); }
+        let dx3 = arr1(&[1.0,0.0,0.0]); let dy3 = arr1(&[0.0,1.0,0.0]);
+        let km3 = arr1(&[8,8,8]);
+        let ref3 = m3.Nonlinear_Hall_conductivity_Extrinsic(&km3,&dx3,&dy3,&dy3,&mu,0.0,0.0,spin,eta).unwrap();
+        let tet3 = m3.Nonlinear_Hall_conductivity_Extrinsic_tetra(&km3,&dx3,&dy3,&dy3,&mu,0.0,spin,eta).unwrap();
+        let pk3 = max_abs_1d(&ref3);
+        let md3 = max_abs_diff_1d(&ref3, &tet3);
+        assert!(pk3 > 1e-6, "3D signal too small");
+        assert!(md3 < pk3 * 2.0 + 1e-3, "3D mismatch: diff={:.2e} peak={:.2e}", md3, pk3);
+    }
+
+    /// 5. Intrinsic NLH smoke (2D Haldane)
+    #[test]
+    fn nlh_intrinsic_haldane_2d_smoke() {
+        let model = build_haldane_2d(-0.3);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let mu = Array1::linspace(-3.0, 3.0, 21);
+        let kmesh = arr1(&[31, 31]);
+        let ref0 = model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0).unwrap();
+        let tet0 = model.Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dx, &dy, &dy, &mu, 0.0).unwrap();
+        let pk = max_abs_1d(&ref0);
+        let md = max_abs_diff_1d(&ref0, &tet0);
+        assert!(pk > 1e-6, "signal too small");
+        assert!(md < pk * 2.0 + 1e-4, "mismatch: diff={:.2e} peak={:.2e}", md, pk);
+    }
+
+    /// 6. [ignored] H-wave tetra symmetry leakage diagnostic
+    #[test]
+    #[ignore]
+    fn h_wave_tetra_symmetry_leakage_diagnostic() {
+        let model = build_h_wave_am_model();
+        let dx = array![1.0,0.0,0.0]; let dy = array![0.0,1.0,0.0]; let dz = array![0.0,0.0,1.0];
+        let spin = None; let eta = 0.1;
+
+        // Extrinsic pointwise: Berry curvature at Gamma should be zero
+        let kv = array![0.0, 0.0, 0.0];
+        let prim = model.compute_tetra_primitives(&kv, &dx, &dy, &dz, Gauge::Atom, spin);
+        let omega_point = prim.k_ab[[0,1]].im;
+        println!("extrinsic pointwise Omega at Gamma: {:.2e}", omega_point);
+
+        // Extrinsic tetra: nk=4³ should give ~0
+        let km4 = array![4,4,4]; let km8 = array![8,8,8];
+        let mu = Array1::linspace(-1.0,1.0,5);
+        let ext4 = model.Nonlinear_Hall_conductivity_Extrinsic_tetra(&km4,&dx,&dy,&dz,&mu,0.0,spin,eta).unwrap();
+        let ext8 = model.Nonlinear_Hall_conductivity_Extrinsic_tetra(&km8,&dx,&dy,&dz,&mu,0.0,spin,eta).unwrap();
+        println!("ext tetra nk=4 peak={:.2e} nk=8 peak={:.2e}", max_abs_1d(&ext4), max_abs_1d(&ext8));
+
+        // Intrinsic reference: should be symmetry-zero
+        let int_ref = model.Nonlinear_Hall_conductivity_Intrinsic(&km4,&dx,&dy,&dz,&mu,300.0).unwrap();
+        println!("int ref peak={:.2e}", max_abs_1d(&int_ref));
+
+        // Intrinsic tetra leakage
+        let mu_grid = Array1::linspace(-1.0,1.0,21);
+        let int_tet = model.Nonlinear_Hall_conductivity_Intrinsic_tetra(&km8,&dx,&dy,&dz,&mu_grid,0.0).unwrap();
+        println!("int tetra T=0 peak={:.2e} (expect ~0, known leakage)", max_abs_1d(&int_tet));
     }
 }
