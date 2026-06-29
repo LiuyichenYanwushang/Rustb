@@ -102,6 +102,13 @@
 //! &-\f{e^3}{\hbar}\sum_n\int_\tx{BZ}\f{\dd\bm k}{(2\pi)^3} f_n\lt(2\p_c G_n^{ab}-\f{1}{2}\lt(\p_a G_n^{bc}+\p_b G_n^{ac}\rt)\rt)
 //! \end{aligned}$$
 //!
+//! **Implementation convention note:** the derivation above uses
+//! $G_{\rm lit}^{ab}=2\operatorname{Re}\sum_{m\ne n}v^a_{nm}v^b_{mn}/(\varepsilon_n-\varepsilon_m)^3$.
+//! The charge intrinsic code below instead stores
+//! $G_{\rm code}^{ab}=\operatorname{Re}\sum_{m\ne n}v^a_{nm}v^b_{mn}/(\varepsilon_n-\varepsilon_m)^3$.
+//! Its documented kernels are written in this code convention; converting to
+//! the literature convention multiplies the intrinsic charge result by 2.
+//!
 //! ## Simplification of the Berry connection
 //!
 //! For practical computations, we need to modify the Berry connection form. First, by the chain rule, we have:
@@ -880,7 +887,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(conductivity)
     }
 
-    /// Computes the Berry curvature dipole for each band at a single k-point.
+    /// Computes the unsymmetrized Berry-curvature-dipole kernel for each band at a
+    /// single k-point.
     ///
     /// This computes:
     /// $$ \pdv{\varepsilon_{n\mathbf k}}{k_\gamma} \Omega_{n,\alpha\beta} $$
@@ -894,9 +902,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// # Arguments
     ///
     /// * `k_vec` - k-point coordinates.
-    /// * `current_dir` - Current direction (direction vector for the first index $\alpha$ of $\Omega_{n,\alpha\beta}$).
-    /// * `dir_2` - Direction vector for the second index $\beta$.
-    /// * `dir_3` - Direction vector for the derivative index $\gamma$.
+    /// * `current_dir` - First Berry-curvature index $\alpha$ of $\Omega_{n,\alpha\beta}$.
+    /// * `dir_2` - Second Berry-curvature index $\beta$.
+    /// * `dir_3` - Velocity / Fermi-surface index $\gamma$.
     /// * `og` - Frequency $\omega$ (for the energy denominator).
     /// * `spin` - Spin operator index (0, 1, 2, 3).
     /// * `eta` - Broadening parameter $\eta$.
@@ -949,12 +957,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let evec_conj = evec.t();
         let evec = evec.map(|x| x.conj());
 
-        let v0 = v0.dot(&evec.t());
+        let v0 = v0.dot(&evec);
         let v0 = &evec_conj.dot(&v0);
         let partial_ve = v0.diag().map(|x| x.re);
-        let A1 = J.dot(&evec.t());
+        let A1 = J.dot(&evec);
         let A1 = &evec_conj.dot(&A1);
-        let A2 = v.dot(&evec.t());
+        let A2 = v.dot(&evec);
         let A2 = &evec_conj.dot(&A2);
         let mut U0 = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
         for i in 0..self.nsta() {
@@ -1053,24 +1061,31 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         (omega, band)
     }
 
-    /// Computes the extrinsic nonlinear Hall conductivity via the Berry curvature dipole.
+    /// Computes the unsymmetrized extrinsic nonlinear Hall kernel via the Berry
+    /// curvature dipole.
     ///
-    /// This integrates the Berry curvature dipole over the Brillouin zone:
-    /// $$ \mathcal D_{\alpha\beta\gamma} = \int \dd\mathbf k \sum_n
+    /// This integrates the Berry-curvature-dipole kernel over the Brillouin zone:
+    /// $$ S_{\alpha\beta;\gamma} = \int \dd\mathbf k \sum_n
     ///    \left(-\pdv{f_n}{\varepsilon}\right) \partial_\gamma \varepsilon_{n\mathbf k}
     ///    \Omega_{n,\alpha\beta} $$
+    ///
+    /// This is not the fully field-symmetrized current-first tensor
+    /// $\chi^{\rm ext}_{abc}$.  Use
+    /// [`Nonlinear_Hall_conductivity_Extrinsic_sym`] for
+    /// $\chi^{\rm ext}_{abc}=\frac12(S_{ab;c}+S_{ac;b})$.
     ///
     /// The energy derivative of the Fermi-Dirac distribution is:
     /// $$ -\pdv{f_n}{\varepsilon} = \beta \f{e^{\beta(\varepsilon_n-\mu)}}{(e^{\beta(\varepsilon_n-\mu)}+1)^2}
     ///    = \beta f_n(1-f_n) $$
     ///
-    /// **Note:** This function currently only supports $T \neq 0$. The $T=0$ case is not yet implemented.
+    /// **T>0**: direct k-point sum with Fermi window.
+    /// **T=0**: Blochl tetrahedron integration of the precomputed scalar kernel.
     ///
     /// # Arguments
     ///
     /// * `k_mesh` - Number of k-points along each direction.
     /// * `current_dir`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
-    /// * `dir_3` - Direction vector for the energy derivative index $\gamma$.
+    /// * `dir_3` - Direction vector for the velocity / Fermi-surface index $\gamma$.
     /// * `mu` - Array of chemical potential values (in eV).
     /// * `T` - Temperature (in K). Must be non-zero.
     /// * `og` - Frequency $\omega$ (use 0 for the DC limit).
@@ -1081,9 +1096,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// The extrinsic nonlinear Hall conductivity for each $\mu$ value.
     ///
-    /// # Panics
-    ///
-    /// Panics if `T == 0` (not yet supported).
     pub fn Nonlinear_Hall_conductivity_Extrinsic(
         &self,
         k_mesh: &Array1<usize>,
@@ -1142,12 +1154,47 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(conductivity)
     }
 
+    /// Current-first, field-symmetrized extrinsic nonlinear Hall tensor.
+    ///
+    /// For `j_a = chi_{abc} E_b E_c`, this returns
+    /// ```text
+    /// chi_ext[a,b,c] = 1/2 * (S_{ab;c} + S_{ac;b})
+    /// S_{ab;c} = ∫ (-df/dE) v_c Omega_{ab} dk
+    /// ```
+    ///
+    /// The same physical prefactors omitted by
+    /// [`Nonlinear_Hall_conductivity_Extrinsic`] are omitted here.
+    pub fn Nonlinear_Hall_conductivity_Extrinsic_sym(
+        &self,
+        k_mesh: &Array1<usize>,
+        current_dir: &Array1<f64>,
+        field_dir_1: &Array1<f64>,
+        field_dir_2: &Array1<f64>,
+        mu: &Array1<f64>,
+        T: f64,
+        og: f64,
+        spin: Option<SpinDirection>,
+        eta: f64,
+    ) -> Result<Array1<f64>> {
+        let term_1 = self.Nonlinear_Hall_conductivity_Extrinsic(
+            k_mesh, current_dir, field_dir_1, field_dir_2, mu, T, og, spin, eta,
+        )?;
+        let term_2 = self.Nonlinear_Hall_conductivity_Extrinsic(
+            k_mesh, current_dir, field_dir_2, field_dir_1, mu, T, og, spin, eta,
+        )?;
+        Ok((term_1 + term_2) * 0.5)
+    }
+
     /// Computes the Berry connection dipole at a single k-point.
     ///
-    /// For spinless models, this computes:
-    /// $$ v_\alpha G_{\beta\gamma} - v_\beta G_{\alpha\gamma} $$
-    /// where
-    /// $$ G_{ij} = -2\,\text{Re} \sum_{m\neq n} \f{v_{i,nm} v_{j,mn}}{(\varepsilon_n - \varepsilon_m)^3} $$
+    /// For spinless models, this computes the charge intrinsic NLH kernel
+    /// `-Q^{ab;c}` with the argument order `(a, b, c)`.
+    ///
+    /// ```text
+    /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n
+    ///             - 1/2 (v^a_n G^{bc}_n + v^b_n G^{ac}_n)
+    /// G^{ij}_n = Re sum_{m != n} v^i_nm v^j_mn / (E_n - E_m)^3
+    /// ```
     ///
     /// For spinful models (when `spin != 0`), this additionally computes
     /// $\partial_{h_i} G_{jk}$, the derivative with respect to the spin field.
@@ -1155,15 +1202,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// # Arguments
     ///
     /// * `k_vec` - k-point coordinates.
-    /// * `current_dir` - Direction vector for the first index $\alpha$.
-    /// * `dir_2` - Direction vector for the second index $\beta$.
-    /// * `dir_3` - Direction vector for the third index $\gamma$.
+    /// * `current_dir` - Direction vector for the first field index `a`.
+    /// * `dir_2` - Direction vector for the second field index `b`.
+    /// * `dir_3` - Direction vector for the current/output index `c`.
     /// * `spin` - Spin operator index (0, 1, 2, 3).
     ///
     /// # Returns
     ///
     /// `(omega, band, partial_G)` where:
-    /// - `omega`: $v_\alpha G_{\beta\gamma} - v_\beta G_{\alpha\gamma}$ per band.
+    /// - `omega`: `-Q^{ab;c}` per band for the charge branch.
     /// - `band`: Band energies.
     /// - `partial_G`: $\partial_{h} G$ per band (only `Some` for spinful models, `None` for spinless).
     pub fn berry_connection_dipole_onek(
@@ -1193,18 +1240,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         } else {
             todo!()
         };
-        let evec_conj = evec.t();
-        let evec = evec.map(|x| x.conj());
-        // Precompute transposed evec once — avoids per-direction clone in original
-        let evec_t: Array2<Complex<f64>> = evec.t().to_owned();
+        let ut = evec.t();
+        let uc = evec.map(|x| x.conj());
+        let to_band = |op: &Array2<Complex<f64>>| -> Array2<Complex<f64>> {
+            ut.dot(&op.dot(&uc))
+        };
 
-        // Transform projected matrices to eigenbasis in one shot per projection
+        // Transform projected matrices to eigenbasis in one shot per projection.
         let v0: Array2<Complex<f64>> = v_proj.slice(s![0, .., ..]).to_owned();
         let v1: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
         let v2: Array2<Complex<f64>> = v_proj.slice(s![2, .., ..]).to_owned();
-        let v_1 = evec_conj.dot(&v0.dot(&evec_t));
-        let v_2 = evec_conj.dot(&v1.dot(&evec_t));
-        let v_3 = evec_conj.dot(&v2.dot(&evec_t));
+        let v_1 = to_band(&v0);
+        let v_2 = to_band(&v1);
+        let v_3 = to_band(&v2);
         //三个方向的速度算符都得到了
         let mut U0 = Array2::<f64>::zeros((self.nsta(), self.nsta()));
         for i in 0..self.nsta() {
@@ -1234,9 +1282,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             let s_2_raw = anti_comm(&X, &v_proj.slice(s![1, .., ..])) * 0.5;
             let s_3_raw = anti_comm(&X, &v_proj.slice(s![2, .., ..])) * 0.5;
             // Transform to eigenbasis
-            let s_1 = evec_conj.dot(&s_1_raw.dot(&evec_t));
-            let s_2 = evec_conj.dot(&s_2_raw.dot(&evec_t));
-            let s_3 = evec_conj.dot(&s_3_raw.dot(&evec_t));
+            let s_1 = to_band(&s_1_raw);
+            let s_2 = to_band(&s_2_raw);
+            let s_3 = to_band(&s_3_raw);
             let G_23: Array1<f64> = {
                 //用来计算  beta gamma 的 G
                 let A = &v_2 * (U0.map(|x| Complex::<f64>::new(x.powi(3), 0.0)));
@@ -1441,13 +1489,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
     }
 
-    /// Charge intrinsic nonlinear Hall conductivity (k‑point sum).
+    /// Current-first charge intrinsic nonlinear Hall conductivity (k-point
+    /// sum).
     ///
     /// ```text
-    /// σ^{ab;c}_{int}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) Q^{ab;c}_n(k) dk
+    /// chi_int[c,a,b](μ,T) = σ_int^{ab;c}(μ,T)
+    /// σ^{ab;c}_{int}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) (−Q^{ab;c}_n(k)) dk
     /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
-    /// G^{ij}_n = 2 Re Σ_{m≠n} v^i_{nm} v^j_{mn} / (E_n−E_m)³
+    /// G^{ij}_n = Re Σ_{m≠n} v^i_{nm} v^j_{mn} / (E_n−E_m)³
     /// ```
+    ///
+    /// Argument order is current-first: `(current c, field a, field b)`.
+    /// Internally this maps to the `sigma^{ab;c}` kernel.
     ///
     /// **T>0**: direct k‑point sum with Fermi window.
     /// **T=0**: Blochl tetrahedron integration (`tetrahedron_integrate`).
@@ -1461,7 +1514,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// # Arguments
     ///
     /// * `k_mesh` - Number of k-points along each direction.
-    /// * `current_dir`, `dir_2`, `dir_3` - Direction vectors (indices a,b,c).
+    /// * `current_dir` - Current/output direction `c`.
+    /// * `dir_2`, `dir_3` - Electric-field directions `a,b`.
     /// * `mu` - Array of chemical potential values (in eV).
     /// * `T` - Temperature (in K).
     pub fn Nonlinear_Hall_conductivity_Intrinsic(
@@ -1476,7 +1530,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk: usize = kvec.len_of(Axis(0));
         let (omega, band, _partial_G) =
-            self.berry_connection_dipole(&kvec, &current_dir, &dir_2, &dir_3, None);
+            self.berry_connection_dipole(&kvec, &dir_2, &dir_3, &current_dir, None);
         let omega = omega.into_raw_vec();
         let omega = Array1::from(omega);
         let band0 = band.clone();
@@ -1506,6 +1560,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         Ok(conductivity)
     }
+
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2295,12 +2350,17 @@ fn make_cut_tri_from_specs(
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
-    /// Extrinsic nonlinear Hall conductivity via tetrahedron Fermi‑surface
-    /// integration.
+    /// Unsymmetrized extrinsic nonlinear Hall kernel via tetrahedron
+    /// Fermi-surface integration.
     ///
     /// ```text
-    /// σ^{abc}(μ,T) = Σ_n ∫_BZ (-∂f/∂E_n) v^c_n(k) Ω^{ab}_n(k) d³k
+    /// S_{ab;c}(μ,T) = Σ_n ∫_BZ (-∂f/∂E_n) v^c_n(k) Ω^{ab}_n(k) d³k
     /// ```
+    ///
+    /// This is not the fully field-symmetrized current-first tensor
+    /// `chi_ext[a,b,c]`. Use
+    /// [`Nonlinear_Hall_conductivity_Extrinsic_tetra_sym`] for
+    /// `chi_ext[a,b,c] = 1/2 * (S_{ab;c} + S_{ac;b})`.
     ///
     /// **2D**: each rectangular cell is split into two triangles; the μ‑plane
     /// intersects each triangle in 0 or 1 line segment.  The 1D integral
@@ -2408,7 +2468,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let raw = result_t0 / det;
 
-        if T > 0.0 && n_mu > 1 {
+        if T > 0.0 {
+            if n_mu <= 1 {
+                return Err(TbError::Other(
+                    "T>0 requires a uniform mu grid with n_mu>1: \
+                     a single mu point cannot be thermally convolved".into(),
+                ));
+            }
             let mu_slice = mu.as_slice().unwrap();
             if mu_slice.windows(2).any(|w| w[1] <= w[0]) {
                 return Err(TbError::Other(
@@ -2438,6 +2504,34 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         } else {
             Ok(raw)
         }
+    }
+
+    /// Current-first, field-symmetrized extrinsic nonlinear Hall tensor via
+    /// tetrahedron Fermi-surface integration.
+    ///
+    /// For `j_a = chi_{abc} E_b E_c`, this returns
+    /// ```text
+    /// chi_ext[a,b,c] = 1/2 * (S_{ab;c} + S_{ac;b})
+    /// S_{ab;c} = ∫ (-df/dE) v_c Omega_{ab} dk
+    /// ```
+    pub fn Nonlinear_Hall_conductivity_Extrinsic_tetra_sym(
+        &self,
+        k_mesh: &Array1<usize>,
+        current_dir: &Array1<f64>,
+        field_dir_1: &Array1<f64>,
+        field_dir_2: &Array1<f64>,
+        mu: &Array1<f64>,
+        T: f64,
+        spin: Option<SpinDirection>,
+        eta: f64,
+    ) -> Result<Array1<f64>> {
+        let term_1 = self.Nonlinear_Hall_conductivity_Extrinsic_tetra(
+            k_mesh, current_dir, field_dir_1, field_dir_2, mu, T, spin, eta,
+        )?;
+        let term_2 = self.Nonlinear_Hall_conductivity_Extrinsic_tetra(
+            k_mesh, current_dir, field_dir_2, field_dir_1, mu, T, spin, eta,
+        )?;
+        Ok((term_1 + term_2) * 0.5)
     }
 }
 // ── Parallel cell accumulation helpers ──────────────────────────────────
@@ -2740,6 +2834,10 @@ struct IntrinsicTetraPoint {
     p_bc: Array2<f64>,       // Re[v^b_nm * v^c_mn]
 }
 
+// Match berry_connection_dipole_onek's small-gap cutoff.  The single-band
+// intrinsic formula is not reliable when the pair gap is this small.
+const INTRINSIC_D3_GAP_TOL: f64 = 1e-5;
+
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Compute per‑k‑point primitives for intrinsic NLH tetra integration.
     fn compute_intrinsic_tetra_primitives(
@@ -2890,8 +2988,12 @@ fn triangle_integral_d3(u: &[f64; 3], p: &[f64; 3], d: &[f64; 3]) -> f64 {
 fn segment_integral_d3(
     u0: f64, u1: f64, p0: f64, p1: f64, d0: f64, d1: f64,
 ) -> Option<f64> {
-    // Divergence check: d must not cross or touch zero
-    if d0 * d1 <= 0.0 { return None; }
+    // Divergence / near-degeneracy check: d must stay outside the unsafe gap.
+    let dmin = d0.min(d1);
+    let dmax = d0.max(d1);
+    if dmin <= INTRINSIC_D3_GAP_TOL && dmax >= -INTRINSIC_D3_GAP_TOL {
+        return None;
+    }
 
     let dd = d1 - d0;
     let a = (u1 - u0) * (p1 - p0);
@@ -2996,26 +3098,27 @@ fn accum_intrinsic_cell_2d(
                     let d0_v = interp_scalar(&d_raw, &srt, i0, j0, t0);
                     let d1_v = interp_scalar(&d_raw, &srt, i1, j1, t1);
 
-                    // Block B(v_c, P_ab, d)
                     let vc0 = interp_scalar(&vc_d, &srt, i0, j0, t0);
                     let vc1 = interp_scalar(&vc_d, &srt, i1, j1, t1);
+                    let va0 = interp_scalar(&va_d, &srt, i0, j0, t0);
+                    let va1 = interp_scalar(&va_d, &srt, i1, j1, t1);
+                    let vb0 = interp_scalar(&vb_d, &srt, i0, j0, t0);
+                    let vb1 = interp_scalar(&vb_d, &srt, i1, j1, t1);
+
                     let b1 = match segment_integral_d3(vc0, vc1, u0_ab, u1_ab, d0_v, d1_v) {
                         Some(v) => v, None => continue,
                     };
-                    // Block B(v_a, P_bc, d)
-                    let va0 = interp_scalar(&va_d, &srt, i0, j0, t0);
-                    let va1 = interp_scalar(&va_d, &srt, i1, j1, t1);
                     let b2 = match segment_integral_d3(va0, va1, u0_bc, u1_bc, d0_v, d1_v) {
                         Some(v) => v, None => continue,
                     };
-                    // Block B(v_b, P_ac, d)
-                    let vb0 = interp_scalar(&vb_d, &srt, i0, j0, t0);
-                    let vb1 = interp_scalar(&vb_d, &srt, i1, j1, t1);
                     let b3 = match segment_integral_d3(vb0, vb1, u0_ac, u1_ac, d0_v, d1_v) {
                         Some(v) => v, None => continue,
                     };
 
-                    // Reference integrates −Q = −2 v_c·G_ab + ½ v_a·G_bc + ½ v_b·G_ac
+                    // Integrate each quadratic numerator v(q)P(q) separately.
+                    // Premultiplying v_i*P_i at cut vertices would replace the
+                    // quadratic numerator by a linear interpolant and drop
+                    // cross terms.
                     let q = -2.0 * b1 + 0.5 * b2 + 0.5 * b3;
                     acc[[im]] += q * seg_len / grad;
                 }
@@ -3130,10 +3233,12 @@ fn accum_intrinsic_cell_3d(
                             interp_scalar(&d_raw, &srt, edges[1].0, edges[1].1, edges[1].2),
                             interp_scalar(&d_raw, &srt, edges[2].0, edges[2].1, edges[2].2),
                         ];
-                        // Check d doesn't cross zero on cut triangle
+                        // Check d doesn't cross or approach zero on cut triangle.
                         let dmin = d_tri.iter().cloned().fold(f64::INFINITY, f64::min);
                         let dmax = d_tri.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                        if dmin * dmax <= 0.0 { continue; }
+                        if dmin <= INTRINSIC_D3_GAP_TOL && dmax >= -INTRINSIC_D3_GAP_TOL {
+                            continue;
+                        }
 
                         let q_tri = [
                             interp_coord_3d(&coords, &srt, edges[0].0, edges[0].1, edges[0].2),
@@ -3142,14 +3247,13 @@ fn accum_intrinsic_cell_3d(
                         ];
                         let area = triangle_area_3d(&q_tri);
 
-                        // B(v_c, P_ab)
+                        // Integrate each quadratic numerator v(q)P(q) separately.
+                        // Premultiplying v_i*P_i at triangle vertices would
+                        // replace the quadratic numerator by a linear
+                        // interpolant and drop alpha != beta cross terms.
                         let b1 = triangle_integral_d3(&u_tri, &pab_tri, &d_tri);
-                        // B(v_a, P_bc)
                         let b2 = triangle_integral_d3(&va_tri, &pbc_tri, &d_tri);
-                        // B(v_b, P_ac)
                         let b3 = triangle_integral_d3(&vb_tri, &pac_tri, &d_tri);
-
-                        // Reference integrates −Q = −2 v_c·G_ab + ½ v_a·G_bc + ½ v_b·G_ac
                         let q = -2.0 * b1 + 0.5 * b2 + 0.5 * b3;
                         acc[[im]] += 2.0 * area * q / grad;
                     }
@@ -3168,15 +3272,20 @@ fn interp_coord_3d(coords: &[[f64; 3]], srt: &[usize], i: usize, j: usize, t: f6
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
-    /// Intrinsic nonlinear Hall conductivity via tetrahedron integration.
+    /// Current-first intrinsic nonlinear Hall conductivity via tetrahedron
+    /// integration.
     ///
     /// ```text
+    /// chi_int[c,a,b](μ,T) = σ_int^{ab;c}(μ,T)
     /// σ^{ab;c}_{int}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) (−Q^{ab;c}_n(k)) dk
     /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
     /// G^{ij}_n = Re Σ_{m≠n} v^i_{nm} v^j_{mn} / (E_n−E_m)³
     /// ```
     /// The extra minus sign matches the convention in
     /// [`Nonlinear_Hall_conductivity_Intrinsic`] (overall −e³/ħ factor).
+    ///
+    /// Argument order is current-first: `(current c, field a, field b)`.
+    /// Internally this maps to the `sigma^{ab;c}` kernel.
     ///
     /// **2D**: line‑segment Fermi‑surface cut with analytic 1/d³ integral.
     /// **3D**: triangle Fermi‑surface cut with divided‑difference K³ weights.
@@ -3206,7 +3315,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .map(|ik| {
                 let kv = kvec.row(ik).to_owned();
                 self.compute_intrinsic_tetra_primitives(
-                    &kv, current_dir, dir_2, dir_3, gauge,
+                    &kv, dir_2, dir_3, current_dir, gauge,
                 )
             })
             .collect();
@@ -3273,7 +3382,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let raw = result_t0 / det;
 
-        if T > 0.0 && n_mu > 1 {
+        if T > 0.0 {
+            if n_mu <= 1 {
+                return Err(TbError::Other(
+                    "T>0 requires a uniform mu grid with n_mu>1: \
+                     a single mu point cannot be thermally convolved".into(),
+                ));
+            }
             let mu_slice = mu.as_slice().unwrap();
             if mu_slice.windows(2).any(|w| w[1] <= w[0]) {
                 return Err(TbError::Other(
@@ -3304,4 +3419,5 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             Ok(raw)
         }
     }
+
 }

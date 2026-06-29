@@ -577,6 +577,22 @@ While agents run, review code already modified. Check for non-exhaustive matches
 
 ## What's implemented
 
+## Nonlinear Hall index conventions
+
+- `Nonlinear_Hall_conductivity_Extrinsic` and
+  `Nonlinear_Hall_conductivity_Extrinsic_tetra` return the unsymmetrized
+  kernel `S_{ab;c} = ∫(-df/dE) v_c Omega_ab dk`.  For current-first
+  `chi_ext[a,b,c]`, use `Nonlinear_Hall_conductivity_Extrinsic_sym` or
+  `Nonlinear_Hall_conductivity_Extrinsic_tetra_sym`, which compute
+  `0.5 * (S_{ab;c} + S_{ac;b})`.
+- `Nonlinear_Hall_conductivity_Intrinsic` and
+  `Nonlinear_Hall_conductivity_Intrinsic_tetra` are current-first APIs:
+  arguments mean `(current, field_1, field_2)` and internally map to
+  `sigma_int^{field_1 field_2; current}`.
+- The charge intrinsic implementation uses
+  `G_code^{ij}=Re sum_m v^i_nm v^j_mn/(E_n-E_m)^3`.  Literature formulas
+  that define `G_lit=2 Re sum ...` differ by an overall factor of 2.
+
 ### `Hall_conductivity_tetra` (intrinsic AHC)
 - 2D: 3-point triangle quadrature (approximate for rational integrand)
 - 3D: Blochl sub-tet decomposition with analytic `compute_occ_omega`

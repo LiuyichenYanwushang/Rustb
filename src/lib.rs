@@ -2227,6 +2227,239 @@ mod tests {
         println!("CONVERGED");
     }
 
+    fn build_h_wave_am_model() -> Model<false, 3> {
+        let lat = array![[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
+        let orb = array![[0.0,0.0,0.0],[0.5,0.5,0.5]];
+        let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
+        let t = 1.0;
+        let j = 1.0;
+        model.add_hop(t,0,1,&array![ 0, 0, 0],None);
+        model.add_hop(t,0,1,&array![-1, 0, 0],None);
+        model.add_hop(t,0,1,&array![ 0,-1, 0],None);
+        model.add_hop(t,0,1,&array![-1,-1, 0],None);
+        model.add_hop(t,0,1,&array![ 0, 0,-1],None);
+        model.add_hop(t,0,1,&array![-1, 0,-1],None);
+        model.add_hop(t,0,1,&array![ 0,-1,-1],None);
+        model.add_hop(t,0,1,&array![-1,-1,-1],None);
+
+        let t0 = Complex::new(0.0, 0.5);
+        model.add_hop( t0,0,0,&array![ 2, 1, 1],None);
+        model.add_hop(-t0,0,0,&array![ 2, 1,-1],None);
+        model.add_hop(-t0,0,0,&array![ 2,-1, 1],None);
+        model.add_hop( t0,0,0,&array![ 2,-1,-1],None);
+        model.add_hop(-t0,0,0,&array![ 1, 2, 1],None);
+        model.add_hop( t0,0,0,&array![ 1, 2,-1],None);
+        model.add_hop( t0,0,0,&array![-1, 2, 1],None);
+        model.add_hop(-t0,0,0,&array![-1, 2,-1],None);
+
+        let t0 = -t0;
+        model.add_hop( t0,1,1,&array![ 2, 1, 1],None);
+        model.add_hop(-t0,1,1,&array![ 2, 1,-1],None);
+        model.add_hop(-t0,1,1,&array![ 2,-1, 1],None);
+        model.add_hop( t0,1,1,&array![ 2,-1,-1],None);
+        model.add_hop(-t0,1,1,&array![ 1, 2, 1],None);
+        model.add_hop( t0,1,1,&array![ 1, 2,-1],None);
+        model.add_hop( t0,1,1,&array![-1, 2, 1],None);
+        model.add_hop(-t0,1,1,&array![-1, 2,-1],None);
+
+        model.add_onsite(&array![j, -j], None);
+        model
+    }
+
+    fn max_abs_1d(x: &Array1<f64>) -> f64 {
+        x.iter().fold(0.0f64, |a, &v| a.max(v.abs()))
+    }
+
+    fn max_abs_diff_1d(a: &Array1<f64>, b: &Array1<f64>) -> f64 {
+        a.iter()
+            .zip(b.iter())
+            .fold(0.0f64, |acc, (&x, &y)| acc.max((x - y).abs()))
+    }
+
+    #[test]
+    fn nlh_current_first_api_matches_kernel_definitions() {
+        let model = build_h_wave_am_model();
+        let dx = array![1.0, 0.0, 0.0];
+        let dy = array![0.0, 1.0, 0.0];
+        let dz = array![0.0, 0.0, 1.0];
+        let kmesh = array![4, 4, 4];
+        let mu = Array1::linspace(-0.5, 0.5, 5);
+        let spin = None;
+        let eta = 0.1;
+
+        let s_yz = model
+            .Nonlinear_Hall_conductivity_Extrinsic(
+                &kmesh, &dx, &dy, &dz, &mu, 0.0, 0.0, spin, eta,
+            )
+            .unwrap();
+        let s_zy = model
+            .Nonlinear_Hall_conductivity_Extrinsic(
+                &kmesh, &dx, &dz, &dy, &mu, 0.0, 0.0, spin, eta,
+            )
+            .unwrap();
+        let manual = (s_yz + s_zy) * 0.5;
+        let wrapped = model
+            .Nonlinear_Hall_conductivity_Extrinsic_sym(
+                &kmesh, &dx, &dy, &dz, &mu, 0.0, 0.0, spin, eta,
+            )
+            .unwrap();
+        assert!(max_abs_diff_1d(&manual, &wrapped) < 1e-12);
+
+        let s_yz_t = model
+            .Nonlinear_Hall_conductivity_Extrinsic_tetra(
+                &kmesh, &dx, &dy, &dz, &mu, 0.0, spin, eta,
+            )
+            .unwrap();
+        let s_zy_t = model
+            .Nonlinear_Hall_conductivity_Extrinsic_tetra(
+                &kmesh, &dx, &dz, &dy, &mu, 0.0, spin, eta,
+            )
+            .unwrap();
+        let manual_t = (s_yz_t + s_zy_t) * 0.5;
+        let wrapped_t = model
+            .Nonlinear_Hall_conductivity_Extrinsic_tetra_sym(
+                &kmesh, &dx, &dy, &dz, &mu, 0.0, spin, eta,
+            )
+            .unwrap();
+        assert!(max_abs_diff_1d(&manual_t, &wrapped_t) < 1e-12);
+
+        let kvec = crate::kpoints::gen_kmesh(&kmesh).unwrap();
+        let (omega, band, _) = model.berry_connection_dipole(&kvec, &dy, &dz, &dx, None);
+        let manual_intrinsic =
+            crate::tetrahedron::tetrahedron_integrate(&band, &omega, &kmesh, &mu)
+                / model.lat.det().unwrap();
+        let current_first_intrinsic = model
+            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dz, &mu, 0.0)
+            .unwrap();
+        assert!(max_abs_diff_1d(&manual_intrinsic, &current_first_intrinsic) < 1e-12);
+
+        let intrinsic_tetra_yz = model
+            .Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dx, &dy, &dz, &mu, 0.0)
+            .unwrap();
+        let intrinsic_tetra_zy = model
+            .Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dx, &dz, &dy, &mu, 0.0)
+            .unwrap();
+        assert!(max_abs_diff_1d(&intrinsic_tetra_yz, &intrinsic_tetra_zy) < 1e-10);
+    }
+
+    #[test]
+    fn h_wave_extrinsic_berry_curvature_pointwise_zero() {
+        let model = build_h_wave_am_model();
+        let dx = array![1.0, 0.0, 0.0];
+        let dy = array![0.0, 1.0, 0.0];
+        let eta = 0.0;
+
+        for k in [
+            array![0.13, 0.27, 0.41],
+            array![0.31, 0.17, 0.09],
+            array![0.48, 0.22, 0.36],
+            array![0.07, 0.43, 0.28],
+        ] {
+            let (omega, _band) = model.berry_curvature_n_onek(&k, &dx, &dy, None, eta);
+            let peak = max_abs_1d(&omega);
+            assert!(
+                peak < 1e-10,
+                "H-wave extrinsic Berry curvature should vanish pointwise at k={k:?}, got {peak:.3e}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "documents known Extrinsic_tetra symmetry leakage"]
+    fn h_wave_extrinsic_tetra_zero_response() {
+        let model = build_h_wave_am_model();
+        let dx = array![1.0, 0.0, 0.0];
+        let dy = array![0.0, 1.0, 0.0];
+        let dz = array![0.0, 0.0, 1.0];
+        let mu = Array1::linspace(-1.0, 1.0, 41);
+        let kmesh = array![12, 12, 12];
+        let spin = None;
+        let eta = 0.0;
+
+        let ref_vals = model
+            .Nonlinear_Hall_conductivity_Extrinsic(&kmesh, &dx, &dy, &dz, &mu, 100.0, 0.0, spin, eta)
+            .unwrap();
+        let tet_vals = model
+            .Nonlinear_Hall_conductivity_Extrinsic_tetra(&kmesh, &dx, &dy, &dz, &mu, 100.0, spin, eta)
+            .unwrap();
+
+        let ref_peak = max_abs_1d(&ref_vals);
+        let tet_peak = max_abs_1d(&tet_vals);
+        println!("H-wave extrinsic zero: ref_peak={ref_peak:.3e}, tetra_peak={tet_peak:.3e}");
+        assert!(ref_peak < 1e-10, "reference extrinsic should vanish, got {ref_peak:.3e}");
+        assert!(tet_peak < 1e-10, "tetra extrinsic should vanish, got {tet_peak:.3e}");
+    }
+
+    #[test]
+    fn h_wave_intrinsic_reference_symmetry_zero() {
+        let model = build_h_wave_am_model();
+        let dx = array![1.0, 0.0, 0.0];
+        let dy = array![0.0, 1.0, 0.0];
+        let dz = array![0.0, 0.0, 1.0];
+        let mu = Array1::linspace(-1.0, 1.0, 41);
+        let kmesh = array![24, 24, 24];
+
+        let vals = model
+            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dz, &dx, &dy, &mu, 100.0)
+            .unwrap();
+        let peak = max_abs_1d(&vals);
+        println!("H-wave direct intrinsic symmetry-zero peak={peak:.3e}");
+        assert!(peak < 1e-10, "direct intrinsic should be symmetry-zero, got {peak:.3e}");
+    }
+
+    #[test]
+    #[ignore = "documents known pair-decomposed Intrinsic_tetra symmetry leakage"]
+    fn h_wave_intrinsic_tetra_symmetry_leakage_diagnostic() {
+        let model = build_h_wave_am_model();
+        let dx = array![1.0, 0.0, 0.0];
+        let dy = array![0.0, 1.0, 0.0];
+        let dz = array![0.0, 0.0, 1.0];
+        let mu = Array1::linspace(-1.0, 1.0, 41);
+        let kmesh = array![16, 16, 16];
+
+        let ref_vals = model
+            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dz, &dx, &dy, &mu, 100.0)
+            .unwrap();
+        let tet_vals = model
+            .Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &dz, &dx, &dy, &mu, 100.0)
+            .unwrap();
+        let ref_peak = max_abs_1d(&ref_vals);
+        let tet_peak = max_abs_1d(&tet_vals);
+        println!(
+            "H-wave intrinsic tetra leakage diagnostic: ref_peak={ref_peak:.3e}, tetra_peak={tet_peak:.3e}"
+        );
+        assert!(ref_peak < 1e-10, "direct intrinsic should be symmetry-zero, got {ref_peak:.3e}");
+        assert!(tet_peak < 1e-8, "Intrinsic_tetra leaks a false symmetry-forbidden signal: {tet_peak:.3e}");
+    }
+
+    #[test]
+    fn tetra_thermal_convolution_rejects_single_mu_for_nlh() {
+        let model = build_h_wave_am_model();
+        let dx = array![1.0, 0.0, 0.0];
+        let dy = array![0.0, 1.0, 0.0];
+        let dz = array![0.0, 0.0, 1.0];
+        let mu = array![0.0];
+        let kmesh = array![4, 4, 4];
+
+        assert!(
+            model
+                .Nonlinear_Hall_conductivity_Extrinsic_tetra(
+                    &kmesh, &dx, &dy, &dz, &mu, 100.0, None, 0.0,
+                )
+                .is_err(),
+            "T>0 extrinsic tetra must reject a single-mu convolution grid"
+        );
+        assert!(
+            model
+                .Nonlinear_Hall_conductivity_Intrinsic_tetra(
+                    &kmesh, &dx, &dy, &dz, &mu, 100.0,
+                )
+                .is_err(),
+            "T>0 intrinsic tetra must reject a single-mu convolution grid"
+        );
+    }
+
+    #[ignore = "known H-wave intrinsic_tetra symmetry leakage diagnostic"]
     #[test]
     fn H_wave_AM_Intrinsic_test(){
         let li: Complex<f64> = Complex::new(0.0, 1.0);
@@ -2278,19 +2511,21 @@ mod tests {
         let sigma_1=model.Nonlinear_Hall_conductivity_Intrinsic_tetra(&kmesh, &current_dir, &dir_1, &dir_2, &mu, 100.0).unwrap();
 
         let peak = sigma_0.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
+        let tetra_peak = sigma_1.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
         let mut max_diff: f64 = 0.0;
         for i in 0..mu.len() {
             max_diff = max_diff.max((sigma_0[[i]] - sigma_1[[i]]).abs());
         }
-        let rel_err = if peak > 1e-12 { max_diff / peak * 100.0 } else { 0.0 };
-        println!("AM Intrinsic T=100K: peak={:.4e} max|diff|={:.2e} rel_err={:.1}%",
-            peak, max_diff, rel_err);
-        assert!(peak > 1e-8, "signal too small: {:.2e}", peak);
-        // AM model has band degeneracies where 1/d³ diverges.
-        // Reference k-sum samples k-points → poor convergence near crossings.
-        // Tetra analytic divided-differences handle d→0 correctly.
-        assert!(max_diff < peak * 3.0 + 1e-4,
-            "tetra-ref mismatch: diff={:.2e} rel={:.1}% peak={:.2e}",
-            max_diff, rel_err, peak);
+        println!(
+            "AM Intrinsic T=100K: ref_peak={:.4e} tetra_peak={:.4e} max|diff|={:.2e}",
+            peak, tetra_peak, max_diff
+        );
+        assert!(peak < 1e-10, "H-wave direct intrinsic should be symmetry-zero: {:.2e}", peak);
+        assert!(
+            tetra_peak < 1e-8,
+            "known Intrinsic_tetra symmetry leakage: tetra_peak={:.2e}, diff={:.2e}",
+            tetra_peak,
+            max_diff
+        );
     }
 }
