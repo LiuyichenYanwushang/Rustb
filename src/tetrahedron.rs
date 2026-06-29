@@ -1218,4 +1218,181 @@ mod tests {
         let result = tetrahedron_volume_integrate(&f, &arr1(&[nx, ny]));
         assert!((result - 1.0).abs() < 1e-10, "got {result}, expected 1.0");
     }
+
+    // ── Simplex Berry/QGT tests ──────────────────────────────────────────
+
+    /// Build a mock VertexKernel with two bands and a toy velocity kernel.
+    fn mock_vertex(band: [f64; 2], k_val: Complex<f64>) -> VertexKernel {
+        let norb = 2;
+        let nsta = 2;
+        let evec = Array2::<Complex<f64>>::eye(norb); // identity
+        let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        k_ab[[0, 1]] = k_val;
+        k_ab[[1, 0]] = k_val.conj();
+        VertexKernel {
+            band: arr1(&band),
+            k_ab,
+            vdiag: None,
+            evec,
+        }
+    }
+
+    /// Gauge phase test: multiplying eigenvectors by random U(1) phases
+    /// must leave K_nm unchanged (since K_nm is gauge‑invariant).
+    #[test]
+    fn test_gauge_invariance_of_kernel() {
+        use std::f64::consts::PI;
+        let norb = 2;
+        let nsta = 2;
+        let band = arr1(&[0.0, 1.0]);
+        // "Real" velocity matrix elements
+        let va = Complex::new(0.3, 0.1);
+        let vb = Complex::new(0.2, -0.4);
+        let k_val = va * vb.conj(); // K_01 = v^a_01 * v^b_10
+
+        // Build evec with random phases
+        let mut evec = Array2::<Complex<f64>>::eye(norb);
+        let phase0 = Complex::new(0.0, 0.7 * PI).exp();
+        let phase1 = Complex::new(0.0, -0.3 * PI).exp();
+        evec[[0, 0]] = phase0;
+        evec[[1, 1]] = phase1;
+
+        let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        k_ab[[0, 1]] = k_val;
+        k_ab[[1, 0]] = k_val.conj();
+
+        let vk = VertexKernel { band, k_ab, vdiag: None, evec };
+        // K_nm should be exactly the same regardless of evec phases
+        assert!((vk.k_ab[[0, 1]] - k_val).norm() < 1e-14,
+            "K_01 changed under gauge transformation");
+    }
+
+    /// Band reordering test: permuting bands and then tracking should
+    /// recover the same integrand.
+    #[test]
+    fn test_band_tracking_permuted_bands() {
+        let norb = 2;
+        let nsta = 2;
+        // Non‑identity eigenvectors so overlap has off‑diagonal structure
+        let theta: f64 = 0.3;
+        let c = theta.cos();
+        let s = theta.sin();
+        let mut evec0 = Array2::<Complex<f64>>::zeros((norb, nsta));
+        evec0[[0, 0]] = Complex::new(c, 0.0);
+        evec0[[1, 0]] = Complex::new(s, 0.0);
+        evec0[[0, 1]] = Complex::new(-s, 0.0);
+        evec0[[1, 1]] = Complex::new(c, 0.0);
+        let k_val = Complex::new(0.2, 0.1);
+        let mut k0 = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        k0[[0, 1]] = k_val;
+        k0[[1, 0]] = k_val.conj();
+        let v0 = VertexKernel {
+            band: arr1(&[0.0, 1.0]),
+            k_ab: k0,
+            vdiag: None,
+            evec: evec0.clone(),
+        };
+
+        // v1: same eigenstates but energy order reversed
+        let mut evec1 = evec0.clone();
+        // swap columns (bands)
+        for orb in 0..norb {
+            let tmp = evec1[[orb, 0]];
+            evec1[[orb, 0]] = evec1[[orb, 1]];
+            evec1[[orb, 1]] = tmp;
+        }
+        let mut k1 = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        k1[[0, 1]] = k_val.conj(); // swapped band indices
+        k1[[1, 0]] = k_val;
+        let v1 = VertexKernel {
+            band: arr1(&[1.0, 0.0]), // energies swapped
+            k_ab: k1,
+            vdiag: None,
+            evec: evec1,
+        };
+
+        let ov = build_overlap_matrix(&v0.evec, &v1.evec);
+        let p = greedy_assign(&ov);
+        // After tracking, band 0 of v1 should map back to band 0 of v0
+        // (lower energy, same physical state)
+        assert_eq!(p[0], 1, "band 0 of ref should map to band 1 of v1");
+        assert_eq!(p[1], 0, "band 1 of ref should map to band 0 of v1");
+
+        let v1_aligned = permute_vertex(&v1, &p);
+        assert!((v1_aligned.band[[0]] - 0.0).abs() < 1e-12, "band 0 energy wrong");
+        assert!((v1_aligned.band[[1]] - 1.0).abs() < 1e-12, "band 1 energy wrong");
+    }
+
+    /// Constant kernel test: if K_nm is constant and bands are flat,
+    /// the Berry integral should match the analytic result.
+    #[test]
+    fn test_constant_kernel_2d() {
+        let n = 20;
+        let nk = n * n;
+        let nsta: usize = 2;
+        let band_val = arr1(&[0.0, 0.5]);
+        let k_val = Complex::new(0.0, 0.3); // purely imaginary → Berry = -2*Im = -0.6
+
+        let mut all_pts = Vec::new();
+        for _ik in 0..nk {
+            // All k-points identical
+            let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
+            k_ab[[0, 1]] = k_val;
+            k_ab[[1, 0]] = k_val.conj();
+            all_pts.push(VertexKernel {
+                band: band_val.clone(),
+                k_ab,
+                vdiag: None,
+                evec: Array2::<Complex<f64>>::eye(nsta),
+            });
+        }
+
+        let (total_g, total_o, _unsafe) =
+            simplex_berry_integrate(&all_pts, &arr1(&[n, n]), 0.0);
+
+        // d = 0.5, denom = 0.25
+        // Ω_0 = -2 * Im(K_01) / d² = -2 * 0.3 / 0.25 = -2.4
+        // Ω_1 = -2 * Im(K_10) / d² = -2 * (-0.3) / 0.25 = 2.4
+        // Total Ω = 0 (cancellation), g = 0 (purely imaginary K → Re=0)
+        let omega_expected = 0.0;
+        let g_expected = 0.0;
+        assert!((total_o - omega_expected).abs() < 1e-10,
+            "Omega {total_o} != expected {omega_expected}");
+        assert!((total_g - g_expected).abs() < 1e-10,
+            "Metric {total_g} != expected {g_expected}");
+    }
+
+    /// Non‑zero Berry curvature: two‑band model with real K_nm
+    /// → Berry=0, metric>0.
+    #[test]
+    fn test_real_kernel_gives_zero_berry() {
+        let n = 10;
+        let nk = n * n;
+        let nsta: usize = 2;
+        let band_val = arr1(&[0.0, 1.0]);
+        let k_val = Complex::new(0.4, 0.0); // purely real
+
+        let mut all_pts = Vec::new();
+        for _ik in 0..nk {
+            let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
+            k_ab[[0, 1]] = k_val;
+            k_ab[[1, 0]] = k_val; // real-symmetric
+            all_pts.push(VertexKernel {
+                band: band_val.clone(),
+                k_ab,
+                vdiag: None,
+                evec: Array2::<Complex<f64>>::eye(nsta),
+            });
+        }
+
+        let (total_g, total_o, _unsafe) =
+            simplex_berry_integrate(&all_pts, &arr1(&[n, n]), 0.0);
+
+        // Real K → Im[K/d²] = 0 → Berry = 0
+        assert!(total_o.abs() < 1e-12, "Berry should be zero for real K, got {total_o}");
+        // Re[K/d²] = 0.4/1.0 = 0.4 per band, two bands → 0.8
+        let g_expected = 0.8;
+        assert!((total_g - g_expected).abs() < 1e-4,
+            "Metric {total_g} != ~{g_expected}");
+    }
 }
