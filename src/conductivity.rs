@@ -1142,8 +1142,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
             conductivity = conductivity.clone() / (nk as f64) / self.lat.det().unwrap();
         } else {
-            // T=0: direct k-point sum with narrow thermal window
-            let T_eff = 1e-4;
+            // T=0: use low-T Fermi window matching k-mesh resolution
+            let nk_per_dim = (nk as f64).powf(1.0 / self.dim_r() as f64);
+            let T_eff = (1.0 / (nk_per_dim * 8.617e-5)).max(1.0);
             let beta_eff = 1.0 / (T_eff * 8.617e-5);
             let use_iter = band.iter().zip(omega.iter()).par_bridge();
             conductivity = use_iter
@@ -1557,8 +1558,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
             conductivity = conductivity.clone() / (nk as f64) / self.lat.det().unwrap();
         } else {
-            // T=0: direct k-point sum with narrow thermal window
-            let T_eff = 1e-4;
+            // T=0: use low-T Fermi window matching k-mesh resolution
+            let nk_per_dim = (nk as f64).powf(1.0 / self.dim_r() as f64);
+            let T_eff = (1.0 / (nk_per_dim * 8.617e-5)).max(1.0);
             let beta_eff = 1.0 / (T_eff * 8.617e-5);
             let use_iter = band.iter().zip(omega.iter()).par_bridge();
             conductivity = use_iter

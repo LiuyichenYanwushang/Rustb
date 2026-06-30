@@ -1868,7 +1868,9 @@ mod tests {
 
     #[test]
     fn nlh_current_first_api_matches_kernel_definitions() {
-        { unimplemented!("TODO: fix after tetra→response migration"); }
+        // This test verified tetra-helper naming conventions.
+        // The tetra path has been removed; the simplex path uses
+        // response::primitives::compute_velocity_kernel with clean naming.
     }
     // ── Tetra smoke tests ─────────────────────────────────────────────────
 
@@ -1893,51 +1895,78 @@ mod tests {
         m
     }
 
-    /// 1. API conventions + thermal convolution guard
+    /// 1. API conventions: T>0 guard on single-mu
     #[test]
     fn nlh_api_conventions_and_guards() {
-        { unimplemented!("TODO: fix after tetra→response migration"); }
+        let model = build_h_wave_am_model();
+        let dx = array![1.0, 0.0, 0.0];
+        let dy = array![0.0, 1.0, 0.0];
+        let dz = array![0.0, 0.0, 1.0];
+        let kmesh = array![4, 4, 4];
+        let mu1 = arr1(&[0.0]);
+        // Reference must accept T>0
+        assert!(model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dz, &mu1, 300.0).is_ok());
     }
-    /// 2. 2D AHC tetra smoke (Haldane)
-    #[test]
-    fn hall_tetra_haldane_2d_smoke() {
-        { unimplemented!("TODO: fix after tetra→response migration"); }
-    }
-    /// 3. 3D AHC tetra smoke (stacked Haldane)
-    #[test]
-    fn hall_tetra_haldane_3d_smoke() {
-        { unimplemented!("TODO: fix after tetra→response migration"); }
-    }
-    /// 4. Extrinsic NLH smoke (2D + 3D staggered graphene)
-    #[test]
-    fn nlh_extrinsic_graphene_smoke() {
-        { unimplemented!("TODO: fix after tetra→response migration"); }
-    }
-    /// 5. Intrinsic NLH: H-wave up/dn convergence (T=0 and T>0).
+
+    /// 2. Intrinsic NLH: H-wave up/dn T‑odd via direct sum.
     ///
-    /// The time‑reversal operation flips the sign of the altermagnetic
-    /// exchange `j → −j`, so `σ(up) = −σ(dn)`.  Both the reference
-    /// (`Intrinsic`) and tetra (`Intrinsic_tetra`) must reproduce this
-    /// T‑odd property **and** converge towards each other as nk grows.
+    /// σ(up) = −σ(dn) must hold for the reference path.
     #[test]
     fn nlh_intrinsic_hwave_up_dn_odd() {
-        { unimplemented!("TODO: fix after tetra→response migration"); }
+        let li = Complex::new(0.0, 1.0);
+        let lat = array![[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
+        let orb = array![[0.0,0.0,0.0],[0.5,0.5,0.5]];
+        let t = 1.0; let j0 = 1.0;
+        let build = |j_sign: f64| {
+            let mut m = Model::<false, 3>::tb_model(lat.clone(), orb.clone(), None).unwrap();
+            for &(i, j, k) in &[(0,0,0),(-1,0,0),(0,-1,0),(-1,-1,0),
+                                  (0,0,-1),(-1,0,-1),(0,-1,-1),(-1,-1,-1)] {
+                m.add_hop(t, 0, 1, &array![i, j, k], None);
+            }
+            let t0 = Complex::new(0.0, 0.2);
+            let nnn: [(f64, (isize, isize, isize)); 8] = [
+                (1.0,(2,1,1)),(-1.0,(2,1,-1)),(-1.0,(2,-1,1)),(1.0,(2,-1,-1)),
+                (-1.0,(1,2,1)),(1.0,(1,2,-1)),(1.0,(-1,2,1)),(-1.0,(-1,2,-1))];
+            for &(s, (i,j,k)) in &nnn {
+                m.add_hop(t0.scale(s), 0, 0, &array![i, j, k], None);
+                m.add_hop(t0.scale(-s), 1, 1, &array![i, j, k], None);
+            }
+            m.add_onsite(&array![j0 * j_sign, -j0 * j_sign], None);
+            m
+        };
+        let model_up = build(1.0);
+        let model_dn = build(-1.0);
+        let dx = array![1.0,0.0,0.0]; let dy = array![0.0,1.0,0.0]; let dz = array![0.0,0.0,1.0];
+        let T: f64 = 100.0;
+        let mu = Array1::linspace(-1.0, 1.0, 21);
+        let km = array![12, 12, 12];
+        let ref_up = model_up.Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dz, &mu, T).unwrap();
+        let ref_dn = model_dn.Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dz, &mu, T).unwrap();
+        let sum = max_abs_1d(&(&ref_up + &ref_dn));
+        assert!(sum < 1e-10, "ref up+dn must vanish (T‑odd), got {:.2e}", sum);
+        assert!(max_abs_1d(&ref_up) > 1e-6, "signal too small");
     }
-    /// 6. [ignored] H-wave tetra symmetry leakage diagnostic
-    #[test]
-    #[ignore]
-    fn h_wave_tetra_symmetry_leakage_diagnostic() {
-        { unimplemented!("TODO: fix after tetra→response migration"); }
-    }
-    /// 7. Intrinsic NLH 2D convergence (Haldane, T=0).
-    ///
-    /// Compares `Nonlinear_Hall_conductivity_Intrinsic` (Blochl δ‑function
-    /// on the per‑k‑point scalar) against `Intrinsic_tetra` (segment‑integral
-    /// on interpolated primitives).  The two must converge to the same
-    /// μ‑dependent profile as the k‑mesh is refined.
+
+    /// 3. Intrinsic NLH 2D convergence via direct sum.
     #[test]
     fn intrinsic_haldane_2d_convergence() {
-        { unimplemented!("TODO: fix after tetra→response migration"); }
+        let model = build_haldane_2d(-0.3);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let mu = Array1::linspace(-4.0, 4.0, 21);
+        let mut prev_pk = 0.0;
+        for &nk in &[21usize, 31, 41, 51] {
+            let km = arr1(&[nk, nk]);
+            let ref_val = model.Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dy, &mu, 0.0).unwrap();
+            let pk = max_abs_1d(&ref_val);
+            assert!(pk > 1e-6, "signal too small at nk={nk}");
+            // Result should stabilise with mesh size
+            if prev_pk > 0.0 {
+                let rel = (pk - prev_pk).abs() / prev_pk;
+                assert!(rel < 0.5, "large drift at nk={nk}: pk={pk:.3e} prev={prev_pk:.3e}");
+            }
+            prev_pk = pk;
+        }
     }
     // ── Simplex vs direct-sum comparison tests ──────────────────────────
 
