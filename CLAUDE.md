@@ -302,6 +302,77 @@ let sigma = model.optical_conductivity_simplex(
 )?;
 ```
 
+### Public API reference
+
+**Model‑level (recommended for most users)**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `model.berry_curvature_simplex(k_mesh, dir_a, dir_b, eta)` | `(g, Ω, unsafe)` | Berry curvature + quantum metric in Cartesian volume |
+| `model.berry_curvature_dipole_simplex(k_mesh, dir_a, dir_b, dir_c, mu, T, eta)` | `(D(μ), unsafe)` | Berry dipole D^{ab;c}(μ,T), T>0 only |
+| `model.optical_conductivity_simplex(k_mesh, dir_a, dir_b, ω, η, μ, T)` | `σ(ω)` | Complex optical conductivity |
+| `model.compute_velocity_kernel(k_vec, dir_a, dir_b, dir_c?, gauge, spin)` | `VertexKernel` | Per‑k‑point band‑basis velocity primitives |
+
+**Low‑level (for custom integration loops)**
+
+| Function | Module | Description |
+|----------|--------|-------------|
+| `linear::integrate(all_pts, k_mesh, eta)` | `response::linear` | BZ integral of Berry + metric (fractional coords) |
+| `nonlinear::integrate_dipole(all_pts, k_mesh, mu, T, eta)` | `response::nonlinear` | BZ dipole integral per μ |
+| `optical::integrate(all_pts, k_mesh, ω, η, μ, T)` | `response::optical` | Optical conductivity (fractional coords) |
+| `build_triangles_2d(ix, iy, nx, ny, inv_nx, inv_ny, all_pts)` | `response` | Build tracked 2D triangles for one cell |
+| `build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, ...)` | `response` | Build tracked 3D tetrahedra for one cell |
+| `eval_berry_kernel(band_q, k_ab_q, eta, nsta)` | `response` | Evaluate `(g_n, Ω_n)` at one quadrature point |
+| `eval_optical_kernel(band_q, k_ab_q, ω, η, μ, β, nsta)` | `response` | Evaluate `σ_nm` at one quadrature point |
+| `eval_q_tensor(band_q, k_ab_q, k_bc_q, k_ac_q, vdiag_*, eta, nsta)` | `response` | Intrinsic NLH Q‑tensor at one quadrature point |
+
+**Data types**
+
+| Type | Fields |
+|------|--------|
+| `VertexKernel` | `band: Array1<f64>`, `k_ab: Array2<Complex<f64>>`, `vdiag: Option<Array1<f64>>`, `evec: Array2<Complex<f64>>` |
+| `TrackedSimplex` | `vertices: Vec<VertexKernel>`, `volume: f64`, `coords: Array2<f64>`, `diag: SimplexDiagnostics` |
+| `SimplexDiagnostics` | `min_gap: f64`, `min_assignment_overlap: f64`, `tracking_conflict: bool` |
+
+### API changes (v0.8 → post‑tetra)
+
+**Deleted** — no longer exist:
+
+| Old API | Reason |
+|---------|--------|
+| `tetrahedron_integrate()` | Blochl δ‑function on final scalar — replaced by simplex |
+| `tetrahedron_volume_integrate()` | Linear vertex average — replaced by simplex |
+| `Hall_conductivity_tetra()` | AHC via Blochl — removed |
+| `Nonlinear_Hall_conductivity_Extrinsic_tetra()` | Extrinsic NLH via Fermi‑surface cuts — removed |
+| `Nonlinear_Hall_conductivity_Extrinsic_tetra_sym()` | Symmetrised wrapper — removed |
+| `Nonlinear_Hall_conductivity_Intrinsic_tetra()` | Intrinsic NLH via segment/triangle integrals — removed |
+| `compute_tetra_primitives()` | Renamed → `compute_velocity_kernel` |
+| `TetraKPoint`, `IntrinsicTetraPoint` | Replaced by `VertexKernel` |
+| `src/tetrahedron.rs` | Entire file deleted |
+
+**Retained** — unchanged:
+
+| API | Description |
+|-----|-------------|
+| `Hall_conductivity()` / `Hall_conductivity_mu()` / `Hall_conductivity_adapted()` | AHC via direct k‑mesh sum |
+| `Nonlinear_Hall_conductivity_Extrinsic()` / `_sym()` | Extrinsic NLH via direct k‑mesh sum |
+| `Nonlinear_Hall_conductivity_Intrinsic()` | Intrinsic NLH via direct k‑mesh sum |
+| `berry_curvature_n_onek()` / `berry_curvature_onek()` / `berry_curvature()` | Per‑k‑point / k‑path Berry curvature |
+| `berry_curvature_dipole_n_onek()` / `berry_curvature_dipole_n()` | Per‑k‑point Berry dipole |
+| `berry_connection_dipole_onek()` / `berry_connection_dipole()` | Per‑k‑point Berry connection dipole |
+| `optical_geometry_n_onek()` | Per‑k‑point optical geometry |
+| `quantum_geometry_n_onek()` / `quantum_geometry_n()` / `quantum_geometry()` | Per‑k‑point QGT |
+
+**New** — added in this refactoring:
+
+| API | Description |
+|-----|-------------|
+| `berry_curvature_simplex()` | Berry + metric via simplex quadrature (Cartesian) |
+| `berry_curvature_dipole_simplex()` | Berry dipole via simplex quadrature (T>0, Cartesian) |
+| `optical_conductivity_simplex()` | Optical σ(ω) via simplex quadrature (Cartesian) |
+| `compute_velocity_kernel()` | Per‑k‑point band‑basis velocity primitives |
+| `response::*` module | Public low‑level simplex integration primitives |
+
 ### Known limitations
 
 - **Dipole requires T>0** — no δ‑function Fermi‑surface integral yet
