@@ -4,13 +4,13 @@
 //!
 //! The quantum geometric tensor is
 //!
-//! $$G^{ab}_n(\mathbf{k}) = \sum_{m\neq n}
+//! $$G^{ab}_n(\mathbf{k}) = \sum_{m=\not n}
 //!   \frac{\langle\partial_a u_n|u_m\rangle\langle u_m|\partial_b u_n\rangle}
 //!        {(E_n-E_m)^2} = g^{ab}_n - \frac{i}{2}\Omega^{ab}_n$$
 //!
 //! In terms of velocity matrix elements $v^\alpha_{nm} = \langle u_n|\partial_\alpha H|u_m\rangle$:
 //!
-//! $$G^{ab}_n(\mathbf{k}) = \sum_{m\neq n} \frac{v^a_{nm} v^b_{mn}}{(E_n-E_m)^2 + \eta^2}$$
+//! $$G^{ab}_n(\mathbf{k}) = \sum_{m=\not n} \frac{v^a_{nm} v^b_{mn}}{(E_n-E_m)^2 + \eta^2}$$
 //!
 //! where $\eta$ is a small regularisation width.  The real and imaginary
 //! parts give the quantum metric $g^{ab}_n$ and Berry curvature $\Omega^{ab}_n$:

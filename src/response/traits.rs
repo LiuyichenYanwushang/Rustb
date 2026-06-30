@@ -58,7 +58,7 @@ pub trait BerryCurvature: Velocity {
     /// The formula computed is:
     /// $$ \sum_n f_n\Omega_{n,\alpha\beta}^\gamma(\mathbf k) =
     ///    \sum_n \f{1}{e^{(\varepsilon_{n\mathbf k}-\mu)/(k_B T)}+1}
-    ///    \sum_{m\neq n} \f{J_{\alpha,nm}^\gamma v_{\beta,mn}}
+    ///    \sum_{m=\not n} \f{J_{\alpha,nm}^\gamma v_{\beta,mn}}
     ///    {(\varepsilon_{n\mathbf k}-\varepsilon_{m\mathbf k})^2 + \eta^2} $$
     /// where $J_\alpha^\gamma = \{s_\gamma, v_\alpha\}$ is the anti-commutator of the
     /// spin and velocity operators.

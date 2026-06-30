@@ -60,7 +60,7 @@
 //! |--------|----------|---------|
 //! | [`linear`]   | Berry curvature $\Omega^{ab}$, quantum metric $g^{ab}$ | $\sum_n \int \Omega_n^{ab}d\mathbf{k}$ |
 //! | [`nonlinear`]| Berry dipole $D^{ab;c}$, intrinsic/extrinsic NLH | $\sum_n \int (-\partial f/\partial E_n) v^c_n \Omega_n^{ab}d\mathbf{k}$ |
-//! | [`optical`]  | Optical conductivity $\sigma^{ab}(\omega)$ | $\sum_{n\neq m} \int \frac{(f_n-f_m)K^{ab}_{nm}}{(E_n-E_m)^2-(\omega+i\eta)^2}d\mathbf{k}$ |
+//! | [`optical`]  | Optical conductivity $\sigma^{ab}(\omega)$ | $\sum_{n=\not m} \int \frac{(f_n-f_m)K^{ab}_{nm}}{(E_n-E_m)^2-(\omega+i\eta)^2}d\mathbf{k}$ |
 //! | [`traits`]   | `BerryCurvature` trait (per‑k‑point Berry curvature) | |
 //!
 //! ## Quick start
