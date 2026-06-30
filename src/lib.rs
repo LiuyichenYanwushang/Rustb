@@ -17,8 +17,6 @@
 //! |   [`Gauge`], [`Dimension`], [`SpinDirection`] |
 //! | [`atom_struct`] | [`Atom`] and [`OrbProj`] types for describing atomic sites and orbital
 //! |   projections |
-//! | [`SKmodel`] | Slater-Koster parameterized models with two-center integrals and f-orbital
-//! |   support; [`SlaterKosterModel`], [`SkAtom`], [`SkParams`] |
 //!
 //! ### Model construction and manipulation
 //!
@@ -199,7 +197,6 @@
 //! # }
 //! ```
 
-pub mod SKmodel;
 pub mod atom_struct;
 pub mod conductivity;
 pub mod cut;
@@ -229,7 +226,6 @@ pub mod unfold;
 pub mod velocity;
 pub mod wannier90;
 pub mod response;
-pub use crate::SKmodel::{SkAtom, SkParams, SlaterKosterModel, ToTbModel};
 pub use crate::atom_struct::{Atom, OrbProj};
 pub use crate::conductivity::*;
 pub use crate::cut::*;

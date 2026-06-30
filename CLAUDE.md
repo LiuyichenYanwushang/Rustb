@@ -47,7 +47,7 @@ let m = Model::<false, 3, HasRMatrix>::from_hr(path, seed, 0.0)?;
 
 1. **No runtime fields** — SPIN, DIM, RMATRIX all compile-time. No dimension/spin/rmatrix flags in Model.
 2. **`surf_Green` stores `spin: bool` and `dim_r: usize`** — const generics converted to runtime fields.
-3. **`SlaterKosterModel<const SPIN, const DIM>`** — parallel const generics.
+3. **Removed**: `SlaterKosterModel` — deleted as unused.
 4. **`RMatrixData` trait** — `HasRMatrix` (Deref to Array4) and `NoRMatrix` (ZST). `NoRMatrix` model has literally no rmatrix field in memory.
 5. **Safe `zaxpy`** — in `ndarray_lapack.rs`, wraps `blas::zaxpy` FFI; all call sites are safe Rust.
 6. **`update_hamiltonian!` / `add_hamiltonian!` macros** — take `$spin` const generic; branches eliminated at compile time.
@@ -157,7 +157,6 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `cut.rs` | `CutModel` trait — slab (`cut_piece`), dot/edge (`cut_dot`) from bulk models |
 | `ndarray_lapack.rs` | LAPACK bindings + safe `zaxpy()` BLAS wrapper |
 | `lib.rs` | Crate root, re-exports, integration tests |
-| `SKmodel.rs` | Slater-Koster parameterized models (`SlaterKosterModel`, `SkAtom`, `SkParams`) |
 | `fermi_surface.rs` | `FermiSurface`/`FermiSurfacePlane` traits (marching squares/tetrahedra → gnuplot); BXSF export (`BxsfExport` trait → XCrySDen/FermiSurfer); `write_spin_frmsf` free fn (spin‑split FRMSF for altermagnets) |
 | `optical_conductivity.rs` | Frequency-dependent optical conductivity & optical Hall |
 | `orbital_angular.rs` | Orbital angular momentum operator |
