@@ -8,24 +8,32 @@ use ndarray::*;
 use num_complex::Complex;
 
 use super::quadrature::*;
-use super::types::{TrackedSimplex, SIMPLEX_GAP_TOL};
+use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex};
 
 // ── Fermi functions ─────────────────────────────────────────────────────
 
 #[inline]
 pub fn fermi(e: f64, mu: f64, beta: f64) -> f64 {
-    if beta == 0.0 { 0.5 }
-    else {
+    if beta == 0.0 {
+        0.5
+    } else {
         let x = beta * (e - mu);
-        if x > 50.0 { 0.0 } else if x < -50.0 { 1.0 } else { 1.0 / (1.0 + x.exp()) }
+        if x > 50.0 {
+            0.0
+        } else if x < -50.0 {
+            1.0
+        } else {
+            1.0 / (1.0 + x.exp())
+        }
     }
 }
 
 #[inline]
 pub fn fermi_deriv(e: f64, mu: f64, beta: f64) -> f64 {
     let x = beta * (e - mu);
-    if x > 50.0 || x < -50.0 { 0.0 }
-    else {
+    if x > 50.0 || x < -50.0 {
+        0.0
+    } else {
         let ex = x.exp();
         beta * ex / ((1.0 + ex) * (1.0 + ex))
     }
@@ -49,10 +57,14 @@ pub fn eval_berry_kernel(
     for n in 0..nsta {
         let mut g_sum = Complex::new(0.0, 0.0);
         for m in 0..nsta {
-            if m == n { continue; }
+            if m == n {
+                continue;
+            }
             let de = band_q[n] - band_q[m];
             let denom = de * de + eta2;
-            if denom < 1e-30 { continue; }
+            if denom < 1e-30 {
+                continue;
+            }
             g_sum += k_ab_q[[n, m]] / denom;
         }
         metric[n] = g_sum.re;
@@ -83,13 +95,19 @@ pub fn eval_optical_kernel(
     for n in 0..nsta {
         let fn_val = fermi(band_q[n], mu, beta);
         for m in 0..nsta {
-            if m == n { continue; }
+            if m == n {
+                continue;
+            }
             let fm_val = fermi(band_q[m], mu, beta);
             let df = fn_val - fm_val;
-            if df.abs() < 1e-30 { continue; }
+            if df.abs() < 1e-30 {
+                continue;
+            }
             let d = band_q[n] - band_q[m];
             let denom = d * d - denom_shift;
-            if denom.norm_sqr() < 1e-30 { continue; }
+            if denom.norm_sqr() < 1e-30 {
+                continue;
+            }
             total += df * k_ab_q[[n, m]] / denom;
         }
     }
@@ -124,10 +142,14 @@ pub fn eval_q_tensor(
     let mut g_ac = Array1::<f64>::zeros(nsta);
     for n in 0..nsta {
         for m in 0..nsta {
-            if m == n { continue; }
+            if m == n {
+                continue;
+            }
             let de = band_q[n] - band_q[m];
             let denom = de * de + eta2;
-            if denom < 1e-30 { continue; }
+            if denom < 1e-30 {
+                continue;
+            }
             g_ab[n] += (k_ab_q[[n, m]] / denom).re;
             g_bc[n] += (k_bc_q[[n, m]] / denom).re;
             g_ac[n] += (k_ac_q[[n, m]] / denom).re;
@@ -135,8 +157,7 @@ pub fn eval_q_tensor(
     }
     let mut q = Array1::<f64>::zeros(nsta);
     for n in 0..nsta {
-        q[n] = 2.0 * vdiag_c[n] * g_ab[n]
-            - 0.5 * (vdiag_a[n] * g_bc[n] + vdiag_b[n] * g_ac[n]);
+        q[n] = 2.0 * vdiag_c[n] * g_ab[n] - 0.5 * (vdiag_a[n] * g_bc[n] + vdiag_b[n] * g_ac[n]);
     }
     q
 }
@@ -179,7 +200,10 @@ pub fn quadrature_berry_simplex(sim: &TrackedSimplex, eta: f64) -> (f64, f64) {
 
 /// Quadrature over one simplex for the Berry dipole.
 pub fn quadrature_dipole_simplex(
-    sim: &TrackedSimplex, eta: f64, mu: &Array1<f64>, beta: f64,
+    sim: &TrackedSimplex,
+    eta: f64,
+    mu: &Array1<f64>,
+    beta: f64,
 ) -> Array1<f64> {
     let d = sim.vertices.len() - 1;
     let nsta = sim.vertices[0].band.len();
@@ -188,7 +212,13 @@ pub fn quadrature_dipole_simplex(
     let bands: Vec<Vec<f64>> = (0..nv).map(|v| sim.vertices[v].band.to_vec()).collect();
     let kmats: Vec<Array2<Complex<f64>>> = (0..nv).map(|v| sim.vertices[v].k_ab.clone()).collect();
     let vdiags: Vec<Vec<f64>> = (0..nv)
-        .map(|v| sim.vertices[v].vdiag.as_ref().map(|vd| vd.to_vec()).unwrap_or_else(|| vec![0.0; nsta]))
+        .map(|v| {
+            sim.vertices[v]
+                .vdiag
+                .as_ref()
+                .map(|vd| vd.to_vec())
+                .unwrap_or_else(|| vec![0.0; nsta])
+        })
         .collect();
     let mut acc = Array1::<f64>::zeros(n_mu);
     if d == 2 {
@@ -227,7 +257,11 @@ pub fn quadrature_dipole_simplex(
 
 /// Quadrature over one simplex for the optical conductivity.
 pub fn quadrature_optical_simplex(
-    sim: &TrackedSimplex, omega: f64, eta: f64, mu: f64, beta: f64,
+    sim: &TrackedSimplex,
+    omega: f64,
+    eta: f64,
+    mu: f64,
+    beta: f64,
 ) -> Complex<f64> {
     let d = sim.vertices.len() - 1;
     let nsta = sim.vertices[0].band.len();

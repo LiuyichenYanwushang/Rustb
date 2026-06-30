@@ -487,9 +487,27 @@ impl<const SPIN: bool, R: RMatrixData> BxsfExport for Model<SPIN, 3, R> {
         writeln!(f, "    {nsta}")?;
         writeln!(f, "    {nx} {ny} {nz}")?;
         writeln!(f, "    0.0 0.0 0.0")?; // origin = Γ point
-        writeln!(f, "    {:.10} {:.10} {:.10}", b[[0, 0]], b[[0, 1]], b[[0, 2]])?;
-        writeln!(f, "    {:.10} {:.10} {:.10}", b[[1, 0]], b[[1, 1]], b[[1, 2]])?;
-        writeln!(f, "    {:.10} {:.10} {:.10}", b[[2, 0]], b[[2, 1]], b[[2, 2]])?;
+        writeln!(
+            f,
+            "    {:.10} {:.10} {:.10}",
+            b[[0, 0]],
+            b[[0, 1]],
+            b[[0, 2]]
+        )?;
+        writeln!(
+            f,
+            "    {:.10} {:.10} {:.10}",
+            b[[1, 0]],
+            b[[1, 1]],
+            b[[1, 2]]
+        )?;
+        writeln!(
+            f,
+            "    {:.10} {:.10} {:.10}",
+            b[[2, 0]],
+            b[[2, 1]],
+            b[[2, 2]]
+        )?;
 
         for ib in 0..nsta {
             writeln!(f, "    BAND: {b0}", b0 = ib + 1)?;
@@ -637,8 +655,8 @@ pub fn write_spin_frmsf<const SPIN: bool, R: RMatrixData>(
 
     let b = up_model.rec_lat()?;
     let kvec: Array2<f64> = gen_kmesh(&arr1(&[nx, ny, nz]))?;
-    let eval_up = up_model.solve_band_all_parallel(&kvec)-e_fermi;
-    let eval_dn = dn_model.solve_band_all_parallel(&kvec)-e_fermi;
+    let eval_up = up_model.solve_band_all_parallel(&kvec) - e_fermi;
+    let eval_dn = dn_model.solve_band_all_parallel(&kvec) - e_fermi;
 
     // Merge: up bands first, then down
     let nk = nx * ny * nz;

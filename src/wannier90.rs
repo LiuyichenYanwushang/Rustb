@@ -561,101 +561,104 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             let hr = File::open(path);
             if let Ok(hr) = hr {
                 have_r = true;
-            let reader = BufReader::new(hr);
-            let mut reads: Vec<String> = Vec::new();
-            for line in reader.lines() {
-                let line = line.map_err(|e| TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!("Failed to read line: {}", e),
-                })?;
-                reads.push(line.clone());
-            }
-            let n_R = reads[2]
-                .trim()
-                .parse::<usize>()
-                .map_err(|e| TbError::FileParse {
-                    file: r_path.clone(),
-                    message: format!("Failed to parse n_R: {}", e),
-                })?;
-            let mut rmatrix = Array4::<Complex<f64>>::zeros((hamR.nrows(), 3, nsta, nsta));
-            for i in 0..n_R {
-                let mut string = reads[i * nsta * nsta + 3].trim().split_whitespace();
-                let a = string
-                    .next()
-                    .ok_or_else(|| TbError::FileParse {
-                        file: r_path.clone(),
-                        message: "Missing R vector component".to_string(),
-                    })?
-                    .parse::<isize>()
+                let reader = BufReader::new(hr);
+                let mut reads: Vec<String> = Vec::new();
+                for line in reader.lines() {
+                    let line = line.map_err(|e| TbError::FileParse {
+                        file: xyz_path.clone(),
+                        message: format!("Failed to read line: {}", e),
+                    })?;
+                    reads.push(line.clone());
+                }
+                let n_R = reads[2]
+                    .trim()
+                    .parse::<usize>()
                     .map_err(|e| TbError::FileParse {
                         file: r_path.clone(),
-                        message: format!("Failed to parse R vector: {}", e),
+                        message: format!("Failed to parse n_R: {}", e),
                     })?;
-                let b = string
-                    .next()
-                    .ok_or_else(|| TbError::FileParse {
+                let mut rmatrix = Array4::<Complex<f64>>::zeros((hamR.nrows(), 3, nsta, nsta));
+                for i in 0..n_R {
+                    let mut string = reads[i * nsta * nsta + 3].trim().split_whitespace();
+                    let a = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: r_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: r_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let b = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: r_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: r_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let c = string
+                        .next()
+                        .ok_or_else(|| TbError::FileParse {
+                            file: r_path.clone(),
+                            message: "Missing R vector component".to_string(),
+                        })?
+                        .parse::<isize>()
+                        .map_err(|e| TbError::FileParse {
+                            file: r_path.clone(),
+                            message: format!("Failed to parse R vector: {}", e),
+                        })?;
+                    let R0 = array![a, b, c];
+                    let index = find_R(&hamR, &R0).ok_or_else(|| TbError::FileParse {
                         file: r_path.clone(),
-                        message: "Missing R vector component".to_string(),
-                    })?
-                    .parse::<isize>()
-                    .map_err(|e| TbError::FileParse {
-                        file: r_path.clone(),
-                        message: format!("Failed to parse R vector: {}", e),
+                        message: format!("R vector {:?} not found in Hamiltonian", R0),
                     })?;
-                let c = string
-                    .next()
-                    .ok_or_else(|| TbError::FileParse {
-                        file: r_path.clone(),
-                        message: "Missing R vector component".to_string(),
-                    })?
-                    .parse::<isize>()
-                    .map_err(|e| TbError::FileParse {
-                        file: r_path.clone(),
-                        message: format!("Failed to parse R vector: {}", e),
-                    })?;
-                let R0 = array![a, b, c];
-                let index = find_R(&hamR, &R0).ok_or_else(|| TbError::FileParse {
-                    file: r_path.clone(),
-                    message: format!("R vector {:?} not found in Hamiltonian", R0),
-                })?;
-                for ind_i in 0..nsta {
-                    for ind_j in 0..nsta {
-                        let string = &reads[i * nsta * nsta + ind_i * nsta + ind_j + 3];
-                        let mut string = string.trim().split_whitespace();
-                        string.nth(4);
-                        for r in 0..3 {
-                            let re = string
-                                .next()
-                                .ok_or_else(|| TbError::FileParse {
-                                    file: r_path.clone(),
-                                    message: "Missing R matrix real part".to_string(),
-                                })?
-                                .parse::<f64>()
-                                .map_err(|e| TbError::FileParse {
-                                    file: r_path.clone(),
-                                    message: format!("Failed to parse R matrix real part: {}", e),
-                                })?;
-                            let im = string
-                                .next()
-                                .ok_or_else(|| TbError::FileParse {
-                                    file: r_path.clone(),
-                                    message: "Missing R matrix imaginary part".to_string(),
-                                })?
-                                .parse::<f64>()
-                                .map_err(|e| TbError::FileParse {
-                                    file: r_path.clone(),
-                                    message: format!(
-                                        "Failed to parse R matrix imaginary part: {}",
-                                        e
-                                    ),
-                                })?;
-                            rmatrix[[index, r, ind_j, ind_i]] =
-                                Complex::new(re, im) / (weights[i] as f64);
+                    for ind_i in 0..nsta {
+                        for ind_j in 0..nsta {
+                            let string = &reads[i * nsta * nsta + ind_i * nsta + ind_j + 3];
+                            let mut string = string.trim().split_whitespace();
+                            string.nth(4);
+                            for r in 0..3 {
+                                let re = string
+                                    .next()
+                                    .ok_or_else(|| TbError::FileParse {
+                                        file: r_path.clone(),
+                                        message: "Missing R matrix real part".to_string(),
+                                    })?
+                                    .parse::<f64>()
+                                    .map_err(|e| TbError::FileParse {
+                                        file: r_path.clone(),
+                                        message: format!(
+                                            "Failed to parse R matrix real part: {}",
+                                            e
+                                        ),
+                                    })?;
+                                let im = string
+                                    .next()
+                                    .ok_or_else(|| TbError::FileParse {
+                                        file: r_path.clone(),
+                                        message: "Missing R matrix imaginary part".to_string(),
+                                    })?
+                                    .parse::<f64>()
+                                    .map_err(|e| TbError::FileParse {
+                                        file: r_path.clone(),
+                                        message: format!(
+                                            "Failed to parse R matrix imaginary part: {}",
+                                            e
+                                        ),
+                                    })?;
+                                rmatrix[[index, r, ind_j, ind_i]] =
+                                    Complex::new(re, im) / (weights[i] as f64);
+                            }
                         }
                     }
                 }
-            }
-            rmatrix
+                rmatrix
             } else {
                 return Err(TbError::FileCreation {
                     path: r_path.clone(),

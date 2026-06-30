@@ -13,11 +13,13 @@ use super::types::{SimplexDiagnostics, TrackedSimplex, VertexKernel};
 // ── Cube / tetrahedron decomposition constants ──────────────────────────
 
 const CUBE_TETS: [[usize; 4]; 5] = [
-    [0, 1, 2, 4], [3, 1, 2, 7], [5, 1, 4, 7], [6, 2, 4, 7], [1, 2, 4, 7],
+    [0, 1, 2, 4],
+    [3, 1, 2, 7],
+    [5, 1, 4, 7],
+    [6, 2, 4, 7],
+    [1, 2, 4, 7],
 ];
-const TET_VOL_FACTOR: [f64; 5] = [
-    1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0,
-];
+const TET_VOL_FACTOR: [f64; 5] = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0];
 
 // ── Overlap and assignment ──────────────────────────────────────────────
 
@@ -92,7 +94,12 @@ pub fn permute_vertex(v: &VertexKernel, p: &[usize]) -> VertexKernel {
             k_ab[[n, m]] = v.k_ab[[p[n], p[m]]];
         }
     }
-    VertexKernel { band, k_ab, vdiag, evec }
+    VertexKernel {
+        band,
+        k_ab,
+        vdiag,
+        evec,
+    }
 }
 
 /// Minimum band gap at a single vertex.
@@ -125,8 +132,7 @@ pub fn track_simplex_vertices(
     for vi in 1..nv {
         let ov = build_overlap_matrix(&aligned[0].evec, &vertices[vi].evec);
         let p = greedy_assign(&ov);
-        let ov_score: f64 = (0..ov.nrows()).map(|n| ov[[n, p[n]]]).sum::<f64>()
-            / ov.nrows() as f64;
+        let ov_score: f64 = (0..ov.nrows()).map(|n| ov[[n, p[n]]]).sum::<f64>() / ov.nrows() as f64;
         min_ov = min_ov.min(ov_score);
         aligned.push(permute_vertex(&vertices[vi], &p));
     }
@@ -146,8 +152,12 @@ pub fn track_simplex_vertices(
 
 /// Build the two tracked triangles of a 2D cell.
 pub fn build_triangles_2d(
-    ix: usize, iy: usize, nx: usize, ny: usize,
-    inv_nx: f64, inv_ny: f64,
+    ix: usize,
+    iy: usize,
+    nx: usize,
+    ny: usize,
+    inv_nx: f64,
+    inv_ny: f64,
     all_pts: &[VertexKernel],
 ) -> Vec<TrackedSimplex> {
     let ixp = (ix + 1) % nx;
@@ -157,14 +167,17 @@ pub fn build_triangles_2d(
     let i11 = ixp * ny + iyp;
     let i01 = ix * ny + iyp;
 
-    let frac = |ixv: usize, iyv: usize| -> [f64; 2] {
-        [ixv as f64 * inv_nx, iyv as f64 * inv_ny]
-    };
+    let frac = |ixv: usize, iyv: usize| -> [f64; 2] { [ixv as f64 * inv_nx, iyv as f64 * inv_ny] };
     let coord_of = |idx: usize| -> [f64; 2] {
-        if idx == i00 { frac(ix, iy) }
-        else if idx == i10 { frac(ix + 1, iy) }
-        else if idx == i11 { frac(ix + 1, iy + 1) }
-        else { frac(ix, iy + 1) }
+        if idx == i00 {
+            frac(ix, iy)
+        } else if idx == i10 {
+            frac(ix + 1, iy)
+        } else if idx == i11 {
+            frac(ix + 1, iy + 1)
+        } else {
+            frac(ix, iy + 1)
+        }
     };
 
     let cell_area = inv_nx * inv_ny;
@@ -172,22 +185,40 @@ pub fn build_triangles_2d(
     let mut out = Vec::new();
 
     for &(v0, v1, v2) in &[(i00, i10, i01), (i11, i10, i01)] {
-        let raw = vec![all_pts[v0].clone(), all_pts[v1].clone(), all_pts[v2].clone()];
+        let raw = vec![
+            all_pts[v0].clone(),
+            all_pts[v1].clone(),
+            all_pts[v2].clone(),
+        ];
         let (aligned, diag) = track_simplex_vertices(&raw);
         let coords = Array2::from_shape_vec((3, 2), {
-            let c0 = coord_of(v0); let c1 = coord_of(v1); let c2 = coord_of(v2);
+            let c0 = coord_of(v0);
+            let c1 = coord_of(v1);
+            let c2 = coord_of(v2);
             vec![c0[0], c0[1], c1[0], c1[1], c2[0], c2[1]]
-        }).unwrap();
-        out.push(TrackedSimplex { vertices: aligned, volume: tri_area, coords, diag });
+        })
+        .unwrap();
+        out.push(TrackedSimplex {
+            vertices: aligned,
+            volume: tri_area,
+            coords,
+            diag,
+        });
     }
     out
 }
 
 /// Build the five tracked tetrahedra of a 3D cell.
 pub fn build_tetrahedra_3d(
-    ix: usize, iy: usize, iz: usize,
-    nx: usize, ny: usize, nz: usize,
-    inv_nx: f64, inv_ny: f64, inv_nz: f64,
+    ix: usize,
+    iy: usize,
+    iz: usize,
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    inv_nx: f64,
+    inv_ny: f64,
+    inv_nz: f64,
     all_pts: &[VertexKernel],
 ) -> Vec<TrackedSimplex> {
     let ixp = (ix + 1) % nx;
@@ -195,20 +226,32 @@ pub fn build_tetrahedra_3d(
     let izp = (iz + 1) % nz;
     let idx3 = |x: usize, y: usize, z: usize| x * ny * nz + y * nz + z;
     let c = [
-        idx3(ix, iy, iz), idx3(ixp, iy, iz),
-        idx3(ix, iyp, iz), idx3(ixp, iyp, iz),
-        idx3(ix, iy, izp), idx3(ixp, iy, izp),
-        idx3(ix, iyp, izp), idx3(ixp, iyp, izp),
+        idx3(ix, iy, iz),
+        idx3(ixp, iy, iz),
+        idx3(ix, iyp, iz),
+        idx3(ixp, iyp, iz),
+        idx3(ix, iy, izp),
+        idx3(ixp, iy, izp),
+        idx3(ix, iyp, izp),
+        idx3(ixp, iyp, izp),
     ];
 
     let frac = |ixv: usize, iyv: usize, izv: usize| -> [f64; 3] {
-        [ixv as f64 * inv_nx, iyv as f64 * inv_ny, izv as f64 * inv_nz]
+        [
+            ixv as f64 * inv_nx,
+            iyv as f64 * inv_ny,
+            izv as f64 * inv_nz,
+        ]
     };
     let corners_frac: [[f64; 3]; 8] = [
-        frac(ix, iy, iz), frac(ix + 1, iy, iz),
-        frac(ix, iyp, iz), frac(ix + 1, iy + 1, iz),
-        frac(ix, iy, izp), frac(ix + 1, iy, izp),
-        frac(ix, iyp, izp), frac(ix + 1, iy + 1, izp),
+        frac(ix, iy, iz),
+        frac(ix + 1, iy, iz),
+        frac(ix, iyp, iz),
+        frac(ix + 1, iy + 1, iz),
+        frac(ix, iy, izp),
+        frac(ix + 1, iy, izp),
+        frac(ix, iyp, izp),
+        frac(ix + 1, iy + 1, izp),
     ];
 
     let cube_vol = inv_nx * inv_ny * inv_nz;
@@ -216,16 +259,22 @@ pub fn build_tetrahedra_3d(
 
     for (teti, &[v0, v1, v2, v3]) in CUBE_TETS.iter().enumerate() {
         let raw = vec![
-            all_pts[c[v0]].clone(), all_pts[c[v1]].clone(),
-            all_pts[c[v2]].clone(), all_pts[c[v3]].clone(),
+            all_pts[c[v0]].clone(),
+            all_pts[c[v1]].clone(),
+            all_pts[c[v2]].clone(),
+            all_pts[c[v3]].clone(),
         ];
         let (aligned, diag) = track_simplex_vertices(&raw);
         let coords = Array2::from_shape_vec((4, 3), {
-            let c0 = corners_frac[v0]; let c1 = corners_frac[v1];
-            let c2 = corners_frac[v2]; let c3 = corners_frac[v3];
-            vec![c0[0], c0[1], c0[2], c1[0], c1[1], c1[2],
-                 c2[0], c2[1], c2[2], c3[0], c3[1], c3[2]]
-        }).unwrap();
+            let c0 = corners_frac[v0];
+            let c1 = corners_frac[v1];
+            let c2 = corners_frac[v2];
+            let c3 = corners_frac[v3];
+            vec![
+                c0[0], c0[1], c0[2], c1[0], c1[1], c1[2], c2[0], c2[1], c2[2], c3[0], c3[1], c3[2],
+            ]
+        })
+        .unwrap();
         out.push(TrackedSimplex {
             vertices: aligned,
             volume: cube_vol * TET_VOL_FACTOR[teti],

@@ -30,11 +30,11 @@
 //!   on-site term with a non-zero imaginary part is set.
 
 use crate::Model;
-use crate::model::RMatrixData;
 use crate::SpinDirection;
 use crate::atom_struct::{Atom, AtomType, OrbProj};
 use crate::error::{Result, TbError};
 use crate::generics::hop_use;
+use crate::model::RMatrixData;
 use crate::model_utils::find_R;
 use ndarray::prelude::*;
 use ndarray::*;
@@ -1017,7 +1017,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let new_ham = new_ham.select(Axis(2), &orb_index);
         self.ham = new_ham;
         //开始操作rmatrix
-        self.rmatrix = self.rmatrix.select_axes(Axis(2), &orb_index, Axis(3), &orb_index);
+        self.rmatrix = self
+            .rmatrix
+            .select_axes(Axis(2), &orb_index, Axis(3), &orb_index);
     }
 
     /// Reorder atoms and their associated orbitals.
@@ -1105,7 +1107,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
         self.ham = self.ham.select(Axis(1), &new_state_order);
         self.ham = self.ham.select(Axis(2), &new_state_order);
-        self.rmatrix = self.rmatrix.select_axes(Axis(2), &new_state_order, Axis(3), &new_state_order);
+        self.rmatrix =
+            self.rmatrix
+                .select_axes(Axis(2), &new_state_order, Axis(3), &new_state_order);
     }
 
     /// Build a supercell by applying an integer transformation matrix `U`.
@@ -1434,14 +1438,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                 self.ham[[index, *use_i + self.norb(), *use_j + self.norb()]];
                             for r in 0..self.dim_r() {
                                 let rmat = self.rmatrix.as_array4();
-                                use_rmatrix[[r, int_i, int_j]] =
-                                    rmat[[index, r, *use_i, *use_j]];
+                                use_rmatrix[[r, int_i, int_j]] = rmat[[index, r, *use_i, *use_j]];
                                 use_rmatrix[[r, int_i + norb, int_j]] =
                                     rmat[[index, r, *use_i + self.norb(), *use_j]];
                                 use_rmatrix[[r, int_i, int_j + norb]] =
                                     rmat[[index, r, *use_i, *use_j + self.norb()]];
-                                use_rmatrix[[r, int_i + norb, int_j + norb]] = rmat
-                                    [[index, r, *use_i + self.norb(), *use_j + self.norb()]];
+                                use_rmatrix[[r, int_i + norb, int_j + norb]] =
+                                    rmat[[index, r, *use_i + self.norb(), *use_j + self.norb()]];
                             }
                         } else {
                             continue;
@@ -1483,8 +1486,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
                             for r in 0..self.dim_r() {
                                 let rmat = self.rmatrix.as_array4();
-                                use_rmatrix[[r, int_i, int_j]] =
-                                    rmat[[index, r, *use_i, *use_j]]
+                                use_rmatrix[[r, int_i, int_j]] = rmat[[index, r, *use_i, *use_j]]
                             }
                         } else {
                             continue;

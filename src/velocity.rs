@@ -353,7 +353,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Velocity for Model<SPIN
                     for (iR, &u) in Us.iter().enumerate() {
                         let hm = self.ham.index_axis(Axis(0), iR);
                         let alpha = u * R0_d[iR] * Complex::i();
-                        crate::ndarray_lapack::zaxpy(alpha, hm.as_slice().unwrap(), vv.as_slice_mut().unwrap());
+                        crate::ndarray_lapack::zaxpy(
+                            alpha,
+                            hm.as_slice().unwrap(),
+                            vv.as_slice_mut().unwrap(),
+                        );
                     }
                     azip!((v in &mut vv, &h in &hamk, &u in &UU.slice(s![d, .., ..])) *v += h * u);
                     // Gauge transform: for m + Zip, no allocation
@@ -380,7 +384,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Velocity for Model<SPIN
                     let mut rk = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));
                     for (iR, &u) in Us[..n_rmat].iter().enumerate() {
                         let rm = self.rmatrix.as_array4().index_axis(Axis(0), iR);
-                        crate::ndarray_lapack::zaxpy(u, rm.as_slice().unwrap(), rk.as_slice_mut().unwrap());
+                        crate::ndarray_lapack::zaxpy(
+                            u,
+                            rm.as_slice().unwrap(),
+                            rk.as_slice_mut().unwrap(),
+                        );
                     }
                     for i in 0..dim {
                         let mut r0 = rk.slice_mut(s![i, .., ..]);
@@ -406,7 +414,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Velocity for Model<SPIN
                     for (iR, &u) in Us.iter().enumerate() {
                         let hm = self.ham.index_axis(Axis(0), iR);
                         let alpha = u * R0_d[iR] * Complex::i();
-                        crate::ndarray_lapack::zaxpy(alpha, hm.as_slice().unwrap(), vv.as_slice_mut().unwrap());
+                        crate::ndarray_lapack::zaxpy(
+                            alpha,
+                            hm.as_slice().unwrap(),
+                            vv.as_slice_mut().unwrap(),
+                        );
                     }
                     v.slice_mut(s![d, .., ..]).assign(&vv);
                 }
@@ -415,7 +427,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Velocity for Model<SPIN
                     let mut rk = Array3::<Complex<f64>>::zeros((dim, nsta, nsta));
                     for (iR, &u) in Us[..n_rmat].iter().enumerate() {
                         let rm = self.rmatrix.as_array4().index_axis(Axis(0), iR);
-                        crate::ndarray_lapack::zaxpy(u, rm.as_slice().unwrap(), rk.as_slice_mut().unwrap());
+                        crate::ndarray_lapack::zaxpy(
+                            u,
+                            rm.as_slice().unwrap(),
+                            rk.as_slice_mut().unwrap(),
+                        );
                     }
                     for i in 0..dim {
                         let r0 = rk.slice(s![i, .., ..]);
@@ -532,8 +548,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         match gauge {
             Gauge::Atom => {
                 let orb_sta = if SPIN {
-                    let orb0 =
-                        concatenate(Axis(0), &[self.orb.view(), self.orb.view()]).unwrap();
+                    let orb0 = concatenate(Axis(0), &[self.orb.view(), self.orb.view()]).unwrap();
                     orb0
                 } else {
                     self.orb.to_owned()
@@ -546,11 +561,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     2 => orb_sta
                         .outer_iter()
                         .map(|tau| {
-                            Complex::new(
-                                0.0,
-                                2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1]),
-                            )
-                            .exp()
+                            Complex::new(0.0, 2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1]))
+                                .exp()
                         })
                         .collect(),
                     3 => orb_sta
@@ -558,10 +570,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         .map(|tau| {
                             Complex::new(
                                 0.0,
-                                2.0 * PI
-                                    * (tau[0] * kvec[0]
-                                        + tau[1] * kvec[1]
-                                        + tau[2] * kvec[2]),
+                                2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1] + tau[2] * kvec[2]),
                             )
                             .exp()
                         })
@@ -584,21 +593,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         let r_dot_w: f64 = match DIM {
                             1 => dir[0] * R0[[iR, 0]],
                             2 => dir[0] * R0[[iR, 0]] + dir[1] * R0[[iR, 1]],
-                            3 => {
-                                dir[0] * R0[[iR, 0]]
-                                    + dir[1] * R0[[iR, 1]]
-                                    + dir[2] * R0[[iR, 2]]
-                            }
+                            3 => dir[0] * R0[[iR, 0]] + dir[1] * R0[[iR, 1]] + dir[2] * R0[[iR, 2]],
                             _ => unreachable!(),
                         };
                         if r_dot_w != 0.0 {
                             let alpha = u * Complex::i() * r_dot_w;
                             let hm = self.ham.index_axis(Axis(0), iR);
-                            crate::ndarray_lapack::zaxpy(
-                                alpha,
-                                hm.as_slice().unwrap(),
-                                vv_slice,
-                            );
+                            crate::ndarray_lapack::zaxpy(alpha, hm.as_slice().unwrap(), vv_slice);
                         }
                     }
 
@@ -607,8 +608,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         let conj_pm = orb_phase[m].conj();
                         for n in 0..nsta {
                             let diff = tau_proj[[p, n]] - tau_proj[[p, m]];
-                            vv[[m, n]] = (vv[[m, n]]
-                                + Complex::i() * diff * hamk[[m, n]])
+                            vv[[m, n]] = (vv[[m, n]] + Complex::i() * diff * hamk[[m, n]])
                                 * conj_pm
                                 * orb_phase[n];
                         }
@@ -631,17 +631,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 // then project onto direction vectors (n_proj * DIM zaxpy calls).
                 if <R as RMatrixData>::HAS_RMATRIX {
                     let n_rmat = self.rmatrix.as_array4().len_of(Axis(0));
-                    let mut rk =
-                        Array3::<Complex<f64>>::zeros((DIM, nsta, nsta));
+                    let mut rk = Array3::<Complex<f64>>::zeros((DIM, nsta, nsta));
                     for (iR, &u) in Us[..n_rmat].iter().enumerate() {
                         let rm = self.rmatrix.as_array4().index_axis(Axis(0), iR);
                         for d in 0..DIM {
                             crate::ndarray_lapack::zaxpy(
                                 u,
                                 rm.slice(s![d, .., ..]).as_slice().unwrap(),
-                                rk.slice_mut(s![d, .., ..])
-                                    .as_slice_mut()
-                                    .unwrap(),
+                                rk.slice_mut(s![d, .., ..]).as_slice_mut().unwrap(),
                             );
                         }
                     }
@@ -649,17 +646,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     for p in 0..n_proj {
                         let dir = directions.row(p);
                         // Project rk onto dir[p]: rk_p = Σ_d dir[d] * rk[d]
-                        let mut rk_p =
-                            Array2::<Complex<f64>>::zeros((nsta, nsta));
+                        let mut rk_p = Array2::<Complex<f64>>::zeros((nsta, nsta));
                         let rk_p_slice = rk_p.as_slice_mut().unwrap();
                         for d in 0..DIM {
                             let w = dir[d];
                             if w != 0.0 {
                                 crate::ndarray_lapack::zaxpy(
                                     Complex::new(w, 0.0),
-                                    rk.slice(s![d, .., ..])
-                                        .as_slice()
-                                        .unwrap(),
+                                    rk.slice(s![d, .., ..]).as_slice().unwrap(),
                                     rk_p_slice,
                                 );
                             }
@@ -689,21 +683,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         let r_dot_w: f64 = match DIM {
                             1 => dir[0] * R0[[iR, 0]],
                             2 => dir[0] * R0[[iR, 0]] + dir[1] * R0[[iR, 1]],
-                            3 => {
-                                dir[0] * R0[[iR, 0]]
-                                    + dir[1] * R0[[iR, 1]]
-                                    + dir[2] * R0[[iR, 2]]
-                            }
+                            3 => dir[0] * R0[[iR, 0]] + dir[1] * R0[[iR, 1]] + dir[2] * R0[[iR, 2]],
                             _ => unreachable!(),
                         };
                         if r_dot_w != 0.0 {
                             let alpha = u * Complex::i() * r_dot_w;
                             let hm = self.ham.index_axis(Axis(0), iR);
-                            crate::ndarray_lapack::zaxpy(
-                                alpha,
-                                hm.as_slice().unwrap(),
-                                vv_slice,
-                            );
+                            crate::ndarray_lapack::zaxpy(alpha, hm.as_slice().unwrap(), vv_slice);
                         }
                     }
 
@@ -713,34 +699,28 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 // Rmatrix commutator (no gauge transform, no diagonal zeroing)
                 if <R as RMatrixData>::HAS_RMATRIX {
                     let n_rmat = self.rmatrix.as_array4().len_of(Axis(0));
-                    let mut rk =
-                        Array3::<Complex<f64>>::zeros((DIM, nsta, nsta));
+                    let mut rk = Array3::<Complex<f64>>::zeros((DIM, nsta, nsta));
                     for (iR, &u) in Us[..n_rmat].iter().enumerate() {
                         let rm = self.rmatrix.as_array4().index_axis(Axis(0), iR);
                         for d in 0..DIM {
                             crate::ndarray_lapack::zaxpy(
                                 u,
                                 rm.slice(s![d, .., ..]).as_slice().unwrap(),
-                                rk.slice_mut(s![d, .., ..])
-                                    .as_slice_mut()
-                                    .unwrap(),
+                                rk.slice_mut(s![d, .., ..]).as_slice_mut().unwrap(),
                             );
                         }
                     }
 
                     for p in 0..n_proj {
                         let dir = directions.row(p);
-                        let mut rk_p =
-                            Array2::<Complex<f64>>::zeros((nsta, nsta));
+                        let mut rk_p = Array2::<Complex<f64>>::zeros((nsta, nsta));
                         let rk_p_slice = rk_p.as_slice_mut().unwrap();
                         for d in 0..DIM {
                             let w = dir[d];
                             if w != 0.0 {
                                 crate::ndarray_lapack::zaxpy(
                                     Complex::new(w, 0.0),
-                                    rk.slice(s![d, .., ..])
-                                        .as_slice()
-                                        .unwrap(),
+                                    rk.slice(s![d, .., ..]).as_slice().unwrap(),
                                     rk_p_slice,
                                 );
                             }

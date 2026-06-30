@@ -26,7 +26,8 @@ pub trait RMatrixData: Clone + std::fmt::Debug + Sync {
     /// Get a mutable reference to the underlying Array4. Panics for NoRMatrix.
     fn as_array4_mut(&mut self) -> &mut Array4<Complex<f64>>;
     /// Select axes for the underlying Array4. No-op for NoRMatrix.
-    fn select_axes(&self, axis1: Axis, indices1: &[usize], axis2: Axis, indices2: &[usize]) -> Self;
+    fn select_axes(&self, axis1: Axis, indices1: &[usize], axis2: Axis, indices2: &[usize])
+    -> Self;
 }
 
 /// Position matrix elements are stored. Wraps [`Array4<Complex<f64>>`] with
@@ -58,7 +59,13 @@ impl RMatrixData for HasRMatrix {
     fn as_array4_mut(&mut self) -> &mut Array4<Complex<f64>> {
         &mut self.0
     }
-    fn select_axes(&self, axis1: Axis, indices1: &[usize], axis2: Axis, indices2: &[usize]) -> Self {
+    fn select_axes(
+        &self,
+        axis1: Axis,
+        indices1: &[usize],
+        axis2: Axis,
+        indices2: &[usize],
+    ) -> Self {
         HasRMatrix(self.0.select(axis1, indices1).select(axis2, indices2))
     }
 }
@@ -94,7 +101,13 @@ impl RMatrixData for NoRMatrix {
     fn as_array4_mut(&mut self) -> &mut Array4<Complex<f64>> {
         panic!("NoRMatrix has no underlying Array4; only HasRMatrix supports this operation")
     }
-    fn select_axes(&self, _axis1: Axis, _indices1: &[usize], _axis2: Axis, _indices2: &[usize]) -> Self {
+    fn select_axes(
+        &self,
+        _axis1: Axis,
+        _indices1: &[usize],
+        _axis2: Axis,
+        _indices2: &[usize],
+    ) -> Self {
         NoRMatrix
     }
 }
@@ -118,7 +131,9 @@ pub struct Model<const SPIN: bool = false, const DIM: usize = 3, R: RMatrixData 
 }
 
 // Manual Serialize
-impl<const SPIN: bool, const DIM: usize, R: RMatrixData + Serialize> Serialize for Model<SPIN, DIM, R> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData + Serialize> Serialize
+    for Model<SPIN, DIM, R>
+{
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let n_fields = if R::HAS_RMATRIX { 8 } else { 7 };
         let mut s = serializer.serialize_struct("Model", n_fields)?;
@@ -188,7 +203,9 @@ impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, D
                         ModelField::Atoms => atoms = Some(map.next_value()?),
                         ModelField::Ham => ham = Some(map.next_value()?),
                         ModelField::HamR => hamR = Some(map.next_value()?),
-                        ModelField::Rmatrix => { let _: Array4<Complex<f64>> = map.next_value()?; },
+                        ModelField::Rmatrix => {
+                            let _: Array4<Complex<f64>> = map.next_value()?;
+                        }
                     }
                 }
 
@@ -210,7 +227,8 @@ impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, D
                 Ok(Model {
                     lat: lat.ok_or_else(|| de::Error::missing_field("lat"))?,
                     orb: orb.ok_or_else(|| de::Error::missing_field("orb"))?,
-                    orb_projection: orb_projection.ok_or_else(|| de::Error::missing_field("orb_projection"))?,
+                    orb_projection: orb_projection
+                        .ok_or_else(|| de::Error::missing_field("orb_projection"))?,
                     atoms: atoms.ok_or_else(|| de::Error::missing_field("atoms"))?,
                     ham: ham.ok_or_else(|| de::Error::missing_field("ham"))?,
                     hamR: hamR.ok_or_else(|| de::Error::missing_field("hamR"))?,
@@ -221,7 +239,17 @@ impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, D
 
         deserializer.deserialize_struct(
             "Model",
-            &["dim_r", "spin", "lat", "orb", "orb_projection", "atoms", "ham", "hamR", "rmatrix"],
+            &[
+                "dim_r",
+                "spin",
+                "lat",
+                "orb",
+                "orb_projection",
+                "atoms",
+                "ham",
+                "hamR",
+                "rmatrix",
+            ],
             ModelVisitor::<SPIN, DIM>,
         )
     }
@@ -286,18 +314,31 @@ impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, D
                 Ok(Model {
                     lat: lat.ok_or_else(|| de::Error::missing_field("lat"))?,
                     orb: orb.ok_or_else(|| de::Error::missing_field("orb"))?,
-                    orb_projection: orb_projection.ok_or_else(|| de::Error::missing_field("orb_projection"))?,
+                    orb_projection: orb_projection
+                        .ok_or_else(|| de::Error::missing_field("orb_projection"))?,
                     atoms: atoms.ok_or_else(|| de::Error::missing_field("atoms"))?,
                     ham: ham.ok_or_else(|| de::Error::missing_field("ham"))?,
                     hamR: hamR.ok_or_else(|| de::Error::missing_field("hamR"))?,
-                    rmatrix: HasRMatrix(rmatrix.ok_or_else(|| de::Error::missing_field("rmatrix"))?),
+                    rmatrix: HasRMatrix(
+                        rmatrix.ok_or_else(|| de::Error::missing_field("rmatrix"))?,
+                    ),
                 })
             }
         }
 
         deserializer.deserialize_struct(
             "Model",
-            &["dim_r", "spin", "lat", "orb", "orb_projection", "atoms", "ham", "hamR", "rmatrix"],
+            &[
+                "dim_r",
+                "spin",
+                "lat",
+                "orb",
+                "orb_projection",
+                "atoms",
+                "ham",
+                "hamR",
+                "rmatrix",
+            ],
             ModelVisitor::<SPIN, DIM>,
         )
     }
@@ -393,7 +434,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut Ly = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
         let mut Lz = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
         let mut Lz_orig = Array2::<Complex<f64>>::zeros((16, 16));
-        Lz_orig.slice_mut(s![1..4, 1..4])
+        Lz_orig
+            .slice_mut(s![1..4, 1..4])
             .assign(&Array2::from_diag(&array![-1.0, 0.0, 1.0]).mapv(|x| Complex::new(x, 0.0)));
         Lz_orig.slice_mut(s![4..9, 4..9]).assign(
             &Array2::from_diag(&array![-2.0, -1.0, 0.0, 1.0, 2.0]).mapv(|x| Complex::new(x, 0.0)),
@@ -410,15 +452,22 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 if m + 1 > l as isize && m - 1 < -(l as isize) {
                     continue;
                 } else if m + 1 > l as isize {
-                    let l = l as f64; let m = m as f64;
-                    Ldn_orig[[i - 1, i]] = Complex::new((l * (l + 1.0) - m * (m - 1.0)).sqrt(), 0.0);
+                    let l = l as f64;
+                    let m = m as f64;
+                    Ldn_orig[[i - 1, i]] =
+                        Complex::new((l * (l + 1.0) - m * (m - 1.0)).sqrt(), 0.0);
                 } else if m - 1 < -(l as isize) {
-                    let l = l as f64; let m = m as f64;
-                    Lup_orig[[i + 1, i]] = Complex::new((l * (l + 1.0) - m * (m + 1.0)).sqrt(), 0.0);
+                    let l = l as f64;
+                    let m = m as f64;
+                    Lup_orig[[i + 1, i]] =
+                        Complex::new((l * (l + 1.0) - m * (m + 1.0)).sqrt(), 0.0);
                 } else {
-                    let l = l as f64; let m = m as f64;
-                    Ldn_orig[[i - 1, i]] = Complex::new((l * (l + 1.0) - m * (m - 1.0)).sqrt(), 0.0);
-                    Lup_orig[[i + 1, i]] = Complex::new((l * (l + 1.0) - m * (m + 1.0)).sqrt(), 0.0);
+                    let l = l as f64;
+                    let m = m as f64;
+                    Ldn_orig[[i - 1, i]] =
+                        Complex::new((l * (l + 1.0) - m * (m - 1.0)).sqrt(), 0.0);
+                    Lup_orig[[i + 1, i]] =
+                        Complex::new((l * (l + 1.0) - m * (m + 1.0)).sqrt(), 0.0);
                 }
             }
         }

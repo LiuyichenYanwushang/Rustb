@@ -124,8 +124,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry for Mod
             d.row_mut(1).assign(dir_2);
             d
         };
-        let (v_proj, hamk) =
-            self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
+        let (v_proj, hamk) = self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
 
         // Projected velocity matrices
         let v_alpha: Array2<Complex<f64>> = v_proj.slice(s![0, .., ..]).to_owned();
