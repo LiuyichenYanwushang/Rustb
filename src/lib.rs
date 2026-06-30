@@ -47,9 +47,9 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`conductivity`] | Linear and nonlinear conductivity tensors via the Kubo formalism:
-//! |   anomalous Hall, spin Hall, and nonlinear responses |
-//! | [`optical_conductivity`] | Frequency-dependent optical conductivity |
+//! | [`response`] | Linear, nonlinear, and optical conductivity tensors via the Kubo
+//! |   formalism and simplex quadrature: anomalous Hall, spin Hall, nonlinear
+//! |   responses, and frequency-dependent optical conductivity |
 //!
 //! ### Operators and observables
 //!
@@ -198,7 +198,6 @@
 //! ```
 
 pub mod atom_struct;
-pub mod conductivity;
 pub mod cut;
 pub mod error;
 pub mod fermi_surface;
@@ -215,19 +214,17 @@ pub mod model_build;
 pub mod model_physics;
 pub mod model_utils;
 pub mod ndarray_lapack;
-pub mod optical_conductivity;
 pub mod orbital_angular;
 pub mod output;
 pub mod phy_const;
 pub mod quantum_geometry;
+pub mod response;
 pub mod solve_ham;
 pub mod surfgreen;
 pub mod unfold;
 pub mod velocity;
 pub mod wannier90;
-pub mod response;
 pub use crate::atom_struct::{Atom, OrbProj};
-pub use crate::conductivity::*;
 pub use crate::cut::*;
 pub use crate::error::{Result, TbError};
 pub use crate::fermi_surface::*;
@@ -241,9 +238,9 @@ pub use crate::magnetic_field::*;
 pub use crate::math::*;
 pub use crate::model::*;
 pub use crate::model_physics::*;
-pub use crate::optical_conductivity::*;
 pub use crate::output::*;
 pub use crate::quantum_geometry::*;
+pub use crate::response::*;
 pub use crate::solve_ham::*;
 pub use crate::surfgreen::*;
 pub use crate::unfold::*;
@@ -459,12 +456,18 @@ mod tests {
             "Wrong!, the berry_curvature or berry_flux mut be false"
         );
         //测试Hall_conductivity 和 Hall_conductivity_mu
-        let kmesh=array![100,100];
+        let kmesh = array![100, 100];
         let mu = -1.0;
-        let a1=model.Hall_conductivity(&kmesh,&dir_2,&dir_1,mu,T,spin,eta).unwrap();
-        let a2=model.Hall_conductivity_mu(&kmesh,&dir_2,&dir_1,&array![mu],T,spin,eta).unwrap()[[0]];
-        assert!((a2-a1).abs()<1e-5,"Wrong!, Hall_conductivity_mu and Hall_conductivity is not equal!")
-
+        let a1 = model
+            .Hall_conductivity(&kmesh, &dir_2, &dir_1, mu, T, spin, eta)
+            .unwrap();
+        let a2 = model
+            .Hall_conductivity_mu(&kmesh, &dir_2, &dir_1, &array![mu], T, spin, eta)
+            .unwrap()[[0]];
+        assert!(
+            (a2 - a1).abs() < 1e-5,
+            "Wrong!, Hall_conductivity_mu and Hall_conductivity is not equal!"
+        )
     }
     #[test]
     fn gen_v_speed_test() {
@@ -634,7 +637,7 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
         let conductivity = model
-            .Hall_conductivity_adapted(&kmesh, &dir_1, &dir_2, mu, T, spin, eta, 0.01, 0.0001)
+            .Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta)
             .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
@@ -811,8 +814,7 @@ mod tests {
         let eta = 0.01;
 
         // Reference: berry_curvature_n_onek
-        let (omega_ref, _band_ref) =
-            model.berry_curvature_n_onek(&k, &dx, &dy, None, eta);
+        let (omega_ref, _band_ref) = model.berry_curvature_n_onek(&k, &dx, &dy, None, eta);
         // Tetra primitives
         let dv = Array1::zeros(2);
         let pt = model.compute_velocity_kernel(&k, &dx, &dy, Some(&dv), Gauge::Atom, None);
@@ -822,14 +824,24 @@ mod tests {
         for n in 0..nsta {
             let mut omega_n = 0.0;
             for m in 0..nsta {
-                if m == n { continue; }
+                if m == n {
+                    continue;
+                }
                 let d = pt.band[[n]] - pt.band[[m]];
                 omega_n -= 2.0 * pt.k_ab[[n, m]].im / (d.powi(2) + eta.powi(2));
             }
-            println!("band {n}: ref={:.6}, tetra={:.6}, diff={:.2e}",
-                omega_ref[[n]], omega_n, (omega_ref[[n]]-omega_n).abs());
-            assert!((omega_ref[[n]] - omega_n).abs() < 1e-6,
-                "band {n}: ref={}, tetra={}", omega_ref[[n]], omega_n);
+            println!(
+                "band {n}: ref={:.6}, tetra={:.6}, diff={:.2e}",
+                omega_ref[[n]],
+                omega_n,
+                (omega_ref[[n]] - omega_n).abs()
+            );
+            assert!(
+                (omega_ref[[n]] - omega_n).abs() < 1e-6,
+                "band {n}: ref={}, tetra={}",
+                omega_ref[[n]],
+                omega_n
+            );
         }
         println!("PASSED");
     }
@@ -867,11 +879,18 @@ mod tests {
         for i in 0..model.nsta() {
             for j in 0..model.nsta() {
                 if i == j {
-                    assert!((diag[[i, j]].re - band[[i]]).abs() < 1e-10,
-                        "diag[{i},{i}]={} != band[{i}]={}", diag[[i,i]].re, band[[i]]);
+                    assert!(
+                        (diag[[i, j]].re - band[[i]]).abs() < 1e-10,
+                        "diag[{i},{i}]={} != band[{i}]={}",
+                        diag[[i, i]].re,
+                        band[[i]]
+                    );
                 } else {
-                    assert!(diag[[i, j]].norm() < 1e-10,
-                        "off-diag[{i},{j}]={} != 0", diag[[i,j]]);
+                    assert!(
+                        diag[[i, j]].norm() < 1e-10,
+                        "off-diag[{i},{j}]={} != 0",
+                        diag[[i, j]]
+                    );
                 }
             }
         }
@@ -1151,7 +1170,7 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
         let conductivity = model
-            .Hall_conductivity_adapted(&kmesh, &dir_1, &dir_2, mu, T, spin, eta, 0.01, 0.01)
+            .Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta)
             .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
@@ -1399,14 +1418,7 @@ mod tests {
         fg.show();
 
         let sigma: Array1<f64> = model
-            .Nonlinear_Hall_conductivity_Intrinsic(
-                &kmesh,
-                &dir_1,
-                &dir_2,
-                &dir_3,
-                &mu,
-                T,
-            )
+            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T)
             .unwrap();
         //开始绘制非线性电导
         let mut fg = Figure::new();
@@ -1814,39 +1826,39 @@ mod tests {
     }
 
     fn build_h_wave_am_model() -> Model<false, 3> {
-        let lat = array![[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
-        let orb = array![[0.0,0.0,0.0],[0.5,0.5,0.5]];
+        let lat = array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let orb = array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]];
         let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
         let t = 1.0;
         let j = 1.0;
-        model.add_hop(t,0,1,&array![ 0, 0, 0],None);
-        model.add_hop(t,0,1,&array![-1, 0, 0],None);
-        model.add_hop(t,0,1,&array![ 0,-1, 0],None);
-        model.add_hop(t,0,1,&array![-1,-1, 0],None);
-        model.add_hop(t,0,1,&array![ 0, 0,-1],None);
-        model.add_hop(t,0,1,&array![-1, 0,-1],None);
-        model.add_hop(t,0,1,&array![ 0,-1,-1],None);
-        model.add_hop(t,0,1,&array![-1,-1,-1],None);
+        model.add_hop(t, 0, 1, &array![0, 0, 0], None);
+        model.add_hop(t, 0, 1, &array![-1, 0, 0], None);
+        model.add_hop(t, 0, 1, &array![0, -1, 0], None);
+        model.add_hop(t, 0, 1, &array![-1, -1, 0], None);
+        model.add_hop(t, 0, 1, &array![0, 0, -1], None);
+        model.add_hop(t, 0, 1, &array![-1, 0, -1], None);
+        model.add_hop(t, 0, 1, &array![0, -1, -1], None);
+        model.add_hop(t, 0, 1, &array![-1, -1, -1], None);
 
         let t0 = Complex::new(0.0, 0.5);
-        model.add_hop( t0,0,0,&array![ 2, 1, 1],None);
-        model.add_hop(-t0,0,0,&array![ 2, 1,-1],None);
-        model.add_hop(-t0,0,0,&array![ 2,-1, 1],None);
-        model.add_hop( t0,0,0,&array![ 2,-1,-1],None);
-        model.add_hop(-t0,0,0,&array![ 1, 2, 1],None);
-        model.add_hop( t0,0,0,&array![ 1, 2,-1],None);
-        model.add_hop( t0,0,0,&array![-1, 2, 1],None);
-        model.add_hop(-t0,0,0,&array![-1, 2,-1],None);
+        model.add_hop(t0, 0, 0, &array![2, 1, 1], None);
+        model.add_hop(-t0, 0, 0, &array![2, 1, -1], None);
+        model.add_hop(-t0, 0, 0, &array![2, -1, 1], None);
+        model.add_hop(t0, 0, 0, &array![2, -1, -1], None);
+        model.add_hop(-t0, 0, 0, &array![1, 2, 1], None);
+        model.add_hop(t0, 0, 0, &array![1, 2, -1], None);
+        model.add_hop(t0, 0, 0, &array![-1, 2, 1], None);
+        model.add_hop(-t0, 0, 0, &array![-1, 2, -1], None);
 
         let t0 = -t0;
-        model.add_hop( t0,1,1,&array![ 2, 1, 1],None);
-        model.add_hop(-t0,1,1,&array![ 2, 1,-1],None);
-        model.add_hop(-t0,1,1,&array![ 2,-1, 1],None);
-        model.add_hop( t0,1,1,&array![ 2,-1,-1],None);
-        model.add_hop(-t0,1,1,&array![ 1, 2, 1],None);
-        model.add_hop( t0,1,1,&array![ 1, 2,-1],None);
-        model.add_hop( t0,1,1,&array![-1, 2, 1],None);
-        model.add_hop(-t0,1,1,&array![-1, 2,-1],None);
+        model.add_hop(t0, 1, 1, &array![2, 1, 1], None);
+        model.add_hop(-t0, 1, 1, &array![2, 1, -1], None);
+        model.add_hop(-t0, 1, 1, &array![2, -1, 1], None);
+        model.add_hop(t0, 1, 1, &array![2, -1, -1], None);
+        model.add_hop(-t0, 1, 1, &array![1, 2, 1], None);
+        model.add_hop(t0, 1, 1, &array![1, 2, -1], None);
+        model.add_hop(t0, 1, 1, &array![-1, 2, 1], None);
+        model.add_hop(-t0, 1, 1, &array![-1, 2, -1], None);
 
         model.add_onsite(&array![j, -j], None);
         model
@@ -1901,7 +1913,11 @@ mod tests {
         let kmesh = array![4, 4, 4];
         let mu1 = arr1(&[0.0]);
         // Reference must accept T>0
-        assert!(model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dz, &mu1, 300.0).is_ok());
+        assert!(
+            model
+                .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dz, &mu1, 300.0)
+                .is_ok()
+        );
     }
 
     /// 2. Intrinsic NLH: H-wave up/dn T‑odd via direct sum.
@@ -1910,20 +1926,36 @@ mod tests {
     #[test]
     fn nlh_intrinsic_hwave_up_dn_odd() {
         let li = Complex::new(0.0, 1.0);
-        let lat = array![[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
-        let orb = array![[0.0,0.0,0.0],[0.5,0.5,0.5]];
-        let t = 1.0; let j0 = 1.0;
+        let lat = array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let orb = array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]];
+        let t = 1.0;
+        let j0 = 1.0;
         let build = |j_sign: f64| {
             let mut m = Model::<false, 3>::tb_model(lat.clone(), orb.clone(), None).unwrap();
-            for &(i, j, k) in &[(0,0,0),(-1,0,0),(0,-1,0),(-1,-1,0),
-                                  (0,0,-1),(-1,0,-1),(0,-1,-1),(-1,-1,-1)] {
+            for &(i, j, k) in &[
+                (0, 0, 0),
+                (-1, 0, 0),
+                (0, -1, 0),
+                (-1, -1, 0),
+                (0, 0, -1),
+                (-1, 0, -1),
+                (0, -1, -1),
+                (-1, -1, -1),
+            ] {
                 m.add_hop(t, 0, 1, &array![i, j, k], None);
             }
             let t0 = Complex::new(0.0, 0.2);
             let nnn: [(f64, (isize, isize, isize)); 8] = [
-                (1.0,(2,1,1)),(-1.0,(2,1,-1)),(-1.0,(2,-1,1)),(1.0,(2,-1,-1)),
-                (-1.0,(1,2,1)),(1.0,(1,2,-1)),(1.0,(-1,2,1)),(-1.0,(-1,2,-1))];
-            for &(s, (i,j,k)) in &nnn {
+                (1.0, (2, 1, 1)),
+                (-1.0, (2, 1, -1)),
+                (-1.0, (2, -1, 1)),
+                (1.0, (2, -1, -1)),
+                (-1.0, (1, 2, 1)),
+                (1.0, (1, 2, -1)),
+                (1.0, (-1, 2, 1)),
+                (-1.0, (-1, 2, -1)),
+            ];
+            for &(s, (i, j, k)) in &nnn {
                 m.add_hop(t0.scale(s), 0, 0, &array![i, j, k], None);
                 m.add_hop(t0.scale(-s), 1, 1, &array![i, j, k], None);
             }
@@ -1932,14 +1964,24 @@ mod tests {
         };
         let model_up = build(1.0);
         let model_dn = build(-1.0);
-        let dx = array![1.0,0.0,0.0]; let dy = array![0.0,1.0,0.0]; let dz = array![0.0,0.0,1.0];
+        let dx = array![1.0, 0.0, 0.0];
+        let dy = array![0.0, 1.0, 0.0];
+        let dz = array![0.0, 0.0, 1.0];
         let T: f64 = 100.0;
         let mu = Array1::linspace(-1.0, 1.0, 21);
         let km = array![12, 12, 12];
-        let ref_up = model_up.Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dz, &mu, T).unwrap();
-        let ref_dn = model_dn.Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dz, &mu, T).unwrap();
+        let ref_up = model_up
+            .Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dz, &mu, T)
+            .unwrap();
+        let ref_dn = model_dn
+            .Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dz, &mu, T)
+            .unwrap();
         let sum = max_abs_1d(&(&ref_up + &ref_dn));
-        assert!(sum < 1e-10, "ref up+dn must vanish (T‑odd), got {:.2e}", sum);
+        assert!(
+            sum < 1e-10,
+            "ref up+dn must vanish (T‑odd), got {:.2e}",
+            sum
+        );
         assert!(max_abs_1d(&ref_up) > 1e-6, "signal too small");
     }
 
@@ -1953,13 +1995,18 @@ mod tests {
         let mut prev_pk = 0.0;
         for &nk in &[21usize, 31, 41, 51] {
             let km = arr1(&[nk, nk]);
-            let ref_val = model.Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dy, &mu, 0.0).unwrap();
+            let ref_val = model
+                .Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dy, &mu, 0.0)
+                .unwrap();
             let pk = max_abs_1d(&ref_val);
             assert!(pk > 1e-6, "signal too small at nk={nk}");
             // Result should stabilise with mesh size
             if prev_pk > 0.0 {
                 let rel = (pk - prev_pk).abs() / prev_pk;
-                assert!(rel < 0.5, "large drift at nk={nk}: pk={pk:.3e} prev={prev_pk:.3e}");
+                assert!(
+                    rel < 0.5,
+                    "large drift at nk={nk}: pk={pk:.3e} prev={prev_pk:.3e}"
+                );
             }
             prev_pk = pk;
         }
@@ -1996,7 +2043,9 @@ mod tests {
             for n in 0..nsta {
                 let mut g_sum = Complex::new(0.0, 0.0);
                 for m in 0..nsta {
-                    if m == n { continue; }
+                    if m == n {
+                        continue;
+                    }
                     let de = tk.band[[n]] - tk.band[[m]];
                     let denom = de * de + eta2;
                     g_sum += tk.k_ab[[n, m]] / denom;
@@ -2007,8 +2056,7 @@ mod tests {
             max_err = max_err.max(err);
         }
         println!("max per‑k‑point Ω_n discrepancy: {:.3e} (nk={nk})", max_err);
-        assert!(max_err < 1e-12,
-            "old vs new Ω_n mismatch: {:.2e}", max_err);
+        assert!(max_err < 1e-12, "old vs new Ω_n mismatch: {:.2e}", max_err);
     }
 
     /// 9. Berry curvature dipole: old direct Fermi‑derivative sum vs new
@@ -2036,14 +2084,14 @@ mod tests {
             let kv = kvec.row(ik).to_owned();
             let (omega_n, band) = model.berry_curvature_n_onek(&kv, &dx, &dy, None, eta);
             // get v^c_n via tetra primitives
-            let tk = model.compute_velocity_kernel(
-                &kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None,
-            );
+            let tk = model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None);
             for n in 0..model.nsta() {
                 let vcn = tk.vdiag.as_ref().unwrap()[[n]];
                 for im in 0..n_mu {
                     let x = beta * (band[[n]] - mu[[im]]);
-                    if x.abs() > 50.0 { continue; }
+                    if x.abs() > 50.0 {
+                        continue;
+                    }
                     let f = 1.0 / (1.0 + x.exp());
                     let df = beta * f * (1.0 - f);
                     old_dipole[[im]] += df * vcn * omega_n[[n]];
@@ -2056,22 +2104,24 @@ mod tests {
         let all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
             .map(|ik| {
                 let kv = kvec.row(ik).to_owned();
-                let tk = model.compute_velocity_kernel(
-                    &kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None,
-                );
+                let tk =
+                    model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None);
                 crate::response::VertexKernel {
-                    band: tk.band, k_ab: tk.k_ab,
-                    vdiag: tk.vdiag, evec: tk.evec,
+                    band: tk.band,
+                    k_ab: tk.k_ab,
+                    vdiag: tk.vdiag,
+                    evec: tk.evec,
                 }
             })
             .collect();
         let (new_dipole, _unsafe) =
-            crate::response::nonlinear::integrate_dipole(
-                &all_pts, &kmesh, &mu, T, eta,
-            );
+            crate::response::nonlinear::integrate_dipole(&all_pts, &kmesh, &mu, T, eta);
 
         println!("--- Berry dipole D^{{xy;x}}(μ,T={T}K) nk={nk} ---");
-        println!("{:>8}  {:>14}  {:>14}  {:>12}", "μ", "old_direct", "new_simplex", "diff");
+        println!(
+            "{:>8}  {:>14}  {:>14}  {:>12}",
+            "μ", "old_direct", "new_simplex", "diff"
+        );
         let mut max_rel: f64 = 0.0;
         for im in 0..n_mu {
             let o = old_dipole[[im]];
@@ -2080,15 +2130,17 @@ mod tests {
             let pk = o.abs().max(n.abs());
             let rel = if pk > 1e-8 { d / pk } else { d };
             max_rel = max_rel.max(rel);
-            println!("{:.3}  {:>14.6e}  {:>14.6e}  {:>10.3e}",
-                mu[[im]], o, n, d);
+            println!("{:.3}  {:>14.6e}  {:>14.6e}  {:>10.3e}", mu[[im]], o, n, d);
         }
         let max_abs = max_abs_diff_1d(&old_dipole, &new_dipole);
         println!("max rel={:.3e}  max_abs={:.3e}", max_rel, max_abs);
         // Haldane has particle‑hole symmetry → BCD = 0 identically.
         // Old method gives ~0; new simplex has residual quadrature noise ~1e-4.
-        assert!(max_abs < 5e-4,
-            "old vs new absolute dipole diff {:.2e} too large", max_abs);
+        assert!(
+            max_abs < 5e-4,
+            "old vs new absolute dipole diff {:.2e} too large",
+            max_abs
+        );
     }
 
     /// 10. Optical conductivity: old per‑frequency direct sum vs new
@@ -2119,25 +2171,39 @@ mod tests {
             // Actually this is complex. Let me use a simpler approach.
             // Compute K_nm = v^a_nm * v^b_mn from compute_velocity_kernel
             // then manually sum over bands with optical denominator
-            let tk = model.compute_velocity_kernel(
-                &kv, &dx, &dy, None, Gauge::Atom, None,
-            );
+            let tk = model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None);
             let w_plus_ieta = Complex::new(omega, eta);
             let denom_shift = w_plus_ieta * w_plus_ieta;
             for n in 0..model.nsta() {
                 let x = beta * (tk.band[[n]] - mu);
-                let fn_val = if x > 50.0 { 0.0 } else if x < -50.0 { 1.0 }
-                    else { 1.0 / (1.0 + x.exp()) };
+                let fn_val = if x > 50.0 {
+                    0.0
+                } else if x < -50.0 {
+                    1.0
+                } else {
+                    1.0 / (1.0 + x.exp())
+                };
                 for m in 0..model.nsta() {
-                    if m == n { continue; }
+                    if m == n {
+                        continue;
+                    }
                     let xm = beta * (tk.band[[m]] - mu);
-                    let fm_val = if xm > 50.0 { 0.0 } else if xm < -50.0 { 1.0 }
-                        else { 1.0 / (1.0 + xm.exp()) };
+                    let fm_val = if xm > 50.0 {
+                        0.0
+                    } else if xm < -50.0 {
+                        1.0
+                    } else {
+                        1.0 / (1.0 + xm.exp())
+                    };
                     let df = fn_val - fm_val;
-                    if df.abs() < 1e-30 { continue; }
+                    if df.abs() < 1e-30 {
+                        continue;
+                    }
                     let d = tk.band[[n]] - tk.band[[m]];
                     let denom = Complex::new(d * d, 0.0) - denom_shift;
-                    if denom.norm_sqr() < 1e-30 { continue; }
+                    if denom.norm_sqr() < 1e-30 {
+                        continue;
+                    }
                     old_sigma += df * tk.k_ab[[n, m]] / denom;
                 }
             }
@@ -2148,27 +2214,34 @@ mod tests {
         let all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
             .map(|ik| {
                 let kv = kvec.row(ik).to_owned();
-                let tk = model.compute_velocity_kernel(
-                    &kv, &dx, &dy, None, Gauge::Atom, None,
-                );
+                let tk = model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None);
                 crate::response::VertexKernel {
-                    band: tk.band, k_ab: tk.k_ab,
-                    vdiag: None, evec: tk.evec,
+                    band: tk.band,
+                    k_ab: tk.k_ab,
+                    vdiag: None,
+                    evec: tk.evec,
                 }
             })
             .collect();
-        let new_sigma = crate::response::optical::integrate(
-            &all_pts, &kmesh, omega, eta, mu, T,
-        );
+        let new_sigma = crate::response::optical::integrate(&all_pts, &kmesh, omega, eta, mu, T);
 
         let diff = (old_sigma - new_sigma).norm();
         let pk = old_sigma.norm().max(new_sigma.norm());
         let rel = if pk > 1e-10 { diff / pk } else { diff };
         println!("--- Optical σ^{{xy}}(ω={omega},μ={mu},T={T}K) nk={nk} ---");
-        println!("old  direct: {:>12.6e} + i·{:>12.6e}", old_sigma.re, old_sigma.im);
-        println!("new simplex: {:>12.6e} + i·{:>12.6e}", new_sigma.re, new_sigma.im);
+        println!(
+            "old  direct: {:>12.6e} + i·{:>12.6e}",
+            old_sigma.re, old_sigma.im
+        );
+        println!(
+            "new simplex: {:>12.6e} + i·{:>12.6e}",
+            new_sigma.re, new_sigma.im
+        );
         println!("diff: {:.3e}  rel: {:.3e}", diff, rel);
 
-        assert!(rel < 1.0, "optical old vs new disagree too much: rel={rel:.3}");
+        assert!(
+            rel < 1.0,
+            "optical old vs new disagree too much: rel={rel:.3}"
+        );
     }
 }

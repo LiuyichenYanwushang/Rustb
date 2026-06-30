@@ -8,47 +8,15 @@ use ndarray::*;
 use ndarray_linalg::*;
 use num_complex::Complex;
 
-use crate::math::anti_comm;
-use crate::velocity::Velocity;
 use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
 use crate::SpinDirection;
+use crate::math::anti_comm;
+use crate::velocity::Velocity;
 
+use super::helpers::build_spin_matrix;
 use super::types::VertexKernel;
-
-/// Directly construct spin Pauli matrix σ⊗I_{norb}/2 without kron.
-#[inline]
-fn build_spin_matrix(norb: usize, spin: Option<SpinDirection>) -> Array2<Complex<f64>> {
-    let nsta = 2 * norb;
-    let mut m = Array2::<Complex<f64>>::zeros((nsta, nsta));
-    let half = Complex::new(0.5, 0.0);
-    let i_half = Complex::new(0.0, 0.5);
-    match spin {
-        None => {
-            m = Array2::<Complex<f64>>::eye(2 * norb);
-        }
-        Some(SpinDirection::X) => {
-            for i in 0..norb {
-                m[[i, i + norb]] = half;
-                m[[i + norb, i]] = half;
-            }
-        }
-        Some(SpinDirection::Y) => {
-            for i in 0..norb {
-                m[[i, i + norb]] = -i_half;
-                m[[i + norb, i]] = i_half;
-            }
-        }
-        Some(SpinDirection::Z) => {
-            for i in 0..norb {
-                m[[i, i]] = half;
-                m[[i + norb, i + norb]] = -half;
-            }
-        }
-    }
-    m
-}
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Compute band‑basis velocity primitives at one k‑point.
@@ -118,6 +86,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             None
         };
 
-        VertexKernel { band, evec, k_ab, vdiag }
+        VertexKernel {
+            band,
+            evec,
+            k_ab,
+            vdiag,
+        }
     }
 }
