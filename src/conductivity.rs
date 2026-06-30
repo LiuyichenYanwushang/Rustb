@@ -1078,8 +1078,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// $$ -\pdv{f_n}{\varepsilon} = \beta \f{e^{\beta(\varepsilon_n-\mu)}}{(e^{\beta(\varepsilon_n-\mu)}+1)^2}
     ///    = \beta f_n(1-f_n) $$
     ///
-    /// **T>0**: direct k-point sum with Fermi window.
-    /// **T=0**: Blochl tetrahedron integration of the precomputed scalar kernel.
+    /// **T>0**: direct k‑point sum with Fermi window.
+    /// **T=0**: narrow thermal window (adaptive to k‑mesh resolution).
     ///
     /// # Arguments
     ///
@@ -1087,8 +1087,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `current_dir`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
     /// * `dir_3` - Direction vector for the velocity / Fermi-surface index $\gamma$.
     /// * `mu` - Array of chemical potential values (in eV).
-    /// * `T` - Temperature (in K). Must be non-zero.
-    /// * `og` - Frequency $\omega$ (use 0 for the DC limit).
+    /// * `T` - Temperature (in K).
     /// * `spin` - Spin operator index (0, 1, 2, 3).
     /// * `eta` - Broadening parameter $\eta$.
     ///
@@ -1508,13 +1507,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Internally this maps to the `sigma^{ab;c}` kernel.
     ///
     /// **T>0**: direct k‑point sum with Fermi window.
-    /// **T=0**: Blochl tetrahedron integration (`tetrahedron_integrate`).
+    /// **T=0**: narrow thermal window (adaptive to k‑mesh resolution).
     ///
-    /// For tetrahedron pair‑decomposition (more accurate near band
-    /// degeneracies), use [`Nonlinear_Hall_conductivity_Intrinsic_tetra`].
-    ///
-    /// Spinful / partial_G branch is not yet correctly implemented;
-    /// use the charge‑only tetra version for now.
+    /// Spinful / partial_G branch is not yet correctly implemented.
     ///
     /// # Arguments
     ///

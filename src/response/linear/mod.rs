@@ -24,8 +24,20 @@ use super::types::{VertexKernel, SIMPLEX_GAP_TOL};
 
 /// Integrate Berry curvature and quantum metric over the BZ.
 ///
-/// Returns `(total_metric, total_berry, unsafe_count)` in
-/// fractional‑coordinate volume.  Divide by `det(lat)` for Cartesian.
+/// ```text
+/// total_berry  = Σ_n ∫_BZ Ω^{ab}_n(k) dk
+/// total_metric = Σ_n ∫_BZ  g^{ab}_n(k) dk
+/// ```
+///
+/// where `Ω_n = −2 Im G_n`, `g_n = Re G_n`, and
+/// `G_n = Σ_{m≠n} K^{ab}_nm / ((E_n−E_m)² + η²)`.
+///
+/// Inside each simplex, `K_nm` and `E_n` are linearly interpolated,
+/// then the kernel is evaluated at degree‑2 symmetric quadrature points.
+///
+/// # Returns
+/// `(total_metric, total_berry, unsafe_count)` in fractional‑coordinate
+/// volume.  Divide by `det(lat)` for Cartesian volume.
 pub fn integrate(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
