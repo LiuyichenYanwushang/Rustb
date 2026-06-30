@@ -1,12 +1,35 @@
-//! Linear‑response simplex quadrature: Berry curvature + quantum metric.
+//! # Linear response: Berry curvature and quantum metric
 //!
-//! ```text
-//! Ω^{ab} = Σ_n ∫_BZ Ω^{ab}_n(k) dk
-//! g^{ab} = Σ_n ∫_BZ  g^{ab}_n(k) dk
-//! ```
+//! ## Theory
 //!
-//! where `Ω_n = −2 Im G_n`, `g_n = Re G_n`, and
-//! `G_n = Σ_{m≠n} v^a_nm v^b_mn / ((E_n−E_m)² + η²)`.
+//! The quantum geometric tensor is
+//!
+//! $$G^{ab}_n(\mathbf{k}) = \sum_{m\neq n}
+//!   \frac{\langle\partial_a u_n|u_m\rangle\langle u_m|\partial_b u_n\rangle}
+//!        {(E_n-E_m)^2} = g^{ab}_n - \frac{i}{2}\Omega^{ab}_n$$
+//!
+//! In terms of velocity matrix elements $v^\alpha_{nm} = \langle u_n|\partial_\alpha H|u_m\rangle$:
+//!
+//! $$G^{ab}_n(\mathbf{k}) = \sum_{m\neq n} \frac{v^a_{nm} v^b_{mn}}{(E_n-E_m)^2 + \eta^2}$$
+//!
+//! where $\eta$ is a small regularisation width.  The real and imaginary
+//! parts give the quantum metric $g^{ab}_n$ and Berry curvature $\Omega^{ab}_n$:
+//!
+//! $$g^{ab}_n = \operatorname{Re} G^{ab}_n, \qquad
+//!   \Omega^{ab}_n = -2\operatorname{Im} G^{ab}_n$$
+//!
+//! The **anomalous Hall conductivity** (AHC) at $T=0$ is
+//!
+//! $$\sigma^{xy}_{\text{AHC}}(\mu) = -\frac{e^2}{\hbar}\sum_n
+//!   \int_{\text{BZ}} \Theta(\mu-E_n)\,\Omega^{xy}_n(\mathbf{k})\,d\mathbf{k}$$
+//!
+//! ## API
+//!
+//! | Method | Path | Formula |
+//! |--------|------|---------|
+//! | `berry_curvature_simplex` | simplex | $\sum_n \int \Omega^{ab}_n\,d\mathbf{k}$ (Cartesian) |
+//! | `Hall_conductivity` | direct sum | $\sigma_{\text{AHC}}(\mu,T)$ |
+//! | `Hall_conductivity_mu` | direct sum | $\sigma_{\text{AHC}}(\mu)$ per μ |
 
 use ndarray::prelude::*;
 use ndarray::*;

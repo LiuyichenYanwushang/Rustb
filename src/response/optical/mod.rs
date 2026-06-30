@@ -1,23 +1,40 @@
-//! Optical conductivity: old direct‑sum path + new simplex quadrature.
+//! # Optical conductivity
 //!
-//! ## Old direct‑sum path
+//! ## Theory
 //!
-//! The adopted definition is
-//! $$\sigma_{\ap\bt}=\f{2ie^2\hbar}{V}\sum_{\bm k}\sum_{n} f_n (g_{n,\ap\bt}+\f{i}{2}\Og_{n,\ap\bt})$$
+//! The optical conductivity tensor is
 //!
-//! Where
-//! $$\\begin{aligned}
-//! g_{n\ap\bt}&=\sum_{m=\not n}\f{\og-i\eta}{\ve_{n\bm k}-\ve_{m\bm k}}\f{\text{Re} \bra{\psi_{n\bm k}}\p_\ap H\ket{\psi_{m\bm k}}\bra{\psi_{m\bm k}}\p_\bt H\ket{\psi_{n\bm k}}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og-i\eta)^2}\\\\
-//! \Og_{n\ap\bt}&=\sum_{m=\not n}\f{\text{Re} \bra{\psi_{n\bm k}}\p_\ap H\ket{\psi_{m\bm k}}\bra{\psi_{m\bm k}}\p_\bt H\ket{\psi_{n\bm k}}}{(\ve_{n\bm k}-\ve_{m\bm k})^2-(\og-i\eta)^2}
-//! \\end{aligned}
-//! $$
+//! $$\sigma_{\alpha\beta}(\omega) =
+//!   \frac{2ie^2\hbar}{V}\sum_{\mathbf{k}}\sum_n f_n
+//!   \Bigl(g_{n,\alpha\beta} + \frac{i}{2}\Omega_{n,\alpha\beta}\Bigr)$$
 //!
-//! ## Simplex quadrature path
+//! where the quantum metric $g$ and Berry curvature $\Omega$ contributions are
 //!
-//! ```text
-//! σ^{ab}(ω,μ,T) = Σ_{n≠m} ∫_BZ (f_n−f_m)
-//!     · v^a_{nm} v^b_{mn} / ((E_n−E_m)² − (ω+iη)²) dk
-//! ```
+//! $$g_{n,\alpha\beta} = \sum_{m\neq n}
+//!   \frac{\omega-i\eta}{E_n-E_m}\,
+//!   \frac{\operatorname{Re}[v^\alpha_{nm} v^\beta_{mn}]}
+//!        {(E_n-E_m)^2 - (\omega-i\eta)^2}$$
+//!
+//! $$\Omega_{n,\alpha\beta} = \sum_{m\neq n}
+//!   \frac{\operatorname{Re}[v^\alpha_{nm} v^\beta_{mn}]}
+//!        {(E_n-E_m)^2 - (\omega-i\eta)^2}$$
+//!
+//! In the **simplex path**, the equivalent form is used:
+//!
+//! $$\sigma^{ab}(\omega,\mu,T) = \sum_{n\neq m} \int_{\rm BZ}
+//!   \frac{(f_n-f_m)\,K^{ab}_{nm}}
+//!        {(E_n-E_m)^2 - (\omega+i\eta)^2}\,d\mathbf{k}$$
+//!
+//! where $K^{ab}_{nm}=v^a_{nm}v^b_{mn}$ is the gauge‑invariant kernel.
+//!
+//! ## API
+//!
+//! | Method | Path | Formula |
+//! |--------|------|---------|
+//! | `optical_conductivity` | direct sum | $\sigma(\omega)$ per frequency |
+//! | `optical_conductivity_T` | direct sum | $\sigma(\omega,\mu,T)$ |
+//! | `optical_conductivity_all_direction` | direct sum | all $\alpha\beta$ components |
+//! | `optical_conductivity_simplex` | simplex | $\sigma^{ab}(\omega)$ via quadrature |
 
 use ndarray::prelude::*;
 use ndarray::*;

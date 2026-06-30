@@ -1,7 +1,19 @@
 //! Data structures for simplex quadrature.
 //!
-//! `VertexKernel` stores gauge‑invariant per‑k‑point primitives.
-//! `TrackedSimplex` bundles band‑aligned vertices with geometry and diagnostics.
+//! ## Core types
+//!
+//! `VertexKernel` stores gauge‑invariant per‑k‑point primitives:
+//! band energies $E_n$, eigenvectors $U$, the velocity kernel
+//! $K^{ab}_{nm}=v^a_{nm}v^b_{mn}$, and optionally $v^c_n = \partial_c E_n$.
+//!
+//! `TrackedSimplex` bundles band‑aligned vertices with their geometry
+//! (barycentric coords, volume) and diagnostic information.
+//!
+//! ## Safety threshold
+//!
+//! `SIMPLEX_GAP_TOL = 10^{-4}` eV — simplexes with a band gap smaller
+//! than this are flagged as potentially unsafe for single‑band evaluation
+//! of Berry/QGT quantities.
 
 use ndarray::prelude::*;
 use ndarray::*;

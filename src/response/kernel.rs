@@ -1,7 +1,19 @@
 //! Kernel evaluators at quadrature points.
 //!
-//! These functions take interpolated `E_n(q)` and `K_nm(q)` at a
-//! quadrature point and assemble the Berry / QGT / optical response.
+//! Each function takes interpolated band energies $E_n(q)$ and the
+//! gauge‑invariant velocity kernel $K^{ab}_{nm}(q) = v^a_{nm}v^b_{mn}$
+//! at a single quadrature point $q$, then evaluates the singular
+//! denominator:
+//!
+//! | Function | Denominator | Returns |
+//! |----------|-------------|---------|
+//! | `eval_berry_kernel` | $d_{nm}^2 + \eta^2$ | $(g_n, \Omega_n)$ per band |
+//! | `eval_optical_kernel` | $d_{nm}^2 - (\omega+i\eta)^2$ | $\sum_{nm} (f_n-f_m)K_{nm}/{\rm denom}$ |
+//! | `eval_q_tensor` | $d_{nm}^2 + \eta^2$ | $Q^{ab;c}_n$ per band |
+//!
+//! The single‑simplex quadrature helpers (`quadrature_berry_simplex`
+//! etc.) loop over all quadrature points, interpolate, call the
+//! evaluator, and accumulate with quadrature weights.
 
 use ndarray::prelude::*;
 use ndarray::*;

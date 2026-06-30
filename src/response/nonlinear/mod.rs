@@ -1,11 +1,37 @@
-//! Nonlinear‑response simplex quadrature: Berry curvature dipole.
+//! # Nonlinear response: Berry dipole, intrinsic & extrinsic NLH
 //!
-//! ```text
-//! D^{ab;c}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) v^c_n(k) Ω^{ab}_n(k) dk
-//! ```
+//! ## Extrinsic NLH — Berry curvature dipole
 //!
-//! Requires `T > 0`.  At `T = 0` the δ‑function Fermi‑surface integral
-//! is not yet implemented in the simplex path.
+//! $$\chi^{\rm ext}_{abc}(\mu,T) =
+//!   \sum_n \int_{\rm BZ} \left(-\frac{\partial f}{\partial E_n}\right)
+//!   v^c_n(\mathbf{k})\,\Omega^{ab}_n(\mathbf{k})\,d\mathbf{k}$$
+//!
+//! where $f(E)=1/(1+e^{\beta(E-\mu)})$, $\Omega^{ab}_n = -2\operatorname{Im}G^{ab}_n$.
+//! The symmetrised form is $\chi^{\rm ext}_{c,ab}=\frac12(S_{ab;c}+S_{ac;b})$.
+//!
+//! ## Intrinsic NLH — Berry connection dipole
+//!
+//! $$\sigma^{ab;c}_{\rm int}(\mu,T) = -\frac{e^3}{\hbar}
+//!   \sum_n \int_{\rm BZ} f_n\,
+//!   \bigl[2\partial_c G^{ab}_n - \tfrac12(\partial_a G^{bc}_n + \partial_b G^{ac}_n)\bigr]\,d\mathbf{k}$$
+//!
+//! After integration by parts $\int f\partial_i G = -\int(\partial_i f)G$, the kernel is
+//!
+//! $$Q^{ab;c}_n = 2v^c_n G^{ab}_n - \tfrac12\bigl(v^a_n G^{bc}_n + v^b_n G^{ac}_n\bigr)$$
+//!
+//! The **Berry curvature dipole** (simplex path) computes $D^{ab;c}$ via
+//! volume quadrature with $(-\partial f/\partial E)$ at each quadrature point.
+//! Requires $T>0$; the $T=0$ $\delta$‑function integral is future work.
+//!
+//! ## API
+//!
+//! | Method | Path | Formula |
+//! |--------|------|---------|
+//! | `Nonlinear_Hall_conductivity_Extrinsic` | direct sum | $\chi^{\rm ext}$ |
+//! | `Nonlinear_Hall_conductivity_Extrinsic_sym` | direct sum | symmetrised $\chi^{\rm ext}$ |
+//! | `Nonlinear_Hall_conductivity_Intrinsic` | direct sum | $\sigma_{\rm int}$ |
+//! | `berry_curvature_dipole_simplex` | simplex | $D^{ab;c}$ (T>0) |
+//! | `berry_connection_dipole` | per‑k‑point | $Q^{ab;c}_n$ at each k |
 
 use ndarray::prelude::*;
 use ndarray::*;
