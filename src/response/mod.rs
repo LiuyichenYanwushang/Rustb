@@ -27,7 +27,7 @@
 //! Brillouin zone because eigenstates carry arbitrary U(1) phases.  The
 //! product
 //!
-//! $$K^{ab}_{nm}(\mathbf{k}) \equiv v^a_{nm}(\mathbf{k})\,v^b_{mn}(\mathbf{k})$$
+//! $$K^{ab}_{nm}(\mathbf{k}) \equiv v^a_{nm}(\mathbf{k})v^b_{mn}(\mathbf{k})$$
 //!
 //! is invariant under independent phase rotations of bands $n$ and $m$
 //! (when the bands are isolated), making it safe to interpolate inside
@@ -40,8 +40,8 @@
 //! simplex (triangle in 2D, tetrahedron in 3D), then evaluates the
 //! singular denominator at symmetric quadrature points:
 //!
-//! $$\int_{\text{simplex}} f(K(\mathbf{k}), E(\mathbf{k}))\,d\mathbf{k}
-//!   \approx V_{\text{simplex}} \sum_q w_q\,f(K(\mathbf{k}_q), E(\mathbf{k}_q))$$
+//! $$\int_{\text{simplex}} f(K(\mathbf{k}), E(\mathbf{k}))d\mathbf{k}
+//!   \approx V_{\text{simplex}} \sum_q w_qf(K(\mathbf{k}_q), E(\mathbf{k}_q))$$
 //!
 //! This correctly preserves the $1/(E_n-E_m)^p$ singularity structure
 //! near small gaps, unlike the old Blochl method which linearly
@@ -58,9 +58,9 @@
 //!
 //! | Module | Quantity | Formula |
 //! |--------|----------|---------|
-//! | [`linear`]   | Berry curvature $\Omega^{ab}$, quantum metric $g^{ab}$ | $\sum_n \int \Omega_n^{ab}\,d\mathbf{k}$ |
-//! | [`nonlinear`]| Berry dipole $D^{ab;c}$, intrinsic/extrinsic NLH | $\sum_n \int (-\partial f/\partial E_n) v^c_n \Omega_n^{ab}\,d\mathbf{k}$ |
-//! | [`optical`]  | Optical conductivity $\sigma^{ab}(\omega)$ | $\sum_{n\neq m} \int \frac{(f_n-f_m)K^{ab}_{nm}}{(E_n-E_m)^2-(\omega+i\eta)^2}\,d\mathbf{k}$ |
+//! | [`linear`]   | Berry curvature $\Omega^{ab}$, quantum metric $g^{ab}$ | $\sum_n \int \Omega_n^{ab}d\mathbf{k}$ |
+//! | [`nonlinear`]| Berry dipole $D^{ab;c}$, intrinsic/extrinsic NLH | $\sum_n \int (-\partial f/\partial E_n) v^c_n \Omega_n^{ab}d\mathbf{k}$ |
+//! | [`optical`]  | Optical conductivity $\sigma^{ab}(\omega)$ | $\sum_{n\neq m} \int \frac{(f_n-f_m)K^{ab}_{nm}}{(E_n-E_m)^2-(\omega+i\eta)^2}d\mathbf{k}$ |
 //! | [`traits`]   | `BerryCurvature` trait (per‑k‑point Berry curvature) | |
 //!
 //! ## Quick start

@@ -21,13 +21,13 @@
 //! The **anomalous Hall conductivity** (AHC) at $T=0$ is
 //!
 //! $$\sigma^{xy}_{\text{AHC}}(\mu) = -\frac{e^2}{\hbar}\sum_n
-//!   \int_{\text{BZ}} \Theta(\mu-E_n)\,\Omega^{xy}_n(\mathbf{k})\,d\mathbf{k}$$
+//!   \int_{\text{BZ}} \Theta(\mu-E_n)\Omega^{xy}_n(\mathbf{k})d\mathbf{k}$$
 //!
 //! ## API
 //!
 //! | Method | Path | Formula |
 //! |--------|------|---------|
-//! | `berry_curvature_simplex` | simplex | $\sum_n \int \Omega^{ab}_n\,d\mathbf{k}$ (Cartesian) |
+//! | `berry_curvature_simplex` | simplex | $\sum_n \int \Omega^{ab}_nd\mathbf{k}$ (Cartesian) |
 //! | `Hall_conductivity` | direct sum | $\sigma_{\text{AHC}}(\mu,T)$ |
 //! | `Hall_conductivity_mu` | direct sum | $\sigma_{\text{AHC}}(\mu)$ per μ |
 

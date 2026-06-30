@@ -11,7 +11,7 @@
 //! where the quantum metric $g$ and Berry curvature $\Omega$ contributions are
 //!
 //! $$g_{n,\alpha\beta} = \sum_{m\neq n}
-//!   \frac{\omega-i\eta}{E_n-E_m}\,
+//!   \frac{\omega-i\eta}{E_n-E_m}
 //!   \frac{\operatorname{Re}[v^\alpha_{nm} v^\beta_{mn}]}
 //!        {(E_n-E_m)^2 - (\omega-i\eta)^2}$$
 //!
@@ -22,8 +22,8 @@
 //! In the **simplex path**, the equivalent form is used:
 //!
 //! $$\sigma^{ab}(\omega,\mu,T) = \sum_{n\neq m} \int_{\rm BZ}
-//!   \frac{(f_n-f_m)\,K^{ab}_{nm}}
-//!        {(E_n-E_m)^2 - (\omega+i\eta)^2}\,d\mathbf{k}$$
+//!   \frac{(f_n-f_m)K^{ab}_{nm}}
+//!        {(E_n-E_m)^2 - (\omega+i\eta)^2}d\mathbf{k}$$
 //!
 //! where $K^{ab}_{nm}=v^a_{nm}v^b_{mn}$ is the gauge‑invariant kernel.
 //!

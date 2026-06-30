@@ -4,7 +4,7 @@
 //!
 //! $$\chi^{\rm ext}_{abc}(\mu,T) =
 //!   \sum_n \int_{\rm BZ} \left(-\frac{\partial f}{\partial E_n}\right)
-//!   v^c_n(\mathbf{k})\,\Omega^{ab}_n(\mathbf{k})\,d\mathbf{k}$$
+//!   v^c_n(\mathbf{k})\Omega^{ab}_n(\mathbf{k})d\mathbf{k}$$
 //!
 //! where $f(E)=1/(1+e^{\beta(E-\mu)})$, $\Omega^{ab}_n = -2\operatorname{Im}G^{ab}_n$.
 //! The symmetrised form is $\chi^{\rm ext}_{c,ab}=\frac12(S_{ab;c}+S_{ac;b})$.
@@ -12,8 +12,8 @@
 //! ## Intrinsic NLH — Berry connection dipole
 //!
 //! $$\sigma^{ab;c}_{\rm int}(\mu,T) = -\frac{e^3}{\hbar}
-//!   \sum_n \int_{\rm BZ} f_n\,
-//!   \bigl[2\partial_c G^{ab}_n - \tfrac12(\partial_a G^{bc}_n + \partial_b G^{ac}_n)\bigr]\,d\mathbf{k}$$
+//!   \sum_n \int_{\rm BZ} f_n
+//!   \bigl[2\partial_c G^{ab}_n - \tfrac12(\partial_a G^{bc}_n + \partial_b G^{ac}_n)\bigr]d\mathbf{k}$$
 //!
 //! After integration by parts $\int f\partial_i G = -\int(\partial_i f)G$, the kernel is
 //!
