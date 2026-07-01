@@ -2133,7 +2133,7 @@ mod tests {
         }
     }
 
-    /// 8c. AHC energy-cut 3D smoke test.
+    /// 8c. AHC energy-cut 3D smoke (altermagnet, Berry ≈ 0, sanity check).
     #[test]
     fn hall_conductivity_ec_3d_smoke() {
         let model = build_h_wave_am_model();
@@ -2151,8 +2151,63 @@ mod tests {
                 .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
                 .unwrap();
             let max_abs = max_abs_diff_1d(&direct, &ec);
-            println!("3D nk={nk}  max_abs={max_abs:.3e}");
+            println!("3D smoke nk={nk}  max_abs={max_abs:.3e}");
             assert!(max_abs < 5e-2, "3D mismatch too large: {max_abs:.3e}");
+        }
+    }
+
+    /// Build stacked 2D QWZ: H = sin kx σx + sin ky σy + (m+cos kx+cos ky) σz, kz-independent.
+    fn build_qwz_stacked_3d(m: f64) -> Model<false, 3> {
+        let lat = array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let orb = array![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
+        model.add_onsite(&array![m, -m], None);
+        // sin(kx) σx: H_01 = (e^{ikx} - e^{-ikx}) / (2i)
+        model.add_hop(Complex::new(0.0, -0.5), 0, 1, &array![1, 0, 0], None);
+        model.add_hop(Complex::new(0.0, 0.5), 0, 1, &array![-1, 0, 0], None);
+        // sin(ky) σy: H_01 = -i sin(ky) = -(e^{iky} - e^{-iky})/2
+        model.add_hop(-0.5, 0, 1, &array![0, 1, 0], None);
+        model.add_hop(0.5, 0, 1, &array![0, -1, 0], None);
+        // cos(kx) σz: (e^{ikx} + e^{-ikx})/2 σz
+        model.add_hop(0.5, 0, 0, &array![1, 0, 0], None);
+        model.add_hop(0.5, 0, 0, &array![-1, 0, 0], None);
+        model.add_hop(-0.5, 1, 1, &array![1, 0, 0], None);
+        model.add_hop(-0.5, 1, 1, &array![-1, 0, 0], None);
+        // cos(ky) σz
+        model.add_hop(0.5, 0, 0, &array![0, 1, 0], None);
+        model.add_hop(0.5, 0, 0, &array![0, -1, 0], None);
+        model.add_hop(-0.5, 1, 1, &array![0, 1, 0], None);
+        model.add_hop(-0.5, 1, 1, &array![0, -1, 0], None);
+        model
+    }
+
+    /// 8d. 3D stacked QWZ: Ω kz-independent, plateau = 1/(2π).
+    #[test]
+    fn hall_conductivity_ec_3d_qwz() {
+        let model = build_qwz_stacked_3d(-1.0);
+        let dx = arr1(&[1.0, 0.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0, 0.0]);
+        let eta = 0.1;
+        let mu = Array1::linspace(-3.0, 3.0, 61);
+        let i_mid = mu.len() / 2;
+        let c_ref = 1.0 / (2.0 * std::f64::consts::PI);
+
+        for &nk in &[10, 14] {
+            let kmesh = arr1(&[nk, nk, 4]); // fewer kz points (Ω is kz-independent)
+            let direct = model
+                .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, eta)
+                .unwrap();
+            let ec = model
+                .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
+                .unwrap();
+            let max_abs = max_abs_diff_1d(&direct, &ec);
+            let c_dir = direct[[i_mid]];
+            let c_ec = ec[[i_mid]];
+            println!(
+                "3D QWZ nk={nk}  max_abs={max_abs:.3e}  C_dir={c_dir:.6}  C_ec={c_ec:.6}  C_ref={c_ref:.6}"
+            );
+            assert!(max_abs < 5e-2, "QWZ EC vs direct mismatch: {max_abs:.3e}");
+            assert!((c_ec - c_ref).abs() < 0.003, "QWZ plateau off: {c_ec:.6}");
         }
     }
 }
