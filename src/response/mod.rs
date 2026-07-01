@@ -98,8 +98,8 @@ pub use energy_cut::{
     triangle_line_cut,
 };
 pub use kernel::{
-    eval_berry_kernel, eval_optical_kernel, fermi, fermi_deriv, quadrature_berry_simplex,
-    quadrature_optical_simplex,
+    eval_berry_band_at_lam, eval_berry_kernel, eval_optical_kernel, fermi, fermi_deriv,
+    quadrature_berry_simplex, quadrature_optical_simplex,
 };
 pub use optical::OpticalGeometry;
 pub use quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};

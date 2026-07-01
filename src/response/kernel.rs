@@ -84,6 +84,59 @@ pub fn eval_berry_kernel(
     (metric, berry)
 }
 
+/// Evaluate $\Omega_n$ for a single band at one quadrature point.
+///
+/// Interpolates $E_m(q)$ and $K_{nm}(q)$ at barycentric coords `lam`,
+/// then computes $\Omega_n = -2\,\mathrm{Im}\sum_{m\ne n} K_{nm}/(\Delta_{nm}^2+\eta^2)$.
+/// Avoids allocating the full $K$ matrix and computing $\Omega$ for other bands.
+pub fn eval_berry_band_at_lam(
+    n: usize,
+    bands: &[Vec<f64>],
+    kmats: &[Array2<Complex<f64>>],
+    lam: &[f64],
+    eta: f64,
+    nsta: usize,
+) -> f64 {
+    // Interpolate E_m for all bands
+    let mut e_q = vec![0.0; nsta];
+    for v in 0..bands.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            e_q[m] += bands[v][m] * lv;
+        }
+    }
+
+    // Interpolate K_{nm} for row n only
+    let mut k_row = vec![Complex::new(0.0, 0.0); nsta];
+    for v in 0..kmats.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            k_row[m] += kmats[v][[n, m]] * lv;
+        }
+    }
+
+    let eta2 = eta * eta;
+    let mut g_sum = Complex::new(0.0, 0.0);
+    for m in 0..nsta {
+        if m == n {
+            continue;
+        }
+        let de = e_q[n] - e_q[m];
+        let denom = de * de + eta2;
+        if denom < 1e-30 {
+            continue;
+        }
+        g_sum += k_row[m] / denom;
+    }
+    -2.0 * g_sum.im
+}
+
 // ── Optical kernel ──────────────────────────────────────────────────────
 
 /// Evaluate the optical conductivity kernel at one quadrature point.

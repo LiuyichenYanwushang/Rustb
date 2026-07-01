@@ -16,9 +16,11 @@
 
 use ndarray::prelude::*;
 use ndarray::*;
+use num_complex::Complex;
 use rayon::prelude::*;
 
-use super::kernel::eval_berry_kernel;
+use super::kernel::{eval_berry_band_at_lam, eval_berry_kernel};
+use super::quadrature::{TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
 use super::tracking::{build_tetrahedra_3d, build_triangles_2d_diagavg};
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, VertexKernel};
 
@@ -250,79 +252,132 @@ pub fn integrate_dipole_energy_cut_2d(
 
 // ── Fermi‑window energy‑cut (AHC) ───────────────────────────────────────
 
-/// Exact integral of linearly interpolated $\Omega(k)$ over the occupied
-/// region $\{k \in \text{triangle} : E(k) \le \mu\}$.
-///
-/// Three cases:
-/// - $\mu$ below all vertices → 0
-/// - $\mu$ above all vertices → $\text{area} \times (\Omega_0+\Omega_1+\Omega_2)/3$
-/// - otherwise → triangle clipped by the iso‑energy line $E=\mu$,
-///   integrated analytically (sub‑triangle or two triangles for a quadrilateral)
-///
-/// Returns the integral in the coordinate measure of `coords`.
-fn triangle_occupied_integral(
-    coords: &Array2<f64>,
-    energy_v: [f64; 3],
-    omega_v: [f64; 3],
-    mu: f64,
-) -> f64 {
-    let eps = ENERGY_CUT_EPS;
-    let area = triangle_area(coords);
-    if area < eps {
-        return 0.0;
-    }
+/// Map barycentric coordinates in the original triangle to physical coords.
+fn bary_to_phys_2d(coords: &Array2<f64>, lam: &[f64; 3]) -> [f64; 2] {
+    [
+        lam[0] * coords[[0, 0]] + lam[1] * coords[[1, 0]] + lam[2] * coords[[2, 0]],
+        lam[0] * coords[[0, 1]] + lam[1] * coords[[1, 1]] + lam[2] * coords[[2, 1]],
+    ]
+}
 
+/// Area of a sub‑triangle defined by 3 barycentric points.
+fn sub_tri_area_2d(coords: &Array2<f64>, tri: &[[f64; 3]; 3]) -> f64 {
+    let p0 = bary_to_phys_2d(coords, &tri[0]);
+    let p1 = bary_to_phys_2d(coords, &tri[1]);
+    let p2 = bary_to_phys_2d(coords, &tri[2]);
+    0.5 * ((p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1])).abs()
+}
+
+/// Clip the original triangle by $E_n(k)\le\mu$ and return the occupied
+/// polygon as 1–2 sub‑triangles, each vertex given by its barycentric
+/// coordinates in the original triangle.
+fn clip_triangle(energy_v: [f64; 3], mu: f64) -> Vec<[[f64; 3]; 3]> {
+    let eps = 1e-12;
     let e_min = energy_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
     let e_max = energy_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
 
     if mu <= e_min + eps {
-        return 0.0;
+        return vec![];
     }
     if mu >= e_max - eps {
-        return area * (omega_v[0] + omega_v[1] + omega_v[2]) / 3.0;
+        return vec![[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]];
     }
 
-    // Sort vertices by energy: e[a] ≤ e[b] ≤ e[c]
     let mut idx: [usize; 3] = [0, 1, 2];
     idx.sort_by(|&i, &j| energy_v[i].partial_cmp(&energy_v[j]).unwrap());
     let (a, b, c) = (idx[0], idx[1], idx[2]);
 
-    let tri = |p0: [f64; 2], p1: [f64; 2], p2: [f64; 2]| -> f64 {
-        0.5 * ((p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1])).abs()
+    // Barycentric unit vector at original vertex i
+    let unit = |i: usize| -> [f64; 3] {
+        let mut l = [0.0; 3];
+        l[i] = 1.0;
+        l
     };
 
-    // Intersection point + Ω on edge i→j at energy μ
-    let cut = |i: usize, j: usize| -> ([f64; 2], f64) {
+    // Barycentrics of the intersection on edge i→j at energy μ
+    let cut = |i: usize, j: usize| -> [f64; 3] {
         let de = energy_v[j] - energy_v[i];
         let t = if de.abs() < eps {
             0.5
         } else {
             ((mu - energy_v[i]) / de).clamp(0.0, 1.0)
         };
-        let x = coords[[i, 0]] + t * (coords[[j, 0]] - coords[[i, 0]]);
-        let y = coords[[i, 1]] + t * (coords[[j, 1]] - coords[[i, 1]]);
-        let omega = omega_v[i] + t * (omega_v[j] - omega_v[i]);
-        ([x, y], omega)
+        let mut l = [0.0; 3];
+        l[i] = 1.0 - t;
+        l[j] = t;
+        l
     };
 
-    let a_xy = [coords[[a, 0]], coords[[a, 1]]];
-    let b_xy = [coords[[b, 0]], coords[[b, 1]]];
-
     if mu <= energy_v[b] + eps {
-        // a below μ, b and c above → sub‑triangle a → p_ab → p_ac
-        let (p_ab, o_ab) = cut(a, b);
-        let (p_ac, o_ac) = cut(a, c);
-        tri(a_xy, p_ab, p_ac) * (omega_v[a] + o_ab + o_ac) / 3.0
+        // 1 vertex below (a) → sub‑triangle {a, cut(a,b), cut(a,c)}
+        vec![[unit(a), cut(a, b), cut(a, c)]]
     } else {
-        // a and b below μ, c above → quadrilateral → two triangles
-        let (p_ac, o_ac) = cut(a, c);
-        let (p_bc, o_bc) = cut(b, c);
-        tri(a_xy, b_xy, p_ac) * (omega_v[a] + omega_v[b] + o_ac) / 3.0
-            + tri(b_xy, p_ac, p_bc) * (omega_v[b] + o_ac + o_bc) / 3.0
+        // 2 vertices below (a,b) → quadrilateral → two sub‑triangles
+        vec![
+            [unit(a), unit(b), cut(a, c)],
+            [unit(b), cut(a, c), cut(b, c)],
+        ]
     }
 }
 
-/// T=0 occupancy‑cut integration (no energy binning).
+/// Combine sub‑triangle barycentrics $\alpha$ with vertex barycentrics
+/// $\lambda_i$ to get the overall barycentrics in the original triangle:
+/// $\lambda = \sum_i \alpha_i \lambda_i$.
+fn combine_bary(alpha: &[f64; 3], lam0: &[f64; 3], lam1: &[f64; 3], lam2: &[f64; 3]) -> [f64; 3] {
+    [
+        alpha[0] * lam0[0] + alpha[1] * lam1[0] + alpha[2] * lam2[0],
+        alpha[0] * lam0[1] + alpha[1] * lam1[1] + alpha[2] * lam2[1],
+        alpha[0] * lam0[2] + alpha[1] * lam1[2] + alpha[2] * lam2[2],
+    ]
+}
+
+/// Hybrid integration: vertex‑average $\Omega$ for fully‑occupied / empty
+/// triangles; K‑quadrature on clipped polygons for partially‑occupied ones.
+///
+/// Returns the integral in the coordinate measure of `coords`.
+fn triangle_occupied_hybrid(
+    coords: &Array2<f64>,
+    e_v: [f64; 3],
+    omega_vertex: [f64; 3],
+    bands: &[Vec<f64>],
+    kmats: &[Array2<Complex<f64>>],
+    mu: f64,
+    eta: f64,
+    n: usize,
+    nsta: usize,
+) -> f64 {
+    let eps = ENERGY_CUT_EPS;
+    let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let area = triangle_area(coords);
+
+    if mu <= e_min + eps {
+        return 0.0;
+    }
+    if mu >= e_max - eps {
+        // Full occupancy: vertex‑average Ω preserves gap quantization
+        return area * (omega_vertex[0] + omega_vertex[1] + omega_vertex[2]) / 3.0;
+    }
+
+    // Partial occupancy: clipped polygon + K‑quadrature
+    let sub_tris = clip_triangle(e_v, mu);
+    let mut total = 0.0;
+    for sub_tri in &sub_tris {
+        let sub_area = sub_tri_area_2d(coords, sub_tri);
+        if sub_area < 1e-30 {
+            continue;
+        }
+        for iq in 0..3 {
+            let alpha = &TRI_QUAD_PTS_3[iq];
+            let w = TRI_QUAD_WTS_3[iq];
+            let lam = combine_bary(alpha, &sub_tri[0], &sub_tri[1], &sub_tri[2]);
+            total += sub_area * w * eval_berry_band_at_lam(n, bands, kmats, &lam, eta, nsta);
+        }
+    }
+    total
+}
+
+/// T=0 occupancy‑cut with hybrid vertex‑Ω / K‑quadrature.
 fn integrate_fermi_cut_2d_t0(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
@@ -346,6 +401,7 @@ fn integrate_fermi_cut_2d_t0(
                 let volume_scale = sim.volume / area;
                 let nsta = sim.vertices[0].band.len();
 
+                // Precompute vertex Ω (shared across μ).
                 let (_g0, o0) = eval_berry_kernel(
                     &sim.vertices[0].band.to_vec(),
                     &sim.vertices[0].k_ab,
@@ -365,6 +421,18 @@ fn integrate_fermi_cut_2d_t0(
                     nsta,
                 );
 
+                // Pre-extract band energies and K matrices for K‑quadrature.
+                let bands: [Vec<f64>; 3] = [
+                    sim.vertices[0].band.to_vec(),
+                    sim.vertices[1].band.to_vec(),
+                    sim.vertices[2].band.to_vec(),
+                ];
+                let kmats: [Array2<Complex<f64>>; 3] = [
+                    sim.vertices[0].k_ab.clone(),
+                    sim.vertices[1].k_ab.clone(),
+                    sim.vertices[2].k_ab.clone(),
+                ];
+
                 for n in 0..nsta {
                     let e_v = [
                         sim.vertices[0].band[n],
@@ -372,10 +440,30 @@ fn integrate_fermi_cut_2d_t0(
                         sim.vertices[2].band[n],
                     ];
                     let omega_v = [o0[n], o1[n], o2[n]];
+                    let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+                    let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+                    let full_val = area * (omega_v[0] + omega_v[1] + omega_v[2]) / 3.0;
 
                     for im in 0..n_mu {
-                        result[im] += volume_scale
-                            * triangle_occupied_integral(&sim.coords, e_v, omega_v, mu[im]);
+                        let m = mu[im];
+                        let contrib = if m <= e_min + ENERGY_CUT_EPS {
+                            0.0
+                        } else if m >= e_max - ENERGY_CUT_EPS {
+                            full_val
+                        } else {
+                            triangle_occupied_hybrid(
+                                &sim.coords,
+                                e_v,
+                                omega_v,
+                                &bands,
+                                &kmats,
+                                m,
+                                eta,
+                                n,
+                                nsta,
+                            )
+                        };
+                        result[im] += volume_scale * contrib;
                     }
                 }
             }
