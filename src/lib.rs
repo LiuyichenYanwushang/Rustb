@@ -2254,6 +2254,45 @@ mod tests {
         assert!(max_sum < 1e-3, "Intrinsic TR-odd broken: {max_sum:.3e}");
     }
 
+    /// 8c5. Intrinsic NLH convergence: EC vs direct as f(nk, T).
+    #[test]
+    fn intrinsic_ec_convergence() {
+        let model = build_haldane_2d(-0.3);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let dc = arr1(&[1.0, 0.0]);
+        let eta = 0.1;
+        let mu = Array1::linspace(-3.0, 3.0, 81);
+
+        println!("nk     T=0K       T=100K     T=300K");
+        for &nk in &[15, 21, 31, 41] {
+            let kmesh = arr1(&[nk, nk]);
+            let d0 = model
+                .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dc, &dx, &dy, &mu, 0.0)
+                .unwrap();
+            let ec0 = model
+                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dc, &mu, 0.0, eta)
+                .unwrap();
+            let d100 = model
+                .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dc, &dx, &dy, &mu, 100.0)
+                .unwrap();
+            let ec100 = model
+                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dc, &mu, 100.0, eta)
+                .unwrap();
+            let d300 = model
+                .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dc, &dx, &dy, &mu, 300.0)
+                .unwrap();
+            let ec300 = model
+                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dc, &mu, 300.0, eta)
+                .unwrap();
+            let e0 = max_abs_diff_1d(&d0, &ec0);
+            let e100 = max_abs_diff_1d(&d100, &ec100);
+            let e300 = max_abs_diff_1d(&d300, &ec300);
+            println!("{nk:>3}   {e0:.3e}   {e100:.3e}   {e300:.3e}");
+            assert!(e0 < 1e-2 && e100 < 1e-2 && e300 < 1e-2);
+        }
+    }
+
     /// 8d. AHC energy-cut 3D smoke (altermagnet, Berry ≈ 0, sanity check).
     #[test]
     fn hall_conductivity_ec_3d_smoke() {
