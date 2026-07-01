@@ -2059,6 +2059,56 @@ mod tests {
         assert!(max_err < 1e-12, "old vs new Ω_n mismatch: {:.2e}", max_err);
     }
 
+    /// 8b. Berry curvature integral: simplex vs direct sum.
+    ///
+    /// The Haldane model has total Ω = 0 (Chern numbers sum to zero).
+    /// This tests whether the simplex quadrature introduces spurious
+    /// non‑zero total Berry curvature.
+    #[test]
+    fn berry_total_simplex_vs_direct() {
+        let model = build_haldane_2d(-0.3);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let eta = 0.05;
+
+        println!("\n--- Berry total Ω^{{xy}} simplex vs direct ---");
+        println!("{:>4}  {:>14}  {:>14}  {:>12}", "nk", "direct_sum", "simplex", "diff");
+        for &nk in &[21usize, 31, 51, 101] {
+            let kmesh = arr1(&[nk, nk]);
+            let kvec = crate::kpoints::gen_kmesh(&kmesh).unwrap();
+            let nkt = kvec.nrows();
+
+            // old: direct sum
+            let mut direct = 0.0;
+            for ik in 0..nkt {
+                let kv = kvec.row(ik).to_owned();
+                let (omega_n, _band) = model.berry_curvature_n_onek(&kv, &dx, &dy, None, eta);
+                direct += omega_n.iter().sum::<f64>();
+            }
+            direct /= nkt as f64;
+
+            // new: simplex integral
+            let all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
+                .map(|ik| {
+                    let kv = kvec.row(ik).to_owned();
+                    let tk = model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None);
+                    crate::response::VertexKernel {
+                        band: tk.band,
+                        k_ab: tk.k_ab,
+                        vdiag: None,
+                        evec: tk.evec,
+                    }
+                })
+                .collect();
+            let (_g, simplex, _unsafe) =
+                crate::response::linear::integrate(&all_pts, &kmesh, eta);
+
+            let diff = (direct - simplex).abs();
+            println!("{nk:>4}  {direct:>14.6e}  {simplex:>14.6e}  {diff:>10.3e}");
+            assert!(diff < 5e-4, "total Ω mismatch {diff:.2e} at nk={nk}");
+        }
+    }
+
     /// 9. Berry curvature dipole: old direct Fermi‑derivative sum vs new
     /// simplex vdiag‑weighted quadrature (T>0 only).
     #[test]
