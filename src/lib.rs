@@ -2203,8 +2203,10 @@ mod tests {
             let max_abs = max_abs_diff_1d(&direct, &ec);
             let c_dir = direct[[i_mid]];
             let c_ec = ec[[i_mid]];
+            let cnt = crate::response::read_reset_fermi_cut_counts();
             println!(
-                "3D QWZ nk={nk}  max_abs={max_abs:.3e}  C_dir={c_dir:.6}  C_ec={c_ec:.6}  C_ref={c_ref:.6}"
+                "3D QWZ nk={nk}  max_abs={max_abs:.3e}  C_dir={c_dir:.6}  C_ec={c_ec:.6}  C_ref={c_ref:.6}  empty/full/partial={}/{}/{}",
+                cnt.empty, cnt.full, cnt.partial
             );
             assert!(max_abs < 5e-2, "QWZ EC vs direct mismatch: {max_abs:.3e}");
             assert!((c_ec - c_ref).abs() < 0.003, "QWZ plateau off: {c_ec:.6}");

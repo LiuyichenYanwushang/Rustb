@@ -534,6 +534,41 @@ pub fn integrate_fermi_cut_2d(
     Array1::from_vec(result)
 }
 
+/// Diagnostic counters for hybrid energy‑cut.
+#[derive(Default, Clone)]
+pub struct FermiCutCounts {
+    pub empty: usize,
+    pub full: usize,
+    pub partial: usize,
+}
+
+#[cfg(debug_assertions)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(debug_assertions)]
+static CNT_EMPTY: AtomicUsize = AtomicUsize::new(0);
+#[cfg(debug_assertions)]
+static CNT_FULL: AtomicUsize = AtomicUsize::new(0);
+#[cfg(debug_assertions)]
+static CNT_PARTIAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Read and reset the internal hybrid energy‑cut counters (debug builds only).
+/// In release builds returns all zeros.
+pub fn read_reset_fermi_cut_counts() -> FermiCutCounts {
+    #[cfg(debug_assertions)]
+    {
+        FermiCutCounts {
+            empty: CNT_EMPTY.swap(0, Ordering::Relaxed),
+            full: CNT_FULL.swap(0, Ordering::Relaxed),
+            partial: CNT_PARTIAL.swap(0, Ordering::Relaxed),
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        FermiCutCounts::default()
+    }
+}
+
 // ── 3D tetrahedron occupancy cut ─────────────────────────────────────────
 
 #[inline]
@@ -806,26 +841,43 @@ fn integrate_fermi_cut_3d_t0(
                         let full_val =
                             vol * (omega_v[0] + omega_v[1] + omega_v[2] + omega_v[3]) / 4.0;
 
-                        for im in 0..n_mu {
-                            let m = mu[im];
-                            let contrib = if m <= e_min + ENERGY_CUT_EPS {
-                                0.0
-                            } else if m >= e_max - ENERGY_CUT_EPS {
-                                full_val
-                            } else {
-                                tetrahedron_occupied_hybrid(
+                        // Sorted-μ sweep: binary search for break points.
+                        let mu_slice = mu.as_slice().unwrap();
+                        let i_partial = mu_slice.partition_point(|&x| x <= e_min + ENERGY_CUT_EPS);
+                        let i_full = mu_slice.partition_point(|&x| x < e_max - ENERGY_CUT_EPS);
+
+                        #[cfg(debug_assertions)]
+                        {
+                            CNT_EMPTY.fetch_add(i_partial, Ordering::Relaxed);
+                            CNT_FULL.fetch_add(n_mu.saturating_sub(i_full), Ordering::Relaxed);
+                            CNT_PARTIAL
+                                .fetch_add(i_full.saturating_sub(i_partial), Ordering::Relaxed);
+                        }
+
+                        // Empty region μ[0..i_partial]: skip (zero contribution).
+
+                        // Partial region μ[i_partial..i_full]: K‑quadrature.
+                        for im in i_partial..i_full {
+                            result[im] += volume_scale
+                                * tetrahedron_occupied_hybrid(
                                     &sim.coords,
                                     e_v,
                                     omega_v,
                                     &bands,
                                     &kmats,
-                                    m,
+                                    mu[im],
                                     eta,
                                     n,
                                     nsta,
-                                )
-                            };
-                            result[im] += volume_scale * contrib;
+                                );
+                        }
+
+                        // Full region μ[i_full..]: range add.
+                        if i_full < n_mu {
+                            let add = volume_scale * full_val;
+                            for im in i_full..n_mu {
+                                result[im] += add;
+                            }
                         }
                     }
                 }
