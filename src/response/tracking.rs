@@ -188,7 +188,7 @@ pub fn build_triangles_2d(
     let tri_area = cell_area / 2.0;
     let mut out = Vec::new();
 
-    for &(v0, v1, v2) in &[(i00, i10, i01), (i11, i10, i01)] {
+    for &(v0, v1, v2, v4) in &[(i00, i10, i01, i11), (i11, i10, i01, i00)] {
         let raw = vec![
             all_pts[v0].clone(),
             all_pts[v1].clone(),
@@ -202,11 +202,13 @@ pub fn build_triangles_2d(
             vec![c0[0], c0[1], c1[0], c1[1], c2[0], c2[1]]
         })
         .unwrap();
+        let vdiag_4th: Option<Vec<f64>> = all_pts[v4].vdiag.as_ref().map(|v| v.to_vec());
         out.push(TrackedSimplex {
             vertices: aligned,
             volume: tri_area,
             coords,
             diag,
+            vdiag_4th,
         });
     }
     out
@@ -285,6 +287,7 @@ pub fn build_tetrahedra_3d(
             volume: cube_vol * TET_VOL_FACTOR[teti],
             coords,
             diag,
+            vdiag_4th: None,
         });
     }
     out

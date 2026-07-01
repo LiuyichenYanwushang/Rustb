@@ -43,6 +43,9 @@ pub struct TrackedSimplex {
     pub volume: f64,
     /// Fractional coordinates of each vertex, shape `(d+1, dim)`.
     pub coords: Array2<f64>,
+    /// 4th rectangle‑corner vdiag values (2D only, for bilinear interpolation).
+    /// Length `nsta`, set by `build_triangles_2d`.
+    pub vdiag_4th: Option<Vec<f64>>,
     /// Diagnostic counters for this simplex.
     pub diag: SimplexDiagnostics,
 }
