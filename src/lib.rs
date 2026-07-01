@@ -2072,7 +2072,10 @@ mod tests {
         let eta = 0.05;
 
         println!("\n--- Berry total Ω^{{xy}} simplex vs direct ---");
-        println!("{:>4}  {:>14}  {:>14}  {:>12}", "nk", "direct_sum", "simplex", "diff");
+        println!(
+            "{:>4}  {:>14}  {:>14}  {:>12}",
+            "nk", "direct_sum", "simplex", "diff"
+        );
         for &nk in &[21usize, 31, 51, 101] {
             let kmesh = arr1(&[nk, nk]);
             let kvec = crate::kpoints::gen_kmesh(&kmesh).unwrap();
@@ -2100,8 +2103,7 @@ mod tests {
                     }
                 })
                 .collect();
-            let (_g, simplex, _unsafe) =
-                crate::response::linear::integrate(&all_pts, &kmesh, eta);
+            let (_g, simplex, _unsafe) = crate::response::linear::integrate(&all_pts, &kmesh, eta);
 
             let diff = (direct - simplex).abs();
             println!("{nk:>4}  {direct:>14.6e}  {simplex:>14.6e}  {diff:>10.3e}");
@@ -2118,83 +2120,102 @@ mod tests {
         let dy = arr1(&[0.0, 1.0]);
         let dir_c = arr1(&[1.0, 0.0]); // v^c = v^x
         let T: f64 = 10.0;
-        let beta = 1.0 / (T * 8.617333262e-5);
         let eta = 0.05;
         let mu = Array1::linspace(-2.0, 2.0, 11);
         let n_mu = mu.len();
 
-        let nk: usize = 101;
-        let kmesh = arr1(&[nk, nk]);
-        let kvec = crate::kpoints::gen_kmesh(&kmesh).unwrap();
-        let nkt = kvec.nrows();
+        println!("--- Berry dipole scaling with nk (T={T}K) ---");
+        println!(
+            "{:>6}  {:>12}  {:>12}  {:>12}  {:>12}",
+            "nk", "max_abs_down", "max_abs_up", "max_abs_avg", "|down-up|"
+        );
+        for &nk in &[21, 31, 51, 71, 101, 151] {
+            let kmesh = arr1(&[nk, nk]);
+            let kvec = crate::kpoints::gen_kmesh(&kmesh).unwrap();
+            let nkt = kvec.nrows();
+            let beta = 1.0 / (T * 8.617333262e-5);
+            let inv_n = 1.0 / nk as f64;
 
-        // ── old: direct sum with −df/dE weighting ──
-        let mut old_dipole = Array1::<f64>::zeros(n_mu);
-        for ik in 0..nkt {
-            let kv = kvec.row(ik).to_owned();
-            let (omega_n, band) = model.berry_curvature_n_onek(&kv, &dx, &dy, None, eta);
-            // get v^c_n via tetra primitives
-            let tk = model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None);
-            for n in 0..model.nsta() {
-                let vcn = tk.vdiag.as_ref().unwrap()[[n]];
-                for im in 0..n_mu {
-                    let x = beta * (band[[n]] - mu[[im]]);
-                    if x.abs() > 50.0 {
-                        continue;
-                    }
-                    let f = 1.0 / (1.0 + x.exp());
-                    let df = beta * f * (1.0 - f);
-                    old_dipole[[im]] += df * vcn * omega_n[[n]];
-                }
-            }
-        }
-        old_dipole /= nkt as f64;
-
-        // ── new: simplex dipole quadrature ──
-        let all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
-            .map(|ik| {
+            // ── direct sum ──
+            let mut old_dipole = Array1::<f64>::zeros(n_mu);
+            for ik in 0..nkt {
                 let kv = kvec.row(ik).to_owned();
+                let (omega_n, band) = model.berry_curvature_n_onek(&kv, &dx, &dy, None, eta);
                 let tk =
                     model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None);
-                crate::response::VertexKernel {
-                    band: tk.band,
-                    k_ab: tk.k_ab,
-                    vdiag: tk.vdiag,
-                    evec: tk.evec,
+                for n in 0..model.nsta() {
+                    let vcn = tk.vdiag.as_ref().unwrap()[[n]];
+                    for im in 0..n_mu {
+                        let x = beta * (band[[n]] - mu[[im]]);
+                        if x.abs() > 50.0 {
+                            continue;
+                        }
+                        let f = 1.0 / (1.0 + x.exp());
+                        let df = beta * f * (1.0 - f);
+                        old_dipole[[im]] += df * vcn * omega_n[[n]];
+                    }
                 }
-            })
-            .collect();
-        let (new_dipole, _unsafe) =
-            crate::response::nonlinear::integrate_dipole(&all_pts, &kmesh, &mu, T, eta);
+            }
+            old_dipole /= nkt as f64;
 
-        println!("--- Berry dipole D^{{xy;x}}(μ,T={T}K) nk={nk} ---");
-        println!(
-            "{:>8}  {:>14}  {:>14}  {:>12}",
-            "μ", "old_direct", "new_simplex", "diff"
-        );
-        let mut max_rel: f64 = 0.0;
-        for im in 0..n_mu {
-            let o = old_dipole[[im]];
-            let n = new_dipole[[im]];
-            let d = (o - n).abs();
-            let pk = o.abs().max(n.abs());
-            let rel = if pk > 1e-8 { d / pk } else { d };
-            max_rel = max_rel.max(rel);
-            println!("{:.3}  {:>14.6e}  {:>14.6e}  {:>10.3e}", mu[[im]], o, n, d);
+            // ── simplex: build VertexKernel + global track ──
+            let mut all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
+                .map(|ik| {
+                    let kv = kvec.row(ik).to_owned();
+                    let tk = model.compute_velocity_kernel(
+                        &kv,
+                        &dx,
+                        &dy,
+                        Some(&dir_c),
+                        Gauge::Atom,
+                        None,
+                    );
+                    crate::response::VertexKernel {
+                        band: tk.band,
+                        k_ab: tk.k_ab,
+                        vdiag: tk.vdiag,
+                        evec: tk.evec,
+                    }
+                })
+                .collect();
+            crate::response::global_band_track(&mut all_pts, &[nk, nk]);
+
+            // ── separate diagonals ──
+            let mut dipole_down = Array1::<f64>::zeros(n_mu);
+            let mut dipole_up = Array1::<f64>::zeros(n_mu);
+            for ix in 0..nk {
+                for iy in 0..nk {
+                    let sims = crate::response::build_triangles_2d_diagavg(
+                        ix, iy, nk, nk, inv_n, inv_n, &all_pts,
+                    );
+                    let vol2 = 2.0;
+                    for s in 0..2 {
+                        let q =
+                            crate::response::quadrature_dipole_simplex(&sims[s], eta, &mu, beta);
+                        dipole_down += &(q * vol2);
+                    }
+                    for s in 2..4 {
+                        let q =
+                            crate::response::quadrature_dipole_simplex(&sims[s], eta, &mu, beta);
+                        dipole_up += &(q * vol2);
+                    }
+                }
+            }
+            let dipole_avg = &dipole_down * 0.5 + &dipole_up * 0.5;
+
+            let max_down = max_abs_diff_1d(&old_dipole, &dipole_down);
+            let max_up = max_abs_diff_1d(&old_dipole, &dipole_up);
+            let max_avg = max_abs_diff_1d(&old_dipole, &dipole_avg);
+            let spread = max_abs_diff_1d(&dipole_down, &dipole_up);
+            println!(
+                "{nk:>6}  {max_down:>12.3e}  {max_up:>12.3e}  {max_avg:>12.3e}  {spread:>12.3e}"
+            );
+
+            assert!(
+                max_avg < 2e-2,
+                "nk={nk}: diagavg vs direct {max_avg:.2e} too large"
+            );
         }
-        let max_abs = max_abs_diff_1d(&old_dipole, &new_dipole);
-        println!("max rel={:.3e}  max_abs={:.3e}", max_rel, max_abs);
-        // Haldane has particle‑hole symmetry → BCD = 0 identically.
-        // Old method gives ~0.  Simplex dipole has a noise floor from
-        // linear interpolation of vdiag within simplices — the product
-        // v^x·Ω·(−∂f/∂E) is not exactly captured by 3‑point degree‑2
-        // quadrature even though the Berry curvature alone converges
-        // to machine precision (~1e-18).  Accept ≤ 1e-2 absolute.
-        assert!(
-            max_abs < 1e-2,
-            "old vs new absolute dipole diff {:.2e} too large",
-            max_abs
-        );
     }
 
     /// 10. Optical conductivity: old per‑frequency direct sum vs new

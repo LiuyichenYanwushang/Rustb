@@ -8,7 +8,7 @@ use ndarray::prelude::*;
 use ndarray::*;
 use num_complex::Complex;
 
-use super::types::{SimplexDiagnostics, TrackedSimplex, VertexKernel};
+use super::types::{SimplexDiagnostics, TrackedSimplex, VdiagRect, VertexKernel};
 
 // ── Cube / tetrahedron decomposition constants ──────────────────────────
 
@@ -235,12 +235,22 @@ fn neighbour_indices(i: usize, k_mesh: &[usize]) -> Vec<usize> {
         let iy = rem / nz;
         let iz = rem % nz;
         for &(dx, dy, dz) in &[
-            (1isize, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1),
+            (1isize, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
         ] {
             let jx = ix as isize + dx;
             let jy = iy as isize + dy;
             let jz = iz as isize + dz;
-            if jx >= 0 && jx < nx as isize && jy >= 0 && jy < ny as isize && jz >= 0 && jz < nz as isize
+            if jx >= 0
+                && jx < nx as isize
+                && jy >= 0
+                && jy < ny as isize
+                && jz >= 0
+                && jz < nz as isize
             {
                 out.push((jx as usize) * ny * nz + (jy as usize) * nz + (jz as usize));
             }
@@ -288,8 +298,31 @@ pub fn build_triangles_2d(
 
     // After global_band_track, all points share consistent band labels.
     // Local tracking is skipped; diagnostics use the vertex data directly.
-    for &(v0, v1, v2, v4) in &[(i00, i10, i01, i11), (i11, i10, i01, i00)] {
-        let aligned = vec![all_pts[v0].clone(), all_pts[v1].clone(), all_pts[v2].clone()];
+    //
+    // Build VdiagRect from all four rectangle corners (when vdiag is present).
+    let vdiag_rect: Option<VdiagRect> = match (
+        all_pts[i00].vdiag.as_ref(),
+        all_pts[i10].vdiag.as_ref(),
+        all_pts[i01].vdiag.as_ref(),
+        all_pts[i11].vdiag.as_ref(),
+    ) {
+        (Some(v00), Some(v10), Some(v01), Some(v11)) => Some(VdiagRect {
+            corners: [v00.to_vec(), v10.to_vec(), v01.to_vec(), v11.to_vec()],
+        }),
+        _ => None,
+    };
+
+    for &(v0, v1, v2, local_xy) in &[
+        // Triangle 1: ↘ diagonal, vertices at (0,0), (1,0), (0,1)
+        (i00, i10, i01, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+        // Triangle 2: ↘ diagonal, vertices at (1,1), (1,0), (0,1)
+        (i11, i10, i01, [[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
+    ] {
+        let aligned = vec![
+            all_pts[v0].clone(),
+            all_pts[v1].clone(),
+            all_pts[v2].clone(),
+        ];
         let mut min_gap = f64::INFINITY;
         for v in &aligned {
             let n = v.band.len();
@@ -299,7 +332,11 @@ pub fn build_triangles_2d(
                 }
             }
         }
-        let diag = SimplexDiagnostics { min_gap, min_assignment_overlap: 1.0, tracking_conflict: false };
+        let diag = SimplexDiagnostics {
+            min_gap,
+            min_assignment_overlap: 1.0,
+            tracking_conflict: false,
+        };
         let coords = Array2::from_shape_vec((3, 2), {
             let c0 = coord_of(v0);
             let c1 = coord_of(v1);
@@ -307,13 +344,136 @@ pub fn build_triangles_2d(
             vec![c0[0], c0[1], c1[0], c1[1], c2[0], c2[1]]
         })
         .unwrap();
-        let vdiag_4th: Option<Vec<f64>> = all_pts[v4].vdiag.as_ref().map(|v| v.to_vec());
+        let vertex_xy = Array2::from_shape_vec((3, 2), {
+            let r0 = local_xy[0];
+            let r1 = local_xy[1];
+            let r2 = local_xy[2];
+            vec![r0[0], r0[1], r1[0], r1[1], r2[0], r2[1]]
+        })
+        .unwrap();
         out.push(TrackedSimplex {
             vertices: aligned,
             volume: tri_area,
             coords,
             diag,
-            vdiag_4th,
+            vdiag_rect: vdiag_rect.clone(),
+            vertex_xy,
+        });
+    }
+    out
+}
+
+/// Build four triangles of a 2D cell averaging both diagonal partitions.
+///
+/// $$\int_{\square} f \approx \frac{1}{2}\bigl(I_{\diagdown} + I_{\diagup}\bigr)$$
+///
+/// Returns 4 triangles, each with `volume = cell_area / 4` so that the
+/// sum over all four equals the diagonal‑averaged cell integral.
+///
+/// | Diagonal | Vertices     | vertex_xy                |
+/// |----------|-------------|--------------------------|
+/// | ↘        | (i00,i10,i01) | (0,0),(1,0),(0,1)       |
+/// | ↘        | (i11,i10,i01) | (1,1),(1,0),(0,1)       |
+/// | ↗        | (i00,i10,i11) | (0,0),(1,0),(1,1)       |
+/// | ↗        | (i00,i11,i01) | (0,0),(1,1),(0,1)       |
+///
+/// Caller must have run `global_band_track` first for consistent labels.
+pub fn build_triangles_2d_diagavg(
+    ix: usize,
+    iy: usize,
+    nx: usize,
+    ny: usize,
+    inv_nx: f64,
+    inv_ny: f64,
+    all_pts: &[VertexKernel],
+) -> Vec<TrackedSimplex> {
+    let ixp = (ix + 1) % nx;
+    let iyp = (iy + 1) % ny;
+    let i00 = ix * ny + iy;
+    let i10 = ixp * ny + iy;
+    let i11 = ixp * ny + iyp;
+    let i01 = ix * ny + iyp;
+
+    let frac = |ixv: usize, iyv: usize| -> [f64; 2] { [ixv as f64 * inv_nx, iyv as f64 * inv_ny] };
+    let coord_of = |idx: usize| -> [f64; 2] {
+        if idx == i00 {
+            frac(ix, iy)
+        } else if idx == i10 {
+            frac(ix + 1, iy)
+        } else if idx == i11 {
+            frac(ix + 1, iy + 1)
+        } else {
+            frac(ix, iy + 1)
+        }
+    };
+
+    let cell_area = inv_nx * inv_ny;
+    let quad_area = cell_area / 4.0; // each of 4 triangles → 1/4 cell area
+
+    // VdiagRect from all four rectangle corners.
+    let vdiag_rect: Option<VdiagRect> = match (
+        all_pts[i00].vdiag.as_ref(),
+        all_pts[i10].vdiag.as_ref(),
+        all_pts[i01].vdiag.as_ref(),
+        all_pts[i11].vdiag.as_ref(),
+    ) {
+        (Some(v00), Some(v10), Some(v01), Some(v11)) => Some(VdiagRect {
+            corners: [v00.to_vec(), v10.to_vec(), v01.to_vec(), v11.to_vec()],
+        }),
+        _ => None,
+    };
+
+    // Four triangles: (vertex_indices, vertex_xy)
+    let triangles: [([usize; 3], [[f64; 2]; 3]); 4] = [
+        ([i00, i10, i01], [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+        ([i11, i10, i01], [[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
+        ([i00, i10, i11], [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]),
+        ([i00, i11, i01], [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+    ];
+
+    let mut out = Vec::with_capacity(4);
+    for &(tri_indices, local_xy) in &triangles {
+        let (v0, v1, v2) = (tri_indices[0], tri_indices[1], tri_indices[2]);
+        let aligned = vec![
+            all_pts[v0].clone(),
+            all_pts[v1].clone(),
+            all_pts[v2].clone(),
+        ];
+        let mut min_gap = f64::INFINITY;
+        for v in &aligned {
+            let n = v.band.len();
+            for i in 0..n {
+                for j in i + 1..n {
+                    min_gap = min_gap.min((v.band[[i]] - v.band[[j]]).abs());
+                }
+            }
+        }
+        let diag = SimplexDiagnostics {
+            min_gap,
+            min_assignment_overlap: 1.0,
+            tracking_conflict: false,
+        };
+        let coords = Array2::from_shape_vec((3, 2), {
+            let c0 = coord_of(v0);
+            let c1 = coord_of(v1);
+            let c2 = coord_of(v2);
+            vec![c0[0], c0[1], c1[0], c1[1], c2[0], c2[1]]
+        })
+        .unwrap();
+        let vertex_xy = Array2::from_shape_vec((3, 2), {
+            let r0 = local_xy[0];
+            let r1 = local_xy[1];
+            let r2 = local_xy[2];
+            vec![r0[0], r0[1], r1[0], r1[1], r2[0], r2[1]]
+        })
+        .unwrap();
+        out.push(TrackedSimplex {
+            vertices: aligned,
+            volume: quad_area,
+            coords,
+            diag,
+            vdiag_rect: vdiag_rect.clone(),
+            vertex_xy,
         });
     }
     out
@@ -387,12 +547,14 @@ pub fn build_tetrahedra_3d(
             ]
         })
         .unwrap();
+        let vertex_xy = Array2::<f64>::zeros((4, 2)); // unused in 3D
         out.push(TrackedSimplex {
             vertices: aligned,
             volume: cube_vol * TET_VOL_FACTOR[teti],
             coords,
             diag,
-            vdiag_4th: None,
+            vdiag_rect: None,
+            vertex_xy,
         });
     }
     out

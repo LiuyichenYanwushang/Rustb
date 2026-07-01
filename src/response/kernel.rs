@@ -219,8 +219,12 @@ pub fn quadrature_berry_simplex(sim: &TrackedSimplex, eta: f64) -> (f64, f64) {
 
 /// Quadrature over one simplex for the Berry dipole.
 ///
-/// When `sim.vdiag_4th` is `Some` (2D triangles), vdiag is interpolated
-/// bilinearly over the parent rectangle using the 4th corner value.
+/// When `sim.vdiag_rect` is `Some` (2D triangles), vdiag is interpolated
+/// bilinearly on the parent rectangle using `vertex_xy` to map barycentric
+/// coordinates to rectangle $(x,y)\in[0,1]^2$:
+///
+/// $$v(x,y) = (1-x)(1-y)v_{00} + x(1-y)v_{10} + xy v_{11} + (1-x)y v_{01}$$
+///
 /// Otherwise, barycentric interpolation is used.
 pub fn quadrature_dipole_simplex(
     sim: &TrackedSimplex,
@@ -246,49 +250,24 @@ pub fn quadrature_dipole_simplex(
 
     let mut acc = Array1::<f64>::zeros(n_mu);
     if d == 2 {
-        if let Some(ref vdiag_4th) = sim.vdiag_4th {
-            // Bilinear interpolation on the parent rectangle.
-            // Detect triangle type from vertex coordinates.
-            let v0_x = sim.coords[[0, 0]];
-            let v0_y = sim.coords[[0, 1]];
-            let v1_x = sim.coords[[1, 0]];
-            let v1_y = sim.coords[[1, 1]];
-            let v2_x = sim.coords[[2, 0]];
-            let v2_y = sim.coords[[2, 1]];
-            let min_x = v0_x.min(v1_x).min(v2_x);
-            let min_y = v0_y.min(v1_y).min(v2_y);
-            // vertex0 is always diagonally opposite the 4th rectangle corner.
-            // If vertex0 is lower-left → Triangle 1 (i00,i10,i01).
-            // If vertex0 is upper-right → Triangle 2 (i11,i10,i01).
-            let v0_is_ll = v0_x <= min_x + 1e-15 && v0_y <= min_y + 1e-15;
-
+        if let Some(ref vdiag_rect) = sim.vdiag_rect {
+            // ── Bilinear interpolation on parent rectangle [0,1]² ──
+            // x_q = Σᵢ λᵢ · vertex_xy[i, 0]
+            // y_q = Σᵢ λᵢ · vertex_xy[i, 1]
             for iq in 0..3 {
                 let lam = TRI_QUAD_PTS_3[iq].as_slice();
                 let w = TRI_QUAD_WTS_3[iq];
                 let band_q = bary_interp_band(&bands, lam, nsta);
                 let k_ab_q = bary_interp_matrix(&kmats, lam);
 
-                // Map barycentric λ to rectangle (x, y) coords.
-                let (x, y) = if v0_is_ll {
-                    // Triangle 1: v0=(0,0), v1=(1,0), v2=(0,1)
-                    (lam[1], lam[2])
-                } else {
-                    // Triangle 2: v0=(1,1), v1=(1,0), v2=(0,1)
-                    (lam[0] + lam[1], lam[0] + lam[2])
-                };
-                // Bilinear corners: v00=(0,0), v10=(1,0), v01=(0,1), v11=(1,1)
-                let v00: &[f64] = if v0_is_ll { &vdiags[0] } else { vdiag_4th };
-                let v10: &[f64] = &vdiags[1];
-                let v01: &[f64] = &vdiags[2];
-                let v11: &[f64] = if v0_is_ll { vdiag_4th } else { &vdiags[0] };
+                let x_q = lam[0] * sim.vertex_xy[[0, 0]]
+                    + lam[1] * sim.vertex_xy[[1, 0]]
+                    + lam[2] * sim.vertex_xy[[2, 0]];
+                let y_q = lam[0] * sim.vertex_xy[[0, 1]]
+                    + lam[1] * sim.vertex_xy[[1, 1]]
+                    + lam[2] * sim.vertex_xy[[2, 1]];
 
-                let mut vdiag_q = vec![0.0_f64; nsta];
-                for n in 0..nsta {
-                    vdiag_q[n] = (1.0 - x) * (1.0 - y) * v00[n]
-                        + x * (1.0 - y) * v10[n]
-                        + x * y * v11[n]
-                        + (1.0 - x) * y * v01[n];
-                }
+                let vdiag_q = vdiag_rect.interp(x_q, y_q, nsta);
 
                 let (_g_n, o_n) = eval_berry_kernel(&band_q, &k_ab_q, eta, nsta);
                 for im in 0..n_mu {
@@ -299,7 +278,7 @@ pub fn quadrature_dipole_simplex(
                 }
             }
         } else {
-            // Fallback barycentric interpolation for vdiag (no 4th corner).
+            // Fallback: barycentric interpolation for vdiag (no vdiag_rect).
             for iq in 0..3 {
                 let lam = TRI_QUAD_PTS_3[iq].as_slice();
                 let w = TRI_QUAD_WTS_3[iq];

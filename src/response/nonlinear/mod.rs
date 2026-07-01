@@ -48,11 +48,20 @@ use crate::math::anti_comm;
 
 use super::helpers::build_spin_matrix;
 use super::kernel::quadrature_dipole_simplex;
-use super::tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
+use super::tracking::{
+    build_tetrahedra_3d, build_triangles_2d, build_triangles_2d_diagavg, global_band_track,
+};
 use super::traits::BerryCurvature;
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 
-/// Integrate the Berry‑curvature dipole over the BZ.
+/// Integrate the Berry‑curvature dipole over the BZ with diagonal averaging.
+///
+/// In 2D each square cell is split along **both** diagonals and averaged:
+///
+/// $$I_{\square} = \frac{1}{2}\bigl(I_{\diagdown} + I_{\diagup}\bigr)$$
+///
+/// The sum over all 4 triangles per cell gives the diagonal‑averaged result
+/// (each triangle has volume = cell_area/4).
 ///
 /// Returns `(dipole_per_mu, unsafe_count)` in fractional‑coordinate
 /// volume.  Divide by `det(lat)` for Cartesian.
@@ -76,7 +85,7 @@ pub fn integrate_dipole(
             let inv_ny = 1.0 / ny as f64;
             for ix in 0..nx {
                 for iy in 0..ny {
-                    let sims = build_triangles_2d(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+                    let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
                     for sim in &sims {
                         if sim.diag.min_gap < SIMPLEX_GAP_TOL {
                             unsafe_count += 1;

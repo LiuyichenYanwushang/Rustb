@@ -96,6 +96,8 @@ pub use kernel::{
 };
 pub use optical::OpticalGeometry;
 pub use quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
-pub use tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
+pub use tracking::{
+    build_tetrahedra_3d, build_triangles_2d, build_triangles_2d_diagavg, global_band_track,
+};
 pub use traits::BerryCurvature;
 pub use types::{SIMPLEX_GAP_TOL, SimplexDiagnostics, TrackedSimplex, VertexKernel};
