@@ -775,8 +775,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// G^{ij}_n = Re Σ_{m≠n} K^{ij}_{nm} / (E_n−E_m)³
     /// ```
     ///
-    /// Uses K‑quadrature along the $E_n=\mu$ Fermi‑surface line inside each
-    /// triangle.  Requires `dir_c` so diagonal velocity fields are available.
+    /// Uses K‑quadrature along the $E_n=\mu$ Fermi‑surface (line in 2D,
+    /// surface in 3D) inside each simplex.  Requires `dir_c` so diagonal
+    /// velocity fields are available.
     #[allow(non_snake_case)]
     pub fn Nonlinear_Hall_conductivity_Intrinsic_ec(
         &self,
@@ -788,7 +789,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         T: f64,
         eta: f64,
     ) -> Result<Array1<f64>> {
-        assert_eq!(k_mesh.len(), 2, "Intrinsic EC currently 2D only");
+        assert!(
+            k_mesh.len() == 2 || k_mesh.len() == 3,
+            "Intrinsic EC: only 2D/3D supported"
+        );
         let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
         let nk = kvec.nrows();
         let gauge = Gauge::Atom;
@@ -802,7 +806,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .collect();
         global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
 
-        let sigma = super::energy_cut::integrate_intrinsic_cut_2d(&all_pts, k_mesh, mu, T);
+        let sigma = match k_mesh.len() {
+            2 => super::energy_cut::integrate_intrinsic_cut_2d(&all_pts, k_mesh, mu, T),
+            3 => super::energy_cut::integrate_intrinsic_cut_3d(&all_pts, k_mesh, mu, T),
+            _ => unreachable!(),
+        };
         let det = self.lat.det().unwrap();
         Ok(sigma / det)
     }

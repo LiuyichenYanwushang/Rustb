@@ -626,6 +626,351 @@ pub fn integrate_intrinsic_cut_2d(
     acc
 }
 
+// ── 3D intrinsic NLH energy‑cut ─────────────────────────────────────────
+
+/// Gradient $\nabla E$ (3D) computed from tetrahedron vertex coordinates
+/// and energies.  Returns `(gx, gy, gz, |∇E|)`.
+fn energy_gradient_3d(coords: &Array2<f64>, de: [f64; 3]) -> (f64, f64, f64, f64) {
+    let x0 = coords[[0, 0]];
+    let y0 = coords[[0, 1]];
+    let z0 = coords[[0, 2]];
+    let dx1 = coords[[1, 0]] - x0;
+    let dy1 = coords[[1, 1]] - y0;
+    let dz1 = coords[[1, 2]] - z0;
+    let dx2 = coords[[2, 0]] - x0;
+    let dy2 = coords[[2, 1]] - y0;
+    let dz2 = coords[[2, 2]] - z0;
+    let dx3 = coords[[3, 0]] - x0;
+    let dy3 = coords[[3, 1]] - y0;
+    let dz3 = coords[[3, 2]] - z0;
+    // J = [dr1, dr2, dr3] as columns; solve J^T · grad = de
+    // Cramer's rule for 3×3
+    let det = dx1 * (dy2 * dz3 - dz2 * dy3) - dy1 * (dx2 * dz3 - dz2 * dx3)
+        + dz1 * (dx2 * dy3 - dy2 * dx3);
+    if det.abs() < ENERGY_CUT_EPS {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    let (e1, e2, e3) = (de[0], de[1], de[2]);
+    let gx = ((dy2 * dz3 - dz2 * dy3) * e1
+        + (dz1 * dy3 - dy1 * dz3) * e2
+        + (dy1 * dz2 - dz1 * dy2) * e3)
+        / det;
+    let gy = ((dz2 * dx3 - dx2 * dz3) * e1
+        + (dx1 * dz3 - dz1 * dx3) * e2
+        + (dz1 * dx2 - dx1 * dz2) * e3)
+        / det;
+    let gz = ((dx2 * dy3 - dy2 * dx3) * e1
+        + (dy1 * dx3 - dx1 * dy3) * e2
+        + (dx1 * dy2 - dy1 * dx2) * e3)
+        / det;
+    let norm = (gx * gx + gy * gy + gz * gz).sqrt();
+    (gx, gy, gz, norm)
+}
+
+/// Find the intersection polygon of the $E=\mu$ plane with a tetrahedron.
+/// Returns vertices as barycentric coordinates in the original tet.
+fn tet_plane_intersection(energy_v: [f64; 4], mu: f64) -> Vec<[f64; 4]> {
+    let eps = 1e-12;
+
+    // Sort by energy
+    let mut idx: [usize; 4] = [0, 1, 2, 3];
+    idx.sort_by(|&i, &j| energy_v[i].partial_cmp(&energy_v[j]).unwrap());
+    let (a, b, c, d) = (idx[0], idx[1], idx[2], idx[3]);
+
+    if mu <= energy_v[a] + eps || mu >= energy_v[d] - eps {
+        return vec![];
+    }
+
+    let unit = |i: usize| -> [f64; 4] {
+        let mut l = [0.0; 4];
+        l[i] = 1.0;
+        l
+    };
+
+    let cut = |i: usize, j: usize| -> [f64; 4] {
+        let de = energy_v[j] - energy_v[i];
+        let t = if de.abs() < eps {
+            0.5
+        } else {
+            ((mu - energy_v[i]) / de).clamp(0.0, 1.0)
+        };
+        let mut l = [0.0; 4];
+        l[i] = 1.0 - t;
+        l[j] = t;
+        l
+    };
+
+    if mu <= energy_v[b] + eps {
+        // 1 below (a), 3 above → triangle: cut(a,b), cut(a,c), cut(a,d)
+        vec![cut(a, b), cut(a, c), cut(a, d)]
+    } else if mu <= energy_v[c] + eps {
+        // 2 below (a,b), 2 above → quadrilateral
+        // Order: cut(a,c) → cut(a,d) → cut(b,d) → cut(b,c)
+        vec![cut(a, c), cut(a, d), cut(b, d), cut(b, c)]
+    } else {
+        // 3 below (a,b,c), 1 above → triangle
+        // cut(a,d), cut(b,d), cut(c,d) — but order for proper triangulation:
+        // Same as case 1 with roles reversed: intersection is the triangle
+        // connecting the 3 cut points on edges to the above vertex
+        vec![cut(a, d), cut(b, d), cut(c, d)]
+    }
+}
+
+/// Area of a polygon in 3D defined by barycentric vertices.
+/// Triangulates by fan from vertex 0.
+fn polygon_area_3d(coords: &Array2<f64>, verts: &[[f64; 4]]) -> f64 {
+    if verts.len() < 3 {
+        return 0.0;
+    }
+    let to_xyz = |lam: &[f64; 4]| -> [f64; 3] {
+        [
+            lam[0] * coords[[0, 0]]
+                + lam[1] * coords[[1, 0]]
+                + lam[2] * coords[[2, 0]]
+                + lam[3] * coords[[3, 0]],
+            lam[0] * coords[[0, 1]]
+                + lam[1] * coords[[1, 1]]
+                + lam[2] * coords[[2, 1]]
+                + lam[3] * coords[[3, 1]],
+            lam[0] * coords[[0, 2]]
+                + lam[1] * coords[[1, 2]]
+                + lam[2] * coords[[2, 2]]
+                + lam[3] * coords[[3, 2]],
+        ]
+    };
+    let v0 = to_xyz(&verts[0]);
+    let mut area = 0.0;
+    for i in 1..verts.len() - 1 {
+        let v1 = to_xyz(&verts[i]);
+        let v2 = to_xyz(&verts[i + 1]);
+        let dx1 = v1[0] - v0[0];
+        let dy1 = v1[1] - v0[1];
+        let dz1 = v1[2] - v0[2];
+        let dx2 = v2[0] - v0[0];
+        let dy2 = v2[1] - v0[1];
+        let dz2 = v2[2] - v0[2];
+        let cx = dy1 * dz2 - dz1 * dy2;
+        let cy = dz1 * dx2 - dx1 * dz2;
+        let cz = dx1 * dy2 - dy1 * dx2;
+        area += 0.5 * (cx * cx + cy * cy + cz * cz).sqrt();
+    }
+    area
+}
+
+/// Combine sub‑triangle barycentrics $\alpha$ with the polygon vertex
+/// barycentrics to get barycentrics in the original tetrahedron.
+fn combine_bary_3d(alpha: &[f64; 3], lam: &[[f64; 4]]) -> [f64; 4] {
+    let mut out = [0.0; 4];
+    for k in 0..3 {
+        for i in 0..4 {
+            out[i] += alpha[k] * lam[k][i];
+        }
+    }
+    out
+}
+
+/// K‑quadrature surface integral for intrinsic NLH over the $E=\mu$ plane
+/// intersection with one tetrahedron.
+fn kquad_surface_cut_intrinsic(
+    coords: &Array2<f64>,
+    energy_v: [f64; 4],
+    bands: &[Vec<f64>],
+    kmat_ab: &[Array2<Complex<f64>>],
+    kmat_bc: &[Array2<Complex<f64>>],
+    kmat_ac: &[Array2<Complex<f64>>],
+    vdiag_c: [f64; 4],
+    vdiag_a: [f64; 4],
+    vdiag_b: [f64; 4],
+    mu: f64,
+    n: usize,
+    nsta: usize,
+) -> f64 {
+    let verts = tet_plane_intersection(energy_v, mu);
+    if verts.len() < 3 {
+        return 0.0;
+    }
+
+    // |∇E|
+    let de = [
+        energy_v[1] - energy_v[0],
+        energy_v[2] - energy_v[0],
+        energy_v[3] - energy_v[0],
+    ];
+    let (_, _, _, grad_norm) = energy_gradient_3d(coords, de);
+    if grad_norm < ENERGY_CUT_EPS {
+        return 0.0;
+    }
+
+    // Area of intersection polygon
+    let area = polygon_area_3d(coords, &verts);
+
+    // K‑quadrature over polygon (fan triangulation from vertex 0)
+    let mut amp_sum = 0.0;
+    for i in 1..verts.len() - 1 {
+        let sub_tri = [&verts[0], &verts[i], &verts[i + 1]];
+        let sub_area = {
+            let lam_ref: [[f64; 4]; 3] = [*sub_tri[0], *sub_tri[1], *sub_tri[2]];
+            polygon_area_3d(coords, &lam_ref)
+        };
+        if sub_area < 1e-30 {
+            continue;
+        }
+        for iq in 0..3 {
+            let alpha = &TRI_QUAD_PTS_3[iq];
+            let w = TRI_QUAD_WTS_3[iq];
+            let lam = combine_bary_3d(alpha, &[*sub_tri[0], *sub_tri[1], *sub_tri[2]]);
+            let g_ab = eval_intrinsic_G_at_lam(n, bands, kmat_ab, &lam, nsta);
+            let g_bc = eval_intrinsic_G_at_lam(n, bands, kmat_bc, &lam, nsta);
+            let g_ac = eval_intrinsic_G_at_lam(n, bands, kmat_ac, &lam, nsta);
+            let va = lam[0] * vdiag_a[0]
+                + lam[1] * vdiag_a[1]
+                + lam[2] * vdiag_a[2]
+                + lam[3] * vdiag_a[3];
+            let vb = lam[0] * vdiag_b[0]
+                + lam[1] * vdiag_b[1]
+                + lam[2] * vdiag_b[2]
+                + lam[3] * vdiag_b[3];
+            let vc = lam[0] * vdiag_c[0]
+                + lam[1] * vdiag_c[1]
+                + lam[2] * vdiag_c[2]
+                + lam[3] * vdiag_c[3];
+            let q = 2.0 * vc * g_ab - 0.5 * (va * g_bc + vb * g_ac);
+            amp_sum -= sub_area * w * q;
+        }
+    }
+
+    amp_sum / grad_norm
+}
+
+fn accumulate_tetrahedron_intrinsic_kquad(
+    sim: &TrackedSimplex,
+    mu: &Array1<f64>,
+    beta: f64,
+    acc: &mut Array1<f64>,
+) {
+    let _vol = tet_vol_from_pts(
+        [sim.coords[[0, 0]], sim.coords[[0, 1]], sim.coords[[0, 2]]],
+        [sim.coords[[1, 0]], sim.coords[[1, 1]], sim.coords[[1, 2]]],
+        [sim.coords[[2, 0]], sim.coords[[2, 1]], sim.coords[[2, 2]]],
+        [sim.coords[[3, 0]], sim.coords[[3, 1]], sim.coords[[3, 2]]],
+    );
+    if _vol < ENERGY_CUT_EPS {
+        return;
+    }
+    let volume_scale = sim.volume / _vol;
+    let nsta = sim.vertices[0].band.len();
+
+    let bands: Vec<Vec<f64>> = (0..4).map(|v| sim.vertices[v].band.to_vec()).collect();
+    let kmat_ab: Vec<Array2<Complex<f64>>> = (0..4).map(|v| sim.vertices[v].k_ab.clone()).collect();
+    let kmat_bc: Vec<Array2<Complex<f64>>> = (0..4)
+        .map(|v| sim.vertices[v].k_bc.as_ref().expect("k_bc").clone())
+        .collect();
+    let kmat_ac: Vec<Array2<Complex<f64>>> = (0..4)
+        .map(|v| sim.vertices[v].k_ac.as_ref().expect("k_ac").clone())
+        .collect();
+    let vdiag_c: Vec<Vec<f64>> = (0..4)
+        .map(|v| sim.vertices[v].vdiag.as_ref().expect("vdiag").to_vec())
+        .collect();
+    let vdiag_a: Vec<Vec<f64>> = (0..4)
+        .map(|v| sim.vertices[v].vdiag_a.as_ref().expect("vdiag_a").to_vec())
+        .collect();
+    let vdiag_b: Vec<Vec<f64>> = (0..4)
+        .map(|v| sim.vertices[v].vdiag_b.as_ref().expect("vdiag_b").to_vec())
+        .collect();
+
+    let n_mu = mu.len();
+    for n in 0..nsta {
+        let e_v = [
+            sim.vertices[0].band[n],
+            sim.vertices[1].band[n],
+            sim.vertices[2].band[n],
+            sim.vertices[3].band[n],
+        ];
+        let vc_v = [vdiag_c[0][n], vdiag_c[1][n], vdiag_c[2][n], vdiag_c[3][n]];
+        let va_v = [vdiag_a[0][n], vdiag_a[1][n], vdiag_a[2][n], vdiag_a[3][n]];
+        let vb_v = [vdiag_b[0][n], vdiag_b[1][n], vdiag_b[2][n], vdiag_b[3][n]];
+
+        if beta == 0.0 {
+            for im in 0..n_mu {
+                acc[im] += volume_scale
+                    * kquad_surface_cut_intrinsic(
+                        &sim.coords,
+                        e_v,
+                        &bands,
+                        &kmat_ab,
+                        &kmat_bc,
+                        &kmat_ac,
+                        vc_v,
+                        va_v,
+                        vb_v,
+                        mu[im],
+                        n,
+                        nsta,
+                    );
+            }
+        } else {
+            let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
+            for im in 0..n_mu {
+                let mut sum = 0.0;
+                for iq in 0..FERMI_X_STEPS {
+                    let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
+                    let energy = mu[im] + x / beta;
+                    let rho = kquad_surface_cut_intrinsic(
+                        &sim.coords,
+                        e_v,
+                        &bands,
+                        &kmat_ab,
+                        &kmat_bc,
+                        &kmat_ac,
+                        vc_v,
+                        va_v,
+                        vb_v,
+                        energy,
+                        n,
+                        nsta,
+                    );
+                    sum += dx * fermi_window_x(x) * rho;
+                }
+                acc[im] += volume_scale * sum;
+            }
+        }
+    }
+}
+
+/// 3D intrinsic NLH via K‑quadrature surface energy‑cut.
+pub fn integrate_intrinsic_cut_3d(
+    all_pts: &[VertexKernel],
+    k_mesh: &Array1<usize>,
+    mu: &Array1<f64>,
+    T: f64,
+) -> Array1<f64> {
+    assert_eq!(k_mesh.len(), 3);
+    let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+    let inv_nx = 1.0 / nx as f64;
+    let inv_ny = 1.0 / ny as f64;
+    let inv_nz = 1.0 / nz as f64;
+    let beta = if T > 0.0 {
+        1.0 / (T * KB_EV_PER_K)
+    } else {
+        0.0
+    };
+    let mut acc = Array1::<f64>::zeros(mu.len());
+
+    for ix in 0..nx {
+        for iy in 0..ny {
+            for iz in 0..nz {
+                let sims =
+                    build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts);
+                for sim in &sims {
+                    accumulate_tetrahedron_intrinsic_kquad(sim, mu, beta, &mut acc);
+                }
+            }
+        }
+    }
+
+    acc
+}
+
 // ── Fermi‑window energy‑cut (AHC) ───────────────────────────────────────
 
 /// Map barycentric coordinates in the original triangle to physical coords.

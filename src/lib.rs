@@ -2432,6 +2432,66 @@ mod tests {
         assert!(*ref0 > 1e-6, "Intrinsic signal too small: {ref0:.3e}");
     }
 
+    /// 8c8. 3D intrinsic NLH sign-flip (λ→−λ) with NLH model.
+    #[test]
+    fn intrinsic_ec_3d_sign_flip() {
+        let model_p = build_nlh_3d(2.6, 1.0);
+        let model_m = build_nlh_3d(2.6, -1.0);
+        let dx = arr1(&[1.0, 0.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0, 0.0]);
+        let dz = arr1(&[0.0, 0.0, 1.0]);
+        let eta = 0.03;
+        let mu = Array1::linspace(-3.0, 3.0, 31);
+        let kmesh = arr1(&[8, 8, 8]);
+
+        let ec_p = model_p
+            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 0.0, eta)
+            .unwrap();
+        let ec_m = model_m
+            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 0.0, eta)
+            .unwrap();
+        let max_sum = ec_p
+            .iter()
+            .zip(ec_m.iter())
+            .fold(0.0f64, |a: f64, (&x, &y)| a.max((x + y).abs()));
+        let max_p = ec_p.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
+        println!("3D Intrinsic sign flip: max|σ|={max_p:.3e}  max|σ(λ)+σ(−λ)|={max_sum:.3e}");
+        // nk=8 is coarse; K-quad surface integral error ~50% relative
+        // at this mesh.  P-oddness holds to O(1e-4) absolute.
+        assert!(max_sum < 2e-4, "3D P-odd broken: {max_sum:.3e}");
+    }
+
+    /// 8c9. 3D intrinsic EC convergence: peak |σ| vs nk at T=100K.
+    #[test]
+    fn intrinsic_ec_3d_convergence() {
+        let model = build_nlh_3d(2.6, 1.0);
+        let dx = arr1(&[1.0, 0.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0, 0.0]);
+        let dz = arr1(&[0.0, 0.0, 1.0]);
+        let eta = 0.03;
+        let mu = Array1::linspace(-3.0, 3.0, 41);
+        let nks = [6, 8, 10, 12, 14];
+
+        println!("nk    peak|σ|       Δ/ref");
+        let mut peaks = Vec::new();
+        for &nk in &nks {
+            let kmesh = arr1(&[nk, nk, nk]);
+            let ec = model
+                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 100.0, eta)
+                .unwrap();
+            let peak = ec.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
+            peaks.push(peak);
+        }
+        let ref_val = peaks.last().unwrap();
+        for (i, &nk) in nks.iter().enumerate() {
+            let d = (ref_val - peaks[i]).abs() / ref_val.abs();
+            println!("{:>3}    {:.4e}   {:.3e}", nk, peaks[i], d);
+        }
+        // 3D surface K‑quadrature converges ∝1/nk² (area), slower than 2D line ∝1/nk.
+        // nk=10 is within ~16% of nk=14; nk=14→18 extrapolated ~5%.
+        assert!(peaks[2] > 1e-4, "3D intrinsic signal too small");
+    }
+
     /// 8d. AHC energy-cut 3D smoke (altermagnet, Berry ≈ 0, sanity check).
     #[test]
     fn hall_conductivity_ec_3d_smoke() {

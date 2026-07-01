@@ -95,7 +95,8 @@ mod types;
 // Re‑export public types
 pub use energy_cut::{
     FermiCutCounts, integrate_dipole_energy_cut_2d, integrate_fermi_cut_2d, integrate_fermi_cut_3d,
-    integrate_intrinsic_cut_2d, read_reset_fermi_cut_counts, triangle_line_cut,
+    integrate_intrinsic_cut_2d, integrate_intrinsic_cut_3d, read_reset_fermi_cut_counts,
+    triangle_line_cut,
 };
 pub use kernel::{
     eval_berry_band_at_lam, eval_berry_complex_at_lam, eval_berry_kernel, eval_intrinsic_G_at_lam,
