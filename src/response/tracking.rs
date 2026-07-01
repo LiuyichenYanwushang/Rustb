@@ -1,16 +1,10 @@
 //! Band tracking and simplex construction.
-//!
-//! Uses eigenvector overlap maximisation to align band labels across
-//! simplex vertices, then builds 2D triangles / 3D tetrahedra with
-//! periodic boundary conditions.
 
 use ndarray::prelude::*;
 use ndarray::*;
 use num_complex::Complex;
 
-use super::types::{SimplexDiagnostics, TrackedSimplex, VdiagRect, VertexKernel};
-
-// ── Cube / tetrahedron decomposition constants ──────────────────────────
+use super::types::{SimplexDiagnostics, TrackedSimplex, VertexKernel};
 
 const CUBE_TETS: [[usize; 4]; 5] = [
     [0, 1, 2, 4],
@@ -21,9 +15,6 @@ const CUBE_TETS: [[usize; 4]; 5] = [
 ];
 const TET_VOL_FACTOR: [f64; 5] = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0];
 
-// ── Overlap and assignment ──────────────────────────────────────────────
-
-/// Build the overlap matrix `O_nm = |⟨u_n(ref)|u_m(other)⟩|²`.
 pub fn build_overlap_matrix(
     evec_ref: &Array2<Complex<f64>>,
     evec_other: &Array2<Complex<f64>>,
@@ -43,11 +34,6 @@ pub fn build_overlap_matrix(
     ov
 }
 
-/// Greedy band assignment (row‑wise maximum, not guaranteed globally optimal).
-///
-/// For small `nsta` with diagonally‑dominant overlap this is exact; for
-/// larger or near‑degenerate problems, replace with Hungarian / exhaustive
-/// search over small `n`.
 pub fn greedy_assign(overlap: &Array2<f64>) -> Vec<usize> {
     let n = overlap.nrows();
     let mut assigned = vec![false; n];
@@ -74,39 +60,52 @@ pub fn greedy_assign(overlap: &Array2<f64>) -> Vec<usize> {
     perm
 }
 
-/// Reorder a `VertexKernel` according to band permutation `p`.
 pub fn permute_vertex(v: &VertexKernel, p: &[usize]) -> VertexKernel {
     let nsta = v.band.len();
     let norb = v.evec.nrows();
-    let mut band = Array1::<f64>::zeros(nsta);
-    let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
-    let mut evec = Array2::<Complex<f64>>::zeros((norb, nsta));
-    let mut vdiag = v.vdiag.as_ref().map(|_| Array1::<f64>::zeros(nsta));
 
+    let perm_mat_opt = |m_opt: &Option<Array2<Complex<f64>>>| -> Option<Array2<Complex<f64>>> {
+        m_opt.as_ref().map(|m| {
+            let mut out = Array2::<Complex<f64>>::zeros((nsta, nsta));
+            for ni in 0..nsta {
+                for mi in 0..nsta {
+                    out[[ni, mi]] = m[[p[ni], p[mi]]];
+                }
+            }
+            out
+        })
+    };
+    let perm_vec_opt = |v_opt: &Option<Array1<f64>>| -> Option<Array1<f64>> {
+        v_opt.as_ref().map(|arr| {
+            let mut out = Array1::<f64>::zeros(nsta);
+            for ni in 0..nsta {
+                out[[ni]] = arr[[p[ni]]];
+            }
+            out
+        })
+    };
+
+    let mut band = Array1::<f64>::zeros(nsta);
+    let mut evec = Array2::<Complex<f64>>::zeros((norb, nsta));
     for n in 0..nsta {
-        let pn = p[n];
-        band[[n]] = v.band[[pn]];
-        if let Some(ref mut vd) = vdiag {
-            vd[[n]] = v.vdiag.as_ref().unwrap()[[pn]];
-        }
+        band[[n]] = v.band[[p[n]]];
         for orb in 0..norb {
-            evec[[orb, n]] = v.evec[[orb, pn]];
+            evec[[orb, n]] = v.evec[[orb, p[n]]];
         }
     }
-    for n in 0..nsta {
-        for m in 0..nsta {
-            k_ab[[n, m]] = v.k_ab[[p[n], p[m]]];
-        }
-    }
+
     VertexKernel {
         band,
-        k_ab,
-        vdiag,
+        k_ab: perm_mat_opt(&Some(v.k_ab.clone())).unwrap(),
+        k_bc: perm_mat_opt(&v.k_bc),
+        k_ac: perm_mat_opt(&v.k_ac),
+        vdiag: perm_vec_opt(&v.vdiag),
+        vdiag_a: perm_vec_opt(&v.vdiag_a),
+        vdiag_b: perm_vec_opt(&v.vdiag_b),
         evec,
     }
 }
 
-/// Minimum band gap at a single vertex.
 fn min_vertex_gap(v: &VertexKernel) -> f64 {
     let n = v.band.len();
     let mut g = f64::INFINITY;
@@ -118,7 +117,6 @@ fn min_vertex_gap(v: &VertexKernel) -> f64 {
     g
 }
 
-/// Track band labels across simplex vertices (first vertex = reference).
 pub fn track_simplex_vertices(
     vertices: &[VertexKernel],
 ) -> (Vec<VertexKernel>, SimplexDiagnostics) {
@@ -152,40 +150,23 @@ pub fn track_simplex_vertices(
     (aligned, diag)
 }
 
-// ── Global band tracking ────────────────────────────────────────────────
-
-/// Globally track band labels across the entire k‑mesh.
-///
-/// Starts from the Γ point (first k‑point, assumed to be `k = 0`) and
-/// propagates outward using BFS.  At each step the new point is matched
-/// against **all already‑tracked neighbours** to maximise robustness.
-///
-/// The `all_pts` slice is mutated in place — each `VertexKernel` gets
-/// its band indices permuted for global consistency.  After this call,
-/// local simplex tracking is no longer needed.
 pub fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) {
     let nk = all_pts.len();
     if nk <= 1 {
         return;
     }
     let dim = k_mesh.len();
-
-    // ── BFS queue; visited[i] = true once the point is tracked ──────
     let mut visited = vec![false; nk];
     let mut queue = std::collections::VecDeque::new();
-
-    // Γ point (index 0) is the reference.
     visited[0] = true;
     queue.push_back(0usize);
 
     while let Some(current) = queue.pop_front() {
-        // Find all unvisited neighbours of `current`
         let neighbours = neighbour_indices(current, k_mesh);
         for &nb in &neighbours {
             if visited[nb] {
                 continue;
             }
-            // Collect overlap with all *visited* neighbours
             let mut ov_sum: Option<Array2<f64>> = None;
             let mut n_contrib = 0usize;
             for &vn in &neighbour_indices(nb, k_mesh) {
@@ -201,11 +182,9 @@ pub fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) {
                 n_contrib += 1;
             }
             if let Some(ov) = ov_sum {
-                // Average overlap over all visited neighbours
                 let ov_avg = ov / n_contrib as f64;
                 let p = greedy_assign(&ov_avg);
-                let permuted = permute_vertex(&all_pts[nb], &p);
-                all_pts[nb] = permuted;
+                all_pts[nb] = permute_vertex(&all_pts[nb], &p);
             }
             visited[nb] = true;
             queue.push_back(nb);
@@ -213,7 +192,6 @@ pub fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) {
     }
 }
 
-/// Return the indices of all nearest‑neighbour k‑points for index `i`.
 fn neighbour_indices(i: usize, k_mesh: &[usize]) -> Vec<usize> {
     let dim = k_mesh.len();
     let mut out = Vec::new();
@@ -261,8 +239,6 @@ fn neighbour_indices(i: usize, k_mesh: &[usize]) -> Vec<usize> {
 
 // ── Simplex builders ────────────────────────────────────────────────────
 
-/// Build the two tracked triangles of a 2D cell.
-/// Caller should have run `global_band_track` first for consistent labels.
 pub fn build_triangles_2d(
     ix: usize,
     iy: usize,
@@ -292,32 +268,10 @@ pub fn build_triangles_2d(
         }
     };
 
-    let cell_area = inv_nx * inv_ny;
-    let tri_area = cell_area / 2.0;
+    let tri_area = inv_nx * inv_ny / 2.0;
     let mut out = Vec::new();
 
-    // After global_band_track, all points share consistent band labels.
-    // Local tracking is skipped; diagnostics use the vertex data directly.
-    //
-    // Build VdiagRect from all four rectangle corners (when vdiag is present).
-    let vdiag_rect: Option<VdiagRect> = match (
-        all_pts[i00].vdiag.as_ref(),
-        all_pts[i10].vdiag.as_ref(),
-        all_pts[i01].vdiag.as_ref(),
-        all_pts[i11].vdiag.as_ref(),
-    ) {
-        (Some(v00), Some(v10), Some(v01), Some(v11)) => Some(VdiagRect {
-            corners: [v00.to_vec(), v10.to_vec(), v01.to_vec(), v11.to_vec()],
-        }),
-        _ => None,
-    };
-
-    for &(v0, v1, v2, local_xy) in &[
-        // Triangle 1: ↘ diagonal, vertices at (0,0), (1,0), (0,1)
-        (i00, i10, i01, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-        // Triangle 2: ↘ diagonal, vertices at (1,1), (1,0), (0,1)
-        (i11, i10, i01, [[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
-    ] {
+    for &(v0, v1, v2) in &[(i00, i10, i01), (i11, i10, i01)] {
         let aligned = vec![
             all_pts[v0].clone(),
             all_pts[v1].clone(),
@@ -344,40 +298,16 @@ pub fn build_triangles_2d(
             vec![c0[0], c0[1], c1[0], c1[1], c2[0], c2[1]]
         })
         .unwrap();
-        let vertex_xy = Array2::from_shape_vec((3, 2), {
-            let r0 = local_xy[0];
-            let r1 = local_xy[1];
-            let r2 = local_xy[2];
-            vec![r0[0], r0[1], r1[0], r1[1], r2[0], r2[1]]
-        })
-        .unwrap();
         out.push(TrackedSimplex {
             vertices: aligned,
             volume: tri_area,
             coords,
             diag,
-            vdiag_rect: vdiag_rect.clone(),
-            vertex_xy,
         });
     }
     out
 }
 
-/// Build four triangles of a 2D cell averaging both diagonal partitions.
-///
-/// $$\int_{\square} f \approx \frac{1}{2}\bigl(I_{\diagdown} + I_{\diagup}\bigr)$$
-///
-/// Returns 4 triangles, each with `volume = cell_area / 4` so that the
-/// sum over all four equals the diagonal‑averaged cell integral.
-///
-/// | Diagonal | Vertices     | vertex_xy                |
-/// |----------|-------------|--------------------------|
-/// | ↘        | (i00,i10,i01) | (0,0),(1,0),(0,1)       |
-/// | ↘        | (i11,i10,i01) | (1,1),(1,0),(0,1)       |
-/// | ↗        | (i00,i10,i11) | (0,0),(1,0),(1,1)       |
-/// | ↗        | (i00,i11,i01) | (0,0),(1,1),(0,1)       |
-///
-/// Caller must have run `global_band_track` first for consistent labels.
 pub fn build_triangles_2d_diagavg(
     ix: usize,
     iy: usize,
@@ -407,33 +337,17 @@ pub fn build_triangles_2d_diagavg(
         }
     };
 
-    let cell_area = inv_nx * inv_ny;
-    let quad_area = cell_area / 4.0; // each of 4 triangles → 1/4 cell area
+    let quad_area = inv_nx * inv_ny / 4.0;
 
-    // VdiagRect from all four rectangle corners.
-    let vdiag_rect: Option<VdiagRect> = match (
-        all_pts[i00].vdiag.as_ref(),
-        all_pts[i10].vdiag.as_ref(),
-        all_pts[i01].vdiag.as_ref(),
-        all_pts[i11].vdiag.as_ref(),
-    ) {
-        (Some(v00), Some(v10), Some(v01), Some(v11)) => Some(VdiagRect {
-            corners: [v00.to_vec(), v10.to_vec(), v01.to_vec(), v11.to_vec()],
-        }),
-        _ => None,
-    };
-
-    // Four triangles: (vertex_indices, vertex_xy)
-    let triangles: [([usize; 3], [[f64; 2]; 3]); 4] = [
-        ([i00, i10, i01], [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-        ([i11, i10, i01], [[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
-        ([i00, i10, i11], [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]),
-        ([i00, i11, i01], [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+    let triangles: [[usize; 3]; 4] = [
+        [i00, i10, i01],
+        [i11, i10, i01], // ↘
+        [i00, i10, i11],
+        [i00, i11, i01], // ↗
     ];
 
     let mut out = Vec::with_capacity(4);
-    for &(tri_indices, local_xy) in &triangles {
-        let (v0, v1, v2) = (tri_indices[0], tri_indices[1], tri_indices[2]);
+    for &[v0, v1, v2] in &triangles {
         let aligned = vec![
             all_pts[v0].clone(),
             all_pts[v1].clone(),
@@ -460,26 +374,16 @@ pub fn build_triangles_2d_diagavg(
             vec![c0[0], c0[1], c1[0], c1[1], c2[0], c2[1]]
         })
         .unwrap();
-        let vertex_xy = Array2::from_shape_vec((3, 2), {
-            let r0 = local_xy[0];
-            let r1 = local_xy[1];
-            let r2 = local_xy[2];
-            vec![r0[0], r0[1], r1[0], r1[1], r2[0], r2[1]]
-        })
-        .unwrap();
         out.push(TrackedSimplex {
             vertices: aligned,
             volume: quad_area,
             coords,
             diag,
-            vdiag_rect: vdiag_rect.clone(),
-            vertex_xy,
         });
     }
     out
 }
 
-/// Build the five tracked tetrahedra of a 3D cell.
 pub fn build_tetrahedra_3d(
     ix: usize,
     iy: usize,
@@ -514,7 +418,6 @@ pub fn build_tetrahedra_3d(
             izv as f64 * inv_nz,
         ]
     };
-    // Use unwrapped ix+1, iy+1, iz+1 for fractional coords (match 2D convention).
     let corners_frac: [[f64; 3]; 8] = [
         frac(ix, iy, iz),
         frac(ix + 1, iy, iz),
@@ -547,14 +450,11 @@ pub fn build_tetrahedra_3d(
             ]
         })
         .unwrap();
-        let vertex_xy = Array2::<f64>::zeros((4, 2)); // unused in 3D
         out.push(TrackedSimplex {
             vertices: aligned,
             volume: cube_vol * TET_VOL_FACTOR[teti],
             coords,
             diag,
-            vdiag_rect: None,
-            vertex_xy,
         });
     }
     out

@@ -45,32 +45,7 @@ pub const TET_QUAD_PTS_4: [[f64; 4]; 4] = [
 ];
 pub const TET_QUAD_WTS_4: [f64; 4] = [0.25, 0.25, 0.25, 0.25];
 
-/// Degree‑3 6‑point rule for the reference triangle (all positive weights).
-/// Exact for polynomials up to degree 3.
-pub const TRI_QUAD_PTS_6: [[f64; 3]; 6] = [
-    [0.5, 0.5, 0.0],
-    [0.5, 0.0, 0.5],
-    [0.0, 0.5, 0.5],
-    [2.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0],
-    [1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0],
-    [1.0 / 6.0, 1.0 / 6.0, 2.0 / 3.0],
-];
-pub const TRI_QUAD_WTS_6: [f64; 6] = [
-    1.0 / 15.0,
-    1.0 / 15.0,
-    1.0 / 15.0,
-    4.0 / 15.0,
-    4.0 / 15.0,
-    4.0 / 15.0,
-];
-
 // ── Barycentric interpolation ───────────────────────────────────────────
-
-/// Interpolate a scalar field `vals[d+1]` at barycentric coords `lam[d+1]`.
-#[inline]
-pub fn bary_interp_scalar(vals: &[f64], lam: &[f64]) -> f64 {
-    vals.iter().zip(lam.iter()).map(|(v, l)| v * l).sum()
-}
 
 /// Interpolate band energies at barycentric coords `lam`.
 pub fn bary_interp_band(bands: &[Vec<f64>], lam: &[f64], nsta: usize) -> Vec<f64> {

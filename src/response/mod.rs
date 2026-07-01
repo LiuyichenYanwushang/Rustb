@@ -93,10 +93,10 @@ mod tracking;
 mod types;
 
 // Re‑export public types
-pub use energy_cut::{integrate_dipole_energy_cut_2d, triangle_line_cut};
+pub use energy_cut::{integrate_dipole_energy_cut_2d, integrate_fermi_cut_2d, triangle_line_cut};
 pub use kernel::{
     eval_berry_kernel, eval_optical_kernel, fermi, fermi_deriv, quadrature_berry_simplex,
-    quadrature_dipole_simplex, quadrature_optical_simplex,
+    quadrature_optical_simplex,
 };
 pub use optical::OpticalGeometry;
 pub use quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};

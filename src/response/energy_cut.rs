@@ -244,3 +244,128 @@ pub fn integrate_dipole_energy_cut_2d(
 
     (acc, unsafe_count)
 }
+
+// ── Fermi‑window energy‑cut (AHC, optical) ──────────────────────────────
+
+/// Energy‑binned spectral function accumulator for a single triangle.
+///
+/// For each band $n$, computes $\Omega_n$ at the three vertices, then
+/// evaluates $\rho_\Omega(E)=\int_T \Omega_n(k)\delta(E_n(k)-E)d^2k$
+/// on the given energy grid via [`triangle_line_cut`].
+fn accumulate_triangle_fermi_cut(
+    sim: &TrackedSimplex,
+    eta: f64,
+    e_min: f64,
+    de: f64,
+    rho: &mut [f64],
+) {
+    let area = triangle_area(&sim.coords);
+    if area < ENERGY_CUT_EPS {
+        return;
+    }
+    let volume_scale = sim.volume / area;
+    let nsta = sim.vertices[0].band.len();
+    let n_bins = rho.len();
+
+    for n in 0..nsta {
+        // E_n at three vertices
+        let e_v = [
+            sim.vertices[0].band[n],
+            sim.vertices[1].band[n],
+            sim.vertices[2].band[n],
+        ];
+        // Ω_n at three vertices
+        let omega_v: [f64; 3] = {
+            let band0 = sim.vertices[0].band.to_vec();
+            let band1 = sim.vertices[1].band.to_vec();
+            let band2 = sim.vertices[2].band.to_vec();
+            let (_, o0) = eval_berry_kernel(&band0, &sim.vertices[0].k_ab, eta, nsta);
+            let (_, o1) = eval_berry_kernel(&band1, &sim.vertices[1].k_ab, eta, nsta);
+            let (_, o2) = eval_berry_kernel(&band2, &sim.vertices[2].k_ab, eta, nsta);
+            [o0[n], o1[n], o2[n]]
+        };
+
+        let e_lo = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let e_hi = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let i_lo = ((e_lo - e_min) / de).floor() as isize;
+        let i_hi = ((e_hi - e_min) / de).ceil() as isize;
+
+        for ib in i_lo.max(0) as usize..(i_hi as usize).min(n_bins) {
+            let energy = e_min + (ib as f64 + 0.5) * de;
+            let contrib = triangle_line_cut(&sim.coords, e_v, omega_v, energy);
+            rho[ib] += volume_scale * contrib;
+        }
+    }
+}
+
+/// 2D Fermi‑window integration via energy‑cut.
+///
+/// Builds the spectral function $\rho(E)=\sum_n\int\Omega_n\delta(E_n-E)dk$
+/// on an energy grid, then integrates with the Fermi‑Dirac occupation.
+///
+/// Returns $\sigma(\mu_i)$ for each $\mu$ in `mu` (fractional BZ volume;
+/// divide by $\det(L)$ for Cartesian).
+pub fn integrate_fermi_cut_2d(
+    all_pts: &[VertexKernel],
+    k_mesh: &Array1<usize>,
+    mu: &Array1<f64>,
+    T: f64,
+    eta: f64,
+    n_bins: usize,
+) -> Array1<f64> {
+    assert_eq!(k_mesh.len(), 2);
+    let (nx, ny) = (k_mesh[0], k_mesh[1]);
+    let inv_nx = 1.0 / nx as f64;
+    let inv_ny = 1.0 / ny as f64;
+
+    // Find energy range and allocate bins.
+    let e_lo = all_pts
+        .iter()
+        .flat_map(|v| v.band.iter())
+        .fold(f64::INFINITY, |a, &b| a.min(b));
+    let e_hi = all_pts
+        .iter()
+        .flat_map(|v| v.band.iter())
+        .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let de = (e_hi - e_lo) / n_bins as f64;
+    let mut rho = vec![0.0f64; n_bins];
+
+    for ix in 0..nx {
+        for iy in 0..ny {
+            let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+            for sim in &sims {
+                accumulate_triangle_fermi_cut(sim, eta, e_lo, de, &mut rho);
+            }
+        }
+    }
+
+    // Integrate ρ(E) with occupation.
+    let n_mu = mu.len();
+    let beta = if T > 0.0 {
+        1.0 / (T * 8.617333262e-5)
+    } else {
+        f64::INFINITY
+    };
+    let mut result = Array1::<f64>::zeros(n_mu);
+
+    for (ib, &r) in rho.iter().enumerate() {
+        let ec = e_lo + (ib as f64 + 0.5) * de;
+        for im in 0..n_mu {
+            let occ = if T == 0.0 {
+                if ec <= mu[im] { 1.0 } else { 0.0 }
+            } else {
+                let x = beta * (ec - mu[im]);
+                if x < -50.0 {
+                    1.0
+                } else if x > 50.0 {
+                    0.0
+                } else {
+                    1.0 / (1.0 + x.exp())
+                }
+            };
+            result[im] += occ * r * de;
+        }
+    }
+
+    result
+}

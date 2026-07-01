@@ -1,74 +1,54 @@
-//! Data structures for simplex quadrature.
+//! Data structures for simplex quadrature and energy‑cut integration.
 //!
 //! ## Core types
 //!
-//! `VertexKernel` stores gauge‑invariant per‑k‑point primitives:
-//! band energies $E_n$, eigenvectors $U$, the velocity kernel
-//! $K^{ab}_{nm}=v^a_{nm}v^b_{mn}$, and optionally $v^c_n = \partial_c E_n$.
+//! `VertexKernel` stores gauge‑invariant per‑k‑point primitives suitable
+//! for linear interpolation inside simplices:
 //!
-//! `TrackedSimplex` bundles band‑aligned vertices with their geometry
-//! (barycentric coords, volume) and diagnostic information.
+//! | Field | Formula | Invariant? |
+//! |-------|---------|-----------|
+//! | `band[n]` | $E_n$ | ✓ |
+//! | `k_ab[n,m]` | $K^{ab}_{nm}=v^a_{nm}v^b_{mn}$ | ✓ |
+//! | `k_bc[n,m]` | $K^{bc}_{nm}=v^b_{nm}v^c_{mn}$ | ✓ |
+//! | `k_ac[n,m]` | $K^{ac}_{nm}=v^a_{nm}v^c_{mn}$ | ✓ |
+//! | `vdiag[n]` | $v^c_n=\partial_c E_n$ | ✓ |
+//! | `vdiag_a[n]` | $v^a_n=\partial_a E_n$ | ✓ |
+//! | `vdiag_b[n]` | $v^b_n=\partial_b E_n$ | ✓ |
+//!
+//! All are invariant under independent U(1) rotations $|u_n\rangle\to
+//! e^{i\phi_n}|u_n\rangle$ of individual band eigenstates.
 //!
 //! ## Safety threshold
 //!
 //! `SIMPLEX_GAP_TOL = 10^{-4}` eV — simplexes with a band gap smaller
-//! than this are flagged as potentially unsafe for single‑band evaluation
-//! of Berry/QGT quantities.
+//! than this are flagged as potentially unsafe for single‑band evaluation.
 
 use ndarray::prelude::*;
 use ndarray::*;
 use num_complex::Complex;
 
-/// Rectangle‑corner vdiag values for bilinear interpolation on 2D cells.
+/// Per‑k‑point gauge‑invariant primitives for energy‑cut integration.
 ///
-/// Corners are indexed `[i00, i10, i01, i11]` where
-///
-/// ```text
-/// i00=(0,0)  i10=(1,0)  i01=(0,1)  i11=(1,1)
-/// ```
-///
-/// in the parent rectangle local coordinates.  At a quadrature point
-/// $(x,y)\in[0,1]^2$ the bilinear interpolation is
-///
-/// $$v(x,y) = (1-x)(1-y)v_{00} + x(1-y)v_{10} + xy v_{11} + (1-x)y v_{01}$$
-#[derive(Clone)]
-pub struct VdiagRect {
-    pub corners: [Vec<f64>; 4],
-}
-
-impl VdiagRect {
-    /// Bilinear interpolation at rectangle‑local coords $(x,y)\in[0,1]^2$.
-    pub fn interp(&self, x: f64, y: f64, nsta: usize) -> Vec<f64> {
-        let (c00, c10, c01, c11) = (
-            &self.corners[0],
-            &self.corners[1],
-            &self.corners[2],
-            &self.corners[3],
-        );
-        let mut v = vec![0.0; nsta];
-        for n in 0..nsta {
-            v[n] = (1.0 - x) * (1.0 - y) * c00[n]
-                + x * (1.0 - y) * c10[n]
-                + x * y * c11[n]
-                + (1.0 - x) * y * c01[n];
-        }
-        v
-    }
-}
-
-/// Per‑k‑point primitive data for one direction pair `(a,b)`.
-///
-/// `k_ab[n,m] = v^a_nm · v^b_mn` is gauge‑invariant under independent
-/// U(1) rotations of bands n and m (when both bands are isolated).
+/// Fields dependent on `dir_c` are `Option`: `None` when only two
+/// directions were requested (e.g. Berry curvature).  Callers must
+/// handle the absence explicitly rather than receiving silent zeros.
 #[derive(Clone)]
 pub struct VertexKernel {
-    /// Band energies `ε_n`, length `nsta`.
+    /// Band energies $E_n$, length `nsta`.
     pub band: Array1<f64>,
-    /// `K^{ab}_{nm}`, shape `(nsta, nsta)`.
+    /// $K^{ab}_{nm}=v^a_{nm}v^b_{mn}$, shape `(nsta, nsta)` (always computed).
     pub k_ab: Array2<Complex<f64>>,
-    /// Diagonal velocity `v^c_n = ⟨n|∂_c H|n⟩` (only when dipole needed).
+    /// $K^{bc}_{nm}=v^b_{nm}v^c_{mn}$ — `None` if `dir_c` was not supplied.
+    pub k_bc: Option<Array2<Complex<f64>>>,
+    /// $K^{ac}_{nm}=v^a_{nm}v^c_{mn}$ — `None` if `dir_c` was not supplied.
+    pub k_ac: Option<Array2<Complex<f64>>>,
+    /// Diagonal velocity $v^c_n$ — `None` if `dir_c` was not supplied.
     pub vdiag: Option<Array1<f64>>,
-    /// Eigenvectors `U[:, n]`, shape `(norb, nsta)` — for band tracking.
+    /// Diagonal velocity $v^a_n$ — `None` if `dir_c` was not supplied.
+    pub vdiag_a: Option<Array1<f64>>,
+    /// Diagonal velocity $v^b_n$ — `None` if `dir_c` was not supplied.
+    pub vdiag_b: Option<Array1<f64>>,
+    /// Eigenvectors $U[:, n]$, shape `(norb, nsta)` — for band tracking.
     pub evec: Array2<Complex<f64>>,
 }
 
@@ -80,13 +60,6 @@ pub struct TrackedSimplex {
     pub volume: f64,
     /// Fractional coordinates of each vertex, shape `(d+1, dim)`.
     pub coords: Array2<f64>,
-    /// Rectangle‑corner vdiag for bilinear interpolation (2D only).
-    /// Four corners indexed `[i00, i10, i01, i11]` in parent‑rectangle
-    /// local coordinates $(0,0),(1,0),(0,1),(1,1)$.
-    pub vdiag_rect: Option<VdiagRect>,
-    /// Per‑vertex $(x,y)$ coordinates in the parent rectangle $[0,1]^2$.
-    /// Shape `(nv, 2)`: row $i$ holds $(x_i, y_i)$ for `vertices[i]`.
-    pub vertex_xy: Array2<f64>,
     /// Diagnostic counters for this simplex.
     pub diag: SimplexDiagnostics,
 }
@@ -94,15 +67,11 @@ pub struct TrackedSimplex {
 /// Per‑simplex safety / quality diagnostics.
 #[derive(Clone, Default)]
 pub struct SimplexDiagnostics {
-    /// Minimum band gap `min_{n≠m} |E_n − E_m|` across all vertices.
+    /// Minimum band gap $\min_{n\neq m} |E_n - E_m|$ across all vertices.
     pub min_gap: f64,
     /// Minimum assignment overlap from band tracking (1.0 = perfect).
     pub min_assignment_overlap: f64,
-    /// Placeholder: currently always `false`.  Future global band‑tracking
-    /// pass will detect path‑dependent permutation conflicts.
     pub tracking_conflict: bool,
 }
 
-/// Safety threshold: simplexes with `min_gap < GAP_TOL` are skipped for
-/// single‑band Berry/QGT evaluation.
 pub const SIMPLEX_GAP_TOL: f64 = 1e-4;

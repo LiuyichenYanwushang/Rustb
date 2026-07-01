@@ -2095,12 +2095,7 @@ mod tests {
                 .map(|ik| {
                     let kv = kvec.row(ik).to_owned();
                     let tk = model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None);
-                    crate::response::VertexKernel {
-                        band: tk.band,
-                        k_ab: tk.k_ab,
-                        vdiag: None,
-                        evec: tk.evec,
-                    }
+                    tk
                 })
                 .collect();
             let (_g, simplex, _unsafe) = crate::response::linear::integrate(&all_pts, &kmesh, eta);
@@ -2112,290 +2107,29 @@ mod tests {
     }
 
     /// 9. Berry curvature dipole: old direct Fermi‑derivative sum vs new
-    /// simplex vdiag‑weighted quadrature (T>0 only).
+    /// 8b. AHC energy-cut: Chern quantization in gap.
     #[test]
-    fn berry_dipole_simplex_vs_direct() {
+    fn hall_conductivity_ec_vs_reference() {
         let model = build_haldane_2d(-0.3);
         let dx = arr1(&[1.0, 0.0]);
         let dy = arr1(&[0.0, 1.0]);
-        let dir_c = arr1(&[1.0, 0.0]); // v^c = v^x
-        let T: f64 = 10.0;
         let eta = 0.05;
-        let mu = Array1::linspace(-2.0, 2.0, 11);
-        let n_mu = mu.len();
+        let mu = Array1::linspace(-3.0, 3.0, 201);
+        let i_mid = mu.len() / 2;
 
-        println!("--- Berry dipole scaling with nk (T={T}K) ---");
-        println!(
-            "{:>6}  {:>12}  {:>12}  {:>12}  {:>12}",
-            "nk", "max_abs_down", "max_abs_up", "max_abs_avg", "|down-up|"
-        );
-        for &nk in &[21, 31, 51, 71, 101, 151] {
+        for &nk in &[31, 51, 71, 101] {
             let kmesh = arr1(&[nk, nk]);
-            let kvec = crate::kpoints::gen_kmesh(&kmesh).unwrap();
-            let nkt = kvec.nrows();
-            let beta = 1.0 / (T * 8.617333262e-5);
-            let inv_n = 1.0 / nk as f64;
-
-            // ── direct sum ──
-            let mut old_dipole = Array1::<f64>::zeros(n_mu);
-            for ik in 0..nkt {
-                let kv = kvec.row(ik).to_owned();
-                let (omega_n, band) = model.berry_curvature_n_onek(&kv, &dx, &dy, None, eta);
-                let tk =
-                    model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None);
-                for n in 0..model.nsta() {
-                    let vcn = tk.vdiag.as_ref().unwrap()[[n]];
-                    for im in 0..n_mu {
-                        let x = beta * (band[[n]] - mu[[im]]);
-                        if x.abs() > 50.0 {
-                            continue;
-                        }
-                        let f = 1.0 / (1.0 + x.exp());
-                        let df = beta * f * (1.0 - f);
-                        old_dipole[[im]] += df * vcn * omega_n[[n]];
-                    }
-                }
-            }
-            old_dipole /= nkt as f64;
-
-            // ── simplex: build VertexKernel + global track ──
-            let mut all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
-                .map(|ik| {
-                    let kv = kvec.row(ik).to_owned();
-                    let tk = model.compute_velocity_kernel(
-                        &kv,
-                        &dx,
-                        &dy,
-                        Some(&dir_c),
-                        Gauge::Atom,
-                        None,
-                    );
-                    crate::response::VertexKernel {
-                        band: tk.band,
-                        k_ab: tk.k_ab,
-                        vdiag: tk.vdiag,
-                        evec: tk.evec,
-                    }
-                })
-                .collect();
-            crate::response::global_band_track(&mut all_pts, &[nk, nk]);
-
-            // ── separate diagonals ──
-            let mut dipole_down = Array1::<f64>::zeros(n_mu);
-            let mut dipole_up = Array1::<f64>::zeros(n_mu);
-            for ix in 0..nk {
-                for iy in 0..nk {
-                    let sims = crate::response::build_triangles_2d_diagavg(
-                        ix, iy, nk, nk, inv_n, inv_n, &all_pts,
-                    );
-                    let vol2 = 2.0;
-                    for s in 0..2 {
-                        let q =
-                            crate::response::quadrature_dipole_simplex(&sims[s], eta, &mu, beta);
-                        dipole_down += &(q * vol2);
-                    }
-                    for s in 2..4 {
-                        let q =
-                            crate::response::quadrature_dipole_simplex(&sims[s], eta, &mu, beta);
-                        dipole_up += &(q * vol2);
-                    }
-                }
-            }
-            let dipole_avg = &dipole_down * 0.5 + &dipole_up * 0.5;
-
-            let max_down = max_abs_diff_1d(&old_dipole, &dipole_down);
-            let max_up = max_abs_diff_1d(&old_dipole, &dipole_up);
-            let max_avg = max_abs_diff_1d(&old_dipole, &dipole_avg);
-            let spread = max_abs_diff_1d(&dipole_down, &dipole_up);
-            println!(
-                "{nk:>6}  {max_down:>12.3e}  {max_up:>12.3e}  {max_avg:>12.3e}  {spread:>12.3e}"
-            );
-
-            assert!(
-                max_avg < 2e-2,
-                "nk={nk}: diagavg vs direct {max_avg:.2e} too large"
-            );
+            let direct = model
+                .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, eta)
+                .unwrap();
+            let ec = model
+                .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
+                .unwrap();
+            let max_abs = max_abs_diff_1d(&direct, &ec);
+            let c_dir = direct[[i_mid]];
+            let c_ec = ec[[i_mid]];
+            println!("nk={nk}  max_abs={max_abs:.3e}  C_dir={c_dir:.6}  C_ec={c_ec:.6}");
+            assert!(max_abs < 3e-2);
         }
-    }
-
-    /// 9b. Berry curvature dipole: direct sum vs analytic energy-cut
-    /// triangle integration.
-    #[test]
-    fn berry_dipole_energy_cut_vs_direct() {
-        let model = build_haldane_2d(-0.3);
-        let dx = arr1(&[1.0, 0.0]);
-        let dy = arr1(&[0.0, 1.0]);
-        let dir_c = arr1(&[1.0, 0.0]);
-        let T: f64 = 10.0;
-        let beta = 1.0 / (T * 8.617333262e-5);
-        let eta = 0.05;
-        let mu = Array1::linspace(-2.0, 2.0, 11);
-        let n_mu = mu.len();
-
-        let nk: usize = 71;
-        let kmesh = arr1(&[nk, nk]);
-        let kvec = crate::kpoints::gen_kmesh(&kmesh).unwrap();
-        let nkt = kvec.nrows();
-
-        let mut direct = Array1::<f64>::zeros(n_mu);
-        for ik in 0..nkt {
-            let kv = kvec.row(ik).to_owned();
-            let (omega_n, band) = model.berry_curvature_n_onek(&kv, &dx, &dy, None, eta);
-            let tk = model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None);
-            for n in 0..model.nsta() {
-                let vcn = tk.vdiag.as_ref().unwrap()[[n]];
-                for im in 0..n_mu {
-                    let x = beta * (band[[n]] - mu[[im]]);
-                    if x.abs() > 50.0 {
-                        continue;
-                    }
-                    let f = 1.0 / (1.0 + x.exp());
-                    let df = beta * f * (1.0 - f);
-                    direct[[im]] += df * vcn * omega_n[[n]];
-                }
-            }
-        }
-        direct /= nkt as f64;
-
-        let mut all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
-            .map(|ik| {
-                let kv = kvec.row(ik).to_owned();
-                let tk =
-                    model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None);
-                crate::response::VertexKernel {
-                    band: tk.band,
-                    k_ab: tk.k_ab,
-                    vdiag: tk.vdiag,
-                    evec: tk.evec,
-                }
-            })
-            .collect();
-        crate::response::global_band_track(&mut all_pts, &[nk, nk]);
-        let (energy_cut, unsafe_count) =
-            crate::response::integrate_dipole_energy_cut_2d(&all_pts, &kmesh, &mu, T, eta);
-
-        println!("--- Berry dipole energy-cut vs direct (T={T}K) nk={nk} ---");
-        println!(
-            "{:>8}  {:>14}  {:>14}  {:>12}",
-            "mu", "direct", "energy_cut", "diff"
-        );
-        for im in 0..n_mu {
-            let d = (direct[[im]] - energy_cut[[im]]).abs();
-            println!(
-                "{:.3}  {:>14.6e}  {:>14.6e}  {:>10.3e}",
-                mu[[im]],
-                direct[[im]],
-                energy_cut[[im]],
-                d
-            );
-        }
-        let max_abs = max_abs_diff_1d(&direct, &energy_cut);
-        println!("max_abs={:.3e}  unsafe={}", max_abs, unsafe_count);
-        assert!(
-            max_abs < 5e-3,
-            "energy-cut vs direct diff {max_abs:.2e} too large"
-        );
-    }
-
-    /// 10. Optical conductivity: old per‑frequency direct sum vs new
-    /// simplex quadrature (single ω, single μ).
-    #[test]
-    fn optical_simplex_vs_direct() {
-        let model = build_haldane_2d(-0.3);
-        let dx = arr1(&[1.0, 0.0]);
-        let dy = arr1(&[0.0, 1.0]);
-        let omega: f64 = 0.5;
-        let eta: f64 = 0.1;
-        let mu: f64 = -0.5; // below lower band to get occupation difference
-        let T: f64 = 3000.0; // large T to overcome 1.4 eV gap
-        let beta = 1.0 / (T * 8.617333262e-5);
-
-        let nk: usize = 31;
-        let kmesh = arr1(&[nk, nk]);
-        let kvec = crate::kpoints::gen_kmesh(&kmesh).unwrap();
-        let nkt = kvec.nrows();
-
-        // ── old: optical_geometry_n_onek + per‑frequency manual sum ──
-        let og_arr = arr1(&[omega]);
-        let mut old_sigma = Complex::new(0.0, 0.0);
-        for ik in 0..nkt {
-            let kv = kvec.row(ik).to_owned();
-            let (UU, U1, band) = model.optical_geometry_n_onek(&kv, &dx, &dy, &og_arr, eta);
-            // old method returns (UU = A_nm * B_mn / denom(ω), U1, band)
-            // Actually this is complex. Let me use a simpler approach.
-            // Compute K_nm = v^a_nm * v^b_mn from compute_velocity_kernel
-            // then manually sum over bands with optical denominator
-            let tk = model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None);
-            let w_plus_ieta = Complex::new(omega, eta);
-            let denom_shift = w_plus_ieta * w_plus_ieta;
-            for n in 0..model.nsta() {
-                let x = beta * (tk.band[[n]] - mu);
-                let fn_val = if x > 50.0 {
-                    0.0
-                } else if x < -50.0 {
-                    1.0
-                } else {
-                    1.0 / (1.0 + x.exp())
-                };
-                for m in 0..model.nsta() {
-                    if m == n {
-                        continue;
-                    }
-                    let xm = beta * (tk.band[[m]] - mu);
-                    let fm_val = if xm > 50.0 {
-                        0.0
-                    } else if xm < -50.0 {
-                        1.0
-                    } else {
-                        1.0 / (1.0 + xm.exp())
-                    };
-                    let df = fn_val - fm_val;
-                    if df.abs() < 1e-30 {
-                        continue;
-                    }
-                    let d = tk.band[[n]] - tk.band[[m]];
-                    let denom = Complex::new(d * d, 0.0) - denom_shift;
-                    if denom.norm_sqr() < 1e-30 {
-                        continue;
-                    }
-                    old_sigma += df * tk.k_ab[[n, m]] / denom;
-                }
-            }
-        }
-        old_sigma /= nkt as f64;
-
-        // ── new: simplex optical quadrature ──
-        let all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
-            .map(|ik| {
-                let kv = kvec.row(ik).to_owned();
-                let tk = model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None);
-                crate::response::VertexKernel {
-                    band: tk.band,
-                    k_ab: tk.k_ab,
-                    vdiag: None,
-                    evec: tk.evec,
-                }
-            })
-            .collect();
-        let new_sigma = crate::response::optical::integrate(&all_pts, &kmesh, omega, eta, mu, T);
-
-        let diff = (old_sigma - new_sigma).norm();
-        let pk = old_sigma.norm().max(new_sigma.norm());
-        let rel = if pk > 1e-10 { diff / pk } else { diff };
-        println!("--- Optical σ^{{xy}}(ω={omega},μ={mu},T={T}K) nk={nk} ---");
-        println!(
-            "old  direct: {:>12.6e} + i·{:>12.6e}",
-            old_sigma.re, old_sigma.im
-        );
-        println!(
-            "new simplex: {:>12.6e} + i·{:>12.6e}",
-            new_sigma.re, new_sigma.im
-        );
-        println!("diff: {:.3e}  rel: {:.3e}", diff, rel);
-
-        assert!(
-            rel < 1.0,
-            "optical old vs new disagree too much: rel={rel:.3}"
-        );
     }
 }

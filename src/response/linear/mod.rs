@@ -42,6 +42,7 @@ use crate::RMatrixData;
 use crate::SpinDirection;
 use crate::error::Result;
 
+use super::energy_cut::integrate_fermi_cut_2d;
 use super::kernel::quadrature_berry_simplex;
 use super::tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
 use super::traits::BerryCurvature;
@@ -299,5 +300,43 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             Array1::<f64>::from_vec(conductivity_new)
         };
         Ok(conductivity)
+    }
+
+    /// Anomalous Hall conductivity via energy‑cut (2D only).
+    ///
+    /// Builds $\rho_\Omega(E)=\sum_n\int\Omega_n\delta(E_n-E)dk$ on an
+    /// energy grid, then integrates with the Fermi‑Dirac occupation:
+    ///
+    /// $$\sigma(\mu,T) = \int_{-\infty}^\infty f(E,\mu,T)\rho_\Omega(E)dE$$
+    ///
+    /// This avoids k‑space sampling of the Fermi surface and works
+    /// well at low temperature unlike direct k‑point summation.
+    #[allow(non_snake_case)]
+    pub fn Hall_conductivity_ec(
+        &self,
+        k_mesh: &Array1<usize>,
+        dir_a: &Array1<f64>,
+        dir_b: &Array1<f64>,
+        mu: &Array1<f64>,
+        T: f64,
+        eta: f64,
+    ) -> Result<Array1<f64>> {
+        assert_eq!(k_mesh.len(), 2, "Hall_conductivity_ec currently 2D only");
+        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
+        let nk = kvec.nrows();
+
+        let mut all_pts: Vec<VertexKernel> = (0..nk)
+            .into_par_iter()
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                self.compute_velocity_kernel(&kv, dir_a, dir_b, None, Gauge::Atom, None)
+            })
+            .collect();
+        global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
+
+        let n_bins = 2000;
+        let sigma = integrate_fermi_cut_2d(&all_pts, k_mesh, mu, T, eta, n_bins);
+        let det = self.lat.det().unwrap();
+        Ok(sigma / det)
     }
 }
