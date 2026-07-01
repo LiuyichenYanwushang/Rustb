@@ -20,7 +20,7 @@ use num_complex::Complex;
 use rayon::prelude::*;
 
 use super::kernel::{eval_berry_band_at_lam, eval_berry_kernel};
-use super::quadrature::{TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
+use super::quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
 use super::tracking::{build_tetrahedra_3d, build_triangles_2d_diagavg};
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, VertexKernel};
 
@@ -548,19 +548,81 @@ fn tet_vol_from_pts(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) -> f
     det.abs() / 6.0
 }
 
-/// Exact integral of linearly interpolated $\Omega(k)$ over the occupied
-/// region $\{k \in \text{tetrahedron} : E(k) \le \mu\}$.
-///
-/// Five cases depending on how many vertices lie below $\mu$ (after sorting
-/// by energy).  The occupied polyhedron is decomposed into at most 3
-/// sub‑tetrahedra whose volume‑weighted average $\Omega$ is summed.
-///
-/// Returns the integral in the coordinate measure of `coords`.
-fn tetrahedron_occupied_integral(
-    coords: &Array2<f64>, // 4×3
-    energy_v: [f64; 4],
+/// Map 4 barycentrics to physical 3D coords.
+fn bary_to_phys_3d(coords: &Array2<f64>, lam: &[f64; 4]) -> [f64; 3] {
+    [
+        lam[0] * coords[[0, 0]]
+            + lam[1] * coords[[1, 0]]
+            + lam[2] * coords[[2, 0]]
+            + lam[3] * coords[[3, 0]],
+        lam[0] * coords[[0, 1]]
+            + lam[1] * coords[[1, 1]]
+            + lam[2] * coords[[2, 1]]
+            + lam[3] * coords[[3, 1]],
+        lam[0] * coords[[0, 2]]
+            + lam[1] * coords[[1, 2]]
+            + lam[2] * coords[[2, 2]]
+            + lam[3] * coords[[3, 2]],
+    ]
+}
+
+/// Volume of a sub‑tet defined by 4 barycentric vertices.
+fn sub_tet_vol_3d(coords: &Array2<f64>, sub_lam: &[[f64; 4]; 4]) -> f64 {
+    tet_vol_from_pts(
+        bary_to_phys_3d(coords, &sub_lam[0]),
+        bary_to_phys_3d(coords, &sub_lam[1]),
+        bary_to_phys_3d(coords, &sub_lam[2]),
+        bary_to_phys_3d(coords, &sub_lam[3]),
+    )
+}
+
+/// Combine sub‑tet barycentrics $\alpha$ (4‑vector) with vertex
+/// barycentrics $\lambda_i$ to get barycentrics in the original tet.
+fn combine_bary_4(alpha: &[f64; 4], lam: &[[f64; 4]; 4]) -> [f64; 4] {
+    let mut out = [0.0; 4];
+    for k in 0..4 {
+        for i in 0..4 {
+            out[i] += alpha[k] * lam[k][i];
+        }
+    }
+    out
+}
+
+/// K‑quadrature over a single sub‑tetrahedron defined by barycentric vertices.
+fn sub_tet_k_quad(
+    sub_lam: &[[f64; 4]; 4],
+    bands: &[Vec<f64>],
+    kmats: &[Array2<Complex<f64>>],
+    n: usize,
+    eta: f64,
+    nsta: usize,
+    coords: &Array2<f64>,
+) -> f64 {
+    let sub_vol = sub_tet_vol_3d(coords, sub_lam);
+    if sub_vol < 1e-30 {
+        return 0.0;
+    }
+    let mut total = 0.0;
+    for iq in 0..4 {
+        let alpha = &TET_QUAD_PTS_4[iq];
+        let w = TET_QUAD_WTS_4[iq];
+        let lam = combine_bary_4(alpha, sub_lam);
+        total += sub_vol * w * eval_berry_band_at_lam(n, bands, kmats, &lam, eta, nsta);
+    }
+    total
+}
+
+/// Hybrid 3D: vertex‑average $\Omega$ for full/empty; K‑quadrature for partial.
+fn tetrahedron_occupied_hybrid(
+    coords: &Array2<f64>,
+    e_v: [f64; 4],
     omega_v: [f64; 4],
+    bands: &[Vec<f64>],
+    kmats: &[Array2<Complex<f64>>],
     mu: f64,
+    eta: f64,
+    n: usize,
+    nsta: usize,
 ) -> f64 {
     let eps = ENERGY_CUT_EPS;
     let full_vol = tet_vol_from_pts(
@@ -572,9 +634,8 @@ fn tetrahedron_occupied_integral(
     if full_vol < eps {
         return 0.0;
     }
-
-    let e_min = energy_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-    let e_max = energy_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
 
     if mu <= e_min + eps {
         return 0.0;
@@ -583,73 +644,85 @@ fn tetrahedron_occupied_integral(
         return full_vol * (omega_v[0] + omega_v[1] + omega_v[2] + omega_v[3]) / 4.0;
     }
 
-    // Sort vertices by energy: e[a] ≤ e[b] ≤ e[c] ≤ e[d]
+    // Sort by energy: e[a] ≤ e[b] ≤ e[c] ≤ e[d]
     let mut idx: [usize; 4] = [0, 1, 2, 3];
-    idx.sort_by(|&i, &j| energy_v[i].partial_cmp(&energy_v[j]).unwrap());
+    idx.sort_by(|&i, &j| e_v[i].partial_cmp(&e_v[j]).unwrap());
     let (a, b, c, d) = (idx[0], idx[1], idx[2], idx[3]);
 
-    let xyzi = |i: usize| -> [f64; 3] { [coords[[i, 0]], coords[[i, 1]], coords[[i, 2]]] };
+    let unit = |i: usize| -> [f64; 4] {
+        let mut l = [0.0; 4];
+        l[i] = 1.0;
+        l
+    };
 
-    // Intersection point + Ω on edge i→j at energy μ
-    let cut = |i: usize, j: usize| -> ([f64; 3], f64) {
-        let de = energy_v[j] - energy_v[i];
+    let cut_bary = |i: usize, j: usize| -> [f64; 4] {
+        let de = e_v[j] - e_v[i];
         let t = if de.abs() < eps {
             0.5
         } else {
-            ((mu - energy_v[i]) / de).clamp(0.0, 1.0)
+            ((mu - e_v[i]) / de).clamp(0.0, 1.0)
         };
-        let x = coords[[i, 0]] + t * (coords[[j, 0]] - coords[[i, 0]]);
-        let y = coords[[i, 1]] + t * (coords[[j, 1]] - coords[[i, 1]]);
-        let z = coords[[i, 2]] + t * (coords[[j, 2]] - coords[[i, 2]]);
-        let omega = omega_v[i] + t * (omega_v[j] - omega_v[i]);
-        ([x, y, z], omega)
+        let mut l = [0.0; 4];
+        l[i] = 1.0 - t;
+        l[j] = t;
+        l
     };
 
-    let tet_int = |v0: [f64; 3],
-                   v1: [f64; 3],
-                   v2: [f64; 3],
-                   v3: [f64; 3],
-                   o0: f64,
-                   o1: f64,
-                   o2: f64,
-                   o3: f64|
-     -> f64 { tet_vol_from_pts(v0, v1, v2, v3) * (o0 + o1 + o2 + o3) / 4.0 };
-
-    if mu <= energy_v[b] + eps {
-        // Case 3: 1 vertex below (a), 3 above (b,c,d)
-        // Occupied = sub‑tet (v_a, p_ab, p_ac, p_ad)
-        let (p_ab, o_ab) = cut(a, b);
-        let (p_ac, o_ac) = cut(a, c);
-        let (p_ad, o_ad) = cut(a, d);
-        tet_int(xyzi(a), p_ab, p_ac, p_ad, omega_v[a], o_ab, o_ac, o_ad)
-    } else if mu <= energy_v[c] + eps {
-        // Case 4: 2 below (a,b), 2 above (c,d)
-        // Decompose occupied polyhedron into 3 tets via diagonal p_ac → p_bd
-        let (p_ac, o_ac) = cut(a, c);
-        let (p_ad, o_ad) = cut(a, d);
-        let (p_bc, o_bc) = cut(b, c);
-        let (p_bd, o_bd) = cut(b, d);
-
-        let a_xyz = xyzi(a);
-        let b_xyz = xyzi(b);
-
-        tet_int(a_xyz, b_xyz, p_ac, p_bd, omega_v[a], omega_v[b], o_ac, o_bd)
-            + tet_int(a_xyz, p_ac, p_ad, p_bd, omega_v[a], o_ac, o_ad, o_bd)
-            + tet_int(b_xyz, p_bc, p_bd, p_ac, omega_v[b], o_bc, o_bd, o_ac)
+    if mu <= e_v[b] + eps {
+        // 1 below (a) → sub‑tet {a, cut(a,b), cut(a,c), cut(a,d)}
+        sub_tet_k_quad(
+            &[unit(a), cut_bary(a, b), cut_bary(a, c), cut_bary(a, d)],
+            bands,
+            kmats,
+            n,
+            eta,
+            nsta,
+            coords,
+        )
+    } else if mu <= e_v[c] + eps {
+        // 2 below (a,b) → 3 sub‑tets via diagonal p_ac → p_bd
+        sub_tet_k_quad(
+            &[unit(a), unit(b), cut_bary(a, c), cut_bary(b, d)],
+            bands,
+            kmats,
+            n,
+            eta,
+            nsta,
+            coords,
+        ) + sub_tet_k_quad(
+            &[unit(a), cut_bary(a, c), cut_bary(a, d), cut_bary(b, d)],
+            bands,
+            kmats,
+            n,
+            eta,
+            nsta,
+            coords,
+        ) + sub_tet_k_quad(
+            &[unit(b), cut_bary(b, c), cut_bary(b, d), cut_bary(a, c)],
+            bands,
+            kmats,
+            n,
+            eta,
+            nsta,
+            coords,
+        )
     } else {
-        // Case 5: 3 below (a,b,c), 1 above (d)
-        // Occupied = full tet − sub‑tet (v_d, p_ad, p_bd, p_cd)
-        let (p_ad, o_ad) = cut(a, d);
-        let (p_bd, o_bd) = cut(b, d);
-        let (p_cd, o_cd) = cut(c, d);
-
-        let full = full_vol * (omega_v[0] + omega_v[1] + omega_v[2] + omega_v[3]) / 4.0;
-        let sub = tet_int(xyzi(d), p_ad, p_bd, p_cd, omega_v[d], o_ad, o_bd, o_cd);
-        full - sub
+        // 3 below (a,b,c) → full − sub‑tet(d, cut(a,d), cut(b,d), cut(c,d))
+        let full_val = full_vol * (omega_v[0] + omega_v[1] + omega_v[2] + omega_v[3]) / 4.0;
+        full_val
+            - sub_tet_k_quad(
+                &[unit(d), cut_bary(a, d), cut_bary(b, d), cut_bary(c, d)],
+                bands,
+                kmats,
+                n,
+                eta,
+                nsta,
+                coords,
+            )
     }
 }
 
-/// T=0 3D occupancy‑cut integration.
+/// T=0 3D hybrid occupancy‑cut integration.
 fn integrate_fermi_cut_3d_t0(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
@@ -681,6 +754,7 @@ fn integrate_fermi_cut_3d_t0(
                     let volume_scale = sim.volume / vol;
                     let nsta = sim.vertices[0].band.len();
 
+                    // Precompute vertex Ω.
                     let (_g0, o0) = eval_berry_kernel(
                         &sim.vertices[0].band.to_vec(),
                         &sim.vertices[0].k_ab,
@@ -706,6 +780,19 @@ fn integrate_fermi_cut_3d_t0(
                         nsta,
                     );
 
+                    let bands: [Vec<f64>; 4] = [
+                        sim.vertices[0].band.to_vec(),
+                        sim.vertices[1].band.to_vec(),
+                        sim.vertices[2].band.to_vec(),
+                        sim.vertices[3].band.to_vec(),
+                    ];
+                    let kmats: [Array2<Complex<f64>>; 4] = [
+                        sim.vertices[0].k_ab.clone(),
+                        sim.vertices[1].k_ab.clone(),
+                        sim.vertices[2].k_ab.clone(),
+                        sim.vertices[3].k_ab.clone(),
+                    ];
+
                     for n in 0..nsta {
                         let e_v = [
                             sim.vertices[0].band[n],
@@ -714,10 +801,31 @@ fn integrate_fermi_cut_3d_t0(
                             sim.vertices[3].band[n],
                         ];
                         let omega_v = [o0[n], o1[n], o2[n], o3[n]];
+                        let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+                        let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+                        let full_val =
+                            vol * (omega_v[0] + omega_v[1] + omega_v[2] + omega_v[3]) / 4.0;
 
                         for im in 0..n_mu {
-                            result[im] += volume_scale
-                                * tetrahedron_occupied_integral(&sim.coords, e_v, omega_v, mu[im]);
+                            let m = mu[im];
+                            let contrib = if m <= e_min + ENERGY_CUT_EPS {
+                                0.0
+                            } else if m >= e_max - ENERGY_CUT_EPS {
+                                full_val
+                            } else {
+                                tetrahedron_occupied_hybrid(
+                                    &sim.coords,
+                                    e_v,
+                                    omega_v,
+                                    &bands,
+                                    &kmats,
+                                    m,
+                                    eta,
+                                    n,
+                                    nsta,
+                                )
+                            };
+                            result[im] += volume_scale * contrib;
                         }
                     }
                 }
