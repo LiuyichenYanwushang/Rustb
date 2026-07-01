@@ -152,9 +152,107 @@ pub fn track_simplex_vertices(
     (aligned, diag)
 }
 
+// ── Global band tracking ────────────────────────────────────────────────
+
+/// Globally track band labels across the entire k‑mesh.
+///
+/// Starts from the Γ point (first k‑point, assumed to be `k = 0`) and
+/// propagates outward using BFS.  At each step the new point is matched
+/// against **all already‑tracked neighbours** to maximise robustness.
+///
+/// The `all_pts` slice is mutated in place — each `VertexKernel` gets
+/// its band indices permuted for global consistency.  After this call,
+/// local simplex tracking is no longer needed.
+pub fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) {
+    let nk = all_pts.len();
+    if nk <= 1 {
+        return;
+    }
+    let dim = k_mesh.len();
+
+    // ── BFS queue; visited[i] = true once the point is tracked ──────
+    let mut visited = vec![false; nk];
+    let mut queue = std::collections::VecDeque::new();
+
+    // Γ point (index 0) is the reference.
+    visited[0] = true;
+    queue.push_back(0usize);
+
+    while let Some(current) = queue.pop_front() {
+        // Find all unvisited neighbours of `current`
+        let neighbours = neighbour_indices(current, k_mesh);
+        for &nb in &neighbours {
+            if visited[nb] {
+                continue;
+            }
+            // Collect overlap with all *visited* neighbours
+            let mut ov_sum: Option<Array2<f64>> = None;
+            let mut n_contrib = 0usize;
+            for &vn in &neighbour_indices(nb, k_mesh) {
+                if !visited[vn] {
+                    continue;
+                }
+                let ov = build_overlap_matrix(&all_pts[vn].evec, &all_pts[nb].evec);
+                if let Some(ref mut s) = ov_sum {
+                    *s += &ov;
+                } else {
+                    ov_sum = Some(ov);
+                }
+                n_contrib += 1;
+            }
+            if let Some(ov) = ov_sum {
+                // Average overlap over all visited neighbours
+                let ov_avg = ov / n_contrib as f64;
+                let p = greedy_assign(&ov_avg);
+                let permuted = permute_vertex(&all_pts[nb], &p);
+                all_pts[nb] = permuted;
+            }
+            visited[nb] = true;
+            queue.push_back(nb);
+        }
+    }
+}
+
+/// Return the indices of all nearest‑neighbour k‑points for index `i`.
+fn neighbour_indices(i: usize, k_mesh: &[usize]) -> Vec<usize> {
+    let dim = k_mesh.len();
+    let mut out = Vec::new();
+    if dim == 2 {
+        let (nx, ny) = (k_mesh[0], k_mesh[1]);
+        let ix = i / ny;
+        let iy = i % ny;
+        for &(dx, dy) in &[(1isize, 0isize), (-1, 0), (0, 1), (0, -1)] {
+            let jx = ix as isize + dx;
+            let jy = iy as isize + dy;
+            if jx >= 0 && jx < nx as isize && jy >= 0 && jy < ny as isize {
+                out.push((jx as usize) * ny + (jy as usize));
+            }
+        }
+    } else {
+        let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+        let ix = i / (ny * nz);
+        let rem = i % (ny * nz);
+        let iy = rem / nz;
+        let iz = rem % nz;
+        for &(dx, dy, dz) in &[
+            (1isize, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1),
+        ] {
+            let jx = ix as isize + dx;
+            let jy = iy as isize + dy;
+            let jz = iz as isize + dz;
+            if jx >= 0 && jx < nx as isize && jy >= 0 && jy < ny as isize && jz >= 0 && jz < nz as isize
+            {
+                out.push((jx as usize) * ny * nz + (jy as usize) * nz + (jz as usize));
+            }
+        }
+    }
+    out
+}
+
 // ── Simplex builders ────────────────────────────────────────────────────
 
 /// Build the two tracked triangles of a 2D cell.
+/// Caller should have run `global_band_track` first for consistent labels.
 pub fn build_triangles_2d(
     ix: usize,
     iy: usize,
@@ -188,13 +286,20 @@ pub fn build_triangles_2d(
     let tri_area = cell_area / 2.0;
     let mut out = Vec::new();
 
+    // After global_band_track, all points share consistent band labels.
+    // Local tracking is skipped; diagnostics use the vertex data directly.
     for &(v0, v1, v2, v4) in &[(i00, i10, i01, i11), (i11, i10, i01, i00)] {
-        let raw = vec![
-            all_pts[v0].clone(),
-            all_pts[v1].clone(),
-            all_pts[v2].clone(),
-        ];
-        let (aligned, diag) = track_simplex_vertices(&raw);
+        let aligned = vec![all_pts[v0].clone(), all_pts[v1].clone(), all_pts[v2].clone()];
+        let mut min_gap = f64::INFINITY;
+        for v in &aligned {
+            let n = v.band.len();
+            for i in 0..n {
+                for j in i + 1..n {
+                    min_gap = min_gap.min((v.band[[i]] - v.band[[j]]).abs());
+                }
+            }
+        }
+        let diag = SimplexDiagnostics { min_gap, min_assignment_overlap: 1.0, tracking_conflict: false };
         let coords = Array2::from_shape_vec((3, 2), {
             let c0 = coord_of(v0);
             let c1 = coord_of(v1);

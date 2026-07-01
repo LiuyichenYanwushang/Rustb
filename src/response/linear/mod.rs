@@ -43,7 +43,7 @@ use crate::SpinDirection;
 use crate::error::Result;
 
 use super::kernel::quadrature_berry_simplex;
-use super::tracking::{build_tetrahedra_3d, build_triangles_2d};
+use super::tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
 use super::traits::BerryCurvature;
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 
@@ -133,13 +133,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let nk = kvec.nrows();
         let gauge = Gauge::Atom;
 
-        let all_pts: Vec<VertexKernel> = (0..nk)
+        let mut all_pts: Vec<VertexKernel> = (0..nk)
             .into_par_iter()
             .map(|ik| {
                 let kv = kvec.row(ik).to_owned();
                 self.compute_velocity_kernel(&kv, dir_a, dir_b, None, gauge, None)
             })
             .collect();
+        global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
 
         let (total_g, total_o, unsafe_count) = integrate(&all_pts, k_mesh, eta);
         let det = self.lat.det().unwrap();
