@@ -220,7 +220,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// chemical potential.
     ///
     /// This is the quantum‑geometry analogue of
-    /// [`Hall_conductivity_mu`](crate::conductivity::Model::Hall_conductivity_mu):
+    /// `Hall_conductivity_mu` (now in `response::linear`):
     /// it first computes the band‑resolved quantum metric $g_{n,\alpha\beta}$
     /// and Berry curvature $\Omega_{n,\alpha\beta}$ at every k‑point of a
     /// uniform mesh, then evaluates the Fermi–Dirac‑weighted Brillouin‑zone sum

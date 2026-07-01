@@ -115,16 +115,16 @@ cargo runexample <name>              # cargo run --features intel-mkl-system --e
 ### Trait Hierarchy
 
 ```
-Velocity  (src/velocity.rs)        → v_α(k) operator
-  ├─ BerryCurvature (src/conductivity.rs) → AHC, spin Hall, nonlinear Hall
-  │    ├─ intrinsic NLH (src/conductivity.rs)
-  │    └─ extrinsic NLH (src/conductivity.rs)
+Velocity  (src/velocity.rs)          → v_α(k) operator
+  ├─ BerryCurvature (src/response/traits.rs) → AHC, spin Hall, nonlinear Hall
+  │    ├─ intrinsic NLH (src/response/nonlinear)
+  │    └─ extrinsic NLH (src/response/nonlinear)
   └─ QuantumGeometry (src/quantum_geometry.rs) → QGT, quantum metric
 
 FermiSurface / FermiSurfacePlane (src/fermi_surface.rs)
 
-Berry (src/geometry.rs)            → Wilson loops, Berry phase, Wannier centres
-CutModel (src/cut.rs)              → slab/ribbon (cut_piece), dot (cut_dot)
+Berry (src/geometry.rs)              → Wilson loops, Berry phase, Wannier centres
+CutModel (src/cut.rs)                → slab/ribbon (cut_piece), dot (cut_dot)
 
 MagneticField (src/magnetic_field.rs)
 Unfold (src/unfold.rs)
@@ -140,8 +140,8 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `model_build.rs` | Builder: `tb_model()`, `set_hop()`, `make_supercell()`, macros |
 | `model_physics.rs` | `gen_ham()` (Bloch Hamiltonian), `dos()` |
 | `velocity.rs` | `Velocity` trait — `gen_v()` with safe rmatrix commutator; `gen_v_projected()` fuses direction-weight projection |
-| `conductivity.rs` | `BerryCurvature` trait — AHC, spin Hall, nonlinear Hall (intrinsic + extrinsic); per‑k‑point helpers; direct k‑mesh sum APIs |
-| `response/` | Simplex‑quadrature response functions (replaces old Blochl tetrahedron) |
+| `response/` | All response functions: traits, direct‑sum APIs, simplex quadrature |
+| `response/traits.rs` | `BerryCurvature` trait — per‑k‑point Berry curvature |
 | `response/primitives.rs` | `compute_velocity_kernel` — band‑basis velocity matrix elements |
 | `response/types.rs` | `VertexKernel`, `TrackedSimplex`, `SimplexDiagnostics` |
 | `response/quadrature.rs` | 2D/3D symmetric quadrature rules, barycentric interpolation |
@@ -158,7 +158,7 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `ndarray_lapack.rs` | LAPACK bindings + safe `zaxpy()` BLAS wrapper |
 | `lib.rs` | Crate root, re-exports, integration tests |
 | `fermi_surface.rs` | `FermiSurface`/`FermiSurfacePlane` traits (marching squares/tetrahedra → gnuplot); BXSF export (`BxsfExport` trait → XCrySDen/FermiSurfer); `write_spin_frmsf` free fn (spin‑split FRMSF for altermagnets) |
-| `optical_conductivity.rs` | Frequency-dependent optical conductivity & optical Hall |
+| `response/optical/` | Optical conductivity (direct sum + simplex quadrature) |
 | `orbital_angular.rs` | Orbital angular momentum operator |
 | `magnetic_field.rs` | Uniform magnetic field via Peierls substitution (`MagneticField` trait) |
 | `unfold.rs` | Band unfolding for supercell→primitive projection (`Unfold` trait) |
@@ -323,7 +323,6 @@ let sigma = model.optical_conductivity_simplex(
 | `build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, ...)` | `response` | Build tracked 3D tetrahedra for one cell |
 | `eval_berry_kernel(band_q, k_ab_q, eta, nsta)` | `response` | Evaluate `(g_n, Ω_n)` at one quadrature point |
 | `eval_optical_kernel(band_q, k_ab_q, ω, η, μ, β, nsta)` | `response` | Evaluate `σ_nm` at one quadrature point |
-| `eval_q_tensor(band_q, k_ab_q, k_bc_q, k_ac_q, vdiag_*, eta, nsta)` | `response` | Intrinsic NLH Q‑tensor at one quadrature point |
 
 **Data types**
 

@@ -54,7 +54,8 @@ pub struct SimplexDiagnostics {
     pub min_gap: f64,
     /// Minimum assignment overlap from band tracking (1.0 = perfect).
     pub min_assignment_overlap: f64,
-    /// True if different neighbour paths imply inconsistent band permutations.
+    /// Placeholder: currently always `false`.  Future global band‑tracking
+    /// pass will detect path‑dependent permutation conflicts.
     pub tracking_conflict: bool,
 }
 
