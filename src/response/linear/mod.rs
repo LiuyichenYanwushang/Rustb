@@ -334,8 +334,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .collect();
         global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
 
-        let n_bins = 2000;
-        let sigma = integrate_fermi_cut_2d(&all_pts, k_mesh, mu, T, eta, n_bins);
+        let sigma = integrate_fermi_cut_2d(&all_pts, k_mesh, mu, T, eta);
         let det = self.lat.det().unwrap();
         Ok(sigma / det)
     }

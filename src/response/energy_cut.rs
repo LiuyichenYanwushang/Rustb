@@ -16,6 +16,7 @@
 
 use ndarray::prelude::*;
 use ndarray::*;
+use rayon::prelude::*;
 
 use super::kernel::eval_berry_kernel;
 use super::tracking::build_triangles_2d_diagavg;
@@ -247,63 +248,151 @@ pub fn integrate_dipole_energy_cut_2d(
     (acc, unsafe_count)
 }
 
-// ── Fermi‑window energy‑cut (AHC, optical) ──────────────────────────────
+// ── Fermi‑window energy‑cut (AHC) ───────────────────────────────────────
 
-/// Energy‑binned spectral function accumulator for a single triangle.
+/// Exact integral of linearly interpolated $\Omega(k)$ over the occupied
+/// region $\{k \in \text{triangle} : E(k) \le \mu\}$.
 ///
-/// For each band $n$, computes $\Omega_n$ at the three vertices, then
-/// evaluates $\rho_\Omega(E)=\int_T \Omega_n(k)\delta(E_n(k)-E)d^2k$
-/// on the given energy grid via [`triangle_line_cut`].
-fn accumulate_triangle_fermi_cut(
-    sim: &TrackedSimplex,
-    eta: f64,
-    e_min: f64,
-    de: f64,
-    rho: &mut [f64],
-) {
-    let area = triangle_area(&sim.coords);
-    if area < ENERGY_CUT_EPS {
-        return;
+/// Three cases:
+/// - $\mu$ below all vertices → 0
+/// - $\mu$ above all vertices → $\text{area} \times (\Omega_0+\Omega_1+\Omega_2)/3$
+/// - otherwise → triangle clipped by the iso‑energy line $E=\mu$,
+///   integrated analytically (sub‑triangle or two triangles for a quadrilateral)
+///
+/// Returns the integral in the coordinate measure of `coords`.
+fn triangle_occupied_integral(
+    coords: &Array2<f64>,
+    energy_v: [f64; 3],
+    omega_v: [f64; 3],
+    mu: f64,
+) -> f64 {
+    let eps = ENERGY_CUT_EPS;
+    let area = triangle_area(coords);
+    if area < eps {
+        return 0.0;
     }
-    let volume_scale = sim.volume / area;
-    let nsta = sim.vertices[0].band.len();
-    let n_bins = rho.len();
 
-    for n in 0..nsta {
-        // E_n at three vertices
-        let e_v = [
-            sim.vertices[0].band[n],
-            sim.vertices[1].band[n],
-            sim.vertices[2].band[n],
-        ];
-        // Ω_n at three vertices
-        let omega_v: [f64; 3] = {
-            let band0 = sim.vertices[0].band.to_vec();
-            let band1 = sim.vertices[1].band.to_vec();
-            let band2 = sim.vertices[2].band.to_vec();
-            let (_, o0) = eval_berry_kernel(&band0, &sim.vertices[0].k_ab, eta, nsta);
-            let (_, o1) = eval_berry_kernel(&band1, &sim.vertices[1].k_ab, eta, nsta);
-            let (_, o2) = eval_berry_kernel(&band2, &sim.vertices[2].k_ab, eta, nsta);
-            [o0[n], o1[n], o2[n]]
+    let e_min = energy_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let e_max = energy_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+    if mu <= e_min + eps {
+        return 0.0;
+    }
+    if mu >= e_max - eps {
+        return area * (omega_v[0] + omega_v[1] + omega_v[2]) / 3.0;
+    }
+
+    // Sort vertices by energy: e[a] ≤ e[b] ≤ e[c]
+    let mut idx: [usize; 3] = [0, 1, 2];
+    idx.sort_by(|&i, &j| energy_v[i].partial_cmp(&energy_v[j]).unwrap());
+    let (a, b, c) = (idx[0], idx[1], idx[2]);
+
+    let tri = |p0: [f64; 2], p1: [f64; 2], p2: [f64; 2]| -> f64 {
+        0.5 * ((p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1])).abs()
+    };
+
+    // Intersection point + Ω on edge i→j at energy μ
+    let cut = |i: usize, j: usize| -> ([f64; 2], f64) {
+        let de = energy_v[j] - energy_v[i];
+        let t = if de.abs() < eps {
+            0.5
+        } else {
+            ((mu - energy_v[i]) / de).clamp(0.0, 1.0)
         };
+        let x = coords[[i, 0]] + t * (coords[[j, 0]] - coords[[i, 0]]);
+        let y = coords[[i, 1]] + t * (coords[[j, 1]] - coords[[i, 1]]);
+        let omega = omega_v[i] + t * (omega_v[j] - omega_v[i]);
+        ([x, y], omega)
+    };
 
-        let e_lo = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let e_hi = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        let i_lo = ((e_lo - e_min) / de).floor() as isize;
-        let i_hi = ((e_hi - e_min) / de).ceil() as isize;
+    let a_xy = [coords[[a, 0]], coords[[a, 1]]];
+    let b_xy = [coords[[b, 0]], coords[[b, 1]]];
 
-        for ib in i_lo.max(0) as usize..(i_hi as usize).min(n_bins) {
-            let energy = e_min + (ib as f64 + 0.5) * de;
-            let contrib = triangle_line_cut(&sim.coords, e_v, omega_v, energy);
-            rho[ib] += volume_scale * contrib;
-        }
+    if mu <= energy_v[b] + eps {
+        // a below μ, b and c above → sub‑triangle a → p_ab → p_ac
+        let (p_ab, o_ab) = cut(a, b);
+        let (p_ac, o_ac) = cut(a, c);
+        tri(a_xy, p_ab, p_ac) * (omega_v[a] + o_ab + o_ac) / 3.0
+    } else {
+        // a and b below μ, c above → quadrilateral → two triangles
+        let (p_ac, o_ac) = cut(a, c);
+        let (p_bc, o_bc) = cut(b, c);
+        tri(a_xy, b_xy, p_ac) * (omega_v[a] + omega_v[b] + o_ac) / 3.0
+            + tri(b_xy, p_ac, p_bc) * (omega_v[b] + o_ac + o_bc) / 3.0
     }
 }
 
-/// 2D Fermi‑window integration via energy‑cut.
+/// T=0 occupancy‑cut integration (no energy binning).
+fn integrate_fermi_cut_2d_t0(
+    all_pts: &[VertexKernel],
+    k_mesh: &Array1<usize>,
+    mu: &Array1<f64>,
+    eta: f64,
+) -> Array1<f64> {
+    let (nx, ny) = (k_mesh[0], k_mesh[1]);
+    let inv_nx = 1.0 / nx as f64;
+    let inv_ny = 1.0 / ny as f64;
+    let n_mu = mu.len();
+    let mut result = Array1::<f64>::zeros(n_mu);
+
+    for ix in 0..nx {
+        for iy in 0..ny {
+            let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+            for sim in &sims {
+                let area = triangle_area(&sim.coords);
+                if area < ENERGY_CUT_EPS {
+                    continue;
+                }
+                let volume_scale = sim.volume / area;
+                let nsta = sim.vertices[0].band.len();
+
+                let (_g0, o0) = eval_berry_kernel(
+                    &sim.vertices[0].band.to_vec(),
+                    &sim.vertices[0].k_ab,
+                    eta,
+                    nsta,
+                );
+                let (_g1, o1) = eval_berry_kernel(
+                    &sim.vertices[1].band.to_vec(),
+                    &sim.vertices[1].k_ab,
+                    eta,
+                    nsta,
+                );
+                let (_g2, o2) = eval_berry_kernel(
+                    &sim.vertices[2].band.to_vec(),
+                    &sim.vertices[2].k_ab,
+                    eta,
+                    nsta,
+                );
+
+                for n in 0..nsta {
+                    let e_v = [
+                        sim.vertices[0].band[n],
+                        sim.vertices[1].band[n],
+                        sim.vertices[2].band[n],
+                    ];
+                    let omega_v = [o0[n], o1[n], o2[n]];
+
+                    for im in 0..n_mu {
+                        result[im] += volume_scale
+                            * triangle_occupied_integral(&sim.coords, e_v, omega_v, mu[im]);
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// 2D Fermi‑window integration via per‑μ triangle occupancy cut.
 ///
-/// Builds the spectral function $\rho(E)=\sum_n\int\Omega_n\delta(E_n-E)dk$
-/// on an energy grid, then integrates with the Fermi‑Dirac occupation.
+/// At $T=0$ the occupation is a step function; the integral is computed
+/// exactly within each triangle (no energy binning).  At $T>0$ the
+/// $T=0$ result is thermally convolved:
+///
+/// $$\sigma_T(\mu) = \int_{-\infty}^\infty w(x)\,\sigma_0(\mu + x/\beta)\,dx,
+/// \qquad w(x)=\frac{e^x}{(1+e^x)^2}$$
 ///
 /// Returns $\sigma(\mu_i)$ for each $\mu$ in `mu` (fractional BZ volume;
 /// divide by $\det(L)$ for Cartesian).
@@ -313,61 +402,46 @@ pub fn integrate_fermi_cut_2d(
     mu: &Array1<f64>,
     T: f64,
     eta: f64,
-    n_bins: usize,
 ) -> Array1<f64> {
     assert_eq!(k_mesh.len(), 2);
-    let (nx, ny) = (k_mesh[0], k_mesh[1]);
-    let inv_nx = 1.0 / nx as f64;
-    let inv_ny = 1.0 / ny as f64;
 
-    // Find energy range and allocate bins.
-    let e_lo = all_pts
-        .iter()
-        .flat_map(|v| v.band.iter())
-        .fold(f64::INFINITY, |a, &b| a.min(b));
-    let e_hi = all_pts
-        .iter()
-        .flat_map(|v| v.band.iter())
-        .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-    let de = (e_hi - e_lo) / n_bins as f64;
-    let mut rho = vec![0.0f64; n_bins];
-
-    for ix in 0..nx {
-        for iy in 0..ny {
-            let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
-            for sim in &sims {
-                accumulate_triangle_fermi_cut(sim, eta, e_lo, de, &mut rho);
-            }
-        }
+    if T == 0.0 {
+        return integrate_fermi_cut_2d_t0(all_pts, k_mesh, mu, eta);
     }
 
-    // Integrate ρ(E) with occupation.
-    let n_mu = mu.len();
-    let beta = if T > 0.0 {
-        1.0 / (T * 8.617333262e-5)
-    } else {
-        f64::INFINITY
-    };
-    let mut result = Array1::<f64>::zeros(n_mu);
+    // T>0: thermal convolution of the T=0 result.
+    let beta = 1.0 / (T * KB_EV_PER_K);
+    let x_max = 12.0; // w(x) < 6e-6 for |x| > 12
+    let mu_min = mu.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let mu_max = mu.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let mu_lo = mu_min - x_max / beta;
+    let mu_hi = mu_max + x_max / beta;
+    let dmu_fine = 0.1 / beta; // fine grid for accurate linear interpolation
+    let n_ext = ((mu_hi - mu_lo) / dmu_fine).ceil() as usize + 1;
+    let mu_ext = Array1::linspace(mu_lo, mu_hi, n_ext);
 
-    for (ib, &r) in rho.iter().enumerate() {
-        let ec = e_lo + (ib as f64 + 0.5) * de;
-        for im in 0..n_mu {
-            let occ = if T == 0.0 {
-                if ec <= mu[im] { 1.0 } else { 0.0 }
-            } else {
-                let x = beta * (ec - mu[im]);
-                if x < -50.0 {
-                    1.0
-                } else if x > 50.0 {
-                    0.0
-                } else {
-                    1.0 / (1.0 + x.exp())
+    let sigma0 = integrate_fermi_cut_2d_t0(all_pts, k_mesh, &mu_ext, eta);
+
+    let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
+    let result: Vec<f64> = mu
+        .into_par_iter()
+        .map(|&m| {
+            let mut sum = 0.0;
+            for iq in 0..FERMI_X_STEPS {
+                let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
+                let w = fermi_window_x(x);
+                let e_target = m + x / beta;
+                let i_f = (e_target - mu_lo) / dmu_fine;
+                let i_lo = (i_f.floor() as isize).max(0) as usize;
+                let i_hi = (i_lo + 1).min(n_ext - 1);
+                if i_hi > i_lo {
+                    let t = i_f - i_lo as f64;
+                    let val = sigma0[i_lo] + t * (sigma0[i_hi] - sigma0[i_lo]);
+                    sum += dx * w * val;
                 }
-            };
-            result[im] += occ * r * de;
-        }
-    }
-
-    result
+            }
+            sum
+        })
+        .collect();
+    Array1::from_vec(result)
 }
