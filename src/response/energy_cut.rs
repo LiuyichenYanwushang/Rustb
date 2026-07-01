@@ -806,20 +806,10 @@ fn kquad_surface_cut_intrinsic(
     mu: f64,
     n: usize,
     nsta: usize,
+    grad_norm: f64,
 ) -> f64 {
     let verts = tet_plane_intersection(energy_v, mu);
     if verts.len() < 3 {
-        return 0.0;
-    }
-
-    // |∇E|
-    let de = [
-        energy_v[1] - energy_v[0],
-        energy_v[2] - energy_v[0],
-        energy_v[3] - energy_v[0],
-    ];
-    let (_, _, _, grad_norm) = energy_gradient_3d(coords, de);
-    if grad_norm < ENERGY_CUT_EPS {
         return 0.0;
     }
 
@@ -935,6 +925,13 @@ fn accumulate_tetrahedron_intrinsic_kquad(
         let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
         let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
 
+        // Precompute |∇E| once per band (same for all μ).
+        let de = [e_v[1] - e_v[0], e_v[2] - e_v[0], e_v[3] - e_v[0]];
+        let (_, _, _, grad_norm) = energy_gradient_3d(&sim.coords, de);
+        if grad_norm < ENERGY_CUT_EPS {
+            continue;
+        }
+
         let mu_slice = mu.as_slice().unwrap();
         let (i_start, i_end) = if beta == 0.0 {
             let s = mu_slice.partition_point(|&x| x < e_min - ENERGY_CUT_EPS);
@@ -963,6 +960,7 @@ fn accumulate_tetrahedron_intrinsic_kquad(
                         mu[im],
                         n,
                         nsta,
+                        grad_norm,
                     );
             }
         } else {
@@ -985,6 +983,7 @@ fn accumulate_tetrahedron_intrinsic_kquad(
                         energy,
                         n,
                         nsta,
+                        grad_norm,
                     );
                     sum += dx * fermi_window_x(x) * rho;
                 }
