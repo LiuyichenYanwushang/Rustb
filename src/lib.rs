@@ -2193,15 +2193,14 @@ mod tests {
         let (d_tr, _) = model_tr
             .berry_curvature_dipole_energy_cut(&kmesh, &dx, &dy, &dc, &mu, 0.0, eta)
             .unwrap();
-        let max_sum = d_dir
+        // BCD is TR‑even: v_TR^c Ω_TR^{ab} = (−v^c)(−Ω^{ab}) = v^c Ω^{ab}  →  D_TR = D
+        let max_diff = d_dir
             .iter()
             .zip(d_tr.iter())
-            .fold(0.0f64, |a: f64, (&x, &y)| a.max((x + y).abs()));
+            .fold(0.0f64, |a: f64, (&x, &y)| a.max((x - y).abs()));
         let max_d = d_dir.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
-        println!("Dipole TR: max|D|={max_d:.3e}  max|D+D_TR|={max_sum:.3e}");
-        assert!(max_sum < 5e-3, "Dipole TR asymmetry: {max_sum:.3e}");
-        // K‑quadrature along line introduces ~1e-3 level discretization error
-        // that doesn't perfectly cancel under TR; 2→3‑point Gauss would improve this.
+        println!("Dipole TR: max|D|={max_d:.3e}  max|D−D_TR|={max_diff:.3e}");
+        assert!(max_diff < 1e-10, "Dipole TR-even broken: {max_diff:.3e}");
     }
 
     /// 8c3. Intrinsic NLH energy-cut vs direct sum.
