@@ -276,6 +276,7 @@ src/response/
 ├── quadrature.rs   — 2D/3D symmetric quadrature rules, barycentric interp
 ├── tracking.rs     — band tracking (overlap → greedy → permute) + simplex builders
 ├── kernel.rs       — eval_berry_kernel, eval_optical_kernel, quadrature helpers
+├── energy_cut.rs   — 2D analytic line-cut integration for Berry dipole
 ├── primitives.rs   — Model::compute_velocity_kernel (band‑basis velocities)
 ├── linear/         — Berry curvature + quantum metric → berry_curvature_simplex
 ├── nonlinear/      — Berry dipole → berry_curvature_dipole_simplex (T>0 only)
@@ -295,6 +296,11 @@ let (dipole, _) = model.berry_curvature_dipole_simplex(
     &arr1(&[30, 30]), &dx, &dy, &dx, &mu, 300.0, 0.05,
 )?;
 
+// Berry curvature dipole via analytic 2D energy cuts
+let (dipole_cut, _) = model.berry_curvature_dipole_energy_cut(
+    &arr1(&[30, 30]), &dx, &dy, &dx, &mu, 10.0, 0.05,
+)?;
+
 // Optical conductivity
 let sigma = model.optical_conductivity_simplex(
     &arr1(&[30, 30]), &dx, &dy, 0.5, 0.1, 0.0, 300.0,
@@ -309,6 +315,7 @@ let sigma = model.optical_conductivity_simplex(
 |--------|---------|-------------|
 | `model.berry_curvature_simplex(k_mesh, dir_a, dir_b, eta)` | `(g, Ω, unsafe)` | Berry curvature + quantum metric in Cartesian volume |
 | `model.berry_curvature_dipole_simplex(k_mesh, dir_a, dir_b, dir_c, mu, T, eta)` | `(D(μ), unsafe)` | Berry dipole D^{ab;c}(μ,T), T>0 only |
+| `model.berry_curvature_dipole_energy_cut(k_mesh, dir_a, dir_b, dir_c, mu, T, eta)` | `(D(μ), unsafe)` | 2D Berry dipole via analytic energy cuts |
 | `model.optical_conductivity_simplex(k_mesh, dir_a, dir_b, ω, η, μ, T)` | `σ(ω)` | Complex optical conductivity |
 | `model.compute_velocity_kernel(k_vec, dir_a, dir_b, dir_c?, gauge, spin)` | `VertexKernel` | Per‑k‑point band‑basis velocity primitives |
 
@@ -318,6 +325,7 @@ let sigma = model.optical_conductivity_simplex(
 |----------|--------|-------------|
 | `linear::integrate(all_pts, k_mesh, eta)` | `response::linear` | BZ integral of Berry + metric (fractional coords) |
 | `nonlinear::integrate_dipole(all_pts, k_mesh, mu, T, eta)` | `response::nonlinear` | BZ dipole integral per μ |
+| `integrate_dipole_energy_cut_2d(all_pts, k_mesh, mu, T, eta)` | `response` | 2D dipole using analytic line cuts |
 | `optical::integrate(all_pts, k_mesh, ω, η, μ, T)` | `response::optical` | Optical conductivity (fractional coords) |
 | `build_triangles_2d(ix, iy, nx, ny, inv_nx, inv_ny, all_pts)` | `response` | Build tracked 2D triangles for one cell |
 | `build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, ...)` | `response` | Build tracked 3D tetrahedra for one cell |
@@ -367,15 +375,16 @@ let sigma = model.optical_conductivity_simplex(
 |-----|-------------|
 | `berry_curvature_simplex()` | Berry + metric via simplex quadrature (Cartesian) |
 | `berry_curvature_dipole_simplex()` | Berry dipole via simplex quadrature (T>0, Cartesian) |
+| `berry_curvature_dipole_energy_cut()` | 2D Berry dipole via analytic energy-cut line integration |
 | `optical_conductivity_simplex()` | Optical σ(ω) via simplex quadrature (Cartesian) |
 | `compute_velocity_kernel()` | Per‑k‑point band‑basis velocity primitives |
 | `response::*` module | Public low‑level simplex integration primitives |
 
 ### Known limitations
 
-- **Dipole requires T>0** — no δ‑function Fermi‑surface integral yet
+- **Energy-cut dipole is 2D only** — 3D tetrahedral cut integration is future work
 - **Intrinsic NLH tetra path removed** — `Nonlinear_Hall_conductivity_Intrinsic_tetra` deleted
-- **2D convergence oscillates** at moderate nk (different triangulation vs reference)
+- **Volume-quadrature dipole is noisy at low T** — use `berry_curvature_dipole_energy_cut` for 2D low-temperature Fermi-window integrals
 - **No band tracking in intrinsic NLH** path (not yet ported to simplex)
 
 ## Performance Notes

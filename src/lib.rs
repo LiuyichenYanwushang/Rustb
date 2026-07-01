@@ -2218,6 +2218,85 @@ mod tests {
         }
     }
 
+    /// 9b. Berry curvature dipole: direct sum vs analytic energy-cut
+    /// triangle integration.
+    #[test]
+    fn berry_dipole_energy_cut_vs_direct() {
+        let model = build_haldane_2d(-0.3);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let dir_c = arr1(&[1.0, 0.0]);
+        let T: f64 = 10.0;
+        let beta = 1.0 / (T * 8.617333262e-5);
+        let eta = 0.05;
+        let mu = Array1::linspace(-2.0, 2.0, 11);
+        let n_mu = mu.len();
+
+        let nk: usize = 71;
+        let kmesh = arr1(&[nk, nk]);
+        let kvec = crate::kpoints::gen_kmesh(&kmesh).unwrap();
+        let nkt = kvec.nrows();
+
+        let mut direct = Array1::<f64>::zeros(n_mu);
+        for ik in 0..nkt {
+            let kv = kvec.row(ik).to_owned();
+            let (omega_n, band) = model.berry_curvature_n_onek(&kv, &dx, &dy, None, eta);
+            let tk = model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None);
+            for n in 0..model.nsta() {
+                let vcn = tk.vdiag.as_ref().unwrap()[[n]];
+                for im in 0..n_mu {
+                    let x = beta * (band[[n]] - mu[[im]]);
+                    if x.abs() > 50.0 {
+                        continue;
+                    }
+                    let f = 1.0 / (1.0 + x.exp());
+                    let df = beta * f * (1.0 - f);
+                    direct[[im]] += df * vcn * omega_n[[n]];
+                }
+            }
+        }
+        direct /= nkt as f64;
+
+        let mut all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                let tk =
+                    model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dir_c), Gauge::Atom, None);
+                crate::response::VertexKernel {
+                    band: tk.band,
+                    k_ab: tk.k_ab,
+                    vdiag: tk.vdiag,
+                    evec: tk.evec,
+                }
+            })
+            .collect();
+        crate::response::global_band_track(&mut all_pts, &[nk, nk]);
+        let (energy_cut, unsafe_count) =
+            crate::response::integrate_dipole_energy_cut_2d(&all_pts, &kmesh, &mu, T, eta);
+
+        println!("--- Berry dipole energy-cut vs direct (T={T}K) nk={nk} ---");
+        println!(
+            "{:>8}  {:>14}  {:>14}  {:>12}",
+            "mu", "direct", "energy_cut", "diff"
+        );
+        for im in 0..n_mu {
+            let d = (direct[[im]] - energy_cut[[im]]).abs();
+            println!(
+                "{:.3}  {:>14.6e}  {:>14.6e}  {:>10.3e}",
+                mu[[im]],
+                direct[[im]],
+                energy_cut[[im]],
+                d
+            );
+        }
+        let max_abs = max_abs_diff_1d(&direct, &energy_cut);
+        println!("max_abs={:.3e}  unsafe={}", max_abs, unsafe_count);
+        assert!(
+            max_abs < 5e-3,
+            "energy-cut vs direct diff {max_abs:.2e} too large"
+        );
+    }
+
     /// 10. Optical conductivity: old per‑frequency direct sum vs new
     /// simplex quadrature (single ω, single μ).
     #[test]

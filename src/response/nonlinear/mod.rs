@@ -46,6 +46,7 @@ use crate::SpinDirection;
 use crate::error::Result;
 use crate::math::anti_comm;
 
+use super::energy_cut::integrate_dipole_energy_cut_2d;
 use super::helpers::build_spin_matrix;
 use super::kernel::quadrature_dipole_simplex;
 use super::tracking::{
@@ -153,6 +154,48 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
 
         let (dipole, unsafe_count) = integrate_dipole(&all_pts, k_mesh, mu, T, eta);
+        let det = self.lat.det().unwrap();
+        Ok((dipole / det, unsafe_count))
+    }
+
+    /// Berry-curvature dipole via analytic 2D energy-cut integration.
+    ///
+    /// This avoids volume quadrature over the narrow finite-temperature Fermi
+    /// window.  Inside each triangle, `E_n(k)` and
+    /// `A_n(k)=v^c_n(k)Omega^{ab}_n(k)` are linearly interpolated; the
+    /// `delta(E_n-mu)` line cut is evaluated analytically and convolved with
+    /// `beta f(1-f)` for finite `T`.
+    ///
+    /// Currently implemented for 2D k-meshes only.
+    pub fn berry_curvature_dipole_energy_cut(
+        &self,
+        k_mesh: &Array1<usize>,
+        dir_a: &Array1<f64>,
+        dir_b: &Array1<f64>,
+        dir_c: &Array1<f64>,
+        mu: &Array1<f64>,
+        T: f64,
+        eta: f64,
+    ) -> Result<(Array1<f64>, usize)> {
+        assert_eq!(
+            k_mesh.len(),
+            2,
+            "berry_curvature_dipole_energy_cut currently supports 2D only"
+        );
+        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
+        let nk = kvec.nrows();
+        let gauge = Gauge::Atom;
+
+        let mut all_pts: Vec<VertexKernel> = (0..nk)
+            .into_par_iter()
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                self.compute_velocity_kernel(&kv, dir_a, dir_b, Some(dir_c), gauge, None)
+            })
+            .collect();
+        global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
+
+        let (dipole, unsafe_count) = integrate_dipole_energy_cut_2d(&all_pts, k_mesh, mu, T, eta);
         let det = self.lat.det().unwrap();
         Ok((dipole / det, unsafe_count))
     }

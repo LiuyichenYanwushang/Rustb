@@ -61,6 +61,7 @@
 //! | [`linear`]   | Berry curvature $\Omega^{ab}$, quantum metric $g^{ab}$ | $\sum_n \int \Omega_n^{ab}d\mathbf{k}$ |
 //! | [`nonlinear`]| Berry dipole $D^{ab;c}$, intrinsic/extrinsic NLH | $\sum_n \int (-\partial f/\partial E_n) v^c_n \Omega_n^{ab}d\mathbf{k}$ |
 //! | [`optical`]  | Optical conductivity $\sigma^{ab}(\omega)$ | $\sum_{n=\not m} \int \frac{(f_n-f_m)K^{ab}_{nm}}{(E_n-E_m)^2-(\omega+i\eta)^2}d\mathbf{k}$ |
+//! | energy cut | 2D Berry dipole line cuts | $\int A_n(k)\delta(E_n-\mu)d^2k$ with finite-T convolution |
 //! | [`traits`]   | `BerryCurvature` trait (per‑k‑point Berry curvature) | |
 //!
 //! ## Quick start
@@ -74,6 +75,7 @@
 //! // Simplex quadrature (higher accuracy near small gaps)
 //! let (metric, berry, _) = model.berry_curvature_simplex(&kmesh, &dx, &dy, eta)?;
 //! let (dipole, _) = model.berry_curvature_dipole_simplex(&kmesh, &dx, &dy, &dx, &mu, T, eta)?;
+//! let (dipole_cut, _) = model.berry_curvature_dipole_energy_cut(&kmesh, &dx, &dy, &dx, &mu, T, eta)?;
 //! let sigma_opt = model.optical_conductivity_simplex(&kmesh, &dx, &dy, omega, eta, mu, T)?;
 //! ```
 
@@ -83,6 +85,7 @@ pub mod nonlinear;
 pub mod optical;
 pub mod traits;
 
+mod energy_cut;
 mod kernel;
 mod primitives;
 mod quadrature;
@@ -90,6 +93,7 @@ mod tracking;
 mod types;
 
 // Re‑export public types
+pub use energy_cut::{integrate_dipole_energy_cut_2d, triangle_line_cut};
 pub use kernel::{
     eval_berry_kernel, eval_optical_kernel, fermi, fermi_deriv, quadrature_berry_simplex,
     quadrature_dipole_simplex, quadrature_optical_simplex,
