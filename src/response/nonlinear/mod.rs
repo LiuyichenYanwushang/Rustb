@@ -336,7 +336,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///    = \beta f_n(1-f_n) $$
     ///
     /// **T>0**: direct k‑point sum with Fermi window.
-    /// **T=0**: narrow thermal window (adaptive to k‑mesh resolution).
+    /// **T=0**: uses a mesh‑broadened Fermi window
+    /// `T_eff = max(1, 1/(n_per_dim·k_B))` — not a true δ‑function limit.
     ///
     /// # Arguments
     ///
@@ -684,14 +685,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         let nk = k_vec.len_of(Axis(0));
 
-        if SPIN {
+        if SPIN && spin.is_some() {
             let ((omega, band), partial_G): ((Vec<_>, Vec<_>), Vec<_>) = k_vec
                 .axis_iter(Axis(0))
                 .into_par_iter()
                 .map(|x| {
                     let (omega_one, band, partial_G) =
                         self.berry_connection_dipole_onek(&x.to_owned(), dir_a, dir_b, dir_c, spin);
-                    let partial_G = partial_G.unwrap();
+                    let partial_G = partial_G.expect("SPIN && spin.is_some() must return Some");
                     ((omega_one, band), partial_G)
                 })
                 .collect();
@@ -751,7 +752,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Internally this maps to the `sigma^{ab;c}` kernel.
     ///
     /// **T>0**: direct k‑point sum with Fermi window.
-    /// **T=0**: narrow thermal window (adaptive to k‑mesh resolution).
+    /// **T=0**: uses a mesh‑broadened Fermi window
+    /// `T_eff = max(1, 1/(n_per_dim·k_B))` — not a true δ‑function limit.
     ///
     /// Spinful / partial_G branch is not yet correctly implemented.
     ///

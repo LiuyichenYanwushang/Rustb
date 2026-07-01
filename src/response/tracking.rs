@@ -43,7 +43,11 @@ pub fn build_overlap_matrix(
     ov
 }
 
-/// Greedy one‑to‑one band assignment maximising `Σ_n O_{n, p(n)}`.
+/// Greedy band assignment (row‑wise maximum, not guaranteed globally optimal).
+///
+/// For small `nsta` with diagonally‑dominant overlap this is exact; for
+/// larger or near‑degenerate problems, replace with Hungarian / exhaustive
+/// search over small `n`.
 pub fn greedy_assign(overlap: &Array2<f64>) -> Vec<usize> {
     let n = overlap.nrows();
     let mut assigned = vec![false; n];
@@ -243,15 +247,16 @@ pub fn build_tetrahedra_3d(
             izv as f64 * inv_nz,
         ]
     };
+    // Use unwrapped ix+1, iy+1, iz+1 for fractional coords (match 2D convention).
     let corners_frac: [[f64; 3]; 8] = [
         frac(ix, iy, iz),
         frac(ix + 1, iy, iz),
-        frac(ix, iyp, iz),
+        frac(ix, iy + 1, iz),
         frac(ix + 1, iy + 1, iz),
-        frac(ix, iy, izp),
-        frac(ix + 1, iy, izp),
-        frac(ix, iyp, izp),
-        frac(ix + 1, iy + 1, izp),
+        frac(ix, iy, iz + 1),
+        frac(ix + 1, iy, iz + 1),
+        frac(ix, iy + 1, iz + 1),
+        frac(ix + 1, iy + 1, iz + 1),
     ];
 
     let cube_vol = inv_nx * inv_ny * inv_nz;

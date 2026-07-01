@@ -135,8 +135,13 @@ pub fn eval_optical_kernel(
 ///
 /// ```text
 /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
-/// G^{ij}_n = Re Σ_{m≠n} K^{ij}_nm / (d² + η²)
+/// G^{ij}_n = Re Σ_{m≠n} K^{ij}_nm · d_{nm} / (d_{nm}² + η²)²
 /// ```
+///
+/// The odd regularizer `R_η(d) = d / (d²+η²)²` preserves the correct
+/// `1/d³` asymptotic for |d| ≫ η while staying finite at d = 0.
+/// Note: this is an experimental kernel not yet validated against
+/// the direct‑sum `berry_connection_dipole` reference.
 pub fn eval_q_tensor(
     band_q: &[f64],
     k_ab_q: &Array2<Complex<f64>>,
@@ -158,13 +163,15 @@ pub fn eval_q_tensor(
                 continue;
             }
             let de = band_q[n] - band_q[m];
-            let denom = de * de + eta2;
-            if denom < 1e-30 {
+            // Odd regularizer: R_η(d) = d / (d² + η²)²  →  ~1/d³ for |d| ≫ η
+            let d2 = de * de + eta2;
+            if d2 < 1e-30 {
                 continue;
             }
-            g_ab[n] += (k_ab_q[[n, m]] / denom).re;
-            g_bc[n] += (k_bc_q[[n, m]] / denom).re;
-            g_ac[n] += (k_ac_q[[n, m]] / denom).re;
+            let weight = de / (d2 * d2);
+            g_ab[n] += (k_ab_q[[n, m]] * weight).re;
+            g_bc[n] += (k_bc_q[[n, m]] * weight).re;
+            g_ac[n] += (k_ac_q[[n, m]] * weight).re;
         }
     }
     let mut q = Array1::<f64>::zeros(nsta);
