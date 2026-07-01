@@ -84,10 +84,15 @@ cargo build --release
 
 ### Testing
 ```bash
-cargo test
-cargo test graphene                  # single test
-cargo test -- --nocapture 2>&1 | head -100
+cargo test --release                                 # always use --release for numerics
+cargo test --release --features intel-mkl-system     # with MKL
+cargo test --release graphene                        # single test
+cargo test --release -- --nocapture 2>&1 | head -100
 ```
+
+Simplex‑quadrature tests involve heavy floating‑point loops (band tracking,
+K‑quadrature, energy‑cut).  Debug builds are 10–50× slower and can cause
+timeouts.  Always test with `--release`.
 
 Tests generate PDF plots via gnuplot (`pdfcairo` terminal).
 
@@ -95,10 +100,10 @@ Tests generate PDF plots via gnuplot (`pdfcairo` terminal).
 ```bash
 cargo fmt
 cargo clippy
-cargo bench                          # criterion benchmarks
-cargo mydoc                          # cargo doc --open --no-deps
-cargo testall                        # cargo test --features intel-mkl-system
-cargo runexample <name>              # cargo run --features intel-mkl-system --example <name>
+cargo bench --features intel-mkl-system             # criterion benchmarks
+cargo mydoc                                          # cargo doc --open --no-deps
+cargo testall                                        # cargo test --release --features intel-mkl-system
+cargo runexample <name>                              # cargo run --release --features intel-mkl-system --example <name>
 ```
 
 ## High-Level Architecture

@@ -38,7 +38,9 @@ use ndarray::*;
 use num_complex::Complex;
 use rayon::prelude::*;
 
-use super::kernel::{eval_berry_band_at_lam, eval_berry_complex_at_lam, eval_berry_kernel};
+use super::kernel::{
+    eval_berry_band_at_lam_buf, eval_berry_complex_at_lam_buf, eval_berry_kernel,
+};
 use super::quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
 use super::tracking::{
     build_tetrahedra_3d, build_tetrahedra_3d_diagavg, build_triangles_2d_diagavg,
@@ -223,8 +225,8 @@ fn find_line_intersections(
 fn kquad_line_cut_dipole(
     coords: &Array2<f64>,
     energy_v: [f64; 3],
-    bands: &[Vec<f64>],
-    kmats: &[Array2<Complex<f64>>],
+    bands: &[&[f64]],
+    kmats: &[&Array2<Complex<f64>>],
     vdiag_v: [f64; 3],
     energy: f64,
     eta: f64,
@@ -277,6 +279,8 @@ fn kquad_line_cut_dipole(
     const SQ3: f64 = 0.5773502691896257; // 1/√3
     let t_vals = [0.5 * (1.0 - SQ3), 0.5 * (1.0 + SQ3)];
 
+    let mut e_buf = vec![0.0f64; nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     let mut amp_sum = 0.0;
     for t in &t_vals {
         let lam = [
@@ -284,7 +288,7 @@ fn kquad_line_cut_dipole(
             (1.0 - t) * lam0[1] + t * lam1[1],
             (1.0 - t) * lam0[2] + t * lam1[2],
         ];
-        let (_metric, berry) = eval_berry_complex_at_lam(n, bands, kmats, &lam, eta, nsta);
+        let (_metric, berry) = eval_berry_complex_at_lam_buf(n, bands, kmats, &lam, eta, nsta, &mut e_buf, &mut k_buf);
         let vc = lam[0] * vdiag_v[0] + lam[1] * vdiag_v[1] + lam[2] * vdiag_v[2];
         amp_sum += vc * berry;
     }
@@ -307,19 +311,17 @@ fn accumulate_triangle_dipole_kquad(
     let volume_scale = sim.volume / area;
     let nsta = sim.vertices[0].band.len();
 
-    // Pre‑extract vertex data (shared across bands and μ).
-    let bands: Vec<Vec<f64>> = (0..3).map(|v| sim.vertices[v].band.to_vec()).collect();
-    let kmats: Vec<Array2<Complex<f64>>> = (0..3).map(|v| sim.vertices[v].k_ab.clone()).collect();
-    let vdiags: Vec<Vec<f64>> = (0..3)
-        .map(|v| {
-            sim.vertices[v]
-                .vdiag
-                .as_ref()
-                .expect("vdiag required — call compute_velocity_kernel with dir_c")
-                .to_vec()
-        })
-        .collect();
-
+    // Borrow vertex data (no clone).
+    let v0 = &sim.vertices[0];
+    let v1 = &sim.vertices[1];
+    let v2 = &sim.vertices[2];
+    let bands: [&[f64]; 3] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap()];
+    let kmats: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
+    let vdiags: [&[f64]; 3] = [
+        v0.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
+        v1.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
+        v2.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
+    ];
     for n in 0..nsta {
         let e_v = [
             sim.vertices[0].band[n],
@@ -416,7 +418,7 @@ pub fn integrate_dipole_energy_cut_2d(
 
 // ── Intrinsic NLH energy‑cut ────────────────────────────────────────────
 
-use super::kernel::eval_intrinsic_G_at_lam;
+use super::kernel::eval_intrinsic_G_at_lam_buf;
 
 /// K‑quadrature line‑cut for the intrinsic NLH kernel
 /// $Q^{ab;c}_n = 2 v^c_n G^{ab}_n - \frac12(v^a_n G^{bc}_n + v^b_n G^{ac}_n)$
@@ -424,10 +426,10 @@ use super::kernel::eval_intrinsic_G_at_lam;
 fn kquad_line_cut_intrinsic(
     coords: &Array2<f64>,
     energy_v: [f64; 3],
-    bands: &[Vec<f64>],
-    kmat_ab: &[Array2<Complex<f64>>],
-    kmat_bc: &[Array2<Complex<f64>>],
-    kmat_ac: &[Array2<Complex<f64>>],
+    bands: &[&[f64]],
+    kmat_ab: &[&Array2<Complex<f64>>],
+    kmat_bc: &[&Array2<Complex<f64>>],
+    kmat_ac: &[&Array2<Complex<f64>>],
     vdiag_c: [f64; 3],
     vdiag_a: [f64; 3],
     vdiag_b: [f64; 3],
@@ -479,6 +481,8 @@ fn kquad_line_cut_intrinsic(
     const SQ3: f64 = 0.5773502691896257;
     let t_vals = [0.5 * (1.0 - SQ3), 0.5 * (1.0 + SQ3)];
 
+    let mut e_buf = vec![0.0f64; nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     let mut amp_sum = 0.0;
     for t in &t_vals {
         let lam = [
@@ -486,9 +490,9 @@ fn kquad_line_cut_intrinsic(
             (1.0 - t) * lam0[1] + t * lam1[1],
             (1.0 - t) * lam0[2] + t * lam1[2],
         ];
-        let g_ab = eval_intrinsic_G_at_lam(n, bands, kmat_ab, &lam, nsta);
-        let g_bc = eval_intrinsic_G_at_lam(n, bands, kmat_bc, &lam, nsta);
-        let g_ac = eval_intrinsic_G_at_lam(n, bands, kmat_ac, &lam, nsta);
+        let g_ab = eval_intrinsic_G_at_lam_buf(n, bands, kmat_ab, &lam, nsta, &mut e_buf, &mut k_buf);
+        let g_bc = eval_intrinsic_G_at_lam_buf(n, bands, kmat_bc, &lam, nsta, &mut e_buf, &mut k_buf);
+        let g_ac = eval_intrinsic_G_at_lam_buf(n, bands, kmat_ac, &lam, nsta, &mut e_buf, &mut k_buf);
         let va = lam[0] * vdiag_a[0] + lam[1] * vdiag_a[1] + lam[2] * vdiag_a[2];
         let vb = lam[0] * vdiag_b[0] + lam[1] * vdiag_b[1] + lam[2] * vdiag_b[2];
         let vc = lam[0] * vdiag_c[0] + lam[1] * vdiag_c[1] + lam[2] * vdiag_c[2];
@@ -511,53 +515,36 @@ fn accumulate_triangle_intrinsic_kquad(
     let volume_scale = sim.volume / area;
     let nsta = sim.vertices[0].band.len();
 
-    let bands: Vec<Vec<f64>> = (0..3).map(|v| sim.vertices[v].band.to_vec()).collect();
-    let kmat_ab: Vec<Array2<Complex<f64>>> = (0..3).map(|v| sim.vertices[v].k_ab.clone()).collect();
-    let kmat_bc: Vec<Array2<Complex<f64>>> = (0..3)
-        .map(|v| {
-            sim.vertices[v]
-                .k_bc
-                .as_ref()
-                .expect("k_bc required for intrinsic")
-                .clone()
-        })
-        .collect();
-    let kmat_ac: Vec<Array2<Complex<f64>>> = (0..3)
-        .map(|v| {
-            sim.vertices[v]
-                .k_ac
-                .as_ref()
-                .expect("k_ac required for intrinsic")
-                .clone()
-        })
-        .collect();
-    let vdiag_c: Vec<Vec<f64>> = (0..3)
-        .map(|v| {
-            sim.vertices[v]
-                .vdiag
-                .as_ref()
-                .expect("vdiag required for intrinsic")
-                .to_vec()
-        })
-        .collect();
-    let vdiag_a: Vec<Vec<f64>> = (0..3)
-        .map(|v| {
-            sim.vertices[v]
-                .vdiag_a
-                .as_ref()
-                .expect("vdiag_a required for intrinsic")
-                .to_vec()
-        })
-        .collect();
-    let vdiag_b: Vec<Vec<f64>> = (0..3)
-        .map(|v| {
-            sim.vertices[v]
-                .vdiag_b
-                .as_ref()
-                .expect("vdiag_b required for intrinsic")
-                .to_vec()
-        })
-        .collect();
+    let v0 = &sim.vertices[0];
+    let v1 = &sim.vertices[1];
+    let v2 = &sim.vertices[2];
+    let bands: [&[f64]; 3] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap()];
+    let kmat_ab: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
+    let kmat_bc: [&Array2<Complex<f64>>; 3] = [
+        v0.k_bc.as_ref().expect("k_bc required"),
+        v1.k_bc.as_ref().expect("k_bc required"),
+        v2.k_bc.as_ref().expect("k_bc required"),
+    ];
+    let kmat_ac: [&Array2<Complex<f64>>; 3] = [
+        v0.k_ac.as_ref().expect("k_ac required"),
+        v1.k_ac.as_ref().expect("k_ac required"),
+        v2.k_ac.as_ref().expect("k_ac required"),
+    ];
+    let vdiag_c: [&[f64]; 3] = [
+        v0.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
+        v1.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
+        v2.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
+    ];
+    let vdiag_a: [&[f64]; 3] = [
+        v0.vdiag_a.as_ref().expect("vdiag_a required").as_slice().unwrap(),
+        v1.vdiag_a.as_ref().expect("vdiag_a required").as_slice().unwrap(),
+        v2.vdiag_a.as_ref().expect("vdiag_a required").as_slice().unwrap(),
+    ];
+    let vdiag_b: [&[f64]; 3] = [
+        v0.vdiag_b.as_ref().expect("vdiag_b required").as_slice().unwrap(),
+        v1.vdiag_b.as_ref().expect("vdiag_b required").as_slice().unwrap(),
+        v2.vdiag_b.as_ref().expect("vdiag_b required").as_slice().unwrap(),
+    ];
 
     for n in 0..nsta {
         let e_v = [
@@ -795,10 +782,10 @@ fn combine_bary_3d(alpha: &[f64; 3], lam: &[[f64; 4]]) -> [f64; 4] {
 fn kquad_surface_cut_intrinsic(
     coords: &Array2<f64>,
     energy_v: [f64; 4],
-    bands: &[Vec<f64>],
-    kmat_ab: &[Array2<Complex<f64>>],
-    kmat_bc: &[Array2<Complex<f64>>],
-    kmat_ac: &[Array2<Complex<f64>>],
+    bands: &[&[f64]],
+    kmat_ab: &[&Array2<Complex<f64>>],
+    kmat_bc: &[&Array2<Complex<f64>>],
+    kmat_ac: &[&Array2<Complex<f64>>],
     vdiag_c: [f64; 4],
     vdiag_a: [f64; 4],
     vdiag_b: [f64; 4],
@@ -826,6 +813,8 @@ fn kquad_surface_cut_intrinsic(
     let area = polygon_area_3d(coords, &verts);
 
     // K‑quadrature over polygon (fan triangulation from vertex 0)
+    let mut e_buf = vec![0.0f64; nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     let mut amp_sum = 0.0;
     for i in 1..verts.len() - 1 {
         let sub_tri = [&verts[0], &verts[i], &verts[i + 1]];
@@ -840,9 +829,9 @@ fn kquad_surface_cut_intrinsic(
             let alpha = &TRI_QUAD_PTS_3[iq];
             let w = TRI_QUAD_WTS_3[iq];
             let lam = combine_bary_3d(alpha, &[*sub_tri[0], *sub_tri[1], *sub_tri[2]]);
-            let g_ab = eval_intrinsic_G_at_lam(n, bands, kmat_ab, &lam, nsta);
-            let g_bc = eval_intrinsic_G_at_lam(n, bands, kmat_bc, &lam, nsta);
-            let g_ac = eval_intrinsic_G_at_lam(n, bands, kmat_ac, &lam, nsta);
+            let g_ab = eval_intrinsic_G_at_lam_buf(n, bands, kmat_ab, &lam, nsta, &mut e_buf, &mut k_buf);
+            let g_bc = eval_intrinsic_G_at_lam_buf(n, bands, kmat_bc, &lam, nsta, &mut e_buf, &mut k_buf);
+            let g_ac = eval_intrinsic_G_at_lam_buf(n, bands, kmat_ac, &lam, nsta, &mut e_buf, &mut k_buf);
             let va = lam[0] * vdiag_a[0]
                 + lam[1] * vdiag_a[1]
                 + lam[2] * vdiag_a[2]
@@ -881,23 +870,42 @@ fn accumulate_tetrahedron_intrinsic_kquad(
     let volume_scale = sim.volume / _vol;
     let nsta = sim.vertices[0].band.len();
 
-    let bands: Vec<Vec<f64>> = (0..4).map(|v| sim.vertices[v].band.to_vec()).collect();
-    let kmat_ab: Vec<Array2<Complex<f64>>> = (0..4).map(|v| sim.vertices[v].k_ab.clone()).collect();
-    let kmat_bc: Vec<Array2<Complex<f64>>> = (0..4)
-        .map(|v| sim.vertices[v].k_bc.as_ref().expect("k_bc").clone())
-        .collect();
-    let kmat_ac: Vec<Array2<Complex<f64>>> = (0..4)
-        .map(|v| sim.vertices[v].k_ac.as_ref().expect("k_ac").clone())
-        .collect();
-    let vdiag_c: Vec<Vec<f64>> = (0..4)
-        .map(|v| sim.vertices[v].vdiag.as_ref().expect("vdiag").to_vec())
-        .collect();
-    let vdiag_a: Vec<Vec<f64>> = (0..4)
-        .map(|v| sim.vertices[v].vdiag_a.as_ref().expect("vdiag_a").to_vec())
-        .collect();
-    let vdiag_b: Vec<Vec<f64>> = (0..4)
-        .map(|v| sim.vertices[v].vdiag_b.as_ref().expect("vdiag_b").to_vec())
-        .collect();
+    let v0 = &sim.vertices[0];
+    let v1 = &sim.vertices[1];
+    let v2 = &sim.vertices[2];
+    let v3 = &sim.vertices[3];
+    let bands: [&[f64]; 4] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap(), v3.band.as_slice().unwrap()];
+    let kmat_ab: [&Array2<Complex<f64>>; 4] = [&v0.k_ab, &v1.k_ab, &v2.k_ab, &v3.k_ab];
+    let kmat_bc: [&Array2<Complex<f64>>; 4] = [
+        v0.k_bc.as_ref().expect("k_bc"),
+        v1.k_bc.as_ref().expect("k_bc"),
+        v2.k_bc.as_ref().expect("k_bc"),
+        v3.k_bc.as_ref().expect("k_bc"),
+    ];
+    let kmat_ac: [&Array2<Complex<f64>>; 4] = [
+        v0.k_ac.as_ref().expect("k_ac"),
+        v1.k_ac.as_ref().expect("k_ac"),
+        v2.k_ac.as_ref().expect("k_ac"),
+        v3.k_ac.as_ref().expect("k_ac"),
+    ];
+    let vdiag_c: [&[f64]; 4] = [
+        v0.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
+        v1.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
+        v2.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
+        v3.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
+    ];
+    let vdiag_a: [&[f64]; 4] = [
+        v0.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
+        v1.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
+        v2.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
+        v3.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
+    ];
+    let vdiag_b: [&[f64]; 4] = [
+        v0.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
+        v1.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
+        v2.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
+        v3.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
+    ];
 
     let n_mu = mu.len();
     for n in 0..nsta {
@@ -1082,8 +1090,8 @@ fn triangle_occupied_hybrid(
     coords: &Array2<f64>,
     e_v: [f64; 3],
     omega_vertex: [f64; 3],
-    bands: &[Vec<f64>],
-    kmats: &[Array2<Complex<f64>>],
+    bands: &[&[f64]],
+    kmats: &[&Array2<Complex<f64>>],
     mu: f64,
     eta: f64,
     n: usize,
@@ -1103,6 +1111,8 @@ fn triangle_occupied_hybrid(
     }
 
     // Partial occupancy: clipped polygon + K‑quadrature
+    let mut e_buf = vec![0.0f64; nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     let sub_tris = clip_triangle(e_v, mu);
     let mut total = 0.0;
     for sub_tri in &sub_tris {
@@ -1114,7 +1124,11 @@ fn triangle_occupied_hybrid(
             let alpha = &TRI_QUAD_PTS_3[iq];
             let w = TRI_QUAD_WTS_3[iq];
             let lam = combine_bary(alpha, &sub_tri[0], &sub_tri[1], &sub_tri[2]);
-            total += sub_area * w * eval_berry_band_at_lam(n, bands, kmats, &lam, eta, nsta);
+            total += sub_area
+                * w
+                * eval_berry_band_at_lam_buf(
+                    n, bands, kmats, &lam, eta, nsta, &mut e_buf, &mut k_buf,
+                );
         }
     }
     total
@@ -1146,35 +1160,30 @@ fn integrate_fermi_cut_2d_t0(
 
                 // Precompute vertex Ω (shared across μ).
                 let (_g0, o0) = eval_berry_kernel(
-                    &sim.vertices[0].band.to_vec(),
+                    sim.vertices[0].band.as_slice().unwrap(),
                     &sim.vertices[0].k_ab,
                     eta,
                     nsta,
                 );
                 let (_g1, o1) = eval_berry_kernel(
-                    &sim.vertices[1].band.to_vec(),
+                    sim.vertices[1].band.as_slice().unwrap(),
                     &sim.vertices[1].k_ab,
                     eta,
                     nsta,
                 );
                 let (_g2, o2) = eval_berry_kernel(
-                    &sim.vertices[2].band.to_vec(),
+                    sim.vertices[2].band.as_slice().unwrap(),
                     &sim.vertices[2].k_ab,
                     eta,
                     nsta,
                 );
 
-                // Pre-extract band energies and K matrices for K‑quadrature.
-                let bands: [Vec<f64>; 3] = [
-                    sim.vertices[0].band.to_vec(),
-                    sim.vertices[1].band.to_vec(),
-                    sim.vertices[2].band.to_vec(),
-                ];
-                let kmats: [Array2<Complex<f64>>; 3] = [
-                    sim.vertices[0].k_ab.clone(),
-                    sim.vertices[1].k_ab.clone(),
-                    sim.vertices[2].k_ab.clone(),
-                ];
+                // Borrow band energies and K matrices for K‑quadrature.
+                let v0 = &sim.vertices[0];
+                let v1 = &sim.vertices[1];
+                let v2 = &sim.vertices[2];
+                let bands: [&[f64]; 3] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap()];
+                let kmats: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
 
                 for n in 0..nsta {
                     let e_v = [
@@ -1369,8 +1378,8 @@ fn combine_bary_4(alpha: &[f64; 4], lam: &[[f64; 4]; 4]) -> [f64; 4] {
 /// K‑quadrature over a single sub‑tetrahedron defined by barycentric vertices.
 fn sub_tet_k_quad(
     sub_lam: &[[f64; 4]; 4],
-    bands: &[Vec<f64>],
-    kmats: &[Array2<Complex<f64>>],
+    bands: &[&[f64]],
+    kmats: &[&Array2<Complex<f64>>],
     n: usize,
     eta: f64,
     nsta: usize,
@@ -1381,11 +1390,13 @@ fn sub_tet_k_quad(
         return 0.0;
     }
     let mut total = 0.0;
+    let mut e_buf = vec![0.0f64; nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     for iq in 0..4 {
         let alpha = &TET_QUAD_PTS_4[iq];
         let w = TET_QUAD_WTS_4[iq];
         let lam = combine_bary_4(alpha, sub_lam);
-        total += sub_vol * w * eval_berry_band_at_lam(n, bands, kmats, &lam, eta, nsta);
+        total += sub_vol * w * eval_berry_band_at_lam_buf(n, bands, kmats, &lam, eta, nsta, &mut e_buf, &mut k_buf);
     }
     total
 }
@@ -1395,8 +1406,8 @@ fn tetrahedron_occupied_hybrid(
     coords: &Array2<f64>,
     e_v: [f64; 4],
     omega_v: [f64; 4],
-    bands: &[Vec<f64>],
-    kmats: &[Array2<Complex<f64>>],
+    bands: &[&[f64]],
+    kmats: &[&Array2<Complex<f64>>],
     mu: f64,
     eta: f64,
     n: usize,
@@ -1534,42 +1545,36 @@ fn integrate_fermi_cut_3d_t0(
 
                     // Precompute vertex Ω.
                     let (_g0, o0) = eval_berry_kernel(
-                        &sim.vertices[0].band.to_vec(),
+                        sim.vertices[0].band.as_slice().unwrap(),
                         &sim.vertices[0].k_ab,
                         eta,
                         nsta,
                     );
                     let (_g1, o1) = eval_berry_kernel(
-                        &sim.vertices[1].band.to_vec(),
+                        sim.vertices[1].band.as_slice().unwrap(),
                         &sim.vertices[1].k_ab,
                         eta,
                         nsta,
                     );
                     let (_g2, o2) = eval_berry_kernel(
-                        &sim.vertices[2].band.to_vec(),
+                        sim.vertices[2].band.as_slice().unwrap(),
                         &sim.vertices[2].k_ab,
                         eta,
                         nsta,
                     );
                     let (_g3, o3) = eval_berry_kernel(
-                        &sim.vertices[3].band.to_vec(),
+                        sim.vertices[3].band.as_slice().unwrap(),
                         &sim.vertices[3].k_ab,
                         eta,
                         nsta,
                     );
 
-                    let bands: [Vec<f64>; 4] = [
-                        sim.vertices[0].band.to_vec(),
-                        sim.vertices[1].band.to_vec(),
-                        sim.vertices[2].band.to_vec(),
-                        sim.vertices[3].band.to_vec(),
-                    ];
-                    let kmats: [Array2<Complex<f64>>; 4] = [
-                        sim.vertices[0].k_ab.clone(),
-                        sim.vertices[1].k_ab.clone(),
-                        sim.vertices[2].k_ab.clone(),
-                        sim.vertices[3].k_ab.clone(),
-                    ];
+                    let v0 = &sim.vertices[0];
+                    let v1 = &sim.vertices[1];
+                    let v2 = &sim.vertices[2];
+                    let v3 = &sim.vertices[3];
+                    let bands: [&[f64]; 4] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap(), v3.band.as_slice().unwrap()];
+                    let kmats: [&Array2<Complex<f64>>; 4] = [&v0.k_ab, &v1.k_ab, &v2.k_ab, &v3.k_ab];
 
                     for n in 0..nsta {
                         let e_v = [

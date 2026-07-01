@@ -143,6 +143,54 @@ pub fn eval_berry_band_at_lam(
     -2.0 * g_sum.im
 }
 
+/// Pre‑allocated buffer version: avoids Vec allocation on every call.
+#[inline]
+pub fn eval_berry_band_at_lam_buf(
+    n: usize,
+    bands: &[&[f64]],
+    kmats: &[&Array2<Complex<f64>>],
+    lam: &[f64],
+    eta: f64,
+    nsta: usize,
+    e_buf: &mut [f64],
+    k_buf: &mut [Complex<f64>],
+) -> f64 {
+    e_buf[..nsta].fill(0.0);
+    k_buf[..nsta].fill(Complex::new(0.0, 0.0));
+    for v in 0..bands.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            e_buf[m] += bands[v][m] * lv;
+        }
+    }
+    for v in 0..kmats.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            k_buf[m] += kmats[v][[n, m]] * lv;
+        }
+    }
+    let eta2 = eta * eta;
+    let mut g_sum = Complex::new(0.0, 0.0);
+    for m in 0..nsta {
+        if m == n {
+            continue;
+        }
+        let de = e_buf[n] - e_buf[m];
+        let denom = de * de + eta2;
+        if denom < 1e-30 {
+            continue;
+        }
+        g_sum += k_buf[m] / denom;
+    }
+    -2.0 * g_sum.im
+}
+
 /// Evaluate $G_n = \Sigma_{m\ne n} K_{nm} / (\Delta_{nm}^2 + \eta^2)$
 /// for a single band at barycentrics, returning `(metric_n, berry_n)`.
 /// Interpolates only $E_m$ and the $n$-th row of $K$.
@@ -190,6 +238,54 @@ pub fn eval_berry_complex_at_lam(
     (g_sum.re, -2.0 * g_sum.im)
 }
 
+/// Pre‑allocated buffer version of [`eval_berry_complex_at_lam`].
+#[inline]
+pub fn eval_berry_complex_at_lam_buf(
+    n: usize,
+    bands: &[&[f64]],
+    kmats: &[&Array2<Complex<f64>>],
+    lam: &[f64],
+    eta: f64,
+    nsta: usize,
+    e_buf: &mut [f64],
+    k_buf: &mut [Complex<f64>],
+) -> (f64, f64) {
+    e_buf[..nsta].fill(0.0);
+    k_buf[..nsta].fill(Complex::new(0.0, 0.0));
+    for v in 0..bands.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            e_buf[m] += bands[v][m] * lv;
+        }
+    }
+    for v in 0..kmats.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            k_buf[m] += kmats[v][[n, m]] * lv;
+        }
+    }
+    let eta2 = eta * eta;
+    let mut g_sum = Complex::new(0.0, 0.0);
+    for m in 0..nsta {
+        if m == n {
+            continue;
+        }
+        let de = e_buf[n] - e_buf[m];
+        let denom = de * de + eta2;
+        if denom < 1e-30 {
+            continue;
+        }
+        g_sum += k_buf[m] / denom;
+    }
+    (g_sum.re, -2.0 * g_sum.im)
+}
+
 /// Evaluate $G^{ij}_n = \operatorname{Re} \sum_{m\ne n} K_{nm} / (E_n-E_m)^3$
 /// for a single band at barycentrics (no $\eta$ regularization — used for
 /// intrinsic NLH).
@@ -232,6 +328,52 @@ pub fn eval_intrinsic_G_at_lam(
             continue;
         }
         g_sum += k_row[m].re / de3;
+    }
+    g_sum
+}
+
+/// Pre‑allocated buffer version of [`eval_intrinsic_G_at_lam`].
+#[inline]
+pub fn eval_intrinsic_G_at_lam_buf(
+    n: usize,
+    bands: &[&[f64]],
+    kmats: &[&Array2<Complex<f64>>],
+    lam: &[f64],
+    nsta: usize,
+    e_buf: &mut [f64],
+    k_buf: &mut [Complex<f64>],
+) -> f64 {
+    e_buf[..nsta].fill(0.0);
+    k_buf[..nsta].fill(Complex::new(0.0, 0.0));
+    for v in 0..bands.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            e_buf[m] += bands[v][m] * lv;
+        }
+    }
+    for v in 0..kmats.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            k_buf[m] += kmats[v][[n, m]] * lv;
+        }
+    }
+    let mut g_sum = 0.0f64;
+    for m in 0..nsta {
+        if m == n {
+            continue;
+        }
+        let de = e_buf[n] - e_buf[m];
+        let de3 = de * de * de;
+        if de3.abs() < 1e-30 {
+            continue;
+        }
+        g_sum += k_buf[m].re / de3;
     }
     g_sum
 }
