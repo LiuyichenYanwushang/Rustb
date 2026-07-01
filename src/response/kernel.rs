@@ -7,8 +7,14 @@
 //!
 //! | Function | Denominator | Returns |
 //! |----------|-------------|---------|
-//! | `eval_berry_kernel` | $d_{nm}^2 + \eta^2$ | $(g_n, \Omega_n)$ per band |
-//! | `eval_optical_kernel` | $d_{nm}^2 - (\omega+i\eta)^2$ | $\sum_{nm} (f_n-f_m)K_{nm}/{\rm denom}$ |
+//! | `eval_berry_kernel` | $\Delta_{nm}^2 + \eta^2$ | $(g_n, \Omega_n)$ per band (all bands) |
+//! | `eval_berry_band_at_lam` | $\Delta_{nm}^2 + \eta^2$ | $\Omega_n$ (single band at barycentrics) |
+//! | `eval_berry_complex_at_lam` | $\Delta_{nm}^2 + \eta^2$ | $(g_n, \Omega_n)$ (single band) |
+//! | `eval_intrinsic_G_at_lam` | $\Delta_{nm}^3$ | $G^{ij}_n$ (single band, no $\eta$) |
+//! | `eval_optical_kernel` | $\Delta_{nm}^2 - (\omega+i\eta)^2$ | $\sum_{nm} (f_n-f_m)K_{nm}/{\rm denom}$ |
+//!
+//! The single‑band functions (`_at_lam`) interpolate only the $n$‑th row
+//! of $K$ and avoid allocating the full $nsta\times nsta$ matrix.
 //!
 //! The single‑simplex quadrature helpers (`quadrature_berry_simplex`
 //! etc.) loop over all quadrature points, interpolate, call the

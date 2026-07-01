@@ -275,11 +275,12 @@ src/response/
 ├── types.rs        — VertexKernel, TrackedSimplex, SimplexDiagnostics
 ├── quadrature.rs   — 2D/3D symmetric quadrature rules, barycentric interp
 ├── tracking.rs     — band tracking (overlap → greedy → permute) + simplex builders
-├── kernel.rs       — eval_berry_kernel, eval_berry_band_at_lam, eval_optical_kernel, quadrature helpers
-├── energy_cut.rs   — 2D/3D analytic energy‑cut (dipole + AHC), hybrid vertex‑Ω / K‑quad
+├── kernel.rs       — eval_berry_kernel, eval_berry_band_at_lam, eval_berry_complex_at_lam,
+│                     eval_intrinsic_G_at_lam, eval_optical_kernel, quadrature helpers
+├── energy_cut.rs   — 2D/3D energy‑cut (AHC, dipole, intrinsic), hybrid + K‑quadrature
 ├── primitives.rs   — Model::compute_velocity_kernel (band‑basis velocities)
-├── linear/         — Berry curvature + quantum metric → berry_curvature_simplex
-├── nonlinear/      — Berry dipole + intrinsic/extrinsic NLH
+├── linear/         — Berry curvature + quantum metric + AHC → berry_curvature_simplex
+├── nonlinear/      — Berry dipole + intrinsic/extrinsic NLH (K‑quad line‑cut)
 └── optical/        — Optical conductivity → optical_conductivity_simplex
 ```
 
@@ -316,6 +317,7 @@ let sigma = model.optical_conductivity_simplex(
 | `model.berry_curvature_simplex(k_mesh, dir_a, dir_b, eta)` | `(g, Ω, unsafe)` | Berry curvature + quantum metric in Cartesian volume |
 | `model.berry_curvature_dipole_energy_cut(k_mesh, dir_a, dir_b, dir_c, mu, T, eta)` | `(D(μ), unsafe)` | Berry dipole D^{ab;c}(μ,T), 2D analytic energy‑cut |
 | `model.Hall_conductivity_ec(k_mesh, dir_a, dir_b, mu, T, eta)` | `σ(μ)` | AHC via hybrid energy‑cut (2D/3D) |
+| `model.Nonlinear_Hall_conductivity_Intrinsic_ec(k_mesh, dir_a, dir_b, dir_c, mu, T, eta)` | `σ_int(μ)` | Intrinsic NLH via K‑quad energy‑cut (2D/3D) |
 | `model.optical_conductivity_simplex(k_mesh, dir_a, dir_b, ω, η, μ, T)` | `σ(ω)` | Complex optical conductivity |
 | `model.compute_velocity_kernel(k_vec, dir_a, dir_b, dir_c?, gauge, spin)` | `VertexKernel` | Per‑k‑point band‑basis velocity primitives |
 
@@ -324,14 +326,19 @@ let sigma = model.optical_conductivity_simplex(
 | Function | Module | Description |
 |----------|--------|-------------|
 | `linear::integrate(all_pts, k_mesh, eta)` | `response::linear` | BZ integral of Berry + metric (fractional coords) |
-| `integrate_dipole_energy_cut_2d(all_pts, k_mesh, mu, T, eta)` | `response` | 2D dipole via analytic line cuts |
+| `integrate_dipole_energy_cut_2d(all_pts, k_mesh, mu, T, eta)` | `response` | 2D dipole via K‑quad line cuts |
 | `integrate_fermi_cut_2d(all_pts, k_mesh, mu, T, eta)` | `response` | 2D AHC via hybrid energy‑cut |
 | `integrate_fermi_cut_3d(all_pts, k_mesh, mu, T, eta)` | `response` | 3D AHC via hybrid energy‑cut |
+| `integrate_intrinsic_cut_2d(all_pts, k_mesh, mu, T)` | `response` | 2D intrinsic NLH via K‑quad line cuts |
+| `integrate_intrinsic_cut_3d(all_pts, k_mesh, mu, T)` | `response` | 3D intrinsic NLH via K‑quad surface cuts |
 | `optical::integrate(all_pts, k_mesh, ω, η, μ, T)` | `response::optical` | Optical conductivity (fractional coords) |
 | `build_triangles_2d(ix, iy, nx, ny, inv_nx, inv_ny, all_pts)` | `response` | Build tracked 2D triangles for one cell |
-| `build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, ...)` | `response` | Build tracked 3D tetrahedra for one cell |
+| `build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, ...)` | `response` | Build tracked 3D tetrahedra (single decomposition) |
+| `build_tetrahedra_3d_diagavg(ix, iy, iz, ...)` | `response` | Diagonal‑averaged 3D tetrahedra (10/cell) |
 | `eval_berry_kernel(band_q, k_ab_q, eta, nsta)` | `response` | Evaluate `(g_n, Ω_n)` at one quadrature point |
 | `eval_berry_band_at_lam(n, bands, kmats, lam, eta, nsta)` | `response` | Evaluate `Ω_n` for a single band |
+| `eval_berry_complex_at_lam(n, bands, kmats, lam, eta, nsta)` | `response` | Evaluate `(metric_n, berry_n)` for a single band |
+| `eval_intrinsic_G_at_lam(n, bands, kmats, lam, nsta)` | `response` | Evaluate $G^{ij}_n$ for intrinsic NLH |
 | `eval_optical_kernel(band_q, k_ab_q, ω, η, μ, β, nsta)` | `response` | Evaluate `σ_nm` at one quadrature point |
 | `read_reset_fermi_cut_counts()` | `response` | Read & reset hybrid path counters (debug) |
 
@@ -380,30 +387,55 @@ let sigma = model.optical_conductivity_simplex(
 | `berry_curvature_simplex()` | Berry + metric via simplex quadrature (Cartesian) |
 | `berry_curvature_dipole_energy_cut()` | Berry dipole via analytic energy‑cut (2D only) |
 | `Hall_conductivity_ec()` | AHC via hybrid energy‑cut (2D/3D, vertex‑Ω full + K‑quad partial) |
+| `Nonlinear_Hall_conductivity_Intrinsic_ec()` | Intrinsic NLH via K‑quad energy‑cut (2D/3D, surface integral) |
+| `berry_curvature_dipole_energy_cut()` | BCD via K‑quadrature line‑cut (upgraded from linear Ω) |
 | `eval_berry_band_at_lam()` | Single‑band Berry kernel at barycentric coords |
+| `eval_berry_complex_at_lam()` | Single‑band (metric, berry) at barycentrics |
+| `eval_intrinsic_G_at_lam()` | Single‑band $G^{ij}_n = \operatorname{Re}\sum K_{nm}/(E_n-E_m)^3$ |
+| `build_tetrahedra_3d_diagavg()` | Diagonal‑averaged 3D tet decomposition (restores k→−k) |
 | `FermiCutCounts` / `read_reset_fermi_cut_counts()` | Diagnostic counters for hybrid fast‑path ratio |
 | `optical_conductivity_simplex()` | Optical σ(ω) via simplex quadrature (Cartesian) |
 | `compute_velocity_kernel()` | Per‑k‑point band‑basis velocity primitives |
-| `response::*` module | Public low‑level simplex integration primitives |
+| `response::*` module | Public low‑level integration primitives |
 
-### Energy‑cut design (hybrid)
+### Energy‑cut design
 
-The AHC energy‑cut uses a hybrid strategy per simplex:
+**AHC** (volume integral $\int \Theta(\mu-E)\,\Omega\,dk$):
 
 | Occupancy | Method | Cost |
 |-----------|--------|------|
 | Fully occupied | Vertex‑average Ω (preserves gap quantization) | O(1) |
 | Fully empty | Skip | O(1) |
-| Partially occupied | K‑quadrature on clipped polygon (preserves 1/Δ²) | O(N_quad) |
+| Partially occupied | K‑quadrature on clipped polygon (preserves $1/\Delta^2$) | O(N_quad) |
 
-3D uses a sorted‑μ sweep: binary search finds empty/partial/full μ ranges,
-eliminating the per‑μ conditional for >80% of (tet, band, μ) combinations.
+3D uses a sorted‑μ sweep: binary search finds empty/partial/full μ ranges.
+
+**Nonlinear** (Fermi‑surface integral $\int \delta(\mu-E)\,A\,dk$):
+
+| Dim | Intersection | Quadrature |
+|-----|-------------|------------|
+| 2D | $E=\mu$ line ∩ triangle → segment | 2‑pt Gauss K‑quad along line |
+| 3D | $E=\mu$ plane ∩ tetrahedron → polygon | polygon triangulation + 3‑pt K‑quad |
+
+Nonlinear energy‑cut has no full/empty fast path (the integrand $\propto\delta(E-\mu)$
+is zero away from the Fermi surface).  Amplitude kernel varies by method:
+
+| Method | Amplitude $A_n$ |
+|--------|----------------|
+| Dipole (extrinsic) | $v^c_n \cdot \Omega^{ab}_n$ |
+| Intrinsic | $2v^c_n G^{ab}_n - \frac12(v^a_n G^{bc}_n + v^b_n G^{ac}_n)$ |
+
+**3D diagonal averaging** (`build_tetrahedra_3d_diagavg`): generates 10 tets per
+cell by averaging the two possible 5‑tet cube decompositions with opposite body
+diagonals.  This restores $k\to-k$ cancellation for P‑odd quantities, analogous
+to the 2D diagonal average.
 
 ### Known limitations
 
-- **Energy-cut dipole is 2D only** — 3D tetrahedral cut integration is future work
-- **Intrinsic NLH tetra path removed** — `Nonlinear_Hall_conductivity_Intrinsic_tetra` deleted
-- **No band tracking in intrinsic NLH** path (not yet ported to simplex)
+- **Intrinsic NLH 3D convergence** — nk=12 gives 4.2% error vs nk=14 reference
+  (surface K‑quad $\propto h^2$, slower than 2D line integral $\propto h$)
+- **Dipole energy‑cut is 2D only** — 3D tetrahedron surface cut not yet implemented
+- **No band tracking in intrinsic NLH** direct‑sum path (not ported to simplex)
 
 ## Performance Notes
 
@@ -419,6 +451,24 @@ prefer preallocated buffers. For rayon folds over `mu` values, mutate a local
 **Autovec/SIMD**: simple contiguous slice loops autovectorize better than `ndarray`
 indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512.
 BLAS backends (MKL/OpenBLAS) dispatch optimized kernels independently.
+
+**Energy‑cut hotspots** (in priority order):
+
+1. `eval_*_at_lam` functions allocate `Vec<f64>` and `Vec<Complex<f64>>` per call.
+   Pre‑allocating thread‑local buffers (or stack arrays for small nsta ≤ 32) would
+   eliminate allocation overhead entirely.
+
+2. `accumulate_tetrahedron_*_kquad` clones 6 `nsta×nsta` matrices per tetrahedron.
+   These could borrow from the TrackedSimplex vertices (lifetime permitting) or
+   use `Arc`-shared data.
+
+3. Nonlinear 3D lacks a sorted‑μ sweep — currently loops over all μ per
+   (tet, band).  Same optimization as AHC 3D (binary search + range add) applies
+   here, saving the per‑μ conditional for μ values away from the Fermi surface.
+
+4. `energy_gradient_3d` recomputes the same gradient for every band at every μ
+   within the same tetrahedron.  Computing once per (tet, μ) and sharing across
+   bands would cut 3D intrinsic cost roughly in half.
 
 ## Refactoring Guidelines
 

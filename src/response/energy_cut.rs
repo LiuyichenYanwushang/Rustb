@@ -1,18 +1,37 @@
-//! Energy-cut integration for Fermi-surface weighted response functions.
+//! Energy‑cut integration via K‑quadrature on simplex intersections.
 //!
-//! This module avoids sampling the narrow finite-temperature Fermi window by
-//! quadrature points in k-space.  For a triangle with linearly interpolated
-//! band energy `E(k)` and scalar response amplitude `A(k)`, it evaluates the
-//! iso-energy line integral
+//! ## 2D (triangle)
 //!
-//! ```text
-//! rho_A(E) = int_T A(k) delta(E(k) - E) d^2k
-//!          = |p - q| / |grad E| * (A(p) + A(q)) / 2
-//! ```
+//! The $E=\mu$ line intersects a triangle in a line segment.  The integral
 //!
-//! where `p` and `q` are the two intersections of the level set with the
-//! triangle edges.  Finite temperature is then a one-dimensional convolution
-//! with `beta f(1-f)`.
+//! $$\int_T A(k)\,\delta(E(k)-\mu)\,d^2k = \frac{|pq|}{|\nabla E|}\int_0^1 A(t)\,dt$$
+//!
+//! is evaluated with 2‑point Gauss‑Legendre K‑quadrature along the segment:
+//! $E_m$, $K_{nm}^{ab}$, and diagonal velocities are barycentrically
+//! interpolated, then $\Omega_n$ (or $G_n$) is recomputed from primitives.
+//!
+//! ## 3D (tetrahedron)
+//!
+//! The $E=\mu$ plane intersects a tetrahedron in a convex polygon (triangle
+//! or quadrilateral).  The surface integral
+//!
+//! $$\int_T A(k)\,\delta(E(k)-\mu)\,d^3k = \frac{\mathrm{area}}{|\nabla E|}\,
+//!   \frac{1}{\mathrm{area}}\int_{\mathrm{polygon}} A\,dS$$
+//!
+//! uses polygon triangulation + 3‑point K‑quadrature on each sub‑triangle.
+//! `build_tetrahedra_3d_diagavg` provides diagonal‑averaged tetrahedralization
+//! for restoring $k\to-k$ cancellation of P‑odd quantities.
+//!
+//! ## Occupancy‑cut (AHC)
+//!
+//! Hybrid strategy: fully occupied → vertex‑average $\Omega$; partially
+//! occupied → K‑quadrature on clipped polygon; empty → skip.  3D uses a
+//! sorted‑$\mu$ sweep with binary search for empty/partial/full $\mu$ ranges.
+//!
+//! ## Thermal convolution
+//!
+//! $T>0$ integrals use 1D convolution of the $T=0$ result with the thermal
+//! window $w(x) = e^x/(1+e^x)^2$, avoiding per‑$T$ recomputation.
 
 use ndarray::prelude::*;
 use ndarray::*;

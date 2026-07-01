@@ -1,36 +1,34 @@
 //! # Nonlinear response: Berry dipole, intrinsic & extrinsic NLH
 //!
-//! ## Extrinsic NLH — Berry curvature dipole
+//! ## Extrinsic NLH — Berry curvature dipole (BCD)
 //!
 //! $$\chi^{\rm ext}_{abc}(\mu,T) =
 //!   \sum_n \int_{\rm BZ} \left(-\frac{\partial f}{\partial E_n}\right)
 //!   v^c_n(\mathbf{k})\Omega^{ab}_n(\mathbf{k})d\mathbf{k}$$
 //!
-//! where $f(E)=1/(1+e^{\beta(E-\mu)})$, $\Omega^{ab}_n = -2\operatorname{Im}G^{ab}_n$.
-//! The symmetrised form is $\chi^{\rm ext}_{c,ab}=\frac12(S_{ab;c}+S_{ac;b})$.
+//! The BCD is **TR‑even** ($D_{TR}=D$) — survives in TR‑symmetric, P‑broken systems.
+//! Under time reversal: $v^c\to -v^c$, $\Omega^{ab}\to -\Omega^{ab}$, so the
+//! product $v^c\Omega^{ab}$ is invariant.
 //!
 //! ## Intrinsic NLH — Berry connection dipole
 //!
 //! $$\sigma^{ab;c}_{\rm int}(\mu,T) = -\frac{e^3}{\hbar}
-//!   \sum_n \int_{\rm BZ} f_n
-//!   \bigl[2\partial_c G^{ab}_n - \tfrac12(\partial_a G^{bc}_n + \partial_b G^{ac}_n)\bigr]d\mathbf{k}$$
+//!   \sum_n \int_{\rm BZ} (-\partial f/\partial E_n)
+//!   \bigl[2v^c_n G^{ab}_n - \tfrac12(v^a_n G^{bc}_n + v^b_n G^{ac}_n)\bigr]d\mathbf{k}$$
 //!
-//! After integration by parts $\int f\partial_i G = -\int(\partial_i f)G$, the kernel is
-//!
-//! $$Q^{ab;c}_n = 2v^c_n G^{ab}_n - \tfrac12\bigl(v^a_n G^{bc}_n + v^b_n G^{ac}_n\bigr)$$
-//!
-//! The **Berry curvature dipole** (energy‑cut path) computes $D^{ab;c}$ via
-//! analytic iso‑energy line cuts on 2D triangles.  Works at any $T$,
-//! including $T=0$.  Requires `dir_c` so that `v^c_n$ is available.
+//! where $G^{ij}_n = \operatorname{Re}\sum_{m\ne n} K^{ij}_{nm} / (E_n-E_m)^3$.
+//! The intrinsic NLH is **TR‑odd** ($\sigma_{TR}=-\sigma$) — requires both
+//! $\mathcal P$ and $\mathcal T$ breaking.
 //!
 //! ## API
 //!
 //! | Method | Path | Formula |
 //! |--------|------|---------|
-//! | `berry_curvature_dipole_energy_cut` | energy‑cut | $D^{ab;c}$ (2D only) |
+//! | `berry_curvature_dipole_energy_cut` | energy‑cut | $D^{ab;c}$ (2D, K‑quad line‑cut) |
 //! | `Nonlinear_Hall_conductivity_Extrinsic` | direct sum | $\chi^{\rm ext}$ |
 //! | `Nonlinear_Hall_conductivity_Extrinsic_sym` | direct sum | symmetrised $\chi^{\rm ext}$ |
 //! | `Nonlinear_Hall_conductivity_Intrinsic` | direct sum | $\sigma_{\rm int}$ |
+//! | `Nonlinear_Hall_conductivity_Intrinsic_ec` | energy‑cut | $\sigma_{\rm int}$ (2D/3D, K‑quad) |
 //! | `berry_connection_dipole` | per‑k‑point | $Q^{ab;c}_n$ at each k |
 
 use ndarray::prelude::*;
