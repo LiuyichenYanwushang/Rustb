@@ -94,9 +94,16 @@ pub fn permute_vertex(v: &VertexKernel, p: &[usize]) -> VertexKernel {
         }
     }
 
+    let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
+    for ni in 0..nsta {
+        for mi in 0..nsta {
+            k_ab[[ni, mi]] = v.k_ab[[p[ni], p[mi]]];
+        }
+    }
+
     VertexKernel {
         band,
-        k_ab: perm_mat_opt(&Some(v.k_ab.clone())).unwrap(),
+        k_ab,
         k_bc: perm_mat_opt(&v.k_bc),
         k_ac: perm_mat_opt(&v.k_ac),
         vdiag: perm_vec_opt(&v.vdiag),

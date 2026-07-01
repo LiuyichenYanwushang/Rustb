@@ -79,15 +79,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
 
-        let vdiag = if dir_c.is_some() {
-            let vc = to_band(2, false);
-            Some(vc.diag().map(|x| x.re).to_owned())
-        } else {
-            None
-        };
-
-        // Compute additional gauge-invariant primitives when dir_c is present.
-        let (k_bc, k_ac, vdiag_a, vdiag_b) = if dir_c.is_some() {
+        let (vdiag, k_bc, k_ac, vdiag_a, vdiag_b) = if let Some(_dc) = dir_c {
             let vc = to_band(2, false);
             let mut bc = Array2::<Complex<f64>>::zeros((nsta, nsta));
             let mut ac = Array2::<Complex<f64>>::zeros((nsta, nsta));
@@ -98,13 +90,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
             }
             (
+                Some(vc.diag().map(|x| x.re).to_owned()),
                 Some(bc),
                 Some(ac),
                 Some(va.diag().map(|x| x.re).to_owned()),
                 Some(vb.diag().map(|x| x.re).to_owned()),
             )
         } else {
-            (None, None, None, None)
+            (None, None, None, None, None)
         };
 
         VertexKernel {

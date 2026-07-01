@@ -149,7 +149,9 @@ fn triangle_band_values(sim: &TrackedSimplex, eta: f64) -> Option<Vec<([f64; 3],
     let mut out = vec![([0.0; 3], [0.0; 3]); nsta];
     for iv in 0..3 {
         let v = &sim.vertices[iv];
-        let vdiag = v.vdiag.as_ref()?;
+        let vdiag = v.vdiag.as_ref().expect(
+            "VertexKernel.vdiag is None — call compute_velocity_kernel with dir_c to populate it",
+        );
         let band_q = v.band.to_vec();
         let (_metric, omega) = eval_berry_kernel(&band_q, &v.k_ab, eta, nsta);
         for n in 0..nsta {

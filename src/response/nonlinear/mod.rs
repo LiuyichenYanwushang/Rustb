@@ -19,14 +19,15 @@
 //!
 //! $$Q^{ab;c}_n = 2v^c_n G^{ab}_n - \tfrac12\bigl(v^a_n G^{bc}_n + v^b_n G^{ac}_n\bigr)$$
 //!
-//! The **Berry curvature dipole** (simplex path) computes $D^{ab;c}$ via
-//! volume quadrature with $(-\partial f/\partial E)$ at each quadrature point.
-//! Requires $T>0$; the $T=0$ $\delta$‑function integral is future work.
+//! The **Berry curvature dipole** (energy‑cut path) computes $D^{ab;c}$ via
+//! analytic iso‑energy line cuts on 2D triangles.  Works at any $T$,
+//! including $T=0$.  Requires `dir_c` so that `v^c_n$ is available.
 //!
 //! ## API
 //!
 //! | Method | Path | Formula |
 //! |--------|------|---------|
+//! | `berry_curvature_dipole_energy_cut` | energy‑cut | $D^{ab;c}$ (2D only) |
 //! | `Nonlinear_Hall_conductivity_Extrinsic` | direct sum | $\chi^{\rm ext}$ |
 //! | `Nonlinear_Hall_conductivity_Extrinsic_sym` | direct sum | symmetrised $\chi^{\rm ext}$ |
 //! | `Nonlinear_Hall_conductivity_Intrinsic` | direct sum | $\sigma_{\rm int}$ |
