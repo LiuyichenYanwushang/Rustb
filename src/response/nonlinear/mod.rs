@@ -767,8 +767,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Current-first charge intrinsic NLH via K‑quadrature energy‑cut (2D).
     ///
+    /// Returns the same signed result as [`Nonlinear_Hall_conductivity_Intrinsic`]
+    /// (i.e. integrates $-Q^{ab;c}_n$).
+    ///
     /// ```text
-    /// σ_int^{ab;c}(μ,T) = Σ_n ∫_{BZ} (−∂f/∂E_n) Q^{ab;c}_n(k) dk
     /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
     /// G^{ij}_n = Re Σ_{m≠n} K^{ij}_{nm} / (E_n−E_m)³
     /// ```

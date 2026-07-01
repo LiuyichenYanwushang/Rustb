@@ -2224,8 +2224,7 @@ mod tests {
             .unwrap();
         let max_abs = max_abs_diff_1d(&dir, &ec);
         println!("Intrinsic EC vs direct: max_abs = {max_abs:.3e}");
-        // Intrinsic is more sensitive to K-quadrature accuracy; relax tolerance
-        assert!(max_abs < 1.0, "Intrinsic EC mismatch: {max_abs:.3e}");
+        assert!(max_abs < 1e-3, "Intrinsic EC mismatch: {max_abs:.3e}");
     }
 
     /// 8d. AHC energy-cut 3D smoke (altermagnet, Berry ≈ 0, sanity check).

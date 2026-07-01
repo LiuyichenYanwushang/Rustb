@@ -472,7 +472,7 @@ fn kquad_line_cut_intrinsic(
         let vb = lam[0] * vdiag_b[0] + lam[1] * vdiag_b[1] + lam[2] * vdiag_b[2];
         let vc = lam[0] * vdiag_c[0] + lam[1] * vdiag_c[1] + lam[2] * vdiag_c[2];
         let q = 2.0 * vc * g_ab - 0.5 * (va * g_bc + vb * g_ac);
-        amp_sum += q;
+        amp_sum -= q; // sign convention: direct sum returns −Q, so EC returns −∫ δ Q dk
     }
     0.5 * length * amp_sum / grad_norm
 }
