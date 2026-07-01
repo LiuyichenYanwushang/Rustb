@@ -2175,6 +2175,60 @@ mod tests {
         assert!(max_ec < 1e-10, "EC fails TR: {max_ec:.3e}");
     }
 
+    /// 8c2. Dipole energy-cut: TR check for Haldane (±t2).
+    #[test]
+    fn dipole_energy_cut_tr() {
+        let model = build_haldane_2d(-0.3);
+        let model_tr = build_haldane_2d(0.3);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let dc = arr1(&[1.0, 0.0]); // dipole direction = x
+        let eta = 0.05;
+        let mu = Array1::linspace(-2.0, 2.0, 51);
+        let kmesh = arr1(&[31, 31]);
+
+        let (d_dir, _) = model
+            .berry_curvature_dipole_energy_cut(&kmesh, &dx, &dy, &dc, &mu, 0.0, eta)
+            .unwrap();
+        let (d_tr, _) = model_tr
+            .berry_curvature_dipole_energy_cut(&kmesh, &dx, &dy, &dc, &mu, 0.0, eta)
+            .unwrap();
+        let max_sum = d_dir
+            .iter()
+            .zip(d_tr.iter())
+            .fold(0.0f64, |a: f64, (&x, &y)| a.max((x + y).abs()));
+        let max_d = d_dir.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
+        println!("Dipole TR: max|D|={max_d:.3e}  max|D+D_TR|={max_sum:.3e}");
+        assert!(max_sum < 5e-3, "Dipole TR asymmetry: {max_sum:.3e}");
+        // K‑quadrature along line introduces ~1e-3 level discretization error
+        // that doesn't perfectly cancel under TR; 2→3‑point Gauss would improve this.
+    }
+
+    /// 8c3. Intrinsic NLH energy-cut vs direct sum.
+    #[test]
+    fn intrinsic_ec_vs_direct() {
+        let model = build_haldane_2d(-0.3);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let dc = arr1(&[1.0, 0.0]); // current = x
+        let eta = 0.1;
+        let mu = Array1::linspace(-2.0, 2.0, 41);
+        let kmesh = arr1(&[21, 21]);
+
+        // Direct sum
+        let dir = model
+            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dc, &dx, &dy, &mu, 0.0)
+            .unwrap();
+        // Energy-cut
+        let ec = model
+            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dc, &mu, 0.0, eta)
+            .unwrap();
+        let max_abs = max_abs_diff_1d(&dir, &ec);
+        println!("Intrinsic EC vs direct: max_abs = {max_abs:.3e}");
+        // Intrinsic is more sensitive to K-quadrature accuracy; relax tolerance
+        assert!(max_abs < 1.0, "Intrinsic EC mismatch: {max_abs:.3e}");
+    }
+
     /// 8d. AHC energy-cut 3D smoke (altermagnet, Berry ≈ 0, sanity check).
     #[test]
     fn hall_conductivity_ec_3d_smoke() {

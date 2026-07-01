@@ -764,4 +764,44 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         Ok(conductivity)
     }
+
+    /// Current-first charge intrinsic NLH via K‑quadrature energy‑cut (2D).
+    ///
+    /// ```text
+    /// σ_int^{ab;c}(μ,T) = Σ_n ∫_{BZ} (−∂f/∂E_n) Q^{ab;c}_n(k) dk
+    /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
+    /// G^{ij}_n = Re Σ_{m≠n} K^{ij}_{nm} / (E_n−E_m)³
+    /// ```
+    ///
+    /// Uses K‑quadrature along the $E_n=\mu$ Fermi‑surface line inside each
+    /// triangle.  Requires `dir_c` so diagonal velocity fields are available.
+    #[allow(non_snake_case)]
+    pub fn Nonlinear_Hall_conductivity_Intrinsic_ec(
+        &self,
+        k_mesh: &Array1<usize>,
+        dir_a: &Array1<f64>,
+        dir_b: &Array1<f64>,
+        dir_c: &Array1<f64>,
+        mu: &Array1<f64>,
+        T: f64,
+        eta: f64,
+    ) -> Result<Array1<f64>> {
+        assert_eq!(k_mesh.len(), 2, "Intrinsic EC currently 2D only");
+        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
+        let nk = kvec.nrows();
+        let gauge = Gauge::Atom;
+
+        let mut all_pts: Vec<VertexKernel> = (0..nk)
+            .into_par_iter()
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                self.compute_velocity_kernel(&kv, dir_a, dir_b, Some(dir_c), gauge, None)
+            })
+            .collect();
+        global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
+
+        let sigma = super::energy_cut::integrate_intrinsic_cut_2d(&all_pts, k_mesh, mu, T);
+        let det = self.lat.det().unwrap();
+        Ok(sigma / det)
+    }
 }

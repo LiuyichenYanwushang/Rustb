@@ -19,7 +19,7 @@ use ndarray::*;
 use num_complex::Complex;
 use rayon::prelude::*;
 
-use super::kernel::{eval_berry_band_at_lam, eval_berry_kernel};
+use super::kernel::{eval_berry_band_at_lam, eval_berry_complex_at_lam, eval_berry_kernel};
 use super::quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
 use super::tracking::{build_tetrahedra_3d, build_triangles_2d_diagavg};
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, VertexKernel};
@@ -144,47 +144,183 @@ pub fn triangle_line_cut(
     length * amp_avg / grad_norm
 }
 
-fn triangle_band_values(sim: &TrackedSimplex, eta: f64) -> Option<Vec<([f64; 3], [f64; 3])>> {
-    if sim.vertices.len() != 3 {
-        return None;
-    }
-    let nsta = sim.vertices[0].band.len();
-    let mut out = vec![([0.0; 3], [0.0; 3]); nsta];
-    for iv in 0..3 {
-        let v = &sim.vertices[iv];
-        let vdiag = v.vdiag.as_ref().expect(
-            "VertexKernel.vdiag is None — call compute_velocity_kernel with dir_c to populate it",
-        );
-        let band_q = v.band.to_vec();
-        let (_metric, omega) = eval_berry_kernel(&band_q, &v.k_ab, eta, nsta);
-        for n in 0..nsta {
-            out[n].0[iv] = v.band[n];
-            out[n].1[iv] = vdiag[n] * omega[n];
+// ── K‑quadrature line‑cut helpers ──────────────────────────────────────
+
+/// Find the two intersection points of the iso‑energy line $E=\mu$ with
+/// the triangle edges, returning both physical coordinates and barycentrics.
+fn find_line_intersections(
+    coords: &Array2<f64>,
+    energy_v: [f64; 3],
+    energy: f64,
+) -> (Vec<[f64; 2]>, Vec<[f64; 3]>) {
+    let mut pts: Vec<[f64; 2]> = Vec::with_capacity(3);
+    let mut bcs: Vec<[f64; 3]> = Vec::with_capacity(3);
+    let xy = [
+        [coords[[0, 0]], coords[[0, 1]]],
+        [coords[[1, 0]], coords[[1, 1]]],
+        [coords[[2, 0]], coords[[2, 1]]],
+    ];
+    for &(i, j) in &[(0usize, 1usize), (1, 2), (2, 0)] {
+        let ei = energy_v[i];
+        let ej = energy_v[j];
+        let denom = ej - ei;
+        if denom.abs() < ENERGY_CUT_EPS {
+            continue;
+        }
+        let t = (energy - ei) / denom;
+        if (-ENERGY_CUT_EPS..=1.0 + ENERGY_CUT_EPS).contains(&t) {
+            let tc = t.clamp(0.0, 1.0);
+            let px = xy[i][0] + tc * (xy[j][0] - xy[i][0]);
+            let py = xy[i][1] + tc * (xy[j][1] - xy[i][1]);
+            // Deduplicate
+            let mut dup = false;
+            for k in 0..pts.len() {
+                let dx = pts[k][0] - px;
+                let dy = pts[k][1] - py;
+                if dx * dx + dy * dy < 1e-24 {
+                    dup = true;
+                    break;
+                }
+            }
+            if !dup {
+                pts.push([px, py]);
+                let mut lam = [0.0; 3];
+                lam[i] = 1.0 - tc;
+                lam[j] = tc;
+                bcs.push(lam);
+            }
         }
     }
-    Some(out)
+    (pts, bcs)
 }
 
-fn accumulate_triangle_energy_cut(
+/// K‑quadrature line‑cut for the Berry curvature dipole amplitude
+/// $A_n = v^c_n \cdot \Omega_n$ along the $E_n=\mu$ line.
+///
+/// Uses 2‑point Gauss‑Legendre quadrature along the line segment, with
+/// barycentric interpolation of $K^{ab}_{nm}$, $E_m$, and $v^c_n$.
+fn kquad_line_cut_dipole(
+    coords: &Array2<f64>,
+    energy_v: [f64; 3],
+    bands: &[Vec<f64>],
+    kmats: &[Array2<Complex<f64>>],
+    vdiag_v: [f64; 3],
+    energy: f64,
+    eta: f64,
+    n: usize,
+    nsta: usize,
+) -> f64 {
+    let (pts, bcs) = find_line_intersections(coords, energy_v, energy);
+    if pts.len() < 2 {
+        return 0.0;
+    }
+
+    // |∇E|
+    let (x0, y0) = (coords[[0, 0]], coords[[0, 1]]);
+    let (x1, y1) = (coords[[1, 0]], coords[[1, 1]]);
+    let (x2, y2) = (coords[[2, 0]], coords[[2, 1]]);
+    let det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if det.abs() < ENERGY_CUT_EPS {
+        return 0.0;
+    }
+    let de1 = energy_v[1] - energy_v[0];
+    let de2 = energy_v[2] - energy_v[0];
+    let grad_x = (de1 * (y2 - y0) - de2 * (y1 - y0)) / det;
+    let grad_y = ((x1 - x0) * de2 - (x2 - x0) * de1) / det;
+    let grad_norm = (grad_x * grad_x + grad_y * grad_y).sqrt();
+    if grad_norm < ENERGY_CUT_EPS {
+        return 0.0;
+    }
+
+    // Find the two most distant points
+    let mut best = (0usize, 1usize);
+    let mut best_l2 = -1.0;
+    for i in 0..pts.len() {
+        for j in i + 1..pts.len() {
+            let dx = pts[i][0] - pts[j][0];
+            let dy = pts[i][1] - pts[j][1];
+            let l2 = dx * dx + dy * dy;
+            if l2 > best_l2 {
+                best_l2 = l2;
+                best = (i, j);
+            }
+        }
+    }
+    if best_l2 <= ENERGY_CUT_EPS * ENERGY_CUT_EPS {
+        return 0.0;
+    }
+    let length = best_l2.sqrt();
+    let (lam0, lam1) = (bcs[best.0], bcs[best.1]);
+
+    // 2-point Gauss-Legendre along [0,1]
+    const SQ3: f64 = 0.5773502691896257; // 1/√3
+    let t_vals = [0.5 * (1.0 - SQ3), 0.5 * (1.0 + SQ3)];
+
+    let mut amp_sum = 0.0;
+    for t in &t_vals {
+        let lam = [
+            (1.0 - t) * lam0[0] + t * lam1[0],
+            (1.0 - t) * lam0[1] + t * lam1[1],
+            (1.0 - t) * lam0[2] + t * lam1[2],
+        ];
+        let (_metric, berry) = eval_berry_complex_at_lam(n, bands, kmats, &lam, eta, nsta);
+        let vc = lam[0] * vdiag_v[0] + lam[1] * vdiag_v[1] + lam[2] * vdiag_v[2];
+        amp_sum += vc * berry;
+    }
+    // Gauss weights are 0.5 each
+    0.5 * length * amp_sum / grad_norm
+}
+
+/// K‑quadrature dipole accumulator (replaces the old linear‑Ω version).
+fn accumulate_triangle_dipole_kquad(
     sim: &TrackedSimplex,
     eta: f64,
     mu: &Array1<f64>,
     beta: f64,
     acc: &mut Array1<f64>,
 ) {
-    let Some(values) = triangle_band_values(sim, eta) else {
-        return;
-    };
     let area = triangle_area(&sim.coords);
     if area < ENERGY_CUT_EPS {
         return;
     }
     let volume_scale = sim.volume / area;
+    let nsta = sim.vertices[0].band.len();
 
-    for (energy_v, amp_v) in values {
+    // Pre‑extract vertex data (shared across bands and μ).
+    let bands: Vec<Vec<f64>> = (0..3).map(|v| sim.vertices[v].band.to_vec()).collect();
+    let kmats: Vec<Array2<Complex<f64>>> = (0..3).map(|v| sim.vertices[v].k_ab.clone()).collect();
+    let vdiags: Vec<Vec<f64>> = (0..3)
+        .map(|v| {
+            sim.vertices[v]
+                .vdiag
+                .as_ref()
+                .expect("vdiag required — call compute_velocity_kernel with dir_c")
+                .to_vec()
+        })
+        .collect();
+
+    for n in 0..nsta {
+        let e_v = [
+            sim.vertices[0].band[n],
+            sim.vertices[1].band[n],
+            sim.vertices[2].band[n],
+        ];
+        let vdiag_v = [vdiags[0][n], vdiags[1][n], vdiags[2][n]];
+
         if beta == 0.0 {
             for im in 0..mu.len() {
-                acc[im] += volume_scale * triangle_line_cut(&sim.coords, energy_v, amp_v, mu[im]);
+                acc[im] += volume_scale
+                    * kquad_line_cut_dipole(
+                        &sim.coords,
+                        e_v,
+                        &bands,
+                        &kmats,
+                        vdiag_v,
+                        mu[im],
+                        eta,
+                        n,
+                        nsta,
+                    );
             }
         } else {
             let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
@@ -193,7 +329,17 @@ fn accumulate_triangle_energy_cut(
                 for iq in 0..FERMI_X_STEPS {
                     let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
                     let energy = mu[im] + x / beta;
-                    let rho = triangle_line_cut(&sim.coords, energy_v, amp_v, energy);
+                    let rho = kquad_line_cut_dipole(
+                        &sim.coords,
+                        e_v,
+                        &bands,
+                        &kmats,
+                        vdiag_v,
+                        energy,
+                        eta,
+                        n,
+                        nsta,
+                    );
                     sum += dx * fermi_window_x(x) * rho;
                 }
                 acc[im] += volume_scale * sum;
@@ -202,16 +348,13 @@ fn accumulate_triangle_energy_cut(
     }
 }
 
-/// Integrate the Berry-curvature dipole using analytic 2D energy cuts.
+/// Integrate the Berry-curvature dipole using K‑quadrature energy cuts.
 ///
-/// The per-band scalar amplitude is
-///
-/// ```text
-/// A_n(k) = v^c_n(k) * Omega^{ab}_n(k)
-/// ```
-///
-/// with `E_n(k)` and `A_n(k)` linearly interpolated on each triangle.  In 2D
-/// the two possible square diagonals are averaged by `build_triangles_2d_diagavg`.
+/// The per-band amplitude $A_n = v^c_n \cdot \Omega^{ab}_n$ is evaluated
+/// via 2‑point Gauss‑Legendre quadrature along the $E_n=\mu$ line inside
+/// each triangle.  $K^{ab}_{nm}$, $E_m$, and $v^c_n$ are barycentrically
+/// interpolated at each quadrature point so the $1/\Delta^2$ structure is
+/// preserved.
 pub fn integrate_dipole_energy_cut_2d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
@@ -242,12 +385,245 @@ pub fn integrate_dipole_energy_cut_2d(
                 if sim.diag.min_gap < SIMPLEX_GAP_TOL {
                     unsafe_count += 1;
                 }
-                accumulate_triangle_energy_cut(sim, eta, mu, beta, &mut acc);
+                accumulate_triangle_dipole_kquad(sim, eta, mu, beta, &mut acc);
             }
         }
     }
 
     (acc, unsafe_count)
+}
+
+// ── Intrinsic NLH energy‑cut ────────────────────────────────────────────
+
+use super::kernel::eval_intrinsic_G_at_lam;
+
+/// K‑quadrature line‑cut for the intrinsic NLH kernel
+/// $Q^{ab;c}_n = 2 v^c_n G^{ab}_n - \frac12(v^a_n G^{bc}_n + v^b_n G^{ac}_n)$
+/// along the $E_n=\mu$ line.
+fn kquad_line_cut_intrinsic(
+    coords: &Array2<f64>,
+    energy_v: [f64; 3],
+    bands: &[Vec<f64>],
+    kmat_ab: &[Array2<Complex<f64>>],
+    kmat_bc: &[Array2<Complex<f64>>],
+    kmat_ac: &[Array2<Complex<f64>>],
+    vdiag_c: [f64; 3],
+    vdiag_a: [f64; 3],
+    vdiag_b: [f64; 3],
+    energy: f64,
+    n: usize,
+    nsta: usize,
+) -> f64 {
+    let (pts, bcs) = find_line_intersections(coords, energy_v, energy);
+    if pts.len() < 2 {
+        return 0.0;
+    }
+
+    // |∇E|
+    let (x0, y0) = (coords[[0, 0]], coords[[0, 1]]);
+    let (x1, y1) = (coords[[1, 0]], coords[[1, 1]]);
+    let (x2, y2) = (coords[[2, 0]], coords[[2, 1]]);
+    let det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if det.abs() < ENERGY_CUT_EPS {
+        return 0.0;
+    }
+    let de1 = energy_v[1] - energy_v[0];
+    let de2 = energy_v[2] - energy_v[0];
+    let grad_x = (de1 * (y2 - y0) - de2 * (y1 - y0)) / det;
+    let grad_y = ((x1 - x0) * de2 - (x2 - x0) * de1) / det;
+    let grad_norm = (grad_x * grad_x + grad_y * grad_y).sqrt();
+    if grad_norm < ENERGY_CUT_EPS {
+        return 0.0;
+    }
+
+    let mut best = (0usize, 1usize);
+    let mut best_l2 = -1.0;
+    for i in 0..pts.len() {
+        for j in i + 1..pts.len() {
+            let dx = pts[i][0] - pts[j][0];
+            let dy = pts[i][1] - pts[j][1];
+            let l2 = dx * dx + dy * dy;
+            if l2 > best_l2 {
+                best_l2 = l2;
+                best = (i, j);
+            }
+        }
+    }
+    if best_l2 <= ENERGY_CUT_EPS * ENERGY_CUT_EPS {
+        return 0.0;
+    }
+    let length = best_l2.sqrt();
+    let (lam0, lam1) = (bcs[best.0], bcs[best.1]);
+
+    const SQ3: f64 = 0.5773502691896257;
+    let t_vals = [0.5 * (1.0 - SQ3), 0.5 * (1.0 + SQ3)];
+
+    let mut amp_sum = 0.0;
+    for t in &t_vals {
+        let lam = [
+            (1.0 - t) * lam0[0] + t * lam1[0],
+            (1.0 - t) * lam0[1] + t * lam1[1],
+            (1.0 - t) * lam0[2] + t * lam1[2],
+        ];
+        let g_ab = eval_intrinsic_G_at_lam(n, bands, kmat_ab, &lam, nsta);
+        let g_bc = eval_intrinsic_G_at_lam(n, bands, kmat_bc, &lam, nsta);
+        let g_ac = eval_intrinsic_G_at_lam(n, bands, kmat_ac, &lam, nsta);
+        let va = lam[0] * vdiag_a[0] + lam[1] * vdiag_a[1] + lam[2] * vdiag_a[2];
+        let vb = lam[0] * vdiag_b[0] + lam[1] * vdiag_b[1] + lam[2] * vdiag_b[2];
+        let vc = lam[0] * vdiag_c[0] + lam[1] * vdiag_c[1] + lam[2] * vdiag_c[2];
+        let q = 2.0 * vc * g_ab - 0.5 * (va * g_bc + vb * g_ac);
+        amp_sum += q;
+    }
+    0.5 * length * amp_sum / grad_norm
+}
+
+fn accumulate_triangle_intrinsic_kquad(
+    sim: &TrackedSimplex,
+    mu: &Array1<f64>,
+    beta: f64,
+    acc: &mut Array1<f64>,
+) {
+    let area = triangle_area(&sim.coords);
+    if area < ENERGY_CUT_EPS {
+        return;
+    }
+    let volume_scale = sim.volume / area;
+    let nsta = sim.vertices[0].band.len();
+
+    let bands: Vec<Vec<f64>> = (0..3).map(|v| sim.vertices[v].band.to_vec()).collect();
+    let kmat_ab: Vec<Array2<Complex<f64>>> = (0..3).map(|v| sim.vertices[v].k_ab.clone()).collect();
+    let kmat_bc: Vec<Array2<Complex<f64>>> = (0..3)
+        .map(|v| {
+            sim.vertices[v]
+                .k_bc
+                .as_ref()
+                .expect("k_bc required for intrinsic")
+                .clone()
+        })
+        .collect();
+    let kmat_ac: Vec<Array2<Complex<f64>>> = (0..3)
+        .map(|v| {
+            sim.vertices[v]
+                .k_ac
+                .as_ref()
+                .expect("k_ac required for intrinsic")
+                .clone()
+        })
+        .collect();
+    let vdiag_c: Vec<Vec<f64>> = (0..3)
+        .map(|v| {
+            sim.vertices[v]
+                .vdiag
+                .as_ref()
+                .expect("vdiag required for intrinsic")
+                .to_vec()
+        })
+        .collect();
+    let vdiag_a: Vec<Vec<f64>> = (0..3)
+        .map(|v| {
+            sim.vertices[v]
+                .vdiag_a
+                .as_ref()
+                .expect("vdiag_a required for intrinsic")
+                .to_vec()
+        })
+        .collect();
+    let vdiag_b: Vec<Vec<f64>> = (0..3)
+        .map(|v| {
+            sim.vertices[v]
+                .vdiag_b
+                .as_ref()
+                .expect("vdiag_b required for intrinsic")
+                .to_vec()
+        })
+        .collect();
+
+    for n in 0..nsta {
+        let e_v = [
+            sim.vertices[0].band[n],
+            sim.vertices[1].band[n],
+            sim.vertices[2].band[n],
+        ];
+        let vc_v = [vdiag_c[0][n], vdiag_c[1][n], vdiag_c[2][n]];
+        let va_v = [vdiag_a[0][n], vdiag_a[1][n], vdiag_a[2][n]];
+        let vb_v = [vdiag_b[0][n], vdiag_b[1][n], vdiag_b[2][n]];
+
+        if beta == 0.0 {
+            for im in 0..mu.len() {
+                acc[im] += volume_scale
+                    * kquad_line_cut_intrinsic(
+                        &sim.coords,
+                        e_v,
+                        &bands,
+                        &kmat_ab,
+                        &kmat_bc,
+                        &kmat_ac,
+                        vc_v,
+                        va_v,
+                        vb_v,
+                        mu[im],
+                        n,
+                        nsta,
+                    );
+            }
+        } else {
+            let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
+            for im in 0..mu.len() {
+                let mut sum = 0.0;
+                for iq in 0..FERMI_X_STEPS {
+                    let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
+                    let energy = mu[im] + x / beta;
+                    let rho = kquad_line_cut_intrinsic(
+                        &sim.coords,
+                        e_v,
+                        &bands,
+                        &kmat_ab,
+                        &kmat_bc,
+                        &kmat_ac,
+                        vc_v,
+                        va_v,
+                        vb_v,
+                        energy,
+                        n,
+                        nsta,
+                    );
+                    sum += dx * fermi_window_x(x) * rho;
+                }
+                acc[im] += volume_scale * sum;
+            }
+        }
+    }
+}
+
+/// 2D intrinsic NLH via K‑quadrature energy‑cut.
+pub fn integrate_intrinsic_cut_2d(
+    all_pts: &[VertexKernel],
+    k_mesh: &Array1<usize>,
+    mu: &Array1<f64>,
+    T: f64,
+) -> Array1<f64> {
+    assert_eq!(k_mesh.len(), 2);
+    let (nx, ny) = (k_mesh[0], k_mesh[1]);
+    let inv_nx = 1.0 / nx as f64;
+    let inv_ny = 1.0 / ny as f64;
+    let beta = if T > 0.0 {
+        1.0 / (T * KB_EV_PER_K)
+    } else {
+        0.0
+    };
+    let n_mu = mu.len();
+    let mut acc = Array1::<f64>::zeros(n_mu);
+
+    for ix in 0..nx {
+        for iy in 0..ny {
+            let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+            for sim in &sims {
+                accumulate_triangle_intrinsic_kquad(sim, mu, beta, &mut acc);
+            }
+        }
+    }
+
+    acc
 }
 
 // ── Fermi‑window energy‑cut (AHC) ───────────────────────────────────────

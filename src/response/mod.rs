@@ -95,11 +95,11 @@ mod types;
 // Re‑export public types
 pub use energy_cut::{
     FermiCutCounts, integrate_dipole_energy_cut_2d, integrate_fermi_cut_2d, integrate_fermi_cut_3d,
-    read_reset_fermi_cut_counts, triangle_line_cut,
+    integrate_intrinsic_cut_2d, read_reset_fermi_cut_counts, triangle_line_cut,
 };
 pub use kernel::{
-    eval_berry_band_at_lam, eval_berry_kernel, eval_optical_kernel, fermi, fermi_deriv,
-    quadrature_berry_simplex, quadrature_optical_simplex,
+    eval_berry_band_at_lam, eval_berry_complex_at_lam, eval_berry_kernel, eval_intrinsic_G_at_lam,
+    eval_optical_kernel, fermi, fermi_deriv, quadrature_berry_simplex, quadrature_optical_simplex,
 };
 pub use optical::OpticalGeometry;
 pub use quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};

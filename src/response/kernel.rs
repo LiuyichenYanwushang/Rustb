@@ -137,6 +137,99 @@ pub fn eval_berry_band_at_lam(
     -2.0 * g_sum.im
 }
 
+/// Evaluate $G_n = \Sigma_{m\ne n} K_{nm} / (\Delta_{nm}^2 + \eta^2)$
+/// for a single band at barycentrics, returning `(metric_n, berry_n)`.
+/// Interpolates only $E_m$ and the $n$-th row of $K$.
+pub fn eval_berry_complex_at_lam(
+    n: usize,
+    bands: &[Vec<f64>],
+    kmats: &[Array2<Complex<f64>>],
+    lam: &[f64],
+    eta: f64,
+    nsta: usize,
+) -> (f64, f64) {
+    let mut e_q = vec![0.0; nsta];
+    for v in 0..bands.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            e_q[m] += bands[v][m] * lv;
+        }
+    }
+    let mut k_row = vec![Complex::new(0.0, 0.0); nsta];
+    for v in 0..kmats.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            k_row[m] += kmats[v][[n, m]] * lv;
+        }
+    }
+    let eta2 = eta * eta;
+    let mut g_sum = Complex::new(0.0, 0.0);
+    for m in 0..nsta {
+        if m == n {
+            continue;
+        }
+        let de = e_q[n] - e_q[m];
+        let denom = de * de + eta2;
+        if denom < 1e-30 {
+            continue;
+        }
+        g_sum += k_row[m] / denom;
+    }
+    (g_sum.re, -2.0 * g_sum.im)
+}
+
+/// Evaluate $G^{ij}_n = \operatorname{Re} \sum_{m\ne n} K_{nm} / (E_n-E_m)^3$
+/// for a single band at barycentrics (no $\eta$ regularization — used for
+/// intrinsic NLH).
+#[inline]
+pub fn eval_intrinsic_G_at_lam(
+    n: usize,
+    bands: &[Vec<f64>],
+    kmats: &[Array2<Complex<f64>>],
+    lam: &[f64],
+    nsta: usize,
+) -> f64 {
+    let mut e_q = vec![0.0; nsta];
+    for v in 0..bands.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            e_q[m] += bands[v][m] * lv;
+        }
+    }
+    let mut k_row = vec![Complex::new(0.0, 0.0); nsta];
+    for v in 0..kmats.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            k_row[m] += kmats[v][[n, m]] * lv;
+        }
+    }
+    let mut g_sum = 0.0f64;
+    for m in 0..nsta {
+        if m == n {
+            continue;
+        }
+        let de = e_q[n] - e_q[m];
+        let de3 = de * de * de;
+        if de3.abs() < 1e-30 {
+            continue;
+        }
+        g_sum += k_row[m].re / de3;
+    }
+    g_sum
+}
+
 // ── Optical kernel ──────────────────────────────────────────────────────
 
 /// Evaluate the optical conductivity kernel at one quadrature point.
