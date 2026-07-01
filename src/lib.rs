@@ -2133,7 +2133,49 @@ mod tests {
         }
     }
 
-    /// 8c. AHC energy-cut 3D smoke (altermagnet, Berry ≈ 0, sanity check).
+    /// 8c. Time-reversal check: σ(TR Haldane) = −σ(Haldane) for both direct and EC.
+    #[test]
+    fn hall_conductivity_ec_tr() {
+        let model = build_haldane_2d(-0.3);
+        let model_tr = build_haldane_2d(0.3); // t2 → −t2
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let eta = 0.05;
+        let mu = Array1::linspace(-3.0, 3.0, 101);
+        let kmesh = arr1(&[51, 51]);
+
+        let d_dir = model
+            .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, eta)
+            .unwrap();
+        let d_ec = model
+            .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
+            .unwrap();
+        let tr_dir = model_tr
+            .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, eta)
+            .unwrap();
+        let tr_ec = model_tr
+            .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
+            .unwrap();
+
+        // Check σ(Haldane) + σ(TR) ≈ 0 element-wise
+        let diff_dir: Vec<f64> = d_dir
+            .iter()
+            .zip(tr_dir.iter())
+            .map(|(&a, &b)| (a + b).abs())
+            .collect();
+        let diff_ec: Vec<f64> = d_ec
+            .iter()
+            .zip(tr_ec.iter())
+            .map(|(&a, &b)| (a + b).abs())
+            .collect();
+        let max_dir = diff_dir.iter().fold(0.0f64, |a: f64, &b| a.max(b));
+        let max_ec = diff_ec.iter().fold(0.0f64, |a: f64, &b| a.max(b));
+        println!("TR check: max|σ+σ_TR|  direct={max_dir:.3e}  EC={max_ec:.3e}");
+        assert!(max_dir < 1e-10, "direct sum fails TR: {max_dir:.3e}");
+        assert!(max_ec < 1e-10, "EC fails TR: {max_ec:.3e}");
+    }
+
+    /// 8d. AHC energy-cut 3D smoke (altermagnet, Berry ≈ 0, sanity check).
     #[test]
     fn hall_conductivity_ec_3d_smoke() {
         let model = build_h_wave_am_model();
