@@ -239,6 +239,10 @@ pub fn quadrature_dipole_simplex(
                 .unwrap_or_else(|| vec![0.0; nsta])
         })
         .collect();
+    // Note: vdiag is less linear than K_nm within each simplex, so the
+    // dipole quadrature has a higher noise floor than Berry curvature.
+    // This cannot be fixed by higher-order quadrature alone — it requires
+    // higher-order interpolation of vdiag or adaptive mesh refinement.
     let mut acc = Array1::<f64>::zeros(n_mu);
     if d == 2 {
         for iq in 0..3 {
