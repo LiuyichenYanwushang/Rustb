@@ -2227,6 +2227,33 @@ mod tests {
         assert!(max_abs < 1e-3, "Intrinsic EC mismatch: {max_abs:.3e}");
     }
 
+    /// 8c4. Intrinsic NLH TR check: σ_int is TR‑odd (Q → −Q).
+    #[test]
+    fn intrinsic_ec_tr() {
+        let model = build_haldane_2d(-0.3);
+        let model_tr = build_haldane_2d(0.3);
+        let dx = arr1(&[1.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0]);
+        let dc = arr1(&[1.0, 0.0]);
+        let eta = 0.1;
+        let mu = Array1::linspace(-3.0, 3.0, 61);
+        let kmesh = arr1(&[21, 21]);
+
+        let s_dir = model
+            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dc, &mu, 0.0, eta)
+            .unwrap();
+        let s_tr = model_tr
+            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dc, &mu, 0.0, eta)
+            .unwrap();
+        let max_sum = s_dir
+            .iter()
+            .zip(s_tr.iter())
+            .fold(0.0f64, |a: f64, (&x, &y)| a.max((x + y).abs()));
+        let max_s = s_dir.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
+        println!("Intrinsic TR: max|σ|={max_s:.3e}  max|σ+σ_TR|={max_sum:.3e}");
+        assert!(max_sum < 1e-3, "Intrinsic TR-odd broken: {max_sum:.3e}");
+    }
+
     /// 8d. AHC energy-cut 3D smoke (altermagnet, Berry ≈ 0, sanity check).
     #[test]
     fn hall_conductivity_ec_3d_smoke() {
