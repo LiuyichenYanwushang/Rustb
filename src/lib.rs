@@ -2132,4 +2132,27 @@ mod tests {
             assert!(max_abs < 3e-2);
         }
     }
+
+    /// 8c. AHC energy-cut 3D smoke test.
+    #[test]
+    fn hall_conductivity_ec_3d_smoke() {
+        let model = build_h_wave_am_model();
+        let dx = arr1(&[1.0, 0.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0, 0.0]);
+        let eta = 0.1;
+        let mu = Array1::linspace(-2.0, 2.0, 41);
+
+        for &nk in &[8, 10] {
+            let kmesh = arr1(&[nk, nk, nk]);
+            let direct = model
+                .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, eta)
+                .unwrap();
+            let ec = model
+                .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
+                .unwrap();
+            let max_abs = max_abs_diff_1d(&direct, &ec);
+            println!("3D nk={nk}  max_abs={max_abs:.3e}");
+            assert!(max_abs < 5e-2, "3D mismatch too large: {max_abs:.3e}");
+        }
+    }
 }

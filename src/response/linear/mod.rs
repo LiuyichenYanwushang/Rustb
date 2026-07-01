@@ -42,7 +42,7 @@ use crate::RMatrixData;
 use crate::SpinDirection;
 use crate::error::Result;
 
-use super::energy_cut::integrate_fermi_cut_2d;
+use super::energy_cut::{integrate_fermi_cut_2d, integrate_fermi_cut_3d};
 use super::kernel::quadrature_berry_simplex;
 use super::tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
 use super::traits::BerryCurvature;
@@ -302,15 +302,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(conductivity)
     }
 
-    /// Anomalous Hall conductivity via energy‑cut (2D only).
+    /// Anomalous Hall conductivity via energy‑cut (2D/3D).
     ///
-    /// Builds $\rho_\Omega(E)=\sum_n\int\Omega_n\delta(E_n-E)dk$ on an
-    /// energy grid, then integrates with the Fermi‑Dirac occupation:
+    /// At $T=0$ the occupation is a step function; inside each simplex
+    /// (triangle or tetrahedron) the linearly‑interpolated $\Omega_n(k)$
+    /// is integrated exactly over $\{k:E_n(k)\le\mu\}$.  No energy binning.
     ///
-    /// $$\sigma(\mu,T) = \int_{-\infty}^\infty f(E,\mu,T)\rho_\Omega(E)dE$$
+    /// At $T>0$ the $T=0$ result is thermally convolved:
     ///
-    /// This avoids k‑space sampling of the Fermi surface and works
-    /// well at low temperature unlike direct k‑point summation.
+    /// $$\sigma_T(\mu)=\int w(x)\,\sigma_0(\mu+x/\beta)\,dx,
+    /// \quad w(x)=e^x/(1+e^x)^2$$
     #[allow(non_snake_case)]
     pub fn Hall_conductivity_ec(
         &self,
@@ -321,7 +322,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         T: f64,
         eta: f64,
     ) -> Result<Array1<f64>> {
-        assert_eq!(k_mesh.len(), 2, "Hall_conductivity_ec currently 2D only");
+        assert!(
+            k_mesh.len() == 2 || k_mesh.len() == 3,
+            "Hall_conductivity_ec: only 2D/3D supported"
+        );
         let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
         let nk = kvec.nrows();
 
@@ -334,7 +338,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .collect();
         global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
 
-        let sigma = integrate_fermi_cut_2d(&all_pts, k_mesh, mu, T, eta);
+        let sigma = match k_mesh.len() {
+            2 => integrate_fermi_cut_2d(&all_pts, k_mesh, mu, T, eta),
+            3 => integrate_fermi_cut_3d(&all_pts, k_mesh, mu, T, eta),
+            _ => unreachable!(),
+        };
         let det = self.lat.det().unwrap();
         Ok(sigma / det)
     }

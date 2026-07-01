@@ -19,7 +19,7 @@ use ndarray::*;
 use rayon::prelude::*;
 
 use super::kernel::eval_berry_kernel;
-use super::tracking::build_triangles_2d_diagavg;
+use super::tracking::{build_tetrahedra_3d, build_triangles_2d_diagavg};
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, VertexKernel};
 
 const KB_EV_PER_K: f64 = 8.617333262e-5;
@@ -421,6 +421,256 @@ pub fn integrate_fermi_cut_2d(
     let mu_ext = Array1::linspace(mu_lo, mu_hi, n_ext);
 
     let sigma0 = integrate_fermi_cut_2d_t0(all_pts, k_mesh, &mu_ext, eta);
+
+    let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
+    let result: Vec<f64> = mu
+        .into_par_iter()
+        .map(|&m| {
+            let mut sum = 0.0;
+            for iq in 0..FERMI_X_STEPS {
+                let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
+                let w = fermi_window_x(x);
+                let e_target = m + x / beta;
+                let i_f = (e_target - mu_lo) / dmu_fine;
+                let i_lo = (i_f.floor() as isize).max(0) as usize;
+                let i_hi = (i_lo + 1).min(n_ext - 1);
+                if i_hi > i_lo {
+                    let t = i_f - i_lo as f64;
+                    let val = sigma0[i_lo] + t * (sigma0[i_hi] - sigma0[i_lo]);
+                    sum += dx * w * val;
+                }
+            }
+            sum
+        })
+        .collect();
+    Array1::from_vec(result)
+}
+
+// ── 3D tetrahedron occupancy cut ─────────────────────────────────────────
+
+#[inline]
+fn tet_vol_from_pts(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) -> f64 {
+    let (x0, y0, z0) = (p0[0], p0[1], p0[2]);
+    let (x1, y1, z1) = (p1[0], p1[1], p1[2]);
+    let (x2, y2, z2) = (p2[0], p2[1], p2[2]);
+    let (x3, y3, z3) = (p3[0], p3[1], p3[2]);
+    let det = (x1 - x0) * ((y2 - y0) * (z3 - z0) - (z2 - z0) * (y3 - y0))
+        - (y1 - y0) * ((x2 - x0) * (z3 - z0) - (z2 - z0) * (x3 - x0))
+        + (z1 - z0) * ((x2 - x0) * (y3 - y0) - (y2 - y0) * (x3 - x0));
+    det.abs() / 6.0
+}
+
+/// Exact integral of linearly interpolated $\Omega(k)$ over the occupied
+/// region $\{k \in \text{tetrahedron} : E(k) \le \mu\}$.
+///
+/// Five cases depending on how many vertices lie below $\mu$ (after sorting
+/// by energy).  The occupied polyhedron is decomposed into at most 3
+/// sub‑tetrahedra whose volume‑weighted average $\Omega$ is summed.
+///
+/// Returns the integral in the coordinate measure of `coords`.
+fn tetrahedron_occupied_integral(
+    coords: &Array2<f64>, // 4×3
+    energy_v: [f64; 4],
+    omega_v: [f64; 4],
+    mu: f64,
+) -> f64 {
+    let eps = ENERGY_CUT_EPS;
+    let full_vol = tet_vol_from_pts(
+        [coords[[0, 0]], coords[[0, 1]], coords[[0, 2]]],
+        [coords[[1, 0]], coords[[1, 1]], coords[[1, 2]]],
+        [coords[[2, 0]], coords[[2, 1]], coords[[2, 2]]],
+        [coords[[3, 0]], coords[[3, 1]], coords[[3, 2]]],
+    );
+    if full_vol < eps {
+        return 0.0;
+    }
+
+    let e_min = energy_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let e_max = energy_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+    if mu <= e_min + eps {
+        return 0.0;
+    }
+    if mu >= e_max - eps {
+        return full_vol * (omega_v[0] + omega_v[1] + omega_v[2] + omega_v[3]) / 4.0;
+    }
+
+    // Sort vertices by energy: e[a] ≤ e[b] ≤ e[c] ≤ e[d]
+    let mut idx: [usize; 4] = [0, 1, 2, 3];
+    idx.sort_by(|&i, &j| energy_v[i].partial_cmp(&energy_v[j]).unwrap());
+    let (a, b, c, d) = (idx[0], idx[1], idx[2], idx[3]);
+
+    let xyzi = |i: usize| -> [f64; 3] { [coords[[i, 0]], coords[[i, 1]], coords[[i, 2]]] };
+
+    // Intersection point + Ω on edge i→j at energy μ
+    let cut = |i: usize, j: usize| -> ([f64; 3], f64) {
+        let de = energy_v[j] - energy_v[i];
+        let t = if de.abs() < eps {
+            0.5
+        } else {
+            ((mu - energy_v[i]) / de).clamp(0.0, 1.0)
+        };
+        let x = coords[[i, 0]] + t * (coords[[j, 0]] - coords[[i, 0]]);
+        let y = coords[[i, 1]] + t * (coords[[j, 1]] - coords[[i, 1]]);
+        let z = coords[[i, 2]] + t * (coords[[j, 2]] - coords[[i, 2]]);
+        let omega = omega_v[i] + t * (omega_v[j] - omega_v[i]);
+        ([x, y, z], omega)
+    };
+
+    let tet_int = |v0: [f64; 3],
+                   v1: [f64; 3],
+                   v2: [f64; 3],
+                   v3: [f64; 3],
+                   o0: f64,
+                   o1: f64,
+                   o2: f64,
+                   o3: f64|
+     -> f64 { tet_vol_from_pts(v0, v1, v2, v3) * (o0 + o1 + o2 + o3) / 4.0 };
+
+    if mu <= energy_v[b] + eps {
+        // Case 3: 1 vertex below (a), 3 above (b,c,d)
+        // Occupied = sub‑tet (v_a, p_ab, p_ac, p_ad)
+        let (p_ab, o_ab) = cut(a, b);
+        let (p_ac, o_ac) = cut(a, c);
+        let (p_ad, o_ad) = cut(a, d);
+        tet_int(xyzi(a), p_ab, p_ac, p_ad, omega_v[a], o_ab, o_ac, o_ad)
+    } else if mu <= energy_v[c] + eps {
+        // Case 4: 2 below (a,b), 2 above (c,d)
+        // Decompose occupied polyhedron into 3 tets via diagonal p_ac → p_bd
+        let (p_ac, o_ac) = cut(a, c);
+        let (p_ad, o_ad) = cut(a, d);
+        let (p_bc, o_bc) = cut(b, c);
+        let (p_bd, o_bd) = cut(b, d);
+
+        let a_xyz = xyzi(a);
+        let b_xyz = xyzi(b);
+
+        tet_int(a_xyz, b_xyz, p_ac, p_bd, omega_v[a], omega_v[b], o_ac, o_bd)
+            + tet_int(a_xyz, p_ac, p_ad, p_bd, omega_v[a], o_ac, o_ad, o_bd)
+            + tet_int(b_xyz, p_bc, p_bd, p_ac, omega_v[b], o_bc, o_bd, o_ac)
+    } else {
+        // Case 5: 3 below (a,b,c), 1 above (d)
+        // Occupied = full tet − sub‑tet (v_d, p_ad, p_bd, p_cd)
+        let (p_ad, o_ad) = cut(a, d);
+        let (p_bd, o_bd) = cut(b, d);
+        let (p_cd, o_cd) = cut(c, d);
+
+        let full = full_vol * (omega_v[0] + omega_v[1] + omega_v[2] + omega_v[3]) / 4.0;
+        let sub = tet_int(xyzi(d), p_ad, p_bd, p_cd, omega_v[d], o_ad, o_bd, o_cd);
+        full - sub
+    }
+}
+
+/// T=0 3D occupancy‑cut integration.
+fn integrate_fermi_cut_3d_t0(
+    all_pts: &[VertexKernel],
+    k_mesh: &Array1<usize>,
+    mu: &Array1<f64>,
+    eta: f64,
+) -> Array1<f64> {
+    let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+    let inv_nx = 1.0 / nx as f64;
+    let inv_ny = 1.0 / ny as f64;
+    let inv_nz = 1.0 / nz as f64;
+    let n_mu = mu.len();
+    let mut result = Array1::<f64>::zeros(n_mu);
+
+    for ix in 0..nx {
+        for iy in 0..ny {
+            for iz in 0..nz {
+                let sims =
+                    build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts);
+                for sim in &sims {
+                    let vol = tet_vol_from_pts(
+                        [sim.coords[[0, 0]], sim.coords[[0, 1]], sim.coords[[0, 2]]],
+                        [sim.coords[[1, 0]], sim.coords[[1, 1]], sim.coords[[1, 2]]],
+                        [sim.coords[[2, 0]], sim.coords[[2, 1]], sim.coords[[2, 2]]],
+                        [sim.coords[[3, 0]], sim.coords[[3, 1]], sim.coords[[3, 2]]],
+                    );
+                    if vol < ENERGY_CUT_EPS {
+                        continue;
+                    }
+                    let volume_scale = sim.volume / vol;
+                    let nsta = sim.vertices[0].band.len();
+
+                    let (_g0, o0) = eval_berry_kernel(
+                        &sim.vertices[0].band.to_vec(),
+                        &sim.vertices[0].k_ab,
+                        eta,
+                        nsta,
+                    );
+                    let (_g1, o1) = eval_berry_kernel(
+                        &sim.vertices[1].band.to_vec(),
+                        &sim.vertices[1].k_ab,
+                        eta,
+                        nsta,
+                    );
+                    let (_g2, o2) = eval_berry_kernel(
+                        &sim.vertices[2].band.to_vec(),
+                        &sim.vertices[2].k_ab,
+                        eta,
+                        nsta,
+                    );
+                    let (_g3, o3) = eval_berry_kernel(
+                        &sim.vertices[3].band.to_vec(),
+                        &sim.vertices[3].k_ab,
+                        eta,
+                        nsta,
+                    );
+
+                    for n in 0..nsta {
+                        let e_v = [
+                            sim.vertices[0].band[n],
+                            sim.vertices[1].band[n],
+                            sim.vertices[2].band[n],
+                            sim.vertices[3].band[n],
+                        ];
+                        let omega_v = [o0[n], o1[n], o2[n], o3[n]];
+
+                        for im in 0..n_mu {
+                            result[im] += volume_scale
+                                * tetrahedron_occupied_integral(&sim.coords, e_v, omega_v, mu[im]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// 3D Fermi‑window integration via per‑μ tetrahedron occupancy cut.
+///
+/// Same algorithm as [`integrate_fermi_cut_2d`] but for tetrahedra.
+/// At $T=0$ each tetrahedron's linearly‑interpolated $E(k)$ and $\Omega(k)$
+/// are integrated exactly over the occupied sub‑region; $T>0$ uses
+/// thermal convolution of the $T=0$ result.
+pub fn integrate_fermi_cut_3d(
+    all_pts: &[VertexKernel],
+    k_mesh: &Array1<usize>,
+    mu: &Array1<f64>,
+    T: f64,
+    eta: f64,
+) -> Array1<f64> {
+    assert_eq!(k_mesh.len(), 3);
+
+    if T == 0.0 {
+        return integrate_fermi_cut_3d_t0(all_pts, k_mesh, mu, eta);
+    }
+
+    // T>0: thermal convolution
+    let beta = 1.0 / (T * KB_EV_PER_K);
+    let x_max = 12.0;
+    let mu_min = mu.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let mu_max = mu.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let mu_lo = mu_min - x_max / beta;
+    let mu_hi = mu_max + x_max / beta;
+    let dmu_fine = 0.1 / beta;
+    let n_ext = ((mu_hi - mu_lo) / dmu_fine).ceil() as usize + 1;
+    let mu_ext = Array1::linspace(mu_lo, mu_hi, n_ext);
+
+    let sigma0 = integrate_fermi_cut_3d_t0(all_pts, k_mesh, &mu_ext, eta);
 
     let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
     let result: Vec<f64> = mu
