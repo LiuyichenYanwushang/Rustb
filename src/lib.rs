@@ -2456,9 +2456,9 @@ mod tests {
             .fold(0.0f64, |a: f64, (&x, &y)| a.max((x + y).abs()));
         let max_p = ec_p.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
         println!("3D Intrinsic sign flip: max|σ|={max_p:.3e}  max|σ(λ)+σ(−λ)|={max_sum:.3e}");
-        // nk=8 is coarse; K-quad surface integral error ~50% relative
-        // at this mesh.  P-oddness holds to O(1e-4) absolute.
-        assert!(max_sum < 2e-4, "3D P-odd broken: {max_sum:.3e}");
+        // Diagonal-averaged tetrahedralization restores k→−k cancellation
+        // to machine precision, matching 2D diagavg result.
+        assert!(max_sum < 1e-10, "3D P-odd broken: {max_sum:.3e}");
     }
 
     /// 8c9. 3D intrinsic EC convergence: peak |σ| vs nk at T=100K.

@@ -13,6 +13,14 @@ const CUBE_TETS: [[usize; 4]; 5] = [
     [6, 2, 4, 7],
     [1, 2, 4, 7],
 ];
+/// Opposite body diagonal [0,3,5,6]; used for diagonal averaging.
+const CUBE_TETS_ALT: [[usize; 4]; 5] = [
+    [1, 0, 3, 5],
+    [2, 0, 3, 6],
+    [4, 0, 5, 6],
+    [7, 3, 5, 6],
+    [0, 3, 5, 6],
+];
 const TET_VOL_FACTOR: [f64; 5] = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0];
 
 pub fn build_overlap_matrix(
@@ -464,5 +472,101 @@ pub fn build_tetrahedra_3d(
             diag,
         });
     }
+    out
+}
+
+/// Helper: build one set of 5 tetrahedra from the given decomposition table,
+/// scaling each tet volume by `scale`.
+fn build_one_tet_decomp(
+    tet_table: &[[usize; 4]; 5],
+    c: &[usize; 8],
+    corners_frac: &[[f64; 3]; 8],
+    cube_vol: f64,
+    scale: f64,
+    all_pts: &[VertexKernel],
+) -> Vec<TrackedSimplex> {
+    let mut out = Vec::with_capacity(5);
+    for (teti, &[v0, v1, v2, v3]) in tet_table.iter().enumerate() {
+        let raw = vec![
+            all_pts[c[v0]].clone(),
+            all_pts[c[v1]].clone(),
+            all_pts[c[v2]].clone(),
+            all_pts[c[v3]].clone(),
+        ];
+        let (aligned, diag) = track_simplex_vertices(&raw);
+        let coords = Array2::from_shape_vec((4, 3), {
+            let c0 = corners_frac[v0];
+            let c1 = corners_frac[v1];
+            let c2 = corners_frac[v2];
+            let c3 = corners_frac[v3];
+            vec![
+                c0[0], c0[1], c0[2], c1[0], c1[1], c1[2], c2[0], c2[1], c2[2], c3[0], c3[1], c3[2],
+            ]
+        })
+        .unwrap();
+        out.push(TrackedSimplex {
+            vertices: aligned,
+            volume: cube_vol * TET_VOL_FACTOR[teti] * scale,
+            coords,
+            diag,
+        });
+    }
+    out
+}
+
+/// Diagonal‑averaged 3D tetrahedralization (10 tets per cell).
+pub fn build_tetrahedra_3d_diagavg(
+    ix: usize,
+    iy: usize,
+    iz: usize,
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    inv_nx: f64,
+    inv_ny: f64,
+    inv_nz: f64,
+    all_pts: &[VertexKernel],
+) -> Vec<TrackedSimplex> {
+    let ixp = (ix + 1) % nx;
+    let iyp = (iy + 1) % ny;
+    let izp = (iz + 1) % nz;
+    let idx3 = |x: usize, y: usize, z: usize| x * ny * nz + y * nz + z;
+    let c = [
+        idx3(ix, iy, iz),
+        idx3(ixp, iy, iz),
+        idx3(ix, iyp, iz),
+        idx3(ixp, iyp, iz),
+        idx3(ix, iy, izp),
+        idx3(ixp, iy, izp),
+        idx3(ix, iyp, izp),
+        idx3(ixp, iyp, izp),
+    ];
+    let frac = |ixv: usize, iyv: usize, izv: usize| -> [f64; 3] {
+        [
+            ixv as f64 * inv_nx,
+            iyv as f64 * inv_ny,
+            izv as f64 * inv_nz,
+        ]
+    };
+    let corners_frac: [[f64; 3]; 8] = [
+        frac(ix, iy, iz),
+        frac(ix + 1, iy, iz),
+        frac(ix, iy + 1, iz),
+        frac(ix + 1, iy + 1, iz),
+        frac(ix, iy, iz + 1),
+        frac(ix + 1, iy, iz + 1),
+        frac(ix, iy + 1, iz + 1),
+        frac(ix + 1, iy + 1, iz + 1),
+    ];
+    let cube_vol = inv_nx * inv_ny * inv_nz;
+    let mut out = build_one_tet_decomp(&CUBE_TETS, &c, &corners_frac, cube_vol, 0.5, all_pts);
+    out.extend(build_one_tet_decomp(
+        &CUBE_TETS_ALT,
+        &c,
+        &corners_frac,
+        cube_vol,
+        0.5,
+        all_pts,
+    ));
     out
 }

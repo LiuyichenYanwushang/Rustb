@@ -21,7 +21,9 @@ use rayon::prelude::*;
 
 use super::kernel::{eval_berry_band_at_lam, eval_berry_complex_at_lam, eval_berry_kernel};
 use super::quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
-use super::tracking::{build_tetrahedra_3d, build_triangles_2d_diagavg};
+use super::tracking::{
+    build_tetrahedra_3d, build_tetrahedra_3d_diagavg, build_triangles_2d_diagavg,
+};
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, VertexKernel};
 
 const KB_EV_PER_K: f64 = 8.617333262e-5;
@@ -959,8 +961,9 @@ pub fn integrate_intrinsic_cut_3d(
     for ix in 0..nx {
         for iy in 0..ny {
             for iz in 0..nz {
-                let sims =
-                    build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts);
+                let sims = build_tetrahedra_3d_diagavg(
+                    ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
+                );
                 for sim in &sims {
                     accumulate_tetrahedron_intrinsic_kquad(sim, mu, beta, &mut acc);
                 }
