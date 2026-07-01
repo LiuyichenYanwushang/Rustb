@@ -555,9 +555,23 @@ fn accumulate_triangle_intrinsic_kquad(
         let vc_v = [vdiag_c[0][n], vdiag_c[1][n], vdiag_c[2][n]];
         let va_v = [vdiag_a[0][n], vdiag_a[1][n], vdiag_a[2][n]];
         let vb_v = [vdiag_b[0][n], vdiag_b[1][n], vdiag_b[2][n]];
+        let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+        let mu_slice = mu.as_slice().unwrap();
+        let (i_start, i_end) = if beta == 0.0 {
+            let s = mu_slice.partition_point(|&x| x < e_min - ENERGY_CUT_EPS);
+            let e = mu_slice.partition_point(|&x| x <= e_max + ENERGY_CUT_EPS);
+            (s, e)
+        } else {
+            let window = FERMI_X_CUT / beta;
+            let s = mu_slice.partition_point(|&x| x < e_min - window - ENERGY_CUT_EPS);
+            let e = mu_slice.partition_point(|&x| x <= e_max + window + ENERGY_CUT_EPS);
+            (s, e)
+        };
 
         if beta == 0.0 {
-            for im in 0..mu.len() {
+            for im in i_start..i_end {
                 acc[im] += volume_scale
                     * kquad_line_cut_intrinsic(
                         &sim.coords,
@@ -576,7 +590,7 @@ fn accumulate_triangle_intrinsic_kquad(
             }
         } else {
             let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
-            for im in 0..mu.len() {
+            for im in i_start..i_end {
                 let mut sum = 0.0;
                 for iq in 0..FERMI_X_STEPS {
                     let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
@@ -918,9 +932,23 @@ fn accumulate_tetrahedron_intrinsic_kquad(
         let vc_v = [vdiag_c[0][n], vdiag_c[1][n], vdiag_c[2][n], vdiag_c[3][n]];
         let va_v = [vdiag_a[0][n], vdiag_a[1][n], vdiag_a[2][n], vdiag_a[3][n]];
         let vb_v = [vdiag_b[0][n], vdiag_b[1][n], vdiag_b[2][n], vdiag_b[3][n]];
+        let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+        let mu_slice = mu.as_slice().unwrap();
+        let (i_start, i_end) = if beta == 0.0 {
+            let s = mu_slice.partition_point(|&x| x < e_min - ENERGY_CUT_EPS);
+            let e = mu_slice.partition_point(|&x| x <= e_max + ENERGY_CUT_EPS);
+            (s, e)
+        } else {
+            let window = FERMI_X_CUT / beta;
+            let s = mu_slice.partition_point(|&x| x < e_min - window - ENERGY_CUT_EPS);
+            let e = mu_slice.partition_point(|&x| x <= e_max + window + ENERGY_CUT_EPS);
+            (s, e)
+        };
 
         if beta == 0.0 {
-            for im in 0..n_mu {
+            for im in i_start..i_end {
                 acc[im] += volume_scale
                     * kquad_surface_cut_intrinsic(
                         &sim.coords,
@@ -939,7 +967,7 @@ fn accumulate_tetrahedron_intrinsic_kquad(
             }
         } else {
             let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
-            for im in 0..n_mu {
+            for im in i_start..i_end {
                 let mut sum = 0.0;
                 for iq in 0..FERMI_X_STEPS {
                     let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
