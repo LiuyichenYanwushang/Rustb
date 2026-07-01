@@ -275,8 +275,8 @@ src/response/
 ├── types.rs        — VertexKernel, TrackedSimplex, SimplexDiagnostics
 ├── quadrature.rs   — 2D/3D symmetric quadrature rules, barycentric interp
 ├── tracking.rs     — band tracking (overlap → greedy → permute) + simplex builders
-├── kernel.rs       — eval_berry_kernel, eval_optical_kernel, quadrature helpers
-├── energy_cut.rs   — 2D analytic energy‑cut integration (Berry dipole + AHC Fermi‑window)
+├── kernel.rs       — eval_berry_kernel, eval_berry_band_at_lam, eval_optical_kernel, quadrature helpers
+├── energy_cut.rs   — 2D/3D analytic energy‑cut (dipole + AHC), hybrid vertex‑Ω / K‑quad
 ├── primitives.rs   — Model::compute_velocity_kernel (band‑basis velocities)
 ├── linear/         — Berry curvature + quantum metric → berry_curvature_simplex
 ├── nonlinear/      — Berry dipole + intrinsic/extrinsic NLH
@@ -291,9 +291,14 @@ let (metric, berry, unsafe_count) = model.berry_curvature_simplex(
     &arr1(&[50, 50]), &dx, &dy, 0.05,
 )?;
 
-// Berry curvature dipole (2D/3D, analytic energy-cut)
+// Berry curvature dipole (2D only, analytic energy-cut)
 let (dipole, _) = model.berry_curvature_dipole_energy_cut(
     &arr1(&[30, 30]), &dx, &dy, &dx, &mu, 10.0, 0.05,
+)?;
+
+// AHC via hybrid energy-cut (2D or 3D)
+let sigma_ec = model.Hall_conductivity_ec(
+    &arr1(&[30, 30]), &dx, &dy, &mu, 0.0, 0.05,
 )?;
 
 // Optical conductivity
@@ -310,7 +315,7 @@ let sigma = model.optical_conductivity_simplex(
 |--------|---------|-------------|
 | `model.berry_curvature_simplex(k_mesh, dir_a, dir_b, eta)` | `(g, Ω, unsafe)` | Berry curvature + quantum metric in Cartesian volume |
 | `model.berry_curvature_dipole_energy_cut(k_mesh, dir_a, dir_b, dir_c, mu, T, eta)` | `(D(μ), unsafe)` | Berry dipole D^{ab;c}(μ,T), 2D analytic energy‑cut |
-| `model.Hall_conductivity_ec(k_mesh, dir_a, dir_b, mu, T, eta)` | `σ(μ)` | AHC via 2D Fermi‑window energy‑cut |
+| `model.Hall_conductivity_ec(k_mesh, dir_a, dir_b, mu, T, eta)` | `σ(μ)` | AHC via hybrid energy‑cut (2D/3D) |
 | `model.optical_conductivity_simplex(k_mesh, dir_a, dir_b, ω, η, μ, T)` | `σ(ω)` | Complex optical conductivity |
 | `model.compute_velocity_kernel(k_vec, dir_a, dir_b, dir_c?, gauge, spin)` | `VertexKernel` | Per‑k‑point band‑basis velocity primitives |
 
@@ -320,12 +325,15 @@ let sigma = model.optical_conductivity_simplex(
 |----------|--------|-------------|
 | `linear::integrate(all_pts, k_mesh, eta)` | `response::linear` | BZ integral of Berry + metric (fractional coords) |
 | `integrate_dipole_energy_cut_2d(all_pts, k_mesh, mu, T, eta)` | `response` | 2D dipole via analytic line cuts |
-| `integrate_fermi_cut_2d(all_pts, k_mesh, mu, T, eta, n_bins)` | `response` | AHC via 2D Fermi‑window energy‑cut |
+| `integrate_fermi_cut_2d(all_pts, k_mesh, mu, T, eta)` | `response` | 2D AHC via hybrid energy‑cut |
+| `integrate_fermi_cut_3d(all_pts, k_mesh, mu, T, eta)` | `response` | 3D AHC via hybrid energy‑cut |
 | `optical::integrate(all_pts, k_mesh, ω, η, μ, T)` | `response::optical` | Optical conductivity (fractional coords) |
 | `build_triangles_2d(ix, iy, nx, ny, inv_nx, inv_ny, all_pts)` | `response` | Build tracked 2D triangles for one cell |
 | `build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, ...)` | `response` | Build tracked 3D tetrahedra for one cell |
 | `eval_berry_kernel(band_q, k_ab_q, eta, nsta)` | `response` | Evaluate `(g_n, Ω_n)` at one quadrature point |
+| `eval_berry_band_at_lam(n, bands, kmats, lam, eta, nsta)` | `response` | Evaluate `Ω_n` for a single band |
 | `eval_optical_kernel(band_q, k_ab_q, ω, η, μ, β, nsta)` | `response` | Evaluate `σ_nm` at one quadrature point |
+| `read_reset_fermi_cut_counts()` | `response` | Read & reset hybrid path counters (debug) |
 
 **Data types**
 
@@ -334,6 +342,7 @@ let sigma = model.optical_conductivity_simplex(
 | `VertexKernel` | `band`, `k_ab`, `k_bc: Option<_>`, `k_ac: Option<_>`, `vdiag: Option<_>`, `vdiag_a: Option<_>`, `vdiag_b: Option<_>`, `evec` |
 | `TrackedSimplex` | `vertices: Vec<VertexKernel>`, `volume: f64`, `coords: Array2<f64>`, `diag: SimplexDiagnostics` |
 | `SimplexDiagnostics` | `min_gap: f64`, `min_assignment_overlap: f64`, `tracking_conflict: bool` |
+| `FermiCutCounts` | `empty: usize`, `full: usize`, `partial: usize` (debug counters) |
 
 ### API changes (v0.8 → post‑tetra)
 
@@ -370,16 +379,30 @@ let sigma = model.optical_conductivity_simplex(
 |-----|-------------|
 | `berry_curvature_simplex()` | Berry + metric via simplex quadrature (Cartesian) |
 | `berry_curvature_dipole_energy_cut()` | Berry dipole via analytic energy‑cut (2D only) |
-| `Hall_conductivity_ec()` | AHC via Fermi‑window energy‑cut (2D only) |
+| `Hall_conductivity_ec()` | AHC via hybrid energy‑cut (2D/3D, vertex‑Ω full + K‑quad partial) |
+| `eval_berry_band_at_lam()` | Single‑band Berry kernel at barycentric coords |
+| `FermiCutCounts` / `read_reset_fermi_cut_counts()` | Diagnostic counters for hybrid fast‑path ratio |
 | `optical_conductivity_simplex()` | Optical σ(ω) via simplex quadrature (Cartesian) |
 | `compute_velocity_kernel()` | Per‑k‑point band‑basis velocity primitives |
 | `response::*` module | Public low‑level simplex integration primitives |
+
+### Energy‑cut design (hybrid)
+
+The AHC energy‑cut uses a hybrid strategy per simplex:
+
+| Occupancy | Method | Cost |
+|-----------|--------|------|
+| Fully occupied | Vertex‑average Ω (preserves gap quantization) | O(1) |
+| Fully empty | Skip | O(1) |
+| Partially occupied | K‑quadrature on clipped polygon (preserves 1/Δ²) | O(N_quad) |
+
+3D uses a sorted‑μ sweep: binary search finds empty/partial/full μ ranges,
+eliminating the per‑μ conditional for >80% of (tet, band, μ) combinations.
 
 ### Known limitations
 
 - **Energy-cut dipole is 2D only** — 3D tetrahedral cut integration is future work
 - **Intrinsic NLH tetra path removed** — `Nonlinear_Hall_conductivity_Intrinsic_tetra` deleted
-- **Volume-quadrature dipole is noisy at low T** — use `berry_curvature_dipole_energy_cut` for 2D low-temperature Fermi-window integrals
 - **No band tracking in intrinsic NLH** path (not yet ported to simplex)
 
 ## Performance Notes
