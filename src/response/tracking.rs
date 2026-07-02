@@ -812,7 +812,6 @@ pub fn build_tetrahedra_3d_diagavg_ref<'a>(
         frac(ix + 1, iy + 1, iz + 1),
     ];
     let cube_vol = inv_nx * inv_ny * inv_nz;
-    let half_vol = cube_vol * 0.5;
 
     let min_gap_of = |vs: &[&VertexKernel]| -> f64 {
         vs.iter().fold(f64::INFINITY, |mg, v| {
@@ -822,22 +821,6 @@ pub fn build_tetrahedra_3d_diagavg_ref<'a>(
                 .fold(mg, f64::min)
         })
     };
-
-    let mk_tet =
-        |v0: usize, v1: usize, v2: usize, v3: usize, vol: f64| -> TrackedSimplexRef<'a, 4> {
-            let vs = [&all_pts[v0], &all_pts[v1], &all_pts[v2], &all_pts[v3]];
-            let mg = min_gap_of(&vs);
-            TrackedSimplexRef {
-                vertices: vs,
-                coords: [corners[v0], corners[v1], corners[v2], corners[v3]],
-                volume: vol,
-                diag: SimplexDiagnostics {
-                    min_gap: mg,
-                    min_assignment_overlap: 1.0,
-                    tracking_conflict: false,
-                },
-            }
-        };
 
     let make_tet = |local_v: &[usize; 4], vol: f64| -> TrackedSimplexRef<'a, 4> {
         let &[lv0, lv1, lv2, lv3] = local_v;

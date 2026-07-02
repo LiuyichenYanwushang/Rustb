@@ -488,6 +488,8 @@ fn accumulate_triangle_dipole_kquad_ref(
 /// each triangle.  $K^{ab}_{nm}$, $E_m$, and $v^c_n$ are barycentrically
 /// interpolated at each quadrature point so the $1/\Delta^2$ structure is
 /// preserved.
+/// `all_pts` must have been band‑tracked via [`global_band_track`].
+/// The public `Model`‑level methods handle this automatically.
 pub fn integrate_dipole_energy_cut_2d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
@@ -943,6 +945,8 @@ fn accumulate_triangle_intrinsic_kquad_ref(
 }
 
 /// 2D intrinsic NLH via K‑quadrature energy‑cut.
+/// `all_pts` must have been band‑tracked via [`global_band_track`].
+/// The public `Model`‑level methods handle this automatically.
 pub fn integrate_intrinsic_cut_2d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
@@ -1458,6 +1462,8 @@ fn accumulate_tetrahedron_intrinsic_kquad_ref(
 }
 
 /// 3D intrinsic NLH via K‑quadrature surface energy‑cut.
+/// `all_pts` must have been band‑tracked via [`global_band_track`].
+/// The public `Model`‑level methods handle this automatically.
 pub fn integrate_intrinsic_cut_3d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
@@ -1761,6 +1767,8 @@ fn integrate_fermi_cut_2d_t0(
 ///
 /// Returns $\sigma(\mu_i)$ for each $\mu$ in `mu` (fractional BZ volume;
 /// divide by $\det(L)$ for Cartesian).
+/// `all_pts` must have been band‑tracked via [`global_band_track`].
+/// The public `Model`‑level methods handle this automatically.
 pub fn integrate_fermi_cut_2d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
@@ -2200,6 +2208,8 @@ fn integrate_fermi_cut_3d_t0(
 /// At $T=0$ each tetrahedron's linearly‑interpolated $E(k)$ and $\Omega(k)$
 /// are integrated exactly over the occupied sub‑region; $T>0$ uses
 /// thermal convolution of the $T=0$ result.
+/// `all_pts` must have been band‑tracked via [`global_band_track`].
+/// The public `Model`‑level methods handle this automatically.
 pub fn integrate_fermi_cut_3d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
