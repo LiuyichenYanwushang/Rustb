@@ -495,7 +495,13 @@ fn bench_intrinsic_ec_2d(c: &mut Criterion) {
                 let r = black_box(
                     model
                         .Nonlinear_Hall_conductivity_Intrinsic_ec(
-                            black_box(&kmesh), &dx, &dy, &dx, black_box(&mu), 0.0, eta,
+                            black_box(&kmesh),
+                            &dx,
+                            &dy,
+                            &dx,
+                            black_box(&mu),
+                            0.0,
+                            eta,
                         )
                         .unwrap(),
                 );

@@ -2689,7 +2689,10 @@ mod tests {
             let peak = up.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
             println!(
                 "{:<8}{:<14.4e}{:<14.4e}{:<14.4e}",
-                nk, peak, max_sum, max_sum / peak.max(1e-30)
+                nk,
+                peak,
+                max_sum,
+                max_sum / peak.max(1e-30)
             );
         }
         // At nk=20 signal should be nonzero and sum should converge

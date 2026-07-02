@@ -38,9 +38,7 @@ use ndarray::*;
 use num_complex::Complex;
 use rayon::prelude::*;
 
-use super::kernel::{
-    eval_berry_band_at_lam_buf, eval_berry_complex_at_lam_buf, eval_berry_kernel,
-};
+use super::kernel::{eval_berry_band_at_lam_buf, eval_berry_complex_at_lam_buf, eval_berry_kernel};
 use super::quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
 use super::tracking::{
     build_tetrahedra_3d, build_tetrahedra_3d_diagavg, build_triangles_2d_diagavg,
@@ -288,7 +286,8 @@ fn kquad_line_cut_dipole(
             (1.0 - t) * lam0[1] + t * lam1[1],
             (1.0 - t) * lam0[2] + t * lam1[2],
         ];
-        let (_metric, berry) = eval_berry_complex_at_lam_buf(n, bands, kmats, &lam, eta, nsta, e_buf, k_buf);
+        let (_metric, berry) =
+            eval_berry_complex_at_lam_buf(n, bands, kmats, &lam, eta, nsta, e_buf, k_buf);
         let vc = lam[0] * vdiag_v[0] + lam[1] * vdiag_v[1] + lam[2] * vdiag_v[2];
         amp_sum += vc * berry;
     }
@@ -315,12 +314,28 @@ fn accumulate_triangle_dipole_kquad(
     let v0 = &sim.vertices[0];
     let v1 = &sim.vertices[1];
     let v2 = &sim.vertices[2];
-    let bands: [&[f64]; 3] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap()];
+    let bands: [&[f64]; 3] = [
+        v0.band.as_slice().unwrap(),
+        v1.band.as_slice().unwrap(),
+        v2.band.as_slice().unwrap(),
+    ];
     let kmats: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
     let vdiags: [&[f64]; 3] = [
-        v0.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
-        v1.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
-        v2.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
+        v0.vdiag
+            .as_ref()
+            .expect("vdiag required")
+            .as_slice()
+            .unwrap(),
+        v1.vdiag
+            .as_ref()
+            .expect("vdiag required")
+            .as_slice()
+            .unwrap(),
+        v2.vdiag
+            .as_ref()
+            .expect("vdiag required")
+            .as_slice()
+            .unwrap(),
     ];
     let mut e_buf = vec![0.0f64; nsta];
     let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
@@ -391,7 +406,7 @@ pub fn integrate_dipole_energy_cut_2d(
     T: f64,
     eta: f64,
 ) -> (Array1<f64>, usize) {
-    debug_assert!(
+    assert!(
         mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
         "mu must be sorted ascending"
     );
@@ -428,7 +443,10 @@ pub fn integrate_dipole_energy_cut_2d(
         )
         .reduce(
             || (Array1::zeros(n_mu), 0),
-            |(a1, u1), (a2, u2)| (a1 + a2, u1 + u2),
+            |(mut a1, u1), (a2, u2)| {
+                a1 += &a2;
+                (a1, u1 + u2)
+            },
         );
 
     (acc, unsafe_count)
@@ -536,7 +554,11 @@ fn accumulate_triangle_intrinsic_kquad(
     let v0 = &sim.vertices[0];
     let v1 = &sim.vertices[1];
     let v2 = &sim.vertices[2];
-    let bands: [&[f64]; 3] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap()];
+    let bands: [&[f64]; 3] = [
+        v0.band.as_slice().unwrap(),
+        v1.band.as_slice().unwrap(),
+        v2.band.as_slice().unwrap(),
+    ];
     let kmat_ab: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
     let kmat_bc: [&Array2<Complex<f64>>; 3] = [
         v0.k_bc.as_ref().expect("k_bc required"),
@@ -549,19 +571,55 @@ fn accumulate_triangle_intrinsic_kquad(
         v2.k_ac.as_ref().expect("k_ac required"),
     ];
     let vdiag_c: [&[f64]; 3] = [
-        v0.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
-        v1.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
-        v2.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
+        v0.vdiag
+            .as_ref()
+            .expect("vdiag required")
+            .as_slice()
+            .unwrap(),
+        v1.vdiag
+            .as_ref()
+            .expect("vdiag required")
+            .as_slice()
+            .unwrap(),
+        v2.vdiag
+            .as_ref()
+            .expect("vdiag required")
+            .as_slice()
+            .unwrap(),
     ];
     let vdiag_a: [&[f64]; 3] = [
-        v0.vdiag_a.as_ref().expect("vdiag_a required").as_slice().unwrap(),
-        v1.vdiag_a.as_ref().expect("vdiag_a required").as_slice().unwrap(),
-        v2.vdiag_a.as_ref().expect("vdiag_a required").as_slice().unwrap(),
+        v0.vdiag_a
+            .as_ref()
+            .expect("vdiag_a required")
+            .as_slice()
+            .unwrap(),
+        v1.vdiag_a
+            .as_ref()
+            .expect("vdiag_a required")
+            .as_slice()
+            .unwrap(),
+        v2.vdiag_a
+            .as_ref()
+            .expect("vdiag_a required")
+            .as_slice()
+            .unwrap(),
     ];
     let vdiag_b: [&[f64]; 3] = [
-        v0.vdiag_b.as_ref().expect("vdiag_b required").as_slice().unwrap(),
-        v1.vdiag_b.as_ref().expect("vdiag_b required").as_slice().unwrap(),
-        v2.vdiag_b.as_ref().expect("vdiag_b required").as_slice().unwrap(),
+        v0.vdiag_b
+            .as_ref()
+            .expect("vdiag_b required")
+            .as_slice()
+            .unwrap(),
+        v1.vdiag_b
+            .as_ref()
+            .expect("vdiag_b required")
+            .as_slice()
+            .unwrap(),
+        v2.vdiag_b
+            .as_ref()
+            .expect("vdiag_b required")
+            .as_slice()
+            .unwrap(),
     ];
 
     let mut e_buf = vec![0.0f64; nsta];
@@ -648,7 +706,7 @@ pub fn integrate_intrinsic_cut_2d(
     mu: &Array1<f64>,
     T: f64,
 ) -> Array1<f64> {
-    debug_assert!(
+    assert!(
         mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
         "mu must be sorted ascending"
     );
@@ -676,10 +734,7 @@ pub fn integrate_intrinsic_cut_2d(
                 local_acc
             },
         )
-        .reduce(
-            || Array1::zeros(n_mu),
-            |a, b| a + b,
-        );
+        .reduce(|| Array1::zeros(n_mu), |mut a, b| { a += &b; a });
 
     acc
 }
@@ -911,7 +966,12 @@ fn accumulate_tetrahedron_intrinsic_kquad(
     let v1 = &sim.vertices[1];
     let v2 = &sim.vertices[2];
     let v3 = &sim.vertices[3];
-    let bands: [&[f64]; 4] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap(), v3.band.as_slice().unwrap()];
+    let bands: [&[f64]; 4] = [
+        v0.band.as_slice().unwrap(),
+        v1.band.as_slice().unwrap(),
+        v2.band.as_slice().unwrap(),
+        v3.band.as_slice().unwrap(),
+    ];
     let kmat_ab: [&Array2<Complex<f64>>; 4] = [&v0.k_ab, &v1.k_ab, &v2.k_ab, &v3.k_ab];
     let kmat_bc: [&Array2<Complex<f64>>; 4] = [
         v0.k_bc.as_ref().expect("k_bc"),
@@ -1039,7 +1099,7 @@ pub fn integrate_intrinsic_cut_3d(
     mu: &Array1<f64>,
     T: f64,
 ) -> Array1<f64> {
-    debug_assert!(
+    assert!(
         mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
         "mu must be sorted ascending"
     );
@@ -1071,10 +1131,7 @@ pub fn integrate_intrinsic_cut_3d(
                 local_acc
             },
         )
-        .reduce(
-            || Array1::zeros(n_mu),
-            |a, b| a + b,
-        );
+        .reduce(|| Array1::zeros(n_mu), |mut a, b| { a += &b; a });
 
     acc
 }
@@ -1204,9 +1261,7 @@ fn triangle_occupied_hybrid(
             let lam = combine_bary(alpha, &sub_tri[0], &sub_tri[1], &sub_tri[2]);
             total += sub_area
                 * w
-                * eval_berry_band_at_lam_buf(
-                    n, bands, kmats, &lam, eta, nsta, e_buf, k_buf,
-                );
+                * eval_berry_band_at_lam_buf(n, bands, kmats, &lam, eta, nsta, e_buf, k_buf);
         }
     }
     total
@@ -1232,97 +1287,96 @@ fn integrate_fermi_cut_2d_t0(
             |mut local_acc, idx| {
                 let iy = idx % ny;
                 let ix = idx / ny;
-            let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
-            for sim in &sims {
-                let area = triangle_area(&sim.coords);
-                if area < ENERGY_CUT_EPS {
-                    continue;
-                }
-                let volume_scale = sim.volume / area;
-                let nsta = sim.vertices[0].band.len();
-
-                // Precompute vertex Ω (shared across μ).
-                let (_g0, o0) = eval_berry_kernel(
-                    sim.vertices[0].band.as_slice().unwrap(),
-                    &sim.vertices[0].k_ab,
-                    eta,
-                    nsta,
-                );
-                let (_g1, o1) = eval_berry_kernel(
-                    sim.vertices[1].band.as_slice().unwrap(),
-                    &sim.vertices[1].k_ab,
-                    eta,
-                    nsta,
-                );
-                let (_g2, o2) = eval_berry_kernel(
-                    sim.vertices[2].band.as_slice().unwrap(),
-                    &sim.vertices[2].k_ab,
-                    eta,
-                    nsta,
-                );
-
-                // Borrow band energies and K matrices for K‑quadrature.
-                let v0 = &sim.vertices[0];
-                let v1 = &sim.vertices[1];
-                let v2 = &sim.vertices[2];
-                let bands: [&[f64]; 3] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap()];
-                let kmats: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
-                let mut e_buf = vec![0.0f64; nsta];
-                let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
-
-                for n in 0..nsta {
-                    let e_v = [
-                        sim.vertices[0].band[n],
-                        sim.vertices[1].band[n],
-                        sim.vertices[2].band[n],
-                    ];
-                    let omega_v = [o0[n], o1[n], o2[n]];
-                    let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-                    let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-                    let full_val = area * (omega_v[0] + omega_v[1] + omega_v[2]) / 3.0;
-
-                    // Sorted-μ sweep: empty / partial / full.
-                    let i_partial =
-                        mu_slice.partition_point(|&x| x <= e_min + ENERGY_CUT_EPS);
-                    let i_full =
-                        mu_slice.partition_point(|&x| x < e_max - ENERGY_CUT_EPS);
-
-                    // Empty region μ[0..i_partial]: skip.
-
-                    // Partial region μ[i_partial..i_full]: K‑quadrature.
-                    for im in i_partial..i_full {
-                        local_acc[im] += volume_scale
-                            * triangle_occupied_hybrid(
-                                &sim.coords,
-                                e_v,
-                                omega_v,
-                                &bands,
-                                &kmats,
-                                mu[im],
-                                eta,
-                                n,
-                                nsta,
-                                &mut e_buf,
-                                &mut k_buf,
-                            );
+                let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+                for sim in &sims {
+                    let area = triangle_area(&sim.coords);
+                    if area < ENERGY_CUT_EPS {
+                        continue;
                     }
+                    let volume_scale = sim.volume / area;
+                    let nsta = sim.vertices[0].band.len();
 
-                    // Full region μ[i_full..]: range add.
-                    if i_full < n_mu {
-                        let add = volume_scale * full_val;
-                        for im in i_full..n_mu {
-                            local_acc[im] += add;
+                    // Precompute vertex Ω (shared across μ).
+                    let (_g0, o0) = eval_berry_kernel(
+                        sim.vertices[0].band.as_slice().unwrap(),
+                        &sim.vertices[0].k_ab,
+                        eta,
+                        nsta,
+                    );
+                    let (_g1, o1) = eval_berry_kernel(
+                        sim.vertices[1].band.as_slice().unwrap(),
+                        &sim.vertices[1].k_ab,
+                        eta,
+                        nsta,
+                    );
+                    let (_g2, o2) = eval_berry_kernel(
+                        sim.vertices[2].band.as_slice().unwrap(),
+                        &sim.vertices[2].k_ab,
+                        eta,
+                        nsta,
+                    );
+
+                    // Borrow band energies and K matrices for K‑quadrature.
+                    let v0 = &sim.vertices[0];
+                    let v1 = &sim.vertices[1];
+                    let v2 = &sim.vertices[2];
+                    let bands: [&[f64]; 3] = [
+                        v0.band.as_slice().unwrap(),
+                        v1.band.as_slice().unwrap(),
+                        v2.band.as_slice().unwrap(),
+                    ];
+                    let kmats: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
+                    let mut e_buf = vec![0.0f64; nsta];
+                    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
+
+                    for n in 0..nsta {
+                        let e_v = [
+                            sim.vertices[0].band[n],
+                            sim.vertices[1].band[n],
+                            sim.vertices[2].band[n],
+                        ];
+                        let omega_v = [o0[n], o1[n], o2[n]];
+                        let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+                        let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+                        let full_val = area * (omega_v[0] + omega_v[1] + omega_v[2]) / 3.0;
+
+                        // Sorted-μ sweep: empty / partial / full.
+                        let i_partial = mu_slice.partition_point(|&x| x <= e_min + ENERGY_CUT_EPS);
+                        let i_full = mu_slice.partition_point(|&x| x < e_max - ENERGY_CUT_EPS);
+
+                        // Empty region μ[0..i_partial]: skip.
+
+                        // Partial region μ[i_partial..i_full]: K‑quadrature.
+                        for im in i_partial..i_full {
+                            local_acc[im] += volume_scale
+                                * triangle_occupied_hybrid(
+                                    &sim.coords,
+                                    e_v,
+                                    omega_v,
+                                    &bands,
+                                    &kmats,
+                                    mu[im],
+                                    eta,
+                                    n,
+                                    nsta,
+                                    &mut e_buf,
+                                    &mut k_buf,
+                                );
+                        }
+
+                        // Full region μ[i_full..]: range add.
+                        if i_full < n_mu {
+                            let add = volume_scale * full_val;
+                            for im in i_full..n_mu {
+                                local_acc[im] += add;
+                            }
                         }
                     }
                 }
-            }
                 local_acc
             },
         )
-        .reduce(
-            || Array1::zeros(n_mu),
-            |a, b| a + b,
-        );
+        .reduce(|| Array1::zeros(n_mu), |mut a, b| { a += &b; a });
 
     result
 }
@@ -1345,7 +1399,7 @@ pub fn integrate_fermi_cut_2d(
     T: f64,
     eta: f64,
 ) -> Array1<f64> {
-    debug_assert!(
+    assert!(
         mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
         "mu must be sorted ascending"
     );
@@ -1502,7 +1556,9 @@ fn sub_tet_k_quad(
         let alpha = &TET_QUAD_PTS_4[iq];
         let w = TET_QUAD_WTS_4[iq];
         let lam = combine_bary_4(alpha, sub_lam);
-        total += sub_vol * w * eval_berry_band_at_lam_buf(n, bands, kmats, &lam, eta, nsta, e_buf, k_buf);
+        total += sub_vol
+            * w
+            * eval_berry_band_at_lam_buf(n, bands, kmats, &lam, eta, nsta, e_buf, k_buf);
     }
     total
 }
@@ -1575,8 +1631,8 @@ fn tetrahedron_occupied_hybrid(
             eta,
             nsta,
             coords,
-        e_buf,
-        k_buf,
+            e_buf,
+            k_buf,
         )
     } else if mu <= e_v[c] + eps {
         // 2 below (a,b) → 3 sub‑tets via diagonal p_ac → p_bd
@@ -1608,8 +1664,8 @@ fn tetrahedron_occupied_hybrid(
             eta,
             nsta,
             coords,
-        e_buf,
-        k_buf,
+            e_buf,
+            k_buf,
         )
     } else {
         // 3 below (a,b,c) → full − sub‑tet(d, cut(a,d), cut(b,d), cut(c,d))
@@ -1623,8 +1679,8 @@ fn tetrahedron_occupied_hybrid(
                 eta,
                 nsta,
                 coords,
-        e_buf,
-        k_buf,
+                e_buf,
+                k_buf,
             )
     }
 }
@@ -1696,8 +1752,14 @@ fn integrate_fermi_cut_3d_t0(
                     let v1 = &sim.vertices[1];
                     let v2 = &sim.vertices[2];
                     let v3 = &sim.vertices[3];
-                    let bands: [&[f64]; 4] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap(), v3.band.as_slice().unwrap()];
-                    let kmats: [&Array2<Complex<f64>>; 4] = [&v0.k_ab, &v1.k_ab, &v2.k_ab, &v3.k_ab];
+                    let bands: [&[f64]; 4] = [
+                        v0.band.as_slice().unwrap(),
+                        v1.band.as_slice().unwrap(),
+                        v2.band.as_slice().unwrap(),
+                        v3.band.as_slice().unwrap(),
+                    ];
+                    let kmats: [&Array2<Complex<f64>>; 4] =
+                        [&v0.k_ab, &v1.k_ab, &v2.k_ab, &v3.k_ab];
                     let mut e_buf = vec![0.0f64; nsta];
                     let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
 
@@ -1759,10 +1821,7 @@ fn integrate_fermi_cut_3d_t0(
                 local_acc
             },
         )
-        .reduce(
-            || Array1::zeros(n_mu),
-            |a, b| a + b,
-        );
+        .reduce(|| Array1::zeros(n_mu), |mut a, b| { a += &b; a });
 
     result
 }
@@ -1780,7 +1839,7 @@ pub fn integrate_fermi_cut_3d(
     T: f64,
     eta: f64,
 ) -> Array1<f64> {
-    debug_assert!(
+    assert!(
         mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
         "mu must be sorted ascending"
     );
