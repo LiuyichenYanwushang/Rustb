@@ -42,7 +42,7 @@ use super::kernel::{eval_berry_band_at_lam_buf, eval_berry_complex_at_lam_buf, e
 use super::quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
 use super::tracking::{
     build_tetrahedra_3d, build_tetrahedra_3d_diagavg, build_tetrahedra_3d_diagavg_ref,
-    build_triangles_2d_diagavg, build_triangles_2d_diagavg_ref,
+    build_tetrahedra_3d_ref, build_triangles_2d_diagavg, build_triangles_2d_diagavg_ref,
 };
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, TrackedSimplexRef, VertexKernel};
 
@@ -401,6 +401,101 @@ fn accumulate_triangle_dipole_kquad(
         }
     }
 }
+fn accumulate_triangle_dipole_kquad_ref(
+    sim: &TrackedSimplexRef<3>,
+    eta: f64,
+    mu: &Array1<f64>,
+    beta: f64,
+    acc: &mut Array1<f64>,
+) {
+    let area = triangle_area(&fixed_coords_to_array2(&sim.coords));
+    if area < ENERGY_CUT_EPS {
+        return;
+    }
+    let volume_scale = sim.volume / area;
+    let nsta = sim.vertices[0].band.len();
+
+    // Borrow vertex data (no clone).
+    let v0 = &sim.vertices[0];
+    let v1 = &sim.vertices[1];
+    let v2 = &sim.vertices[2];
+    let bands: [&[f64]; 3] = [
+        v0.band.as_slice().unwrap(),
+        v1.band.as_slice().unwrap(),
+        v2.band.as_slice().unwrap(),
+    ];
+    let kmats: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
+    let vdiags: [&[f64]; 3] = [
+        v0.vdiag
+            .as_ref()
+            .expect("vdiag required")
+            .as_slice()
+            .unwrap(),
+        v1.vdiag
+            .as_ref()
+            .expect("vdiag required")
+            .as_slice()
+            .unwrap(),
+        v2.vdiag
+            .as_ref()
+            .expect("vdiag required")
+            .as_slice()
+            .unwrap(),
+    ];
+    let mut e_buf = vec![0.0f64; nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
+    for n in 0..nsta {
+        let e_v = [
+            sim.vertices[0].band[n],
+            sim.vertices[1].band[n],
+            sim.vertices[2].band[n],
+        ];
+        let vdiag_v = [vdiags[0][n], vdiags[1][n], vdiags[2][n]];
+
+        if beta == 0.0 {
+            for im in 0..mu.len() {
+                acc[im] += volume_scale
+                    * kquad_line_cut_dipole(
+                        &fixed_coords_to_array2(&sim.coords),
+                        e_v,
+                        &bands,
+                        &kmats,
+                        vdiag_v,
+                        mu[im],
+                        eta,
+                        n,
+                        nsta,
+                        &mut e_buf,
+                        &mut k_buf,
+                    );
+            }
+        } else {
+            let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
+            for im in 0..mu.len() {
+                let mut sum = 0.0;
+                for iq in 0..FERMI_X_STEPS {
+                    let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
+                    let energy = mu[im] + x / beta;
+                    let rho = kquad_line_cut_dipole(
+                        &fixed_coords_to_array2(&sim.coords),
+                        e_v,
+                        &bands,
+                        &kmats,
+                        vdiag_v,
+                        energy,
+                        eta,
+                        n,
+                        nsta,
+                        &mut e_buf,
+                        &mut k_buf,
+                    );
+                    sum += dx * fermi_window_x(x) * rho;
+                }
+                acc[im] += volume_scale * sum;
+            }
+        }
+    }
+}
 
 /// Integrate the Berry-curvature dipole using K‑quadrature energy cuts.
 ///
@@ -441,12 +536,12 @@ pub fn integrate_dipole_energy_cut_2d(
             |(mut local_acc, mut local_us), idx| {
                 let iy = idx % ny;
                 let ix = idx / ny;
-                let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+                let sims = build_triangles_2d_diagavg_ref(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
                 for sim in &sims {
                     if sim.diag.min_gap < SIMPLEX_GAP_TOL {
                         local_us += 1;
                     }
-                    accumulate_triangle_dipole_kquad(sim, eta, mu, beta, &mut local_acc);
+                    accumulate_triangle_dipole_kquad_ref(sim, eta, mu, beta, &mut local_acc);
                 }
                 (local_acc, local_us)
             },
@@ -1627,9 +1722,9 @@ fn integrate_fermi_cut_2d_t0(
             |mut local_acc, idx| {
                 let iy = idx % ny;
                 let ix = idx / ny;
-                let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+                let sims = build_triangles_2d_diagavg_ref(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
                 for sim in &sims {
-                    let area = triangle_area(&sim.coords);
+                    let area = triangle_area(&fixed_coords_to_array2(&sim.coords));
                     if area < ENERGY_CUT_EPS {
                         continue;
                     }
@@ -1690,7 +1785,7 @@ fn integrate_fermi_cut_2d_t0(
                         for im in i_partial..i_full {
                             local_acc[im] += volume_scale
                                 * triangle_occupied_hybrid(
-                                    &sim.coords,
+                                    &fixed_coords_to_array2(&sim.coords),
                                     e_v,
                                     omega_v,
                                     &bands,
@@ -2053,14 +2148,15 @@ fn integrate_fermi_cut_3d_t0(
                 let iz = idx % nz;
                 let iy = (idx / nz) % ny;
                 let ix = idx / (ny * nz);
-                let sims =
-                    build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts);
+                let sims = build_tetrahedra_3d_ref(
+                    ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
+                );
                 for sim in &sims {
                     let vol = tet_vol_from_pts(
-                        [sim.coords[[0, 0]], sim.coords[[0, 1]], sim.coords[[0, 2]]],
-                        [sim.coords[[1, 0]], sim.coords[[1, 1]], sim.coords[[1, 2]]],
-                        [sim.coords[[2, 0]], sim.coords[[2, 1]], sim.coords[[2, 2]]],
-                        [sim.coords[[3, 0]], sim.coords[[3, 1]], sim.coords[[3, 2]]],
+                        [sim.coords[0][0], sim.coords[0][1], sim.coords[0][2]],
+                        [sim.coords[1][0], sim.coords[1][1], sim.coords[1][2]],
+                        [sim.coords[2][0], sim.coords[2][1], sim.coords[2][2]],
+                        [sim.coords[3][0], sim.coords[3][1], sim.coords[3][2]],
                     );
                     if vol < ENERGY_CUT_EPS {
                         continue;
@@ -2141,7 +2237,7 @@ fn integrate_fermi_cut_3d_t0(
                         for im in i_partial..i_full {
                             local_acc[im] += volume_scale
                                 * tetrahedron_occupied_hybrid(
-                                    &sim.coords,
+                                    &fixed_coords_to_array2(&sim.coords),
                                     e_v,
                                     omega_v,
                                     &bands,
