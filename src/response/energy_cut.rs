@@ -1235,26 +1235,37 @@ fn integrate_fermi_cut_2d_t0(
                     let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
                     let full_val = area * (omega_v[0] + omega_v[1] + omega_v[2]) / 3.0;
 
-                    for im in 0..n_mu {
-                        let m = mu[im];
-                        let contrib = if m <= e_min + ENERGY_CUT_EPS {
-                            0.0
-                        } else if m >= e_max - ENERGY_CUT_EPS {
-                            full_val
-                        } else {
-                            triangle_occupied_hybrid(
+                    // Sorted-μ sweep: empty / partial / full.
+                    let mu_slice = mu.as_slice().unwrap();
+                    let i_partial =
+                        mu_slice.partition_point(|&x| x <= e_min + ENERGY_CUT_EPS);
+                    let i_full =
+                        mu_slice.partition_point(|&x| x < e_max - ENERGY_CUT_EPS);
+
+                    // Empty region μ[0..i_partial]: skip.
+
+                    // Partial region μ[i_partial..i_full]: K‑quadrature.
+                    for im in i_partial..i_full {
+                        result[im] += volume_scale
+                            * triangle_occupied_hybrid(
                                 &sim.coords,
                                 e_v,
                                 omega_v,
                                 &bands,
                                 &kmats,
-                                m,
+                                mu[im],
                                 eta,
                                 n,
                                 nsta,
-                            )
-                        };
-                        result[im] += volume_scale * contrib;
+                            );
+                    }
+
+                    // Full region μ[i_full..]: range add.
+                    if i_full < n_mu {
+                        let add = volume_scale * full_val;
+                        for im in i_full..n_mu {
+                            result[im] += add;
+                        }
                     }
                 }
             }
