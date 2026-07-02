@@ -232,6 +232,8 @@ fn kquad_line_cut_dipole(
     eta: f64,
     n: usize,
     nsta: usize,
+    e_buf: &mut [f64],
+    k_buf: &mut [Complex<f64>],
 ) -> f64 {
     let (pts, bcs) = find_line_intersections(coords, energy_v, energy);
     if pts.len() < 2 {
@@ -279,8 +281,6 @@ fn kquad_line_cut_dipole(
     const SQ3: f64 = 0.5773502691896257; // 1/√3
     let t_vals = [0.5 * (1.0 - SQ3), 0.5 * (1.0 + SQ3)];
 
-    let mut e_buf = vec![0.0f64; nsta];
-    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     let mut amp_sum = 0.0;
     for t in &t_vals {
         let lam = [
@@ -288,7 +288,7 @@ fn kquad_line_cut_dipole(
             (1.0 - t) * lam0[1] + t * lam1[1],
             (1.0 - t) * lam0[2] + t * lam1[2],
         ];
-        let (_metric, berry) = eval_berry_complex_at_lam_buf(n, bands, kmats, &lam, eta, nsta, &mut e_buf, &mut k_buf);
+        let (_metric, berry) = eval_berry_complex_at_lam_buf(n, bands, kmats, &lam, eta, nsta, e_buf, k_buf);
         let vc = lam[0] * vdiag_v[0] + lam[1] * vdiag_v[1] + lam[2] * vdiag_v[2];
         amp_sum += vc * berry;
     }
@@ -322,6 +322,8 @@ fn accumulate_triangle_dipole_kquad(
         v1.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
         v2.vdiag.as_ref().expect("vdiag required").as_slice().unwrap(),
     ];
+    let mut e_buf = vec![0.0f64; nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     for n in 0..nsta {
         let e_v = [
             sim.vertices[0].band[n],
@@ -343,6 +345,8 @@ fn accumulate_triangle_dipole_kquad(
                         eta,
                         n,
                         nsta,
+                        &mut e_buf,
+                        &mut k_buf,
                     );
             }
         } else {
@@ -362,6 +366,8 @@ fn accumulate_triangle_dipole_kquad(
                         eta,
                         n,
                         nsta,
+                        &mut e_buf,
+                        &mut k_buf,
                     );
                     sum += dx * fermi_window_x(x) * rho;
                 }
@@ -440,6 +446,8 @@ fn kquad_line_cut_intrinsic(
     energy: f64,
     n: usize,
     nsta: usize,
+    e_buf: &mut [f64],
+    k_buf: &mut [Complex<f64>],
 ) -> f64 {
     let (pts, bcs) = find_line_intersections(coords, energy_v, energy);
     if pts.len() < 2 {
@@ -485,8 +493,6 @@ fn kquad_line_cut_intrinsic(
     const SQ3: f64 = 0.5773502691896257;
     let t_vals = [0.5 * (1.0 - SQ3), 0.5 * (1.0 + SQ3)];
 
-    let mut e_buf = vec![0.0f64; nsta];
-    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     let mut amp_sum = 0.0;
     for t in &t_vals {
         let lam = [
@@ -495,7 +501,7 @@ fn kquad_line_cut_intrinsic(
             (1.0 - t) * lam0[2] + t * lam1[2],
         ];
         let (g_ab, g_bc, g_ac) = eval_intrinsic_G3_at_lam_buf(
-            n, bands, kmat_ab, kmat_bc, kmat_ac, &lam, nsta, &mut e_buf, &mut k_buf,
+            n, bands, kmat_ab, kmat_bc, kmat_ac, &lam, nsta, e_buf, k_buf,
         );
         let va = lam[0] * vdiag_a[0] + lam[1] * vdiag_a[1] + lam[2] * vdiag_a[2];
         let vb = lam[0] * vdiag_b[0] + lam[1] * vdiag_b[1] + lam[2] * vdiag_b[2];
@@ -550,6 +556,8 @@ fn accumulate_triangle_intrinsic_kquad(
         v2.vdiag_b.as_ref().expect("vdiag_b required").as_slice().unwrap(),
     ];
 
+    let mut e_buf = vec![0.0f64; nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     for n in 0..nsta {
         let e_v = [
             sim.vertices[0].band[n],
@@ -590,6 +598,8 @@ fn accumulate_triangle_intrinsic_kquad(
                         mu[im],
                         n,
                         nsta,
+                        &mut e_buf,
+                        &mut k_buf,
                     );
             }
         } else {
@@ -612,6 +622,8 @@ fn accumulate_triangle_intrinsic_kquad(
                         energy,
                         n,
                         nsta,
+                        &mut e_buf,
+                        &mut k_buf,
                     );
                     sum += dx * fermi_window_x(x) * rho;
                 }
@@ -815,18 +827,15 @@ fn kquad_surface_cut_intrinsic(
     n: usize,
     nsta: usize,
     grad_norm: f64,
+    e_buf: &mut [f64],
+    k_buf: &mut [Complex<f64>],
 ) -> f64 {
     let verts = tet_plane_intersection(energy_v, mu);
     if verts.len() < 3 {
         return 0.0;
     }
 
-    // Area of intersection polygon
-    let area = polygon_area_3d(coords, &verts);
-
     // K‑quadrature over polygon (fan triangulation from vertex 0)
-    let mut e_buf = vec![0.0f64; nsta];
-    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     let mut amp_sum = 0.0;
     for i in 1..verts.len() - 1 {
         let sub_tri = [&verts[0], &verts[i], &verts[i + 1]];
@@ -842,7 +851,7 @@ fn kquad_surface_cut_intrinsic(
             let w = TRI_QUAD_WTS_3[iq];
             let lam = combine_bary_3d(alpha, &[*sub_tri[0], *sub_tri[1], *sub_tri[2]]);
             let (g_ab, g_bc, g_ac) = eval_intrinsic_G3_at_lam_buf(
-                n, bands, kmat_ab, kmat_bc, kmat_ac, &lam, nsta, &mut e_buf, &mut k_buf,
+                n, bands, kmat_ab, kmat_bc, kmat_ac, &lam, nsta, e_buf, k_buf,
             );
             let va = lam[0] * vdiag_a[0]
                 + lam[1] * vdiag_a[1]
@@ -920,6 +929,8 @@ fn accumulate_tetrahedron_intrinsic_kquad(
     ];
 
     let n_mu = mu.len();
+    let mut e_buf = vec![0.0f64; nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     for n in 0..nsta {
         let e_v = [
             sim.vertices[0].band[n],
@@ -969,6 +980,8 @@ fn accumulate_tetrahedron_intrinsic_kquad(
                         n,
                         nsta,
                         grad_norm,
+                        &mut e_buf,
+                        &mut k_buf,
                     );
             }
         } else {
@@ -992,6 +1005,8 @@ fn accumulate_tetrahedron_intrinsic_kquad(
                         n,
                         nsta,
                         grad_norm,
+                        &mut e_buf,
+                        &mut k_buf,
                     );
                     sum += dx * fermi_window_x(x) * rho;
                 }
@@ -1135,6 +1150,8 @@ fn triangle_occupied_hybrid(
     eta: f64,
     n: usize,
     nsta: usize,
+    e_buf: &mut [f64],
+    k_buf: &mut [Complex<f64>],
 ) -> f64 {
     let eps = ENERGY_CUT_EPS;
     let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
@@ -1150,8 +1167,6 @@ fn triangle_occupied_hybrid(
     }
 
     // Partial occupancy: clipped polygon + K‑quadrature
-    let mut e_buf = vec![0.0f64; nsta];
-    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     let sub_tris = clip_triangle(e_v, mu);
     let mut total = 0.0;
     for sub_tri in &sub_tris {
@@ -1166,7 +1181,7 @@ fn triangle_occupied_hybrid(
             total += sub_area
                 * w
                 * eval_berry_band_at_lam_buf(
-                    n, bands, kmats, &lam, eta, nsta, &mut e_buf, &mut k_buf,
+                    n, bands, kmats, &lam, eta, nsta, e_buf, k_buf,
                 );
         }
     }
@@ -1223,6 +1238,8 @@ fn integrate_fermi_cut_2d_t0(
                 let v2 = &sim.vertices[2];
                 let bands: [&[f64]; 3] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap()];
                 let kmats: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
+                let mut e_buf = vec![0.0f64; nsta];
+                let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
 
                 for n in 0..nsta {
                     let e_v = [
@@ -1257,6 +1274,8 @@ fn integrate_fermi_cut_2d_t0(
                                 eta,
                                 n,
                                 nsta,
+                                &mut e_buf,
+                                &mut k_buf,
                             );
                     }
 
@@ -1438,19 +1457,19 @@ fn sub_tet_k_quad(
     eta: f64,
     nsta: usize,
     coords: &Array2<f64>,
+    e_buf: &mut [f64],
+    k_buf: &mut [Complex<f64>],
 ) -> f64 {
     let sub_vol = sub_tet_vol_3d(coords, sub_lam);
     if sub_vol < 1e-30 {
         return 0.0;
     }
     let mut total = 0.0;
-    let mut e_buf = vec![0.0f64; nsta];
-    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     for iq in 0..4 {
         let alpha = &TET_QUAD_PTS_4[iq];
         let w = TET_QUAD_WTS_4[iq];
         let lam = combine_bary_4(alpha, sub_lam);
-        total += sub_vol * w * eval_berry_band_at_lam_buf(n, bands, kmats, &lam, eta, nsta, &mut e_buf, &mut k_buf);
+        total += sub_vol * w * eval_berry_band_at_lam_buf(n, bands, kmats, &lam, eta, nsta, e_buf, k_buf);
     }
     total
 }
@@ -1466,6 +1485,8 @@ fn tetrahedron_occupied_hybrid(
     eta: f64,
     n: usize,
     nsta: usize,
+    e_buf: &mut [f64],
+    k_buf: &mut [Complex<f64>],
 ) -> f64 {
     let eps = ENERGY_CUT_EPS;
     let full_vol = tet_vol_from_pts(
@@ -1521,6 +1542,8 @@ fn tetrahedron_occupied_hybrid(
             eta,
             nsta,
             coords,
+        e_buf,
+        k_buf,
         )
     } else if mu <= e_v[c] + eps {
         // 2 below (a,b) → 3 sub‑tets via diagonal p_ac → p_bd
@@ -1532,6 +1555,8 @@ fn tetrahedron_occupied_hybrid(
             eta,
             nsta,
             coords,
+            e_buf,
+            k_buf,
         ) + sub_tet_k_quad(
             &[unit(a), cut_bary(a, c), cut_bary(a, d), cut_bary(b, d)],
             bands,
@@ -1540,6 +1565,8 @@ fn tetrahedron_occupied_hybrid(
             eta,
             nsta,
             coords,
+            e_buf,
+            k_buf,
         ) + sub_tet_k_quad(
             &[unit(b), cut_bary(b, c), cut_bary(b, d), cut_bary(a, c)],
             bands,
@@ -1548,6 +1575,8 @@ fn tetrahedron_occupied_hybrid(
             eta,
             nsta,
             coords,
+        e_buf,
+        k_buf,
         )
     } else {
         // 3 below (a,b,c) → full − sub‑tet(d, cut(a,d), cut(b,d), cut(c,d))
@@ -1561,6 +1590,8 @@ fn tetrahedron_occupied_hybrid(
                 eta,
                 nsta,
                 coords,
+        e_buf,
+        k_buf,
             )
     }
 }
@@ -1629,6 +1660,8 @@ fn integrate_fermi_cut_3d_t0(
                     let v3 = &sim.vertices[3];
                     let bands: [&[f64]; 4] = [v0.band.as_slice().unwrap(), v1.band.as_slice().unwrap(), v2.band.as_slice().unwrap(), v3.band.as_slice().unwrap()];
                     let kmats: [&Array2<Complex<f64>>; 4] = [&v0.k_ab, &v1.k_ab, &v2.k_ab, &v3.k_ab];
+                    let mut e_buf = vec![0.0f64; nsta];
+                    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
 
                     for n in 0..nsta {
                         let e_v = [
@@ -1671,6 +1704,8 @@ fn integrate_fermi_cut_3d_t0(
                                     eta,
                                     n,
                                     nsta,
+                                    &mut e_buf,
+                                    &mut k_buf,
                                 );
                         }
 
