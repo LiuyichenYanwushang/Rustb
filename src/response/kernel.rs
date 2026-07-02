@@ -378,6 +378,70 @@ pub fn eval_intrinsic_G_at_lam_buf(
     g_sum
 }
 
+/// Evaluate $G^{ab}_n$, $G^{bc}_n$, $G^{ac}_n$ in one fused pass.
+///
+/// Interpolates $E_m$ once, then computes the three G components
+/// reusing the same energy interpolation.  Saves 2 redundant energy
+/// interpolations vs three separate `eval_intrinsic_G_at_lam_buf` calls.
+#[inline]
+pub fn eval_intrinsic_G3_at_lam_buf(
+    n: usize,
+    bands: &[&[f64]],
+    kmat_ab: &[&Array2<Complex<f64>>],
+    kmat_bc: &[&Array2<Complex<f64>>],
+    kmat_ac: &[&Array2<Complex<f64>>],
+    lam: &[f64],
+    nsta: usize,
+    e_buf: &mut [f64],
+    k_buf: &mut [Complex<f64>],
+) -> (f64, f64, f64) {
+    // Interpolate energies once
+    e_buf[..nsta].fill(0.0);
+    for v in 0..bands.len() {
+        let lv = lam[v];
+        if lv == 0.0 {
+            continue;
+        }
+        for m in 0..nsta {
+            e_buf[m] += bands[v][m] * lv;
+        }
+    }
+    let en = e_buf[n];
+
+    macro_rules! g_one {
+        ($kmats:expr) => {{
+            k_buf[..nsta].fill(Complex::new(0.0, 0.0));
+            for v in 0..$kmats.len() {
+                let lv = lam[v];
+                if lv == 0.0 {
+                    continue;
+                }
+                for m in 0..nsta {
+                    k_buf[m] += $kmats[v][[n, m]] * lv;
+                }
+            }
+            let mut s = 0.0f64;
+            for m in 0..nsta {
+                if m == n {
+                    continue;
+                }
+                let de = en - e_buf[m];
+                let de3 = de * de * de;
+                if de3.abs() < 1e-30 {
+                    continue;
+                }
+                s += k_buf[m].re / de3;
+            }
+            s
+        }};
+    }
+
+    let g_ab = g_one!(kmat_ab);
+    let g_bc = g_one!(kmat_bc);
+    let g_ac = g_one!(kmat_ac);
+    (g_ab, g_bc, g_ac)
+}
+
 // ── Optical kernel ──────────────────────────────────────────────────────
 
 /// Evaluate the optical conductivity kernel at one quadrature point.

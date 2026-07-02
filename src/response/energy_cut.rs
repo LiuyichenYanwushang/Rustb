@@ -422,7 +422,7 @@ pub fn integrate_dipole_energy_cut_2d(
 
 // ── Intrinsic NLH energy‑cut ────────────────────────────────────────────
 
-use super::kernel::eval_intrinsic_G_at_lam_buf;
+use super::kernel::eval_intrinsic_G3_at_lam_buf;
 
 /// K‑quadrature line‑cut for the intrinsic NLH kernel
 /// $Q^{ab;c}_n = 2 v^c_n G^{ab}_n - \frac12(v^a_n G^{bc}_n + v^b_n G^{ac}_n)$
@@ -494,9 +494,9 @@ fn kquad_line_cut_intrinsic(
             (1.0 - t) * lam0[1] + t * lam1[1],
             (1.0 - t) * lam0[2] + t * lam1[2],
         ];
-        let g_ab = eval_intrinsic_G_at_lam_buf(n, bands, kmat_ab, &lam, nsta, &mut e_buf, &mut k_buf);
-        let g_bc = eval_intrinsic_G_at_lam_buf(n, bands, kmat_bc, &lam, nsta, &mut e_buf, &mut k_buf);
-        let g_ac = eval_intrinsic_G_at_lam_buf(n, bands, kmat_ac, &lam, nsta, &mut e_buf, &mut k_buf);
+        let (g_ab, g_bc, g_ac) = eval_intrinsic_G3_at_lam_buf(
+            n, bands, kmat_ab, kmat_bc, kmat_ac, &lam, nsta, &mut e_buf, &mut k_buf,
+        );
         let va = lam[0] * vdiag_a[0] + lam[1] * vdiag_a[1] + lam[2] * vdiag_a[2];
         let vb = lam[0] * vdiag_b[0] + lam[1] * vdiag_b[1] + lam[2] * vdiag_b[2];
         let vc = lam[0] * vdiag_c[0] + lam[1] * vdiag_c[1] + lam[2] * vdiag_c[2];
@@ -841,9 +841,9 @@ fn kquad_surface_cut_intrinsic(
             let alpha = &TRI_QUAD_PTS_3[iq];
             let w = TRI_QUAD_WTS_3[iq];
             let lam = combine_bary_3d(alpha, &[*sub_tri[0], *sub_tri[1], *sub_tri[2]]);
-            let g_ab = eval_intrinsic_G_at_lam_buf(n, bands, kmat_ab, &lam, nsta, &mut e_buf, &mut k_buf);
-            let g_bc = eval_intrinsic_G_at_lam_buf(n, bands, kmat_bc, &lam, nsta, &mut e_buf, &mut k_buf);
-            let g_ac = eval_intrinsic_G_at_lam_buf(n, bands, kmat_ac, &lam, nsta, &mut e_buf, &mut k_buf);
+            let (g_ab, g_bc, g_ac) = eval_intrinsic_G3_at_lam_buf(
+                n, bands, kmat_ab, kmat_bc, kmat_ac, &lam, nsta, &mut e_buf, &mut k_buf,
+            );
             let va = lam[0] * vdiag_a[0]
                 + lam[1] * vdiag_a[1]
                 + lam[2] * vdiag_a[2]
