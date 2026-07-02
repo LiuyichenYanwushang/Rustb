@@ -2571,4 +2571,133 @@ mod tests {
             assert!((c_ec - c_ref).abs() < 0.003, "QWZ plateau off: {c_ec:.6}");
         }
     }
+
+    // ── G‑wave 3D model (2‑orbital, triangular bilayer) ───────────────────
+
+    fn build_gwave_3d(j: f64) -> Model<false, 3> {
+        let lat = array![
+            [1.0, 0.0, 0.0],
+            [-0.5, 3_f64.sqrt() / 2.0, 0.0],
+            [0.0, 0.0, 1.0]
+        ];
+        let orb = array![[1.0 / 3.0, 2.0 / 3.0, 0.0], [2.0 / 3.0, 1.0 / 3.0, 0.5]];
+        let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
+
+        let t = 1.0;
+        model.add_hop(t, 0, 1, &array![0, 0, 0], None);
+        model.add_hop(t, 0, 1, &array![-1, 0, 0], None);
+        model.add_hop(t, 0, 1, &array![0, 1, 0], None);
+        model.add_hop(t, 0, 1, &array![0, 0, -1], None);
+        model.add_hop(t, 0, 1, &array![-1, 0, -1], None);
+        model.add_hop(t, 0, 1, &array![0, 1, -1], None);
+
+        let t2 = Complex::new(0.0, 0.5);
+        let r_pairs: [(isize, isize, isize, Complex<f64>); 6] = [
+            (1, -2, 1, -t2),
+            (2, -1, 1, t2),
+            (3, 1, 1, -t2),
+            (3, 2, 1, t2),
+            (2, 3, 1, -t2),
+            (1, 3, 1, t2),
+        ];
+        for (a, b, c, val) in &r_pairs {
+            model.set_hop(*val, 0, 0, &array![*a, *b, *c], None);
+            model.set_hop(-val, 0, 0, &array![*a, *b, -1], None);
+        }
+        for (a, b, c, val) in &r_pairs {
+            model.set_hop(-val, 1, 1, &array![*a, *b, *c], None);
+            model.set_hop(*val, 1, 1, &array![*a, *b, -1], None);
+        }
+
+        model.add_onsite(&array![j, -j], None);
+        model
+    }
+
+    /// 9a. G‑wave 3D: EC vs direct intrinsic at diagnostic k‑meshes.
+    /// 3D surface K‑quadrature converges ∝1/nk²; nk≲16 is coarse.
+    #[test]
+    fn gwave_intrinsic_ec_vs_direct() {
+        let model = build_gwave_3d(1.0);
+        let dx = arr1(&[1.0, 0.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0, 0.0]);
+        let dz = arr1(&[0.0, 0.0, 1.0]);
+        let eta = 1e-3;
+        let mu = Array1::linspace(-4.0, 4.0, 21);
+        let nks = [12, 16, 20];
+        println!(
+            "{:<8}{:<14}{:<14}{:<14}",
+            "nk", "peak|σ_ec|", "max|Δ|", "rel_err"
+        );
+        for &nk in &nks {
+            let kmesh = arr1(&[nk, nk, nk]);
+            let ec = model
+                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 0.0, eta)
+                .unwrap();
+            let direct = model
+                .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dz, &mu, 0.0)
+                .unwrap();
+            let max_abs = max_abs_diff_1d(&ec, &direct);
+            let peak_ec = ec.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
+            let peak_dir = direct.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
+            println!(
+                "{:<8}{:<14.4e}{:<14.4e}{:<14.4e}",
+                nk,
+                peak_ec.max(peak_dir),
+                max_abs,
+                max_abs / peak_ec.max(peak_dir).max(1e-30)
+            );
+        }
+        // Smoke: both methods produce O(1e-3) signal at nk=20
+        let kmesh20 = arr1(&[20, 20, 20]);
+        let ec20 = model
+            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh20, &dx, &dy, &dz, &mu, 0.0, eta)
+            .unwrap();
+        let peak = ec20.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
+        assert!(peak > 1e-6, "G‑wave signal too small: {peak:.3e}");
+    }
+
+    /// 9b. G‑wave 3D: J → −J sign check.
+    /// Under orbital exchange the g‑wave intra‑orbital hoppings flip sign,
+    /// so H(J) and H(−J) are related by U H U^†.  Intrinsic σ should flip sign.
+    #[test]
+    fn gwave_intrinsic_sign_flip() {
+        let model_up = build_gwave_3d(1.0);
+        let model_dn = build_gwave_3d(-1.0);
+        let dx = arr1(&[1.0, 0.0, 0.0]);
+        let dy = arr1(&[0.0, 1.0, 0.0]);
+        let dz = arr1(&[0.0, 0.0, 1.0]);
+        let eta = 1e-3;
+        let mu = Array1::linspace(-4.0, 4.0, 21);
+        // Use only EC — direct sum has degeneracy‑handling differences.
+        let nks = [12, 16, 20];
+        println!(
+            "{:<8}{:<14}{:<14}{:<14}",
+            "nk", "peak|σ|", "max|sum|", "sum/peak"
+        );
+        for &nk in &nks {
+            let kmesh = arr1(&[nk, nk, nk]);
+            let up = model_up
+                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 0.0, eta)
+                .unwrap();
+            let dn = model_dn
+                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 0.0, eta)
+                .unwrap();
+            let max_sum = up
+                .iter()
+                .zip(dn.iter())
+                .fold(0.0f64, |a, (&x, &y)| a.max((x + y).abs()));
+            let peak = up.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
+            println!(
+                "{:<8}{:<14.4e}{:<14.4e}{:<14.4e}",
+                nk, peak, max_sum, max_sum / peak.max(1e-30)
+            );
+        }
+        // At nk=20 signal should be nonzero and sum should converge
+        let kmesh20 = arr1(&[20, 20, 20]);
+        let up20 = model_up
+            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh20, &dx, &dy, &dz, &mu, 0.0, eta)
+            .unwrap();
+        let peak20 = up20.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
+        assert!(peak20 > 1e-6, "G‑wave signal vanished at nk=20");
+    }
 }
