@@ -408,20 +408,28 @@ pub fn integrate_dipole_energy_cut_2d(
     let (nx, ny) = (k_mesh[0], k_mesh[1]);
     let inv_nx = 1.0 / nx as f64;
     let inv_ny = 1.0 / ny as f64;
-    let mut acc = Array1::<f64>::zeros(mu.len());
-    let mut unsafe_count = 0usize;
-
-    for ix in 0..nx {
-        for iy in 0..ny {
-            let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
-            for sim in &sims {
-                if sim.diag.min_gap < SIMPLEX_GAP_TOL {
-                    unsafe_count += 1;
+    let n_mu = mu.len();
+    let (acc, unsafe_count) = (0..nx * ny)
+        .into_par_iter()
+        .fold(
+            || (Array1::<f64>::zeros(n_mu), 0usize),
+            |(mut local_acc, mut local_us), idx| {
+                let iy = idx % ny;
+                let ix = idx / ny;
+                let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+                for sim in &sims {
+                    if sim.diag.min_gap < SIMPLEX_GAP_TOL {
+                        local_us += 1;
+                    }
+                    accumulate_triangle_dipole_kquad(sim, eta, mu, beta, &mut local_acc);
                 }
-                accumulate_triangle_dipole_kquad(sim, eta, mu, beta, &mut acc);
-            }
-        }
-    }
+                (local_acc, local_us)
+            },
+        )
+        .reduce(
+            || (Array1::zeros(n_mu), 0),
+            |(a1, u1), (a2, u2)| (a1 + a2, u1 + u2),
+        );
 
     (acc, unsafe_count)
 }
@@ -654,16 +662,24 @@ pub fn integrate_intrinsic_cut_2d(
         0.0
     };
     let n_mu = mu.len();
-    let mut acc = Array1::<f64>::zeros(n_mu);
-
-    for ix in 0..nx {
-        for iy in 0..ny {
-            let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
-            for sim in &sims {
-                accumulate_triangle_intrinsic_kquad(sim, mu, beta, &mut acc);
-            }
-        }
-    }
+    let acc = (0..nx * ny)
+        .into_par_iter()
+        .fold(
+            || Array1::<f64>::zeros(n_mu),
+            |mut local_acc, idx| {
+                let iy = idx % ny;
+                let ix = idx / ny;
+                let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+                for sim in &sims {
+                    accumulate_triangle_intrinsic_kquad(sim, mu, beta, &mut local_acc);
+                }
+                local_acc
+            },
+        )
+        .reduce(
+            || Array1::zeros(n_mu),
+            |a, b| a + b,
+        );
 
     acc
 }
@@ -1037,20 +1053,28 @@ pub fn integrate_intrinsic_cut_3d(
     } else {
         0.0
     };
-    let mut acc = Array1::<f64>::zeros(mu.len());
-
-    for ix in 0..nx {
-        for iy in 0..ny {
-            for iz in 0..nz {
+    let n_mu = mu.len();
+    let acc = (0..nx * ny * nz)
+        .into_par_iter()
+        .fold(
+            || Array1::<f64>::zeros(n_mu),
+            |mut local_acc, idx| {
+                let iz = idx % nz;
+                let iy = (idx / nz) % ny;
+                let ix = idx / (ny * nz);
                 let sims = build_tetrahedra_3d_diagavg(
                     ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
                 );
                 for sim in &sims {
-                    accumulate_tetrahedron_intrinsic_kquad(sim, mu, beta, &mut acc);
+                    accumulate_tetrahedron_intrinsic_kquad(sim, mu, beta, &mut local_acc);
                 }
-            }
-        }
-    }
+                local_acc
+            },
+        )
+        .reduce(
+            || Array1::zeros(n_mu),
+            |a, b| a + b,
+        );
 
     acc
 }
@@ -1199,10 +1223,15 @@ fn integrate_fermi_cut_2d_t0(
     let inv_nx = 1.0 / nx as f64;
     let inv_ny = 1.0 / ny as f64;
     let n_mu = mu.len();
-    let mut result = Array1::<f64>::zeros(n_mu);
+    let mu_slice = mu.as_slice().unwrap();
 
-    for ix in 0..nx {
-        for iy in 0..ny {
+    let result = (0..nx * ny)
+        .into_par_iter()
+        .fold(
+            || Array1::<f64>::zeros(n_mu),
+            |mut local_acc, idx| {
+                let iy = idx % ny;
+                let ix = idx / ny;
             let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
             for sim in &sims {
                 let area = triangle_area(&sim.coords);
@@ -1253,7 +1282,6 @@ fn integrate_fermi_cut_2d_t0(
                     let full_val = area * (omega_v[0] + omega_v[1] + omega_v[2]) / 3.0;
 
                     // Sorted-μ sweep: empty / partial / full.
-                    let mu_slice = mu.as_slice().unwrap();
                     let i_partial =
                         mu_slice.partition_point(|&x| x <= e_min + ENERGY_CUT_EPS);
                     let i_full =
@@ -1263,7 +1291,7 @@ fn integrate_fermi_cut_2d_t0(
 
                     // Partial region μ[i_partial..i_full]: K‑quadrature.
                     for im in i_partial..i_full {
-                        result[im] += volume_scale
+                        local_acc[im] += volume_scale
                             * triangle_occupied_hybrid(
                                 &sim.coords,
                                 e_v,
@@ -1283,13 +1311,18 @@ fn integrate_fermi_cut_2d_t0(
                     if i_full < n_mu {
                         let add = volume_scale * full_val;
                         for im in i_full..n_mu {
-                            result[im] += add;
+                            local_acc[im] += add;
                         }
                     }
                 }
             }
-        }
-    }
+                local_acc
+            },
+        )
+        .reduce(
+            || Array1::zeros(n_mu),
+            |a, b| a + b,
+        );
 
     result
 }
@@ -1608,11 +1641,16 @@ fn integrate_fermi_cut_3d_t0(
     let inv_ny = 1.0 / ny as f64;
     let inv_nz = 1.0 / nz as f64;
     let n_mu = mu.len();
-    let mut result = Array1::<f64>::zeros(n_mu);
+    let mu_slice = mu.as_slice().unwrap();
 
-    for ix in 0..nx {
-        for iy in 0..ny {
-            for iz in 0..nz {
+    let result = (0..nx * ny * nz)
+        .into_par_iter()
+        .fold(
+            || Array1::<f64>::zeros(n_mu),
+            |mut local_acc, idx| {
+                let iz = idx % nz;
+                let iy = (idx / nz) % ny;
+                let ix = idx / (ny * nz);
                 let sims =
                     build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts);
                 for sim in &sims {
@@ -1693,7 +1731,7 @@ fn integrate_fermi_cut_3d_t0(
 
                         // Partial region μ[i_partial..i_full]: K‑quadrature.
                         for im in i_partial..i_full {
-                            result[im] += volume_scale
+                            local_acc[im] += volume_scale
                                 * tetrahedron_occupied_hybrid(
                                     &sim.coords,
                                     e_v,
@@ -1713,14 +1751,18 @@ fn integrate_fermi_cut_3d_t0(
                         if i_full < n_mu {
                             let add = volume_scale * full_val;
                             for im in i_full..n_mu {
-                                result[im] += add;
+                                local_acc[im] += add;
                             }
                         }
                     }
                 }
-            }
-        }
-    }
+                local_acc
+            },
+        )
+        .reduce(
+            || Array1::zeros(n_mu),
+            |a, b| a + b,
+        );
 
     result
 }
