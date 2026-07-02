@@ -408,7 +408,9 @@ fn accumulate_triangle_dipole_kquad_ref(
     beta: f64,
     acc: &mut Array1<f64>,
 ) {
-    let area = triangle_area(&fixed_coords_to_array2(&sim.coords));
+    let coords = fixed_coords_to_array2(&sim.coords);
+
+    let area = triangle_area(&coords);
     if area < ENERGY_CUT_EPS {
         return;
     }
@@ -456,16 +458,7 @@ fn accumulate_triangle_dipole_kquad_ref(
             for im in 0..mu.len() {
                 acc[im] += volume_scale
                     * kquad_line_cut_dipole(
-                        &fixed_coords_to_array2(&sim.coords),
-                        e_v,
-                        &bands,
-                        &kmats,
-                        vdiag_v,
-                        mu[im],
-                        eta,
-                        n,
-                        nsta,
-                        &mut e_buf,
+                        &coords, e_v, &bands, &kmats, vdiag_v, mu[im], eta, n, nsta, &mut e_buf,
                         &mut k_buf,
                     );
             }
@@ -477,16 +470,7 @@ fn accumulate_triangle_dipole_kquad_ref(
                     let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
                     let energy = mu[im] + x / beta;
                     let rho = kquad_line_cut_dipole(
-                        &fixed_coords_to_array2(&sim.coords),
-                        e_v,
-                        &bands,
-                        &kmats,
-                        vdiag_v,
-                        energy,
-                        eta,
-                        n,
-                        nsta,
-                        &mut e_buf,
+                        &coords, e_v, &bands, &kmats, vdiag_v, energy, eta, n, nsta, &mut e_buf,
                         &mut k_buf,
                     );
                     sum += dx * fermi_window_x(x) * rho;
@@ -810,7 +794,9 @@ fn accumulate_triangle_intrinsic_kquad_ref(
     beta: f64,
     acc: &mut Array1<f64>,
 ) {
-    let area = triangle_area(&fixed_coords_to_array2(&sim.coords));
+    let coords = fixed_coords_to_array2(&sim.coords);
+
+    let area = triangle_area(&coords);
     if area < ENERGY_CUT_EPS {
         return;
     }
@@ -903,7 +889,7 @@ fn accumulate_triangle_intrinsic_kquad_ref(
         let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
 
         // Precompute |∇E| once per band.
-        let c = &fixed_coords_to_array2(&sim.coords);
+        let c = &coords;
         let (x0, y0) = (c[[0, 0]], c[[0, 1]]);
         let (x1, y1) = (c[[1, 0]], c[[1, 1]]);
         let (x2, y2) = (c[[2, 0]], c[[2, 1]]);
@@ -933,21 +919,8 @@ fn accumulate_triangle_intrinsic_kquad_ref(
             for im in i_start..i_end {
                 acc[im] += volume_scale
                     * kquad_line_cut_intrinsic(
-                        &fixed_coords_to_array2(&sim.coords),
-                        e_v,
-                        &bands,
-                        &kmat_ab,
-                        &kmat_bc,
-                        &kmat_ac,
-                        vc_v,
-                        va_v,
-                        vb_v,
-                        mu[im],
-                        n,
-                        nsta,
-                        &mut e_buf,
-                        &mut k_buf,
-                        grad_norm,
+                        &coords, e_v, &bands, &kmat_ab, &kmat_bc, &kmat_ac, vc_v, va_v, vb_v,
+                        mu[im], n, nsta, &mut e_buf, &mut k_buf, grad_norm,
                     );
             }
         } else {
@@ -958,21 +931,8 @@ fn accumulate_triangle_intrinsic_kquad_ref(
                     let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
                     let energy = mu[im] + x / beta;
                     let rho = kquad_line_cut_intrinsic(
-                        &fixed_coords_to_array2(&sim.coords),
-                        e_v,
-                        &bands,
-                        &kmat_ab,
-                        &kmat_bc,
-                        &kmat_ac,
-                        vc_v,
-                        va_v,
-                        vb_v,
-                        energy,
-                        n,
-                        nsta,
-                        &mut e_buf,
-                        &mut k_buf,
-                        grad_norm,
+                        &coords, e_v, &bands, &kmat_ab, &kmat_bc, &kmat_ac, vc_v, va_v, vb_v,
+                        energy, n, nsta, &mut e_buf, &mut k_buf, grad_norm,
                     );
                     sum += dx * fermi_window_x(x) * rho;
                 }
@@ -1379,6 +1339,8 @@ fn accumulate_tetrahedron_intrinsic_kquad_ref(
     beta: f64,
     acc: &mut Array1<f64>,
 ) {
+    let coords = fixed_coords_to_array2(&sim.coords);
+
     let _vol = tet_vol_from_pts(
         [sim.coords[0][0], sim.coords[0][1], sim.coords[0][2]],
         [sim.coords[1][0], sim.coords[1][1], sim.coords[1][2]],
@@ -1451,7 +1413,7 @@ fn accumulate_tetrahedron_intrinsic_kquad_ref(
 
         // Precompute |∇E| once per band (same for all μ).
         let de = [e_v[1] - e_v[0], e_v[2] - e_v[0], e_v[3] - e_v[0]];
-        let (_, _, _, grad_norm) = energy_gradient_3d(&fixed_coords_to_array2(&sim.coords), de);
+        let (_, _, _, grad_norm) = energy_gradient_3d(&coords, de);
         if grad_norm < ENERGY_CUT_EPS {
             continue;
         }
@@ -1472,21 +1434,8 @@ fn accumulate_tetrahedron_intrinsic_kquad_ref(
             for im in i_start..i_end {
                 acc[im] += volume_scale
                     * kquad_surface_cut_intrinsic(
-                        &fixed_coords_to_array2(&sim.coords),
-                        e_v,
-                        &bands,
-                        &kmat_ab,
-                        &kmat_bc,
-                        &kmat_ac,
-                        vc_v,
-                        va_v,
-                        vb_v,
-                        mu[im],
-                        n,
-                        nsta,
-                        grad_norm,
-                        &mut e_buf,
-                        &mut k_buf,
+                        &coords, e_v, &bands, &kmat_ab, &kmat_bc, &kmat_ac, vc_v, va_v, vb_v,
+                        mu[im], n, nsta, grad_norm, &mut e_buf, &mut k_buf,
                     );
             }
         } else {
@@ -1497,21 +1446,8 @@ fn accumulate_tetrahedron_intrinsic_kquad_ref(
                     let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
                     let energy = mu[im] + x / beta;
                     let rho = kquad_surface_cut_intrinsic(
-                        &fixed_coords_to_array2(&sim.coords),
-                        e_v,
-                        &bands,
-                        &kmat_ab,
-                        &kmat_bc,
-                        &kmat_ac,
-                        vc_v,
-                        va_v,
-                        vb_v,
-                        energy,
-                        n,
-                        nsta,
-                        grad_norm,
-                        &mut e_buf,
-                        &mut k_buf,
+                        &coords, e_v, &bands, &kmat_ab, &kmat_bc, &kmat_ac, vc_v, va_v, vb_v,
+                        energy, n, nsta, grad_norm, &mut e_buf, &mut k_buf,
                     );
                     sum += dx * fermi_window_x(x) * rho;
                 }
@@ -1724,7 +1660,8 @@ fn integrate_fermi_cut_2d_t0(
                 let ix = idx / ny;
                 let sims = build_triangles_2d_diagavg_ref(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
                 for sim in &sims {
-                    let area = triangle_area(&fixed_coords_to_array2(&sim.coords));
+                    let coords = fixed_coords_to_array2(&sim.coords);
+                    let area = triangle_area(&coords);
                     if area < ENERGY_CUT_EPS {
                         continue;
                     }
@@ -1785,17 +1722,8 @@ fn integrate_fermi_cut_2d_t0(
                         for im in i_partial..i_full {
                             local_acc[im] += volume_scale
                                 * triangle_occupied_hybrid(
-                                    &fixed_coords_to_array2(&sim.coords),
-                                    e_v,
-                                    omega_v,
-                                    &bands,
-                                    &kmats,
-                                    mu[im],
-                                    eta,
-                                    n,
-                                    nsta,
-                                    &mut e_buf,
-                                    &mut k_buf,
+                                    &coords, e_v, omega_v, &bands, &kmats, mu[im], eta, n, nsta,
+                                    &mut e_buf, &mut k_buf,
                                 );
                         }
 
@@ -2152,6 +2080,7 @@ fn integrate_fermi_cut_3d_t0(
                     ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
                 );
                 for sim in &sims {
+                    let coords = fixed_coords_to_array2(&sim.coords);
                     let vol = tet_vol_from_pts(
                         [sim.coords[0][0], sim.coords[0][1], sim.coords[0][2]],
                         [sim.coords[1][0], sim.coords[1][1], sim.coords[1][2]],
@@ -2237,17 +2166,8 @@ fn integrate_fermi_cut_3d_t0(
                         for im in i_partial..i_full {
                             local_acc[im] += volume_scale
                                 * tetrahedron_occupied_hybrid(
-                                    &fixed_coords_to_array2(&sim.coords),
-                                    e_v,
-                                    omega_v,
-                                    &bands,
-                                    &kmats,
-                                    mu[im],
-                                    eta,
-                                    n,
-                                    nsta,
-                                    &mut e_buf,
-                                    &mut k_buf,
+                                    &coords, e_v, omega_v, &bands, &kmats, mu[im], eta, n, nsta,
+                                    &mut e_buf, &mut k_buf,
                                 );
                         }
 

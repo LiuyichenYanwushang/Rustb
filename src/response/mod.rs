@@ -93,6 +93,11 @@ mod tracking;
 mod types;
 
 // Re‑export public types
+//
+// NOTE: The `integrate_*` raw integrators below require `all_pts` to have
+// been band‑tracked via `global_band_track`.  The public Model‑level methods
+// (`Hall_conductivity_ec`, `Nonlinear_Hall_conductivity_Intrinsic_ec`, etc.)
+// handle this automatically.
 pub use energy_cut::{
     FermiCutCounts, integrate_dipole_energy_cut_2d, integrate_fermi_cut_2d, integrate_fermi_cut_3d,
     integrate_intrinsic_cut_2d, integrate_intrinsic_cut_3d, read_reset_fermi_cut_counts,
