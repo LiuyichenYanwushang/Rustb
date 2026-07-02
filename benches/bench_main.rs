@@ -109,6 +109,29 @@ const SPINLESS_SMALL: &[(&str, fn() -> Model<false, 2>)] = &[
 const SPINLESS_CURV: &[(&str, fn() -> Model<false, 2>)] =
     &[("small(2orb)", build_small as fn() -> Model<false, 2>)];
 
+// ── Energy‑cut model builders ───────────────────────────────────────────────
+
+fn build_haldane_2d() -> Model<false, 2> {
+    let li = Complex::new(0.0, 1.0);
+    let t = Complex::new(-1.0, 0.0);
+    let t2 = Complex::new(-0.3, 0.0);
+    let delta = 0.7;
+    let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+    let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
+    let mut m = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+    m.set_onsite(&arr1(&[-delta, delta]), None);
+    for &(i, j) in &[(0, 0), (-1, 0), (0, -1)] {
+        m.add_hop(t, 0, 1, &arr1(&[i, j]), None);
+    }
+    for &(i, j) in &[(1, 0), (-1, 1), (0, -1)] {
+        m.add_hop(t2 * li, 0, 0, &arr1(&[i, j]), None);
+    }
+    for &(i, j) in &[(-1, 0), (1, -1), (0, 1)] {
+        m.add_hop(t2 * li, 1, 1, &arr1(&[i, j]), None);
+    }
+    m
+}
+
 // ── Benchmarks ──────────────────────────────────────────────────────────────
 
 fn bench_gen_ham(c: &mut Criterion) {
@@ -431,6 +454,133 @@ fn bench_surfgreen(c: &mut Criterion) {
     group.finish();
 }
 
+// ── Energy‑cut benchmarks ────────────────────────────────────────────────────
+
+fn bench_ahc_ec_2d(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ahc_ec_2d");
+    let model = build_haldane_2d();
+    let dx = arr1(&[1.0, 0.0]);
+    let dy = arr1(&[0.0, 1.0]);
+    let eta = 0.05;
+
+    for &nk in &[31, 51] {
+        let kmesh = arr1(&[nk, nk]);
+        let mu = Array1::linspace(-3.0, 3.0, 51);
+        group.bench_function(BenchmarkId::new("nk", nk), |b| {
+            b.iter(|| {
+                let r = black_box(
+                    model
+                        .Hall_conductivity_ec(black_box(&kmesh), &dx, &dy, black_box(&mu), 0.0, eta)
+                        .unwrap(),
+                );
+                black_box(r)
+            })
+        });
+    }
+    group.finish();
+}
+
+fn bench_intrinsic_ec_2d(c: &mut Criterion) {
+    let mut group = c.benchmark_group("intrinsic_ec_2d");
+    let model = build_haldane_2d();
+    let dx = arr1(&[1.0, 0.0]);
+    let dy = arr1(&[0.0, 1.0]);
+    let eta = 0.05;
+
+    for &nk in &[21, 31] {
+        let kmesh = arr1(&[nk, nk]);
+        let mu = Array1::linspace(-3.0, 3.0, 31);
+        group.bench_function(BenchmarkId::new("nk", nk), |b| {
+            b.iter(|| {
+                let r = black_box(
+                    model
+                        .Nonlinear_Hall_conductivity_Intrinsic_ec(
+                            black_box(&kmesh), &dx, &dy, &dx, black_box(&mu), 0.0, eta,
+                        )
+                        .unwrap(),
+                );
+                black_box(r)
+            })
+        });
+    }
+    group.finish();
+}
+
+fn bench_ahc_ec_2d_integrate_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ahc_ec_2d_integrate");
+    let model = build_haldane_2d();
+    let dx = arr1(&[1.0, 0.0]);
+    let dy = arr1(&[0.0, 1.0]);
+    let eta = 0.05;
+
+    for &nk in &[31, 51] {
+        let kmesh = arr1(&[nk, nk]);
+        let mu = Array1::linspace(-3.0, 3.0, 51);
+
+        // Pre‑compute velocity kernel + band tracking (excluded from timing)
+        let kvec: Array2<f64> = gen_kmesh(&kmesh).unwrap();
+        let nk_tot = kvec.nrows();
+        let mut all_pts: Vec<VertexKernel> = (0..nk_tot)
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Lattice, None)
+            })
+            .collect();
+        global_band_track(&mut all_pts, kmesh.as_slice().unwrap());
+
+        group.bench_function(BenchmarkId::new("nk", nk), |b| {
+            b.iter(|| {
+                let r = black_box(integrate_fermi_cut_2d(
+                    black_box(&all_pts),
+                    black_box(&kmesh),
+                    black_box(&mu),
+                    0.0,
+                    eta,
+                ));
+                black_box(r)
+            })
+        });
+    }
+    group.finish();
+}
+
+fn bench_intrinsic_ec_2d_integrate_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("intrinsic_ec_2d_integrate");
+    let model = build_haldane_2d();
+    let dx = arr1(&[1.0, 0.0]);
+    let dy = arr1(&[0.0, 1.0]);
+    let eta = 0.05;
+
+    for &nk in &[21, 31] {
+        let kmesh = arr1(&[nk, nk]);
+        let mu = Array1::linspace(-3.0, 3.0, 31);
+
+        let kvec: Array2<f64> = gen_kmesh(&kmesh).unwrap();
+        let nk_tot = kvec.nrows();
+        let mut all_pts: Vec<VertexKernel> = (0..nk_tot)
+            .map(|ik| {
+                let kv = kvec.row(ik).to_owned();
+                model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dy), Gauge::Lattice, None)
+            })
+            .collect();
+        global_band_track(&mut all_pts, kmesh.as_slice().unwrap());
+        let _ = eta; // intrinsic doesn't use η
+
+        group.bench_function(BenchmarkId::new("nk", nk), |b| {
+            b.iter(|| {
+                let r = black_box(integrate_intrinsic_cut_2d(
+                    black_box(&all_pts),
+                    black_box(&kmesh),
+                    black_box(&mu),
+                    0.0,
+                ));
+                black_box(r)
+            })
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_gen_ham,
@@ -442,5 +592,9 @@ criterion_group!(
     bench_dos,
     bench_phase_dot_vs_perrow,
     bench_surfgreen,
+    bench_ahc_ec_2d,
+    bench_intrinsic_ec_2d,
+    bench_ahc_ec_2d_integrate_only,
+    bench_intrinsic_ec_2d_integrate_only,
 );
 criterion_main!(benches);
