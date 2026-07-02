@@ -65,13 +65,25 @@ pub struct TrackedSimplex {
 }
 
 /// Per‑simplex safety / quality diagnostics.
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct SimplexDiagnostics {
     /// Minimum band gap $\min_{n\neq m} |E_n - E_m|$ across all vertices.
     pub min_gap: f64,
     /// Minimum assignment overlap from band tracking (1.0 = perfect).
     pub min_assignment_overlap: f64,
     pub tracking_conflict: bool,
+}
+
+/// Zero‑clone simplex referencing `all_pts` vertex data by borrowed pointer.
+///
+/// `NV` = 3 for triangle, 4 for tetrahedron.
+/// `coords` uses `[f64; 3]` for each vertex (pad z=0 for 2D).
+/// No allocation on construction — just indices/coords/volume.
+pub struct TrackedSimplexRef<'a, const NV: usize> {
+    pub vertices: [&'a VertexKernel; NV],
+    pub coords: [[f64; 3]; NV],
+    pub volume: f64,
+    pub diag: SimplexDiagnostics,
 }
 
 pub const SIMPLEX_GAP_TOL: f64 = 1e-4;

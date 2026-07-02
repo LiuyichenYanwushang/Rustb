@@ -570,3 +570,314 @@ pub fn build_tetrahedra_3d_diagavg(
     ));
     out
 }
+
+// ── Zero‑clone ref builders (for EC hot paths) ───────────────────────────
+
+use super::types::TrackedSimplexRef;
+
+/// 2D reference triangles (2 per cell, no clone, single diagonal).
+pub fn build_triangles_2d_ref<'a>(
+    ix: usize,
+    iy: usize,
+    nx: usize,
+    ny: usize,
+    inv_nx: f64,
+    inv_ny: f64,
+    all_pts: &'a [VertexKernel],
+) -> [TrackedSimplexRef<'a, 3>; 2] {
+    let ixp = (ix + 1) % nx;
+    let iyp = (iy + 1) % ny;
+    let i00 = ix * ny + iy;
+    let i10 = ixp * ny + iy;
+    let i11 = ixp * ny + iyp;
+    let i01 = ix * ny + iyp;
+    let frac =
+        |ixv: usize, iyv: usize| -> [f64; 3] { [ixv as f64 * inv_nx, iyv as f64 * inv_ny, 0.0] };
+    let tri_vol = inv_nx * inv_ny / 2.0;
+    let coord_of = |idx: usize| -> [f64; 3] {
+        if idx == i00 {
+            frac(ix, iy)
+        } else if idx == i10 {
+            frac(ix + 1, iy)
+        } else if idx == i11 {
+            frac(ix + 1, iy + 1)
+        } else {
+            frac(ix, iy + 1)
+        }
+    };
+    let vertices_of = |v0: usize, v1: usize, v2: usize| -> [&'a VertexKernel; 3] {
+        [&all_pts[v0], &all_pts[v1], &all_pts[v2]]
+    };
+    let min_gap_of = |vs: &[&VertexKernel; 3]| -> f64 {
+        vs.iter().fold(f64::INFINITY, |mg, v| {
+            let n = v.band.len();
+            (0..n)
+                .flat_map(|i| (i + 1..n).map(move |j| (v.band[[i]] - v.band[[j]]).abs()))
+                .fold(mg, f64::min)
+        })
+    };
+
+    let tri = |v0: usize, v1: usize, v2: usize| -> TrackedSimplexRef<'a, 3> {
+        let vertices = vertices_of(v0, v1, v2);
+        let mg = min_gap_of(&vertices);
+        TrackedSimplexRef {
+            vertices,
+            coords: [coord_of(v0), coord_of(v1), coord_of(v2)],
+            volume: tri_vol,
+            diag: SimplexDiagnostics {
+                min_gap: mg,
+                min_assignment_overlap: 1.0,
+                tracking_conflict: false,
+            },
+        }
+    };
+    [tri(i00, i10, i01), tri(i11, i10, i01)]
+}
+
+/// 2D diagonal‑averaged reference triangles (4 per cell, both diagonals).
+pub fn build_triangles_2d_diagavg_ref<'a>(
+    ix: usize,
+    iy: usize,
+    nx: usize,
+    ny: usize,
+    inv_nx: f64,
+    inv_ny: f64,
+    all_pts: &'a [VertexKernel],
+) -> [TrackedSimplexRef<'a, 3>; 4] {
+    let ixp = (ix + 1) % nx;
+    let iyp = (iy + 1) % ny;
+    let i00 = ix * ny + iy;
+    let i10 = ixp * ny + iy;
+    let i11 = ixp * ny + iyp;
+    let i01 = ix * ny + iyp;
+    let frac =
+        |ixv: usize, iyv: usize| -> [f64; 3] { [ixv as f64 * inv_nx, iyv as f64 * inv_ny, 0.0] };
+    let half_vol = inv_nx * inv_ny / 4.0;
+    let coord_of = |idx: usize| -> [f64; 3] {
+        if idx == i00 {
+            frac(ix, iy)
+        } else if idx == i10 {
+            frac(ix + 1, iy)
+        } else if idx == i11 {
+            frac(ix + 1, iy + 1)
+        } else {
+            frac(ix, iy + 1)
+        }
+    };
+    let min_gap_of = |vs: &[&VertexKernel]| -> f64 {
+        vs.iter().fold(f64::INFINITY, |mg, v| {
+            let n = v.band.len();
+            (0..n)
+                .flat_map(|i| (i + 1..n).map(move |j| (v.band[[i]] - v.band[[j]]).abs()))
+                .fold(mg, f64::min)
+        })
+    };
+    let tri = |v0: usize, v1: usize, v2: usize| -> TrackedSimplexRef<'a, 3> {
+        let vs = [&all_pts[v0], &all_pts[v1], &all_pts[v2]];
+        let mg = min_gap_of(&vs);
+        TrackedSimplexRef {
+            vertices: vs,
+            coords: [coord_of(v0), coord_of(v1), coord_of(v2)],
+            volume: half_vol,
+            diag: SimplexDiagnostics {
+                min_gap: mg,
+                min_assignment_overlap: 1.0,
+                tracking_conflict: false,
+            },
+        }
+    };
+    // Both diagonals: ↘ uses (i10,i01), ↗ uses (i00,i11)
+    [
+        tri(i00, i10, i01),
+        tri(i11, i10, i01), // ↘
+        tri(i00, i10, i11),
+        tri(i00, i11, i01), // ↗
+    ]
+}
+
+/// 3D reference tetrahedra (5 per cell, no clone, single decomposition).
+pub fn build_tetrahedra_3d_ref<'a>(
+    ix: usize,
+    iy: usize,
+    iz: usize,
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    inv_nx: f64,
+    inv_ny: f64,
+    inv_nz: f64,
+    all_pts: &'a [VertexKernel],
+) -> [TrackedSimplexRef<'a, 4>; 5] {
+    let ixp = (ix + 1) % nx;
+    let iyp = (iy + 1) % ny;
+    let izp = (iz + 1) % nz;
+    let idx3 = |x: usize, y: usize, z: usize| x * ny * nz + y * nz + z;
+    let c = [
+        idx3(ix, iy, iz),
+        idx3(ixp, iy, iz),
+        idx3(ix, iyp, iz),
+        idx3(ixp, iyp, iz),
+        idx3(ix, iy, izp),
+        idx3(ixp, iy, izp),
+        idx3(ix, iyp, izp),
+        idx3(ixp, iyp, izp),
+    ];
+    let frac = |ixv: usize, iyv: usize, izv: usize| -> [f64; 3] {
+        [
+            ixv as f64 * inv_nx,
+            iyv as f64 * inv_ny,
+            izv as f64 * inv_nz,
+        ]
+    };
+    let corners: [[f64; 3]; 8] = [
+        frac(ix, iy, iz),
+        frac(ix + 1, iy, iz),
+        frac(ix, iy + 1, iz),
+        frac(ix + 1, iy + 1, iz),
+        frac(ix, iy, iz + 1),
+        frac(ix + 1, iy, iz + 1),
+        frac(ix, iy + 1, iz + 1),
+        frac(ix + 1, iy + 1, iz + 1),
+    ];
+    let cube_vol = inv_nx * inv_ny * inv_nz;
+    let tet_vol_factor = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0];
+
+    let min_gap_of = |vs: &[&VertexKernel]| -> f64 {
+        vs.iter().fold(f64::INFINITY, |mg, v| {
+            let n = v.band.len();
+            (0..n)
+                .flat_map(|i| (i + 1..n).map(move |j| (v.band[[i]] - v.band[[j]]).abs()))
+                .fold(mg, f64::min)
+        })
+    };
+
+    let mk_tet =
+        |v0: usize, v1: usize, v2: usize, v3: usize, vol: f64| -> TrackedSimplexRef<'a, 4> {
+            let vs = [&all_pts[v0], &all_pts[v1], &all_pts[v2], &all_pts[v3]];
+            let mg = min_gap_of(&vs);
+            TrackedSimplexRef {
+                vertices: vs,
+                coords: [corners[v0], corners[v1], corners[v2], corners[v3]],
+                volume: vol,
+                diag: SimplexDiagnostics {
+                    min_gap: mg,
+                    min_assignment_overlap: 1.0,
+                    tracking_conflict: false,
+                },
+            }
+        };
+
+    std::array::from_fn(|i| {
+        let &[lv0, lv1, lv2, lv3] = &CUBE_TETS[i];
+        let (g0, g1, g2, g3) = (c[lv0], c[lv1], c[lv2], c[lv3]);
+        TrackedSimplexRef {
+            vertices: [&all_pts[g0], &all_pts[g1], &all_pts[g2], &all_pts[g3]],
+            coords: [corners[lv0], corners[lv1], corners[lv2], corners[lv3]],
+            volume: cube_vol * tet_vol_factor[i],
+            diag: SimplexDiagnostics {
+                min_gap: min_gap_of(&[&all_pts[g0], &all_pts[g1], &all_pts[g2], &all_pts[g3]]),
+                min_assignment_overlap: 1.0,
+                tracking_conflict: false,
+            },
+        }
+    })
+}
+
+/// 3D diagonal‑averaged reference tetrahedra (10 per cell, restores k→−k).
+pub fn build_tetrahedra_3d_diagavg_ref<'a>(
+    ix: usize,
+    iy: usize,
+    iz: usize,
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    inv_nx: f64,
+    inv_ny: f64,
+    inv_nz: f64,
+    all_pts: &'a [VertexKernel],
+) -> [TrackedSimplexRef<'a, 4>; 10] {
+    let ixp = (ix + 1) % nx;
+    let iyp = (iy + 1) % ny;
+    let izp = (iz + 1) % nz;
+    let idx3 = |x: usize, y: usize, z: usize| x * ny * nz + y * nz + z;
+    let c = [
+        idx3(ix, iy, iz),
+        idx3(ixp, iy, iz),
+        idx3(ix, iyp, iz),
+        idx3(ixp, iyp, iz),
+        idx3(ix, iy, izp),
+        idx3(ixp, iy, izp),
+        idx3(ix, iyp, izp),
+        idx3(ixp, iyp, izp),
+    ];
+    let frac = |ixv: usize, iyv: usize, izv: usize| -> [f64; 3] {
+        [
+            ixv as f64 * inv_nx,
+            iyv as f64 * inv_ny,
+            izv as f64 * inv_nz,
+        ]
+    };
+    let corners: [[f64; 3]; 8] = [
+        frac(ix, iy, iz),
+        frac(ix + 1, iy, iz),
+        frac(ix, iy + 1, iz),
+        frac(ix + 1, iy + 1, iz),
+        frac(ix, iy, iz + 1),
+        frac(ix + 1, iy, iz + 1),
+        frac(ix, iy + 1, iz + 1),
+        frac(ix + 1, iy + 1, iz + 1),
+    ];
+    let cube_vol = inv_nx * inv_ny * inv_nz;
+    let half_vol = cube_vol * 0.5;
+
+    let min_gap_of = |vs: &[&VertexKernel]| -> f64 {
+        vs.iter().fold(f64::INFINITY, |mg, v| {
+            let n = v.band.len();
+            (0..n)
+                .flat_map(|i| (i + 1..n).map(move |j| (v.band[[i]] - v.band[[j]]).abs()))
+                .fold(mg, f64::min)
+        })
+    };
+
+    let mk_tet =
+        |v0: usize, v1: usize, v2: usize, v3: usize, vol: f64| -> TrackedSimplexRef<'a, 4> {
+            let vs = [&all_pts[v0], &all_pts[v1], &all_pts[v2], &all_pts[v3]];
+            let mg = min_gap_of(&vs);
+            TrackedSimplexRef {
+                vertices: vs,
+                coords: [corners[v0], corners[v1], corners[v2], corners[v3]],
+                volume: vol,
+                diag: SimplexDiagnostics {
+                    min_gap: mg,
+                    min_assignment_overlap: 1.0,
+                    tracking_conflict: false,
+                },
+            }
+        };
+
+    let make_tet = |local_v: &[usize; 4], vol: f64| -> TrackedSimplexRef<'a, 4> {
+        let &[lv0, lv1, lv2, lv3] = local_v;
+        let (g0, g1, g2, g3) = (c[lv0], c[lv1], c[lv2], c[lv3]);
+        let vs = [&all_pts[g0], &all_pts[g1], &all_pts[g2], &all_pts[g3]];
+        let mg = min_gap_of(&vs);
+        TrackedSimplexRef {
+            vertices: vs,
+            coords: [corners[lv0], corners[lv1], corners[lv2], corners[lv3]],
+            volume: vol,
+            diag: SimplexDiagnostics {
+                min_gap: mg,
+                min_assignment_overlap: 1.0,
+                tracking_conflict: false,
+            },
+        }
+    };
+
+    let mut out = std::array::from_fn(|_i| make_tet(&CUBE_TETS[0], 0.0));
+    for (i, tet) in CUBE_TETS.iter().enumerate() {
+        out[i] = make_tet(tet, cube_vol * TET_VOL_FACTOR[i] * 0.5);
+    }
+    for (i, tet) in CUBE_TETS_ALT.iter().enumerate() {
+        out[5 + i] = make_tet(tet, cube_vol * TET_VOL_FACTOR[i] * 0.5);
+    }
+    out
+}
