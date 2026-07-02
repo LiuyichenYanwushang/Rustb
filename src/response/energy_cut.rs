@@ -385,6 +385,10 @@ pub fn integrate_dipole_energy_cut_2d(
     T: f64,
     eta: f64,
 ) -> (Array1<f64>, usize) {
+    debug_assert!(
+        mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
+        "mu must be sorted ascending"
+    );
     assert_eq!(
         k_mesh.len(),
         2,
@@ -624,6 +628,10 @@ pub fn integrate_intrinsic_cut_2d(
     mu: &Array1<f64>,
     T: f64,
 ) -> Array1<f64> {
+    debug_assert!(
+        mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
+        "mu must be sorted ascending"
+    );
     assert_eq!(k_mesh.len(), 2);
     let (nx, ny) = (k_mesh[0], k_mesh[1]);
     let inv_nx = 1.0 / nx as f64;
@@ -1000,6 +1008,10 @@ pub fn integrate_intrinsic_cut_3d(
     mu: &Array1<f64>,
     T: f64,
 ) -> Array1<f64> {
+    debug_assert!(
+        mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
+        "mu must be sorted ascending"
+    );
     assert_eq!(k_mesh.len(), 3);
     let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
     let inv_nx = 1.0 / nx as f64;
@@ -1270,6 +1282,10 @@ pub fn integrate_fermi_cut_2d(
     T: f64,
     eta: f64,
 ) -> Array1<f64> {
+    debug_assert!(
+        mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
+        "mu must be sorted ascending"
+    );
     assert_eq!(k_mesh.len(), 2);
 
     if T == 0.0 {
@@ -1676,6 +1692,10 @@ pub fn integrate_fermi_cut_3d(
     T: f64,
     eta: f64,
 ) -> Array1<f64> {
+    debug_assert!(
+        mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
+        "mu must be sorted ascending"
+    );
     assert_eq!(k_mesh.len(), 3);
 
     if T == 0.0 {
