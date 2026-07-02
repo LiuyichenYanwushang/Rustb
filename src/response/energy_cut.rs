@@ -173,9 +173,10 @@ fn find_line_intersections(
     coords: &Array2<f64>,
     energy_v: [f64; 3],
     energy: f64,
-) -> (Vec<[f64; 2]>, Vec<[f64; 3]>) {
-    let mut pts: Vec<[f64; 2]> = Vec::with_capacity(3);
-    let mut bcs: Vec<[f64; 3]> = Vec::with_capacity(3);
+) -> ([[f64; 2]; 2], [[f64; 3]; 2], usize) {
+    let mut pts = [[0.0f64; 2]; 2];
+    let mut bcs = [[0.0f64; 3]; 2];
+    let mut count = 0usize;
     let xy = [
         [coords[[0, 0]], coords[[0, 1]]],
         [coords[[1, 0]], coords[[1, 1]]],
@@ -195,7 +196,7 @@ fn find_line_intersections(
             let py = xy[i][1] + tc * (xy[j][1] - xy[i][1]);
             // Deduplicate
             let mut dup = false;
-            for k in 0..pts.len() {
+            for k in 0..count {
                 let dx = pts[k][0] - px;
                 let dy = pts[k][1] - py;
                 if dx * dx + dy * dy < 1e-24 {
@@ -204,15 +205,16 @@ fn find_line_intersections(
                 }
             }
             if !dup {
-                pts.push([px, py]);
+                pts[count] = [px, py];
                 let mut lam = [0.0; 3];
                 lam[i] = 1.0 - tc;
                 lam[j] = tc;
-                bcs.push(lam);
+                bcs[count] = lam;
+                count += 1;
             }
         }
     }
-    (pts, bcs)
+    (pts, bcs, count)
 }
 
 /// K‑quadrature line‑cut for the Berry curvature dipole amplitude
@@ -233,8 +235,8 @@ fn kquad_line_cut_dipole(
     e_buf: &mut [f64],
     k_buf: &mut [Complex<f64>],
 ) -> f64 {
-    let (pts, bcs) = find_line_intersections(coords, energy_v, energy);
-    if pts.len() < 2 {
+    let (pts, bcs, n_pts) = find_line_intersections(coords, energy_v, energy);
+    if n_pts < 2 {
         return 0.0;
     }
 
@@ -258,8 +260,8 @@ fn kquad_line_cut_dipole(
     // Find the two most distant points
     let mut best = (0usize, 1usize);
     let mut best_l2 = -1.0;
-    for i in 0..pts.len() {
-        for j in i + 1..pts.len() {
+    for i in 0..n_pts {
+        for j in i + 1..n_pts {
             let dx = pts[i][0] - pts[j][0];
             let dy = pts[i][1] - pts[j][1];
             let l2 = dx * dx + dy * dy;
@@ -474,33 +476,17 @@ fn kquad_line_cut_intrinsic(
     nsta: usize,
     e_buf: &mut [f64],
     k_buf: &mut [Complex<f64>],
+    grad_norm: f64,
 ) -> f64 {
-    let (pts, bcs) = find_line_intersections(coords, energy_v, energy);
-    if pts.len() < 2 {
-        return 0.0;
-    }
-
-    // |∇E|
-    let (x0, y0) = (coords[[0, 0]], coords[[0, 1]]);
-    let (x1, y1) = (coords[[1, 0]], coords[[1, 1]]);
-    let (x2, y2) = (coords[[2, 0]], coords[[2, 1]]);
-    let det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-    if det.abs() < ENERGY_CUT_EPS {
-        return 0.0;
-    }
-    let de1 = energy_v[1] - energy_v[0];
-    let de2 = energy_v[2] - energy_v[0];
-    let grad_x = (de1 * (y2 - y0) - de2 * (y1 - y0)) / det;
-    let grad_y = ((x1 - x0) * de2 - (x2 - x0) * de1) / det;
-    let grad_norm = (grad_x * grad_x + grad_y * grad_y).sqrt();
-    if grad_norm < ENERGY_CUT_EPS {
+    let (pts, bcs, n_pts) = find_line_intersections(coords, energy_v, energy);
+    if n_pts < 2 {
         return 0.0;
     }
 
     let mut best = (0usize, 1usize);
     let mut best_l2 = -1.0;
-    for i in 0..pts.len() {
-        for j in i + 1..pts.len() {
+    for i in 0..n_pts {
+        for j in i + 1..n_pts {
             let dx = pts[i][0] - pts[j][0];
             let dy = pts[i][1] - pts[j][1];
             let l2 = dx * dx + dy * dy;
@@ -623,7 +609,7 @@ fn accumulate_triangle_intrinsic_kquad(
     ];
 
     let mut e_buf = vec![0.0f64; nsta];
-    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta * 3];
     for n in 0..nsta {
         let e_v = [
             sim.vertices[0].band[n],
@@ -635,6 +621,21 @@ fn accumulate_triangle_intrinsic_kquad(
         let vb_v = [vdiag_b[0][n], vdiag_b[1][n], vdiag_b[2][n]];
         let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
         let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+        // Precompute |∇E| once per band.
+        let c = &sim.coords;
+        let (x0, y0) = (c[[0, 0]], c[[0, 1]]);
+        let (x1, y1) = (c[[1, 0]], c[[1, 1]]);
+        let (x2, y2) = (c[[2, 0]], c[[2, 1]]);
+        let det_grad = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+        if det_grad.abs() < ENERGY_CUT_EPS {
+            continue;
+        }
+        let de1 = e_v[1] - e_v[0];
+        let de2 = e_v[2] - e_v[0];
+        let gx = (de1 * (y2 - y0) - de2 * (y1 - y0)) / det_grad;
+        let gy = ((x1 - x0) * de2 - (x2 - x0) * de1) / det_grad;
+        let grad_norm = (gx * gx + gy * gy).sqrt();
 
         let mu_slice = mu.as_slice().unwrap();
         let (i_start, i_end) = if beta == 0.0 {
@@ -666,6 +667,7 @@ fn accumulate_triangle_intrinsic_kquad(
                         nsta,
                         &mut e_buf,
                         &mut k_buf,
+                        grad_norm,
                     );
             }
         } else {
@@ -690,6 +692,7 @@ fn accumulate_triangle_intrinsic_kquad(
                         nsta,
                         &mut e_buf,
                         &mut k_buf,
+                        grad_norm,
                     );
                     sum += dx * fermi_window_x(x) * rho;
                 }
@@ -734,7 +737,13 @@ pub fn integrate_intrinsic_cut_2d(
                 local_acc
             },
         )
-        .reduce(|| Array1::zeros(n_mu), |mut a, b| { a += &b; a });
+        .reduce(
+            || Array1::zeros(n_mu),
+            |mut a, b| {
+                a += &b;
+                a
+            },
+        );
 
     acc
 }
@@ -782,7 +791,7 @@ fn energy_gradient_3d(coords: &Array2<f64>, de: [f64; 3]) -> (f64, f64, f64, f64
 
 /// Find the intersection polygon of the $E=\mu$ plane with a tetrahedron.
 /// Returns vertices as barycentric coordinates in the original tet.
-fn tet_plane_intersection(energy_v: [f64; 4], mu: f64) -> Vec<[f64; 4]> {
+fn tet_plane_intersection(energy_v: [f64; 4], mu: f64) -> ([[f64; 4]; 4], usize) {
     let eps = 1e-12;
 
     // Sort by energy
@@ -791,14 +800,8 @@ fn tet_plane_intersection(energy_v: [f64; 4], mu: f64) -> Vec<[f64; 4]> {
     let (a, b, c, d) = (idx[0], idx[1], idx[2], idx[3]);
 
     if mu <= energy_v[a] + eps || mu >= energy_v[d] - eps {
-        return vec![];
+        return ([[0.0f64; 4]; 4], 0);
     }
-
-    let unit = |i: usize| -> [f64; 4] {
-        let mut l = [0.0; 4];
-        l[i] = 1.0;
-        l
-    };
 
     let cut = |i: usize, j: usize| -> [f64; 4] {
         let de = energy_v[j] - energy_v[i];
@@ -814,18 +817,17 @@ fn tet_plane_intersection(energy_v: [f64; 4], mu: f64) -> Vec<[f64; 4]> {
     };
 
     if mu <= energy_v[b] + eps {
-        // 1 below (a), 3 above → triangle: cut(a,b), cut(a,c), cut(a,d)
-        vec![cut(a, b), cut(a, c), cut(a, d)]
+        // 1 below (a), 3 above → triangle
+        let verts = [cut(a, b), cut(a, c), cut(a, d), [0.0; 4]];
+        (verts, 3)
     } else if mu <= energy_v[c] + eps {
         // 2 below (a,b), 2 above → quadrilateral
-        // Order: cut(a,c) → cut(a,d) → cut(b,d) → cut(b,c)
-        vec![cut(a, c), cut(a, d), cut(b, d), cut(b, c)]
+        let verts = [cut(a, c), cut(a, d), cut(b, d), cut(b, c)];
+        (verts, 4)
     } else {
         // 3 below (a,b,c), 1 above → triangle
-        // cut(a,d), cut(b,d), cut(c,d) — but order for proper triangulation:
-        // Same as case 1 with roles reversed: intersection is the triangle
-        // connecting the 3 cut points on edges to the above vertex
-        vec![cut(a, d), cut(b, d), cut(c, d)]
+        let verts = [cut(a, d), cut(b, d), cut(c, d), [0.0; 4]];
+        (verts, 3)
     }
 }
 
@@ -901,14 +903,14 @@ fn kquad_surface_cut_intrinsic(
     e_buf: &mut [f64],
     k_buf: &mut [Complex<f64>],
 ) -> f64 {
-    let verts = tet_plane_intersection(energy_v, mu);
-    if verts.len() < 3 {
+    let (verts, n_verts) = tet_plane_intersection(energy_v, mu);
+    if n_verts < 3 {
         return 0.0;
     }
 
     // K‑quadrature over polygon (fan triangulation from vertex 0)
     let mut amp_sum = 0.0;
-    for i in 1..verts.len() - 1 {
+    for i in 1..n_verts - 1 {
         let sub_tri = [&verts[0], &verts[i], &verts[i + 1]];
         let sub_area = {
             let lam_ref: [[f64; 4]; 3] = [*sub_tri[0], *sub_tri[1], *sub_tri[2]];
@@ -1006,7 +1008,7 @@ fn accumulate_tetrahedron_intrinsic_kquad(
 
     let n_mu = mu.len();
     let mut e_buf = vec![0.0f64; nsta];
-    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
+    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta * 3];
     for n in 0..nsta {
         let e_v = [
             sim.vertices[0].band[n],
@@ -1131,7 +1133,13 @@ pub fn integrate_intrinsic_cut_3d(
                 local_acc
             },
         )
-        .reduce(|| Array1::zeros(n_mu), |mut a, b| { a += &b; a });
+        .reduce(
+            || Array1::zeros(n_mu),
+            |mut a, b| {
+                a += &b;
+                a
+            },
+        );
 
     acc
 }
@@ -1376,7 +1384,13 @@ fn integrate_fermi_cut_2d_t0(
                 local_acc
             },
         )
-        .reduce(|| Array1::zeros(n_mu), |mut a, b| { a += &b; a });
+        .reduce(
+            || Array1::zeros(n_mu),
+            |mut a, b| {
+                a += &b;
+                a
+            },
+        );
 
     result
 }
@@ -1821,7 +1835,13 @@ fn integrate_fermi_cut_3d_t0(
                 local_acc
             },
         )
-        .reduce(|| Array1::zeros(n_mu), |mut a, b| { a += &b; a });
+        .reduce(
+            || Array1::zeros(n_mu),
+            |mut a, b| {
+                a += &b;
+                a
+            },
+        );
 
     result
 }

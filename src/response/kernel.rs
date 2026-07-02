@@ -395,8 +395,13 @@ pub fn eval_intrinsic_G3_at_lam_buf(
     e_buf: &mut [f64],
     k_buf: &mut [Complex<f64>],
 ) -> (f64, f64, f64) {
-    // Interpolate energies once
+    // Interpolate energies + all three K rows in one pass.
     e_buf[..nsta].fill(0.0);
+    let (k_ab_row, rest) = k_buf.split_at_mut(nsta);
+    let (k_bc_row, k_ac_row) = rest.split_at_mut(nsta);
+    k_ab_row.fill(Complex::new(0.0, 0.0));
+    k_bc_row.fill(Complex::new(0.0, 0.0));
+    k_ac_row.fill(Complex::new(0.0, 0.0));
     for v in 0..bands.len() {
         let lv = lam[v];
         if lv == 0.0 {
@@ -404,41 +409,28 @@ pub fn eval_intrinsic_G3_at_lam_buf(
         }
         for m in 0..nsta {
             e_buf[m] += bands[v][m] * lv;
+            k_ab_row[m] += kmat_ab[v][[n, m]] * lv;
+            k_bc_row[m] += kmat_bc[v][[n, m]] * lv;
+            k_ac_row[m] += kmat_ac[v][[n, m]] * lv;
         }
     }
     let en = e_buf[n];
-
-    macro_rules! g_one {
-        ($kmats:expr) => {{
-            k_buf[..nsta].fill(Complex::new(0.0, 0.0));
-            for v in 0..$kmats.len() {
-                let lv = lam[v];
-                if lv == 0.0 {
-                    continue;
-                }
-                for m in 0..nsta {
-                    k_buf[m] += $kmats[v][[n, m]] * lv;
-                }
-            }
-            let mut s = 0.0f64;
-            for m in 0..nsta {
-                if m == n {
-                    continue;
-                }
-                let de = en - e_buf[m];
-                let de3 = de * de * de;
-                if de3.abs() < 1e-30 {
-                    continue;
-                }
-                s += k_buf[m].re / de3;
-            }
-            s
-        }};
+    let mut g_ab = 0.0f64;
+    let mut g_bc = 0.0f64;
+    let mut g_ac = 0.0f64;
+    for m in 0..nsta {
+        if m == n {
+            continue;
+        }
+        let de = en - e_buf[m];
+        let de3 = de * de * de;
+        if de3.abs() < 1e-30 {
+            continue;
+        }
+        g_ab += k_ab_row[m].re / de3;
+        g_bc += k_bc_row[m].re / de3;
+        g_ac += k_ac_row[m].re / de3;
     }
-
-    let g_ab = g_one!(kmat_ab);
-    let g_bc = g_one!(kmat_bc);
-    let g_ac = g_one!(kmat_ac);
     (g_ab, g_bc, g_ac)
 }
 
