@@ -95,6 +95,10 @@ name = "graphene"
 path="examples/graphene/main.rs"
 
 [[example]]
+name = "floquet_chain"
+path="examples/floquet_chain/main.rs"
+
+[[example]]
 name = "BiF_square"
 path="examples/BiF_square/main.rs"
 

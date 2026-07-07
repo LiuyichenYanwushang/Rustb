@@ -502,3 +502,147 @@ BLAS backends (MKL/OpenBLAS) dispatch optimized kernels independently.
 - The charge intrinsic implementation uses
   `G^{ij}=Re sum_m v^i_nm v^j_mn/(E_n-E_m)^3`.  Literature formulas
   that define `G=2 Re sum ...` differ by an overall factor of 2.
+
+---
+
+## Floquet Plan: Real-Space Peierls-Sambe Solver
+
+> **Goal**: support automated Floquet calculations for arbitrary incident-light
+> direction, arbitrary polarization, and mixed commensurate harmonics, while
+> keeping the coupling in real space.  The first implementation is the
+> long-wavelength Peierls-coupling path; length-gauge dipole/rmatrix coupling is
+> a later extension.
+
+### Real-space convention
+
+The repository stores tight-binding hopping blocks as
+
+```math
+t_{ij}(\mathbf R)=\langle i,\mathbf 0|H|j,\mathbf R\rangle ,
+```
+
+with integer lattice vector `hamR[R]` and matrix block `ham[R,i,j]`.  The real
+space link used by the Floquet Peierls phase is
+
+```math
+\mathbf d_{ij\mathbf R}
+=
+\left(\mathbf R+\boldsymbol\tau_j-\boldsymbol\tau_i\right)\cdot L ,
+```
+
+where `orb` stores fractional orbital positions and `lat` is the real-space
+lattice matrix used with row-vector fractional coordinates (`cart = frac · lat`).
+For spinful models, the spin index is ignored in the position lookup:
+`orbital_index = state_index % norb`.
+
+### Light-field convention
+
+The drive is represented by the dimensionless vector-potential amplitude
+
+```math
+\mathbf a(t) = \frac{e}{\hbar}\mathbf A(t),
+```
+
+in inverse length units matching `lat` (typically `1/Angstrom`).  A complex
+Fourier component is stored as `a_complex`, so the real drive is
+
+```math
+\mathbf a(t)
+=
+\operatorname{Re}\sum_\alpha
+\mathbf a_\alpha e^{-i l_\alpha \Omega_0 t}.
+```
+
+Here `l_alpha` is an integer harmonic.  This supports arbitrary linear,
+circular, elliptical, and mixed-frequency commensurate polarization by simply
+adding modes with different complex vectors and harmonics.
+
+### Peierls time dependence
+
+Each hopping is dressed by
+
+```math
+t_{ij}(\mathbf R,t)
+=
+t_{ij}(\mathbf R)
+\exp\left[-i\,\mathbf a(t)\cdot\mathbf d_{ij\mathbf R}\right].
+```
+
+The Fourier coefficient used in the Sambe matrix is
+
+```math
+C_q(\mathbf d)
+=
+\frac{1}{T}\int_0^T dt\,
+e^{iq\Omega_0 t}
+\exp\left[-i\,\mathbf a(t)\cdot\mathbf d\right].
+```
+
+The implementation evaluates this coefficient by uniform discrete Fourier
+sampling.  This is intentionally more general than a Bessel-function formula:
+it works for arbitrary complex polarization and arbitrary commensurate harmonic
+mixing without hand-derived special cases.
+
+### Floquet Hamiltonian
+
+The real-space Fourier block is
+
+```math
+H^{(q)}_{ij}(\mathbf k)
+=
+\sum_{\mathbf R}
+t_{ij}(\mathbf R)\,
+C_q(\mathbf d_{ij\mathbf R})\,
+e^{i2\pi\mathbf k\cdot\mathbf R}.
+```
+
+For photon sectors `n,m ∈ [-N,N]`, the Sambe Hamiltonian is
+
+```math
+\left[H_F(\mathbf k)\right]_{i n,j m}
+=
+H^{(n-m)}_{ij}(\mathbf k)
++ n\Omega_0\,\delta_{nm}\delta_{ij}.
+```
+
+The diagonal photon term uses energy units (`omega0_ev`).  Quasienergies can be
+folded to the first Floquet zone `[-omega0/2, omega0/2)` after diagonalization.
+
+### Initial API
+
+The first implementation should expose:
+
+| Type / API | Purpose |
+|------------|---------|
+| `LightMode` | One commensurate harmonic component: `(harmonic, a_complex)` |
+| `FloquetDrive` | Base photon energy `omega0_ev` plus a list of `LightMode`s |
+| `FloquetTruncation` | Photon cutoff `n_max` and time-grid size `n_time` |
+| `IncidentBasis` | Builds transverse polarization vectors from an incident direction |
+| `Floquet` trait | `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
+
+`LightMode::a_complex` has length `DIM`.  For full 3D incidence geometry,
+construct a complex polarization vector with `IncidentBasis` and then project or
+truncate it consistently with the model dimension.
+
+### Validation tests
+
+1. **No drive**: with no `LightMode`, `H_F(k)` is block diagonal and the spectrum
+   equals static bands plus `n omega0`.
+2. **Hermiticity**: `H_F(k) = H_F(k)^\dagger` for a generic complex polarization.
+3. **Weak-drive 1D check**: for a 1D nearest-neighbor chain and small amplitude
+   `a`, the `q=1` hopping Fourier block agrees with the first-order expansion of
+   the Peierls phase.
+
+### Future extensions
+
+- **Multi-frequency incommensurate drive**: use a multi-index Sambe basis
+  `n⃗`, diagonal energy `n⃗·Ω⃗`, and multidimensional Fourier sampling.  This is
+  expensive (`∏_α(2N_α+1)` sectors), so it should be an explicit advanced API.
+- **Length-gauge/rmatrix coupling**: add
+  `-e E(t)·r` for `Model<SPIN,DIM,HasRMatrix>` when position matrix elements are
+  available.  This should be a separate coupling option, not mixed silently with
+  Peierls hopping phases.
+- **Caching**: cache `C_q(d)` per distinct hopping link `(R,i,j)` and reuse it
+  over k-mesh calculations.  The first implementation computes per k for clarity.
+- **Observable support**: after the Hamiltonian path is stable, add spectral
+  weights, Floquet occupations, and response functions in Sambe space.
