@@ -145,12 +145,19 @@
 //!
 //! # API overview
 //!
+//! Use [`Floquet::floquet_model`] when you want a reusable static tight-binding
+//! model for band plotting, cuts, or other existing `Model` workflows.  The
+//! one-`k` methods are convenience wrappers for direct Sambe diagonalization.
+//!
 //! | Type / method | Meaning |
 //! |---------------|---------|
 //! | [`LightMode`] | One harmonic component `(harmonic, a_complex)` |
 //! | [`FloquetDrive`] | Base photon energy plus all light modes |
 //! | [`FloquetTruncation`] | Photon cutoff and time-Fourier grid |
 //! | [`IncidentBasis`] | 3D transverse basis from an incident direction |
+//! | [`FloquetEffectiveOptions`] | Optional order, q cutoff, and real-space truncation |
+//! | [`Floquet::floquet_model`] | Build an enlarged static Sambe tight-binding model |
+//! | [`Model::floquet_effective_model`] | Build a same-size high-frequency effective model |
 //! | [`Floquet::floquet_ham_onek`] | Build the Sambe Hamiltonian at one `k` |
 //! | [`Floquet::floquet_band_onek`] | Diagonalize the Sambe Hamiltonian |
 //! | [`Floquet::floquet_quasienergy_onek`] | Diagonalize and fold quasienergies |
@@ -191,9 +198,11 @@
 //!     let trunc = FloquetTruncation::new(1, 128);
 //!     let k = arr1(&[0.25, 0.0, 0.0]);
 //!
-//!     let quasienergies =
-//!         model.floquet_quasienergy_onek(&k, &drive, &trunc, Gauge::Lattice)?;
-//!     println!("{quasienergies:?}");
+//!     let floquet_model = model.floquet_model(&drive, &trunc)?;
+//!     let unfolded = floquet_model.solve_band_onek(&k);
+//!     let quasienergies = model.floquet_quasienergy_onek(&k, &drive, &trunc, Gauge::Lattice)?;
+//!     println!("unfolded Sambe bands = {unfolded:?}");
+//!     println!("folded quasienergies = {quasienergies:?}");
 //!     Ok(())
 //! }
 //! ```
@@ -201,12 +210,16 @@
 //! See also `examples/floquet_chain/main.rs`.
 
 use crate::error::{Result, TbError};
+use crate::model::NoRMatrix;
+use crate::model_utils::find_R;
 use crate::ndarray_lapack::eigvalsh_v;
 use crate::{Gauge, Model, RMatrixData};
+use ndarray::parallel::prelude::IntoParallelIterator;
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::UPLO;
 use num_complex::Complex;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use std::f64::consts::TAU;
 
 /// One commensurate Fourier component of the vector potential.
@@ -385,8 +398,117 @@ impl IncidentBasis {
     }
 }
 
+/// Optional controls for building a same-size high-frequency Floquet effective model.
+///
+/// The `k_mesh` itself is passed directly to
+/// [`Model::floquet_effective_model`].  These options only control the
+/// high-frequency expansion order, harmonic cutoff, and target real-space
+/// hopping range.  The inverse Fourier transform uses
+///
+/// ```math
+/// t_{\mathrm{eff}}(\mathbf R)
+/// =
+/// \frac{1}{N_k}\sum_{\mathbf k}
+/// H_{\mathrm{eff}}(\mathbf k)
+/// e^{-i2\pi\mathbf k\cdot\mathbf R}.
+/// ```
+///
+/// If `target_hamR` is `None`, the original model's `hamR` is used.  This keeps
+/// the returned model on the same real-space hopping range as the input model.
+/// Provide a larger `target_hamR` when the commutator terms are expected to
+/// generate longer-range effective hoppings.
+#[derive(Clone, Debug)]
+pub struct FloquetEffectiveOptions {
+    /// van Vleck order.  Currently supported: `0` and `1`.
+    pub order: usize,
+    /// Harmonic cutoff for commutator terms.  Defaults to `2 * trunc.n_max`.
+    pub q_max: Option<isize>,
+    /// Optional target real-space hopping vectors for inverse Fourier transform.
+    pub target_hamR: Option<Array2<isize>>,
+}
+
+impl Default for FloquetEffectiveOptions {
+    fn default() -> Self {
+        Self {
+            order: 1,
+            q_max: None,
+            target_hamR: None,
+        }
+    }
+}
+
+impl FloquetEffectiveOptions {
+    /// Construct first-order options using `q_max = 2 * trunc.n_max` and the
+    /// original model's `hamR`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the van Vleck order.  Currently `0` and `1` are supported.
+    pub fn with_order(mut self, order: usize) -> Self {
+        self.order = order;
+        self
+    }
+
+    /// Set the harmonic cutoff used in first-order commutator terms.
+    pub fn with_q_max(mut self, q_max: isize) -> Self {
+        self.q_max = Some(q_max);
+        self
+    }
+
+    /// Set the real-space hopping vectors used by the inverse Fourier transform.
+    pub fn with_target_hamR(mut self, target_hamR: Array2<isize>) -> Self {
+        self.target_hamR = Some(target_hamR);
+        self
+    }
+}
+
 /// Peierls-Floquet Sambe construction for tight-binding models.
 pub trait Floquet {
+    /// Static model type produced by [`Floquet::floquet_model`].
+    type FloquetModel;
+
+    /// Build an enlarged static tight-binding model in Sambe space.
+    ///
+    /// The returned model has the same spatial lattice and hopping range as
+    /// the original model, but its internal basis is enlarged from
+    /// `N_state` to
+    ///
+    /// ```math
+    /// N_{\mathrm{state}}(2N+1),
+    /// ```
+    ///
+    /// where `N = trunc.n_max`.  Photon sectors run from `-N` to `N`.
+    /// Spinless models are ordered as `(photon sector, orbital)`.  Spinful
+    /// models preserve the usual Rustb spin layout and are ordered as
+    /// `(spin, photon sector, orbital)`.
+    ///
+    /// The real-space matrix elements are
+    ///
+    /// ```math
+    /// \langle i,n;\mathbf 0|H_F|j,m;\mathbf R\rangle
+    /// =
+    /// t_{ij}(\mathbf R) C_{n-m}(\mathbf d_{ij\mathbf R})
+    /// +
+    /// n\Omega_0\delta_{nm}\delta_{ij}\delta_{\mathbf R,0}.
+    /// ```
+    ///
+    /// The result preserves the input model's `SPIN` const generic.  Photon
+    /// sectors are encoded as additional orbitals; if the input model is
+    /// spinful, physical spin remains the `Model<true, DIM, _>` spin degree of
+    /// freedom rather than being flattened away.
+    ///
+    /// This model is stored in real space.  Calling
+    /// `floquet_model.gen_ham(k, Gauge::Lattice)` is equivalent to
+    /// [`Floquet::floquet_ham_onek`] with `Gauge::Lattice`; using
+    /// `Gauge::Atom` applies the same atomic gauge phase to the enlarged
+    /// orbital positions.
+    fn floquet_model(
+        &self,
+        drive: &FloquetDrive,
+        trunc: &FloquetTruncation,
+    ) -> Result<Self::FloquetModel>;
+
     /// Build the full Sambe Hamiltonian at one fractional k point.
     ///
     /// The returned matrix has shape
@@ -445,6 +567,101 @@ pub trait Floquet {
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN, DIM, R> {
+    type FloquetModel = Model<SPIN, DIM, NoRMatrix>;
+
+    fn floquet_model(
+        &self,
+        drive: &FloquetDrive,
+        trunc: &FloquetTruncation,
+    ) -> Result<Self::FloquetModel> {
+        validate_floquet_drive::<DIM>(drive, trunc)?;
+
+        let nsta = self.nsta();
+        let norb = self.norb();
+        let sectors: Vec<isize> = trunc.sectors().collect();
+        let n_sector = sectors.len();
+        let new_norb = norb * n_sector;
+        let total = nsta * n_sector;
+        let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
+        let q_min = -2 * trunc.n_max;
+        let q_max = 2 * trunc.n_max;
+
+        let mut orb = Array2::<f64>::zeros((new_norb, DIM));
+        for isec in 0..n_sector {
+            for iorb in 0..norb {
+                let out_i = isec * norb + iorb;
+                orb.row_mut(out_i).assign(&self.orb.row(iorb));
+            }
+        }
+
+        let mut ham_r = self.hamR.clone();
+        let mut ham = Array3::<Complex<f64>>::zeros((ham_r.nrows(), total, total));
+        ham.axis_iter_mut(Axis(0))
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(i_r, mut out)| {
+                let r_vec = self.hamR.row(i_r);
+                let block = self.ham.index_axis(Axis(0), i_r);
+
+                for i in 0..nsta {
+                    for j in 0..nsta {
+                        let t = block[[i, j]];
+                        if t.norm_sqr() == 0.0 {
+                            continue;
+                        }
+
+                        let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
+                        let coeffs: Vec<Complex<f64>> = (q_min..=q_max)
+                            .map(|q| peierls_fourier_coeff(&d_cart, q, drive, trunc))
+                            .collect();
+
+                        for (in_sec, &n) in sectors.iter().enumerate() {
+                            let row = basis_indices[in_sec][i];
+                            for (im_sec, &m) in sectors.iter().enumerate() {
+                                let coeff = coeffs[(n - m - q_min) as usize];
+                                if coeff.norm_sqr() == 0.0 {
+                                    continue;
+                                }
+                                let col = basis_indices[im_sec][j];
+                                out[[row, col]] += t * coeff;
+                            }
+                        }
+                    }
+                }
+            });
+
+        let zero_r = Array1::<isize>::zeros(DIM);
+        let onsite_index = match find_R(&ham_r, &zero_r) {
+            Some(index) => index,
+            None => {
+                ham.push(
+                    Axis(0),
+                    Array2::<Complex<f64>>::zeros((total, total)).view(),
+                )
+                .unwrap();
+                ham_r.push_row(zero_r.view()).unwrap();
+                ham.len_of(Axis(0)) - 1
+            }
+        };
+
+        for (in_sec, &n) in sectors.iter().enumerate() {
+            let photon_shift = n as f64 * drive.omega0_ev;
+            for i in 0..nsta {
+                let idx = basis_indices[in_sec][i];
+                ham[[onsite_index, idx, idx]] += Complex::new(photon_shift, 0.0);
+            }
+        }
+
+        let mut model = Model::<SPIN, DIM, NoRMatrix>::tb_model(self.lat.clone(), orb, None)?;
+        model.ham = ham;
+        model.hamR = ham_r;
+        model.orb_projection = (0..n_sector)
+            .flat_map(|_| (0..norb).map(|i| self.orb_projection[i]))
+            .collect();
+
+        Ok(model)
+    }
+
     fn floquet_ham_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
@@ -455,9 +672,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         validate_floquet_input(self, kvec, drive, trunc)?;
 
         let nsta = self.nsta();
+        let norb = self.norb();
         let n_sector = trunc.n_sector();
         let total = nsta * n_sector;
         let mut hamf = Array2::<Complex<f64>>::zeros((total, total));
+        let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
 
         let q_min = -2 * trunc.n_max;
         let q_max = 2 * trunc.n_max;
@@ -471,13 +690,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
                 let block = &hq[(q - q_min) as usize];
                 for i in 0..nsta {
                     for j in 0..nsta {
-                        hamf[[in_sec * nsta + i, im_sec * nsta + j]] = block[[i, j]];
+                        let row = basis_indices[in_sec][i];
+                        let col = basis_indices[im_sec][j];
+                        hamf[[row, col]] = block[[i, j]];
                     }
                 }
             }
             let photon_shift = n as f64 * drive.omega0_ev;
             for i in 0..nsta {
-                hamf[[in_sec * nsta + i, in_sec * nsta + i]] += photon_shift;
+                let idx = basis_indices[in_sec][i];
+                hamf[[idx, idx]] += photon_shift;
             }
         }
 
@@ -513,6 +735,151 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    /// Build a same-size high-frequency Floquet effective model.
+    ///
+    /// With the Fourier convention used in this module,
+    ///
+    /// ```math
+    /// H(t)=\sum_q H^{(q)}e^{-iq\Omega t},
+    /// ```
+    ///
+    /// the implemented van Vleck expansion is
+    ///
+    /// ```math
+    /// H_{\mathrm{eff}}(\mathbf k)
+    /// =
+    /// H^{(0)}(\mathbf k)
+    /// +
+    /// \sum_{q=1}^{q_{\max}}
+    /// \frac{[H^{(q)}(\mathbf k),H^{(-q)}(\mathbf k)]}{q\Omega}
+    /// +
+    /// O(\Omega^{-2}).
+    /// ```
+    ///
+    /// `order = 0` keeps only `H^(0)`.  `order = 1` adds the commutator term.
+    /// Higher orders are not implemented yet.  Pass `None` for `options` to use
+    /// first order, `q_max = 2 * trunc.n_max`, and the input model's original
+    /// `hamR`.
+    ///
+    /// The inverse Fourier transform is controlled by `k_mesh`:
+    ///
+    /// ```math
+    /// t_{\mathrm{eff}}(\mathbf R)
+    /// =
+    /// \frac{1}{N_k}\sum_{\mathbf k}
+    /// H_{\mathrm{eff}}(\mathbf k)
+    /// e^{-i2\pi\mathbf k\cdot\mathbf R}.
+    /// ```
+    ///
+    /// The returned model has the same number of states as the input model.
+    /// It is an approximation to the off-resonant Floquet problem, not the full
+    /// enlarged Sambe model returned by [`Floquet::floquet_model`].
+    pub fn floquet_effective_model(
+        &self,
+        drive: &FloquetDrive,
+        trunc: &FloquetTruncation,
+        k_mesh: [usize; DIM],
+        options: Option<&FloquetEffectiveOptions>,
+    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+        let default_options;
+        let options = match options {
+            Some(options) => options,
+            None => {
+                default_options = FloquetEffectiveOptions::default();
+                &default_options
+            }
+        };
+
+        validate_floquet_drive::<DIM>(drive, trunc)?;
+        validate_effective_options::<DIM>(&k_mesh, options)?;
+
+        let nsta = self.nsta();
+        let target_ham_r = options
+            .target_hamR
+            .clone()
+            .unwrap_or_else(|| self.hamR.clone());
+        validate_target_hamr::<DIM>(&target_ham_r)?;
+
+        let q_max = options.q_max.unwrap_or(2 * trunc.n_max);
+        if q_max < 0 {
+            return Err(TbError::Other(format!(
+                "FloquetEffectiveOptions.q_max must be non-negative, got {q_max}"
+            )));
+        }
+
+        let kpoints = floquet_uniform_kmesh(&k_mesh);
+        let norm = 1.0 / (kpoints.len() as f64);
+        let ham = kpoints
+            .par_iter()
+            .fold(
+                || Array3::<Complex<f64>>::zeros((target_ham_r.nrows(), nsta, nsta)),
+                |mut partial, kvec| {
+                    let h_eff = self.floquet_effective_ham_onek_lattice(
+                        kvec,
+                        drive,
+                        trunc,
+                        options.order,
+                        q_max,
+                    );
+                    for (i_r, r_vec) in target_ham_r.outer_iter().enumerate() {
+                        let phase = inverse_bloch_phase::<DIM, _>(&r_vec, kvec) * norm;
+                        let mut block = partial.index_axis_mut(Axis(0), i_r);
+                        crate::ndarray_lapack::zaxpy(
+                            phase,
+                            h_eff.as_slice().unwrap(),
+                            block.as_slice_mut().unwrap(),
+                        );
+                    }
+                    partial
+                },
+            )
+            .reduce(
+                || Array3::<Complex<f64>>::zeros((target_ham_r.nrows(), nsta, nsta)),
+                |mut left, right| {
+                    left.zip_mut_with(&right, |a, b| *a += *b);
+                    left
+                },
+            );
+
+        let mut ham = ham;
+
+        enforce_real_space_hermiticity(&mut ham, &target_ham_r);
+
+        let mut model =
+            Model::<SPIN, DIM, NoRMatrix>::tb_model(self.lat.clone(), self.orb.clone(), None)?;
+        model.ham = ham;
+        model.hamR = target_ham_r;
+        model.orb_projection = self.orb_projection.clone();
+
+        Ok(model)
+    }
+
+    fn floquet_effective_ham_onek_lattice<S: Data<Elem = f64>>(
+        &self,
+        kvec: &ArrayBase<S, Ix1>,
+        drive: &FloquetDrive,
+        trunc: &FloquetTruncation,
+        order: usize,
+        q_max: isize,
+    ) -> Array2<Complex<f64>> {
+        let mut h_eff = self.floquet_harmonic_onek(kvec, drive, trunc, 0, Gauge::Lattice);
+
+        match order {
+            0 => {}
+            1 => {
+                for q in 1..=q_max {
+                    let h_pos = self.floquet_harmonic_onek(kvec, drive, trunc, q, Gauge::Lattice);
+                    let h_neg = self.floquet_harmonic_onek(kvec, drive, trunc, -q, Gauge::Lattice);
+                    let comm = h_pos.dot(&h_neg) - h_neg.dot(&h_pos);
+                    h_eff = h_eff + comm.mapv(|x| x / ((q as f64) * drive.omega0_ev));
+                }
+            }
+            _ => unreachable!("effective order is validated before evaluation"),
+        }
+
+        h_eff
+    }
+
     fn floquet_harmonic_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
@@ -596,6 +963,40 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 }
 
 #[inline]
+fn floquet_basis_indices<const SPIN: bool>(
+    nsta: usize,
+    norb: usize,
+    n_sector: usize,
+) -> Vec<Vec<usize>> {
+    (0..n_sector)
+        .map(|sector_index| {
+            (0..nsta)
+                .map(|state_index| {
+                    floquet_basis_index::<SPIN>(sector_index, state_index, nsta, norb, n_sector)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[inline]
+fn floquet_basis_index<const SPIN: bool>(
+    sector_index: usize,
+    state_index: usize,
+    nsta: usize,
+    norb: usize,
+    n_sector: usize,
+) -> usize {
+    if SPIN {
+        let spin = state_index / norb;
+        let orbital = state_index % norb;
+        spin * n_sector * norb + sector_index * norb + orbital
+    } else {
+        sector_index * nsta + state_index
+    }
+}
+
+#[inline]
 pub fn fold_quasienergy(energy: f64, omega0_ev: f64) -> f64 {
     (energy + 0.5 * omega0_ev).rem_euclid(omega0_ev) - 0.5 * omega0_ev
 }
@@ -623,6 +1024,13 @@ fn validate_floquet_input<
             found: vec![model.lat.nrows(), model.lat.ncols()],
         });
     }
+    validate_floquet_drive::<DIM>(drive, trunc)
+}
+
+fn validate_floquet_drive<const DIM: usize>(
+    drive: &FloquetDrive,
+    trunc: &FloquetTruncation,
+) -> Result<()> {
     if !drive.omega0_ev.is_finite() || drive.omega0_ev <= 0.0 {
         return Err(TbError::InvalidEnergyRange {
             min: 0.0,
@@ -657,6 +1065,51 @@ fn validate_floquet_input<
                 "FloquetDrive.modes[{im}].a_complex contains non-finite values"
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_effective_options<const DIM: usize>(
+    k_mesh: &[usize; DIM],
+    options: &FloquetEffectiveOptions,
+) -> Result<()> {
+    if options.order > 1 {
+        return Err(TbError::Other(format!(
+            "Floquet effective order {} is not implemented; supported orders are 0 and 1",
+            options.order
+        )));
+    }
+    for (axis, &n) in k_mesh.iter().enumerate() {
+        if n == 0 {
+            return Err(TbError::Other(format!(
+                "FloquetEffectiveOptions.k_mesh[{axis}] must be positive"
+            )));
+        }
+    }
+    if let Some(q_max) = options.q_max {
+        if q_max < 0 {
+            return Err(TbError::Other(format!(
+                "FloquetEffectiveOptions.q_max must be non-negative, got {q_max}"
+            )));
+        }
+    }
+    if let Some(target_ham_r) = &options.target_hamR {
+        validate_target_hamr::<DIM>(target_ham_r)?;
+    }
+    Ok(())
+}
+
+fn validate_target_hamr<const DIM: usize>(target_ham_r: &Array2<isize>) -> Result<()> {
+    if target_ham_r.ncols() != DIM {
+        return Err(TbError::InvalidArrayShape {
+            expected: vec![target_ham_r.nrows(), DIM],
+            found: vec![target_ham_r.nrows(), target_ham_r.ncols()],
+        });
+    }
+    if target_ham_r.nrows() == 0 {
+        return Err(TbError::Other(
+            "target_hamR must contain at least one R vector".to_string(),
+        ));
     }
     Ok(())
 }
@@ -702,6 +1155,65 @@ fn bloch_phase<const DIM: usize, S: Data<Elem = f64>>(
         r_dot_k += r_vec[a] as f64 * kvec[a];
     }
     Complex::new(0.0, TAU * r_dot_k).exp()
+}
+
+fn inverse_bloch_phase<const DIM: usize, S: Data<Elem = f64>>(
+    r_vec: &ArrayView1<'_, isize>,
+    kvec: &ArrayBase<S, Ix1>,
+) -> Complex<f64> {
+    bloch_phase::<DIM, S>(r_vec, kvec).conj()
+}
+
+fn floquet_uniform_kmesh<const DIM: usize>(mesh: &[usize; DIM]) -> Vec<Array1<f64>> {
+    let n_total = mesh.iter().product();
+    let mut points = Vec::with_capacity(n_total);
+    for mut linear in 0..n_total {
+        let mut k = Array1::<f64>::zeros(DIM);
+        for a in (0..DIM).rev() {
+            let n = mesh[a];
+            let i = linear % n;
+            linear /= n;
+            k[a] = (i as f64) / (n as f64);
+        }
+        points.push(k);
+    }
+    points
+}
+
+fn enforce_real_space_hermiticity(ham: &mut Array3<Complex<f64>>, ham_r: &Array2<isize>) {
+    let n_r = ham_r.nrows();
+    let mut visited = vec![false; n_r];
+
+    for i_r in 0..n_r {
+        if visited[i_r] {
+            continue;
+        }
+        let neg_r = ham_r.row(i_r).mapv(|x| -x);
+        let Some(j_r) = find_R(ham_r, &neg_r) else {
+            visited[i_r] = true;
+            continue;
+        };
+
+        if i_r == j_r {
+            let block = ham.index_axis(Axis(0), i_r).to_owned();
+            let herm = (&block + &hermitian_conjugate(&block)) * Complex::new(0.5, 0.0);
+            ham.index_axis_mut(Axis(0), i_r).assign(&herm);
+            visited[i_r] = true;
+        } else {
+            let block_i = ham.index_axis(Axis(0), i_r).to_owned();
+            let block_j = ham.index_axis(Axis(0), j_r).to_owned();
+            let avg = (&block_i + &hermitian_conjugate(&block_j)) * Complex::new(0.5, 0.0);
+            let avg_dag = hermitian_conjugate(&avg);
+            ham.index_axis_mut(Axis(0), i_r).assign(&avg);
+            ham.index_axis_mut(Axis(0), j_r).assign(&avg_dag);
+            visited[i_r] = true;
+            visited[j_r] = true;
+        }
+    }
+}
+
+fn hermitian_conjugate(a: &Array2<Complex<f64>>) -> Array2<Complex<f64>> {
+    a.t().mapv(|x| x.conj())
 }
 
 fn normalize3(v: &Array1<f64>) -> Result<Array1<f64>> {
@@ -785,6 +1297,142 @@ mod tests {
             }
         }
         assert!(max_diff < 1e-11, "max hermiticity error = {max_diff:e}");
+    }
+
+    #[test]
+    fn floquet_model_matches_onek_construction() {
+        let lat = array![[1.0, 0.0], [0.2, 1.1]];
+        let orb = array![[0.0, 0.0], [0.31, 0.17]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(0.2_f64, 0, 1, &arr1(&[0isize, 0]), None);
+        model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize, 0]), None);
+        model.set_hop(-0.6_f64, 1, 1, &arr1(&[0isize, 1]), None);
+
+        let drive = FloquetDrive::with_modes(
+            0.8,
+            vec![LightMode::new(
+                1,
+                arr1(&[Complex::new(0.13, 0.0), Complex::new(0.0, 0.09)]),
+            )],
+        );
+        let trunc = FloquetTruncation::new(1, 256);
+        let k = arr1(&[0.23, 0.31]);
+        let floquet_model = model.floquet_model(&drive, &trunc).unwrap();
+
+        assert_eq!(floquet_model.nsta(), model.nsta() * trunc.n_sector());
+        assert_eq!(floquet_model.hamR, model.hamR);
+
+        for gauge in [Gauge::Lattice, Gauge::Atom] {
+            let from_model = floquet_model.gen_ham(&k, gauge);
+            let from_onek = model.floquet_ham_onek(&k, &drive, &trunc, gauge).unwrap();
+            let mut max_diff = 0.0f64;
+            for i in 0..from_model.nrows() {
+                for j in 0..from_model.ncols() {
+                    max_diff = max_diff.max((from_model[[i, j]] - from_onek[[i, j]]).norm());
+                }
+            }
+            assert!(
+                max_diff < 1e-12,
+                "floquet_model mismatch in {gauge:?}: {max_diff:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn floquet_model_preserves_spinful_layout() {
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.27, 0.19]];
+        let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(0.3_f64, 0, 0, &arr1(&[0isize, 0]), crate::SpinDirection::Z);
+        model.add_hop(0.2_f64, 0, 0, &arr1(&[0isize, 0]), crate::SpinDirection::X);
+        model.set_hop(-0.9_f64, 0, 1, &arr1(&[1isize, 0]), None);
+        model.set_hop(-0.4_f64, 1, 1, &arr1(&[0isize, 1]), None);
+
+        let drive = FloquetDrive::with_modes(
+            0.6,
+            vec![LightMode::new(
+                1,
+                arr1(&[Complex::new(0.07, 0.0), Complex::new(0.0, 0.05)]),
+            )],
+        );
+        let trunc = FloquetTruncation::new(1, 256);
+        let k = arr1(&[0.17, 0.29]);
+        let floquet_model = model.floquet_model(&drive, &trunc).unwrap();
+
+        assert_eq!(floquet_model.norb(), model.norb() * trunc.n_sector());
+        assert_eq!(floquet_model.nsta(), model.nsta() * trunc.n_sector());
+
+        for gauge in [Gauge::Lattice, Gauge::Atom] {
+            let from_model = floquet_model.gen_ham(&k, gauge);
+            let from_onek = model.floquet_ham_onek(&k, &drive, &trunc, gauge).unwrap();
+            let mut max_diff = 0.0f64;
+            for i in 0..from_model.nrows() {
+                for j in 0..from_model.ncols() {
+                    max_diff = max_diff.max((from_model[[i, j]] - from_onek[[i, j]]).norm());
+                }
+            }
+            assert!(
+                max_diff < 1e-12,
+                "spinful floquet_model mismatch in {gauge:?}: {max_diff:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn floquet_effective_order0_matches_h0() {
+        let model = chain_model();
+        let drive = FloquetDrive::with_modes(
+            1.1,
+            vec![LightMode::new(1, arr1(&[Complex::new(0.23, 0.0)]))],
+        );
+        let trunc = FloquetTruncation::new(2, 512);
+        let options = FloquetEffectiveOptions::new().with_order(0);
+        let effective = model
+            .floquet_effective_model(&drive, &trunc, [32], Some(&options))
+            .unwrap();
+
+        assert_eq!(effective.nsta(), model.nsta());
+        assert_eq!(effective.hamR, model.hamR);
+
+        let k = arr1(&[0.173]);
+        let from_model = effective.gen_ham(&k, Gauge::Lattice);
+        let h0 = model.floquet_harmonic_onek(&k, &drive, &trunc, 0, Gauge::Lattice);
+        let mut max_diff = 0.0f64;
+        for i in 0..from_model.nrows() {
+            for j in 0..from_model.ncols() {
+                max_diff = max_diff.max((from_model[[i, j]] - h0[[i, j]]).norm());
+            }
+        }
+        assert!(max_diff < 1e-12, "order-0 effective mismatch: {max_diff:e}");
+    }
+
+    #[test]
+    fn floquet_effective_no_drive_matches_static_model() {
+        let model = chain_model();
+        let drive = FloquetDrive::new(0.9);
+        let trunc = FloquetTruncation::new(2, 64);
+        let effective = model
+            .floquet_effective_model(&drive, &trunc, [32], None)
+            .unwrap();
+
+        assert_eq!(effective.nsta(), model.nsta());
+        assert_eq!(effective.hamR, model.hamR);
+
+        let k = arr1(&[0.271]);
+        for gauge in [Gauge::Lattice, Gauge::Atom] {
+            let from_effective = effective.gen_ham(&k, gauge);
+            let from_static = model.gen_ham(&k, gauge);
+            let mut max_diff = 0.0f64;
+            for i in 0..from_effective.nrows() {
+                for j in 0..from_effective.ncols() {
+                    max_diff = max_diff.max((from_effective[[i, j]] - from_static[[i, j]]).norm());
+                }
+            }
+            assert!(
+                max_diff < 1e-12,
+                "no-drive effective mismatch in {gauge:?}: {max_diff:e}"
+            );
+        }
     }
 
     #[test]

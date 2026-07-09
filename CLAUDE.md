@@ -618,11 +618,40 @@ The first implementation should expose:
 | `FloquetDrive` | Base photon energy `omega0_ev` plus a list of `LightMode`s |
 | `FloquetTruncation` | Photon cutoff `n_max` and time-grid size `n_time` |
 | `IncidentBasis` | Builds transverse polarization vectors from an incident direction |
-| `Floquet` trait | `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
+| `FloquetEffectiveOptions` | Optional van Vleck order, q cutoff, and target `hamR` for same-size effective models |
+| `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
+| `Model` inherent API | `floquet_effective_model` with `Option<&FloquetEffectiveOptions>` |
 
 `LightMode::a_complex` has length `DIM`.  For full 3D incidence geometry,
 construct a complex polarization vector with `IncidentBasis` and then project or
 truncate it consistently with the model dimension.
+
+`floquet_model(drive, trunc)` returns a reusable
+`Model<SPIN, DIM, NoRMatrix>` in the enlarged Sambe basis.  Photon sectors are
+encoded as additional orbitals, so a spinful input model remains
+`Model<true, DIM, NoRMatrix>` and physical spin is not flattened away.  The
+spinless basis order is `(photon sector, orbital)`; the spinful basis order is
+Rustb's usual `(spin, photon sector, orbital)`.  The returned model is an
+unfolded Sambe model: `solve_band_onek` gives energies shifted by `n omega0`,
+while quasienergy folding still requires `fold_quasienergy` or
+`floquet_quasienergy_onek`.
+
+`floquet_effective_model(drive, trunc, k_mesh, options)` returns a same-size
+`Model<SPIN, DIM, NoRMatrix>` using the first-order high-frequency van Vleck
+expansion.  It computes `H_eff(k)` on a uniform fractional `k_mesh` and inverse
+Fourier transforms back to real space.  Pass `None` for default options:
+`order=1`, `q_max=2*trunc.n_max`, and `target_hamR=input.hamR`.  Pass
+`Some(&FloquetEffectiveOptions::new()...)` when commutator terms need a custom
+order, harmonic cutoff, or longer-range hoppings.  With the module convention
+`H(t)=Σ_q H^(q)e^{-iqΩt}`,
+
+```math
+H_{\rm eff}(k)
+= H^{(0)}(k)
++ \sum_{q=1}^{q_{\max}}
+\frac{[H^{(q)}(k),H^{(-q)}(k)]}{q\Omega}
++ O(\Omega^{-2}).
+```
 
 ### Validation tests
 
@@ -632,6 +661,9 @@ truncate it consistently with the model dimension.
 3. **Weak-drive 1D check**: for a 1D nearest-neighbor chain and small amplitude
    `a`, the `q=1` hopping Fourier block agrees with the first-order expansion of
    the Peierls phase.
+4. **Effective model checks**: `order=0` matches `H^(0)` after inverse Fourier
+   transform; no-drive first-order effective model reduces to the original
+   static model and preserves the number of bands.
 
 ### Future extensions
 

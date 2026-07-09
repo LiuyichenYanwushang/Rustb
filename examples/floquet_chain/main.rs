@@ -29,15 +29,16 @@ fn main() -> Result<()> {
         vec![LightMode::new(1, circular.mapv(|z| amplitude * z))],
     );
     let trunc = FloquetTruncation::new(1, 128);
+    let floquet_model = model.floquet_model(&drive, &trunc)?;
 
-    println!("# kx    quasienergies in [-omega/2, omega/2)");
+    println!("# kx    unfolded Sambe energies from the returned Floquet Model");
     for ik in 0..=8 {
         let kx = 0.5 * ik as f64 / 8.0;
         let k = arr1(&[kx, 0.0, 0.0]);
-        let qe = model.floquet_quasienergy_onek(&k, &drive, &trunc, Gauge::Lattice)?;
+        let band = floquet_model.solve_band_onek(&k);
         println!(
             "{kx:8.5}  {}",
-            qe.iter()
+            band.iter()
                 .map(|x| format!("{x:12.7}"))
                 .collect::<Vec<_>>()
                 .join(" ")
