@@ -12,15 +12,16 @@ Rustb is a Rust library for tight-binding model calculations in condensed matter
 - **Repo**: https://github.com/LiuyichenYanwushang/Rustb
 - **Error handling**: Uses `thiserror` for `TbError` enum.
 - **Docs**: `katexit` renders LaTeX in rustdoc; `docs-header.html` for custom CSS.
-- **Version**: 0.8.0.
+- **Version**: 0.7.0.
 - **SKILLS.md**: Practical usage guide with code examples for the entire crate. When adding or changing any public API, update that file as well.
 
 > **Note**: README.md and SKILLS.md both use the current const-generic API.
 
-## 0.8.0 Pre-release Refactor Summary
+## 0.7.0 Pre-release Refactor Summary
 
-Version 0.8 deliberately breaks the unreleased 0.7 response API. The central
-design rule is that physics workflows end in an ordinary
+Version 0.7 is the next release after the crates.io version 0.6.7 and
+deliberately breaks the previous response API. The central design rule is that
+physics workflows end in an ordinary
 `Model<SPIN, DIM, R>` whenever that is physically meaningful. Solver-specific
 wrappers hold input data and iteration policy; they do not create parallel
 model hierarchies with duplicated band, geometry, or response methods.
@@ -102,7 +103,7 @@ model hierarchies with duplicated band, geometry, or response methods.
   benchmarks are part of the API migration. Any future public signature or
   convention change must update all of them in the same commit.
 
-### Other 0.8 work in this development batch
+### Other 0.7 work in this development batch
 
 - Floquet support now covers Peierls-Sambe models, quasienergy folding, and a
   validated van Vleck effective-model path that also returns an ordinary

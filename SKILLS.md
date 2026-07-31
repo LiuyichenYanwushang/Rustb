@@ -1,4 +1,4 @@
-# Rustb 0.8 — Practical API Guide
+# Rustb 0.7 — Practical API Guide
 
 This guide follows the const-generic `Model<SPIN, DIM, R>` API in the current
 source tree. For mathematical definitions and complete error semantics, use the

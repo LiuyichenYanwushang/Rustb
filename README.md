@@ -8,7 +8,7 @@ and Floquet calculations.
 
 [![Crates.io](https://img.shields.io/crates/v/Rustb.svg)](https://crates.io/crates/Rustb)
 
-The current API version is **0.8.0** and uses the const-generic model type
+The current API version is **0.7.0** and uses the const-generic model type
 `Model<SPIN, DIM, R>`.
 
 ## Installation
@@ -17,7 +17,7 @@ Choose a BLAS/LAPACK backend suitable for the target system:
 
 ```toml
 [dependencies]
-Rustb = { version = "0.8", features = ["intel-mkl-static"] }
+Rustb = { version = "0.7", features = ["intel-mkl-static"] }
 ndarray = "0.17"
 num-complex = "0.4"
 ```
