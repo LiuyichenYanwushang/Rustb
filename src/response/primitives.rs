@@ -31,7 +31,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `dir_c` — optional diagonal velocity direction (for dipoles).
     /// * `gauge` — `Atom` or `Lattice`.
     /// * `spin` — optional spin direction for spin‑current evaluation.
-    pub fn compute_velocity_kernel(
+    pub(crate) fn compute_velocity_kernel(
         &self,
         k_vec: &Array1<f64>,
         dir_a: &Array1<f64>,

@@ -178,30 +178,36 @@ fn main() {
     fg.show();
 
     let nk: usize = 301;
-    let T: f64 = 0.0;
     let eta: f64 = 0.001;
-    let og: f64 = 0.0;
     let mu: f64 = 0.0;
-    let dir_1 = arr1(&[1.0, 0.0, 0.0]);
-    let dir_2 = arr1(&[0.0, 1.0, 0.0]);
-    let spin = None;
-    let kmesh = arr1(&[nk, nk, 1]);
     let start = Instant::now(); // 开始计时
+    let mut hall_params = HallConductivityParams::at_mu(
+        [nk, nk, 1],
+        DirectionPair::new([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        mu,
+    );
+    hall_params.broadening = eta;
     let conductivity = model
-        .Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta)
+        .hall_conductivity(&hall_params)
+        .unwrap()
+        .single()
         .unwrap();
     let end = Instant::now(); // 结束计时
     let duration = end.duration_since(start); // 计算执行时间
     println!(
-        "Hall_conductivity is {}, took {} seconds",
+        "hall_conductivity is {}, took {} seconds",
         conductivity,
         duration.as_secs_f64()
     ); // 输出执行时间
 
     let mu = Array1::<f64>::linspace(-1.0, 1.0, 1001);
-    let conductivity = model
-        .Hall_conductivity_mu(&kmesh, &dir_1, &dir_2, &mu, T, spin, eta)
-        .unwrap();
+    let mut hall_params = HallConductivityParams::new(
+        [nk, nk, 1],
+        DirectionPair::new([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        mu.clone(),
+    );
+    hall_params.broadening = eta;
+    let conductivity = model.hall_conductivity(&hall_params).unwrap().conductivity;
 
     let mu: f64 = 0.0;
 
@@ -235,7 +241,14 @@ fn main() {
     let kmesh = arr1(&[nk, nk, 1]);
     let kvec = gen_kmesh(&kmesh).unwrap();
     //let kvec=kvec-0.5;
-    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, spin, eta);
+    let berry_params = BerryCurvatureParams {
+        directions: DirectionPair::new([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        current: CurrentOperator::Charge,
+        broadening: eta,
+    };
+    let berry_curv = model
+        .occupied_berry_curvature_on(&kvec, &berry_params, mu, Occupation::ZeroTemperature)
+        .unwrap();
     let data = berry_curv.into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data,
@@ -250,7 +263,9 @@ fn main() {
     ];
     let label = vec!["G", "X", "M", "G"];
     let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
-    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, mu, T, spin, eta);
+    let berry_curv = model
+        .occupied_berry_curvature_on(&kvec, &berry_params, mu, Occupation::ZeroTemperature)
+        .unwrap();
 
     let mut fg = Figure::new();
     let x: Vec<f64> = k_dist.to_vec();

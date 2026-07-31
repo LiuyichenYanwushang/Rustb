@@ -24,12 +24,8 @@
 //!
 //! | Method | Path | Formula |
 //! |--------|------|---------|
-//! | `berry_curvature_dipole_energy_cut` | energy‑cut | $D^{ab;c}$ (2D, K‑quad line‑cut) |
-//! | `Nonlinear_Hall_conductivity_Extrinsic` | direct sum | $\chi^{\rm ext}$ |
-//! | `Nonlinear_Hall_conductivity_Extrinsic_sym` | direct sum | symmetrised $\chi^{\rm ext}$ |
-//! | `Nonlinear_Hall_conductivity_Intrinsic` | direct sum | $\sigma_{\rm int}$ |
-//! | `Nonlinear_Hall_conductivity_Intrinsic_ec` | energy‑cut | $\sigma_{\rm int}$ (2D/3D, K‑quad) |
-//! | `berry_connection_dipole` | per‑k‑point | $Q^{ab;c}_n$ at each k |
+//! | `extrinsic_nonlinear_hall` | direct sum or energy cut | $\chi^{\rm ext}$ |
+//! | `intrinsic_nonlinear_hall` | direct sum or energy cut | $\sigma_{\rm int}$ |
 
 use ndarray::prelude::*;
 use ndarray::*;
@@ -41,58 +37,213 @@ use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
 use crate::SpinDirection;
-use crate::error::Result;
+use crate::error::{Result, TbError};
 use crate::math::anti_comm;
+use crate::thermodynamics::{Occupation, fermi_derivative_from_width};
 
+use super::config::{
+    CurrentOperator, DirectionPair, IntegrationDiagnostics, mesh_array, validate_broadening,
+    validate_chemical_potentials, validate_k_mesh, validate_sorted,
+};
 use super::energy_cut::integrate_dipole_energy_cut_2d;
 use super::helpers::build_spin_matrix;
 use super::tracking::global_band_track;
-use super::traits::BerryCurvature;
 use super::types::VertexKernel;
 
-impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
-    /// Berry-curvature dipole via analytic 2D energy-cut integration.
-    ///
-    /// This avoids volume quadrature over the narrow finite-temperature Fermi
-    /// window.  Inside each triangle, `E_n(k)` and
-    /// `A_n(k)=v^c_n(k)Omega^{ab}_n(k)` are linearly interpolated; the
-    /// `delta(E_n-mu)` line cut is evaluated analytically and convolved with
-    /// `beta f(1-f)` for finite `T`.
-    ///
-    /// Currently implemented for 2D k-meshes only.
-    pub fn berry_curvature_dipole_energy_cut(
-        &self,
-        k_mesh: &Array1<usize>,
-        dir_a: &Array1<f64>,
-        dir_b: &Array1<f64>,
-        dir_c: &Array1<f64>,
-        mu: &Array1<f64>,
-        T: f64,
-        eta: f64,
-    ) -> Result<(Array1<f64>, usize)> {
-        assert_eq!(
-            k_mesh.len(),
-            2,
-            "berry_curvature_dipole_energy_cut currently supports 2D only"
-        );
-        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
-        let nk = kvec.nrows();
-        let gauge = Gauge::Atom;
+/// Current and two electric-field directions of a current-first rank-three
+/// response tensor `chi[current, field_1, field_2]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NonlinearHallDirections<const DIM: usize> {
+    /// Current/output direction.
+    pub current: [f64; DIM],
+    /// First electric-field direction.
+    pub field_1: [f64; DIM],
+    /// Second electric-field direction.
+    pub field_2: [f64; DIM],
+}
 
-        let mut all_pts: Vec<VertexKernel> = (0..nk)
-            .into_par_iter()
-            .map(|ik| {
-                let kv = kvec.row(ik).to_owned();
-                self.compute_velocity_kernel(&kv, dir_a, dir_b, Some(dir_c), gauge, None)
-            })
-            .collect();
-        global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
-
-        let (dipole, unsafe_count) = integrate_dipole_energy_cut_2d(&all_pts, k_mesh, mu, T, eta);
-        let det = self.lat.det().unwrap();
-        Ok((dipole / det, unsafe_count))
+impl<const DIM: usize> NonlinearHallDirections<DIM> {
+    pub const fn new(current: [f64; DIM], field_1: [f64; DIM], field_2: [f64; DIM]) -> Self {
+        Self {
+            current,
+            field_1,
+            field_2,
+        }
     }
 
+    fn validate(&self) -> Result<()> {
+        DirectionPair::new(self.current, self.field_1).validate()?;
+        DirectionPair::new(self.current, self.field_2).validate()
+    }
+
+    fn arrays(&self) -> (Array1<f64>, Array1<f64>, Array1<f64>) {
+        (
+            Array1::from_vec(self.current.to_vec()),
+            Array1::from_vec(self.field_1.to_vec()),
+            Array1::from_vec(self.field_2.to_vec()),
+        )
+    }
+}
+
+/// Integration algorithm for nonlinear Hall conductivity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NonlinearHallIntegration {
+    /// Uniform k-mesh sum with a finite Fermi window.
+    #[default]
+    Direct,
+    /// Band-tracked Fermi-surface integration in energy space.
+    EnergyCut,
+}
+
+/// Whether the two external-field indices are explicitly symmetrized.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FieldSymmetry {
+    /// Return the ordered kernel `S[current, field_1; field_2]`.
+    Ordered,
+    /// Return `(S[current, field_1; field_2] +
+    /// S[current, field_2; field_1]) / 2`.
+    #[default]
+    Symmetrized,
+}
+
+/// Configuration for the Berry-curvature-dipole nonlinear Hall response.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtrinsicNonlinearHallParams<const DIM: usize> {
+    /// Number of uniform samples along each reciprocal-lattice direction.
+    pub k_mesh: [usize; DIM],
+    /// Current-first rank-three tensor directions.
+    pub directions: NonlinearHallDirections<DIM>,
+    /// Chemical potentials in eV.
+    pub chemical_potentials: Array1<f64>,
+    /// Electronic occupation or smearing convention.
+    pub occupation: Occupation,
+    /// External frequency in eV.
+    pub frequency: f64,
+    /// Charge current or a selected spin-current polarization.
+    pub current: CurrentOperator,
+    /// Non-negative response broadening in eV.
+    pub broadening: f64,
+    /// Brillouin-zone integration algorithm.
+    pub integration: NonlinearHallIntegration,
+    /// Ordering convention for the two field indices.
+    pub field_symmetry: FieldSymmetry,
+}
+
+impl<const DIM: usize> ExtrinsicNonlinearHallParams<DIM> {
+    /// Construct a direct, field-symmetrized charge response.
+    pub fn new(
+        k_mesh: [usize; DIM],
+        directions: NonlinearHallDirections<DIM>,
+        chemical_potentials: Array1<f64>,
+        occupation: Occupation,
+    ) -> Self {
+        Self {
+            k_mesh,
+            directions,
+            chemical_potentials,
+            occupation,
+            frequency: 0.0,
+            current: CurrentOperator::Charge,
+            broadening: 1e-3,
+            integration: NonlinearHallIntegration::Direct,
+            field_symmetry: FieldSymmetry::Symmetrized,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_k_mesh(&self.k_mesh)?;
+        self.directions.validate()?;
+        validate_chemical_potentials(&self.chemical_potentials)?;
+        self.occupation.validate()?;
+        validate_broadening(self.broadening)?;
+        if !self.frequency.is_finite() {
+            return Err(TbError::InvalidResponseParameter {
+                parameter: "frequency",
+                message: "must be finite".into(),
+            });
+        }
+        if self.integration == NonlinearHallIntegration::EnergyCut {
+            validate_sorted(&self.chemical_potentials, "chemical_potentials")?;
+            if self.frequency != 0.0 {
+                return Err(TbError::InvalidResponseParameter {
+                    parameter: "frequency",
+                    message: "energy-cut extrinsic response currently requires zero frequency"
+                        .into(),
+                });
+            }
+            if DIM != 2 {
+                return Err(TbError::InvalidDimension {
+                    dim: DIM,
+                    supported: vec![2],
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Configuration for current-first intrinsic nonlinear Hall conductivity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IntrinsicNonlinearHallParams<const DIM: usize> {
+    /// Number of uniform samples along each reciprocal-lattice direction.
+    pub k_mesh: [usize; DIM],
+    /// Current-first rank-three tensor directions.
+    pub directions: NonlinearHallDirections<DIM>,
+    /// Chemical potentials in eV.
+    pub chemical_potentials: Array1<f64>,
+    /// Electronic occupation or smearing convention.
+    pub occupation: Occupation,
+    /// Brillouin-zone integration algorithm.
+    pub integration: NonlinearHallIntegration,
+}
+
+impl<const DIM: usize> IntrinsicNonlinearHallParams<DIM> {
+    /// Construct a direct current-first intrinsic response.
+    pub fn new(
+        k_mesh: [usize; DIM],
+        directions: NonlinearHallDirections<DIM>,
+        chemical_potentials: Array1<f64>,
+        occupation: Occupation,
+    ) -> Self {
+        Self {
+            k_mesh,
+            directions,
+            chemical_potentials,
+            occupation,
+            integration: NonlinearHallIntegration::Direct,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_k_mesh(&self.k_mesh)?;
+        self.directions.validate()?;
+        validate_chemical_potentials(&self.chemical_potentials)?;
+        self.occupation.validate()?;
+        if self.integration == NonlinearHallIntegration::EnergyCut {
+            validate_sorted(&self.chemical_potentials, "chemical_potentials")?;
+            if DIM != 2 && DIM != 3 {
+                return Err(TbError::InvalidDimension {
+                    dim: DIM,
+                    supported: vec![2, 3],
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Conductivity evaluated on a chemical-potential grid.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NonlinearHallResult {
+    /// Chemical potentials copied from the input configuration.
+    pub chemical_potentials: Array1<f64>,
+    /// Nonlinear Hall response at every chemical potential.
+    pub conductivity: Array1<f64>,
+    /// Algorithm diagnostics when exposed by the selected energy-cut path.
+    pub diagnostics: Option<IntegrationDiagnostics>,
+}
+
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Computes the unsymmetrized Berry-curvature-dipole kernel for each band at a
     /// single k-point.
     ///
@@ -119,7 +270,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// `(omega_n, band)` where `omega_n` contains $\partial_\gamma\varepsilon_n \Omega_{n,\alpha\beta}$
     /// for each band, and `band` contains the band energies.
-    pub fn berry_curvature_dipole_n_onek(
+    pub(crate) fn berry_curvature_dipole_n_onek(
         &self,
         k_vec: &Array1<f64>,
         current_dir: &Array1<f64>,
@@ -217,7 +368,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// # Panics
     ///
     /// Panics if any of `current_dir`, `dir_2`, or `dir_3` has length different from `self.dim_r()`.
-    pub fn berry_curvature_dipole_n(
+    pub(crate) fn berry_curvature_dipole_n(
         &self,
         k_vec: &Array2<f64>,
         current_dir: &Array1<f64>,
@@ -264,150 +415,121 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         (omega, band)
     }
 
-    /// Computes the unsymmetrized extrinsic nonlinear Hall kernel via the Berry
-    /// curvature dipole.
+    /// Evaluate the Berry-curvature-dipole nonlinear Hall response.
     ///
-    /// This integrates the Berry-curvature-dipole kernel over the Brillouin zone:
-    /// $$ S_{\alpha\beta;\gamma} = \int \dd\mathbf k \sum_n
-    ///    \left(-\pdv{f_n}{\varepsilon}\right) \partial_\gamma \varepsilon_{n\mathbf k}
-    ///    \Omega_{n,\alpha\beta} $$
-    ///
-    /// This is not the fully field-symmetrized current-first tensor
-    /// $\chi^{\rm ext}_{abc}$.  Use
-    /// [`Nonlinear_Hall_conductivity_Extrinsic_sym`] for
-    /// $\chi^{\rm ext}_{abc}=\frac12(S_{ab;c}+S_{ac;b})$.
-    ///
-    /// The energy derivative of the Fermi-Dirac distribution is:
-    /// $$ -\pdv{f_n}{\varepsilon} = \beta \f{e^{\beta(\varepsilon_n-\mu)}}{(e^{\beta(\varepsilon_n-\mu)}+1)^2}
-    ///    = \beta f_n(1-f_n) $$
-    ///
-    /// **T>0**: direct k‑point sum with Fermi window.
-    /// **T=0**: uses a mesh‑broadened Fermi window
-    /// `T_eff = max(1, 1/(n_per_dim·k_B))` — not a true δ‑function limit.
-    ///
-    /// # Arguments
-    ///
-    /// * `k_mesh` - Number of k-points along each direction.
-    /// * `current_dir`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
-    /// * `dir_3` - Direction vector for the velocity / Fermi-surface index $\gamma$.
-    /// * `mu` - Array of chemical potential values (in eV).
-    /// * `T` - Temperature (in K).
-    /// * `spin` - Spin operator index (0, 1, 2, 3).
-    /// * `eta` - Broadening parameter $\eta$.
-    ///
-    /// # Returns
-    ///
-    /// The extrinsic nonlinear Hall conductivity for each $\mu$ value.
-    ///
-    pub fn Nonlinear_Hall_conductivity_Extrinsic(
+    /// Direct integration requires a finite thermal or smearing width because
+    /// `-df/dE` is sampled on k-points. Energy-cut integration supports the
+    /// exact zero-temperature limit.
+    pub fn extrinsic_nonlinear_hall(
         &self,
-        k_mesh: &Array1<usize>,
-        current_dir: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        dir_3: &Array1<f64>,
-        mu: &Array1<f64>,
-        T: f64,
-        og: f64,
-        spin: Option<SpinDirection>,
-        eta: f64,
-    ) -> Result<Array1<f64>> {
-        if current_dir.len() != self.dim_r()
-            || dir_2.len() != self.dim_r()
-            || dir_3.len() != self.dim_r()
-        {
-            panic!(
-                "Wrong, the current_dir or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {} and {}",
-                self.dim_r(),
-                current_dir.len(),
-                dir_2.len()
-            )
+        params: &ExtrinsicNonlinearHallParams<DIM>,
+    ) -> Result<NonlinearHallResult> {
+        params.validate()?;
+        let spin = params.current.spin_direction();
+        if !SPIN && let Some(direction) = spin {
+            return Err(TbError::SpinNotAllowed(direction));
         }
-        let kvec: Array2<f64> = crate::kpoints::gen_kmesh(&k_mesh)?;
-        let nk: usize = kvec.len_of(Axis(0));
-        let (omega, band) =
-            self.berry_curvature_dipole_n(&kvec, &current_dir, &dir_2, &dir_3, og, spin, eta);
-        let omega = omega.into_raw_vec();
-        let band = band.into_raw_vec();
-        let n_e = mu.len();
-        let mut conductivity = Array1::<f64>::zeros(n_e);
-        if T != 0.0 {
-            let beta = 1.0 / T / (8.617e-5);
-            let use_iter = band.iter().zip(omega.iter()).par_bridge();
-            conductivity = use_iter
-                .fold(
-                    || Array1::<f64>::zeros(n_e),
-                    |acc, (energy, omega0)| {
-                        let f = 1.0 / (beta * (mu - *energy)).mapv(|x| x.exp() + 1.0);
-                        acc + &f * (1.0 - &f) * beta * *omega0
-                    },
-                )
-                .reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
-            conductivity = conductivity.clone() / (nk as f64) / self.lat.det().unwrap();
+        let (current, field_1, field_2) = params.directions.arrays();
+        let (first, first_diagnostics) =
+            self.extrinsic_nonlinear_hall_component(params, &current, &field_1, &field_2, spin)?;
+        let (conductivity, diagnostics) = if params.field_symmetry == FieldSymmetry::Symmetrized {
+            let (second, second_diagnostics) = self
+                .extrinsic_nonlinear_hall_component(params, &current, &field_2, &field_1, spin)?;
+            let diagnostics = match (first_diagnostics, second_diagnostics) {
+                (Some(a), Some(b)) => Some(IntegrationDiagnostics {
+                    unsafe_simplex_count: a.unsafe_simplex_count.max(b.unsafe_simplex_count),
+                }),
+                (a, b) => a.or(b),
+            };
+            ((first + second) * 0.5, diagnostics)
         } else {
-            // T=0: use low-T Fermi window matching k-mesh resolution
-            let nk_per_dim = (nk as f64).powf(1.0 / self.dim_r() as f64);
-            let T_eff = (1.0 / (nk_per_dim * 8.617e-5)).max(1.0);
-            let beta_eff = 1.0 / (T_eff * 8.617e-5);
-            let use_iter = band.iter().zip(omega.iter()).par_bridge();
-            conductivity = use_iter
-                .fold(
-                    || Array1::<f64>::zeros(n_e),
-                    |acc, (energy, omega0)| {
-                        let f = 1.0 / (beta_eff * (mu - *energy)).mapv(|x| x.exp() + 1.0);
-                        acc + &f * (1.0 - &f) * beta_eff * *omega0
-                    },
-                )
-                .reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
-            conductivity = conductivity.clone() / (nk as f64) / self.lat.det().unwrap();
-        }
-        Ok(conductivity)
+            (first, first_diagnostics)
+        };
+        Ok(NonlinearHallResult {
+            chemical_potentials: params.chemical_potentials.clone(),
+            conductivity,
+            diagnostics,
+        })
     }
 
-    /// Current-first, field-symmetrized extrinsic nonlinear Hall tensor.
-    ///
-    /// For `j_a = chi_{abc} E_b E_c`, this returns
-    /// ```text
-    /// chi_ext[a,b,c] = 1/2 * (S_{ab;c} + S_{ac;b})
-    /// S_{ab;c} = ∫ (-df/dE) v_c Omega_{ab} dk
-    /// ```
-    ///
-    /// The same physical prefactors omitted by
-    /// [`Nonlinear_Hall_conductivity_Extrinsic`] are omitted here.
-    pub fn Nonlinear_Hall_conductivity_Extrinsic_sym(
+    fn extrinsic_nonlinear_hall_component(
         &self,
-        k_mesh: &Array1<usize>,
-        current_dir: &Array1<f64>,
-        field_dir_1: &Array1<f64>,
-        field_dir_2: &Array1<f64>,
-        mu: &Array1<f64>,
-        T: f64,
-        og: f64,
+        params: &ExtrinsicNonlinearHallParams<DIM>,
+        current: &Array1<f64>,
+        field_1: &Array1<f64>,
+        field_2: &Array1<f64>,
         spin: Option<SpinDirection>,
-        eta: f64,
-    ) -> Result<Array1<f64>> {
-        let term_1 = self.Nonlinear_Hall_conductivity_Extrinsic(
-            k_mesh,
-            current_dir,
-            field_dir_1,
-            field_dir_2,
-            mu,
-            T,
-            og,
-            spin,
-            eta,
-        )?;
-        let term_2 = self.Nonlinear_Hall_conductivity_Extrinsic(
-            k_mesh,
-            current_dir,
-            field_dir_2,
-            field_dir_1,
-            mu,
-            T,
-            og,
-            spin,
-            eta,
-        )?;
-        Ok((term_1 + term_2) * 0.5)
+    ) -> Result<(Array1<f64>, Option<IntegrationDiagnostics>)> {
+        let k_mesh = mesh_array(&params.k_mesh);
+        let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
+        let width = params.occupation.energy_width()?;
+        let determinant = self.lat.det()?;
+        match params.integration {
+            NonlinearHallIntegration::Direct => {
+                if width == 0.0 {
+                    return Err(TbError::InvalidThermodynamicParameter {
+                        parameter: "occupation",
+                        message: "direct nonlinear Hall integration requires finite temperature or Fermi smearing".into(),
+                    });
+                }
+                let (kernel, energies) = self.berry_curvature_dipole_n(
+                    &k_points,
+                    current,
+                    field_1,
+                    field_2,
+                    params.frequency,
+                    spin,
+                    params.broadening,
+                );
+                let values: Vec<f64> = params
+                    .chemical_potentials
+                    .par_iter()
+                    .map(|&mu| {
+                        kernel
+                            .iter()
+                            .zip(&energies)
+                            .map(|(&value, &energy)| {
+                                value * fermi_derivative_from_width(energy, mu, width)
+                            })
+                            .sum::<f64>()
+                            / k_points.nrows() as f64
+                            / determinant
+                    })
+                    .collect();
+                Ok((Array1::from_vec(values), None))
+            }
+            NonlinearHallIntegration::EnergyCut => {
+                let chemical_potentials =
+                    Array1::from_iter(params.chemical_potentials.iter().copied());
+                let mut vertices: Vec<VertexKernel> = (0..k_points.nrows())
+                    .into_par_iter()
+                    .map(|index| {
+                        self.compute_velocity_kernel(
+                            &k_points.row(index).to_owned(),
+                            current,
+                            field_1,
+                            Some(field_2),
+                            Gauge::Atom,
+                            spin,
+                        )
+                    })
+                    .collect();
+                global_band_track(&mut vertices, &params.k_mesh);
+                let (conductivity, unsafe_simplex_count) = integrate_dipole_energy_cut_2d(
+                    &vertices,
+                    &k_mesh,
+                    &chemical_potentials,
+                    width,
+                    params.broadening,
+                );
+                Ok((
+                    conductivity / determinant,
+                    Some(IntegrationDiagnostics {
+                        unsafe_simplex_count,
+                    }),
+                ))
+            }
+        }
     }
 
     /// Computes the Berry connection dipole at a single k-point.
@@ -450,9 +572,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// ```
     ///
     /// Callers must pass directions in `(dir_a, dir_b, dir_c)` order.
-    /// E.g. `Nonlinear_Hall_conductivity_Intrinsic` maps its public
-    /// `(current=c, field_1=a, field_2=b)` → `(dir_a=a, dir_b=b, dir_c=c)`.
-    pub fn berry_connection_dipole_onek(
+    /// [`Model::intrinsic_nonlinear_hall`] maps its current-first input
+    /// `(current=c, field_1=a, field_2=b)` to this internal order.
+    pub(crate) fn berry_connection_dipole_onek(
         &self,
         k_vec: &Array1<f64>,
         dir_a: &Array1<f64>,
@@ -611,7 +733,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// The three direction vectors `(dir_a, dir_b, dir_c)` are passed directly
     /// to the one‑k‑point kernel — see its docstring for the index convention.
-    pub fn berry_connection_dipole(
+    pub(crate) fn berry_connection_dipole(
         &self,
         k_vec: &Array2<f64>,
         dir_a: &Array1<f64>,
@@ -684,132 +806,89 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
     }
 
-    /// Current-first charge intrinsic nonlinear Hall conductivity (k-point
-    /// sum).
+    /// Evaluate current-first intrinsic nonlinear Hall conductivity.
     ///
-    /// ```text
-    /// chi_int[c,a,b](μ,T) = σ_int^{ab;c}(μ,T)
-    /// σ^{ab;c}_{int}(μ,T) = Σ_n ∫_BZ (−∂f/∂E_n) (−Q^{ab;c}_n(k)) dk
-    /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
-    /// G^{ij}_n = Re Σ_{m≠n} v^i_{nm} v^j_{mn} / (E_n−E_m)³
-    /// ```
-    ///
-    /// Argument order is current-first: `(current c, field a, field b)`.
-    /// Internally this maps to the `sigma^{ab;c}` kernel.
-    ///
-    /// **T>0**: direct k‑point sum with Fermi window.
-    /// **T=0**: uses a mesh‑broadened Fermi window
-    /// `T_eff = max(1, 1/(n_per_dim·k_B))` — not a true δ‑function limit.
-    ///
-    /// Spinful / partial_G branch is not yet correctly implemented.
-    ///
-    /// # Arguments
-    ///
-    /// * `k_mesh` - Number of k-points along each direction.
-    /// * `current_dir` - Current/output direction `c`.
-    /// * `dir_2`, `dir_3` - Electric-field directions `a,b`.
-    /// * `mu` - Array of chemical potential values (in eV).
-    /// * `T` - Temperature (in K).
-    pub fn Nonlinear_Hall_conductivity_Intrinsic(
+    /// Direct integration requires a finite Fermi window. Energy-cut mode
+    /// evaluates the zero-temperature Fermi surface exactly within the
+    /// simplex interpolation and also accepts finite thermal widths.
+    pub fn intrinsic_nonlinear_hall(
         &self,
-        k_mesh: &Array1<usize>,
-        current_dir: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        dir_3: &Array1<f64>,
-        mu: &Array1<f64>,
-        T: f64,
-    ) -> Result<Array1<f64>> {
-        let kvec: Array2<f64> = crate::kpoints::gen_kmesh(&k_mesh)?;
-        let nk: usize = kvec.len_of(Axis(0));
-        // public API (current=c, field_1=a, field_2=b) → helper (dir_a=a, dir_b=b, dir_c=c)
-        let (omega, band, _partial_G) =
-            self.berry_connection_dipole(&kvec, &dir_2, &dir_3, &current_dir, None);
-        let omega = omega.into_raw_vec();
-        let omega = Array1::from(omega);
-        let band = band.into_raw_vec();
-        let band = Array1::from(band);
-        let n_e = mu.len();
-        let mut conductivity = Array1::<f64>::zeros(n_e);
-        if T != 0.0 {
-            let beta = 1.0 / T / 8.617e-5;
-            let use_iter = band.iter().zip(omega.iter()).par_bridge();
-            conductivity = use_iter
-                .fold(
-                    || Array1::<f64>::zeros(n_e),
-                    |acc, (energy, omega0)| {
-                        let f = 1.0 / ((beta * (*energy - mu)).mapv(|x| x.exp() + 1.0));
-                        acc + &f * (1.0 - &f) * beta * *omega0
-                    },
-                )
-                .reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
-            conductivity = conductivity.clone() / (nk as f64) / self.lat.det().unwrap();
-        } else {
-            // T=0: use low-T Fermi window matching k-mesh resolution
-            let nk_per_dim = (nk as f64).powf(1.0 / self.dim_r() as f64);
-            let T_eff = (1.0 / (nk_per_dim * 8.617e-5)).max(1.0);
-            let beta_eff = 1.0 / (T_eff * 8.617e-5);
-            let use_iter = band.iter().zip(omega.iter()).par_bridge();
-            conductivity = use_iter
-                .fold(
-                    || Array1::<f64>::zeros(n_e),
-                    |acc, (energy, omega0)| {
-                        let f = 1.0 / ((beta_eff * (*energy - mu)).mapv(|x| x.exp() + 1.0));
-                        acc + &f * (1.0 - &f) * beta_eff * *omega0
-                    },
-                )
-                .reduce(|| Array1::<f64>::zeros(n_e), |acc, x| acc + x);
-            conductivity = conductivity.clone() / (nk as f64) / self.lat.det().unwrap();
-        }
-        Ok(conductivity)
-    }
+        params: &IntrinsicNonlinearHallParams<DIM>,
+    ) -> Result<NonlinearHallResult> {
+        params.validate()?;
+        let k_mesh = mesh_array(&params.k_mesh);
+        let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
+        let width = params.occupation.energy_width()?;
+        let determinant = self.lat.det()?;
+        let (current, field_1, field_2) = params.directions.arrays();
 
-    /// Current-first charge intrinsic NLH via K‑quadrature energy‑cut (2D).
-    ///
-    /// Returns the same signed result as [`Nonlinear_Hall_conductivity_Intrinsic`]
-    /// (i.e. integrates $-Q^{ab;c}_n$).
-    ///
-    /// ```text
-    /// Q^{ab;c}_n = 2 v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)
-    /// G^{ij}_n = Re Σ_{m≠n} K^{ij}_{nm} / (E_n−E_m)³
-    /// ```
-    ///
-    /// Uses K‑quadrature along the $E_n=\mu$ Fermi‑surface (line in 2D,
-    /// surface in 3D) inside each simplex.  Requires `dir_c` so diagonal
-    /// velocity fields are available.
-    #[allow(non_snake_case)]
-    pub fn Nonlinear_Hall_conductivity_Intrinsic_ec(
-        &self,
-        k_mesh: &Array1<usize>,
-        dir_a: &Array1<f64>,
-        dir_b: &Array1<f64>,
-        dir_c: &Array1<f64>,
-        mu: &Array1<f64>,
-        T: f64,
-        eta: f64,
-    ) -> Result<Array1<f64>> {
-        assert!(
-            k_mesh.len() == 2 || k_mesh.len() == 3,
-            "Intrinsic EC: only 2D/3D supported"
-        );
-        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
-        let nk = kvec.nrows();
-        let gauge = Gauge::Atom;
-
-        let mut all_pts: Vec<VertexKernel> = (0..nk)
-            .into_par_iter()
-            .map(|ik| {
-                let kv = kvec.row(ik).to_owned();
-                self.compute_velocity_kernel(&kv, dir_a, dir_b, Some(dir_c), gauge, None)
-            })
-            .collect();
-        global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
-
-        let sigma = match k_mesh.len() {
-            2 => super::energy_cut::integrate_intrinsic_cut_2d(&all_pts, k_mesh, mu, T),
-            3 => super::energy_cut::integrate_intrinsic_cut_3d(&all_pts, k_mesh, mu, T),
-            _ => unreachable!(),
+        let conductivity = match params.integration {
+            NonlinearHallIntegration::Direct => {
+                if width == 0.0 {
+                    return Err(TbError::InvalidThermodynamicParameter {
+                        parameter: "occupation",
+                        message: "direct nonlinear Hall integration requires finite temperature or Fermi smearing".into(),
+                    });
+                }
+                let (kernel, energies, _) =
+                    self.berry_connection_dipole(&k_points, &field_1, &field_2, &current, None);
+                let values: Vec<f64> = params
+                    .chemical_potentials
+                    .par_iter()
+                    .map(|&mu| {
+                        kernel
+                            .iter()
+                            .zip(&energies)
+                            .map(|(&value, &energy)| {
+                                value * fermi_derivative_from_width(energy, mu, width)
+                            })
+                            .sum::<f64>()
+                            / k_points.nrows() as f64
+                            / determinant
+                    })
+                    .collect();
+                Array1::from_vec(values)
+            }
+            NonlinearHallIntegration::EnergyCut => {
+                let chemical_potentials =
+                    Array1::from_iter(params.chemical_potentials.iter().copied());
+                let mut vertices: Vec<VertexKernel> = (0..k_points.nrows())
+                    .into_par_iter()
+                    .map(|index| {
+                        self.compute_velocity_kernel(
+                            &k_points.row(index).to_owned(),
+                            &field_1,
+                            &field_2,
+                            Some(&current),
+                            Gauge::Atom,
+                            None,
+                        )
+                    })
+                    .collect();
+                global_band_track(&mut vertices, &params.k_mesh);
+                let values = match DIM {
+                    2 => super::energy_cut::integrate_intrinsic_cut_2d(
+                        &vertices,
+                        &k_mesh,
+                        &chemical_potentials,
+                        width,
+                    ),
+                    3 => super::energy_cut::integrate_intrinsic_cut_3d(
+                        &vertices,
+                        &k_mesh,
+                        &chemical_potentials,
+                        width,
+                    ),
+                    _ => unreachable!("validated before energy-cut integration"),
+                };
+                values / determinant
+            }
         };
-        let det = self.lat.det().unwrap();
-        Ok(sigma / det)
+
+        Ok(NonlinearHallResult {
+            chemical_potentials: params.chemical_potentials.clone(),
+            conductivity,
+            diagnostics: None,
+        })
     }
 }

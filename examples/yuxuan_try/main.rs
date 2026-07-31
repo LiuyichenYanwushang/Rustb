@@ -87,36 +87,28 @@ fn main() {
     model.show_band(&path, &label, nk, "examples/yuxuan_try");
 
     //画一下贝利曲率的分布
-    let dir_1 = arr1(&[1.0, 0.0]);
-    let dir_2 = arr1(&[0.0, 1.0]);
-    let dir_3 = arr1(&[0.0, 1.0]);
     let T = 100.0;
-    let nk: usize = 1000;
-    let kmesh = arr1(&[nk, nk]);
-    /*
-    let kvec=gen_kmesh(&kmesh).unwrap();
-    let lat_inv=model.lat.inv().unwrap();
-    let kvec=PI*model.lat.dot(&(kvec.reversed_axes()));
-    let kvec=kvec.reversed_axes();
-    let (berry_curv,band)=model.berry_curvature_dipole_n(&kvec,&dir_1,&dir_2,&dir_3,0.0,0,1e-3);
-    ///////////////////////////////////////////
-    let beta=1.0/T/(8.617e-5);
-    let f:Array2::<f64>=band.clone().map(|x| 1.0/((beta*x).exp()+1.0));
-    let f=beta*&f*(1.0-&f);
-    println!("{:?}",berry_curv.shape());
-    let berry_curv=(berry_curv.clone()*f).sum_axis(Axis(1));
-    let data=berry_curv.into_shape((nk,nk)).unwrap();
-    draw_heatmap(&data,"./examples/yuxuan_try/nonlinear.pdf");
-    */
-
-    //画一下贝利曲率的分布
     let nk: usize = 1000;
     let kmesh = arr1(&[nk, nk]);
     let kvec = gen_kmesh(&kmesh).unwrap();
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, None, 1e-3);
+    let berry_params = BerryCurvatureParams {
+        directions: DirectionPair::new([1.0, 0.0], [0.0, 1.0]),
+        current: CurrentOperator::Charge,
+        broadening: 1e-3,
+    };
+    let berry_curv = model
+        .occupied_berry_curvature_on(
+            &kvec,
+            &berry_params,
+            0.0,
+            Occupation::FermiDirac {
+                temperature_kelvin: T,
+            },
+        )
+        .unwrap();
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data.map(|x| {
@@ -129,51 +121,12 @@ fn main() {
         }),
         "./examples/yuxuan_try/heat_map.pdf",
     );
+    let hall_params =
+        HallConductivityParams::at_mu([nk, nk], DirectionPair::new([1.0, 0.0], [0.0, 1.0]), 0.0);
     let conductivity = model
-        .Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, None, 1e-3)
+        .hall_conductivity(&hall_params)
+        .unwrap()
+        .single()
         .unwrap();
     println!("{}", conductivity / (2.0 * PI));
-
-    /*
-    let E_min=-1.0;
-    let E_max=1.0;
-    let E_n=2000;
-    let og=0.0;
-    let mu=Array1::linspace(E_min,E_max,E_n);
-    let sigma:Array1<f64>=model.Nonlinear_Hall_conductivity_Extrinsic(&kmesh,&dir_1,&dir_2,&dir_3,&mu,T,og,0,1e-5);
-    //开始绘制非线性电导
-    let mut fg = Figure::new();
-    let x:Vec<f64>=mu.to_vec();
-    let axes=fg.axes2d();
-    let y:Vec<f64>=sigma.to_vec();
-    axes.lines(&x, &y, &[Color("black")]);
-    //axes.set_y_range(Fix(-10.0),Fix(10.0));
-    axes.set_x_range(Fix(E_min),Fix(E_max));
-    let mut show_ticks=Vec::<String>::new();
-    let mut pdf_name=String::new();
-    pdf_name.push_str("./examples/yuxuan_try/nonlinear_ex.pdf");
-    fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
-
-
-    let E_min=-1.0;
-    let E_max=1.0;
-    let E_n=2000;
-    let og=0.0;
-    let mu=Array1::linspace(E_min,E_max,E_n);
-    let sigma:Array1<f64>=model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh,&dir_1,&dir_2,&dir_3,&mu,T);
-    //开始绘制非线性电导
-    let mut fg = Figure::new();
-    let x:Vec<f64>=mu.to_vec();
-    let axes=fg.axes2d();
-    let y:Vec<f64>=sigma.to_vec();
-    axes.lines(&x, &y, &[Color("black")]);
-    //axes.set_y_range(Fix(-10.0),Fix(10.0));
-    axes.set_x_range(Fix(E_min),Fix(E_max));
-    let mut show_ticks=Vec::<String>::new();
-    let mut pdf_name=String::new();
-    pdf_name.push_str("./examples/yuxuan_try/nonlinear_in.pdf");
-    fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
-    */
 }

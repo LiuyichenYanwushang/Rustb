@@ -46,7 +46,6 @@ use super::tracking::{
 };
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, TrackedSimplexRef, VertexKernel};
 
-const KB_EV_PER_K: f64 = 8.617333262e-5;
 const ENERGY_CUT_EPS: f64 = 1e-12;
 const FERMI_X_CUT: f64 = 18.0;
 const FERMI_X_STEPS: usize = 72;
@@ -95,7 +94,7 @@ fn unique_push(points: &mut Vec<([f64; 2], f64)>, point: [f64; 2], amp: f64) {
 /// `energy_v[i]` and `amp_v[i]` are the vertex values of the linearly
 /// interpolated energy and response amplitude.  The return value is
 /// `int_T A(k) delta(E(k)-energy) d^2k` in the coordinate measure of `coords`.
-pub fn triangle_line_cut(
+pub(crate) fn triangle_line_cut(
     coords: &Array2<f64>,
     energy_v: [f64; 3],
     amp_v: [f64; 3],
@@ -490,11 +489,11 @@ fn accumulate_triangle_dipole_kquad_ref(
 /// preserved.
 /// `all_pts` must have been band‑tracked via [`global_band_track`].
 /// The public `Model`‑level methods handle this automatically.
-pub fn integrate_dipole_energy_cut_2d(
+pub(crate) fn integrate_dipole_energy_cut_2d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
     mu: &Array1<f64>,
-    T: f64,
+    thermal_width: f64,
     eta: f64,
 ) -> (Array1<f64>, usize) {
     assert!(
@@ -506,8 +505,8 @@ pub fn integrate_dipole_energy_cut_2d(
         2,
         "energy-cut dipole currently supports 2D only"
     );
-    let beta = if T > 0.0 {
-        1.0 / (T * KB_EV_PER_K)
+    let beta = if thermal_width > 0.0 {
+        1.0 / thermal_width
     } else {
         0.0
     };
@@ -947,11 +946,11 @@ fn accumulate_triangle_intrinsic_kquad_ref(
 /// 2D intrinsic NLH via K‑quadrature energy‑cut.
 /// `all_pts` must have been band‑tracked via [`global_band_track`].
 /// The public `Model`‑level methods handle this automatically.
-pub fn integrate_intrinsic_cut_2d(
+pub(crate) fn integrate_intrinsic_cut_2d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
     mu: &Array1<f64>,
-    T: f64,
+    thermal_width: f64,
 ) -> Array1<f64> {
     assert!(
         mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
@@ -961,8 +960,8 @@ pub fn integrate_intrinsic_cut_2d(
     let (nx, ny) = (k_mesh[0], k_mesh[1]);
     let inv_nx = 1.0 / nx as f64;
     let inv_ny = 1.0 / ny as f64;
-    let beta = if T > 0.0 {
-        1.0 / (T * KB_EV_PER_K)
+    let beta = if thermal_width > 0.0 {
+        1.0 / thermal_width
     } else {
         0.0
     };
@@ -1464,11 +1463,11 @@ fn accumulate_tetrahedron_intrinsic_kquad_ref(
 /// 3D intrinsic NLH via K‑quadrature surface energy‑cut.
 /// `all_pts` must have been band‑tracked via [`global_band_track`].
 /// The public `Model`‑level methods handle this automatically.
-pub fn integrate_intrinsic_cut_3d(
+pub(crate) fn integrate_intrinsic_cut_3d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
     mu: &Array1<f64>,
-    T: f64,
+    thermal_width: f64,
 ) -> Array1<f64> {
     assert!(
         mu.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1]),
@@ -1479,8 +1478,8 @@ pub fn integrate_intrinsic_cut_3d(
     let inv_nx = 1.0 / nx as f64;
     let inv_ny = 1.0 / ny as f64;
     let inv_nz = 1.0 / nz as f64;
-    let beta = if T > 0.0 {
-        1.0 / (T * KB_EV_PER_K)
+    let beta = if thermal_width > 0.0 {
+        1.0 / thermal_width
     } else {
         0.0
     };
@@ -1758,9 +1757,9 @@ fn integrate_fermi_cut_2d_t0(
 
 /// 2D Fermi‑window integration via per‑μ triangle occupancy cut.
 ///
-/// At $T=0$ the occupation is a step function; the integral is computed
-/// exactly within each triangle (no energy binning).  At $T>0$ the
-/// $T=0$ result is thermally convolved:
+/// At zero thermal width the occupation is a step function; the integral is
+/// computed exactly within each triangle (no energy binning). At finite width
+/// the zero-width result is thermally convolved:
 ///
 /// $$\sigma_T(\mu) = \int_{-\infty}^\infty w(x)\,\sigma_0(\mu + x/\beta)\,dx,
 /// \qquad w(x)=\frac{e^x}{(1+e^x)^2}$$
@@ -1769,11 +1768,11 @@ fn integrate_fermi_cut_2d_t0(
 /// divide by $\det(L)$ for Cartesian).
 /// `all_pts` must have been band‑tracked via [`global_band_track`].
 /// The public `Model`‑level methods handle this automatically.
-pub fn integrate_fermi_cut_2d(
+pub(crate) fn integrate_fermi_cut_2d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
     mu: &Array1<f64>,
-    T: f64,
+    thermal_width: f64,
     eta: f64,
 ) -> Array1<f64> {
     assert!(
@@ -1782,12 +1781,12 @@ pub fn integrate_fermi_cut_2d(
     );
     assert_eq!(k_mesh.len(), 2);
 
-    if T == 0.0 {
+    if thermal_width == 0.0 {
         return integrate_fermi_cut_2d_t0(all_pts, k_mesh, mu, eta);
     }
 
-    // T>0: thermal convolution of the T=0 result.
-    let beta = 1.0 / (T * KB_EV_PER_K);
+    // Finite-width convolution of the zero-temperature result.
+    let beta = 1.0 / thermal_width;
     let x_max = 12.0; // w(x) < 6e-6 for |x| > 12
     let mu_min = mu.iter().fold(f64::INFINITY, |a, &b| a.min(b));
     let mu_max = mu.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
@@ -1825,7 +1824,7 @@ pub fn integrate_fermi_cut_2d(
 
 /// Diagnostic counters for hybrid energy‑cut.
 #[derive(Default, Clone)]
-pub struct FermiCutCounts {
+pub(crate) struct FermiCutCounts {
     pub empty: usize,
     pub full: usize,
     pub partial: usize,
@@ -1843,7 +1842,7 @@ static CNT_PARTIAL: AtomicUsize = AtomicUsize::new(0);
 
 /// Read and reset the internal hybrid energy‑cut counters (debug builds only).
 /// In release builds returns all zeros.
-pub fn read_reset_fermi_cut_counts() -> FermiCutCounts {
+pub(crate) fn read_reset_fermi_cut_counts() -> FermiCutCounts {
     #[cfg(debug_assertions)]
     {
         FermiCutCounts {
@@ -2205,16 +2204,16 @@ fn integrate_fermi_cut_3d_t0(
 /// 3D Fermi‑window integration via per‑μ tetrahedron occupancy cut.
 ///
 /// Same algorithm as [`integrate_fermi_cut_2d`] but for tetrahedra.
-/// At $T=0$ each tetrahedron's linearly‑interpolated $E(k)$ and $\Omega(k)$
-/// are integrated exactly over the occupied sub‑region; $T>0$ uses
-/// thermal convolution of the $T=0$ result.
+/// At zero thermal width each tetrahedron's linearly-interpolated $E(k)$ and
+/// $\Omega(k)$ are integrated exactly over the occupied sub-region; finite
+/// width uses thermal convolution of the zero-width result.
 /// `all_pts` must have been band‑tracked via [`global_band_track`].
 /// The public `Model`‑level methods handle this automatically.
-pub fn integrate_fermi_cut_3d(
+pub(crate) fn integrate_fermi_cut_3d(
     all_pts: &[VertexKernel],
     k_mesh: &Array1<usize>,
     mu: &Array1<f64>,
-    T: f64,
+    thermal_width: f64,
     eta: f64,
 ) -> Array1<f64> {
     assert!(
@@ -2223,12 +2222,12 @@ pub fn integrate_fermi_cut_3d(
     );
     assert_eq!(k_mesh.len(), 3);
 
-    if T == 0.0 {
+    if thermal_width == 0.0 {
         return integrate_fermi_cut_3d_t0(all_pts, k_mesh, mu, eta);
     }
 
-    // T>0: thermal convolution
-    let beta = 1.0 / (T * KB_EV_PER_K);
+    // Finite-width thermal convolution.
+    let beta = 1.0 / thermal_width;
     let x_max = 12.0;
     let mu_min = mu.iter().fold(f64::INFINITY, |a, &b| a.min(b));
     let mu_max = mu.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));

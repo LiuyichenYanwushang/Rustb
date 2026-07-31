@@ -23,21 +23,14 @@
 //!
 //! Rustb stores hopping blocks as
 //!
-//! ```math
-//! t_{ij}(\mathbf R)
-//! =
-//! \langle i,\mathbf 0|\hat H|j,\mathbf R\rangle ,
-//! ```
+//! $$ t_{ij}(\mathbf R) = \langle i,\mathbf 0|\hat H|j,\mathbf R\rangle , $$
 //!
 //! where `hamR[a]` is the integer lattice vector `R` and `ham[a,i,j]` is the
 //! corresponding matrix element.  The real-space link vector used by the Peierls
 //! phase is
 //!
-//! ```math
-//! \mathbf d_{ij\mathbf R}
-//! =
-//! \bigl(\mathbf R+\boldsymbol\tau_j-\boldsymbol\tau_i\bigr)L .
-//! ```
+//! $$ \mathbf d_{ij\mathbf R} =
+//! \bigl(\mathbf R+\boldsymbol\tau_j-\boldsymbol\tau_i\bigr)L . $$
 //!
 //! Here `orb` stores fractional orbital coordinates `tau`, and `lat` is the
 //! real-space lattice matrix used with row-vector fractional coordinates:
@@ -48,30 +41,24 @@
 //!
 //! The drive is represented by
 //!
-//! ```math
+//! $$
 //! \mathbf a(t) = \frac{e}{\hbar}\mathbf A(t),
-//! ```
+//! $$
 //!
 //! so `LightMode::a_complex` has units of inverse length, matching the length
 //! unit of `lat`.  For one mode with harmonic `l`, the stored complex amplitude
 //! means
 //!
-//! ```math
-//! \mathbf a_l(t)
-//! =
+//! $$ \mathbf a_l(t) =
 //! \operatorname{Re}\left[
 //! \mathbf a_l e^{-i l\Omega_0 t}
-//! \right].
-//! ```
+//! \right]. $$
 //!
 //! Multiple [`LightMode`] values are added before exponentiating:
 //!
-//! ```math
-//! \mathbf a(t)
-//! =
+//! $$ \mathbf a(t) =
 //! \operatorname{Re}\sum_\alpha
-//! \mathbf a_\alpha e^{-i l_\alpha\Omega_0 t}.
-//! ```
+//! \mathbf a_\alpha e^{-i l_\alpha\Omega_0 t}. $$
 //!
 //! This representation covers linear, circular, elliptical, and mixed-harmonic
 //! polarization without hard-coded special cases.
@@ -80,22 +67,16 @@
 //!
 //! Every hopping is dressed as
 //!
-//! ```math
-//! t_{ij}(\mathbf R,t)
-//! =
+//! $$ t_{ij}(\mathbf R,t) =
 //! t_{ij}(\mathbf R)
-//! \exp\left[-i\,\mathbf a(t)\cdot\mathbf d_{ij\mathbf R}\right].
-//! ```
+//! \exp\left[-i\,\mathbf a(t)\cdot\mathbf d_{ij\mathbf R}\right]. $$
 //!
 //! The Fourier coefficient of the Peierls phase is
 //!
-//! ```math
-//! C_q(\mathbf d)
-//! =
+//! $$ C_q(\mathbf d) =
 //! \frac{1}{T}\int_0^T dt\,
 //! e^{iq\Omega_0 t}
-//! \exp\left[-i\,\mathbf a(t)\cdot\mathbf d\right].
-//! ```
+//! \exp\left[-i\,\mathbf a(t)\cdot\mathbf d\right]. $$
 //!
 //! The implementation evaluates `C_q` by uniform time sampling over one period.
 //! This is deliberately more general than a Bessel-function formula: it handles
@@ -103,14 +84,11 @@
 //!
 //! The reciprocal-space Fourier block is
 //!
-//! ```math
-//! H^{(q)}_{ij}(\mathbf k)
-//! =
+//! $$ H^{(q)}_{ij}(\mathbf k) =
 //! \sum_{\mathbf R}
 //! t_{ij}(\mathbf R)\,
 //! C_q(\mathbf d_{ij\mathbf R})\,
-//! e^{i2\pi\mathbf k\cdot\mathbf R}.
-//! ```
+//! e^{i2\pi\mathbf k\cdot\mathbf R}. $$
 //!
 //! `Gauge::Lattice` returns this block directly.  `Gauge::Atom` applies the
 //! same orbital-position phase convention as [`Model::gen_ham`].
@@ -120,13 +98,10 @@
 //! With photon sectors `n,m` in `[-n_max, n_max]`, the Floquet-Sambe
 //! Hamiltonian is
 //!
-//! ```math
-//! \left[H_F(\mathbf k)\right]_{i n,j m}
-//! =
+//! $$ \left[H_F(\mathbf k)\right]_{i n,j m} =
 //! H^{(n-m)}_{ij}(\mathbf k)
 //! +
-//! n\Omega_0\,\delta_{nm}\delta_{ij}.
-//! ```
+//! n\Omega_0\,\delta_{nm}\delta_{ij}. $$
 //!
 //! The photon energy `Omega_0` is stored as `FloquetDrive::omega0_ev` in eV, so
 //! the returned Floquet eigenvalues are also in eV.
@@ -135,13 +110,36 @@
 //! [`Floquet::floquet_quasienergy_onek`] folds them into the first Floquet zone
 //! by
 //!
-//! ```math
-//! \varepsilon_F
-//! =
+//! $$ \varepsilon_F =
 //! \left(\varepsilon+\frac{\Omega_0}{2}\right)\bmod \Omega_0
 //! -
-//! \frac{\Omega_0}{2}.
-//! ```
+//! \frac{\Omega_0}{2}. $$
+//!
+//! # Van Vleck effective model (high-frequency expansion)
+//!
+//! When `Omega_0` is large compared to the bandwidth, the photon-dressed bands
+//! are well separated and the physics can be captured by a **same-size** static
+//! model obtained through the van Vleck expansion:
+//!
+//! $$ H_{\mathrm{eff}}(\mathbf k) =
+//! H^{(0)}(\mathbf k)
+//! +
+//! \sum_{q=1}^{q_{\max}}
+//! \frac{[H^{(q)}(\mathbf k), H^{(-q)}(\mathbf k)]}{q\Omega_0}
+//! +
+//! O(\Omega_0^{-2}). $$
+//!
+//! The Fourier blocks `H^{(q)}(k)` are defined in the [Peierls phase
+//! section](#peierls-phase-and-fourier-blocks) above.  Each commutator term
+//! `[H^(q), H^(-q)]` captures a virtual photon-exchange process where the
+//! system absorbs a photon of energy `q Omega_0` and immediately re-emits it,
+//! staying in the same photon sector but acquiring an effective hopping
+//! correction of order `1/Omega_0`.
+//!
+//! Use [`Model::floquet_effective_model`] for this path.  It computes
+//! `H_eff(k)` on a uniform k-mesh and inverse Fourier transforms back to
+//! real space, returning a [`Model`]`<SPIN, DIM, NoRMatrix>` with the same
+//! number of bands as the input model.
 //!
 //! # API overview
 //!
@@ -230,13 +228,10 @@ use std::f64::consts::TAU;
 ///
 /// In formulas,
 ///
-/// ```math
-/// \mathbf a_l(t)
-/// =
+/// $$ \mathbf a_l(t) =
 /// \operatorname{Re}\left[
 /// \mathbf a_l e^{-il\Omega_0 t}
-/// \right].
-/// ```
+/// \right]. $$
 ///
 /// `harmonic = l` may be any integer.  Use `l = 1` for the fundamental,
 /// `l = 2` for the second harmonic, etc.
@@ -261,12 +256,9 @@ impl LightMode {
 ///
 /// The full field is the sum of all modes:
 ///
-/// ```math
-/// \mathbf a(t)
-/// =
+/// $$ \mathbf a(t) =
 /// \operatorname{Re}\sum_\alpha
-/// \mathbf a_\alpha e^{-il_\alpha\Omega_0 t}.
-/// ```
+/// \mathbf a_\alpha e^{-il_\alpha\Omega_0 t}. $$
 ///
 /// `omega0_ev` is the photon energy `Omega_0` in eV.  All `LightMode::harmonic`
 /// values are integer multiples of this base frequency.
@@ -305,15 +297,15 @@ impl FloquetDrive {
 ///
 /// The Sambe sector index is truncated to
 ///
-/// ```math
+/// $$
 /// n \in [-N,N],
-/// ```
+/// $$
 ///
 /// where `N = n_max`, so the Hamiltonian dimension is
 ///
-/// ```math
+/// $$
 /// N_{\mathrm{Sambe}} = N_{\mathrm{state}}(2N+1).
-/// ```
+/// $$
 ///
 /// `n_time` controls the discrete Fourier transform used to evaluate Peierls
 /// coefficients `C_q(d)`.  Increase it when the drive amplitude or the maximum
@@ -347,14 +339,13 @@ impl FloquetTruncation {
 /// Given a propagation direction `k_hat`, this type constructs two orthonormal
 /// transverse vectors `e1` and `e2`.  A Jones vector `(c1,c2)` then defines
 ///
-/// ```math
+/// $$
 /// \boldsymbol\epsilon = c_1\mathbf e_1+c_2\mathbf e_2.
-/// ```
+/// $$
 ///
 /// Examples:
 ///
-/// - linear polarization along `e1`: `(1,0)`;
-/// - circular polarization: `(1,i)/sqrt(2)`;
+/// - linear polarization along `e1`: `(1,0)`; - circular polarization: `(1,i)/sqrt(2)`;
 /// - elliptical polarization: arbitrary complex `(c1,c2)`.
 #[derive(Clone, Debug)]
 pub struct IncidentBasis {
@@ -405,18 +396,17 @@ impl IncidentBasis {
 /// high-frequency expansion order, harmonic cutoff, and target real-space
 /// hopping range.  The inverse Fourier transform uses
 ///
-/// ```math
-/// t_{\mathrm{eff}}(\mathbf R)
-/// =
+/// $$ t_{\mathrm{eff}}(\mathbf R) =
 /// \frac{1}{N_k}\sum_{\mathbf k}
 /// H_{\mathrm{eff}}(\mathbf k)
-/// e^{-i2\pi\mathbf k\cdot\mathbf R}.
-/// ```
+/// e^{-i2\pi\mathbf k\cdot\mathbf R}. $$
 ///
 /// If `target_hamR` is `None`, the original model's `hamR` is used.  This keeps
 /// the returned model on the same real-space hopping range as the input model.
 /// Provide a larger `target_hamR` when the commutator terms are expected to
-/// generate longer-range effective hoppings.
+/// generate longer-range effective hoppings.  Every vector must occur exactly
+/// once, and the set must be closed under `R -> -R`, so the inverse-transformed
+/// model can satisfy `H(-R) = H(R)^\dagger`.
 #[derive(Clone, Debug)]
 pub struct FloquetEffectiveOptions {
     /// van Vleck order.  Currently supported: `0` and `1`.
@@ -463,6 +453,80 @@ impl FloquetEffectiveOptions {
     }
 }
 
+/// Precomputed `t_ij(R) * C_q(d)` for all harmonics `q ∈ [q_min, q_max]`.
+///
+/// `blocks` has shape `(q_count, n_r, nsta, nsta)` where `q_count = q_max - q_min + 1`.
+/// Index `[iq, i_r, i, j]` stores the `q = q_min + iq` Fourier component of hopping
+/// from orbital `j` in cell `R = hamR[i_r]` to orbital `i` at the origin.
+/// This is independent of `k` and reusable across the entire k-mesh.
+struct FloquetHarmonicCache {
+    q_min: isize,
+    q_max: isize,
+    blocks: Array4<Complex<f64>>,
+}
+
+impl FloquetHarmonicCache {
+    #[inline]
+    fn q_index(&self, q: isize) -> usize {
+        debug_assert!(
+            q >= self.q_min && q <= self.q_max,
+            "Floquet harmonic q={q} is outside cached range [{}, {}]",
+            self.q_min,
+            self.q_max
+        );
+        (q - self.q_min) as usize
+    }
+}
+
+/// Precomputed time-grid data for the discrete Fourier integration of
+/// Peierls coefficients `C_q(d)`.
+///
+/// `link_field[it, a]` stores the real part of the total dimensionless
+/// vector potential `a_a(t_it)` for each time step and spatial direction.
+/// `fourier[iq, it]` stores `exp(i * q * theta)` for each harmonic and time step.
+/// Building these once avoids recomputing the same exponentials for every
+/// hopping link.
+struct FloquetTimeGrid {
+    link_field: Array2<f64>,
+    fourier: Array2<Complex<f64>>,
+    inv_n_time: f64,
+}
+
+impl FloquetTimeGrid {
+    fn new(
+        drive: &FloquetDrive,
+        trunc: &FloquetTruncation,
+        q_min: isize,
+        q_max: isize,
+        dim: usize,
+    ) -> Self {
+        let n_time = trunc.n_time;
+        let q_count = (q_max - q_min + 1) as usize;
+        let inv_n_time = 1.0 / (n_time as f64);
+        let mut link_field = Array2::<f64>::zeros((n_time, dim));
+        let mut fourier = Array2::<Complex<f64>>::zeros((q_count, n_time));
+
+        for it in 0..n_time {
+            let theta = TAU * (it as f64) * inv_n_time;
+            for mode in &drive.modes {
+                let harmonic_phase = Complex::new(0.0, -(mode.harmonic as f64) * theta).exp();
+                for a in 0..dim {
+                    link_field[[it, a]] += (mode.a_complex[a] * harmonic_phase).re;
+                }
+            }
+            for (iq, q) in (q_min..=q_max).enumerate() {
+                fourier[[iq, it]] = Complex::new(0.0, (q as f64) * theta).exp();
+            }
+        }
+
+        Self {
+            link_field,
+            fourier,
+            inv_n_time,
+        }
+    }
+}
+
 /// Peierls-Floquet Sambe construction for tight-binding models.
 pub trait Floquet {
     /// Static model type produced by [`Floquet::floquet_model`].
@@ -474,9 +538,9 @@ pub trait Floquet {
     /// the original model, but its internal basis is enlarged from
     /// `N_state` to
     ///
-    /// ```math
+    /// $$
     /// N_{\mathrm{state}}(2N+1),
-    /// ```
+    /// $$
     ///
     /// where `N = trunc.n_max`.  Photon sectors run from `-N` to `N`.
     /// Spinless models are ordered as `(photon sector, orbital)`.  Spinful
@@ -485,13 +549,10 @@ pub trait Floquet {
     ///
     /// The real-space matrix elements are
     ///
-    /// ```math
-    /// \langle i,n;\mathbf 0|H_F|j,m;\mathbf R\rangle
-    /// =
+    /// $$ \langle i,n;\mathbf 0|H_F|j,m;\mathbf R\rangle =
     /// t_{ij}(\mathbf R) C_{n-m}(\mathbf d_{ij\mathbf R})
     /// +
-    /// n\Omega_0\delta_{nm}\delta_{ij}\delta_{\mathbf R,0}.
-    /// ```
+    /// n\Omega_0\delta_{nm}\delta_{ij}\delta_{\mathbf R,0}. $$
     ///
     /// The result preserves the input model's `SPIN` const generic.  Photon
     /// sectors are encoded as additional orbitals; if the input model is
@@ -513,21 +574,18 @@ pub trait Floquet {
     ///
     /// The returned matrix has shape
     ///
-    /// ```math
+    /// $$
     /// \bigl(N_{\mathrm{state}}(2N+1),\,N_{\mathrm{state}}(2N+1)\bigr),
-    /// ```
+    /// $$
     ///
     /// where `N = trunc.n_max`.
     ///
     /// The block convention is
     ///
-    /// ```math
-    /// \left[H_F\right]_{i n,j m}
-    /// =
+    /// $$ \left[H_F\right]_{i n,j m} =
     /// H^{(n-m)}_{ij}(\mathbf k)
     /// +
-    /// n\Omega_0\delta_{nm}\delta_{ij}.
-    /// ```
+    /// n\Omega_0\delta_{nm}\delta_{ij}. $$
     fn floquet_ham_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
@@ -554,9 +612,9 @@ pub trait Floquet {
     ///
     /// The folding convention is
     ///
-    /// ```math
+    /// $$
     /// \varepsilon_F \in [-\Omega_0/2,\Omega_0/2).
-    /// ```
+    /// $$
     fn floquet_quasienergy_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
@@ -585,6 +643,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
         let q_min = -2 * trunc.n_max;
         let q_max = 2 * trunc.n_max;
+        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, q_min, q_max);
 
         let mut orb = Array2::<f64>::zeros((new_norb, DIM));
         for isec in 0..n_sector {
@@ -600,30 +659,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
             .into_par_iter()
             .enumerate()
             .for_each(|(i_r, mut out)| {
-                let r_vec = self.hamR.row(i_r);
-                let block = self.ham.index_axis(Axis(0), i_r);
-
                 for i in 0..nsta {
                     for j in 0..nsta {
-                        let t = block[[i, j]];
-                        if t.norm_sqr() == 0.0 {
+                        if harmonic_cache
+                            .blocks
+                            .slice(s![.., i_r, i, j])
+                            .iter()
+                            .all(|x| x.norm_sqr() == 0.0)
+                        {
                             continue;
                         }
-
-                        let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
-                        let coeffs: Vec<Complex<f64>> = (q_min..=q_max)
-                            .map(|q| peierls_fourier_coeff(&d_cart, q, drive, trunc))
-                            .collect();
 
                         for (in_sec, &n) in sectors.iter().enumerate() {
                             let row = basis_indices[in_sec][i];
                             for (im_sec, &m) in sectors.iter().enumerate() {
-                                let coeff = coeffs[(n - m - q_min) as usize];
-                                if coeff.norm_sqr() == 0.0 {
+                                let hopping = harmonic_cache.blocks
+                                    [[harmonic_cache.q_index(n - m), i_r, i, j]];
+                                if hopping.norm_sqr() == 0.0 {
                                     continue;
                                 }
                                 let col = basis_indices[im_sec][j];
-                                out[[row, col]] += t * coeff;
+                                out[[row, col]] += hopping;
                             }
                         }
                     }
@@ -652,7 +708,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
             }
         }
 
-        let mut model = Model::<SPIN, DIM, NoRMatrix>::tb_model(self.lat.clone(), orb, None)?;
+        let atoms = (0..n_sector)
+            .flat_map(|_| self.atoms.iter().cloned())
+            .collect();
+        let mut model =
+            Model::<SPIN, DIM, NoRMatrix>::tb_model(self.lat.clone(), orb, Some(atoms))?;
         model.ham = ham;
         model.hamR = ham_r;
         model.orb_projection = (0..n_sector)
@@ -680,8 +740,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
 
         let q_min = -2 * trunc.n_max;
         let q_max = 2 * trunc.n_max;
+        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, q_min, q_max);
         let hq: Vec<Array2<Complex<f64>>> = (q_min..=q_max)
-            .map(|q| self.floquet_harmonic_onek(kvec, drive, trunc, q, gauge))
+            .map(|q| self.floquet_cached_harmonic_onek(kvec, q, gauge, &harmonic_cache))
             .collect();
 
         for (in_sec, n) in trunc.sectors().enumerate() {
@@ -739,22 +800,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// With the Fourier convention used in this module,
     ///
-    /// ```math
+    /// $$
     /// H(t)=\sum_q H^{(q)}e^{-iq\Omega t},
-    /// ```
+    /// $$
     ///
     /// the implemented van Vleck expansion is
     ///
-    /// ```math
-    /// H_{\mathrm{eff}}(\mathbf k)
-    /// =
+    /// $$ H_{\mathrm{eff}}(\mathbf k) =
     /// H^{(0)}(\mathbf k)
     /// +
     /// \sum_{q=1}^{q_{\max}}
     /// \frac{[H^{(q)}(\mathbf k),H^{(-q)}(\mathbf k)]}{q\Omega}
     /// +
-    /// O(\Omega^{-2}).
-    /// ```
+    /// O(\Omega^{-2}). $$
     ///
     /// `order = 0` keeps only `H^(0)`.  `order = 1` adds the commutator term.
     /// Higher orders are not implemented yet.  Pass `None` for `options` to use
@@ -763,13 +821,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// The inverse Fourier transform is controlled by `k_mesh`:
     ///
-    /// ```math
-    /// t_{\mathrm{eff}}(\mathbf R)
-    /// =
+    /// $$ t_{\mathrm{eff}}(\mathbf R) =
     /// \frac{1}{N_k}\sum_{\mathbf k}
     /// H_{\mathrm{eff}}(\mathbf k)
-    /// e^{-i2\pi\mathbf k\cdot\mathbf R}.
-    /// ```
+    /// e^{-i2\pi\mathbf k\cdot\mathbf R}. $$
     ///
     /// The returned model has the same number of states as the input model.
     /// It is an approximation to the off-resonant Floquet problem, not the full
@@ -807,6 +862,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             )));
         }
 
+        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, -q_max, q_max);
         let kpoints = floquet_uniform_kmesh(&k_mesh);
         let norm = 1.0 / (kpoints.len() as f64);
         let ham = kpoints
@@ -817,9 +873,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     let h_eff = self.floquet_effective_ham_onek_lattice(
                         kvec,
                         drive,
-                        trunc,
                         options.order,
                         q_max,
+                        &harmonic_cache,
                     );
                     for (i_r, r_vec) in target_ham_r.outer_iter().enumerate() {
                         let phase = inverse_bloch_phase::<DIM, _>(&r_vec, kvec) * norm;
@@ -843,10 +899,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let mut ham = ham;
 
-        enforce_real_space_hermiticity(&mut ham, &target_ham_r);
+        enforce_real_space_hermiticity(&mut ham, &target_ham_r)?;
 
-        let mut model =
-            Model::<SPIN, DIM, NoRMatrix>::tb_model(self.lat.clone(), self.orb.clone(), None)?;
+        let mut model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
+            self.lat.clone(),
+            self.orb.clone(),
+            Some(self.atoms.clone()),
+        )?;
         model.ham = ham;
         model.hamR = target_ham_r;
         model.orb_projection = self.orb_projection.clone();
@@ -858,18 +917,20 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         &self,
         kvec: &ArrayBase<S, Ix1>,
         drive: &FloquetDrive,
-        trunc: &FloquetTruncation,
         order: usize,
         q_max: isize,
+        harmonic_cache: &FloquetHarmonicCache,
     ) -> Array2<Complex<f64>> {
-        let mut h_eff = self.floquet_harmonic_onek(kvec, drive, trunc, 0, Gauge::Lattice);
+        let mut h_eff = self.floquet_cached_harmonic_onek(kvec, 0, Gauge::Lattice, harmonic_cache);
 
         match order {
             0 => {}
             1 => {
                 for q in 1..=q_max {
-                    let h_pos = self.floquet_harmonic_onek(kvec, drive, trunc, q, Gauge::Lattice);
-                    let h_neg = self.floquet_harmonic_onek(kvec, drive, trunc, -q, Gauge::Lattice);
+                    let h_pos =
+                        self.floquet_cached_harmonic_onek(kvec, q, Gauge::Lattice, harmonic_cache);
+                    let h_neg =
+                        self.floquet_cached_harmonic_onek(kvec, -q, Gauge::Lattice, harmonic_cache);
                     let comm = h_pos.dot(&h_neg) - h_neg.dot(&h_pos);
                     h_eff = h_eff + comm.mapv(|x| x / ((q as f64) * drive.omega0_ev));
                 }
@@ -880,35 +941,99 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         h_eff
     }
 
-    fn floquet_harmonic_onek<S: Data<Elem = f64>>(
+    /// Build the harmonic cache: `t_ij(R) * C_q(d)` for all `q ∈ [q_min, q_max]`.
+    ///
+    /// Returns a [`FloquetHarmonicCache`] whose `blocks[q_index(q), i_r, i, j]`
+    /// stores the `q`-th Fourier coefficient of the Peierls-dressed hopping from
+    /// orbital `j` at cell `R = hamR[i_r]` to orbital `i` at the origin.  The
+    /// cache is constructed once and reused across the whole k-mesh, avoiding the
+    /// recomputation of `C_q(d)` for every k-point.
+    ///
+    /// When `drive.modes` is empty (static limit), the zero-frequency block is
+    /// set to the original `ham` directly.
+    fn floquet_harmonic_cache(
         &self,
-        kvec: &ArrayBase<S, Ix1>,
         drive: &FloquetDrive,
         trunc: &FloquetTruncation,
-        q: isize,
-        gauge: Gauge,
-    ) -> Array2<Complex<f64>> {
+        q_min: isize,
+        q_max: isize,
+    ) -> FloquetHarmonicCache {
         let nsta = self.nsta();
         let norb = self.norb();
+        let n_r = self.hamR.nrows();
+        let q_count = (q_max - q_min + 1) as usize;
+        let mut blocks = Array4::<Complex<f64>>::zeros((q_count, n_r, nsta, nsta));
+
+        if drive.modes.is_empty() {
+            if q_min <= 0 && 0 <= q_max {
+                blocks
+                    .slice_mut(s![(0 - q_min) as usize, .., .., ..])
+                    .assign(&self.ham);
+            }
+            return FloquetHarmonicCache {
+                q_min,
+                q_max,
+                blocks,
+            };
+        }
+
+        let time_grid = FloquetTimeGrid::new(drive, trunc, q_min, q_max, DIM);
+        blocks
+            .axis_iter_mut(Axis(1))
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(i_r, mut out_r)| {
+                let r_vec = self.hamR.row(i_r);
+                let block = self.ham.index_axis(Axis(0), i_r);
+                for i in 0..nsta {
+                    for j in 0..nsta {
+                        let t = block[[i, j]];
+                        if t.norm_sqr() == 0.0 {
+                            continue;
+                        }
+
+                        let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
+                        let coeffs =
+                            peierls_fourier_coeffs(&d_cart, q_min, q_max, drive, &time_grid);
+                        for (iq, coeff) in coeffs.into_iter().enumerate() {
+                            if coeff.norm_sqr() != 0.0 {
+                                out_r[[iq, i, j]] = t * coeff;
+                            }
+                        }
+                    }
+                }
+            });
+
+        FloquetHarmonicCache {
+            q_min,
+            q_max,
+            blocks,
+        }
+    }
+
+    /// Build the `q`-th Fourier block `H^(q)(k)` from the precomputed cache.
+    ///
+    /// For each R-vector, multiplies the cached block `t * C_q(d)` by the Bloch
+    /// phase `exp(2πi k·R)` via `zaxpy`.  The [`Gauge`] selects between the
+    /// lattice gauge (raw Fourier sum) and the atom gauge (with orbital-position
+    /// phases applied).
+    fn floquet_cached_harmonic_onek<S: Data<Elem = f64>>(
+        &self,
+        kvec: &ArrayBase<S, Ix1>,
+        q: isize,
+        gauge: Gauge,
+        harmonic_cache: &FloquetHarmonicCache,
+    ) -> Array2<Complex<f64>> {
+        let nsta = self.nsta();
         let mut hamq = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        let iq = harmonic_cache.q_index(q);
+        let hamq_slice = hamq.as_slice_mut().unwrap();
 
         for i_r in 0..self.hamR.nrows() {
             let r_vec = self.hamR.row(i_r);
             let bloch = bloch_phase::<DIM, S>(&r_vec, kvec);
-            let block = self.ham.index_axis(Axis(0), i_r);
-            for i in 0..nsta {
-                for j in 0..nsta {
-                    let t = block[[i, j]];
-                    if t.norm_sqr() == 0.0 {
-                        continue;
-                    }
-                    let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
-                    let coeff = peierls_fourier_coeff(&d_cart, q, drive, trunc);
-                    if coeff.norm_sqr() != 0.0 {
-                        hamq[[i, j]] += t * coeff * bloch;
-                    }
-                }
-            }
+            let block = harmonic_cache.blocks.slice(s![iq, i_r, .., ..]);
+            crate::ndarray_lapack::zaxpy(bloch, block.as_slice().unwrap(), hamq_slice);
         }
 
         match gauge {
@@ -1111,39 +1236,59 @@ fn validate_target_hamr<const DIM: usize>(target_ham_r: &Array2<isize>) -> Resul
             "target_hamR must contain at least one R vector".to_string(),
         ));
     }
+    for i_r in 0..target_ham_r.nrows() {
+        let r = target_ham_r.row(i_r).to_owned();
+        if (0..i_r).any(|j_r| {
+            target_ham_r
+                .row(j_r)
+                .iter()
+                .zip(r.iter())
+                .all(|(left, right)| left == right)
+        }) {
+            return Err(TbError::Other(format!(
+                "target_hamR contains the duplicate vector R={:?}",
+                r.to_vec()
+            )));
+        }
+        let neg_r = r.mapv(|x| -x);
+        if find_R(target_ham_r, &neg_r).is_none() {
+            return Err(TbError::MissingHermitianConjugateHopping { r });
+        }
+    }
     Ok(())
 }
 
-fn peierls_fourier_coeff(
+fn peierls_fourier_coeffs(
     d_cart: &Array1<f64>,
-    q: isize,
+    q_min: isize,
+    q_max: isize,
     drive: &FloquetDrive,
-    trunc: &FloquetTruncation,
-) -> Complex<f64> {
+    time_grid: &FloquetTimeGrid,
+) -> Vec<Complex<f64>> {
+    let q_count = (q_max - q_min + 1) as usize;
     if drive.modes.is_empty() {
-        return if q == 0 {
-            Complex::new(1.0, 0.0)
-        } else {
-            Complex::new(0.0, 0.0)
-        };
+        let mut coeffs = vec![Complex::new(0.0, 0.0); q_count];
+        if q_min <= 0 && 0 <= q_max {
+            coeffs[(0 - q_min) as usize] = Complex::new(1.0, 0.0);
+        }
+        return coeffs;
     }
 
-    let n_time = trunc.n_time as f64;
-    let mut sum = Complex::new(0.0, 0.0);
-    for it in 0..trunc.n_time {
-        let theta = TAU * (it as f64) / n_time;
+    let mut coeffs = vec![Complex::new(0.0, 0.0); q_count];
+    for it in 0..time_grid.link_field.nrows() {
         let mut link_phase = 0.0;
-        for mode in &drive.modes {
-            let harmonic_phase = Complex::new(0.0, -(mode.harmonic as f64) * theta).exp();
-            for a in 0..d_cart.len() {
-                link_phase += (mode.a_complex[a] * harmonic_phase).re * d_cart[a];
-            }
+        for a in 0..d_cart.len() {
+            link_phase += time_grid.link_field[[it, a]] * d_cart[a];
         }
         let peierls = Complex::new(0.0, -link_phase).exp();
-        let fourier = Complex::new(0.0, (q as f64) * theta).exp();
-        sum += fourier * peierls;
+        for (iq, coeff) in coeffs.iter_mut().enumerate() {
+            *coeff += time_grid.fourier[[iq, it]] * peierls;
+        }
     }
-    sum / n_time
+    for coeff in &mut coeffs {
+        *coeff *= time_grid.inv_n_time;
+    }
+    coeffs
 }
 
 fn bloch_phase<const DIM: usize, S: Data<Elem = f64>>(
@@ -1180,7 +1325,10 @@ fn floquet_uniform_kmesh<const DIM: usize>(mesh: &[usize; DIM]) -> Vec<Array1<f6
     points
 }
 
-fn enforce_real_space_hermiticity(ham: &mut Array3<Complex<f64>>, ham_r: &Array2<isize>) {
+fn enforce_real_space_hermiticity(
+    ham: &mut Array3<Complex<f64>>,
+    ham_r: &Array2<isize>,
+) -> Result<()> {
     let n_r = ham_r.nrows();
     let mut visited = vec![false; n_r];
 
@@ -1190,8 +1338,9 @@ fn enforce_real_space_hermiticity(ham: &mut Array3<Complex<f64>>, ham_r: &Array2
         }
         let neg_r = ham_r.row(i_r).mapv(|x| -x);
         let Some(j_r) = find_R(ham_r, &neg_r) else {
-            visited[i_r] = true;
-            continue;
+            return Err(TbError::MissingHermitianConjugateHopping {
+                r: ham_r.row(i_r).to_owned(),
+            });
         };
 
         if i_r == j_r {
@@ -1210,6 +1359,7 @@ fn enforce_real_space_hermiticity(ham: &mut Array3<Complex<f64>>, ham_r: &Array2
             visited[j_r] = true;
         }
     }
+    Ok(())
 }
 
 fn hermitian_conjugate(a: &Array2<Complex<f64>>) -> Array2<Complex<f64>> {
@@ -1237,6 +1387,7 @@ fn cross3(a: &Array1<f64>, b: &Array1<f64>) -> Array1<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::atom_struct::{Atom, AtomType, OrbProj};
     use crate::model::NoRMatrix;
     use crate::model_build::*;
     use crate::solve_ham::solve;
@@ -1248,6 +1399,25 @@ mod tests {
         let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
         model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), None);
         model
+    }
+
+    fn metadata_model() -> Model<false, 1, NoRMatrix> {
+        let lat = array![[1.0]];
+        let orb = array![[0.0], [0.0], [0.35]];
+        let atoms = vec![
+            Atom::new(arr1(&[0.0]), 2, AtomType::C),
+            Atom::new(arr1(&[0.35]), 1, AtomType::O),
+        ];
+        let mut model = Model::<false, 1>::tb_model(lat, orb, Some(atoms)).unwrap();
+        model.orb_projection = vec![OrbProj::s, OrbProj::px, OrbProj::py];
+        model.set_hop(-0.8_f64, 0, 2, &arr1(&[1isize]), None);
+        model
+    }
+
+    fn assert_same_atom_metadata(expected: &Atom, actual: &Atom) {
+        assert_eq!(actual.position(), expected.position());
+        assert_eq!(actual.norb(), expected.norb());
+        assert_eq!(actual.atom_type(), expected.atom_type());
     }
 
     #[test]
@@ -1379,6 +1549,73 @@ mod tests {
     }
 
     #[test]
+    fn floquet_models_preserve_atom_metadata() {
+        let model = metadata_model();
+        let drive = FloquetDrive::new(1.2);
+        let trunc = FloquetTruncation::new(1, 32);
+
+        let sambe = model.floquet_model(&drive, &trunc).unwrap();
+        assert_eq!(sambe.natom(), model.natom() * trunc.n_sector());
+        for sector in 0..trunc.n_sector() {
+            for i_atom in 0..model.natom() {
+                assert_same_atom_metadata(
+                    &model.atoms[i_atom],
+                    &sambe.atoms[sector * model.natom() + i_atom],
+                );
+            }
+        }
+        let expected_projection: Vec<OrbProj> = (0..trunc.n_sector())
+            .flat_map(|_| model.orb_projection.iter().copied())
+            .collect();
+        assert_eq!(sambe.orb_projection, expected_projection);
+
+        let effective = model
+            .floquet_effective_model(&drive, &trunc, [16], None)
+            .unwrap();
+        assert_eq!(effective.natom(), model.natom());
+        for i_atom in 0..model.natom() {
+            assert_same_atom_metadata(&model.atoms[i_atom], &effective.atoms[i_atom]);
+        }
+        assert_eq!(effective.orb_projection, model.orb_projection);
+    }
+
+    #[test]
+    fn floquet_effective_rejects_non_hermitian_target_range() {
+        let model = chain_model();
+        let drive = FloquetDrive::new(1.0);
+        let trunc = FloquetTruncation::new(1, 32);
+        let options = FloquetEffectiveOptions::new().with_target_hamR(array![[0isize], [1isize]]);
+
+        let err = model
+            .floquet_effective_model(&drive, &trunc, [8], Some(&options))
+            .unwrap_err();
+        match err {
+            TbError::MissingHermitianConjugateHopping { r } => {
+                assert_eq!(r, arr1(&[1isize]));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn floquet_effective_rejects_duplicate_target_vectors() {
+        let model = chain_model();
+        let drive = FloquetDrive::new(1.0);
+        let trunc = FloquetTruncation::new(1, 32);
+        let options = FloquetEffectiveOptions::new().with_target_hamR(array![[0isize], [0isize]]);
+
+        let err = model
+            .floquet_effective_model(&drive, &trunc, [8], Some(&options))
+            .unwrap_err();
+        match err {
+            TbError::Other(message) => {
+                assert!(message.contains("duplicate vector"), "{message}");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
     fn floquet_effective_order0_matches_h0() {
         let model = chain_model();
         let drive = FloquetDrive::with_modes(
@@ -1396,7 +1633,8 @@ mod tests {
 
         let k = arr1(&[0.173]);
         let from_model = effective.gen_ham(&k, Gauge::Lattice);
-        let h0 = model.floquet_harmonic_onek(&k, &drive, &trunc, 0, Gauge::Lattice);
+        let harmonic_cache = model.floquet_harmonic_cache(&drive, &trunc, 0, 0);
+        let h0 = model.floquet_cached_harmonic_onek(&k, 0, Gauge::Lattice, &harmonic_cache);
         let mut max_diff = 0.0f64;
         for i in 0..from_model.nrows() {
             for j in 0..from_model.ncols() {

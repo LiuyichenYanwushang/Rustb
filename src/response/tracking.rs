@@ -23,7 +23,7 @@ const CUBE_TETS_ALT: [[usize; 4]; 5] = [
 ];
 const TET_VOL_FACTOR: [f64; 5] = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0];
 
-pub fn build_overlap_matrix(
+pub(crate) fn build_overlap_matrix(
     evec_ref: &Array2<Complex<f64>>,
     evec_other: &Array2<Complex<f64>>,
 ) -> Array2<f64> {
@@ -42,7 +42,7 @@ pub fn build_overlap_matrix(
     ov
 }
 
-pub fn greedy_assign(overlap: &Array2<f64>) -> Vec<usize> {
+pub(crate) fn greedy_assign(overlap: &Array2<f64>) -> Vec<usize> {
     let n = overlap.nrows();
     let mut assigned = vec![false; n];
     let mut perm = vec![0usize; n];
@@ -68,7 +68,7 @@ pub fn greedy_assign(overlap: &Array2<f64>) -> Vec<usize> {
     perm
 }
 
-pub fn permute_vertex(v: &VertexKernel, p: &[usize]) -> VertexKernel {
+pub(crate) fn permute_vertex(v: &VertexKernel, p: &[usize]) -> VertexKernel {
     let nsta = v.band.len();
     let norb = v.evec.nrows();
 
@@ -132,7 +132,7 @@ fn min_vertex_gap(v: &VertexKernel) -> f64 {
     g
 }
 
-pub fn track_simplex_vertices(
+pub(crate) fn track_simplex_vertices(
     vertices: &[VertexKernel],
 ) -> (Vec<VertexKernel>, SimplexDiagnostics) {
     let nv = vertices.len();
@@ -165,7 +165,7 @@ pub fn track_simplex_vertices(
     (aligned, diag)
 }
 
-pub fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) {
+pub(crate) fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) {
     let nk = all_pts.len();
     if nk <= 1 {
         return;
@@ -254,7 +254,7 @@ fn neighbour_indices(i: usize, k_mesh: &[usize]) -> Vec<usize> {
 
 // ── Simplex builders ────────────────────────────────────────────────────
 
-pub fn build_triangles_2d(
+pub(crate) fn build_triangles_2d(
     ix: usize,
     iy: usize,
     nx: usize,
@@ -323,7 +323,7 @@ pub fn build_triangles_2d(
     out
 }
 
-pub fn build_triangles_2d_diagavg(
+pub(crate) fn build_triangles_2d_diagavg(
     ix: usize,
     iy: usize,
     nx: usize,
@@ -399,7 +399,7 @@ pub fn build_triangles_2d_diagavg(
     out
 }
 
-pub fn build_tetrahedra_3d(
+pub(crate) fn build_tetrahedra_3d(
     ix: usize,
     iy: usize,
     iz: usize,
@@ -515,7 +515,7 @@ fn build_one_tet_decomp(
 }
 
 /// Diagonal‑averaged 3D tetrahedralization (10 tets per cell).
-pub fn build_tetrahedra_3d_diagavg(
+pub(crate) fn build_tetrahedra_3d_diagavg(
     ix: usize,
     iy: usize,
     iz: usize,
@@ -576,7 +576,7 @@ pub fn build_tetrahedra_3d_diagavg(
 use super::types::TrackedSimplexRef;
 
 /// 2D reference triangles (2 per cell, no clone, single diagonal).
-pub fn build_triangles_2d_ref<'a>(
+pub(crate) fn build_triangles_2d_ref<'a>(
     ix: usize,
     iy: usize,
     nx: usize,
@@ -635,7 +635,7 @@ pub fn build_triangles_2d_ref<'a>(
 }
 
 /// 2D diagonal‑averaged reference triangles (4 per cell, both diagonals).
-pub fn build_triangles_2d_diagavg_ref<'a>(
+pub(crate) fn build_triangles_2d_diagavg_ref<'a>(
     ix: usize,
     iy: usize,
     nx: usize,
@@ -696,7 +696,7 @@ pub fn build_triangles_2d_diagavg_ref<'a>(
 }
 
 /// 3D reference tetrahedra (5 per cell, no clone, single decomposition).
-pub fn build_tetrahedra_3d_ref<'a>(
+pub(crate) fn build_tetrahedra_3d_ref<'a>(
     ix: usize,
     iy: usize,
     iz: usize,
@@ -768,7 +768,7 @@ pub fn build_tetrahedra_3d_ref<'a>(
 }
 
 /// 3D diagonal‑averaged reference tetrahedra (10 per cell, restores k→−k).
-pub fn build_tetrahedra_3d_diagavg_ref<'a>(
+pub(crate) fn build_tetrahedra_3d_diagavg_ref<'a>(
     ix: usize,
     iy: usize,
     iz: usize,

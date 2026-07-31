@@ -4,62 +4,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-# v0.8.0: Const-Generic DIM + RMatrixData (DONE)
-
-> **Status**: DONE. Three generics replace runtime fields: `SPIN`, `DIM`, `R`.
-
-## How Model<SPIN, DIM, R> works
-
-```rust
-pub struct Model<
-    const SPIN: bool = false,
-    const DIM: usize = 3,
-    R: RMatrixData = NoRMatrix,
-> {
-    // NO dim_r field,  NO spin field
-    pub lat: Array2<f64>,
-    pub orb: Array2<f64>,
-    pub rmatrix: R,  // NoRMatrix = ZST, HasRMatrix = Array4 newtype
-    // ...
-}
-```
-
-- `DIM` defaults to 3. `dim_r()` returns `DIM`.
-- `R` defaults to `NoRMatrix` (zero-sized, no storage overhead). `HasRMatrix(Array4)` stores position matrix elements.
-- `tb_model(lat, orb, atoms)` — NO `dim_r` parameter.
-- Hot path `match DIM { 1 => ..., 2 => ..., 3 => ... }` compile-time eliminated.
-- Hot path `if <R as RMatrixData>::HAS_RMATRIX { ... }` compile-time eliminated.
-
-### Constructing models
-
-```rust
-// Spinless 2D (most common)
-let m = Model::<false, 2>::tb_model(lat, orb, None)?;
-
-// Spinful 2D
-let m = Model::<true, 2>::tb_model(lat, orb, None)?;
-
-// 3D with position matrix (Wannier90)
-let m = Model::<false, 3, HasRMatrix>::from_hr(path, seed, 0.0)?;
-```
-
-## Key design decisions
-
-1. **No runtime fields** — SPIN, DIM, RMATRIX all compile-time. No dimension/spin/rmatrix flags in Model.
-2. **`surf_Green` stores `spin: bool` and `dim_r: usize`** — const generics converted to runtime fields.
-3. **Removed**: `SlaterKosterModel` — deleted as unused.
-4. **`RMatrixData` trait** — `HasRMatrix` (Deref to Array4) and `NoRMatrix` (ZST). `NoRMatrix` model has literally no rmatrix field in memory.
-5. **Safe `zaxpy`** — in `ndarray_lapack.rs`, wraps `blas::zaxpy` FFI; all call sites are safe Rust.
-6. **`update_hamiltonian!` / `add_hamiltonian!` macros** — take `$spin` const generic; branches eliminated at compile time.
-
-## Doc conventions
-
-- `Model::<false, 2>` / `Model::<true, 3>` with turbofish for SPIN and DIM.
-- `Model<SPIN, DIM, HasRMatrix>` when rmatrix is present.
-- `surf_Green` retains `spin: bool` and `dim_r: usize` fields (derived from const generics via `from_Model`).
-
----
-
 ## Project Overview
 
 Rustb is a Rust library for tight-binding model calculations in condensed matter physics. It computes band structures, density of states, transport properties (Hall conductivity, nonlinear responses), topological invariants (Chern numbers, Wilson loops), and surface states using Green's functions.
@@ -68,9 +12,104 @@ Rustb is a Rust library for tight-binding model calculations in condensed matter
 - **Repo**: https://github.com/LiuyichenYanwushang/Rustb
 - **Error handling**: Uses `thiserror` for `TbError` enum.
 - **Docs**: `katexit` renders LaTeX in rustdoc; `docs-header.html` for custom CSS.
-- **Version**: `Cargo.toml` still reads `0.7.0`; the actual API is v0.8.0. When bumping the crate, update `Cargo.toml` to `0.8.0`.
+- **Version**: 0.8.0.
+- **SKILLS.md**: Practical usage guide with code examples for the entire crate. When adding or changing any public API, update that file as well.
 
-> **Note**: README.md still uses v0.6 API. Do NOT copy from README — use const-generic API as documented here.
+> **Note**: README.md and SKILLS.md both use the current const-generic API.
+
+## 0.8.0 Pre-release Refactor Summary
+
+Version 0.8 deliberately breaks the unreleased 0.7 response API. The central
+design rule is that physics workflows end in an ordinary
+`Model<SPIN, DIM, R>` whenever that is physically meaningful. Solver-specific
+wrappers hold input data and iteration policy; they do not create parallel
+model hierarchies with duplicated band, geometry, or response methods.
+
+### Hubbard unrestricted Hartree-Fock
+
+- `HubbardModel<DIM, R>` wraps a spinful `Model<true, DIM, R>` plus one on-site
+  `U_i` per physical orbital. It is an input/solver type, not a replacement for
+  `Model`.
+- `solve_hartree_fock(&MeanFieldParams<DIM>)` is the only mean-field solve
+  entry point. It performs non-collinear unrestricted Hartree-Fock using the
+  complete local `2 x 2` spin-density matrix. Both diagonal Hartree terms and
+  off-diagonal Fock spin-flip terms are updated self-consistently.
+- `MeanFieldConstraint::FixedChemicalPotential` keeps the supplied chemical
+  potential fixed during iteration. `FixedInitialFilling` first computes the
+  bare-model filling at `reference_mu`, on the requested k-mesh and with the
+  requested occupation, then solves for a chemical potential that preserves
+  that filling at every iteration. This is the preferred mode when the
+  mean-field bands move, especially for metals.
+- `MeanFieldParams` owns the numerical policy: `[usize; DIM]` k-mesh,
+  thermodynamic constraint, `Occupation`, iteration limit, density tolerance,
+  linear mixing, and the initial collinear or non-collinear magnetic seed.
+- The converged chemical potential is subtracted from the final Hamiltonian,
+  so `solve_hartree_fock` returns a normal `Model<true, DIM, R>` whose Fermi
+  level is at zero. Magnetization is already encoded in its spin-dependent
+  one-particle Hamiltonian and can be measured with ordinary `Model` spin
+  expectation APIs such as `spin_moment`.
+- Failure to converge is reported as `TbError::MeanFieldNotConverged`; invalid
+  thermodynamic, mesh, interaction, or iteration parameters return structured
+  errors rather than panicking.
+
+### Shared thermodynamics and metallic calculations
+
+- All occupation-dependent workflows use the same `Occupation` enum:
+  `ZeroTemperature`, `FermiDirac { temperature_kelvin }`, or
+  `FermiSmearing { width }`. Temperatures are kelvin; Hamiltonian energies and
+  smearing widths are electronvolts.
+- Exact zero-temperature occupations are step functions. A direct k-sum of a
+  Fermi-surface derivative cannot represent the resulting Dirac delta and
+  therefore requires finite `FermiDirac`/`FermiSmearing`; an energy-cut method
+  should be used when the exact zero-temperature Fermi surface is required.
+- For metallic Hubbard calculations, use a converged k-mesh and small finite
+  smearing (or physical temperature), normally together with
+  `FixedInitialFilling`. The target electron count is computed once from the
+  bare model instead of being guessed independently.
+
+### Unified response APIs
+
+- Every high-level response calculation takes one named `*Params` structure
+  and returns one named `*Result` structure. Public directions and k-meshes are
+  const-generic arrays (`[f64; DIM]` and `[usize; DIM]`), making dimensional
+  mistakes visible at compile time.
+- The supported entry points are `hall_conductivity`, `quantum_geometry`,
+  `optical_conductivity`, `extrinsic_nonlinear_hall`, and
+  `intrinsic_nonlinear_hall`. Algorithm choice belongs in the corresponding
+  integration enum instead of being encoded in alternate method names.
+- `DirectionPair<DIM>` represents ordered rank-two directions;
+  `NonlinearHallDirections<DIM>` makes the current-first nonlinear convention
+  explicit. `CurrentOperator` selects charge or spin current, and
+  `FieldSymmetry` selects ordered or symmetrized nonlinear field indices.
+- Direct, simplex, and energy-cut paths share the same gauge-invariant response
+  kernels and Cartesian reciprocal-space normalization. Optical conductivity
+  returns the full ordered `DIM x DIM` Cartesian tensor unless directions are
+  explicitly selected.
+- Raw `VertexKernel`, band tracking, simplex construction, quadrature, and
+  energy-cut helpers are crate-private numerical machinery. Do not expose them
+  as compatibility APIs; extend the parameter/result layer instead.
+
+### Breaking migration rules
+
+- Legacy method families such as `Hall_conductivity*`, the old optical and
+  nonlinear conductivity variants, tuple return values, and
+  `solve_mean_field` were removed rather than deprecated. Update callers to
+  the parameterized lowercase entry points and `solve_hartree_fock`.
+- New public physics configuration should normally be a parameter structure
+  with validation near the API boundary. Avoid long positional argument lists,
+  bool switches, and duplicated direct/simplex method names.
+- README.md, SKILLS.md, rustdoc examples, executable examples, tests, and
+  benchmarks are part of the API migration. Any future public signature or
+  convention change must update all of them in the same commit.
+
+### Other 0.8 work in this development batch
+
+- Floquet support now covers Peierls-Sambe models, quasienergy folding, and a
+  validated van Vleck effective-model path that also returns an ordinary
+  `Model`.
+- Optional allocator features, stricter validation/error variants, response
+  integration diagnostics, and benchmark baselines were updated alongside the
+  public API consolidation.
 
 ## Common Commands
 
@@ -90,8 +129,8 @@ cargo test --release graphene                        # single test
 cargo test --release -- --nocapture 2>&1 | head -100
 ```
 
-Simplex‑quadrature tests involve heavy floating‑point loops (band tracking,
-K‑quadrature, energy‑cut).  Debug builds are 10–50× slower and can cause
+Simplex-quadrature tests involve heavy floating-point loops (band tracking,
+K-quadrature, energy-cut).  Debug builds are 10-50x slower and can cause
 timeouts.  Always test with `--release`.
 
 Tests generate PDF plots via gnuplot (`pdfcairo` terminal).
@@ -102,22 +141,60 @@ cargo fmt
 cargo clippy
 cargo bench --features intel-mkl-system             # criterion benchmarks
 cargo mydoc                                          # cargo doc --open --no-deps
-cargo testall                                        # cargo test --release --features intel-mkl-system
-cargo runexample <name>                              # cargo run --release --features intel-mkl-system --example <name>
+cargo testall                                        # cargo test --features intel-mkl-system
+cargo runexample <name>                              # cargo run --features intel-mkl-system --example <name>
 ```
 
-## High-Level Architecture
+Custom aliases (`mydoc`, `testall`, `runexample`) are defined in `.cargo/config.toml`.
+Note that `testall` and `runexample` hardcode `intel-mkl-system` — adjust the alias
+or use explicit `--features` if you need a different BLAS backend.
 
-### Core Data Structures
+## BLAS/LAPACK Backend
 
-- **`Model<SPIN, DIM, R>`**: Central TB model. No runtime dimension, spin, or rmatrix flag.
+| Feature | Backend |
+|---------|---------|
+| `intel-mkl-static` | Intel MKL (best x86_64 perf) |
+| `openblas-static` | OpenBLAS |
+| `netlib-static` | Reference netlib |
+| `intel-mkl-system` | System-installed MKL |
+| `openblas-system` | System-installed OpenBLAS |
+
+---
+
+## Core Architecture
+
+### `Model<SPIN, DIM, R>` — central data structure
+
+Three compile-time generics replace what were historically runtime fields:
+
+```rust
+pub struct Model<
+    const SPIN: bool = false,
+    const DIM: usize = 3,
+    R: RMatrixData = NoRMatrix,
+> {
+    pub lat: Array2<f64>,     // real-space lattice vectors (columns)
+    pub orb: Array2<f64>,     // fractional orbital positions (rows)
+    pub rmatrix: R,           // NoRMatrix = ZST, HasRMatrix = Array4 newtype
+    // ...
+}
+```
+
+- `DIM` defaults to 3. `dim_r()` returns `DIM`.
+- `R` defaults to `NoRMatrix` (zero-sized). `HasRMatrix(Array4)` stores position matrix elements.
+- Hot-path `match DIM { 1 => ..., 2 => ..., 3 => ... }` is compile-time eliminated.
+- Hot-path `if <R as RMatrixData>::HAS_RMATRIX { ... }` is compile-time eliminated.
+- `surf_Green` is non-generic and stores `spin: bool` and `dim_r: usize` (converted from const generics).
+
+### Other key types
+
 - **`Gauge`**: `Atom` (orbital positions in phase) or `Lattice` (only R vectors).
-- **`RMatrixData`**: Trait for rmatrix storage — `HasRMatrix` (newtype over Array4, Deref) or `NoRMatrix` (ZST).
+- **`RMatrixData`**: Trait — `HasRMatrix` (Deref to Array4) or `NoRMatrix` (ZST, literally no field).
+- **`SpinDirection`**: `X/Y/Z` Pauli matrices; `Option<SpinDirection>::None`
+  selects the spin-independent identity term.
 - **`Dimension`**: Enum `one=1/two=2/three=3` for serde compat, NOT stored in Model.
-- **`SpinDirection`**: `X/Y/Z` Pauli matrices, `None` = identity.
-- **`surf_Green`**: Non-generic struct storing `spin: bool` and `dim_r: usize`.
 
-### Trait Hierarchy
+### Trait hierarchy
 
 ```
 Velocity  (src/velocity.rs)          → v_α(k) operator
@@ -126,147 +203,106 @@ Velocity  (src/velocity.rs)          → v_α(k) operator
   │    └─ extrinsic NLH (src/response/nonlinear)
   └─ QuantumGeometry (src/quantum_geometry.rs) → QGT, quantum metric
 
-FermiSurface / FermiSurfacePlane (src/fermi_surface.rs)
+Floquet (src/floquet.rs)             → Sambe Hamiltonian, quasienergies, van Vleck effective model
 
+FermiSurface / FermiSurfacePlane (src/fermi_surface.rs)
 Berry (src/geometry.rs)              → Wilson loops, Berry phase, Wannier centres
 CutModel (src/cut.rs)                → slab/ribbon (cut_piece), dot (cut_dot)
-
 MagneticField (src/magnetic_field.rs)
 Unfold (src/unfold.rs)
 ```
 
 All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait for Model<SPIN, DIM, R>`.
 
-### Key Source Files
+### Key source files
 
 | File | Purpose |
 |------|---------|
 | `model.rs` | `Model<SPIN, DIM, R>` struct, `RMatrixData` trait, `HasRMatrix`/`NoRMatrix`, `Gauge`, serde |
 | `model_build.rs` | Builder: `tb_model()`, `set_hop()`, `make_supercell()`, macros |
 | `model_physics.rs` | `gen_ham()` (Bloch Hamiltonian), `dos()` |
-| `velocity.rs` | `Velocity` trait — `gen_v()` with safe rmatrix commutator; `gen_v_projected()` fuses direction-weight projection |
-| `response/` | All response functions: traits, direct‑sum APIs, simplex quadrature |
-| `response/traits.rs` | `BerryCurvature` trait — per‑k‑point Berry curvature |
-| `response/primitives.rs` | `compute_velocity_kernel` — band‑basis velocity matrix elements |
-| `response/types.rs` | `VertexKernel`, `TrackedSimplex`, `SimplexDiagnostics` |
+| `velocity.rs` | `Velocity` trait — `gen_v()` with rmatrix commutator; `gen_v_projected()` fuses direction-weight projection |
+| `response/` | Public parameter/result APIs plus private direct-sum and simplex machinery |
+| `response/primitives.rs` | Internal `compute_velocity_kernel` band-basis velocity elements |
+| `response/types.rs` | Internal `VertexKernel`, `TrackedSimplex`, `SimplexDiagnostics` |
 | `response/quadrature.rs` | 2D/3D symmetric quadrature rules, barycentric interpolation |
 | `response/tracking.rs` | Band tracking (overlap → greedy assign → permute) + simplex builders |
 | `response/kernel.rs` | Berry/QGT, optical, dipole kernel evaluators at quadrature points |
-| `response/linear/` | Berry curvature Ω^{ab} + quantum metric g^{ab} simplex integration |
-| `response/nonlinear/` | Berry dipole D^{ab;c} (energy‑cut) + intrinsic/extrinsic NLH |
-| `response/optical/` | Optical conductivity σ^{ab}(ω) simplex integration |
-| `quantum_geometry.rs` | `QuantumGeometry` trait — quantum geometric tensor, quantum metric |
-| `geometry.rs` | `Berry` trait — Berry phase, Wilson loops, Wannier centres, hybrid Wannier functions |
+| `response/energy_cut.rs` | 2D/3D energy-cut (AHC, dipole, intrinsic), hybrid + K-quadrature |
+| `response/linear/` | Berry curvature + quantum metric simplex integration |
+| `response/nonlinear/` | Berry dipole + intrinsic/extrinsic NLH |
+| `response/optical/` | Optical conductivity simplex integration |
+| `quantum_geometry.rs` | `QuantumGeometry` trait — QGT, quantum metric |
+| `geometry.rs` | `Berry` trait — Berry phase, Wilson loops, Wannier centres |
 | `surfgreen.rs` | Surface Green's function (Sancho-Rubio iterative method) |
-| `wannier90.rs` | Wannier90 I/O, returns `Model<SPIN, 3, HasRMatrix>` when `_r.dat` present |
-| `cut.rs` | `CutModel` trait — slab (`cut_piece`), dot/edge (`cut_dot`) from bulk models |
+| `wannier90.rs` | Wannier90 I/O; the requested `R` type controls whether `_r.dat` is loaded |
+| `cut.rs` | `CutModel` trait — slab (`cut_piece`), dot/edge (`cut_dot`) |
+| `fermi_surface.rs` | `FermiSurface`/`FermiSurfacePlane` traits; BXSF export; `write_spin_frmsf` for altermagnets |
+| `floquet.rs` | `Floquet` trait + `Model::floquet_effective_model`; `LightMode`, `FloquetDrive`, `FloquetTruncation`, `IncidentBasis`, `FloquetEffectiveOptions`, `fold_quasienergy` |
 | `ndarray_lapack.rs` | LAPACK bindings + safe `zaxpy()` BLAS wrapper |
 | `lib.rs` | Crate root, re-exports, integration tests |
-| `fermi_surface.rs` | `FermiSurface`/`FermiSurfacePlane` traits (marching squares/tetrahedra → gnuplot); BXSF export (`BxsfExport` trait → XCrySDen/FermiSurfer); `write_spin_frmsf` free fn (spin‑split FRMSF for altermagnets) |
-| `response/optical/` | Optical conductivity (direct sum + simplex quadrature) |
-| `orbital_angular.rs` | Orbital angular momentum operator |
-| `magnetic_field.rs` | Uniform magnetic field via Peierls substitution (`MagneticField` trait) |
-| `unfold.rs` | Band unfolding for supercell→primitive projection (`Unfold` trait) |
 | `solve_ham.rs` | Parallel diagonalization (`solve_all_parallel`, `solve_range_onek`) |
 | `kpoints.rs`/`kpath.rs`/`kplane.rs` | k-mesh/k-path/k-plane generation |
-| `output.rs` | gnuplot plotting (`show_band`, `show_surf_state`, `draw_heatmap`, `show_fermi_surface`) |
+| `output.rs` | gnuplot plotting |
 | `model_transform.rs` | Supercell construction, orbital removal/reordering, `shift_to_atom` |
-| `model_utils.rs` | Internal utilities: `find_R()` for lattice vector lookup in `hamR` |
-| `math.rs` | Matrix algebra: `comm()`, `anti_comm()`, `gauss()` smearing function |
+| `model_utils.rs` | Internal: `find_R()` for lattice vector lookup in `hamR` |
+| `math.rs` | `comm()`, `anti_comm()`, `gauss()` smearing |
 | `atom_struct.rs` | `Atom` and `OrbProj` types |
 | `error.rs` | `TbError` enum, `Result` alias |
-| `generics.rs` | Numeric abstractions (`hop_use`, `usefloat`), `SpinDirection::from_index` |
+| `generics.rs` | Numeric abstractions, `SpinDirection::from_index` |
 | `phy_const.rs` | Physical constants: `e`, `ħ`, `μ_B`, `Φ₀`, quantum of conductance |
-| `io.rs` | Text-file output helpers (`write_txt`, `write_txt_1`) |
+| `io.rs` | Text-file output helpers |
 
 ### Conventions
 
 - **k-points**: Fractional reciprocal coordinates; phase = `exp(2πi k·R)`.
-- **Orbital positions**: Fractional coords (columns of `orb`).
+- **Orbital positions**: Fractional coords (rows of `orb`).
 - **Lattice vectors**: Stored in `Model::lat` (columns = real-space vectors).
   Reciprocal vectors via `Model::rec_lat()` (rows = reciprocal vectors,
   formula `B = 2π·(Aᵀ)⁻¹`).
 - **Eigenbasis transformation** (`band` ↔ `evec` from `eigh`): the codebase
-  convention is `U^T · O · U^*` (transpose, NOT conjugate‑transpose, on the
-  left; conjugate on the right).  See `berry_curvature_n_onek` and
-  `response::primitives::compute_velocity_kernel`.  Verify with the test
-  `evec_transform_sanity` which checks `diag(U^T H U^*) == band` numerically.
+  convention is `U^T · O · U^*` (transpose, NOT conjugate-transpose, on the
+  left; conjugate on the right).  Verified by test `evec_transform_sanity`
+  which checks `diag(U^T H U^*) == band` numerically.
 - **Hermitian conjugates**: Auto-generated by `set_hop`/`add_hop`.
-- **Public API**: `pub use X::*` re-exports from `lib.rs`.
+- **Public API**: `lib.rs` re-exports the high-level model, trait, parameter,
+  and result types. Raw response kernels, band tracking, and simplex types are
+  crate-private implementation details.
 
-## BLAS/LAPACK Backend
+### Nonlinear Hall index conventions
 
-- **Intel MKL** (best x86_64 perf): `--features intel-mkl-static`
-- **OpenBLAS**: `--features openblas-static`
-- **netlib**: `--features netlib-static`
+- `extrinsic_nonlinear_hall` and `intrinsic_nonlinear_hall` both take
+  `NonlinearHallDirections { current, field_1, field_2 }`.
+- Extrinsic calculations default to `FieldSymmetry::Symmetrized`, which
+  computes `0.5 * (S_ab;c + S_ac;b)`. Select `FieldSymmetry::Ordered` for
+  the unsymmetrized kernel.
+- The intrinsic response is current-first: `(current, field_1, field_2)` maps
+  to `sigma_int^{field_1 field_2; current}`.
+- The charge intrinsic implementation uses
+  `G^{ij}=Re sum_m v^i_nm v^j_mn/(E_n-E_m)^3`.  Literature formulas
+  that define `G=2 Re sum ...` differ by an overall factor of 2.
 
-## Fermi Surface Export (3 output paths)
+### Response API conventions
 
-`fermi_surface.rs` provides three ways to export Fermi surfaces:
+- High-level response methods take one `*Params` structure and return one
+  named `*Result` structure. Direction vectors are `[f64; DIM]`, so dimension
+  mismatches are rejected at compile time.
+- `Occupation` is shared by Hubbard mean field, Hall, nonlinear Hall, quantum
+  geometry, and optical calculations. Kelvin temperatures and eV smearing
+  widths are distinct enum variants.
+- Direct and simplex/energy-cut algorithms are selected by an `Integration`
+  enum rather than separate method names.
+- `compute_velocity_kernel`, `VertexKernel`, raw energy-cut integrators, and
+  band-tracking helpers are intentionally not public compatibility surfaces.
 
-### 1. `FermiSurface::show_fermi_surface` — gnuplot (2D/3D, legacy)
-Existing path. 2D: marching squares → PDF. 3D: marching tetrahedra → gnuplot pm3d → PDF.
-Slow for 3D (fork gnuplot + triangle rendering).
+---
 
-### 2. `BxsfExport::write_bxsf` — BXSF ASCII (3D, XCrySDen/FermiSurfer)
-Writes band energies on a k‑mesh in the XCrySDen BXSF format.
-FermiSurfer/XCrySDen performs isosurface extraction internally.
-Only implemented for `Model<SPIN, 3, R>`.
+## Simplex Quadrature (`src/response/`)
 
-```rust
-model.write_bxsf(&[50, 50, 50], 0.0, "bcc")?;  // → bcc.bxsf
-```
+Replaces the old Blochl tetrahedron method. Instead of interpolating the final
+integrand `Ω_n(k)` at simplex vertices and applying analytic δ-function weights:
 
-### 3. `write_spin_frmsf` — FRMSF free function (3D, spin‑split)
-Merges two spinless models (up/down) into one FRMSF file with a
-matrix‑element block: `+1` for up bands, `−1` for down bands.
-FermiSurfer renders this as red/blue spin‑split Fermi surfaces
-(`Color scale mode = Input (1D)`, range `[-1, 1]`).
-
-```rust
-write_spin_frmsf(&up_model, &dn_model, &[50, 50, 50], 0.0, "altermagnet")?;
-// → altermagnet.frmsf
-```
-
-### Critical conventions (BXSF / FRMSF)
-
-These are hard-won; changing any of them breaks symmetry in the output.
-
-**`Model::rec_lat()`** — returns reciprocal lattice vectors as **rows**:
-`B = 2π · (Aᵀ)⁻¹` where `A = self.lat`. Row `i` is `bᵢ`. The BXSF/FRMSF
-header writes three lines: `b[[i,0]], b[[i,1]], b[[i,2]]` for `i = 0,1,2`.
-
-**`gen_kmesh` row ordering** — generated by recursion: ik1 (dim 0) outermost,
-ik3 (dim 2) innermost (fastest). Row index: `ik1*ny*nz + ik2*nz + ik3`.
-Fractional coords `k = (ik1/nx, ik2/ny, ik3/nz)` — matches `ishift = 1` in
-FermiSurfer's convention (uniform Γ‑grid `i/N`).
-
-**FRMSF/BXSF write order matches gen_kmesh** — both use ik1‑outer, ik3‑inner.
-Therefore `eval` rows are already in the correct order for serialization:
-`frmsf_order` simply iterates `row in 0..nk_total` sequentially. Do NOT
-introduce an index formula like `ik1 + ik2*nx + ik3*nx*ny` — it will scramble
-E(k) across k-points and destroy crystal symmetries (C3z, etc.).
-
-**`e_fermi` must be subtracted** from band energies before writing.
-FermiSurfer assumes `E_F = 0` by default; the export code computes
-`E_n(k) - e_fermi`. Forgetting this draws the wrong isoenergy surface.
-
-**`write_spin_frmsf` checks** — validates that up/dn models have the same
-band count and lattice (element‑wise diff < 1e‑10). Both models use the
-same k‑mesh and energy shift.
-
-## Simplex Quadrature (replaces old Blochl tetrahedron)
-
-> **Status**: IMPLEMENTED.  The old `tetrahedron.rs` (Blochl δ‑function on
-> linearly‑interpolated final scalars) has been deleted.  All tetra methods
-> (`*_tetra`, `compute_tetra_primitives`) are removed.  Use `response/` instead.
-
-### Key idea
-
-Instead of interpolating the final integrand `Ω_n(k)` at simplex vertices and
-applying analytic δ‑function weights, the simplex path:
-
-1. **Interpolates gauge‑invariant primitives** `K_nm = v^a_nm·v^b_mn` and band
+1. **Interpolates gauge-invariant primitives** `K_nm = v^a_nm·v^b_mn` and band
    energies `E_n` linearly inside each simplex.
 2. **Evaluates the kernel at quadrature points**: `Ω_n(q) = −2 Im Σ_m K_nm(q)/(d²(q)+η²)`.
 3. **Weights by quadrature**: `∫_simplex f(k)dk ≈ V_simplex · Σ_q w_q f(q)`.
@@ -277,203 +313,199 @@ This preserves the singular `1/(E_n−E_m)²` structure near small gaps.
 
 ```
 src/response/
-├── types.rs        — VertexKernel, TrackedSimplex, SimplexDiagnostics
+├── types.rs        — internal VertexKernel, TrackedSimplex, diagnostics
 ├── quadrature.rs   — 2D/3D symmetric quadrature rules, barycentric interp
 ├── tracking.rs     — band tracking (overlap → greedy → permute) + simplex builders
-├── kernel.rs       — eval_berry_kernel, eval_berry_band_at_lam, eval_berry_complex_at_lam,
-│                     eval_intrinsic_G_at_lam, eval_optical_kernel, quadrature helpers
-├── energy_cut.rs   — 2D/3D energy‑cut (AHC, dipole, intrinsic), hybrid + K‑quadrature
-├── primitives.rs   — Model::compute_velocity_kernel (band‑basis velocities)
-├── linear/         — Berry curvature + quantum metric + AHC → berry_curvature_simplex
-├── nonlinear/      — Berry dipole + intrinsic/extrinsic NLH (K‑quad line‑cut)
-└── optical/        — Optical conductivity → optical_conductivity_simplex
+├── kernel.rs       — Berry/QGT, optical, dipole kernel evaluators
+├── energy_cut.rs   — 2D/3D energy-cut (AHC, dipole, intrinsic), hybrid + K-quadrature
+├── primitives.rs   — internal velocity-kernel construction
+├── linear/         — Berry curvature + quantum metric + AHC
+├── nonlinear/      — Berry dipole + intrinsic/extrinsic NLH
+└── optical/        — Optical conductivity
 ```
 
-### Usage
+### Energy-cut design
 
-```rust
-// Berry curvature + quantum metric
-let (metric, berry, unsafe_count) = model.berry_curvature_simplex(
-    &arr1(&[50, 50]), &dx, &dy, 0.05,
-)?;
-
-// Berry curvature dipole (2D only, analytic energy-cut)
-let (dipole, _) = model.berry_curvature_dipole_energy_cut(
-    &arr1(&[30, 30]), &dx, &dy, &dx, &mu, 10.0, 0.05,
-)?;
-
-// AHC via hybrid energy-cut (2D or 3D)
-let sigma_ec = model.Hall_conductivity_ec(
-    &arr1(&[30, 30]), &dx, &dy, &mu, 0.0, 0.05,
-)?;
-
-// Optical conductivity
-let sigma = model.optical_conductivity_simplex(
-    &arr1(&[30, 30]), &dx, &dy, 0.5, 0.1, 0.0, 300.0,
-)?;
-```
-
-### Public API reference
-
-**Model‑level (recommended for most users)**
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `model.berry_curvature_simplex(k_mesh, dir_a, dir_b, eta)` | `(g, Ω, unsafe)` | Berry curvature + quantum metric in Cartesian volume |
-| `model.berry_curvature_dipole_energy_cut(k_mesh, dir_a, dir_b, dir_c, mu, T, eta)` | `(D(μ), unsafe)` | Berry dipole D^{ab;c}(μ,T), 2D analytic energy‑cut |
-| `model.Hall_conductivity_ec(k_mesh, dir_a, dir_b, mu, T, eta)` | `σ(μ)` | AHC via hybrid energy‑cut (2D/3D) |
-| `model.Nonlinear_Hall_conductivity_Intrinsic_ec(k_mesh, dir_a, dir_b, dir_c, mu, T, eta)` | `σ_int(μ)` | Intrinsic NLH via K‑quad energy‑cut (2D/3D) |
-| `model.optical_conductivity_simplex(k_mesh, dir_a, dir_b, ω, η, μ, T)` | `σ(ω)` | Complex optical conductivity |
-| `model.compute_velocity_kernel(k_vec, dir_a, dir_b, dir_c?, gauge, spin)` | `VertexKernel` | Per‑k‑point band‑basis velocity primitives |
-
-**Low‑level (for custom integration loops)**
-
-| Function | Module | Description |
-|----------|--------|-------------|
-| `linear::integrate(all_pts, k_mesh, eta)` | `response::linear` | BZ integral of Berry + metric (fractional coords) |
-| `integrate_dipole_energy_cut_2d(all_pts, k_mesh, mu, T, eta)` | `response` | 2D dipole via K‑quad line cuts |
-| `integrate_fermi_cut_2d(all_pts, k_mesh, mu, T, eta)` | `response` | 2D AHC via hybrid energy‑cut |
-| `integrate_fermi_cut_3d(all_pts, k_mesh, mu, T, eta)` | `response` | 3D AHC via hybrid energy‑cut |
-| `integrate_intrinsic_cut_2d(all_pts, k_mesh, mu, T)` | `response` | 2D intrinsic NLH via K‑quad line cuts |
-| `integrate_intrinsic_cut_3d(all_pts, k_mesh, mu, T)` | `response` | 3D intrinsic NLH via K‑quad surface cuts |
-| `optical::integrate(all_pts, k_mesh, ω, η, μ, T)` | `response::optical` | Optical conductivity (fractional coords) |
-| `build_triangles_2d(ix, iy, nx, ny, inv_nx, inv_ny, all_pts)` | `response` | Build tracked 2D triangles for one cell |
-| `build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, ...)` | `response` | Build tracked 3D tetrahedra (single decomposition) |
-| `build_tetrahedra_3d_diagavg(ix, iy, iz, ...)` | `response` | Diagonal‑averaged 3D tetrahedra (10/cell) |
-| `eval_berry_kernel(band_q, k_ab_q, eta, nsta)` | `response` | Evaluate `(g_n, Ω_n)` at one quadrature point |
-| `eval_berry_band_at_lam(n, bands, kmats, lam, eta, nsta)` | `response` | Evaluate `Ω_n` for a single band |
-| `eval_berry_complex_at_lam(n, bands, kmats, lam, eta, nsta)` | `response` | Evaluate `(metric_n, berry_n)` for a single band |
-| `eval_intrinsic_G_at_lam(n, bands, kmats, lam, nsta)` | `response` | Evaluate $G^{ij}_n$ for intrinsic NLH |
-| `eval_optical_kernel(band_q, k_ab_q, ω, η, μ, β, nsta)` | `response` | Evaluate `σ_nm` at one quadrature point |
-| `read_reset_fermi_cut_counts()` | `response` | Read & reset hybrid path counters (debug) |
-
-**Data types**
-
-| Type | Fields |
-|------|--------|
-| `VertexKernel` | `band`, `k_ab`, `k_bc: Option<_>`, `k_ac: Option<_>`, `vdiag: Option<_>`, `vdiag_a: Option<_>`, `vdiag_b: Option<_>`, `evec` |
-| `TrackedSimplex` | `vertices: Vec<VertexKernel>`, `volume: f64`, `coords: Array2<f64>`, `diag: SimplexDiagnostics` |
-| `SimplexDiagnostics` | `min_gap: f64`, `min_assignment_overlap: f64`, `tracking_conflict: bool` |
-| `FermiCutCounts` | `empty: usize`, `full: usize`, `partial: usize` (debug counters) |
-
-### API changes (v0.8 → post‑tetra)
-
-**Deleted** — no longer exist:
-
-| Old API | Reason |
-|---------|--------|
-| `tetrahedron_integrate()` | Blochl δ‑function on final scalar — replaced by simplex |
-| `tetrahedron_volume_integrate()` | Linear vertex average — replaced by simplex |
-| `Hall_conductivity_tetra()` | AHC via Blochl — removed |
-| `Nonlinear_Hall_conductivity_Extrinsic_tetra()` | Extrinsic NLH via Fermi‑surface cuts — removed |
-| `Nonlinear_Hall_conductivity_Extrinsic_tetra_sym()` | Symmetrised wrapper — removed |
-| `Nonlinear_Hall_conductivity_Intrinsic_tetra()` | Intrinsic NLH via segment/triangle integrals — removed |
-| `compute_tetra_primitives()` | Renamed → `compute_velocity_kernel` |
-| `TetraKPoint`, `IntrinsicTetraPoint` | Replaced by `VertexKernel` |
-| `src/tetrahedron.rs` | Entire file deleted |
-
-**Retained** — unchanged:
-
-| API | Description |
-|-----|-------------|
-| `Hall_conductivity()` / `Hall_conductivity_mu()` / `Hall_conductivity_adapted()` | AHC via direct k‑mesh sum |
-| `Nonlinear_Hall_conductivity_Extrinsic()` / `_sym()` | Extrinsic NLH via direct k‑mesh sum |
-| `Nonlinear_Hall_conductivity_Intrinsic()` | Intrinsic NLH via direct k‑mesh sum |
-| `berry_curvature_n_onek()` / `berry_curvature_onek()` / `berry_curvature()` | Per‑k‑point / k‑path Berry curvature |
-| `berry_curvature_dipole_n_onek()` / `berry_curvature_dipole_n()` | Per‑k‑point Berry dipole |
-| `berry_connection_dipole_onek()` / `berry_connection_dipole()` | Per‑k‑point Berry connection dipole |
-| `optical_geometry_n_onek()` | Per‑k‑point optical geometry |
-| `quantum_geometry_n_onek()` / `quantum_geometry_n()` / `quantum_geometry()` | Per‑k‑point QGT |
-
-**New** — added in this refactoring:
-
-| API | Description |
-|-----|-------------|
-| `berry_curvature_simplex()` | Berry + metric via simplex quadrature (Cartesian) |
-| `berry_curvature_dipole_energy_cut()` | Berry dipole via analytic energy‑cut (2D only) |
-| `Hall_conductivity_ec()` | AHC via hybrid energy‑cut (2D/3D, vertex‑Ω full + K‑quad partial) |
-| `Nonlinear_Hall_conductivity_Intrinsic_ec()` | Intrinsic NLH via K‑quad energy‑cut (2D/3D, surface integral) |
-| `berry_curvature_dipole_energy_cut()` | BCD via K‑quadrature line‑cut (upgraded from linear Ω) |
-| `eval_berry_band_at_lam()` | Single‑band Berry kernel at barycentric coords |
-| `eval_berry_complex_at_lam()` | Single‑band (metric, berry) at barycentrics |
-| `eval_intrinsic_G_at_lam()` | Single‑band $G^{ij}_n = \operatorname{Re}\sum K_{nm}/(E_n-E_m)^3$ |
-| `build_tetrahedra_3d_diagavg()` | Diagonal‑averaged 3D tet decomposition (restores k→−k) |
-| `FermiCutCounts` / `read_reset_fermi_cut_counts()` | Diagnostic counters for hybrid fast‑path ratio |
-| `optical_conductivity_simplex()` | Optical σ(ω) via simplex quadrature (Cartesian) |
-| `compute_velocity_kernel()` | Per‑k‑point band‑basis velocity primitives |
-| `response::*` module | Public low‑level integration primitives |
-
-### Energy‑cut design
-
-**AHC** (volume integral $\int \Theta(\mu-E)\,\Omega\,dk$):
+**AHC** (volume integral `∫ Θ(μ−E) Ω dk`):
 
 | Occupancy | Method | Cost |
 |-----------|--------|------|
-| Fully occupied | Vertex‑average Ω (preserves gap quantization) | O(1) |
+| Fully occupied | Vertex-average Ω (preserves gap quantization) | O(1) |
 | Fully empty | Skip | O(1) |
-| Partially occupied | K‑quadrature on clipped polygon (preserves $1/\Delta^2$) | O(N_quad) |
+| Partially occupied | K-quadrature on clipped polygon | O(N_quad) |
 
-3D uses a sorted‑μ sweep: binary search finds empty/partial/full μ ranges.
+3D uses a sorted-μ sweep: binary search finds empty/partial/full μ ranges.
 
-**Nonlinear** (Fermi‑surface integral $\int \delta(\mu-E)\,A\,dk$):
+**Nonlinear** (Fermi-surface integral `∫ δ(μ−E) A dk`):
 
 | Dim | Intersection | Quadrature |
 |-----|-------------|------------|
-| 2D | $E=\mu$ line ∩ triangle → segment | 2‑pt Gauss K‑quad along line |
-| 3D | $E=\mu$ plane ∩ tetrahedron → polygon | polygon triangulation + 3‑pt K‑quad |
+| 2D | E=μ line ∩ triangle → segment | 2-pt Gauss K-quad along line |
+| 3D | E=μ plane ∩ tetrahedron → polygon | polygon triangulation + 3-pt K-quad |
 
-Nonlinear energy‑cut has no full/empty fast path (the integrand $\propto\delta(E-\mu)$
-is zero away from the Fermi surface).  Amplitude kernel varies by method:
+Nonlinear energy-cut has no full/empty fast path (integrand ∝ δ(E−μ) is zero
+away from the Fermi surface).
 
-| Method | Amplitude $A_n$ |
+| Method | Amplitude A_n |
 |--------|----------------|
-| Dipole (extrinsic) | $v^c_n \cdot \Omega^{ab}_n$ |
-| Intrinsic | $2v^c_n G^{ab}_n - \frac12(v^a_n G^{bc}_n + v^b_n G^{ac}_n)$ |
+| Dipole (extrinsic) | `v^c_n · Ω^{ab}_n` |
+| Intrinsic | `2v^c_n G^{ab}_n − ½(v^a_n G^{bc}_n + v^b_n G^{ac}_n)` |
 
 **3D diagonal averaging** (`build_tetrahedra_3d_diagavg`): generates 10 tets per
-cell by averaging the two possible 5‑tet cube decompositions with opposite body
-diagonals.  This restores $k\to-k$ cancellation for P‑odd quantities, analogous
-to the 2D diagonal average.
+cell by averaging the two possible 5-tet cube decompositions with opposite body
+diagonals. Restores k→−k cancellation for P-odd quantities.
 
 ### Known limitations
 
 - **Intrinsic NLH 3D convergence** — nk=12 gives 4.2% error vs nk=14 reference
-  (surface K‑quad $\propto h^2$, slower than 2D line integral $\propto h$)
-- **Dipole energy‑cut is 2D only** — 3D tetrahedron surface cut not yet implemented
-- **No band tracking in intrinsic NLH** direct‑sum path (not ported to simplex)
+  (surface K-quad ∝ h², slower than 2D line integral ∝ h)
+- **Dipole energy-cut is 2D only** — 3D tetrahedron surface cut not yet implemented
+- **No band tracking in intrinsic NLH** direct-sum path (not ported to simplex)
+
+---
+
+## Fermi Surface Export
+
+Three output paths in `fermi_surface.rs`:
+
+1. **`show_fermi_surface`** — gnuplot (2D/3D). Slow for 3D.
+2. **`write_bxsf`** — BXSF ASCII for XCrySDen/FermiSurfer. `Model<SPIN, 3, R>` only.
+3. **`write_spin_frmsf`** — FRMSF for spin-split Fermi surfaces (altermagnets).
+
+### Critical conventions (hard-won — changing any breaks symmetry)
+
+**`Model::rec_lat()`** returns reciprocal lattice vectors as **rows**:
+`B = 2π · (Aᵀ)⁻¹`. BXSF/FRMSF header writes three lines: `b[i,0], b[i,1], b[i,2]`.
+
+**`gen_kmesh` row ordering**: ik1 (dim 0) outermost, ik3 (dim 2) innermost.
+Row index: `ik1*ny*nz + ik2*nz + ik3`. Fractional coords `k = (ik1/nx, ik2/ny, ik3/nz)`.
+
+**FRMSF/BXSF write order matches gen_kmesh** — `eval` rows are already in the
+correct order. Do NOT introduce an index formula like `ik1 + ik2*nx + ik3*nx*ny`
+— it will scramble E(k) and destroy crystal symmetries (C3z, etc.).
+
+**`e_fermi` must be subtracted** from band energies. FermiSurfer assumes `E_F = 0`.
+
+**`write_spin_frmsf` checks** — validates up/dn models have same band count and
+lattice (element-wise diff < 1e-10).
+
+---
+
+## Floquet: Real-Space Peierls-Sambe Solver
+
+### Real-space convention
+
+Hopping blocks: `t_{ij}(R) = ⟨i,0|H|j,R⟩`, with integer lattice vector `hamR[R]`
+and matrix block `ham[R,i,j]`.  Real-space link for Peierls phase:
+
+```math
+d_{ijR} = (R + τ_j − τ_i) · L
+```
+
+where `orb` stores fractional orbital positions and `lat` is the real-space
+lattice matrix used with row-vector fractional coordinates (`cart = frac · lat`).
+For spinful models: `orbital_index = state_index % norb`.
+
+### Light-field convention
+
+Dimensionless vector-potential amplitude `a(t) = (e/ħ)A(t)` in inverse length
+units matching `lat` (typically 1/Å). Complex Fourier components stored as
+`a_complex`, real drive:
+
+```math
+a(t) = Re Σ_α a_α e^{−i l_α Ω₀ t}
+```
+
+`l_α` is an integer harmonic. Supports arbitrary linear, circular, elliptical,
+and mixed-frequency commensurate polarization.
+
+### Peierls time dependence
+
+Each hopping dressed by `exp[−i a(t)·d_{ijR}]`. Fourier coefficient:
+
+```math
+C_q(d) = (1/T) ∫_0^T dt e^{iqΩ₀t} exp[−i a(t)·d]
+```
+
+Evaluated by uniform discrete Fourier sampling — more general than Bessel
+formulas for arbitrary complex polarization and harmonic mixing.
+
+### Sambe Hamiltonian
+
+```math
+H^{(q)}_{ij}(k) = Σ_R t_{ij}(R) C_q(d_{ijR}) e^{i2πk·R}
+```
+
+```math
+[H_F(k)]_{in,jm} = H^{(n−m)}_{ij}(k) + nΩ₀ δ_{nm}δ_{ij}
+```
+
+Quasienergies can be folded to `[−Ω₀/2, Ω₀/2)` via `fold_quasienergy`.
+
+### van Vleck effective model
+
+```math
+H_eff(k) = H^{(0)}(k) + Σ_{q=1}^{q_max} [H^{(q)}(k), H^{(−q)}(k)] / (qΩ) + O(Ω^{−2})
+```
+
+Returns a same-size `Model<SPIN, DIM, NoRMatrix>` by inverse Fourier transform
+from a uniform k-mesh.
+
+### Key API types
+
+| Type | Purpose |
+|------|---------|
+| `LightMode` | One harmonic component: `LightMode::new(harmonic, a_complex)` |
+| `FloquetDrive` | `omega0_ev` + `Vec<LightMode>`; builder: `new()`, `with_modes()`, `add_mode()` |
+| `FloquetTruncation` | Photon cutoff `n_max` and time-grid `n_time`; `n_sector()` = `2n_max+1` |
+| `IncidentBasis` | Transverse polarization basis from incident direction |
+| `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_q_max(q)`, `with_target_hamR(rs)` |
+| `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
+| `Model::floquet_effective_model` | Inherent method returning same-size effective Model |
+
+### Two Floquet paths
+
+| Path | Returns | Basis size | When |
+|------|---------|------------|------|
+| `floquet_model` | Enlarged `Model` | `nsta·(2N+1)` | Exact, any Ω |
+| `floquet_effective_model` | Same-size `Model` | `nsta` | Ω ≫ bandwidth |
+
+`floquet_model` encodes photon sectors as additional orbitals. Spinless basis
+order: `(photon sector, orbital)`. Spinful: `(spin, photon sector, orbital)`.
+It replicates the input atom metadata and orbital projections in the same
+sector-major order. `floquet_effective_model` preserves the input metadata
+unchanged. A custom `target_hamR` must contain unique vectors and be closed
+under `R -> -R`.
+
+---
 
 ## Performance Notes
 
 **`zaxpy`** (`src/ndarray_lapack.rs`): safe BLAS `y += alpha * x` for `Complex<f64>` slices.
-Preferred over `Zip`/elementwise for direction-weight accumulation of dense matrices.
-Use `Complex::new(weight, 0.0)` as scalar; only call when source and destination are
-standard contiguous slices (`.as_slice().unwrap()` / `.as_slice_mut().unwrap()`).
+Preferred over `Zip`/elementwise for direction-weight accumulation. Only call when
+source and destination are standard contiguous slices.
 
 **Allocation reduction**: avoid `Array1::from_vec(...)` and `.to_owned()` inside hot loops;
 prefer preallocated buffers. For rayon folds over `mu` values, mutate a local
-`Array1<f64>` accumulator directly instead of allocating per-iteration.
+`Array1<f64>` accumulator directly.
 
 **Autovec/SIMD**: simple contiguous slice loops autovectorize better than `ndarray`
 indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512.
-BLAS backends (MKL/OpenBLAS) dispatch optimized kernels independently.
 
-**Energy‑cut hotspots** (in priority order):
+**Energy-cut hotspots** (in priority order):
 
 1. `eval_*_at_lam` functions allocate `Vec<f64>` and `Vec<Complex<f64>>` per call.
-   Pre‑allocating thread‑local buffers (or stack arrays for small nsta ≤ 32) would
+   Pre-allocating thread-local buffers (or stack arrays for nsta ≤ 32) would
    eliminate allocation overhead entirely.
-
 2. `accumulate_tetrahedron_*_kquad` clones 6 `nsta×nsta` matrices per tetrahedron.
-   These could borrow from the TrackedSimplex vertices (lifetime permitting) or
-   use `Arc`-shared data.
-
-3. Nonlinear 3D lacks a sorted‑μ sweep — currently loops over all μ per
-   (tet, band).  Same optimization as AHC 3D (binary search + range add) applies
-   here, saving the per‑μ conditional for μ values away from the Fermi surface.
-
+   Could borrow from TrackedSimplex vertices or use `Arc`-shared data.
+3. Nonlinear 3D lacks a sorted-μ sweep — loops over all μ per (tet, band).
+   Same binary-search + range-add optimization as AHC 3D applies.
 4. `energy_gradient_3d` recomputes the same gradient for every band at every μ
-   within the same tetrahedron.  Computing once per (tet, μ) and sharing across
-   bands would cut 3D intrinsic cost roughly in half.
+   within the same tetrahedron. Computing once per (tet, μ) would cut 3D
+   intrinsic cost roughly in half.
+
+---
 
 ## Refactoring Guidelines
 
@@ -482,199 +514,6 @@ BLAS backends (MKL/OpenBLAS) dispatch optimized kernels independently.
   3-4 agents in parallel for distinct groups of files.
 - **Commit after each successful `cargo check`**: prevents data loss from
   `git checkout` discarding uncommitted work.
-
----
-
-# Deleted: Old Blochl Tetrahedron Code
-
-> **Removed 2026-06-30.**  All `*_tetra` methods, `TetraKPoint`, `tetrahedron.rs`,
-> and the ~2500 lines of Blochl/Fermi‑surface helper code have been deleted.
-> The replacement is `src/response/` (simplex quadrature, see above).
-
-## Nonlinear Hall index conventions
-
-- `Nonlinear_Hall_conductivity_Extrinsic` returns the unsymmetrized
-  kernel `S_{ab;c} = ∫(-df/dE) v_c Omega_ab dk`.  For current-first
-  `chi_ext[a,b,c]`, use `Nonlinear_Hall_conductivity_Extrinsic_sym` which
-  computes `0.5 * (S_{ab;c} + S_{ac;b})`.
-- `Nonlinear_Hall_conductivity_Intrinsic` is current‑first:
-  arguments `(current, field_1, field_2)` map to `sigma_int^{field_1 field_2; current}`.
-- The charge intrinsic implementation uses
-  `G^{ij}=Re sum_m v^i_nm v^j_mn/(E_n-E_m)^3`.  Literature formulas
-  that define `G=2 Re sum ...` differ by an overall factor of 2.
-
----
-
-## Floquet Plan: Real-Space Peierls-Sambe Solver
-
-> **Goal**: support automated Floquet calculations for arbitrary incident-light
-> direction, arbitrary polarization, and mixed commensurate harmonics, while
-> keeping the coupling in real space.  The first implementation is the
-> long-wavelength Peierls-coupling path; length-gauge dipole/rmatrix coupling is
-> a later extension.
-
-### Real-space convention
-
-The repository stores tight-binding hopping blocks as
-
-```math
-t_{ij}(\mathbf R)=\langle i,\mathbf 0|H|j,\mathbf R\rangle ,
-```
-
-with integer lattice vector `hamR[R]` and matrix block `ham[R,i,j]`.  The real
-space link used by the Floquet Peierls phase is
-
-```math
-\mathbf d_{ij\mathbf R}
-=
-\left(\mathbf R+\boldsymbol\tau_j-\boldsymbol\tau_i\right)\cdot L ,
-```
-
-where `orb` stores fractional orbital positions and `lat` is the real-space
-lattice matrix used with row-vector fractional coordinates (`cart = frac · lat`).
-For spinful models, the spin index is ignored in the position lookup:
-`orbital_index = state_index % norb`.
-
-### Light-field convention
-
-The drive is represented by the dimensionless vector-potential amplitude
-
-```math
-\mathbf a(t) = \frac{e}{\hbar}\mathbf A(t),
-```
-
-in inverse length units matching `lat` (typically `1/Angstrom`).  A complex
-Fourier component is stored as `a_complex`, so the real drive is
-
-```math
-\mathbf a(t)
-=
-\operatorname{Re}\sum_\alpha
-\mathbf a_\alpha e^{-i l_\alpha \Omega_0 t}.
-```
-
-Here `l_alpha` is an integer harmonic.  This supports arbitrary linear,
-circular, elliptical, and mixed-frequency commensurate polarization by simply
-adding modes with different complex vectors and harmonics.
-
-### Peierls time dependence
-
-Each hopping is dressed by
-
-```math
-t_{ij}(\mathbf R,t)
-=
-t_{ij}(\mathbf R)
-\exp\left[-i\,\mathbf a(t)\cdot\mathbf d_{ij\mathbf R}\right].
-```
-
-The Fourier coefficient used in the Sambe matrix is
-
-```math
-C_q(\mathbf d)
-=
-\frac{1}{T}\int_0^T dt\,
-e^{iq\Omega_0 t}
-\exp\left[-i\,\mathbf a(t)\cdot\mathbf d\right].
-```
-
-The implementation evaluates this coefficient by uniform discrete Fourier
-sampling.  This is intentionally more general than a Bessel-function formula:
-it works for arbitrary complex polarization and arbitrary commensurate harmonic
-mixing without hand-derived special cases.
-
-### Floquet Hamiltonian
-
-The real-space Fourier block is
-
-```math
-H^{(q)}_{ij}(\mathbf k)
-=
-\sum_{\mathbf R}
-t_{ij}(\mathbf R)\,
-C_q(\mathbf d_{ij\mathbf R})\,
-e^{i2\pi\mathbf k\cdot\mathbf R}.
-```
-
-For photon sectors `n,m ∈ [-N,N]`, the Sambe Hamiltonian is
-
-```math
-\left[H_F(\mathbf k)\right]_{i n,j m}
-=
-H^{(n-m)}_{ij}(\mathbf k)
-+ n\Omega_0\,\delta_{nm}\delta_{ij}.
-```
-
-The diagonal photon term uses energy units (`omega0_ev`).  Quasienergies can be
-folded to the first Floquet zone `[-omega0/2, omega0/2)` after diagonalization.
-
-### Initial API
-
-The first implementation should expose:
-
-| Type / API | Purpose |
-|------------|---------|
-| `LightMode` | One commensurate harmonic component: `(harmonic, a_complex)` |
-| `FloquetDrive` | Base photon energy `omega0_ev` plus a list of `LightMode`s |
-| `FloquetTruncation` | Photon cutoff `n_max` and time-grid size `n_time` |
-| `IncidentBasis` | Builds transverse polarization vectors from an incident direction |
-| `FloquetEffectiveOptions` | Optional van Vleck order, q cutoff, and target `hamR` for same-size effective models |
-| `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
-| `Model` inherent API | `floquet_effective_model` with `Option<&FloquetEffectiveOptions>` |
-
-`LightMode::a_complex` has length `DIM`.  For full 3D incidence geometry,
-construct a complex polarization vector with `IncidentBasis` and then project or
-truncate it consistently with the model dimension.
-
-`floquet_model(drive, trunc)` returns a reusable
-`Model<SPIN, DIM, NoRMatrix>` in the enlarged Sambe basis.  Photon sectors are
-encoded as additional orbitals, so a spinful input model remains
-`Model<true, DIM, NoRMatrix>` and physical spin is not flattened away.  The
-spinless basis order is `(photon sector, orbital)`; the spinful basis order is
-Rustb's usual `(spin, photon sector, orbital)`.  The returned model is an
-unfolded Sambe model: `solve_band_onek` gives energies shifted by `n omega0`,
-while quasienergy folding still requires `fold_quasienergy` or
-`floquet_quasienergy_onek`.
-
-`floquet_effective_model(drive, trunc, k_mesh, options)` returns a same-size
-`Model<SPIN, DIM, NoRMatrix>` using the first-order high-frequency van Vleck
-expansion.  It computes `H_eff(k)` on a uniform fractional `k_mesh` and inverse
-Fourier transforms back to real space.  Pass `None` for default options:
-`order=1`, `q_max=2*trunc.n_max`, and `target_hamR=input.hamR`.  Pass
-`Some(&FloquetEffectiveOptions::new()...)` when commutator terms need a custom
-order, harmonic cutoff, or longer-range hoppings.  With the module convention
-`H(t)=Σ_q H^(q)e^{-iqΩt}`,
-
-```math
-H_{\rm eff}(k)
-= H^{(0)}(k)
-+ \sum_{q=1}^{q_{\max}}
-\frac{[H^{(q)}(k),H^{(-q)}(k)]}{q\Omega}
-+ O(\Omega^{-2}).
-```
-
-### Validation tests
-
-1. **No drive**: with no `LightMode`, `H_F(k)` is block diagonal and the spectrum
-   equals static bands plus `n omega0`.
-2. **Hermiticity**: `H_F(k) = H_F(k)^\dagger` for a generic complex polarization.
-3. **Weak-drive 1D check**: for a 1D nearest-neighbor chain and small amplitude
-   `a`, the `q=1` hopping Fourier block agrees with the first-order expansion of
-   the Peierls phase.
-4. **Effective model checks**: `order=0` matches `H^(0)` after inverse Fourier
-   transform; no-drive first-order effective model reduces to the original
-   static model and preserves the number of bands.
-
-### Future extensions
-
-- **Multi-frequency incommensurate drive**: use a multi-index Sambe basis
-  `n⃗`, diagonal energy `n⃗·Ω⃗`, and multidimensional Fourier sampling.  This is
-  expensive (`∏_α(2N_α+1)` sectors), so it should be an explicit advanced API.
-- **Length-gauge/rmatrix coupling**: add
-  `-e E(t)·r` for `Model<SPIN,DIM,HasRMatrix>` when position matrix elements are
-  available.  This should be a separate coupling option, not mixed silently with
-  Peierls hopping phases.
-- **Caching**: cache `C_q(d)` per distinct hopping link `(R,i,j)` and reuse it
-  over k-mesh calculations.  The first implementation computes per k for clarity.
-- **Observable support**: after the Hamiltonian path is stable, add spectral
-  weights, Floquet occupations, and response functions in Sambe space.
+- **Constructing models**: `Model::<false, 2>::tb_model(lat, orb, None)?` for spinless 2D;
+  `Model::<true, 2>::tb_model(lat, orb, None)?` for spinful 2D;
+  `Model::<false, 3, HasRMatrix>::from_hr(path, seed, 0.0)?` for 3D with position matrix.

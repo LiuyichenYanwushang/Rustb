@@ -27,9 +27,8 @@
 //!
 //! | Method | Path | Formula |
 //! |--------|------|---------|
-//! | `berry_curvature_simplex` | simplex | $\sum_n \int \Omega^{ab}_nd\mathbf{k}$ (Cartesian) |
-//! | `Hall_conductivity` | direct sum | $\sigma_{\text{AHC}}(\mu,T)$ |
-//! | `Hall_conductivity_mu` | direct sum | $\sigma_{\text{AHC}}(\mu)$ per μ |
+//! | `BerryCurvature::berry_curvature_at` | one k-point | band-resolved $\Omega_n^{ab}$ |
+//! | `Model::hall_conductivity` | direct sum or energy cut | $\sigma_{\text{AHC}}(\mu)$ |
 
 use ndarray::prelude::*;
 use ndarray::*;
@@ -39,20 +38,121 @@ use rayon::prelude::*;
 use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
-use crate::SpinDirection;
 use crate::error::Result;
+use crate::thermodynamics::Occupation;
 
+use super::config::{
+    CurrentOperator, DirectionPair, mesh_array, validate_broadening, validate_chemical_potentials,
+    validate_k_mesh, validate_sorted,
+};
 use super::energy_cut::{integrate_fermi_cut_2d, integrate_fermi_cut_3d};
-use super::kernel::quadrature_berry_simplex;
+use super::kernel::quadrature_occupied_geometry_simplex;
 use super::tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
-use super::traits::BerryCurvature;
+use super::traits::{BerryCurvature, BerryCurvatureParams};
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 
-/// Integrate Berry curvature and quantum metric over the BZ.
+/// Brillouin-zone integration used for Hall conductivity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HallIntegration {
+    /// Uniform k-mesh summation of band-resolved Berry curvature.
+    #[default]
+    Direct,
+    /// Simplex energy-cut integration, exact in the zero-temperature limit
+    /// for linearly interpolated energies and velocity kernels.
+    EnergyCut,
+}
+
+/// Complete configuration for anomalous or spin Hall conductivity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HallConductivityParams<const DIM: usize> {
+    /// Number of uniform samples along each reciprocal-lattice direction.
+    pub k_mesh: [usize; DIM],
+    /// Ordered Hall tensor directions.
+    pub directions: DirectionPair<DIM>,
+    /// Chemical potentials in eV.
+    pub chemical_potentials: Array1<f64>,
+    /// Electronic occupation or smearing convention.
+    pub occupation: Occupation,
+    /// Charge current or a selected spin-current polarization.
+    pub current: CurrentOperator,
+    /// Non-negative energy-denominator regularization in eV.
+    pub broadening: f64,
+    /// Brillouin-zone integration algorithm.
+    pub integration: HallIntegration,
+}
+
+impl<const DIM: usize> HallConductivityParams<DIM> {
+    /// Construct a zero-temperature charge-Hall calculation using direct
+    /// k-mesh summation and a `1e-3` eV denominator broadening.
+    pub fn new(
+        k_mesh: [usize; DIM],
+        directions: DirectionPair<DIM>,
+        chemical_potentials: Array1<f64>,
+    ) -> Self {
+        Self {
+            k_mesh,
+            directions,
+            chemical_potentials,
+            occupation: Occupation::ZeroTemperature,
+            current: CurrentOperator::Charge,
+            broadening: 1e-3,
+            integration: HallIntegration::Direct,
+        }
+    }
+
+    /// Convenience constructor for a single chemical potential.
+    pub fn at_mu(
+        k_mesh: [usize; DIM],
+        directions: DirectionPair<DIM>,
+        chemical_potential: f64,
+    ) -> Self {
+        Self::new(
+            k_mesh,
+            directions,
+            Array1::from_vec(vec![chemical_potential]),
+        )
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_k_mesh(&self.k_mesh)?;
+        self.directions.validate()?;
+        validate_chemical_potentials(&self.chemical_potentials)?;
+        self.occupation.validate()?;
+        validate_broadening(self.broadening)?;
+        if self.integration == HallIntegration::EnergyCut {
+            validate_sorted(&self.chemical_potentials, "chemical_potentials")?;
+            if DIM != 2 && DIM != 3 {
+                return Err(crate::TbError::InvalidDimension {
+                    dim: DIM,
+                    supported: vec![2, 3],
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Hall conductivity evaluated on the requested chemical-potential grid.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HallConductivityResult {
+    /// Chemical potentials copied from the input configuration.
+    pub chemical_potentials: Array1<f64>,
+    /// Hall response at every chemical potential.
+    pub conductivity: Array1<f64>,
+}
+
+impl HallConductivityResult {
+    /// Return the scalar value produced by [`HallConductivityParams::at_mu`].
+    pub fn single(&self) -> Option<f64> {
+        (self.conductivity.len() == 1).then(|| self.conductivity[0])
+    }
+}
+
+/// Integrate occupation-weighted Berry curvature and quantum metric over the BZ.
 ///
 /// ```text
-/// total_berry  = Σ_n ∫_BZ Ω^{ab}_n(k) dk
-/// total_metric = Σ_n ∫_BZ  g^{ab}_n(k) dk
+/// total_berry(μ)  = Σ_n ∫_BZ f(E_n, μ) Ω^{ab}_n(k) dk
+/// total_metric(μ) = Σ_n ∫_BZ f(E_n, μ) g^{ab}_n(k) dk
 /// ```
 ///
 /// where `Ω_n = −2 Im G_n`, `g_n = Re G_n`, and
@@ -61,13 +161,18 @@ use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 /// Inside each simplex, `K_nm` and `E_n` are linearly interpolated,
 /// then the kernel is evaluated at degree‑2 symmetric quadrature points.
 ///
-/// # Returns
-/// `(total_metric, total_berry, unsafe_count)` in fractional‑coordinate
-/// volume.  Divide by `det(lat)` for Cartesian volume.
-pub fn integrate(all_pts: &[VertexKernel], k_mesh: &Array1<usize>, eta: f64) -> (f64, f64, usize) {
+/// Values use fractional-coordinate volume. Divide by `det(lat)` for
+/// Cartesian reciprocal-space volume.
+pub(crate) fn integrate_occupied_geometry(
+    all_pts: &[VertexKernel],
+    k_mesh: &Array1<usize>,
+    eta: f64,
+    chemical_potentials: &Array1<f64>,
+    occupation: Occupation,
+) -> (Array1<f64>, Array1<f64>, usize) {
     let dim = k_mesh.len();
-    let mut total_g = 0.0;
-    let mut total_o = 0.0;
+    let mut total_g = Array1::<f64>::zeros(chemical_potentials.len());
+    let mut total_o = Array1::<f64>::zeros(chemical_potentials.len());
     let mut unsafe_count = 0usize;
 
     match dim {
@@ -82,9 +187,14 @@ pub fn integrate(all_pts: &[VertexKernel], k_mesh: &Array1<usize>, eta: f64) -> 
                         if sim.diag.min_gap < SIMPLEX_GAP_TOL {
                             unsafe_count += 1;
                         }
-                        let (g, o) = quadrature_berry_simplex(sim, eta);
-                        total_g += g;
-                        total_o += o;
+                        let (g, o) = quadrature_occupied_geometry_simplex(
+                            sim,
+                            eta,
+                            chemical_potentials,
+                            occupation,
+                        );
+                        total_g += &g;
+                        total_o += &o;
                     }
                 }
             }
@@ -104,9 +214,14 @@ pub fn integrate(all_pts: &[VertexKernel], k_mesh: &Array1<usize>, eta: f64) -> 
                             if sim.diag.min_gap < SIMPLEX_GAP_TOL {
                                 unsafe_count += 1;
                             }
-                            let (g, o) = quadrature_berry_simplex(sim, eta);
-                            total_g += g;
-                            total_o += o;
+                            let (g, o) = quadrature_occupied_geometry_simplex(
+                                sim,
+                                eta,
+                                chemical_potentials,
+                                occupation,
+                            );
+                            total_g += &g;
+                            total_o += &o;
                         }
                     }
                 }
@@ -119,231 +234,110 @@ pub fn integrate(all_pts: &[VertexKernel], k_mesh: &Array1<usize>, eta: f64) -> 
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
-    /// Berry curvature + quantum metric via simplex quadrature.
+    /// Evaluate charge or spin Hall conductivity using one coherent API.
     ///
-    /// Returns `(total_metric, total_berry, unsafe_count)` in Cartesian
-    /// reciprocal‑space volume.
-    pub fn berry_curvature_simplex(
+    /// The returned array has one value per chemical potential. Direct
+    /// integration reuses the band-resolved Berry curvature for the entire
+    /// chemical-potential grid; energy-cut integration tracks bands between
+    /// simplex vertices before integrating the occupied region.
+    pub fn hall_conductivity(
         &self,
-        k_mesh: &Array1<usize>,
-        dir_a: &Array1<f64>,
-        dir_b: &Array1<f64>,
-        eta: f64,
-    ) -> Result<(f64, f64, usize)> {
-        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
-        let nk = kvec.nrows();
-        let gauge = Gauge::Atom;
+        params: &HallConductivityParams<DIM>,
+    ) -> Result<HallConductivityResult> {
+        params.validate()?;
+        let spin = params.current.spin_direction();
+        if !SPIN && let Some(direction) = spin {
+            return Err(crate::TbError::SpinNotAllowed(direction));
+        }
 
-        let mut all_pts: Vec<VertexKernel> = (0..nk)
-            .into_par_iter()
-            .map(|ik| {
-                let kv = kvec.row(ik).to_owned();
-                self.compute_velocity_kernel(&kv, dir_a, dir_b, None, gauge, None)
-            })
-            .collect();
-        global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
-
-        let (total_g, total_o, unsafe_count) = integrate(&all_pts, k_mesh, eta);
-        let det = self.lat.det().unwrap();
-        Ok((total_g / det, total_o / det, unsafe_count))
-    }
-
-    /// Computes the anomalous Hall conductivity at a given chemical potential and temperature.
-    ///
-    /// Uses a uniform k-mesh and direct summation:
-    /// $$ \sigma_{\alpha\beta}^\gamma = \f{1}{N (2\pi)^d V} \sum_{\mathbf k} \Omega_{\alpha\beta}^\gamma(\mathbf k), $$
-    /// where $N$ is the number of k-points, $d$ is the dimension, and $V$ is the unit cell volume.
-    ///
-    /// # Arguments
-    ///
-    /// * `k_mesh` - Number of k-points along each direction, e.g. `arr1(&[nk, nk])` for 2D.
-    /// * `current_dir` - Direction vector for the first index $\alpha$ of $\sigma_{\alpha\beta}$.
-    /// * `dir_2` - Direction vector for the second index $\beta$.
-    /// * `mu` - Chemical potential $\mu$ (in eV).
-    /// * `T` - Temperature (in K). Use `T=0` for the zero-temperature step function.
-    /// * `spin` - Spin operator index (0, 1, 2, 3).
-    /// * `eta` - Broadening parameter $\eta$ (in eV).
-    ///
-    /// # Returns
-    ///
-    /// The Hall conductivity $\sigma_{\alpha\beta}$ in units of $e^2/\hbar/\AA$ (3D) or $e^2/\hbar$ (2D).
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use ndarray::arr1;
-    /// # use rustb::Model;
-    /// # fn example(model: &Model) -> Result<(), rustb::error::TbError> {
-    /// let kmesh = arr1(&[31, 31]);
-    /// let current_dir = arr1(&[1.0, 0.0]);
-    /// let dir_2 = arr1(&[0.0, 1.0]);
-    /// let sigma_xy = model.Hall_conductivity(&kmesh, &current_dir, &dir_2, 0.0, 0.0, None, 1e-3)?;
-    /// println!("Hall conductivity = {}", sigma_xy);
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[allow(non_snake_case)]
-    pub fn Hall_conductivity(
-        &self,
-        k_mesh: &Array1<usize>,
-        current_dir: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        mu: f64,
-        T: f64,
-        spin: Option<SpinDirection>,
-        eta: f64,
-    ) -> Result<f64> {
-        let kvec: Array2<f64> = crate::kpoints::gen_kmesh(&k_mesh)?;
-        let nk: usize = kvec.len_of(Axis(0));
-        let omega = self.berry_curvature(&kvec, &current_dir, &dir_2, mu, T, spin, eta);
-        let conductivity: f64 = omega.sum() / (nk as f64) / self.lat.det().unwrap();
-        Ok(conductivity)
-    }
-
-    /// Computes the Hall conductivity for multiple chemical potential values efficiently.
-    ///
-    /// This method first computes $\Omega_n$ (the Berry curvature per band) at each k-point,
-    /// then evaluates the Fermi-Dirac-weighted sum for each $\mu$. This avoids repeatedly
-    /// computing $\Omega_n$, making it much faster than calling [`Hall_conductivity`] for each $\mu$.
-    /// However, it uses more memory and cannot use adaptive integration.
-    ///
-    /// # Arguments
-    ///
-    /// * `k_mesh` - Number of k-points along each direction.
-    /// * `current_dir`, `dir_2` - Direction vectors for the conductivity tensor indices.
-    /// * `mu` - Array of chemical potential values (in eV).
-    /// * `T` - Temperature (in K).
-    /// * `spin` - Spin operator index (0, 1, 2, 3).
-    /// * `eta` - Broadening parameter (in eV).
-    ///
-    /// # Returns
-    ///
-    /// An `Array1<f64>` of Hall conductivity values, one for each $\mu$, in units of $e^2/\hbar/\AA$ (3D) or $e^2/\hbar$ (2D).
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use ndarray::Array1;
-    /// # use rustb::Model;
-    /// # fn example(model: &Model) -> Result<(), rustb::error::TbError> {
-    /// let kmesh = ndarray::arr1(&[31, 31]);
-    /// let current_dir = ndarray::arr1(&[1.0, 0.0]);
-    /// let dir_2 = ndarray::arr1(&[0.0, 1.0]);
-    /// let mu = Array1::linspace(-2.0, 2.0, 101);
-    /// let sigma_vs_mu = model.Hall_conductivity_mu(&kmesh, &current_dir, &dir_2, &mu, 0.0, None, 1e-3)?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn Hall_conductivity_mu(
-        &self,
-        k_mesh: &Array1<usize>,
-        current_dir: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        mu: &Array1<f64>,
-        T: f64,
-        spin: Option<SpinDirection>,
-        eta: f64,
-    ) -> Result<Array1<f64>> {
-        let kvec: Array2<f64> = crate::kpoints::gen_kmesh(&k_mesh)?;
-        let nk: usize = kvec.len_of(Axis(0));
-        let (omega_n, band): (Vec<_>, Vec<_>) = kvec
-            .axis_iter(Axis(0))
-            .into_par_iter()
-            .map(|x| {
-                let (omega_n, band) =
-                    self.berry_curvature_n_onek(&x.to_owned(), &current_dir, &dir_2, spin, eta);
-                (omega_n, band)
-            })
-            .collect();
-        let omega_n = Array2::<f64>::from_shape_vec(
-            (nk, self.nsta()),
-            omega_n.into_iter().flatten().collect(),
-        )
-        .unwrap();
-        let band =
-            Array2::<f64>::from_shape_vec((nk, self.nsta()), band.into_iter().flatten().collect())
-                .unwrap();
-        let n_mu: usize = mu.len();
-        let conductivity = if T == 0.0 {
-            let conductivity_new: Vec<f64> = mu
-                .into_par_iter()
-                .map(|x| {
-                    let mut omega = Array1::<f64>::zeros(nk);
-                    for k in 0..nk {
-                        for i in 0..self.nsta() {
-                            omega[[k]] += if band[[k, i]] > *x {
-                                0.0
-                            } else {
-                                omega_n[[k, i]]
-                            };
-                        }
+        let k_mesh = mesh_array(&params.k_mesh);
+        let determinant = self.lat.det()?;
+        let (dir_a, dir_b) = params.directions.as_arrays();
+        let conductivity = match params.integration {
+            HallIntegration::Direct => {
+                let kvec: Array2<f64> = crate::kpoints::gen_kmesh(&k_mesh)?;
+                let nk = kvec.nrows();
+                let berry_params = BerryCurvatureParams {
+                    directions: params.directions,
+                    current: params.current,
+                    broadening: params.broadening,
+                };
+                let band_data: Vec<Result<_>> = kvec
+                    .axis_iter(Axis(0))
+                    .into_par_iter()
+                    .map(|k| self.berry_curvature_at(&k, &berry_params))
+                    .collect();
+                let band_data = band_data.into_iter().collect::<Result<Vec<_>>>()?;
+                let values: Vec<f64> = params
+                    .chemical_potentials
+                    .par_iter()
+                    .map(|&mu| {
+                        let sum: f64 = band_data
+                            .iter()
+                            .map(|bands| {
+                                bands
+                                    .berry_curvature
+                                    .iter()
+                                    .zip(&bands.energies)
+                                    .map(|(&omega, &energy)| {
+                                        omega * params.occupation.value_unchecked(energy, mu)
+                                    })
+                                    .sum::<f64>()
+                            })
+                            .sum();
+                        sum / nk as f64 / determinant
+                    })
+                    .collect();
+                Array1::from_vec(values)
+            }
+            HallIntegration::EnergyCut => {
+                let chemical_potentials =
+                    Array1::from_iter(params.chemical_potentials.iter().copied());
+                let kvec = crate::kpoints::gen_kmesh(&k_mesh)?;
+                let mut all_pts: Vec<VertexKernel> = (0..kvec.nrows())
+                    .into_par_iter()
+                    .map(|ik| {
+                        self.compute_velocity_kernel(
+                            &kvec.row(ik).to_owned(),
+                            &dir_a,
+                            &dir_b,
+                            None,
+                            Gauge::Atom,
+                            spin,
+                        )
+                    })
+                    .collect();
+                global_band_track(&mut all_pts, &params.k_mesh);
+                let width = params.occupation.energy_width()?;
+                let sigma = match DIM {
+                    2 => integrate_fermi_cut_2d(
+                        &all_pts,
+                        &k_mesh,
+                        &chemical_potentials,
+                        width,
+                        params.broadening,
+                    ),
+                    3 => integrate_fermi_cut_3d(
+                        &all_pts,
+                        &k_mesh,
+                        &chemical_potentials,
+                        width,
+                        params.broadening,
+                    ),
+                    _ => {
+                        return Err(crate::TbError::InvalidDimension {
+                            dim: DIM,
+                            supported: vec![2, 3],
+                        });
                     }
-                    omega.sum() / self.lat.det().unwrap() / (nk as f64)
-                })
-                .collect();
-            Array1::<f64>::from_vec(conductivity_new)
-        } else {
-            let beta = 1.0 / (T * 8.617e-5);
-            let conductivity_new: Vec<f64> = mu
-                .into_par_iter()
-                .map(|x| {
-                    let fermi_dirac = band.mapv(|x0| 1.0 / ((beta * (x0 - x)).exp() + 1.0));
-                    let omega: Vec<f64> = omega_n
-                        .axis_iter(Axis(0))
-                        .zip(fermi_dirac.axis_iter(Axis(0)))
-                        .map(|(a, b)| (&a * &b).sum())
-                        .collect();
-                    let omega: Array1<f64> = arr1(&omega);
-                    omega.sum() / self.lat.det().unwrap() / (nk as f64)
-                })
-                .collect();
-            Array1::<f64>::from_vec(conductivity_new)
+                };
+                sigma / determinant
+            }
         };
-        Ok(conductivity)
-    }
 
-    /// Anomalous Hall conductivity via energy‑cut (2D/3D).
-    ///
-    /// At $T=0$ the occupation is a step function; inside each simplex
-    /// (triangle or tetrahedron) the linearly‑interpolated $\Omega_n(k)$
-    /// is integrated exactly over $\{k:E_n(k)\le\mu\}$.  No energy binning.
-    ///
-    /// At $T>0$ the $T=0$ result is thermally convolved:
-    ///
-    /// $$\sigma_T(\mu)=\int w(x)\,\sigma_0(\mu+x/\beta)\,dx,
-    /// \quad w(x)=e^x/(1+e^x)^2$$
-    #[allow(non_snake_case)]
-    pub fn Hall_conductivity_ec(
-        &self,
-        k_mesh: &Array1<usize>,
-        dir_a: &Array1<f64>,
-        dir_b: &Array1<f64>,
-        mu: &Array1<f64>,
-        T: f64,
-        eta: f64,
-    ) -> Result<Array1<f64>> {
-        assert!(
-            k_mesh.len() == 2 || k_mesh.len() == 3,
-            "Hall_conductivity_ec: only 2D/3D supported"
-        );
-        let kvec = crate::kpoints::gen_kmesh(k_mesh)?;
-        let nk = kvec.nrows();
-
-        let mut all_pts: Vec<VertexKernel> = (0..nk)
-            .into_par_iter()
-            .map(|ik| {
-                let kv = kvec.row(ik).to_owned();
-                self.compute_velocity_kernel(&kv, dir_a, dir_b, None, Gauge::Atom, None)
-            })
-            .collect();
-        global_band_track(&mut all_pts, k_mesh.as_slice().unwrap());
-
-        let sigma = match k_mesh.len() {
-            2 => integrate_fermi_cut_2d(&all_pts, k_mesh, mu, T, eta),
-            3 => integrate_fermi_cut_3d(&all_pts, k_mesh, mu, T, eta),
-            _ => unreachable!(),
-        };
-        let det = self.lat.det().unwrap();
-        Ok(sigma / det)
+        Ok(HallConductivityResult {
+            chemical_potentials: params.chemical_potentials.clone(),
+            conductivity,
+        })
     }
 }

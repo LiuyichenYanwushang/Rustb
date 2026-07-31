@@ -24,35 +24,24 @@ use ndarray::prelude::*;
 use ndarray::*;
 use num_complex::Complex;
 
+use crate::thermodynamics::{Occupation, fermi_derivative_from_width, fermi_from_width};
+
 use super::quadrature::*;
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex};
 
 // ── Fermi functions ─────────────────────────────────────────────────────
 
 #[inline]
-pub fn fermi(e: f64, mu: f64, beta: f64) -> f64 {
-    if beta == 0.0 {
-        0.5
-    } else {
-        let x = beta * (e - mu);
-        if x > 50.0 {
-            0.0
-        } else if x < -50.0 {
-            1.0
-        } else {
-            1.0 / (1.0 + x.exp())
-        }
-    }
+pub(crate) fn fermi(e: f64, mu: f64, thermal_width: f64) -> f64 {
+    fermi_from_width(e, mu, thermal_width)
 }
 
 #[inline]
-pub fn fermi_deriv(e: f64, mu: f64, beta: f64) -> f64 {
-    let x = beta * (e - mu);
-    if x > 50.0 || x < -50.0 {
+pub(crate) fn fermi_deriv(e: f64, mu: f64, thermal_width: f64) -> f64 {
+    if thermal_width == 0.0 {
         0.0
     } else {
-        let ex = x.exp();
-        beta * ex / ((1.0 + ex) * (1.0 + ex))
+        fermi_derivative_from_width(e, mu, thermal_width)
     }
 }
 
@@ -62,7 +51,7 @@ pub fn fermi_deriv(e: f64, mu: f64, beta: f64) -> f64 {
 ///
 /// Returns per‑band `(metric_n, berry_n)` where
 /// `g_n = Re G_n`, `Ω_n = −2 Im G_n`.
-pub fn eval_berry_kernel(
+pub(crate) fn eval_berry_kernel(
     band_q: &[f64],
     k_ab_q: &Array2<Complex<f64>>,
     eta: f64,
@@ -95,7 +84,7 @@ pub fn eval_berry_kernel(
 /// Interpolates $E_m(q)$ and $K_{nm}(q)$ at barycentric coords `lam`,
 /// then computes $\Omega_n = -2\,\mathrm{Im}\sum_{m\ne n} K_{nm}/(\Delta_{nm}^2+\eta^2)$.
 /// Avoids allocating the full $K$ matrix and computing $\Omega$ for other bands.
-pub fn eval_berry_band_at_lam(
+pub(crate) fn eval_berry_band_at_lam(
     n: usize,
     bands: &[Vec<f64>],
     kmats: &[Array2<Complex<f64>>],
@@ -145,7 +134,7 @@ pub fn eval_berry_band_at_lam(
 
 /// Pre‑allocated buffer version: avoids Vec allocation on every call.
 #[inline]
-pub fn eval_berry_band_at_lam_buf(
+pub(crate) fn eval_berry_band_at_lam_buf(
     n: usize,
     bands: &[&[f64]],
     kmats: &[&Array2<Complex<f64>>],
@@ -194,7 +183,7 @@ pub fn eval_berry_band_at_lam_buf(
 /// Evaluate $G_n = \Sigma_{m\ne n} K_{nm} / (\Delta_{nm}^2 + \eta^2)$
 /// for a single band at barycentrics, returning `(metric_n, berry_n)`.
 /// Interpolates only $E_m$ and the $n$-th row of $K$.
-pub fn eval_berry_complex_at_lam(
+pub(crate) fn eval_berry_complex_at_lam(
     n: usize,
     bands: &[Vec<f64>],
     kmats: &[Array2<Complex<f64>>],
@@ -240,7 +229,7 @@ pub fn eval_berry_complex_at_lam(
 
 /// Pre‑allocated buffer version of [`eval_berry_complex_at_lam`].
 #[inline]
-pub fn eval_berry_complex_at_lam_buf(
+pub(crate) fn eval_berry_complex_at_lam_buf(
     n: usize,
     bands: &[&[f64]],
     kmats: &[&Array2<Complex<f64>>],
@@ -290,7 +279,7 @@ pub fn eval_berry_complex_at_lam_buf(
 /// for a single band at barycentrics (no $\eta$ regularization — used for
 /// intrinsic NLH).
 #[inline]
-pub fn eval_intrinsic_G_at_lam(
+pub(crate) fn eval_intrinsic_G_at_lam(
     n: usize,
     bands: &[Vec<f64>],
     kmats: &[Array2<Complex<f64>>],
@@ -334,7 +323,7 @@ pub fn eval_intrinsic_G_at_lam(
 
 /// Pre‑allocated buffer version of [`eval_intrinsic_G_at_lam`].
 #[inline]
-pub fn eval_intrinsic_G_at_lam_buf(
+pub(crate) fn eval_intrinsic_G_at_lam_buf(
     n: usize,
     bands: &[&[f64]],
     kmats: &[&Array2<Complex<f64>>],
@@ -384,7 +373,7 @@ pub fn eval_intrinsic_G_at_lam_buf(
 /// reusing the same energy interpolation.  Saves 2 redundant energy
 /// interpolations vs three separate `eval_intrinsic_G_at_lam_buf` calls.
 #[inline]
-pub fn eval_intrinsic_G3_at_lam_buf(
+pub(crate) fn eval_intrinsic_G3_at_lam_buf(
     n: usize,
     bands: &[&[f64]],
     kmat_ab: &[&Array2<Complex<f64>>],
@@ -441,25 +430,25 @@ pub fn eval_intrinsic_G3_at_lam_buf(
 /// ```text
 /// σ_nm = (f_n − f_m) · K_nm / (d² − (ω+iη)²)
 /// ```
-pub fn eval_optical_kernel(
+pub(crate) fn eval_optical_kernel(
     band_q: &[f64],
     k_ab_q: &Array2<Complex<f64>>,
     omega: f64,
     eta: f64,
     mu: f64,
-    beta: f64,
+    thermal_width: f64,
     nsta: usize,
 ) -> Complex<f64> {
     let mut total = Complex::new(0.0, 0.0);
     let w_plus_ieta = Complex::new(omega, eta);
     let denom_shift = w_plus_ieta * w_plus_ieta;
     for n in 0..nsta {
-        let fn_val = fermi(band_q[n], mu, beta);
+        let fn_val = fermi(band_q[n], mu, thermal_width);
         for m in 0..nsta {
             if m == n {
                 continue;
             }
-            let fm_val = fermi(band_q[m], mu, beta);
+            let fm_val = fermi(band_q[m], mu, thermal_width);
             let df = fn_val - fm_val;
             if df.abs() < 1e-30 {
                 continue;
@@ -478,7 +467,7 @@ pub fn eval_optical_kernel(
 // ── Quadrature over single simplex ──────────────────────────────────────
 
 /// Quadrature over one simplex for the Berry + metric kernel.
-pub fn quadrature_berry_simplex(sim: &TrackedSimplex, eta: f64) -> (f64, f64) {
+pub(crate) fn quadrature_berry_simplex(sim: &TrackedSimplex, eta: f64) -> (f64, f64) {
     let d = sim.vertices.len() - 1;
     let nsta = sim.vertices[0].band.len();
     let nv = d + 1;
@@ -511,12 +500,56 @@ pub fn quadrature_berry_simplex(sim: &TrackedSimplex, eta: f64) -> (f64, f64) {
     (total_g * sim.volume, total_o * sim.volume)
 }
 
-pub fn quadrature_optical_simplex(
+/// Occupation-weighted Berry curvature and quantum metric on one simplex.
+pub(crate) fn quadrature_occupied_geometry_simplex(
+    sim: &TrackedSimplex,
+    eta: f64,
+    chemical_potentials: &Array1<f64>,
+    occupation: Occupation,
+) -> (Array1<f64>, Array1<f64>) {
+    let dimension = sim.vertices.len() - 1;
+    let nsta = sim.vertices[0].band.len();
+    let vertex_count = dimension + 1;
+    let bands: Vec<Vec<f64>> = (0..vertex_count)
+        .map(|vertex| sim.vertices[vertex].band.to_vec())
+        .collect();
+    let kernels: Vec<Array2<Complex<f64>>> = (0..vertex_count)
+        .map(|vertex| sim.vertices[vertex].k_ab.clone())
+        .collect();
+    let mut metric = Array1::<f64>::zeros(chemical_potentials.len());
+    let mut berry = Array1::<f64>::zeros(chemical_potentials.len());
+
+    let mut accumulate = |lambda: &[f64], weight: f64| {
+        let energies = bary_interp_band(&bands, lambda, nsta);
+        let kernel = bary_interp_matrix(&kernels, lambda);
+        let (metric_n, berry_n) = eval_berry_kernel(&energies, &kernel, eta, nsta);
+        for (index, &mu) in chemical_potentials.iter().enumerate() {
+            for band in 0..nsta {
+                let f = occupation.value_unchecked(energies[band], mu);
+                metric[index] += weight * f * metric_n[band];
+                berry[index] += weight * f * berry_n[band];
+            }
+        }
+    };
+
+    if dimension == 2 {
+        for index in 0..TRI_QUAD_PTS_3.len() {
+            accumulate(&TRI_QUAD_PTS_3[index], TRI_QUAD_WTS_3[index]);
+        }
+    } else {
+        for index in 0..TET_QUAD_PTS_4.len() {
+            accumulate(&TET_QUAD_PTS_4[index], TET_QUAD_WTS_4[index]);
+        }
+    }
+    (metric * sim.volume, berry * sim.volume)
+}
+
+pub(crate) fn quadrature_optical_simplex(
     sim: &TrackedSimplex,
     omega: f64,
     eta: f64,
     mu: f64,
-    beta: f64,
+    thermal_width: f64,
 ) -> Complex<f64> {
     let d = sim.vertices.len() - 1;
     let nsta = sim.vertices[0].band.len();
@@ -530,7 +563,7 @@ pub fn quadrature_optical_simplex(
             let w = TRI_QUAD_WTS_3[iq];
             let band_q = bary_interp_band(&bands, lam, nsta);
             let k_ab_q = bary_interp_matrix(&kmats, lam);
-            total += w * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, beta, nsta);
+            total += w * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, thermal_width, nsta);
         }
     } else {
         for iq in 0..4 {
@@ -538,7 +571,7 @@ pub fn quadrature_optical_simplex(
             let w = TET_QUAD_WTS_4[iq];
             let band_q = bary_interp_band(&bands, lam, nsta);
             let k_ab_q = bary_interp_matrix(&kmats, lam);
-            total += w * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, beta, nsta);
+            total += w * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, thermal_width, nsta);
         }
     }
     total * sim.volume

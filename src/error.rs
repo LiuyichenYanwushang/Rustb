@@ -79,7 +79,7 @@ pub enum TbError {
     InvalidSupercellMatrix,
 
     #[error("Spin direction '{0:?}' is invalid for a model without spin.")]
-    SpinNotAllowed(Option<SpinDirection>),
+    SpinNotAllowed(SpinDirection),
 
     #[error("Invalid k-point mesh dimensions: {0:?}")]
     InvalidKmeshDimensions(Array1<usize>),
@@ -107,6 +107,29 @@ pub enum TbError {
 
     #[error("Convergence failed after {iterations} iterations")]
     ConvergenceFailed { iterations: usize },
+
+    #[error(
+        "Hubbard mean-field self-consistency failed after {iterations} iterations (density residual {residual:e})"
+    )]
+    MeanFieldNotConverged { iterations: usize, residual: f64 },
+
+    #[error("Invalid Hubbard mean-field parameter '{parameter}': {message}")]
+    InvalidMeanFieldParameter {
+        parameter: &'static str,
+        message: String,
+    },
+
+    #[error("Invalid thermodynamic parameter '{parameter}': {message}")]
+    InvalidThermodynamicParameter {
+        parameter: &'static str,
+        message: String,
+    },
+
+    #[error("Invalid response parameter '{parameter}': {message}")]
+    InvalidResponseParameter {
+        parameter: &'static str,
+        message: String,
+    },
 
     // --- Slater-Koster Specific Errors ---
     #[error(
@@ -176,9 +199,6 @@ pub enum TbError {
 
     #[error("Invalid spin value: {spin}. Supported values: {supported:?}")]
     InvalidSpinValue { spin: usize, supported: Vec<usize> },
-
-    #[error("Temperature T=0 not supported for this operation")]
-    ZeroTemperatureNotSupported,
 
     #[error("Invalid k-vector length: expected {expected}, got {actual}")]
     KVectorLengthMismatch { expected: usize, actual: usize },

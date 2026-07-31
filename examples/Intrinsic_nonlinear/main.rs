@@ -30,100 +30,34 @@ fn main() {
     model.show_band(&path, &label, nk, "./examples/Intrinsic_nonlinear/result/");
 
     //开始计算非线性霍尔电导
-    let dir_1 = arr1(&[1.0, 0.0]);
-    let dir_2 = arr1(&[0.0, 1.0]);
-    let dir_3 = arr1(&[0.0, 1.0]);
     let nk: usize = 1000;
-    let kmesh = arr1(&[nk, nk]);
     let E_min = -0.22;
     let E_max = 0.22;
     let E_n = 2000;
-    let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 30.0;
-    /*
-    let sigma:Array1<f64>=model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh,&dir_1,&dir_2,&dir_3,&mu,T,0);
-    //let sigma=sigma/(2.0*PI).powi(2);
+    let params = IntrinsicNonlinearHallParams::new(
+        [nk, nk],
+        NonlinearHallDirections::new([1.0, 0.0], [0.0, 1.0], [0.0, 1.0]),
+        mu.clone(),
+        Occupation::FermiDirac {
+            temperature_kelvin: T,
+        },
+    );
+    let sigma = model
+        .intrinsic_nonlinear_hall(&params)
+        .unwrap()
+        .conductivity;
 
     //开始绘制非线性电导
     let mut fg = Figure::new();
-    let x:Vec<f64>=mu.to_vec();
-    let axes=fg.axes2d();
-    let y:Vec<f64>=sigma.to_vec();
-    axes.lines(&x, &y, &[Color("black")]);
-    //axes.set_y_range(Fix(-0.3),Fix(0.3));
-    axes.set_x_range(Fix(E_min),Fix(E_max));
-    let mut show_ticks=Vec::<String>::new();
-    let mut pdf_name=String::new();
-    pdf_name.push_str("nonlinear_in.pdf");
-    fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
-
-    */
-    let k = array![0.0, 0.01 / 2.0 / PI];
-    let mu0 = -0.04;
-    let (omega_one, band, partial_G) =
-        model.berry_connection_dipole_onek(&k, &dir_1, &dir_2, &dir_3, None);
-    let beta = 1.0 / T / 8.617e-5;
-    let f = 1.0 / (beta * (&band - mu0)).map(|x| x.exp() + 1.0);
-    let pf = &f * (1.0 - &f) * beta;
-    println!("band={}", band);
-    println!("omega={},pf={}", omega_one, pf);
-    println!("{}", (omega_one * pf).sum());
-    //let sigma:Array1<f64>=model.Nonlinear_Hall_conductivity_Intrinsic(&kmesh,&dir_1,&dir_2,&dir_3,&array![mu0],T,0);
-    //println!("{}",sigma);
-    let kvec = gen_kmesh(&kmesh).unwrap();
-    let ratio = 0.1;
-    let kvec = (kvec - 0.5) * ratio;
-    let kvec = model.lat.dot(&(kvec.reversed_axes()));
-    let kvec = kvec.reversed_axes();
-    let (berry_curv, band, _) = model.berry_connection_dipole(&kvec, &dir_1, &dir_2, &dir_3, None);
-    let berry_curv = berry_curv.into_shape((nk, nk, model.nsta())).unwrap();
-    let data = berry_curv
-        .slice(s![.., .., 0..2])
-        .to_owned()
-        .sum_axis(Axis(2));
-    draw_heatmap(
-        &data.clone().reversed_axes(),
-        "examples/Intrinsic_nonlinear/result/heat_map.pdf",
-    );
-    let band = band.into_shape((nk, nk, model.nsta())).unwrap();
-    let f: Array3<f64> = 1.0 / (beta * (&band - mu0)).map(|x| x.exp() + 1.0);
-    let pf = &f * (1.0 - &f) * beta;
-    draw_heatmap(
-        &pf.slice(s![.., .., 0]).to_owned().reversed_axes(),
-        "examples/Intrinsic_nonlinear/result/f_map.pdf",
-    );
-    let a = (&berry_curv * &pf).sum_axis(Axis(2));
-    draw_heatmap(
-        &a.clone().reversed_axes(),
-        "examples/Intrinsic_nonlinear/result/result_map.pdf",
-    );
-    println!("{}", a.sum() / (nk.pow(2) as f64) * ratio.powi(2));
-
-    let mut conductivity = Vec::<f64>::new();
-    let mu = Array1::linspace(E_min, E_max, E_n);
-    let conductivity = mu
-        .par_iter()
-        .map(|x| {
-            let f: Array3<f64> = 1.0 / (beta * (&band - *x)).map(|x| x.exp() + 1.0);
-            let pf = -&f * (1.0 - &f) * beta;
-            let a =
-                (&berry_curv * &pf).sum_axis(Axis(2)).sum() / (nk.pow(2) as f64) * ratio.powi(2);
-            a / PI / 2.0
-        })
-        .collect();
-    let mut fg = Figure::new();
     let x: Vec<f64> = mu.to_vec();
     let axes = fg.axes2d();
-    let y: Vec<f64> = conductivity;
+    let y: Vec<f64> = sigma.to_vec();
     axes.lines(&x, &y, &[Color("black")]);
     //axes.set_y_range(Fix(-0.3),Fix(0.3));
     axes.set_x_range(Fix(E_min), Fix(E_max));
-    let mut show_ticks = Vec::<String>::new();
-    let mut pdf_name = String::new();
-    pdf_name.push_str("./examples/Intrinsic_nonlinear/result/nonlinear_in.pdf");
-    fg.set_terminal("pdfcairo", &pdf_name);
+    fg.set_terminal("pdfcairo", "nonlinear_in.pdf");
     fg.show();
 }
 

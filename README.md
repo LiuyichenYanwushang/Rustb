@@ -1,309 +1,236 @@
 # Rustb
 
-A comprehensive Rust library for tight-binding model calculations in condensed matter physics.
+Rustb is a Rust 2024 library for tight-binding calculations in condensed-matter
+physics. It provides model construction, band structures, density of states,
+linear and nonlinear response, quantum geometry, Wilson loops, surface Green
+functions, Wannier90 import, magnetic fields, band unfolding, Fermi surfaces,
+and Floquet calculations.
 
 [![Crates.io](https://img.shields.io/crates/v/Rustb.svg)](https://crates.io/crates/Rustb)
 
-## Overview
+The current API version is **0.8.0** and uses the const-generic model type
+`Model<SPIN, DIM, R>`.
 
-Rustb computes electronic band structures, density of states, transport properties (anomalous Hall, spin Hall, nonlinear conductivities), topological invariants (Chern numbers, Wilson loops, Wannier centers), and surface states via iterative Green's functions. It supports both **analytical tight-binding models** and **Wannier90** Hamiltonians, as well as **Slater-Koster** parameterized models.
+## Installation
 
-## Quick Start
-
-Add to `Cargo.toml`:
+Choose a BLAS/LAPACK backend suitable for the target system:
 
 ```toml
 [dependencies]
-Rustb = "0.6"
+Rustb = { version = "0.8", features = ["intel-mkl-static"] }
 ndarray = "0.17"
 num-complex = "0.4"
-gnuplot = "0.0.39"     # for plotting
 ```
 
-### Minimal Graphene Example
+Available backends are `intel-mkl-static`, `intel-mkl-system`,
+`openblas-static`, `openblas-system`, `netlib-static`, and `netlib-system`.
+The optional `mimalloc` and `jemalloc` allocator features are mutually
+exclusive and can be combined with one backend feature.
+
+Rustb requires Rust 1.90 or newer.
+
+## Quick start
+
+This example builds a spinless two-dimensional graphene model, plots its band
+structure, and evaluates a Gaussian-broadened density of states:
 
 ```rust
+use ndarray::{arr1, arr2, array, Array1};
 use Rustb::*;
-use ndarray::*;
-use ndarray::prelude::*;
-use num_complex::Complex;
-use std::f64::consts::PI;
 
-fn main() {
-    // Graphene lattice: two triangular sublattices A and B
-    // Lattice vectors (rows): a₁ = (√3, -1)a₀, a₂ = (√3, 1)a₀
-    let a0 = 1.0;
-    let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]) * a0;
-
-    // Orbital positions (fractional): A at origin, B at (1/3, 1/3)
+fn main() -> Result<()> {
+    // Lattice vectors are stored as columns; orbital positions are rows in
+    // fractional lattice coordinates.
+    let lat = arr2(&[
+        [3.0_f64.sqrt(), -1.0],
+        [3.0_f64.sqrt(), 1.0],
+    ]);
     let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
 
-    // Create spinless 2D model, dim_r=2, norb=2
-    let mut model = Model::tb_model(2, lat, orb, false, None).unwrap();
+    let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
 
-    // Nearest-neighbor hopping t ≈ -2.85 eV (graphene)
-    let t = Complex::new(-2.85, 0.0);
-    model.add_hop(t, 0, 1, &array![0, 0], SpinDirection::None);   // A→B in home cell
-    model.add_hop(t, 0, 1, &array![-1, 0], SpinDirection::None);  // A→B in x-left cell
-    model.add_hop(t, 0, 1, &array![0, -1], SpinDirection::None);  // A→B in y-left cell
+    // add_hop/set_hop also insert the Hermitian-conjugate hopping at -R.
+    model.add_hop(-2.85, 0, 1, &array![0, 0], None);
+    model.add_hop(-2.85, 0, 1, &array![-1, 0], None);
+    model.add_hop(-2.85, 0, 1, &array![0, -1], None);
 
-    // k-path: Γ → K → K' → Γ
-    let path = array![
+    let path = arr2(&[
         [0.0, 0.0],
-        [1.0 / 3.0, 2.0 / 3.0],
         [2.0 / 3.0, 1.0 / 3.0],
-        [0.0, 0.0]
-    ];
-    let label = vec!["Γ", "K", "K'", "Γ"];
-    let nk = 1001;
+        [0.5, 0.5],
+        [0.0, 0.0],
+    ]);
+    let labels = vec!["Γ", "K", "M", "Γ"];
+    model.show_band(&path, &labels, 501, "graphene")?;
 
-    // Generate band structure plot
-    model.show_band(&path, &label, nk, "./");
+    let k_mesh = arr1(&[101, 101]);
+    let (_energy, _dos) = model.dos(&k_mesh, -4.0, 4.0, 801, 0.02)?;
+
+    Ok(())
 }
 ```
 
-### Adding Spin-Orbit Coupling (Kane-Mele Model)
+For a spinful model, use `Model::<true, DIM>`. Spin-independent terms take
+`None`; Pauli-matrix terms take `SpinDirection::X`, `Y`, or `Z`:
 
 ```rust
-// Spinful model: each orbital is doubled (↑, ↓)
-let mut model = Model::tb_model(2, lat, orb, true, None).unwrap();
-
-// On-site staggered potential
-model.set_onsite(&arr1(&[0.5, -0.5]), SpinDirection::None);
-
-// Spin-orbit coupling: i·λ_SO·ν_ij·σ_z  (ν_ij = ±1 for clockwise/counterclockwise)
-let soc = Complex::new(0.0, 0.2);
-model.add_hop(soc, 0, 0, &array![1, 0], SpinDirection::z);      // + for A→A
-model.add_hop(-soc, 1, 1, &array![1, 0], SpinDirection::z);     // - for B→B
-model.add_hop(soc, 0, 0, &array![0, 1], SpinDirection::z);
-model.add_hop(-soc, 1, 1, &array![0, 1], SpinDirection::z);
-model.add_hop(soc, 0, 0, &array![1, -1], SpinDirection::z);
-model.add_hop(-soc, 1, 1, &array![1, -1], SpinDirection::z);
+let mut model = Model::<true, 2>::tb_model(lat, orb, None)?;
+model.set_onsite(&arr1(&[0.5, -0.5]), None);
+model.add_hop(0.2, 0, 0, &array![1, 0], SpinDirection::Z);
 ```
 
-## Features
+## Model types
 
-### Band Structure & Density of States
+```text
+Model<SPIN, DIM, R>
+      │     │    └─ NoRMatrix (default) or HasRMatrix
+      │     └────── real-space dimension, normally 1, 2, or 3
+      └──────────── false: spinless, true: spinful
+```
+
+`HasRMatrix` stores Wannier position-matrix elements and enables the associated
+commutator contribution in velocity calculations. `NoRMatrix` is a zero-sized
+type.
+
+Wannier90 models can be loaded as:
 
 ```rust
-// Band structure along a k-path
-let (kvec, kdist, knode) = model.k_path(&path, nk).unwrap();
-let eval = model.solve_band_all_parallel(&kvec);  // parallelized over k-points
-model.show_band(&path, &label, nk, "./output/").unwrap();
+let model: Model<false, 3> =
+    Model::from_hr("path/to/files/", "wannier90", 0.0)?;
 
-// Density of states with Gaussian broadening
-let kmesh = arr1(&[100, 100]);
-let (energy, dos) = model.dos(&kmesh, -6.0, 6.0, 500, 0.05).unwrap();
-model.show_dos(&energy, &dos, "./output/");
+let model_with_r: Model<false, 3, HasRMatrix> =
+    Model::from_hr("path/to/files/", "wannier90", 0.0)?;
 ```
 
-### Topological Properties
+## Response calculations
+
+High-level response methods use a configuration/result pair. The same
+`Occupation` type is shared with the Hubbard solver, and integration algorithms
+are selected explicitly instead of by calling a different method name:
 
 ```rust
-// Chern number via Berry curvature integration
-let kmesh = arr1(&[101, 101]);
-let (chern, _) = model.chern_number(&kmesh, 0.0, 0usize, 1e-4).unwrap();
-println!("Chern number = {}", chern);
+let xy = DirectionPair::new([1.0, 0.0], [0.0, 1.0]);
+let mu = Array1::linspace(-1.0, 1.0, 201);
 
-// Wilson loop / Wannier charge centers
-let (wcc, _) = model.wilson_loop(&kmesh, None, None, 0.0, 0).unwrap();
-model.show_wcc(&wcc, "./output/");
+let mut hall = HallConductivityParams::new([101, 101], xy, mu.clone());
+hall.occupation = Occupation::FermiDirac {
+    temperature_kelvin: 20.0,
+};
+hall.integration = HallIntegration::EnergyCut;
+let hall_result = model.hall_conductivity(&hall)?;
 
-// Berry curvature at each k-point
-let berry = model.berry_curvature(&kvec, &dir_1, &dir_2, 300.0, 0.0, 0.0, 0, 1e-4).unwrap();
+let mut geometry = QuantumGeometryParams::new([101, 101], xy, mu.clone());
+geometry.integration = QuantumGeometryIntegration::Simplex;
+let geometry_result = model.quantum_geometry(&geometry)?;
+
+let mut optical = OpticalConductivityParams::new(
+    [101, 101],
+    xy,
+    Array1::linspace(0.0, 4.0, 401),
+    0.0,
+);
+optical.integration = OpticalIntegration::Simplex;
+let optical_result = model.optical_conductivity(&optical)?;
 ```
 
-### Transport Properties
+For nonlinear Hall calculations, all tensor indices are current-first and
+encoded in one value:
 
 ```rust
-// Anomalous Hall conductivity σ_xy(μ, T)
-let mu = Array1::linspace(-3.0, 3.0, 200);
-let sigma = model.Hall_conductivity(&kmesh, &mu, 300.0, 0.0, 0, None, 1e-4).unwrap();
-
-// Nonlinear Hall conductivity (Berry curvature dipole)
-let dir1 = arr1(&[1.0, 0.0]);
-let dir2 = arr1(&[0.0, 1.0]);
-let dir3 = arr1(&[1.0, 0.0]);
-let sigma_nl = model.Nonlinear_Hall_conductivity_Intrinsic(
-    &kmesh, &dir1, &dir2, &dir3, &mu, 300.0, 0.0, 0, 1e-4
-).unwrap();
+let directions = NonlinearHallDirections::new(
+    [1.0, 0.0], // current
+    [1.0, 0.0], // first field
+    [0.0, 1.0], // second field
+);
+let params = IntrinsicNonlinearHallParams::new(
+    [101, 101],
+    directions,
+    mu,
+    Occupation::FermiSmearing { width: 0.01 },
+);
+let nonlinear_result = model.intrinsic_nonlinear_hall(&params)?;
 ```
 
-### Surface States (Iterative Green's Function)
+Results use named fields such as `conductivity`, `metric`,
+`berry_curvature`, `frequencies`, and `diagnostics`; response methods no
+longer return positional tuples. Direct integration supports 1D–3D where the
+quantity is defined. Simplex and energy-cut paths support their documented 2D
+or 3D subsets.
+
+## Hubbard mean field
+
+`HubbardModel` adds orbital-resolved on-site interactions to a spinful model.
+Its non-collinear unrestricted Hartree-Fock solver updates the complete local
+`2 × 2` spin-density matrix, including Hartree density terms and Fock spin-flip
+terms. It can either hold the chemical potential fixed or preserve the filling
+calculated from the bare model at a reference Fermi level:
 
 ```rust
-// Semi-infinite surface along direction 0, surface normal direction 1
-let mut surf = surf_Green::new(&model, 0, 1, 1e-8, 100000).unwrap();
+let mut bare = Model::<true, 1>::tb_model(
+    array![[1.0]],
+    array![[0.0]],
+    None,
+)?;
+bare.add_hop(-1.0, 0, 0, &array![1], None);
 
-// Surface spectral function A(k_∥, ω)
-let k_para = arr1(&[0.5, 0.0]);  // momentum parallel to surface
-let omega = Array1::linspace(-4.0, 4.0, 500);
-let (A_surf, A_bulk) = surf.spectral_function(&k_para, &omega, 0.01).unwrap();
+let hubbard = HubbardModel::with_uniform_u(bare, 2.0)?;
+let mut params = MeanFieldParams::new(
+    [200],
+    MeanFieldConstraint::FixedInitialFilling {
+        reference_mu: 0.0,
+    },
+    Occupation::FermiSmearing { width: 0.01 },
+);
+params.initial_magnetization = InitialMagnetization::UniformVector {
+    moment_per_orbital: [1e-3, 0.0, 0.0],
+};
+
+let model = hubbard.solve_hartree_fock(&params)?;
+let moment = model.spin_moment(&[200], 0.0, params.occupation)?;
 ```
 
-### Magnetic Field (Peierls Substitution)
+The result is an ordinary `Model<true, DIM, R>`. Its converged chemical
+potential has already been shifted to zero. Direct occupation sums are used
+instead of integrating a broadened DOS; `FermiSmearing` is available for
+zero-temperature metallic calculations.
 
-```rust
-// Uniform magnetic field out-of-plane, supercell expansion [m, n], N_ϕ flux quanta
-let model_b = model.add_magnetic_field(2, [10, 10], 1).unwrap();
+## Main capabilities
 
-// Hofstadter butterfly: scan flux per primitive cell
-let phi_list = Array1::linspace(0.0, 1.0, 101);
-let spectrum = model.hofstadter_butterfly(&phi_list, &[10, 10], 2).unwrap();
-```
+- Model construction and transformations: `tb_model`, `set_hop`, `add_hop`,
+  `set_onsite`, `make_supercell`, `cut_piece`, and `cut_dot`.
+- Non-collinear unrestricted Hartree-Fock with orbital-dependent `U`, fixed
+  chemical potential or fixed initial filling, metallic smearing, and spin
+  observables.
+- Solvers and output: `gen_ham`, `solve_band_onek`,
+  `solve_band_all_parallel`, `show_band`, and `dos`.
+- Response and geometry: anomalous Hall conductivity, nonlinear Hall
+  conductivity, optical conductivity, Berry curvature, and quantum geometry.
+- Topology: Berry phases, Berry flux, Wilson loops, and hybrid Wannier centres.
+- Boundaries and fields: surface Green functions and uniform magnetic fields
+  through the Peierls substitution.
+- Interfaces: Wannier90 import, BXSF/FRMSF export, and band unfolding.
+- Driven systems: Floquet-Sambe Hamiltonians and same-size van Vleck effective
+  models.
 
-### Band Unfolding (for supercells)
+See [SKILLS.md](SKILLS.md) for current signatures and practical examples.
+The generated rustdoc contains the detailed mathematical conventions.
 
-```rust
-// Unfold supercell band structure back to primitive cell BZ
-let U = arr2(&[[2.0, 0.0], [0.0, 2.0]]);
-let super_model = model.make_supercell(&U).unwrap();
-let A_unfolded = super_model.unfold(&U, &path, nk, -3.0, 5.0, nk, 1e-2, 1e-3).unwrap();
-draw_heatmap(&A_unfolded, "./unfold_band.pdf");
-```
-
-### Supercell & Geometry
-
-```rust
-// Create a supercell: new_lat = U · old_lat
-let U = arr2(&[[2.0, 0.0], [0.0, 2.0]]);
-let super_model = model.make_supercell(&U).unwrap();
-
-// Cut a slab/nanoribbon: remove bonds crossing the cut plane
-let plane_normal = arr1(&[0.0, 1.0]);  // cut along y direction
-let slab = model.cut_piece(&plane_normal, 10.0).unwrap();
-```
-
-### Slater-Koster Models
-
-```rust
-use Rustb::*;
-
-// Define SK parameters (two-center integrals)
-let params = SkParams::new()
-    .with_onsite("s", "A", 0.0)
-    .with_onsite("s", "B", 0.5)
-    .with_hopping("s", "s", "Vssσ", -2.0)
-    .with_hopping("s", "p", "Vspσ", 1.5)
-    .with_hopping("p", "p", "Vppσ", 3.0)
-    .with_hopping("p", "p", "Vppπ", -0.5);
-
-// Build atoms
-let atoms = vec![
-    SkAtom::new("A", &[0.0, 0.0, 0.0], &["s"]),
-    SkAtom::new("B", &[0.5, 0.5, 0.0], &["s", "p"]),
-];
-
-// Create SK model and convert to TB model
-let sk = SlaterKosterModel::new(lat, atoms, params);
-let model = sk.to_tb_model().unwrap();
-```
-
-### Wannier90 Interface
-
-```rust
-// Read a Wannier90 tight-binding model. Provide the directory path and seedname.
-// The function automatically reads:
-//   seedname.win            — lattice vectors, spin, projections, atom positions
-//   seedname_hr.dat         — Hamiltonian matrix elements H(R)
-//   seedname_centres.xyz    — orbital positions (recommended, set write_xyz=true)
-//   seedname_r.dat          — position matrix elements r(R) (optional, set write_rmn=true)
-//   seedname_wsvec.dat      — Wannier subspace vectors (recommended for better symmetry)
-
-let model = Model::from_hr("./", "wannier90", 0.0).unwrap();
-
-// Export a model in Wannier90 hr.dat format
-model.output_hr("./output/", "my_model").unwrap();
-```
-
-## Model Construction API
-
-### Creating a Model
-
-```rust
-// Spinless model, dim=2 or 3
-let model = Model::tb_model(dim, lat, orb, false, None)?;
-
-// Spinful model
-let model = Model::tb_model(dim, lat, orb, true, None)?;
-
-// With custom orbital projections
-let model = Model::tb_model(dim, lat, orb, spin, Some(&orb_proj))?;
-```
-
-### Adding Hopping & On-site Terms
-
-```rust
-// add_hop: hermitian conjugate at -R is added automatically
-model.add_hop(t, orb_i, orb_j, &R_vec, spin_dir);
-
-// set_hop: manually set without automatic hermitian conjugate
-model.set_hop(t, orb_i, orb_j, &R_vec, spin_dir);
-
-// Bulk-set all orbitals with same value
-model.add_onsite(&values, spin_dir);   // adds to existing
-model.set_onsite(&values, spin_dir);   // overwrites
-```
-
-Where `spin_dir` controls the spin structure:
-- `SpinDirection::None` → identity in spin space
-- `SpinDirection::x / y / z` → Pauli matrix σ_x / σ_y / σ_z
-
-### Gauge Choice
-
-```rust
-// Atomic gauge: orbital positions included in Bloch phase
-let (v, hamk) = model.gen_v(&kvec, Gauge::Atom);
-
-// Lattice gauge: only R vectors in Bloch phase
-let (v, hamk) = model.gen_v(&kvec, Gauge::Lattice);
-```
-
-## BLAS/LAPACK Backend
-
-For optimal performance, enable a BLAS backend:
-
-```toml
-[dependencies]
-Rustb = { version = "0.6", features = ["intel-mkl-static"] }
-# or: "intel-mkl-system", "openblas-static", "openblas-system", "netlib-static", "netlib-system"
-```
-
-Without features, `ndarray-linalg` uses system BLAS (may be slow). Intel MKL provides the best performance on x86_64.
-
-## Physical Constants
-
-```rust
-use Rustb::phy_const::*;
-// ħ, e, k_B, μ_B, Φ_0, etc.
-```
-
-Constants in SI-based eV·Å units:
-- `HBAR_EV_S` = 6.582119569e-16 eV·s
-- `HBAR2_OVER_2M_EV_A2` = 3.81 eV·Å²
-- `MU_B_EV_PER_T` = 5.7883818060e-5 eV/T
-- `FLUX_QUANTUM_T_M2` = 4.135667696e-15 T·m²
-- `K_B_EV_PER_K` = 8.617333262145e-5 eV/K
-
-## Plotting
-
-The library uses `gnuplot` with `pdfcairo` terminal. Install gnuplot:
+## Development
 
 ```bash
-# Ubuntu/Debian
-sudo apt install gnuplot
-
-# macOS
-brew install gnuplot
+cargo fmt --check
+cargo check --all-targets
+cargo test --release --features intel-mkl-system
+cargo clippy --all-targets --features intel-mkl-system
+cargo doc --no-deps --features intel-mkl-system
 ```
 
-Built-in plotting functions:
-- `model.show_band(&path, &label, nk, dir)` — band structure
-- `model.show_dos(&energy, &dos, dir)` — density of states
-- `model.show_surf_state(&surf_green, &omega, &k_para, dir)` — surface spectral function
-- `model.show_wcc(&wcc, dir)` — Wilson loop spectrum
-- `draw_heatmap(&data, filename)` — 2D heatmap
+Numerical tests should be run in release mode. Some integration-style tests
+invoke gnuplot and regenerate files below `tests/`.
 
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of:
+
+- Apache License, Version 2.0
+- MIT License

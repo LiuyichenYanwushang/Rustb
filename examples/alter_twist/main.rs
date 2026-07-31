@@ -369,8 +369,8 @@ fn main() {
             s.push_str("   ");
         }
         s.push_str(&cc);
-        writer.write(s.as_bytes()).unwrap();
-        writer.write(b"\n").unwrap();
+        writer.write_all(s.as_bytes()).unwrap();
+        writer.write_all(b"\n").unwrap();
     }
     let _ = file;
 }

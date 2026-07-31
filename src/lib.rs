@@ -24,6 +24,8 @@
 //! |--------|---------|
 //! | [`model_build`] | Constructors (`Model::tb_model`), hopping setup (`add_hop`, `set_hop`),
 //! |   on-site energies (`set_onsite`), and supercell building (`make_supercell`) |
+//! | [`hubbard`] | Non-collinear unrestricted Hartree-Fock for on-site Hubbard
+//! |   interactions, with fixed chemical potential or fixed initial filling |
 //! | [`cut`] | [`CutModel`] trait for extracting finite slabs from supercells |
 //! | [`geometry`] | Supercell geometry, dot structures, and related spatial operations |
 //! | [`model_utils`] | Internal utility functions for model manipulation |
@@ -204,6 +206,8 @@ pub mod fermi_surface;
 pub mod floquet;
 pub mod generics;
 pub mod geometry;
+#[path = "Hubbard.rs"]
+pub mod hubbard;
 pub mod io;
 pub mod kpath;
 pub mod kplane;
@@ -222,6 +226,7 @@ pub mod quantum_geometry;
 pub mod response;
 pub mod solve_ham;
 pub mod surfgreen;
+pub mod thermodynamics;
 pub mod unfold;
 pub mod velocity;
 pub mod wannier90;
@@ -232,6 +237,7 @@ pub use crate::fermi_surface::*;
 pub use crate::floquet::*;
 use crate::generics::usefloat;
 pub use crate::geometry::*;
+pub use crate::hubbard::*;
 pub use crate::io::*;
 pub use crate::kpath::*;
 pub use crate::kplane::*;
@@ -245,9 +251,22 @@ pub use crate::quantum_geometry::*;
 pub use crate::response::*;
 pub use crate::solve_ham::*;
 pub use crate::surfgreen::*;
+pub use crate::thermodynamics::*;
 pub use crate::unfold::*;
 pub use crate::velocity::*;
 pub use crate::wannier90::*;
+
+// --- 可选高性能分配器（互斥，只能开一个 feature） ---
+#[cfg(all(feature = "mimalloc", feature = "jemalloc"))]
+compile_error!("mimalloc and jemalloc are mutually exclusive — enable only one.");
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+#[global_allocator]
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 #[cfg(test)]
 mod tests {
@@ -270,6 +289,203 @@ mod tests {
     use std::fs::create_dir_all;
     use std::io::Write;
     use std::time::{Duration, Instant};
+
+    fn fixed_direction<const DIM: usize>(direction: &Array1<f64>) -> [f64; DIM] {
+        direction
+            .as_slice()
+            .expect("direction must be contiguous")
+            .try_into()
+            .expect("direction must match the model dimension")
+    }
+
+    fn fixed_k_mesh<const DIM: usize>(k_mesh: &Array1<usize>) -> [usize; DIM] {
+        k_mesh
+            .as_slice()
+            .expect("k-mesh must be contiguous")
+            .try_into()
+            .expect("k-mesh must match the model dimension")
+    }
+
+    fn thermal_occupation(temperature_kelvin: f64) -> Occupation {
+        if temperature_kelvin == 0.0 {
+            Occupation::ZeroTemperature
+        } else {
+            Occupation::FermiDirac { temperature_kelvin }
+        }
+    }
+
+    fn current_operator(spin: Option<SpinDirection>) -> CurrentOperator {
+        spin.map_or(CurrentOperator::Charge, CurrentOperator::Spin)
+    }
+
+    fn hall_values<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+        model: &Model<SPIN, DIM, R>,
+        k_mesh: &Array1<usize>,
+        direction_a: &Array1<f64>,
+        direction_b: &Array1<f64>,
+        chemical_potentials: &Array1<f64>,
+        temperature_kelvin: f64,
+        spin: Option<SpinDirection>,
+        broadening: f64,
+        integration: HallIntegration,
+    ) -> Result<Array1<f64>> {
+        let mut params = HallConductivityParams::new(
+            fixed_k_mesh(k_mesh),
+            DirectionPair::new(fixed_direction(direction_a), fixed_direction(direction_b)),
+            chemical_potentials.clone(),
+        );
+        params.occupation = thermal_occupation(temperature_kelvin);
+        params.current = current_operator(spin);
+        params.broadening = broadening;
+        params.integration = integration;
+        Ok(model.hall_conductivity(&params)?.conductivity)
+    }
+
+    fn hall_value<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+        model: &Model<SPIN, DIM, R>,
+        k_mesh: &Array1<usize>,
+        direction_a: &Array1<f64>,
+        direction_b: &Array1<f64>,
+        chemical_potential: f64,
+        temperature_kelvin: f64,
+        spin: Option<SpinDirection>,
+        broadening: f64,
+    ) -> Result<f64> {
+        Ok(hall_values(
+            model,
+            k_mesh,
+            direction_a,
+            direction_b,
+            &array![chemical_potential],
+            temperature_kelvin,
+            spin,
+            broadening,
+            HallIntegration::Direct,
+        )?[0])
+    }
+
+    fn band_berry_curvature<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+        model: &Model<SPIN, DIM, R>,
+        k: &Array1<f64>,
+        direction_a: &Array1<f64>,
+        direction_b: &Array1<f64>,
+        spin: Option<SpinDirection>,
+        broadening: f64,
+    ) -> BandBerryCurvature {
+        let params = BerryCurvatureParams {
+            directions: DirectionPair::new(
+                fixed_direction(direction_a),
+                fixed_direction(direction_b),
+            ),
+            current: current_operator(spin),
+            broadening,
+        };
+        model.berry_curvature_at(k, &params).unwrap()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn occupied_berry_curvature<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+        model: &Model<SPIN, DIM, R>,
+        k_points: &Array2<f64>,
+        direction_a: &Array1<f64>,
+        direction_b: &Array1<f64>,
+        chemical_potential: f64,
+        temperature_kelvin: f64,
+        spin: Option<SpinDirection>,
+        broadening: f64,
+    ) -> Array1<f64> {
+        let params = BerryCurvatureParams {
+            directions: DirectionPair::new(
+                fixed_direction(direction_a),
+                fixed_direction(direction_b),
+            ),
+            current: current_operator(spin),
+            broadening,
+        };
+        model
+            .occupied_berry_curvature_on(
+                k_points,
+                &params,
+                chemical_potential,
+                thermal_occupation(temperature_kelvin),
+            )
+            .unwrap()
+    }
+
+    fn nonlinear_occupation(
+        temperature_kelvin: f64,
+        k_mesh: &Array1<usize>,
+        integration: NonlinearHallIntegration,
+    ) -> Occupation {
+        if temperature_kelvin > 0.0 {
+            return Occupation::FermiDirac { temperature_kelvin };
+        }
+        if integration == NonlinearHallIntegration::EnergyCut {
+            return Occupation::ZeroTemperature;
+        }
+        let points_per_dimension = k_mesh.iter().product::<usize>() as f64;
+        let points_per_dimension = points_per_dimension.powf(1.0 / k_mesh.len() as f64);
+        Occupation::FermiSmearing {
+            width: (1.0 / points_per_dimension).max(BOLTZMANN_CONSTANT_EV_PER_K),
+        }
+    }
+
+    fn intrinsic_nonlinear_values<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+        model: &Model<SPIN, DIM, R>,
+        k_mesh: &Array1<usize>,
+        current: &Array1<f64>,
+        field_1: &Array1<f64>,
+        field_2: &Array1<f64>,
+        chemical_potentials: &Array1<f64>,
+        temperature_kelvin: f64,
+        integration: NonlinearHallIntegration,
+    ) -> Result<Array1<f64>> {
+        let mut params = IntrinsicNonlinearHallParams::new(
+            fixed_k_mesh(k_mesh),
+            NonlinearHallDirections::new(
+                fixed_direction(current),
+                fixed_direction(field_1),
+                fixed_direction(field_2),
+            ),
+            chemical_potentials.clone(),
+            nonlinear_occupation(temperature_kelvin, k_mesh, integration),
+        );
+        params.integration = integration;
+        Ok(model.intrinsic_nonlinear_hall(&params)?.conductivity)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn extrinsic_nonlinear_values<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+        model: &Model<SPIN, DIM, R>,
+        k_mesh: &Array1<usize>,
+        current: &Array1<f64>,
+        field_1: &Array1<f64>,
+        field_2: &Array1<f64>,
+        chemical_potentials: &Array1<f64>,
+        temperature_kelvin: f64,
+        frequency: f64,
+        spin: Option<SpinDirection>,
+        broadening: f64,
+        integration: NonlinearHallIntegration,
+        field_symmetry: FieldSymmetry,
+    ) -> Result<Array1<f64>> {
+        let mut params = ExtrinsicNonlinearHallParams::new(
+            fixed_k_mesh(k_mesh),
+            NonlinearHallDirections::new(
+                fixed_direction(current),
+                fixed_direction(field_1),
+                fixed_direction(field_2),
+            ),
+            chemical_potentials.clone(),
+            nonlinear_occupation(temperature_kelvin, k_mesh, integration),
+        );
+        params.frequency = frequency;
+        params.current = current_operator(spin);
+        params.broadening = broadening;
+        params.integration = integration;
+        params.field_symmetry = field_symmetry;
+        Ok(model.extrinsic_nonlinear_hall(&params)?.conductivity)
+    }
 
     fn write_txt(data: Array2<f64>, output: &str) -> std::io::Result<()> {
         let mut file = File::create(output).expect("Unable to BAND.dat");
@@ -428,8 +644,15 @@ mod tests {
         let og = 0.0;
         let spin = None;
         let eta = 1e-3;
-        let result1 =
-            model.berry_curvature_onek(&k_vec, &dir_1, &dir_2, mu, T, spin, eta) * (2.0 * PI);
+        let band_berry = band_berry_curvature(&model, &k_vec, &dir_1, &dir_2, spin, eta);
+        let result1 = band_berry
+            .berry_curvature
+            .iter()
+            .zip(&band_berry.energies)
+            .filter(|&(_, &energy)| energy <= mu)
+            .map(|(&berry, _)| berry)
+            .sum::<f64>()
+            * (2.0 * PI);
 
         let mut k_list = Array2::zeros((9, 2));
         let dk = 0.0001;
@@ -457,18 +680,25 @@ mod tests {
             (result2 - result1).abs() < 1e-4,
             "Wrong!, the berry_curvature or berry_flux mut be false"
         );
-        //测试Hall_conductivity 和 Hall_conductivity_mu
+        // 单化学势构造器与一般化学势网格应给出相同结果。
         let kmesh = array![100, 100];
         let mu = -1.0;
-        let a1 = model
-            .Hall_conductivity(&kmesh, &dir_2, &dir_1, mu, T, spin, eta)
-            .unwrap();
-        let a2 = model
-            .Hall_conductivity_mu(&kmesh, &dir_2, &dir_1, &array![mu], T, spin, eta)
-            .unwrap()[[0]];
+        let a1 = hall_value(&model, &kmesh, &dir_2, &dir_1, mu, T, spin, eta).unwrap();
+        let a2 = hall_values(
+            &model,
+            &kmesh,
+            &dir_2,
+            &dir_1,
+            &array![mu],
+            T,
+            spin,
+            eta,
+            HallIntegration::Direct,
+        )
+        .unwrap()[0];
         assert!(
             (a2 - a1).abs() < 1e-5,
-            "Wrong!, Hall_conductivity_mu and Hall_conductivity is not equal!"
+            "single- and multi-chemical-potential Hall results differ"
         )
     }
     #[test]
@@ -576,9 +806,7 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
 
         let start = Instant::now(); // 开始计时
-        let conductivity = model
-            .Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta)
-            .unwrap();
+        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("quantom_Hall_effect={}", conductivity * (2.0 * PI));
@@ -590,9 +818,18 @@ mod tests {
 
         let mu = Array1::linspace(-2.0, 2.0, 101);
         let start = Instant::now(); // 开始计时
-        let conductivity_mu = model
-            .Hall_conductivity_mu(&kmesh, &dir_1, &dir_2, &mu, T, spin, eta)
-            .unwrap();
+        let conductivity_mu = hall_values(
+            &model,
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            &mu,
+            T,
+            spin,
+            eta,
+            HallIntegration::Direct,
+        )
+        .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("quantom_Hall_effect={}", conductivity_mu[[50]] * (2.0 * PI));
@@ -603,18 +840,14 @@ mod tests {
             conductivity
         );
         println!("function_a took {} seconds", duration.as_secs_f64()); // 输出执行时间
-        let conductivity = model
-            .Hall_conductivity(&kmesh, &dir_1, &dir_2, -2.0, T, spin, eta)
-            .unwrap();
+        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, -2.0, T, spin, eta).unwrap();
         assert!(
             (conductivity_mu[[0]] - conductivity).abs() < 1e-3,
             "Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",
             conductivity_mu[[0]],
             conductivity
         );
-        let conductivity = model
-            .Hall_conductivity(&kmesh, &dir_1, &dir_2, 2.0, T, spin, eta)
-            .unwrap();
+        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, 2.0, T, spin, eta).unwrap();
         assert!(
             (conductivity_mu[[100]] - conductivity).abs() < 1e-3,
             "Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",
@@ -638,9 +871,7 @@ mod tests {
         let nk: usize = 31;
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
-        let conductivity = model
-            .Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta)
-            .unwrap();
+        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("霍尔电导率{}", conductivity * (2.0 * PI));
@@ -658,9 +889,10 @@ mod tests {
         let E_max = 3.0;
         let E_n = 1000;
         let mu = Array1::linspace(E_min, E_max, E_n);
-        let beta: f64 = 1.0 / T / (8.617e-5);
-        let f: Array1<f64> = 1.0 / ((beta * &mu).mapv(f64::exp) + 1.0);
-        let par_f = beta * &f * (1.0 - &f);
+        let occupation = Occupation::FermiDirac {
+            temperature_kelvin: T,
+        };
+        let par_f = mu.mapv(|energy| occupation.minus_derivative(energy, 0.0).unwrap());
         let mut fg = Figure::new();
         let x: Vec<f64> = mu.to_vec();
         let axes = fg.axes2d();
@@ -788,8 +1020,8 @@ mod tests {
         println!("The Chern number of Haldan model is {}", C);
     }
 
-    /// Sanity check: at a single k-point, compute_velocity_kernel
-    /// gives the same Berry curvature as berry_curvature_n_onek.
+    /// Sanity check: at one k-point, the reusable Berry-curvature trait and
+    /// the gauge-invariant velocity kernel give the same result.
     #[test]
     fn tetra_primitives_sanity() {
         let li = Complex::new(0.0, 1.0);
@@ -815,8 +1047,8 @@ mod tests {
         let dy = arr1(&[0.0, 1.0]);
         let eta = 0.01;
 
-        // Reference: berry_curvature_n_onek
-        let (omega_ref, _band_ref) = model.berry_curvature_n_onek(&k, &dx, &dy, None, eta);
+        // Reference: band-resolved Berry-curvature trait.
+        let omega_ref = band_berry_curvature(&model, &k, &dx, &dy, None, eta).berry_curvature;
         // Tetra primitives
         let dv = Array1::zeros(2);
         let pt = model.compute_velocity_kernel(&k, &dx, &dy, Some(&dv), Gauge::Atom, None);
@@ -953,7 +1185,7 @@ mod tests {
         let spin = None;
         let kmesh = arr1(&[nk, nk]);
         let (eval, evec) = model.solve_onek(&arr1(&[0.3, 0.5]));
-        let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta);
+        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta);
         //println!("{}",conductivity/(2.0*PI));
         //开始计算边缘态, 首先是zigsag态
         let nk: usize = 501;
@@ -997,11 +1229,21 @@ mod tests {
         let og = 0.0;
         let mu = Array1::linspace(E_min, E_max, E_n);
         let T = 300.0;
-        let sigma: Array1<f64> = model
-            .Nonlinear_Hall_conductivity_Extrinsic(
-                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, None, 1e-5,
-            )
-            .unwrap();
+        let sigma = extrinsic_nonlinear_values(
+            &model,
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            &dir_3,
+            &mu,
+            T,
+            og,
+            None,
+            1e-5,
+            NonlinearHallIntegration::Direct,
+            FieldSymmetry::Ordered,
+        )
+        .unwrap();
 
         //开始绘制非线性电导
         let mut fg = Figure::new();
@@ -1161,9 +1403,7 @@ mod tests {
         let spin = Some(SpinDirection::Z);
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
-        let conductivity = model
-            .Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta)
-            .unwrap();
+        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}", conductivity * (2.0 * PI));
@@ -1171,9 +1411,7 @@ mod tests {
         let nk: usize = 21;
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
-        let conductivity = model
-            .Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, T, spin, eta)
-            .unwrap();
+        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}", conductivity * (2.0 * PI));
@@ -1202,8 +1440,16 @@ mod tests {
         let kvec = kvec * 2.0;
         let kvec = model.lat.dot(&(kvec.reversed_axes()));
         let kvec = kvec.reversed_axes();
-        let berry_curv =
-            model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, Some(SpinDirection::X), 1e-3);
+        let berry_curv = occupied_berry_curvature(
+            &model,
+            &kvec,
+            &dir_1,
+            &dir_2,
+            0.0,
+            T,
+            Some(SpinDirection::X),
+            1e-3,
+        );
         let data = berry_curv.into_shape((nk, nk)).unwrap();
         draw_heatmap(
             &(-data).map(|x| (x + 1.0).log(10.0)),
@@ -1398,11 +1644,21 @@ mod tests {
         let og = 0.0;
         let mu = Array1::linspace(E_min, E_max, E_n);
         let T = 30.0;
-        let sigma: Array1<f64> = model
-            .Nonlinear_Hall_conductivity_Extrinsic(
-                &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, None, 1e-5,
-            )
-            .unwrap();
+        let sigma = extrinsic_nonlinear_values(
+            &model,
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            &dir_3,
+            &mu,
+            T,
+            og,
+            None,
+            1e-5,
+            NonlinearHallIntegration::Direct,
+            FieldSymmetry::Ordered,
+        )
+        .unwrap();
 
         //开始绘制非线性电导
         let mut fg = Figure::new();
@@ -1419,9 +1675,17 @@ mod tests {
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show();
 
-        let sigma: Array1<f64> = model
-            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T)
-            .unwrap();
+        let sigma = intrinsic_nonlinear_values(
+            &model,
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            &dir_3,
+            &mu,
+            T,
+            NonlinearHallIntegration::Direct,
+        )
+        .unwrap();
         //开始绘制非线性电导
         let mut fg = Figure::new();
         let x: Vec<f64> = mu.to_vec();
@@ -1878,9 +2142,44 @@ mod tests {
 
     #[test]
     fn nlh_current_first_api_matches_kernel_definitions() {
-        // This test verified tetra-helper naming conventions.
-        // The tetra path has been removed; the simplex path uses
-        // response::primitives::compute_velocity_kernel with clean naming.
+        let model = build_h_wave_am_model();
+        let current = array![1.0, 0.0, 0.0];
+        let field_1 = array![0.0, 1.0, 0.0];
+        let field_2 = array![0.0, 0.0, 1.0];
+        let k_mesh = array![12, 12, 12];
+        let chemical_potentials = Array1::linspace(-1.0, 1.0, 21);
+        let occupation = Occupation::FermiDirac {
+            temperature_kelvin: 100.0,
+        };
+        let params = IntrinsicNonlinearHallParams::new(
+            [12, 12, 12],
+            NonlinearHallDirections::new(
+                fixed_direction(&current),
+                fixed_direction(&field_1),
+                fixed_direction(&field_2),
+            ),
+            chemical_potentials.clone(),
+            occupation,
+        );
+        let public = model
+            .intrinsic_nonlinear_hall(&params)
+            .unwrap()
+            .conductivity;
+
+        let k_points = gen_kmesh(&k_mesh).unwrap();
+        let (kernel, energies, _) =
+            model.berry_connection_dipole(&k_points, &field_1, &field_2, &current, None);
+        let expected = chemical_potentials.mapv(|mu| {
+            kernel
+                .iter()
+                .zip(energies.iter())
+                .map(|(&value, &energy)| value * occupation.minus_derivative(energy, mu).unwrap())
+                .sum::<f64>()
+                / k_points.nrows() as f64
+                / model.lat.det().unwrap()
+        });
+        assert!(max_abs_diff_1d(&public, &expected) < 1e-12);
+        assert!(max_abs_1d(&public) > 1e-8, "test signal is too small");
     }
     // ── Tetra smoke tests ─────────────────────────────────────────────────
 
@@ -1916,10 +2215,30 @@ mod tests {
         let mu1 = arr1(&[0.0]);
         // Reference must accept T>0
         assert!(
-            model
-                .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dz, &mu1, 300.0)
-                .is_ok()
+            intrinsic_nonlinear_values(
+                &model,
+                &kmesh,
+                &dx,
+                &dy,
+                &dz,
+                &mu1,
+                300.0,
+                NonlinearHallIntegration::Direct,
+            )
+            .is_ok()
         );
+
+        let zero_temperature = IntrinsicNonlinearHallParams::new(
+            [4, 4, 4],
+            NonlinearHallDirections::new(
+                fixed_direction(&dx),
+                fixed_direction(&dy),
+                fixed_direction(&dz),
+            ),
+            mu1,
+            Occupation::ZeroTemperature,
+        );
+        assert!(model.intrinsic_nonlinear_hall(&zero_temperature).is_err());
     }
 
     /// 2. Intrinsic NLH: H-wave up/dn T‑odd via direct sum.
@@ -1972,12 +2291,28 @@ mod tests {
         let T: f64 = 100.0;
         let mu = Array1::linspace(-1.0, 1.0, 21);
         let km = array![12, 12, 12];
-        let ref_up = model_up
-            .Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dz, &mu, T)
-            .unwrap();
-        let ref_dn = model_dn
-            .Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dz, &mu, T)
-            .unwrap();
+        let ref_up = intrinsic_nonlinear_values(
+            &model_up,
+            &km,
+            &dx,
+            &dy,
+            &dz,
+            &mu,
+            T,
+            NonlinearHallIntegration::Direct,
+        )
+        .unwrap();
+        let ref_dn = intrinsic_nonlinear_values(
+            &model_dn,
+            &km,
+            &dx,
+            &dy,
+            &dz,
+            &mu,
+            T,
+            NonlinearHallIntegration::Direct,
+        )
+        .unwrap();
         let sum = max_abs_1d(&(&ref_up + &ref_dn));
         assert!(
             sum < 1e-10,
@@ -1997,9 +2332,17 @@ mod tests {
         let mut prev_pk = 0.0;
         for &nk in &[21usize, 31, 41, 51] {
             let km = arr1(&[nk, nk]);
-            let ref_val = model
-                .Nonlinear_Hall_conductivity_Intrinsic(&km, &dx, &dy, &dy, &mu, 0.0)
-                .unwrap();
+            let ref_val = intrinsic_nonlinear_values(
+                &model,
+                &km,
+                &dx,
+                &dy,
+                &dy,
+                &mu,
+                0.0,
+                NonlinearHallIntegration::Direct,
+            )
+            .unwrap();
             let pk = max_abs_1d(&ref_val);
             assert!(pk > 1e-6, "signal too small at nk={nk}");
             // Result should stabilise with mesh size
@@ -2015,10 +2358,10 @@ mod tests {
     }
     // ── Simplex vs direct-sum comparison tests ──────────────────────────
 
-    /// 8. Berry curvature: old direct k-mesh sum vs new simplex quadrature.
+    /// 8. Berry-curvature trait vs gauge-invariant velocity kernel.
     ///
     /// Compares the **per‑k‑point integrand** Ω^{xy}_n(k) produced by the
-    /// old path (`berry_curvature_n_onek`) against the gauge‑invariant kernel
+    /// public band-resolved result against the gauge‑invariant kernel
     /// `K^{xy}_nm = v^x_nm v^y_mn` evaluated at each k‑point.  The relation
     /// `Ω_n = −2 Im Σ_m K_nm / (d²+η²)` must hold identically.
     #[test]
@@ -2035,9 +2378,10 @@ mod tests {
         let mut max_err = 0.0f64;
         for ik in 0..nkt {
             let kv = kvec.row(ik).to_owned();
-            // old: direct per‑band Berry curvature
-            let (omega_n_old, _band) = model.berry_curvature_n_onek(&kv, &dx, &dy, None, eta);
-            // new: gauge‑invariant K_nm → same Ω_n
+            // Band-resolved Berry curvature from the public trait.
+            let omega_n_old =
+                band_berry_curvature(&model, &kv, &dx, &dy, None, eta).berry_curvature;
+            // Gauge-invariant K_nm must produce the same Ω_n.
             let tk = model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None);
             let nsta = model.nsta();
             let mut omega_n_new = Array1::<f64>::zeros(nsta);
@@ -2087,7 +2431,8 @@ mod tests {
             let mut direct = 0.0;
             for ik in 0..nkt {
                 let kv = kvec.row(ik).to_owned();
-                let (omega_n, _band) = model.berry_curvature_n_onek(&kv, &dx, &dy, None, eta);
+                let omega_n =
+                    band_berry_curvature(&model, &kv, &dx, &dy, None, eta).berry_curvature;
                 direct += omega_n.iter().sum::<f64>();
             }
             direct /= nkt as f64;
@@ -2100,7 +2445,14 @@ mod tests {
                     tk
                 })
                 .collect();
-            let (_g, simplex, _unsafe) = crate::response::linear::integrate(&all_pts, &kmesh, eta);
+            let (_g, simplex, _unsafe) = crate::response::linear::integrate_occupied_geometry(
+                &all_pts,
+                &kmesh,
+                eta,
+                &array![1e100],
+                Occupation::ZeroTemperature,
+            );
+            let simplex = simplex[0];
 
             let diff = (direct - simplex).abs();
             println!("{nk:>4}  {direct:>14.6e}  {simplex:>14.6e}  {diff:>10.3e}");
@@ -2121,12 +2473,30 @@ mod tests {
 
         for &nk in &[31, 51, 71, 101] {
             let kmesh = arr1(&[nk, nk]);
-            let direct = model
-                .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, eta)
-                .unwrap();
-            let ec = model
-                .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
-                .unwrap();
+            let direct = hall_values(
+                &model,
+                &kmesh,
+                &dx,
+                &dy,
+                &mu,
+                0.0,
+                None,
+                eta,
+                HallIntegration::Direct,
+            )
+            .unwrap();
+            let ec = hall_values(
+                &model,
+                &kmesh,
+                &dx,
+                &dy,
+                &mu,
+                0.0,
+                None,
+                eta,
+                HallIntegration::EnergyCut,
+            )
+            .unwrap();
             let max_abs = max_abs_diff_1d(&direct, &ec);
             let c_dir = direct[[i_mid]];
             let c_ec = ec[[i_mid]];
@@ -2146,18 +2516,54 @@ mod tests {
         let mu = Array1::linspace(-3.0, 3.0, 101);
         let kmesh = arr1(&[51, 51]);
 
-        let d_dir = model
-            .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, eta)
-            .unwrap();
-        let d_ec = model
-            .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
-            .unwrap();
-        let tr_dir = model_tr
-            .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, eta)
-            .unwrap();
-        let tr_ec = model_tr
-            .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
-            .unwrap();
+        let d_dir = hall_values(
+            &model,
+            &kmesh,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            None,
+            eta,
+            HallIntegration::Direct,
+        )
+        .unwrap();
+        let d_ec = hall_values(
+            &model,
+            &kmesh,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            None,
+            eta,
+            HallIntegration::EnergyCut,
+        )
+        .unwrap();
+        let tr_dir = hall_values(
+            &model_tr,
+            &kmesh,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            None,
+            eta,
+            HallIntegration::Direct,
+        )
+        .unwrap();
+        let tr_ec = hall_values(
+            &model_tr,
+            &kmesh,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            None,
+            eta,
+            HallIntegration::EnergyCut,
+        )
+        .unwrap();
 
         // Check σ(Haldane) + σ(TR) ≈ 0 element-wise
         let diff_dir: Vec<f64> = d_dir
@@ -2189,12 +2595,36 @@ mod tests {
         let mu = Array1::linspace(-2.0, 2.0, 51);
         let kmesh = arr1(&[31, 31]);
 
-        let (d_dir, _) = model
-            .berry_curvature_dipole_energy_cut(&kmesh, &dx, &dy, &dc, &mu, 0.0, eta)
-            .unwrap();
-        let (d_tr, _) = model_tr
-            .berry_curvature_dipole_energy_cut(&kmesh, &dx, &dy, &dc, &mu, 0.0, eta)
-            .unwrap();
+        let d_dir = extrinsic_nonlinear_values(
+            &model,
+            &kmesh,
+            &dx,
+            &dy,
+            &dc,
+            &mu,
+            0.0,
+            0.0,
+            None,
+            eta,
+            NonlinearHallIntegration::EnergyCut,
+            FieldSymmetry::Ordered,
+        )
+        .unwrap();
+        let d_tr = extrinsic_nonlinear_values(
+            &model_tr,
+            &kmesh,
+            &dx,
+            &dy,
+            &dc,
+            &mu,
+            0.0,
+            0.0,
+            None,
+            eta,
+            NonlinearHallIntegration::EnergyCut,
+            FieldSymmetry::Ordered,
+        )
+        .unwrap();
         // BCD is TR‑even: v_TR^c Ω_TR^{ab} = (−v^c)(−Ω^{ab}) = v^c Ω^{ab}  →  D_TR = D
         let max_diff = d_dir
             .iter()
@@ -2216,16 +2646,32 @@ mod tests {
         let mu = Array1::linspace(-4.0, 4.0, 41);
         let kmesh = arr1(&[21, 21]);
 
-        let dir = model
-            .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dy, &mu, 0.0)
-            .unwrap();
-        let ec = model
-            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dy, &dy, &dx, &mu, 0.0, eta)
-            .unwrap();
+        let dir = intrinsic_nonlinear_values(
+            &model,
+            &kmesh,
+            &dx,
+            &dy,
+            &dy,
+            &mu,
+            0.0,
+            NonlinearHallIntegration::Direct,
+        )
+        .unwrap();
+        let ec = intrinsic_nonlinear_values(
+            &model,
+            &kmesh,
+            &dx,
+            &dy,
+            &dy,
+            &mu,
+            0.0,
+            NonlinearHallIntegration::EnergyCut,
+        )
+        .unwrap();
         let max_abs = max_abs_diff_1d(&dir, &ec);
         let max_dir = dir.iter().fold(0.0f64, |a: f64, &x| a.max(x.abs()));
         println!("Intrinsic EC vs direct: max_abs={max_abs:.3e}  max|σ|={max_dir:.3e}");
-        // Direct sum at T=0 uses mesh‑broadened T_eff (~T(kmesh)),
+        // The direct reference uses an explicit mesh-scale Fermi smearing,
         // while EC uses exact δ‑function line‑cut.  Differences O(1e-3)
         // for this model are expected.
         assert!(
@@ -2362,9 +2808,17 @@ mod tests {
         let eta = 0.03;
         let mu = Array1::linspace(-4.0, 4.0, 61);
         let kmesh = arr1(&[21, 21]);
-        let ec = model_p
-            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dy, &mu, 0.0, eta)
-            .unwrap();
+        let ec = intrinsic_nonlinear_values(
+            &model_p,
+            &kmesh,
+            &dy,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            NonlinearHallIntegration::EnergyCut,
+        )
+        .unwrap();
         let max_val = ec.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
         println!("Inversion-symmetric (λ=0): max|σ| = {max_val:.3e}");
         assert!(max_val < 1e-10, "P-symmetry broken: {max_val:.3e}");
@@ -2380,12 +2834,28 @@ mod tests {
         let eta = 0.03;
         let mu = Array1::linspace(-4.0, 4.0, 61);
         let kmesh = arr1(&[21, 21]);
-        let ec_p = model_p
-            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dy, &mu, 0.0, eta)
-            .unwrap();
-        let ec_m = model_m
-            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dy, &mu, 0.0, eta)
-            .unwrap();
+        let ec_p = intrinsic_nonlinear_values(
+            &model_p,
+            &kmesh,
+            &dy,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            NonlinearHallIntegration::EnergyCut,
+        )
+        .unwrap();
+        let ec_m = intrinsic_nonlinear_values(
+            &model_m,
+            &kmesh,
+            &dy,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            NonlinearHallIntegration::EnergyCut,
+        )
+        .unwrap();
         let max_sum = ec_p
             .iter()
             .zip(ec_m.iter())
@@ -2410,9 +2880,17 @@ mod tests {
         for (j, &nk) in nks.iter().enumerate() {
             let kmesh = arr1(&[nk, nk]);
             for (ti, &t) in ts.iter().enumerate() {
-                let ec = model
-                    .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dy, &mu, t, eta)
-                    .unwrap();
+                let ec = intrinsic_nonlinear_values(
+                    &model,
+                    &kmesh,
+                    &dy,
+                    &dx,
+                    &dy,
+                    &mu,
+                    t,
+                    NonlinearHallIntegration::EnergyCut,
+                )
+                .unwrap();
                 peaks[ti][j] = ec.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
             }
         }
@@ -2446,12 +2924,28 @@ mod tests {
         let mu = Array1::linspace(-3.0, 3.0, 31);
         let kmesh = arr1(&[8, 8, 8]);
 
-        let ec_p = model_p
-            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 0.0, eta)
-            .unwrap();
-        let ec_m = model_m
-            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 0.0, eta)
-            .unwrap();
+        let ec_p = intrinsic_nonlinear_values(
+            &model_p,
+            &kmesh,
+            &dz,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            NonlinearHallIntegration::EnergyCut,
+        )
+        .unwrap();
+        let ec_m = intrinsic_nonlinear_values(
+            &model_m,
+            &kmesh,
+            &dz,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            NonlinearHallIntegration::EnergyCut,
+        )
+        .unwrap();
         let max_sum = ec_p
             .iter()
             .zip(ec_m.iter())
@@ -2478,9 +2972,17 @@ mod tests {
         let mut peaks = Vec::new();
         for &nk in &nks {
             let kmesh = arr1(&[nk, nk, nk]);
-            let ec = model
-                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 100.0, eta)
-                .unwrap();
+            let ec = intrinsic_nonlinear_values(
+                &model,
+                &kmesh,
+                &dz,
+                &dx,
+                &dy,
+                &mu,
+                100.0,
+                NonlinearHallIntegration::EnergyCut,
+            )
+            .unwrap();
             let peak = ec.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
             peaks.push(peak);
         }
@@ -2505,12 +3007,30 @@ mod tests {
 
         for &nk in &[8, 10] {
             let kmesh = arr1(&[nk, nk, nk]);
-            let direct = model
-                .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, eta)
-                .unwrap();
-            let ec = model
-                .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
-                .unwrap();
+            let direct = hall_values(
+                &model,
+                &kmesh,
+                &dx,
+                &dy,
+                &mu,
+                0.0,
+                None,
+                eta,
+                HallIntegration::Direct,
+            )
+            .unwrap();
+            let ec = hall_values(
+                &model,
+                &kmesh,
+                &dx,
+                &dy,
+                &mu,
+                0.0,
+                None,
+                eta,
+                HallIntegration::EnergyCut,
+            )
+            .unwrap();
             let max_abs = max_abs_diff_1d(&direct, &ec);
             println!("3D smoke nk={nk}  max_abs={max_abs:.3e}");
             assert!(max_abs < 5e-2, "3D mismatch too large: {max_abs:.3e}");
@@ -2555,12 +3075,30 @@ mod tests {
 
         for &nk in &[10, 14] {
             let kmesh = arr1(&[nk, nk, 4]); // fewer kz points (Ω is kz-independent)
-            let direct = model
-                .Hall_conductivity_mu(&kmesh, &dx, &dy, &mu, 0.0, None, eta)
-                .unwrap();
-            let ec = model
-                .Hall_conductivity_ec(&kmesh, &dx, &dy, &mu, 0.0, eta)
-                .unwrap();
+            let direct = hall_values(
+                &model,
+                &kmesh,
+                &dx,
+                &dy,
+                &mu,
+                0.0,
+                None,
+                eta,
+                HallIntegration::Direct,
+            )
+            .unwrap();
+            let ec = hall_values(
+                &model,
+                &kmesh,
+                &dx,
+                &dy,
+                &mu,
+                0.0,
+                None,
+                eta,
+                HallIntegration::EnergyCut,
+            )
+            .unwrap();
             let max_abs = max_abs_diff_1d(&direct, &ec);
             let c_dir = direct[[i_mid]];
             let c_ec = ec[[i_mid]];
@@ -2632,12 +3170,28 @@ mod tests {
         );
         for &nk in &nks {
             let kmesh = arr1(&[nk, nk, nk]);
-            let ec = model
-                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 0.0, eta)
-                .unwrap();
-            let direct = model
-                .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dx, &dy, &dz, &mu, 0.0)
-                .unwrap();
+            let ec = intrinsic_nonlinear_values(
+                &model,
+                &kmesh,
+                &dz,
+                &dx,
+                &dy,
+                &mu,
+                0.0,
+                NonlinearHallIntegration::EnergyCut,
+            )
+            .unwrap();
+            let direct = intrinsic_nonlinear_values(
+                &model,
+                &kmesh,
+                &dz,
+                &dx,
+                &dy,
+                &mu,
+                0.0,
+                NonlinearHallIntegration::Direct,
+            )
+            .unwrap();
             let max_abs = max_abs_diff_1d(&ec, &direct);
             let peak_ec = ec.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
             let peak_dir = direct.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
@@ -2651,9 +3205,17 @@ mod tests {
         }
         // Smoke: both methods produce O(1e-3) signal at nk=20
         let kmesh20 = arr1(&[20, 20, 20]);
-        let ec20 = model
-            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh20, &dx, &dy, &dz, &mu, 0.0, eta)
-            .unwrap();
+        let ec20 = intrinsic_nonlinear_values(
+            &model,
+            &kmesh20,
+            &dz,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            NonlinearHallIntegration::EnergyCut,
+        )
+        .unwrap();
         let peak = ec20.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
         assert!(peak > 1e-6, "G‑wave signal too small: {peak:.3e}");
     }
@@ -2678,12 +3240,28 @@ mod tests {
         );
         for &nk in &nks {
             let kmesh = arr1(&[nk, nk, nk]);
-            let up = model_up
-                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 0.0, eta)
-                .unwrap();
-            let dn = model_dn
-                .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh, &dx, &dy, &dz, &mu, 0.0, eta)
-                .unwrap();
+            let up = intrinsic_nonlinear_values(
+                &model_up,
+                &kmesh,
+                &dz,
+                &dx,
+                &dy,
+                &mu,
+                0.0,
+                NonlinearHallIntegration::EnergyCut,
+            )
+            .unwrap();
+            let dn = intrinsic_nonlinear_values(
+                &model_dn,
+                &kmesh,
+                &dz,
+                &dx,
+                &dy,
+                &mu,
+                0.0,
+                NonlinearHallIntegration::EnergyCut,
+            )
+            .unwrap();
             let max_sum = up
                 .iter()
                 .zip(dn.iter())
@@ -2699,9 +3277,17 @@ mod tests {
         }
         // At nk=20 signal should be nonzero and sum should converge
         let kmesh20 = arr1(&[20, 20, 20]);
-        let up20 = model_up
-            .Nonlinear_Hall_conductivity_Intrinsic_ec(&kmesh20, &dx, &dy, &dz, &mu, 0.0, eta)
-            .unwrap();
+        let up20 = intrinsic_nonlinear_values(
+            &model_up,
+            &kmesh20,
+            &dz,
+            &dx,
+            &dy,
+            &mu,
+            0.0,
+            NonlinearHallIntegration::EnergyCut,
+        )
+        .unwrap();
         let peak20 = up20.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
         assert!(peak20 > 1e-6, "G‑wave signal vanished at nk=20");
     }

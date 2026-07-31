@@ -66,20 +66,36 @@
 //!
 //! ## Quick start
 //!
-//! ```rust,ignore
-//! use rustb::response::{self, VertexKernel};
+//! ```no_run
+//! use ndarray::Array1;
+//! use Rustb::*;
 //!
-//! // Direct k‑mesh sum (reference path)
-//! let sigma = model.Hall_conductivity(&kmesh, &dx, &dy, &mu, T, None, eta)?;
+//! # fn calculate(model: &Model<false, 2>) -> Result<()> {
+//! let xy = DirectionPair::new([1.0, 0.0], [0.0, 1.0]);
+//! let chemical_potentials = Array1::linspace(-1.0, 1.0, 201);
 //!
-//! // Simplex quadrature (higher accuracy near small gaps)
-//! let (metric, berry, _) = model.berry_curvature_simplex(&kmesh, &dx, &dy, eta)?;
-//! let (dipole, _) = model.berry_curvature_dipole_simplex(&kmesh, &dx, &dy, &dx, &mu, T, eta)?;
-//! let (dipole_cut, _) = model.berry_curvature_dipole_energy_cut(&kmesh, &dx, &dy, &dx, &mu, T, eta)?;
-//! let sigma_opt = model.optical_conductivity_simplex(&kmesh, &dx, &dy, omega, eta, mu, T)?;
+//! let mut hall = HallConductivityParams::new([101, 101], xy, chemical_potentials);
+//! hall.occupation = Occupation::FermiDirac {
+//!     temperature_kelvin: 20.0,
+//! };
+//! hall.integration = HallIntegration::EnergyCut;
+//! let hall_result = model.hall_conductivity(&hall)?;
+//!
+//! let mut optical = OpticalConductivityParams::new(
+//!     [101, 101],
+//!     xy,
+//!     Array1::linspace(0.0, 4.0, 401),
+//!     0.0,
+//! );
+//! optical.integration = OpticalIntegration::Simplex;
+//! let optical_result = model.optical_conductivity(&optical)?;
+//! # let _ = (hall_result, optical_result);
+//! # Ok(())
+//! # }
 //! ```
 
-pub mod helpers;
+pub mod config;
+mod helpers;
 pub mod linear;
 pub mod nonlinear;
 pub mod optical;
@@ -92,26 +108,20 @@ mod quadrature;
 mod tracking;
 mod types;
 
-// Re‑export public types
-//
-// NOTE: The `integrate_*` raw integrators below require `all_pts` to have
-// been band‑tracked via `global_band_track`.  The public Model‑level methods
-// (`Hall_conductivity_ec`, `Nonlinear_Hall_conductivity_Intrinsic_ec`, etc.)
-// handle this automatically.
-pub use energy_cut::{
-    FermiCutCounts, integrate_dipole_energy_cut_2d, integrate_fermi_cut_2d, integrate_fermi_cut_3d,
-    integrate_intrinsic_cut_2d, integrate_intrinsic_cut_3d, read_reset_fermi_cut_counts,
-    triangle_line_cut,
+// Stable high-level response API.
+pub use config::{CurrentOperator, DirectionPair, IntegrationDiagnostics};
+pub use linear::{HallConductivityParams, HallConductivityResult, HallIntegration};
+pub use nonlinear::{
+    ExtrinsicNonlinearHallParams, FieldSymmetry, IntrinsicNonlinearHallParams,
+    NonlinearHallDirections, NonlinearHallIntegration, NonlinearHallResult,
 };
-pub use kernel::{
-    eval_berry_band_at_lam, eval_berry_complex_at_lam, eval_berry_kernel, eval_intrinsic_G_at_lam,
-    eval_optical_kernel, fermi, fermi_deriv, quadrature_berry_simplex, quadrature_optical_simplex,
+pub use optical::{
+    OpticalConductivityParams, OpticalConductivityResult, OpticalDirections, OpticalIntegration,
 };
-pub use optical::OpticalGeometry;
-pub use quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
-pub use tracking::{
-    build_tetrahedra_3d, build_tetrahedra_3d_diagavg, build_triangles_2d,
-    build_triangles_2d_diagavg, global_band_track,
-};
-pub use traits::BerryCurvature;
-pub use types::{SIMPLEX_GAP_TOL, SimplexDiagnostics, TrackedSimplex, VertexKernel};
+pub use traits::{BandBerryCurvature, BerryCurvature, BerryCurvatureParams};
+
+// Internal numerical machinery shared with crate-level tests and
+// `quantum_geometry`; it is deliberately not part of the public API.
+pub(crate) use energy_cut::{FermiCutCounts, read_reset_fermi_cut_counts};
+pub(crate) use tracking::global_band_track;
+pub(crate) use types::VertexKernel;

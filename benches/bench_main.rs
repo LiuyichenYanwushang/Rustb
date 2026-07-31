@@ -91,7 +91,9 @@ fn build_large(n: usize) -> Model<false, 2> {
 
 // ── Spinless model lists (all Model<false>) ────────────────────────────────
 
-const SPINLESS_MODELS: &[(&str, fn() -> Model<false, 2>)] = &[
+type SpinlessModelFactory = (&'static str, fn() -> Model<false, 2>);
+
+const SPINLESS_MODELS: &[SpinlessModelFactory] = &[
     ("small(2orb)", build_small as fn() -> Model<false, 2>),
     ("medium(18orb)", build_medium as fn() -> Model<false, 2>),
     ("large(50orb)", build_large5 as fn() -> Model<false, 2>),
@@ -101,12 +103,12 @@ fn build_large5() -> Model<false, 2> {
     build_large(5)
 }
 
-const SPINLESS_SMALL: &[(&str, fn() -> Model<false, 2>)] = &[
+const SPINLESS_SMALL: &[SpinlessModelFactory] = &[
     ("small(2orb)", build_small as fn() -> Model<false, 2>),
     ("medium(18orb)", build_medium as fn() -> Model<false, 2>),
 ];
 
-const SPINLESS_CURV: &[(&str, fn() -> Model<false, 2>)] =
+const SPINLESS_CURV: &[SpinlessModelFactory] =
     &[("small(2orb)", build_small as fn() -> Model<false, 2>)];
 
 // ── Energy‑cut model builders ───────────────────────────────────────────────
@@ -240,27 +242,23 @@ fn bench_solve_band_parallel(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_berry_curvature_onek(c: &mut Criterion) {
-    let mut group = c.benchmark_group("berry_curvature_onek");
+fn bench_occupied_berry_curvature_at(c: &mut Criterion) {
+    let mut group = c.benchmark_group("occupied_berry_curvature_at");
     let kvec = arr1(&[0.3, 0.5]);
-    let dir1 = arr1(&[1.0, 0.0]);
-    let dir2 = arr1(&[0.0, 1.0]);
+    let charge_params = BerryCurvatureParams::new(DirectionPair::new([1.0, 0.0], [0.0, 1.0]));
 
     for (name, build) in SPINLESS_CURV.iter() {
         let m = build();
         group.bench_with_input(
             BenchmarkId::new("scalar", name),
-            &(&m, &kvec, &dir1, &dir2),
-            |b, (m, kv, d1, d2)| {
+            &(&m, &kvec),
+            |b, (m, kv)| {
                 b.iter(|| {
-                    m.berry_curvature_onek(
+                    m.occupied_berry_curvature_at(
                         black_box(kv),
-                        black_box(d1),
-                        black_box(d2),
+                        black_box(&charge_params),
                         0.0,
-                        0.0,
-                        None,
-                        1e-3,
+                        Occupation::ZeroTemperature,
                     )
                 })
             },
@@ -272,34 +270,30 @@ fn bench_berry_curvature_onek(c: &mut Criterion) {
         let name = "spinful(4sta)";
         group.bench_with_input(
             BenchmarkId::new("scalar", name),
-            &(&m, &kvec, &dir1, &dir2),
-            |b, (m, kv, d1, d2)| {
+            &(&m, &kvec),
+            |b, (m, kv)| {
                 b.iter(|| {
-                    m.berry_curvature_onek(
+                    m.occupied_berry_curvature_at(
                         black_box(kv),
-                        black_box(d1),
-                        black_box(d2),
+                        black_box(&charge_params),
                         0.0,
-                        0.0,
-                        None,
-                        1e-3,
+                        Occupation::ZeroTemperature,
                     )
                 })
             },
         );
+        let mut spin_params = charge_params;
+        spin_params.current = CurrentOperator::Spin(SpinDirection::Z);
         group.bench_with_input(
             BenchmarkId::new("spin_z", name),
-            &(&m, &kvec, &dir1, &dir2),
-            |b, (m, kv, d1, d2)| {
+            &(&m, &kvec),
+            |b, (m, kv)| {
                 b.iter(|| {
-                    m.berry_curvature_onek(
+                    m.occupied_berry_curvature_at(
                         black_box(kv),
-                        black_box(d1),
-                        black_box(d2),
+                        black_box(&spin_params),
                         0.0,
-                        0.0,
-                        Some(SpinDirection::Z),
-                        1e-3,
+                        Occupation::ZeroTemperature,
                     )
                 })
             },
@@ -309,27 +303,14 @@ fn bench_berry_curvature_onek(c: &mut Criterion) {
 }
 
 fn bench_hall_conductivity(c: &mut Criterion) {
-    let mut group = c.benchmark_group("Hall_conductivity");
+    let mut group = c.benchmark_group("hall_conductivity");
     let model = build_small();
     let nk = 21;
-    let kmesh = arr1(&[nk, nk]);
-    let dir1 = arr1(&[1.0, 0.0]);
-    let dir2 = arr1(&[0.0, 1.0]);
+    let params =
+        HallConductivityParams::at_mu([nk, nk], DirectionPair::new([1.0, 0.0], [0.0, 1.0]), 0.0);
 
     group.bench_function("small_21x21", |b| {
-        b.iter(|| {
-            model
-                .Hall_conductivity(
-                    black_box(&kmesh),
-                    black_box(&dir1),
-                    black_box(&dir2),
-                    0.0,
-                    0.0,
-                    None,
-                    1e-3,
-                )
-                .unwrap()
-        })
+        b.iter(|| model.hall_conductivity(black_box(&params)).unwrap())
     });
     group.finish();
 }
@@ -459,20 +440,17 @@ fn bench_surfgreen(c: &mut Criterion) {
 fn bench_ahc_ec_2d(c: &mut Criterion) {
     let mut group = c.benchmark_group("ahc_ec_2d");
     let model = build_haldane_2d();
-    let dx = arr1(&[1.0, 0.0]);
-    let dy = arr1(&[0.0, 1.0]);
     let eta = 0.05;
 
     for &nk in &[31, 51] {
-        let kmesh = arr1(&[nk, nk]);
         let mu = Array1::linspace(-3.0, 3.0, 51);
+        let mut params =
+            HallConductivityParams::new([nk, nk], DirectionPair::new([1.0, 0.0], [0.0, 1.0]), mu);
+        params.broadening = eta;
+        params.integration = HallIntegration::EnergyCut;
         group.bench_function(BenchmarkId::new("nk", nk), |b| {
             b.iter(|| {
-                let r = black_box(
-                    model
-                        .Hall_conductivity_ec(black_box(&kmesh), &dx, &dy, black_box(&mu), 0.0, eta)
-                        .unwrap(),
-                );
+                let r = black_box(model.hall_conductivity(black_box(&params)).unwrap());
                 black_box(r)
             })
         });
@@ -483,103 +461,18 @@ fn bench_ahc_ec_2d(c: &mut Criterion) {
 fn bench_intrinsic_ec_2d(c: &mut Criterion) {
     let mut group = c.benchmark_group("intrinsic_ec_2d");
     let model = build_haldane_2d();
-    let dx = arr1(&[1.0, 0.0]);
-    let dy = arr1(&[0.0, 1.0]);
-    let eta = 0.05;
-
     for &nk in &[21, 31] {
-        let kmesh = arr1(&[nk, nk]);
         let mu = Array1::linspace(-3.0, 3.0, 31);
+        let mut params = IntrinsicNonlinearHallParams::new(
+            [nk, nk],
+            NonlinearHallDirections::new([1.0, 0.0], [1.0, 0.0], [0.0, 1.0]),
+            mu,
+            Occupation::ZeroTemperature,
+        );
+        params.integration = NonlinearHallIntegration::EnergyCut;
         group.bench_function(BenchmarkId::new("nk", nk), |b| {
             b.iter(|| {
-                let r = black_box(
-                    model
-                        .Nonlinear_Hall_conductivity_Intrinsic_ec(
-                            black_box(&kmesh),
-                            &dx,
-                            &dy,
-                            &dx,
-                            black_box(&mu),
-                            0.0,
-                            eta,
-                        )
-                        .unwrap(),
-                );
-                black_box(r)
-            })
-        });
-    }
-    group.finish();
-}
-
-fn bench_ahc_ec_2d_integrate_only(c: &mut Criterion) {
-    let mut group = c.benchmark_group("ahc_ec_2d_integrate");
-    let model = build_haldane_2d();
-    let dx = arr1(&[1.0, 0.0]);
-    let dy = arr1(&[0.0, 1.0]);
-    let eta = 0.05;
-
-    for &nk in &[31, 51] {
-        let kmesh = arr1(&[nk, nk]);
-        let mu = Array1::linspace(-3.0, 3.0, 51);
-
-        // Pre‑compute velocity kernel + band tracking (excluded from timing)
-        let kvec: Array2<f64> = gen_kmesh(&kmesh).unwrap();
-        let nk_tot = kvec.nrows();
-        let mut all_pts: Vec<VertexKernel> = (0..nk_tot)
-            .map(|ik| {
-                let kv = kvec.row(ik).to_owned();
-                model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Lattice, None)
-            })
-            .collect();
-        global_band_track(&mut all_pts, kmesh.as_slice().unwrap());
-
-        group.bench_function(BenchmarkId::new("nk", nk), |b| {
-            b.iter(|| {
-                let r = black_box(integrate_fermi_cut_2d(
-                    black_box(&all_pts),
-                    black_box(&kmesh),
-                    black_box(&mu),
-                    0.0,
-                    eta,
-                ));
-                black_box(r)
-            })
-        });
-    }
-    group.finish();
-}
-
-fn bench_intrinsic_ec_2d_integrate_only(c: &mut Criterion) {
-    let mut group = c.benchmark_group("intrinsic_ec_2d_integrate");
-    let model = build_haldane_2d();
-    let dx = arr1(&[1.0, 0.0]);
-    let dy = arr1(&[0.0, 1.0]);
-    let eta = 0.05;
-
-    for &nk in &[21, 31] {
-        let kmesh = arr1(&[nk, nk]);
-        let mu = Array1::linspace(-3.0, 3.0, 31);
-
-        let kvec: Array2<f64> = gen_kmesh(&kmesh).unwrap();
-        let nk_tot = kvec.nrows();
-        let mut all_pts: Vec<VertexKernel> = (0..nk_tot)
-            .map(|ik| {
-                let kv = kvec.row(ik).to_owned();
-                model.compute_velocity_kernel(&kv, &dx, &dy, Some(&dy), Gauge::Lattice, None)
-            })
-            .collect();
-        global_band_track(&mut all_pts, kmesh.as_slice().unwrap());
-        let _ = eta; // intrinsic doesn't use η
-
-        group.bench_function(BenchmarkId::new("nk", nk), |b| {
-            b.iter(|| {
-                let r = black_box(integrate_intrinsic_cut_2d(
-                    black_box(&all_pts),
-                    black_box(&kmesh),
-                    black_box(&mu),
-                    0.0,
-                ));
+                let r = black_box(model.intrinsic_nonlinear_hall(black_box(&params)).unwrap());
                 black_box(r)
             })
         });
@@ -593,14 +486,12 @@ criterion_group!(
     bench_gen_v,
     bench_solve_onek,
     bench_solve_band_parallel,
-    bench_berry_curvature_onek,
+    bench_occupied_berry_curvature_at,
     bench_hall_conductivity,
     bench_dos,
     bench_phase_dot_vs_perrow,
     bench_surfgreen,
     bench_ahc_ec_2d,
     bench_intrinsic_ec_2d,
-    bench_ahc_ec_2d_integrate_only,
-    bench_intrinsic_ec_2d_integrate_only,
 );
 criterion_main!(benches);

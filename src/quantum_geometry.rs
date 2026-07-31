@@ -1,375 +1,394 @@
-//! Quantum geometry computations: quantum metric and Berry curvature.
+//! Occupation-weighted quantum metric and Berry curvature.
 //!
-//! The quantum geometric tensor for band $n$ is defined as
+//! For band `n`, the quantum geometric tensor is
 //!
-//! $$
-//! G_{n,\alpha\beta}(\mathbf{k}) = \sum_{m\neq n}
-//! \frac{\bra{n}v_\alpha\ket{m}\bra{m}v_\beta\ket{n}}
-//!      {(E_n - E_m)^2 + \eta^2},
-//! $$
+//! ```math
+//! G^{ab}_n(k) = \sum_{m\ne n}
+//! \frac{v^a_{nm}(k)v^b_{mn}(k)}{(E_n-E_m)^2+\eta^2}
+//! = g^{ab}_n(k)-\frac{i}{2}\Omega^{ab}_n(k).
+//! ```
 //!
-//! where $v_\alpha = \frac{1}{\hbar}\partial_{k_\alpha} H(\mathbf{k})$ is the velocity
-//! operator.  The quantum metric $g_{n,\alpha\beta}$ (real, symmetric) and the Berry
-//! curvature $\Omega_{n,\alpha\beta}$ (real, antisymmetric) are obtained from the
-//! real and imaginary parts:
-//!
-//! $$
-//! \begin{aligned}
-//! g_{n,\alpha\beta} &= \operatorname{Re}\bigl[G_{n,\alpha\beta}\bigr], \\[4pt]
-//! \Omega_{n,\alpha\beta} &= -2\,\operatorname{Im}\bigl[G_{n,\alpha\beta}\bigr].
-//! \end{aligned}
-//! $$
-//!
-//! The two quantities are related through
-//!
-//! $$
-//! G_{\alpha\beta} = g_{\alpha\beta} - \frac{i}{2}\,\Omega_{\alpha\beta}.
-//! $$
-//!
-//! # Broadening
-//!
-//! The parameter $\eta$ is a Lorentzian broadening that regularises the energy
-//! denominator when bands are nearly degenerate.  The limit $\eta\to 0$ recovers
-//! the exact zero-temperature expression.
+//! [`QuantumGeometry`] exposes reusable band-resolved kernels. The high-level
+//! [`Model::quantum_geometry`] method performs the Brillouin-zone integration
+//! from one [`QuantumGeometryParams`] value.
 
-use crate::error::Result;
-use crate::kpoints::gen_kmesh;
-use crate::velocity::*;
-use crate::{Gauge, Model, RMatrixData};
+use ndarray::Data;
 use ndarray::prelude::*;
-use ndarray::*;
-use ndarray_linalg::*;
+use ndarray_linalg::{Determinant, Eigh, UPLO};
 use num_complex::Complex;
 use rayon::prelude::*;
 
-/// Trait for computing the quantum geometric tensor and its real/imaginary
-/// components at the band-resolved level.
-///
-/// The two functions differ in the k‑point argument:
-/// - `*_onek` evaluates a single k‑point.
-/// - `*_n` evaluates a list of k‑points in parallel.
-pub trait QuantumGeometry: Velocity {
-    /// Band-resolved quantum geometry at **one** k‑point.
-    ///
-    /// # Arguments
-    ///
-    /// * `k_vec` — k‑point coordinates (fractional reciprocal coordinates).
-    /// * `dir_1` — Direction vector for the first index $\alpha$ of
-    ///   $G_{n,\alpha\beta}$ (must have length `self.dim_r()`).
-    /// * `dir_2` — Direction vector for the second index $\beta$ of
-    ///   $G_{n,\alpha\beta}$.
-    /// * `eta`  — Broadening parameter $\eta$ (in eV).
-    ///
-    /// # Returns
-    ///
-    /// `(metric_n, omega_n, band)` where
-    ///
-    /// | field      | type                  | meaning                                      |
-    /// |------------|-----------------------|----------------------------------------------|
-    /// | `metric_n` | `Array1<Complex<f64>>` | $g_{n,\alpha\beta}$ for each band $n$        |
-    /// | `omega_n`  | `Array1<Complex<f64>>` | $\Omega_{n,\alpha\beta}$ for each band $n$   |
-    /// | `band`     | `Array1<f64>`          | band energies $E_{n\mathbf{k}}$              |
-    ///
-    /// (`omega_n` is stored as `Complex` for convenience; its imaginary part is
-    /// always zero.)
-    fn quantum_geometry_n_onek<S: Data<Elem = f64>>(
-        &self,
-        k_vec: &ArrayBase<S, Ix1>,
-        dir_1: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        eta: f64,
-    ) -> (Array1<Complex<f64>>, Array1<Complex<f64>>, Array1<f64>);
+use crate::error::{Result, TbError};
+use crate::response::config::{
+    DirectionPair, IntegrationDiagnostics, mesh_array, validate_broadening,
+    validate_chemical_potentials, validate_k_mesh,
+};
+use crate::response::linear::integrate_occupied_geometry;
+use crate::response::{VertexKernel, global_band_track};
+use crate::thermodynamics::Occupation;
+use crate::velocity::Velocity;
+use crate::{Gauge, Model, RMatrixData};
 
-    /// Band-resolved quantum geometry at **multiple** k‑points (parallel).
-    ///
-    /// # Arguments
-    ///
-    /// * `k_vec` — Array of k‑points, shape `(nk, dim_r)`.
-    /// * `dir_1`, `dir_2`, `eta` — same meaning as in
-    ///   [`quantum_geometry_n_onek`].
-    ///
-    /// # Returns
-    ///
-    /// `(metric, omega, bands)` where
-    ///
-    /// | field    | type                        | shape          |
-    /// |----------|-----------------------------|----------------|
-    /// | `metric` | `Array2<Complex<f64>>`      | `(nk, nsta)`   |
-    /// | `omega`  | `Array2<Complex<f64>>`      | `(nk, nsta)`   |
-    /// | `bands`  | `Array2<f64>`               | `(nk, nsta)`   |
-    fn quantum_geometry_n<S: Data<Elem = f64>>(
-        &self,
-        k_vec: &ArrayBase<S, Ix2>,
-        dir_1: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        eta: f64,
-    ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>, Array2<f64>);
+/// Integration algorithm for occupation-weighted quantum geometry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QuantumGeometryIntegration {
+    /// Evaluate the band-resolved tensor on every point of a uniform mesh.
+    #[default]
+    Direct,
+    /// Interpolate gauge-invariant velocity kernels inside triangles or
+    /// tetrahedra and use symmetric simplex quadrature.
+    Simplex,
 }
 
-impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry for Model<SPIN, DIM, R> {
-    #[inline(always)]
-    fn quantum_geometry_n_onek<S: Data<Elem = f64>>(
+/// Configuration for a Brillouin-zone quantum-geometry calculation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuantumGeometryParams<const DIM: usize> {
+    /// Number of uniform samples along each reciprocal-lattice direction.
+    pub k_mesh: [usize; DIM],
+    /// Ordered directions of the quantum geometric tensor.
+    pub directions: DirectionPair<DIM>,
+    /// Chemical potentials in eV.
+    pub chemical_potentials: Array1<f64>,
+    /// Electronic occupation or smearing convention.
+    pub occupation: Occupation,
+    /// Non-negative energy-denominator regularization in eV.
+    pub broadening: f64,
+    /// Brillouin-zone integration algorithm.
+    pub integration: QuantumGeometryIntegration,
+}
+
+impl<const DIM: usize> QuantumGeometryParams<DIM> {
+    /// Construct a zero-temperature direct-sum calculation.
+    pub fn new(
+        k_mesh: [usize; DIM],
+        directions: DirectionPair<DIM>,
+        chemical_potentials: Array1<f64>,
+    ) -> Self {
+        Self {
+            k_mesh,
+            directions,
+            chemical_potentials,
+            occupation: Occupation::ZeroTemperature,
+            broadening: 1e-3,
+            integration: QuantumGeometryIntegration::Direct,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_k_mesh(&self.k_mesh)?;
+        self.directions.validate()?;
+        validate_chemical_potentials(&self.chemical_potentials)?;
+        self.occupation.validate()?;
+        validate_broadening(self.broadening)?;
+        if self.integration == QuantumGeometryIntegration::Simplex && DIM == 1 {
+            return Err(TbError::InvalidDimension {
+                dim: DIM,
+                supported: vec![2, 3],
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Band-resolved quantum geometry at one k-point.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BandQuantumGeometry {
+    /// Quantum metric of every band.
+    pub metric: Array1<f64>,
+    /// Berry curvature of every band.
+    pub berry_curvature: Array1<f64>,
+    /// Band energies in eV.
+    pub energies: Array1<f64>,
+}
+
+/// Band-resolved quantum geometry on a list of k-points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuantumGeometryMap {
+    /// Shape `(number_of_k_points, number_of_states)`.
+    pub metric: Array2<f64>,
+    /// Shape `(number_of_k_points, number_of_states)`.
+    pub berry_curvature: Array2<f64>,
+    /// Shape `(number_of_k_points, number_of_states)`.
+    pub energies: Array2<f64>,
+}
+
+/// Occupation-weighted Brillouin-zone quantum geometry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuantumGeometryResult {
+    /// Chemical potentials copied from the input configuration.
+    pub chemical_potentials: Array1<f64>,
+    /// Occupation-weighted quantum metric at every chemical potential.
+    pub metric: Array1<f64>,
+    /// Occupation-weighted Berry curvature at every chemical potential.
+    pub berry_curvature: Array1<f64>,
+    /// Present only for simplex integration.
+    pub diagnostics: Option<IntegrationDiagnostics>,
+}
+
+/// Reusable band-resolved quantum-geometry kernels.
+pub trait QuantumGeometry<const DIM: usize>: Velocity {
+    /// Evaluate every band at one k-point.
+    fn quantum_geometry_at<S: Data<Elem = f64>>(
         &self,
-        k_vec: &ArrayBase<S, Ix1>,
-        dir_1: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        eta: f64,
-    ) -> (Array1<Complex<f64>>, Array1<Complex<f64>>, Array1<f64>) {
-        let li: Complex<f64> = 1.0 * Complex::i();
+        k: &ArrayBase<S, Ix1>,
+        directions: &DirectionPair<DIM>,
+        broadening: f64,
+    ) -> Result<BandQuantumGeometry>;
 
-        // Build direction matrix: [dir_1, dir_2]
-        let directions = {
-            let mut d = Array2::<f64>::zeros((2, self.dim_r()));
-            d.row_mut(0).assign(dir_1);
-            d.row_mut(1).assign(dir_2);
-            d
-        };
-        let (v_proj, hamk) = self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
+    /// Evaluate every band on a list of k-points in parallel.
+    fn quantum_geometry_on<S: Data<Elem = f64> + Sync>(
+        &self,
+        k_points: &ArrayBase<S, Ix2>,
+        directions: &DirectionPair<DIM>,
+        broadening: f64,
+    ) -> Result<QuantumGeometryMap>;
+}
 
-        // Projected velocity matrices
-        let v_alpha: Array2<Complex<f64>> = v_proj.slice(s![0, .., ..]).to_owned();
-        let v_beta: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry<DIM>
+    for Model<SPIN, DIM, R>
+{
+    fn quantum_geometry_at<S: Data<Elem = f64>>(
+        &self,
+        k: &ArrayBase<S, Ix1>,
+        directions: &DirectionPair<DIM>,
+        broadening: f64,
+    ) -> Result<BandQuantumGeometry> {
+        if k.len() != DIM {
+            return Err(TbError::KVectorLengthMismatch {
+                expected: DIM,
+                actual: k.len(),
+            });
+        }
+        directions.validate()?;
+        validate_broadening(broadening)?;
 
-        // Diagonalize H(k)
-        let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
-            (eigvals, eigvecs)
-        } else {
-            panic!("Diagonalization failed in quantum_geometry_n_onek");
-        };
+        let mut direction_matrix = Array2::<f64>::zeros((2, DIM));
+        direction_matrix
+            .row_mut(0)
+            .assign(&ArrayView1::from(&directions.first));
+        direction_matrix
+            .row_mut(1)
+            .assign(&ArrayView1::from(&directions.second));
+        let (projected_velocity, hamiltonian) =
+            self.gen_v_projected(k, Gauge::Atom, &direction_matrix);
+        let (energies, eigenvectors) = hamiltonian.eigh(UPLO::Lower)?;
+        let bra = eigenvectors.t();
+        let ket = eigenvectors.mapv(|value| value.conj());
 
-        // Transform velocity matrices to the eigenstate basis
-        // evec[:, n] = |ψ_n⟩,  evec_conj[n, :] = ⟨ψ_n|
-        let evec_conj = evec.t();
-        let evec = evec.mapv(|x| x.conj());
+        let velocity_a = projected_velocity.index_axis(Axis(0), 0);
+        let velocity_b = projected_velocity.index_axis(Axis(0), 1);
+        let a_band = bra.dot(&velocity_a.dot(&ket));
+        let b_band = bra.dot(&velocity_b.dot(&ket));
+        let kernel = a_band * b_band.reversed_axes();
+        let eta_squared = broadening * broadening;
+        let mut metric = Array1::<f64>::zeros(self.nsta());
+        let mut berry_curvature = Array1::<f64>::zeros(self.nsta());
 
-        // A1[n,m] = ⟨n|v_α|m⟩
-        let A1 = v_alpha.dot(&evec);
-        let A1 = &evec_conj.dot(&A1);
-        // A2[m,n] = ⟨m|v_β|n⟩ (transposed so element-wise product works)
-        let A2 = v_beta.dot(&evec);
-        let A2 = evec_conj.dot(&A2);
-        let A2 = A2.reversed_axes();
-
-        // Element-wise: AA[n,m] = ⟨n|v_α|m⟩ · ⟨m|v_β|n⟩
-        let AA = A1 * A2;
-        let Complex { re, im } = AA.view().split_complex();
-
-        // Quantum metric:    g_n = Σ_{m≠n} Re[⟨n|v_α|m⟩⟨m|v_β|n⟩] / (ΔE² + η²)
-        // Berry curvature:   Ω_n = Σ_{m≠n} -2 Im[⟨n|v_α|m⟩⟨m|v_β|n⟩] / (ΔE² + η²)
-        let nsta = self.nsta();
-        let h_eta = eta * eta; // η² for the denominator
-
-        let mut metric_n = Array1::<Complex<f64>>::zeros(nsta);
-        let mut omega_n = Array1::<Complex<f64>>::zeros(nsta);
-
-        for i in 0..nsta {
-            let mut g_sum = 0.0f64;
-            let mut o_sum = 0.0f64;
-            for j in 0..nsta {
-                if i == j {
+        for band in 0..self.nsta() {
+            let mut tensor = Complex::new(0.0, 0.0);
+            for other in 0..self.nsta() {
+                if band == other {
                     continue;
                 }
-                let de = band[i] - band[j];
-                let inv_denom = 1.0 / (de * de + h_eta);
-                g_sum += re[[i, j]] * inv_denom;
-                o_sum += im[[i, j]] * inv_denom;
+                let difference = energies[band] - energies[other];
+                tensor += kernel[[band, other]] / (difference * difference + eta_squared);
             }
-            metric_n[i] = Complex::new(g_sum, 0.0);
-            // Ω_n = -2 Im[G_n], convention matching berry_curvature_n_onek
-            omega_n[i] = Complex::new(-2.0 * o_sum, 0.0);
+            metric[band] = tensor.re;
+            berry_curvature[band] = -2.0 * tensor.im;
         }
 
-        (metric_n, omega_n, band)
+        Ok(BandQuantumGeometry {
+            metric,
+            berry_curvature,
+            energies,
+        })
     }
 
-    fn quantum_geometry_n<S: Data<Elem = f64>>(
+    fn quantum_geometry_on<S: Data<Elem = f64> + Sync>(
         &self,
-        k_vec: &ArrayBase<S, Ix2>,
-        dir_1: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        eta: f64,
-    ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>, Array2<f64>) {
-        let nk = k_vec.len_of(Axis(0));
-        let nsta = self.nsta();
-
-        // Collect results in parallel
-        let results: Vec<_> = k_vec
+        k_points: &ArrayBase<S, Ix2>,
+        directions: &DirectionPair<DIM>,
+        broadening: f64,
+    ) -> Result<QuantumGeometryMap> {
+        if k_points.ncols() != DIM {
+            return Err(TbError::DimensionMismatch {
+                context: "quantum geometry k-points".into(),
+                expected: DIM,
+                found: k_points.ncols(),
+            });
+        }
+        let rows: Vec<Result<BandQuantumGeometry>> = k_points
             .axis_iter(Axis(0))
             .into_par_iter()
-            .map(|k| self.quantum_geometry_n_onek(&k.to_owned(), dir_1, dir_2, eta))
+            .map(|k| self.quantum_geometry_at(&k, directions, broadening))
             .collect();
-
-        let mut metric = Array2::<Complex<f64>>::zeros((nk, nsta));
-        let mut omega = Array2::<Complex<f64>>::zeros((nk, nsta));
-        let mut bands = Array2::<f64>::zeros((nk, nsta));
-
-        for (ik, (m, o, b)) in results.into_iter().enumerate() {
-            metric.row_mut(ik).assign(&m);
-            omega.row_mut(ik).assign(&o);
-            bands.row_mut(ik).assign(&b);
+        let rows: Vec<BandQuantumGeometry> = rows.into_iter().collect::<Result<_>>()?;
+        let number_of_k_points = rows.len();
+        let mut metric = Array2::<f64>::zeros((number_of_k_points, self.nsta()));
+        let mut berry_curvature = Array2::<f64>::zeros((number_of_k_points, self.nsta()));
+        let mut energies = Array2::<f64>::zeros((number_of_k_points, self.nsta()));
+        for (index, row) in rows.into_iter().enumerate() {
+            metric.row_mut(index).assign(&row.metric);
+            berry_curvature.row_mut(index).assign(&row.berry_curvature);
+            energies.row_mut(index).assign(&row.energies);
         }
-
-        (metric, omega, bands)
+        Ok(QuantumGeometryMap {
+            metric,
+            berry_curvature,
+            energies,
+        })
     }
 }
 
-// ── Fermi‑Dirac‑weighted quantum geometry over a k‑mesh ─────────────────
-
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
-    /// Fermi–Dirac weighted quantum metric and Berry curvature as a function of
-    /// chemical potential.
+    /// Integrate occupation-weighted quantum geometry over the Brillouin zone.
     ///
-    /// This is the quantum‑geometry analogue of
-    /// `Hall_conductivity_mu` (now in `response::linear`):
-    /// it first computes the band‑resolved quantum metric $g_{n,\alpha\beta}$
-    /// and Berry curvature $\Omega_{n,\alpha\beta}$ at every k‑point of a
-    /// uniform mesh, then evaluates the Fermi–Dirac‑weighted Brillouin‑zone sum
-    /// for each chemical potential in `mu`.  Re‑using the band‑resolved data
-    /// avoids recomputing the expensive velocity‑matrix diagonalisation for
-    /// every $\mu$.
-    ///
-    /// $$
-    /// \begin{aligned}
-    /// g_{\alpha\beta}(\mu) &=
-    ///   \frac{1}{N} \sum_{\mathbf{k},n}
-    ///   f\bigl(E_{n\mathbf{k}}; \mu, T\bigr)\,
-    ///   g_{n,\alpha\beta}(\mathbf{k}), \\[4pt]
-    /// \Omega_{\alpha\beta}(\mu) &=
-    ///   \frac{1}{N} \sum_{\mathbf{k},n}
-    ///   f\bigl(E_{n\mathbf{k}}; \mu, T\bigr)\,
-    ///   \Omega_{n,\alpha\beta}(\mathbf{k}),
-    /// \end{aligned}
-    /// $$
-    ///
-    /// where $f$ is the Fermi–Dirac distribution and $N$ is the number of
-    /// k‑points.  Both quantities are returned in **natural units** (the
-    /// $e^2/\hbar$ prefactor is omitted, consistent with the rest of the
-    /// crate).
-    ///
-    /// # Arguments
-    ///
-    /// * `k_mesh` — Number of k‑points along each direction, e.g.
-    ///   `arr1(&[nk, nk])` for 2D.
-    /// * `dir_1` — Direction vector for the first index $\alpha$.
-    /// * `dir_2` — Direction vector for the second index $\beta$.
-    /// * `mu` — Array of chemical‑potential values $\mu$ (in eV).
-    /// * `T` — Temperature (in K).  `T = 0` uses a step function.
-    /// * `eta` — Broadening parameter $\eta$ (in eV).
-    ///
-    /// # Returns
-    ///
-    /// `Ok((metric, omega))` where `metric` (`Array1<f64>`) and `omega`
-    /// (`Array1<f64>`) are the Brillouin‑zone sums for each $\mu$ in `mu`.
-    /// The quantum metric has units of $\text{Å}^2$ (the geometric length‑squared
-    /// of the wavefunction in real space); the Berry curvature is dimensionless
-    /// (in units of the reciprocal‑lattice cell).
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use ndarray::{arr1, Array1};
-    /// # use rustb::Model;
-    /// # fn example(model: &Model) -> Result<(), rustb::error::TbError> {
-    /// let kmesh = arr1(&[31, 31]);
-    /// let dir_1 = arr1(&[1.0, 0.0]);
-    /// let dir_2 = arr1(&[0.0, 1.0]);
-    /// let mu = Array1::linspace(-2.0, 2.0, 101);
-    /// let (metric, omega) = model.quantum_geometry(&kmesh, &dir_1, &dir_2, &mu, 0.0, 1e-3)?;
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// Both algorithms return the same named result and use Cartesian
+    /// reciprocal-space normalization. Simplex mode additionally reports the
+    /// number of small-gap simplices encountered during band tracking.
     pub fn quantum_geometry(
         &self,
-        k_mesh: &Array1<usize>,
-        dir_1: &Array1<f64>,
-        dir_2: &Array1<f64>,
-        mu: &Array1<f64>,
-        T: f64,
-        eta: f64,
-    ) -> Result<(Array1<f64>, Array1<f64>)> {
-        let kvec: Array2<f64> = gen_kmesh(k_mesh)?;
-        let nk: usize = kvec.len_of(Axis(0));
-        let nsta = self.nsta();
+        params: &QuantumGeometryParams<DIM>,
+    ) -> Result<QuantumGeometryResult> {
+        params.validate()?;
+        let k_mesh = mesh_array(&params.k_mesh);
+        let determinant = self.lat.det()?;
 
-        // Compute band‑resolved quantum geometry at every k‑point
-        let all: Vec<(Vec<f64>, Vec<f64>, Vec<f64>)> = kvec
-            .axis_iter(Axis(0))
-            .into_par_iter()
-            .map(|k| {
-                let (m, o, b) = self.quantum_geometry_n_onek(&k.to_owned(), dir_1, dir_2, eta);
-                let m_real: Vec<f64> = m.iter().map(|c| c.re).collect();
-                let o_real: Vec<f64> = o.iter().map(|c| c.re).collect();
-                (m_real, o_real, b.to_vec())
-            })
-            .collect();
-
-        // Flatten into (nk, nsta) arrays
-        let (metric_flat, omega_flat, band_flat): (Vec<f64>, Vec<f64>, Vec<f64>) = {
-            let cap = nk * nsta;
-            let mut mf = Vec::with_capacity(cap);
-            let mut of = Vec::with_capacity(cap);
-            let mut bf = Vec::with_capacity(cap);
-            for (m, o, b) in all {
-                mf.extend(m);
-                of.extend(o);
-                bf.extend(b);
-            }
-            (mf, of, bf)
-        };
-        let metric_n = Array2::<f64>::from_shape_vec((nk, nsta), metric_flat).unwrap();
-        let omega_n = Array2::<f64>::from_shape_vec((nk, nsta), omega_flat).unwrap();
-        let band = Array2::<f64>::from_shape_vec((nk, nsta), band_flat).unwrap();
-
-        let n_mu = mu.len();
-        let norm = 1.0 / (nk as f64);
-
-        // Fermi‑Dirac weighted BZ sum — single pass over mu, computing metric
-        // and omega together to avoid redundant work and intermediate allocations.
-        let metric_mu: Vec<(f64, f64)> = if T == 0.0 {
-            // T = 0: step function, parallel over mu
-            mu.into_par_iter()
-                .map(|&mu_i| {
-                    let mut g_sum = 0.0f64;
-                    let mut o_sum = 0.0f64;
-                    for ik in 0..nk {
-                        for ib in 0..nsta {
-                            if band[[ik, ib]] <= mu_i {
-                                g_sum += metric_n[[ik, ib]];
-                                o_sum += omega_n[[ik, ib]];
+        let (metric, berry_curvature, diagnostics) = match params.integration {
+            QuantumGeometryIntegration::Direct => {
+                let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
+                let geometry =
+                    self.quantum_geometry_on(&k_points, &params.directions, params.broadening)?;
+                let normalization = 1.0 / k_points.nrows() as f64 / determinant;
+                let values: Vec<(f64, f64)> = params
+                    .chemical_potentials
+                    .par_iter()
+                    .map(|&mu| {
+                        let mut metric_sum = 0.0;
+                        let mut berry_sum = 0.0;
+                        for k in 0..k_points.nrows() {
+                            for band in 0..self.nsta() {
+                                let occupation = params
+                                    .occupation
+                                    .value_unchecked(geometry.energies[[k, band]], mu);
+                                metric_sum += geometry.metric[[k, band]] * occupation;
+                                berry_sum += geometry.berry_curvature[[k, band]] * occupation;
                             }
                         }
-                    }
-                    (g_sum * norm, o_sum * norm)
-                })
-                .collect::<Vec<(f64, f64)>>()
-        } else {
-            // T > 0: Fermi‑Dirac distribution, parallel over mu
-            let beta = 1.0 / (T * 8.617e-5);
-            mu.into_par_iter()
-                .map(|&mu_i| {
-                    let mut g_sum = 0.0f64;
-                    let mut o_sum = 0.0f64;
-                    for ik in 0..nk {
-                        for ib in 0..nsta {
-                            let e = band[[ik, ib]];
-                            let fd = 1.0 / ((beta * (e - mu_i)).exp() + 1.0);
-                            g_sum += metric_n[[ik, ib]] * fd;
-                            o_sum += omega_n[[ik, ib]] * fd;
-                        }
-                    }
-                    (g_sum * norm, o_sum * norm)
-                })
-                .collect::<Vec<(f64, f64)>>()
+                        (metric_sum * normalization, berry_sum * normalization)
+                    })
+                    .collect();
+                let (metric, berry): (Vec<_>, Vec<_>) = values.into_iter().unzip();
+                (Array1::from_vec(metric), Array1::from_vec(berry), None)
+            }
+            QuantumGeometryIntegration::Simplex => {
+                let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
+                let (direction_a, direction_b) = params.directions.as_arrays();
+                let mut vertices: Vec<VertexKernel> = (0..k_points.nrows())
+                    .into_par_iter()
+                    .map(|index| {
+                        self.compute_velocity_kernel(
+                            &k_points.row(index).to_owned(),
+                            &direction_a,
+                            &direction_b,
+                            None,
+                            Gauge::Atom,
+                            None,
+                        )
+                    })
+                    .collect();
+                global_band_track(&mut vertices, &params.k_mesh);
+                let (metric, berry, unsafe_simplex_count) = integrate_occupied_geometry(
+                    &vertices,
+                    &k_mesh,
+                    params.broadening,
+                    &params.chemical_potentials,
+                    params.occupation,
+                );
+                (
+                    metric / determinant,
+                    berry / determinant,
+                    Some(IntegrationDiagnostics {
+                        unsafe_simplex_count,
+                    }),
+                )
+            }
         };
 
-        let n_mu = mu.len();
-        let mut g_arr = Array1::<f64>::zeros(n_mu);
-        let mut o_arr = Array1::<f64>::zeros(n_mu);
-        for (i, (g, o)) in metric_mu.into_iter().enumerate() {
-            g_arr[i] = g;
-            o_arr[i] = o;
-        }
+        Ok(QuantumGeometryResult {
+            chemical_potentials: params.chemical_potentials.clone(),
+            metric,
+            berry_curvature,
+            diagnostics,
+        })
+    }
+}
 
-        Ok((g_arr, o_arr))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    fn massive_dirac_model() -> Model<false, 2> {
+        let mut model = Model::<false, 2>::tb_model(
+            array![[1.0, 0.0], [0.0, 1.0]],
+            array![[0.0, 0.0], [0.0, 0.0]],
+            None,
+        )
+        .unwrap();
+        model.set_onsite(&array![-0.5, 0.5], None);
+        model
+    }
+
+    fn qwz_model(mass: f64) -> Model<false, 2> {
+        let mut model = Model::<false, 2>::tb_model(
+            array![[1.0, 0.0], [0.0, 1.0]],
+            array![[0.0, 0.0], [0.0, 0.0]],
+            None,
+        )
+        .unwrap();
+        model.add_onsite(&array![mass, -mass], None);
+        model.add_hop(Complex::new(0.0, -0.5), 0, 1, &array![1, 0], None);
+        model.add_hop(Complex::new(0.0, 0.5), 0, 1, &array![-1, 0], None);
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None);
+        model.add_hop(0.5, 0, 1, &array![0, -1], None);
+        for displacement in [array![1, 0], array![-1, 0], array![0, 1], array![0, -1]] {
+            model.add_hop(0.5, 0, 0, &displacement, None);
+            model.add_hop(-0.5, 1, 1, &displacement, None);
+        }
+        model
+    }
+
+    #[test]
+    fn named_band_result_has_real_components() {
+        let model = massive_dirac_model();
+        let geometry = model
+            .quantum_geometry_at(
+                &array![0.0, 0.0],
+                &DirectionPair::new([1.0, 0.0], [0.0, 1.0]),
+                1e-3,
+            )
+            .unwrap();
+        assert_eq!(geometry.metric.len(), model.nsta());
+        assert_eq!(geometry.berry_curvature.len(), model.nsta());
+        assert_eq!(geometry.energies.len(), model.nsta());
+    }
+
+    #[test]
+    fn direct_and_simplex_integrate_the_same_geometry() {
+        let model = qwz_model(-1.0);
+        let mut params = QuantumGeometryParams::new(
+            [31, 31],
+            DirectionPair::new([1.0, 0.0], [0.0, 1.0]),
+            array![0.0],
+        );
+        params.broadening = 0.1;
+        let direct = model.quantum_geometry(&params).unwrap();
+
+        params.integration = QuantumGeometryIntegration::Simplex;
+        let simplex = model.quantum_geometry(&params).unwrap();
+        assert!(simplex.diagnostics.is_some());
+        assert!((direct.metric[0] - simplex.metric[0]).abs() < 5e-3);
+        assert!((direct.berry_curvature[0] - simplex.berry_curvature[0]).abs() < 5e-3);
     }
 }

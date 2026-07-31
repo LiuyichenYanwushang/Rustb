@@ -35,35 +35,28 @@ fn main() {
     model.show_band(&path, &label, nk, "examples/chern_alter");
 
     //画一下贝利曲率的分布
-    let dir_1 = arr1(&[1.0, 0.0]);
-    let dir_2 = arr1(&[0.0, 1.0]);
-    let dir_3 = arr1(&[0.0, 1.0]);
     let T = 100.0;
-    let nk: usize = 1000;
-    let kmesh = arr1(&[nk, nk]);
-    let kvec = gen_kmesh(&kmesh).unwrap();
-    let lat_inv = model.lat.inv().unwrap();
-    let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
-    let kvec = kvec.reversed_axes();
-    let (berry_curv, band) =
-        model.berry_curvature_dipole_n(&kvec, &dir_1, &dir_2, &dir_3, 0.0, None, 1e-3);
-    ///////////////////////////////////////////
-    let beta = 1.0 / T / (8.617e-5);
-    let f: Array2<f64> = band.clone().map(|x| 1.0 / ((beta * x).exp() + 1.0));
-    let f = beta * &f * (1.0 - &f);
-    println!("{:?}", berry_curv.shape());
-    let berry_curv = (berry_curv.clone() * f).sum_axis(Axis(1));
-    let data = berry_curv.into_shape((nk, nk)).unwrap();
-    draw_heatmap(&data, "./examples/chern_alter/nonlinear.pdf");
-
-    //画一下贝利曲率的分布
     let nk: usize = 1000;
     let kmesh = arr1(&[nk, nk]);
     let kvec = gen_kmesh(&kmesh).unwrap();
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let berry_curv = model.berry_curvature(&kvec, &dir_1, &dir_2, T, 0.0, None, 1e-3);
+    let berry_params = BerryCurvatureParams {
+        directions: DirectionPair::new([1.0, 0.0], [0.0, 1.0]),
+        current: CurrentOperator::Charge,
+        broadening: 1e-3,
+    };
+    let berry_curv = model
+        .occupied_berry_curvature_on(
+            &kvec,
+            &berry_params,
+            0.0,
+            Occupation::FermiDirac {
+                temperature_kelvin: T,
+            },
+        )
+        .unwrap();
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data.map(|x| {
@@ -76,8 +69,12 @@ fn main() {
         }),
         "./examples/chern_alter/heat_map.pdf",
     );
+    let hall_params =
+        HallConductivityParams::at_mu([nk, nk], DirectionPair::new([1.0, 0.0], [0.0, 1.0]), 0.0);
     let conductivity = model
-        .Hall_conductivity(&kmesh, &dir_1, &dir_2, 0.0, 0.0, None, 1e-3)
+        .hall_conductivity(&hall_params)
+        .unwrap()
+        .single()
         .unwrap();
     println!("{}", conductivity / (2.0 * PI));
 
@@ -86,11 +83,21 @@ fn main() {
     let E_n = 2000;
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let sigma: Array1<f64> = model
-        .Nonlinear_Hall_conductivity_Extrinsic(
-            &kmesh, &dir_1, &dir_2, &dir_3, &mu, T, og, None, 1e-5,
-        )
-        .unwrap();
+    let mut extrinsic_params = ExtrinsicNonlinearHallParams::new(
+        [nk, nk],
+        NonlinearHallDirections::new([1.0, 0.0], [0.0, 1.0], [0.0, 1.0]),
+        mu.clone(),
+        Occupation::FermiDirac {
+            temperature_kelvin: T,
+        },
+    );
+    extrinsic_params.frequency = og;
+    extrinsic_params.broadening = 1e-5;
+    extrinsic_params.field_symmetry = FieldSymmetry::Ordered;
+    let sigma = model
+        .extrinsic_nonlinear_hall(&extrinsic_params)
+        .unwrap()
+        .conductivity;
     //开始绘制非线性电导
     let mut fg = Figure::new();
     let x: Vec<f64> = mu.to_vec();
@@ -109,9 +116,18 @@ fn main() {
     let E_n = 2000;
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let sigma: Array1<f64> = model
-        .Nonlinear_Hall_conductivity_Intrinsic(&kmesh, &dir_1, &dir_2, &dir_3, &mu, T)
-        .unwrap();
+    let intrinsic_params = IntrinsicNonlinearHallParams::new(
+        [nk, nk],
+        NonlinearHallDirections::new([1.0, 0.0], [0.0, 1.0], [0.0, 1.0]),
+        mu.clone(),
+        Occupation::FermiDirac {
+            temperature_kelvin: T,
+        },
+    );
+    let sigma = model
+        .intrinsic_nonlinear_hall(&intrinsic_params)
+        .unwrap()
+        .conductivity;
     //开始绘制非线性电导
     let mut fg = Figure::new();
     let x: Vec<f64> = mu.to_vec();

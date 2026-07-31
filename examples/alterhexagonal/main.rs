@@ -78,7 +78,14 @@ fn main() {
             //println!("{}",mu);
             //plot!(E,dos,"examples/alterhexagonal/dos.pdf");
 
-            let conductivity = model.Hall_conductivity(&kmesh, &dir_1, &dir_2, mu, 0.0, None, 1e-3);
+            let hall_params = HallConductivityParams::at_mu(
+                [kmesh[0], kmesh[1]],
+                DirectionPair::new([1.0, 0.0], [0.0, 1.0]),
+                mu,
+            );
+            let conductivity = model
+                .hall_conductivity(&hall_params)
+                .map(|result| result.single().unwrap());
             /*
             println!("{},{}",mu,conductivity/(2.0*PI));
             if (conductivity/2.0/PI-1.0).abs()<1e-2{
@@ -91,30 +98,6 @@ fn main() {
         }
     }
     draw_heatmap(&use_conductivity, "./examples/alterhexagonal/heat_map1.pdf");
-
-    /*
-    let E_min=-1.0;
-    let E_max=1.0;
-    let E_n=2000;
-    let og=0.0;
-    let mu=Array1::linspace(E_min,E_max,E_n);
-    let eta=1e-5;
-    let conductivity=model.Hall_conductivity_mu(&kmesh,&dir_1,&dir_2,&mu, T, None, eta);
-    let mut file=File::create("conductivity.dat").expect("Unable to BAND.dat");
-    for i in 0..E_n{
-        let mut s = String::new();
-        let aa= format!("{:.6}", mu[[i]]);
-        s.push_str(&aa);
-        if conductivity[[i]]>=0.0 {
-            s.push_str("     ");
-        }else{
-            s.push_str("    ");
-        }
-        let aa= format!("{:.6}", conductivity[[i]]);
-        s.push_str(&aa);
-        writeln!(file,"{}",s).expect("Can't write");
-    }
-    */
 }
 
 fn gen_model(

@@ -30,11 +30,11 @@ solve_onek/eigh/spinful(4sta)
                         time:   [1.9874 µs 1.9999 µs 2.0132 µs]
 solve_band_all_parallel/small_101x101
                         time:   [2.6009 ms 2.6424 ms 2.6869 ms]
-berry_curvature_onek/scalar/small(2orb)
+occupied_berry_curvature_at/scalar/small(2orb)
                         time:   [4.2113 µs 4.2590 µs 4.3133 µs]
-berry_curvature_onek/scalar/spinful(4sta)
+occupied_berry_curvature_at/scalar/spinful(4sta)
                         time:   [5.7434 µs 5.7986 µs 5.8761 µs]
-berry_curvature_onek/spin_z/spinful(4sta)
+occupied_berry_curvature_at/spin_z/spinful(4sta)
                         time:   [6.7623 µs 6.7975 µs 6.8350 µs]
                         time:   [1.1556 ms 1.1786 ms 1.2041 ms]
 dos/small_51x51         time:   [3.4248 ms 3.4960 ms 3.5712 ms]
