@@ -115,9 +115,7 @@ pub use config::{
 };
 pub use linear::HallConductivityResult;
 pub use nonlinear::NonlinearHallResult;
-pub use optical::{
-    OpticalConductivityParams, OpticalConductivityResult, OpticalDirections, OpticalIntegration,
-};
+pub use optical::OpticalConductivityResult;
 pub use traits::{BandBerryCurvature, BerryCurvature};
 
 // Internal numerical machinery shared with crate-level tests and
