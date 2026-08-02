@@ -19,6 +19,18 @@ pub enum Integration {
     EnergyCut,
 }
 
+/// Whether the two external-field indices of the extrinsic nonlinear Hall
+/// response are explicitly symmetrized.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FieldSymmetry {
+    /// Return the ordered kernel `S[current, field_1; field_2]`.
+    Ordered,
+    /// Return `(S[current, field_1; field_2] +
+    /// S[current, field_2; field_1]) / 2`.
+    #[default]
+    Symmetrized,
+}
+
 /// Unified physical parameters for every response calculation.
 ///
 /// One structure is shared by `hall_conductivity`, `quantum_geometry`,
@@ -53,6 +65,9 @@ pub struct Parameters<const DIM: usize> {
     pub direction: Array2<f64>,
     /// Brillouin-zone integration algorithm.
     pub integration: Integration,
+    /// Ordering convention for the two field indices of the extrinsic
+    /// nonlinear Hall response. Ignored by all other methods.
+    pub field_symmetry: FieldSymmetry,
 }
 
 impl<const DIM: usize> Parameters<DIM> {
@@ -68,6 +83,7 @@ impl<const DIM: usize> Parameters<DIM> {
             spin: None,
             direction,
             integration: Integration::Direct,
+            field_symmetry: FieldSymmetry::Symmetrized,
         }
     }
 
@@ -140,11 +156,13 @@ impl<const DIM: usize> Parameters<DIM> {
     }
 
     /// Validate the fields read by every rank-three response method.
+    ///
+    /// `eta` is intentionally not validated here: the intrinsic nonlinear
+    /// Hall response never reads it.
     pub(crate) fn validate_rank3(&self) -> Result<()> {
         validate_k_mesh(&self.kmesh)?;
         validate_direction_matrix(&self.direction, 3, DIM)?;
         validate_chemical_potentials(&self.mu)?;
-        validate_broadening(self.eta)?;
         validate_temperature(&self.T)
     }
 }
@@ -171,7 +189,7 @@ pub(crate) fn parameters_occupation<const DIM: usize>(params: &Parameters<DIM>) 
     }
 }
 
-fn validate_temperature(values: &Array1<f64>) -> Result<()> {
+pub(crate) fn validate_temperature(values: &Array1<f64>) -> Result<()> {
     if values.is_empty() {
         return Err(TbError::InvalidResponseParameter {
             parameter: "T",

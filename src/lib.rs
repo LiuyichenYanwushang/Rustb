@@ -271,6 +271,7 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::response::config::direction_matrix;
     use gnuplot::{
         AutoOption, AxesCommon, Color, Figure, Fix, Font, LineStyle, Major, PointSymbol, Rotate,
         Solid, TextOffset,
@@ -306,16 +307,15 @@ mod tests {
             .expect("k-mesh must match the model dimension")
     }
 
-    fn thermal_occupation(temperature_kelvin: f64) -> Occupation {
-        if temperature_kelvin == 0.0 {
-            Occupation::ZeroTemperature
-        } else {
-            Occupation::FermiDirac { temperature_kelvin }
-        }
-    }
-
-    fn current_operator(spin: Option<SpinDirection>) -> CurrentOperator {
-        spin.map_or(CurrentOperator::Charge, CurrentOperator::Spin)
+    fn parameters_at_direction<const DIM: usize>(
+        k_mesh: [usize; DIM],
+        direction: Array2<f64>,
+        chemical_potentials: &Array1<f64>,
+        temperature_kelvin: f64,
+    ) -> Parameters<DIM> {
+        let mut params = Parameters::new(k_mesh, direction, chemical_potentials.clone());
+        params.T = array![temperature_kelvin];
+        params
     }
 
     fn hall_values<const SPIN: bool, const DIM: usize, R: RMatrixData>(
@@ -327,16 +327,19 @@ mod tests {
         temperature_kelvin: f64,
         spin: Option<SpinDirection>,
         broadening: f64,
-        integration: HallIntegration,
+        integration: Integration,
     ) -> Result<Array1<f64>> {
-        let mut params = HallConductivityParams::new(
+        let mut params = parameters_at_direction(
             fixed_k_mesh(k_mesh),
-            DirectionPair::new(fixed_direction(direction_a), fixed_direction(direction_b)),
-            chemical_potentials.clone(),
+            direction_matrix::<2, DIM>(&[
+                fixed_direction(direction_a),
+                fixed_direction(direction_b),
+            ]),
+            chemical_potentials,
+            temperature_kelvin,
         );
-        params.occupation = thermal_occupation(temperature_kelvin);
-        params.current = current_operator(spin);
-        params.broadening = broadening;
+        params.spin = spin;
+        params.eta = broadening;
         params.integration = integration;
         Ok(model.hall_conductivity(&params)?.conductivity)
     }
@@ -360,7 +363,7 @@ mod tests {
             temperature_kelvin,
             spin,
             broadening,
-            HallIntegration::Direct,
+            Integration::Direct,
         )?[0])
     }
 
@@ -372,14 +375,14 @@ mod tests {
         spin: Option<SpinDirection>,
         broadening: f64,
     ) -> BandBerryCurvature {
-        let params = BerryCurvatureParams {
-            directions: DirectionPair::new(
-                fixed_direction(direction_a),
-                fixed_direction(direction_b),
-            ),
-            current: current_operator(spin),
-            broadening,
-        };
+        let mut params = Parameters::rank2(
+            [1; DIM],
+            fixed_direction(direction_a),
+            fixed_direction(direction_b),
+            array![0.0],
+        );
+        params.spin = spin;
+        params.eta = broadening;
         model.berry_curvature_at(k, &params).unwrap()
     }
 
@@ -394,40 +397,36 @@ mod tests {
         spin: Option<SpinDirection>,
         broadening: f64,
     ) -> Array1<f64> {
-        let params = BerryCurvatureParams {
-            directions: DirectionPair::new(
-                fixed_direction(direction_a),
-                fixed_direction(direction_b),
-            ),
-            current: current_operator(spin),
-            broadening,
-        };
-        model
-            .occupied_berry_curvature_on(
-                k_points,
-                &params,
-                chemical_potential,
-                thermal_occupation(temperature_kelvin),
-            )
-            .unwrap()
+        let mut params = Parameters::rank2(
+            [1; DIM],
+            fixed_direction(direction_a),
+            fixed_direction(direction_b),
+            array![chemical_potential],
+        );
+        params.T = array![temperature_kelvin];
+        params.spin = spin;
+        params.eta = broadening;
+        model.occupied_berry_curvature_on(k_points, &params).unwrap()
     }
 
-    fn nonlinear_occupation(
+    /// Temperature for direct NLH tests with nominal zero temperature:
+    /// the old Fermi-smearing width `1/nk^(1/dim)` converted to the
+    /// equivalent Fermi-Dirac temperature `width / k_B`.
+    fn nonlinear_temperature(
         temperature_kelvin: f64,
         k_mesh: &Array1<usize>,
-        integration: NonlinearHallIntegration,
-    ) -> Occupation {
+        integration: Integration,
+    ) -> f64 {
         if temperature_kelvin > 0.0 {
-            return Occupation::FermiDirac { temperature_kelvin };
+            return temperature_kelvin;
         }
-        if integration == NonlinearHallIntegration::EnergyCut {
-            return Occupation::ZeroTemperature;
+        if integration == Integration::EnergyCut {
+            return 0.0;
         }
         let points_per_dimension = k_mesh.iter().product::<usize>() as f64;
         let points_per_dimension = points_per_dimension.powf(1.0 / k_mesh.len() as f64);
-        Occupation::FermiSmearing {
-            width: (1.0 / points_per_dimension).max(BOLTZMANN_CONSTANT_EV_PER_K),
-        }
+        let width = (1.0 / points_per_dimension).max(BOLTZMANN_CONSTANT_EV_PER_K);
+        width / BOLTZMANN_CONSTANT_EV_PER_K
     }
 
     fn intrinsic_nonlinear_values<const SPIN: bool, const DIM: usize, R: RMatrixData>(
@@ -438,18 +437,16 @@ mod tests {
         field_2: &Array1<f64>,
         chemical_potentials: &Array1<f64>,
         temperature_kelvin: f64,
-        integration: NonlinearHallIntegration,
+        integration: Integration,
     ) -> Result<Array1<f64>> {
-        let mut params = IntrinsicNonlinearHallParams::new(
+        let mut params = Parameters::rank3(
             fixed_k_mesh(k_mesh),
-            NonlinearHallDirections::new(
-                fixed_direction(current),
-                fixed_direction(field_1),
-                fixed_direction(field_2),
-            ),
+            fixed_direction(current),
+            fixed_direction(field_1),
+            fixed_direction(field_2),
             chemical_potentials.clone(),
-            nonlinear_occupation(temperature_kelvin, k_mesh, integration),
         );
+        params.T = array![nonlinear_temperature(temperature_kelvin, k_mesh, integration)];
         params.integration = integration;
         Ok(model.intrinsic_nonlinear_hall(&params)?.conductivity)
     }
@@ -466,22 +463,20 @@ mod tests {
         frequency: f64,
         spin: Option<SpinDirection>,
         broadening: f64,
-        integration: NonlinearHallIntegration,
+        integration: Integration,
         field_symmetry: FieldSymmetry,
     ) -> Result<Array1<f64>> {
-        let mut params = ExtrinsicNonlinearHallParams::new(
+        let mut params = Parameters::rank3(
             fixed_k_mesh(k_mesh),
-            NonlinearHallDirections::new(
-                fixed_direction(current),
-                fixed_direction(field_1),
-                fixed_direction(field_2),
-            ),
+            fixed_direction(current),
+            fixed_direction(field_1),
+            fixed_direction(field_2),
             chemical_potentials.clone(),
-            nonlinear_occupation(temperature_kelvin, k_mesh, integration),
         );
-        params.frequency = frequency;
-        params.current = current_operator(spin);
-        params.broadening = broadening;
+        params.T = array![nonlinear_temperature(temperature_kelvin, k_mesh, integration)];
+        params.omega = array![frequency];
+        params.spin = spin;
+        params.eta = broadening;
         params.integration = integration;
         params.field_symmetry = field_symmetry;
         Ok(model.extrinsic_nonlinear_hall(&params)?.conductivity)
@@ -693,7 +688,7 @@ mod tests {
             T,
             spin,
             eta,
-            HallIntegration::Direct,
+            Integration::Direct,
         )
         .unwrap()[0];
         assert!(
@@ -827,7 +822,7 @@ mod tests {
             T,
             spin,
             eta,
-            HallIntegration::Direct,
+            Integration::Direct,
         )
         .unwrap();
         let end = Instant::now(); // 结束计时
@@ -1240,7 +1235,7 @@ mod tests {
             og,
             None,
             1e-5,
-            NonlinearHallIntegration::Direct,
+            Integration::Direct,
             FieldSymmetry::Ordered,
         )
         .unwrap();
@@ -1655,7 +1650,7 @@ mod tests {
             og,
             None,
             1e-5,
-            NonlinearHallIntegration::Direct,
+            Integration::Direct,
             FieldSymmetry::Ordered,
         )
         .unwrap();
@@ -1683,7 +1678,7 @@ mod tests {
             &dir_3,
             &mu,
             T,
-            NonlinearHallIntegration::Direct,
+            Integration::Direct,
         )
         .unwrap();
         //开始绘制非线性电导
@@ -2223,7 +2218,7 @@ mod tests {
                 &dz,
                 &mu1,
                 300.0,
-                NonlinearHallIntegration::Direct,
+                Integration::Direct,
             )
             .is_ok()
         );
@@ -2299,7 +2294,7 @@ mod tests {
             &dz,
             &mu,
             T,
-            NonlinearHallIntegration::Direct,
+            Integration::Direct,
         )
         .unwrap();
         let ref_dn = intrinsic_nonlinear_values(
@@ -2310,7 +2305,7 @@ mod tests {
             &dz,
             &mu,
             T,
-            NonlinearHallIntegration::Direct,
+            Integration::Direct,
         )
         .unwrap();
         let sum = max_abs_1d(&(&ref_up + &ref_dn));
@@ -2340,7 +2335,7 @@ mod tests {
                 &dy,
                 &mu,
                 0.0,
-                NonlinearHallIntegration::Direct,
+                Integration::Direct,
             )
             .unwrap();
             let pk = max_abs_1d(&ref_val);
@@ -2482,7 +2477,7 @@ mod tests {
                 0.0,
                 None,
                 eta,
-                HallIntegration::Direct,
+                Integration::Direct,
             )
             .unwrap();
             let ec = hall_values(
@@ -2494,7 +2489,7 @@ mod tests {
                 0.0,
                 None,
                 eta,
-                HallIntegration::EnergyCut,
+                Integration::EnergyCut,
             )
             .unwrap();
             let max_abs = max_abs_diff_1d(&direct, &ec);
@@ -2525,7 +2520,7 @@ mod tests {
             0.0,
             None,
             eta,
-            HallIntegration::Direct,
+            Integration::Direct,
         )
         .unwrap();
         let d_ec = hall_values(
@@ -2537,7 +2532,7 @@ mod tests {
             0.0,
             None,
             eta,
-            HallIntegration::EnergyCut,
+            Integration::EnergyCut,
         )
         .unwrap();
         let tr_dir = hall_values(
@@ -2549,7 +2544,7 @@ mod tests {
             0.0,
             None,
             eta,
-            HallIntegration::Direct,
+            Integration::Direct,
         )
         .unwrap();
         let tr_ec = hall_values(
@@ -2561,7 +2556,7 @@ mod tests {
             0.0,
             None,
             eta,
-            HallIntegration::EnergyCut,
+            Integration::EnergyCut,
         )
         .unwrap();
 
@@ -2606,7 +2601,7 @@ mod tests {
             0.0,
             None,
             eta,
-            NonlinearHallIntegration::EnergyCut,
+            Integration::EnergyCut,
             FieldSymmetry::Ordered,
         )
         .unwrap();
@@ -2621,7 +2616,7 @@ mod tests {
             0.0,
             None,
             eta,
-            NonlinearHallIntegration::EnergyCut,
+            Integration::EnergyCut,
             FieldSymmetry::Ordered,
         )
         .unwrap();
@@ -2654,7 +2649,7 @@ mod tests {
             &dy,
             &mu,
             0.0,
-            NonlinearHallIntegration::Direct,
+            Integration::Direct,
         )
         .unwrap();
         let ec = intrinsic_nonlinear_values(
@@ -2665,7 +2660,7 @@ mod tests {
             &dy,
             &mu,
             0.0,
-            NonlinearHallIntegration::EnergyCut,
+            Integration::EnergyCut,
         )
         .unwrap();
         let max_abs = max_abs_diff_1d(&dir, &ec);
@@ -2816,7 +2811,7 @@ mod tests {
             &dy,
             &mu,
             0.0,
-            NonlinearHallIntegration::EnergyCut,
+            Integration::EnergyCut,
         )
         .unwrap();
         let max_val = ec.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
@@ -2842,7 +2837,7 @@ mod tests {
             &dy,
             &mu,
             0.0,
-            NonlinearHallIntegration::EnergyCut,
+            Integration::EnergyCut,
         )
         .unwrap();
         let ec_m = intrinsic_nonlinear_values(
@@ -2853,7 +2848,7 @@ mod tests {
             &dy,
             &mu,
             0.0,
-            NonlinearHallIntegration::EnergyCut,
+            Integration::EnergyCut,
         )
         .unwrap();
         let max_sum = ec_p
@@ -2888,7 +2883,7 @@ mod tests {
                     &dy,
                     &mu,
                     t,
-                    NonlinearHallIntegration::EnergyCut,
+                    Integration::EnergyCut,
                 )
                 .unwrap();
                 peaks[ti][j] = ec.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
@@ -2932,7 +2927,7 @@ mod tests {
             &dy,
             &mu,
             0.0,
-            NonlinearHallIntegration::EnergyCut,
+            Integration::EnergyCut,
         )
         .unwrap();
         let ec_m = intrinsic_nonlinear_values(
@@ -2943,7 +2938,7 @@ mod tests {
             &dy,
             &mu,
             0.0,
-            NonlinearHallIntegration::EnergyCut,
+            Integration::EnergyCut,
         )
         .unwrap();
         let max_sum = ec_p
@@ -2980,7 +2975,7 @@ mod tests {
                 &dy,
                 &mu,
                 100.0,
-                NonlinearHallIntegration::EnergyCut,
+                Integration::EnergyCut,
             )
             .unwrap();
             let peak = ec.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
@@ -3016,7 +3011,7 @@ mod tests {
                 0.0,
                 None,
                 eta,
-                HallIntegration::Direct,
+                Integration::Direct,
             )
             .unwrap();
             let ec = hall_values(
@@ -3028,7 +3023,7 @@ mod tests {
                 0.0,
                 None,
                 eta,
-                HallIntegration::EnergyCut,
+                Integration::EnergyCut,
             )
             .unwrap();
             let max_abs = max_abs_diff_1d(&direct, &ec);
@@ -3084,7 +3079,7 @@ mod tests {
                 0.0,
                 None,
                 eta,
-                HallIntegration::Direct,
+                Integration::Direct,
             )
             .unwrap();
             let ec = hall_values(
@@ -3096,7 +3091,7 @@ mod tests {
                 0.0,
                 None,
                 eta,
-                HallIntegration::EnergyCut,
+                Integration::EnergyCut,
             )
             .unwrap();
             let max_abs = max_abs_diff_1d(&direct, &ec);
@@ -3178,7 +3173,7 @@ mod tests {
                 &dy,
                 &mu,
                 0.0,
-                NonlinearHallIntegration::EnergyCut,
+                Integration::EnergyCut,
             )
             .unwrap();
             let direct = intrinsic_nonlinear_values(
@@ -3189,7 +3184,7 @@ mod tests {
                 &dy,
                 &mu,
                 0.0,
-                NonlinearHallIntegration::Direct,
+                Integration::Direct,
             )
             .unwrap();
             let max_abs = max_abs_diff_1d(&ec, &direct);
@@ -3213,7 +3208,7 @@ mod tests {
             &dy,
             &mu,
             0.0,
-            NonlinearHallIntegration::EnergyCut,
+            Integration::EnergyCut,
         )
         .unwrap();
         let peak = ec20.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
@@ -3248,7 +3243,7 @@ mod tests {
                 &dy,
                 &mu,
                 0.0,
-                NonlinearHallIntegration::EnergyCut,
+                Integration::EnergyCut,
             )
             .unwrap();
             let dn = intrinsic_nonlinear_values(
@@ -3259,7 +3254,7 @@ mod tests {
                 &dy,
                 &mu,
                 0.0,
-                NonlinearHallIntegration::EnergyCut,
+                Integration::EnergyCut,
             )
             .unwrap();
             let max_sum = up
@@ -3285,7 +3280,7 @@ mod tests {
             &dy,
             &mu,
             0.0,
-            NonlinearHallIntegration::EnergyCut,
+            Integration::EnergyCut,
         )
         .unwrap();
         let peak20 = up20.iter().fold(0.0f64, |a, &x| a.max(x.abs()));

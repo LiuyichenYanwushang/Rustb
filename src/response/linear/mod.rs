@@ -42,95 +42,13 @@ use crate::error::Result;
 use crate::thermodynamics::Occupation;
 
 use super::config::{
-    CurrentOperator, DirectionPair, mesh_array, validate_broadening, validate_chemical_potentials,
-    validate_k_mesh, validate_sorted,
+    Integration, Parameters, mesh_array, parameters_occupation, validate_sorted,
 };
 use super::energy_cut::{integrate_fermi_cut_2d, integrate_fermi_cut_3d};
 use super::kernel::quadrature_occupied_geometry_simplex;
 use super::tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
-use super::traits::{BerryCurvature, BerryCurvatureParams};
+use super::traits::BerryCurvature;
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
-
-/// Brillouin-zone integration used for Hall conductivity.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum HallIntegration {
-    /// Uniform k-mesh summation of band-resolved Berry curvature.
-    #[default]
-    Direct,
-    /// Simplex energy-cut integration, exact in the zero-temperature limit
-    /// for linearly interpolated energies and velocity kernels.
-    EnergyCut,
-}
-
-/// Complete configuration for anomalous or spin Hall conductivity.
-#[derive(Clone, Debug, PartialEq)]
-pub struct HallConductivityParams<const DIM: usize> {
-    /// Number of uniform samples along each reciprocal-lattice direction.
-    pub k_mesh: [usize; DIM],
-    /// Ordered Hall tensor directions.
-    pub directions: DirectionPair<DIM>,
-    /// Chemical potentials in eV.
-    pub chemical_potentials: Array1<f64>,
-    /// Electronic occupation or smearing convention.
-    pub occupation: Occupation,
-    /// Charge current or a selected spin-current polarization.
-    pub current: CurrentOperator,
-    /// Non-negative energy-denominator regularization in eV.
-    pub broadening: f64,
-    /// Brillouin-zone integration algorithm.
-    pub integration: HallIntegration,
-}
-
-impl<const DIM: usize> HallConductivityParams<DIM> {
-    /// Construct a zero-temperature charge-Hall calculation using direct
-    /// k-mesh summation and a `1e-3` eV denominator broadening.
-    pub fn new(
-        k_mesh: [usize; DIM],
-        directions: DirectionPair<DIM>,
-        chemical_potentials: Array1<f64>,
-    ) -> Self {
-        Self {
-            k_mesh,
-            directions,
-            chemical_potentials,
-            occupation: Occupation::ZeroTemperature,
-            current: CurrentOperator::Charge,
-            broadening: 1e-3,
-            integration: HallIntegration::Direct,
-        }
-    }
-
-    /// Convenience constructor for a single chemical potential.
-    pub fn at_mu(
-        k_mesh: [usize; DIM],
-        directions: DirectionPair<DIM>,
-        chemical_potential: f64,
-    ) -> Self {
-        Self::new(
-            k_mesh,
-            directions,
-            Array1::from_vec(vec![chemical_potential]),
-        )
-    }
-
-    fn validate(&self) -> Result<()> {
-        validate_k_mesh(&self.k_mesh)?;
-        self.directions.validate()?;
-        validate_chemical_potentials(&self.chemical_potentials)?;
-        self.occupation.validate()?;
-        validate_broadening(self.broadening)?;
-        if self.integration == HallIntegration::EnergyCut {
-            validate_sorted(&self.chemical_potentials, "chemical_potentials")?;
-            if DIM != 2 && DIM != 3 {
-                return Err(crate::TbError::InvalidDimension {
-                    dim: DIM,
-                    supported: vec![2, 3],
-                });
-            }
-        }
-        Ok(())
-    }
-}
 
 /// Hall conductivity evaluated on the requested chemical-potential grid.
 #[derive(Clone, Debug, PartialEq)]
@@ -142,7 +60,7 @@ pub struct HallConductivityResult {
 }
 
 impl HallConductivityResult {
-    /// Return the scalar value produced by [`HallConductivityParams::at_mu`].
+    /// Return the scalar value produced by [`Parameters::at_mu`].
     pub fn single(&self) -> Option<f64> {
         (self.conductivity.len() == 1).then(|| self.conductivity[0])
     }
@@ -234,42 +152,60 @@ pub(crate) fn integrate_occupied_geometry(
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
-    /// Evaluate charge or spin Hall conductivity using one coherent API.
+    /// Evaluate charge or spin Hall conductivity using the unified
+    /// [`Parameters`] configuration.
     ///
-    /// The returned array has one value per chemical potential. Direct
+    /// Reads `kmesh`, `direction` (rank 2), `mu`, `T`, `eta` and `spin` from
+    /// the parameter set; `omega` and `field_symmetry` are ignored. The
+    /// returned array has one value per chemical potential. Direct
     /// integration reuses the band-resolved Berry curvature for the entire
     /// chemical-potential grid; energy-cut integration tracks bands between
     /// simplex vertices before integrating the occupied region.
     pub fn hall_conductivity(
         &self,
-        params: &HallConductivityParams<DIM>,
+        params: &Parameters<DIM>,
     ) -> Result<HallConductivityResult> {
-        params.validate()?;
-        let spin = params.current.spin_direction();
+        params.validate_rank2()?;
+        let spin = params.spin;
         if !SPIN && let Some(direction) = spin {
             return Err(crate::TbError::SpinNotAllowed(direction));
         }
+        match params.integration {
+            Integration::Direct | Integration::EnergyCut => {}
+            Integration::Simplex => {
+                return Err(crate::TbError::InvalidResponseParameter {
+                    parameter: "integration",
+                    message: "hall_conductivity supports Integration::Direct or EnergyCut, not Simplex".into(),
+                });
+            }
+        }
+        if params.integration == Integration::EnergyCut {
+            validate_sorted(&params.mu, "mu")?;
+            if DIM != 2 && DIM != 3 {
+                return Err(crate::TbError::InvalidDimension {
+                    dim: DIM,
+                    supported: vec![2, 3],
+                });
+            }
+        }
 
-        let k_mesh = mesh_array(&params.k_mesh);
+        let k_mesh = mesh_array(&params.kmesh);
         let determinant = self.lat.det()?;
-        let (dir_a, dir_b) = params.directions.as_arrays();
+        let dir_a = params.direction.row(0).to_owned();
+        let dir_b = params.direction.row(1).to_owned();
+        let occupation = parameters_occupation(params);
         let conductivity = match params.integration {
-            HallIntegration::Direct => {
+            Integration::Direct => {
                 let kvec: Array2<f64> = crate::kpoints::gen_kmesh(&k_mesh)?;
                 let nk = kvec.nrows();
-                let berry_params = BerryCurvatureParams {
-                    directions: params.directions,
-                    current: params.current,
-                    broadening: params.broadening,
-                };
                 let band_data: Vec<Result<_>> = kvec
                     .axis_iter(Axis(0))
                     .into_par_iter()
-                    .map(|k| self.berry_curvature_at(&k, &berry_params))
+                    .map(|k| self.berry_curvature_at(&k, params))
                     .collect();
                 let band_data = band_data.into_iter().collect::<Result<Vec<_>>>()?;
                 let values: Vec<f64> = params
-                    .chemical_potentials
+                    .mu
                     .par_iter()
                     .map(|&mu| {
                         let sum: f64 = band_data
@@ -280,7 +216,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                     .iter()
                                     .zip(&bands.energies)
                                     .map(|(&omega, &energy)| {
-                                        omega * params.occupation.value_unchecked(energy, mu)
+                                        omega * occupation.value_unchecked(energy, mu)
                                     })
                                     .sum::<f64>()
                             })
@@ -290,9 +226,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .collect();
                 Array1::from_vec(values)
             }
-            HallIntegration::EnergyCut => {
+            Integration::EnergyCut => {
                 let chemical_potentials =
-                    Array1::from_iter(params.chemical_potentials.iter().copied());
+                    Array1::from_iter(params.mu.iter().copied());
                 let kvec = crate::kpoints::gen_kmesh(&k_mesh)?;
                 let mut all_pts: Vec<VertexKernel> = (0..kvec.nrows())
                     .into_par_iter()
@@ -307,22 +243,22 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
-                global_band_track(&mut all_pts, &params.k_mesh);
-                let width = params.occupation.energy_width()?;
+                global_band_track(&mut all_pts, &params.kmesh);
+                let width = occupation.energy_width()?;
                 let sigma = match DIM {
                     2 => integrate_fermi_cut_2d(
                         &all_pts,
                         &k_mesh,
                         &chemical_potentials,
                         width,
-                        params.broadening,
+                        params.eta,
                     ),
                     3 => integrate_fermi_cut_3d(
                         &all_pts,
                         &k_mesh,
                         &chemical_potentials,
                         width,
-                        params.broadening,
+                        params.eta,
                     ),
                     _ => {
                         return Err(crate::TbError::InvalidDimension {
@@ -333,10 +269,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 };
                 sigma / determinant
             }
+            Integration::Simplex => unreachable!("rejected during validation"),
         };
 
         Ok(HallConductivityResult {
-            chemical_potentials: params.chemical_potentials.clone(),
+            chemical_potentials: params.mu.clone(),
             conductivity,
         })
     }

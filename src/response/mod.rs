@@ -109,16 +109,16 @@ mod tracking;
 mod types;
 
 // Stable high-level response API.
-pub use config::{CurrentOperator, DirectionPair, Integration, IntegrationDiagnostics, Parameters};
-pub use linear::{HallConductivityParams, HallConductivityResult, HallIntegration};
-pub use nonlinear::{
-    ExtrinsicNonlinearHallParams, FieldSymmetry, IntrinsicNonlinearHallParams,
-    NonlinearHallDirections, NonlinearHallIntegration, NonlinearHallResult,
+pub use config::{
+    CurrentOperator, DirectionPair, FieldSymmetry, Integration, IntegrationDiagnostics,
+    Parameters,
 };
+pub use linear::HallConductivityResult;
+pub use nonlinear::NonlinearHallResult;
 pub use optical::{
     OpticalConductivityParams, OpticalConductivityResult, OpticalDirections, OpticalIntegration,
 };
-pub use traits::{BandBerryCurvature, BerryCurvature, BerryCurvatureParams};
+pub use traits::{BandBerryCurvature, BerryCurvature};
 
 // Internal numerical machinery shared with crate-level tests and
 // `quantum_geometry`; it is deliberately not part of the public API.
