@@ -98,7 +98,59 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry<DIM>
         }
         crate::response::config::validate_direction_matrix(&params.direction, 2, DIM)?;
         crate::response::config::validate_broadening(params.eta)?;
+        self.quantum_geometry_at_impl(k, params)
+    }
 
+    fn quantum_geometry_on<S: Data<Elem = f64> + Sync>(
+        &self,
+        k_points: &ArrayBase<S, Ix2>,
+        params: &Parameters<DIM>,
+    ) -> Result<QuantumGeometryMap> {
+        if k_points.ncols() != DIM {
+            return Err(TbError::DimensionMismatch {
+                context: "quantum geometry k-points".into(),
+                expected: DIM,
+                found: k_points.ncols(),
+            });
+        }
+        // Validate once up front, then reuse the unvalidated kernel per k-point.
+        crate::response::config::validate_direction_matrix(&params.direction, 2, DIM)?;
+        crate::response::config::validate_broadening(params.eta)?;
+        let rows: Vec<Result<BandQuantumGeometry>> = k_points
+            .axis_iter(Axis(0))
+            .into_par_iter()
+            .map(|k| self.quantum_geometry_at_impl(&k, params))
+            .collect();
+        let rows: Vec<BandQuantumGeometry> = rows.into_iter().collect::<Result<_>>()?;
+        let number_of_k_points = rows.len();
+        let mut metric = Array2::<f64>::zeros((number_of_k_points, self.nsta()));
+        let mut berry_curvature = Array2::<f64>::zeros((number_of_k_points, self.nsta()));
+        let mut energies = Array2::<f64>::zeros((number_of_k_points, self.nsta()));
+        for (index, row) in rows.into_iter().enumerate() {
+            metric.row_mut(index).assign(&row.metric);
+            berry_curvature.row_mut(index).assign(&row.berry_curvature);
+            energies.row_mut(index).assign(&row.energies);
+        }
+        Ok(QuantumGeometryMap {
+            metric,
+            berry_curvature,
+            energies,
+        })
+    }
+}
+
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    /// Band-resolved quantum-geometry kernel without input validation.
+    ///
+    /// Callers must have already validated `direction` (rank 2) and `eta`.
+    /// The high-level entry point and `quantum_geometry_on` validate once and
+    /// then reuse this per k-point; the public trait method is an independent
+    /// boundary and validates before delegating here.
+    pub(crate) fn quantum_geometry_at_impl<S: Data<Elem = f64>>(
+        &self,
+        k: &ArrayBase<S, Ix1>,
+        params: &Parameters<DIM>,
+    ) -> Result<BandQuantumGeometry> {
         let (projected_velocity, hamiltonian) =
             self.gen_v_projected(k, Gauge::Atom, &params.direction);
         let (energies, eigenvectors) = hamiltonian.eigh(UPLO::Lower)?;
@@ -134,42 +186,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry<DIM>
         })
     }
 
-    fn quantum_geometry_on<S: Data<Elem = f64> + Sync>(
-        &self,
-        k_points: &ArrayBase<S, Ix2>,
-        params: &Parameters<DIM>,
-    ) -> Result<QuantumGeometryMap> {
-        if k_points.ncols() != DIM {
-            return Err(TbError::DimensionMismatch {
-                context: "quantum geometry k-points".into(),
-                expected: DIM,
-                found: k_points.ncols(),
-            });
-        }
-        let rows: Vec<Result<BandQuantumGeometry>> = k_points
-            .axis_iter(Axis(0))
-            .into_par_iter()
-            .map(|k| self.quantum_geometry_at(&k, params))
-            .collect();
-        let rows: Vec<BandQuantumGeometry> = rows.into_iter().collect::<Result<_>>()?;
-        let number_of_k_points = rows.len();
-        let mut metric = Array2::<f64>::zeros((number_of_k_points, self.nsta()));
-        let mut berry_curvature = Array2::<f64>::zeros((number_of_k_points, self.nsta()));
-        let mut energies = Array2::<f64>::zeros((number_of_k_points, self.nsta()));
-        for (index, row) in rows.into_iter().enumerate() {
-            metric.row_mut(index).assign(&row.metric);
-            berry_curvature.row_mut(index).assign(&row.berry_curvature);
-            energies.row_mut(index).assign(&row.energies);
-        }
-        Ok(QuantumGeometryMap {
-            metric,
-            berry_curvature,
-            energies,
-        })
-    }
-}
-
-impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Integrate occupation-weighted quantum geometry over the Brillouin zone.
     ///
     /// Reads `kmesh`, `direction` (rank 2), `mu`, `T` and `eta` from the

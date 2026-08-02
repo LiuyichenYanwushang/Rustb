@@ -195,10 +195,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             Integration::Direct => {
                 let kvec: Array2<f64> = crate::kpoints::gen_kmesh(&k_mesh)?;
                 let nk = kvec.nrows();
+                // Validation already happened at the entry point; reuse the
+                // unvalidated kernel instead of re-validating per k-point.
                 let band_data: Vec<Result<_>> = kvec
                     .axis_iter(Axis(0))
                     .into_par_iter()
-                    .map(|k| self.berry_curvature_at(&k, params))
+                    .map(|k| self.berry_curvature_at_impl(&k, params))
                     .collect();
                 let band_data = band_data.into_iter().collect::<Result<Vec<_>>>()?;
                 let values: Vec<f64> = params
