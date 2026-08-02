@@ -245,7 +245,7 @@ fn bench_solve_band_parallel(c: &mut Criterion) {
 fn bench_occupied_berry_curvature_at(c: &mut Criterion) {
     let mut group = c.benchmark_group("occupied_berry_curvature_at");
     let kvec = arr1(&[0.3, 0.5]);
-    let charge_params = BerryCurvatureParams::new(DirectionPair::new([1.0, 0.0], [0.0, 1.0]));
+    let charge_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
 
     for (name, build) in SPINLESS_CURV.iter() {
         let m = build();
@@ -254,12 +254,7 @@ fn bench_occupied_berry_curvature_at(c: &mut Criterion) {
             &(&m, &kvec),
             |b, (m, kv)| {
                 b.iter(|| {
-                    m.occupied_berry_curvature_at(
-                        black_box(kv),
-                        black_box(&charge_params),
-                        0.0,
-                        Occupation::ZeroTemperature,
-                    )
+                    m.occupied_berry_curvature_at(black_box(kv), black_box(&charge_params))
                 })
             },
         );
@@ -273,28 +268,18 @@ fn bench_occupied_berry_curvature_at(c: &mut Criterion) {
             &(&m, &kvec),
             |b, (m, kv)| {
                 b.iter(|| {
-                    m.occupied_berry_curvature_at(
-                        black_box(kv),
-                        black_box(&charge_params),
-                        0.0,
-                        Occupation::ZeroTemperature,
-                    )
+                    m.occupied_berry_curvature_at(black_box(kv), black_box(&charge_params))
                 })
             },
         );
         let mut spin_params = charge_params;
-        spin_params.current = CurrentOperator::Spin(SpinDirection::Z);
+        spin_params.spin = Some(SpinDirection::Z);
         group.bench_with_input(
             BenchmarkId::new("spin_z", name),
             &(&m, &kvec),
             |b, (m, kv)| {
                 b.iter(|| {
-                    m.occupied_berry_curvature_at(
-                        black_box(kv),
-                        black_box(&spin_params),
-                        0.0,
-                        Occupation::ZeroTemperature,
-                    )
+                    m.occupied_berry_curvature_at(black_box(kv), black_box(&spin_params))
                 })
             },
         );
@@ -306,8 +291,7 @@ fn bench_hall_conductivity(c: &mut Criterion) {
     let mut group = c.benchmark_group("hall_conductivity");
     let model = build_small();
     let nk = 21;
-    let params =
-        HallConductivityParams::at_mu([nk, nk], DirectionPair::new([1.0, 0.0], [0.0, 1.0]), 0.0);
+    let params = Parameters::rank2([nk, nk], [1.0, 0.0], [0.0, 1.0], array![0.0]);
 
     group.bench_function("small_21x21", |b| {
         b.iter(|| model.hall_conductivity(black_box(&params)).unwrap())
@@ -444,10 +428,9 @@ fn bench_ahc_ec_2d(c: &mut Criterion) {
 
     for &nk in &[31, 51] {
         let mu = Array1::linspace(-3.0, 3.0, 51);
-        let mut params =
-            HallConductivityParams::new([nk, nk], DirectionPair::new([1.0, 0.0], [0.0, 1.0]), mu);
-        params.broadening = eta;
-        params.integration = HallIntegration::EnergyCut;
+        let mut params = Parameters::rank2([nk, nk], [1.0, 0.0], [0.0, 1.0], mu);
+        params.eta = eta;
+        params.integration = Integration::EnergyCut;
         group.bench_function(BenchmarkId::new("nk", nk), |b| {
             b.iter(|| {
                 let r = black_box(model.hall_conductivity(black_box(&params)).unwrap());
@@ -463,13 +446,8 @@ fn bench_intrinsic_ec_2d(c: &mut Criterion) {
     let model = build_haldane_2d();
     for &nk in &[21, 31] {
         let mu = Array1::linspace(-3.0, 3.0, 31);
-        let mut params = IntrinsicNonlinearHallParams::new(
-            [nk, nk],
-            NonlinearHallDirections::new([1.0, 0.0], [1.0, 0.0], [0.0, 1.0]),
-            mu,
-            Occupation::ZeroTemperature,
-        );
-        params.integration = NonlinearHallIntegration::EnergyCut;
+        let mut params = Parameters::rank3([nk, nk], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0], mu);
+        params.integration = Integration::EnergyCut;
         group.bench_function(BenchmarkId::new("nk", nk), |b| {
             b.iter(|| {
                 let r = black_box(model.intrinsic_nonlinear_hall(black_box(&params)).unwrap());

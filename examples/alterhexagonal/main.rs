@@ -78,9 +78,9 @@ fn main() {
             //println!("{}",mu);
             //plot!(E,dos,"examples/alterhexagonal/dos.pdf");
 
-            let hall_params = HallConductivityParams::at_mu(
+            let hall_params = Parameters::at_mu(
                 [kmesh[0], kmesh[1]],
-                DirectionPair::new([1.0, 0.0], [0.0, 1.0]),
+                Array2::from_shape_vec((2, 2), vec![1.0, 0.0, 0.0, 1.0]).unwrap(),
                 mu,
             );
             let conductivity = model

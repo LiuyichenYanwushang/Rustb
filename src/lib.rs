@@ -2143,19 +2143,14 @@ mod tests {
         let field_2 = array![0.0, 0.0, 1.0];
         let k_mesh = array![12, 12, 12];
         let chemical_potentials = Array1::linspace(-1.0, 1.0, 21);
-        let occupation = Occupation::FermiDirac {
-            temperature_kelvin: 100.0,
-        };
-        let params = IntrinsicNonlinearHallParams::new(
+        let mut params = Parameters::rank3(
             [12, 12, 12],
-            NonlinearHallDirections::new(
-                fixed_direction(&current),
-                fixed_direction(&field_1),
-                fixed_direction(&field_2),
-            ),
+            fixed_direction(&current),
+            fixed_direction(&field_1),
+            fixed_direction(&field_2),
             chemical_potentials.clone(),
-            occupation,
         );
+        params.T = array![100.0];
         let public = model
             .intrinsic_nonlinear_hall(&params)
             .unwrap()
@@ -2164,6 +2159,9 @@ mod tests {
         let k_points = gen_kmesh(&k_mesh).unwrap();
         let (kernel, energies, _) =
             model.berry_connection_dipole(&k_points, &field_1, &field_2, &current, None);
+        let occupation = Occupation::FermiDirac {
+            temperature_kelvin: 100.0,
+        };
         let expected = chemical_potentials.mapv(|mu| {
             kernel
                 .iter()
@@ -2223,15 +2221,12 @@ mod tests {
             .is_ok()
         );
 
-        let zero_temperature = IntrinsicNonlinearHallParams::new(
+        let zero_temperature = Parameters::rank3(
             [4, 4, 4],
-            NonlinearHallDirections::new(
-                fixed_direction(&dx),
-                fixed_direction(&dy),
-                fixed_direction(&dz),
-            ),
+            fixed_direction(&dx),
+            fixed_direction(&dy),
+            fixed_direction(&dz),
             mu1,
-            Occupation::ZeroTemperature,
         );
         assert!(model.intrinsic_nonlinear_hall(&zero_temperature).is_err());
     }

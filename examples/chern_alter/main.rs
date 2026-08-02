@@ -42,21 +42,9 @@ fn main() {
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let berry_params = BerryCurvatureParams {
-        directions: DirectionPair::new([1.0, 0.0], [0.0, 1.0]),
-        current: CurrentOperator::Charge,
-        broadening: 1e-3,
-    };
-    let berry_curv = model
-        .occupied_berry_curvature_on(
-            &kvec,
-            &berry_params,
-            0.0,
-            Occupation::FermiDirac {
-                temperature_kelvin: T,
-            },
-        )
-        .unwrap();
+    let mut berry_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
+    berry_params.T = array![T];
+    let berry_curv = model.occupied_berry_curvature_on(&kvec, &berry_params).unwrap();
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data.map(|x| {
@@ -69,8 +57,7 @@ fn main() {
         }),
         "./examples/chern_alter/heat_map.pdf",
     );
-    let hall_params =
-        HallConductivityParams::at_mu([nk, nk], DirectionPair::new([1.0, 0.0], [0.0, 1.0]), 0.0);
+    let hall_params = Parameters::rank2([nk, nk], [1.0, 0.0], [0.0, 1.0], array![0.0]);
     let conductivity = model
         .hall_conductivity(&hall_params)
         .unwrap()
@@ -83,16 +70,16 @@ fn main() {
     let E_n = 2000;
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let mut extrinsic_params = ExtrinsicNonlinearHallParams::new(
+    let mut extrinsic_params = Parameters::rank3(
         [nk, nk],
-        NonlinearHallDirections::new([1.0, 0.0], [0.0, 1.0], [0.0, 1.0]),
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [0.0, 1.0],
         mu.clone(),
-        Occupation::FermiDirac {
-            temperature_kelvin: T,
-        },
     );
-    extrinsic_params.frequency = og;
-    extrinsic_params.broadening = 1e-5;
+    extrinsic_params.T = array![T];
+    extrinsic_params.omega = array![og];
+    extrinsic_params.eta = 1e-5;
     extrinsic_params.field_symmetry = FieldSymmetry::Ordered;
     let sigma = model
         .extrinsic_nonlinear_hall(&extrinsic_params)
@@ -114,16 +101,15 @@ fn main() {
     let E_min = -1.0;
     let E_max = 1.0;
     let E_n = 2000;
-    let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let intrinsic_params = IntrinsicNonlinearHallParams::new(
+    let mut intrinsic_params = Parameters::rank3(
         [nk, nk],
-        NonlinearHallDirections::new([1.0, 0.0], [0.0, 1.0], [0.0, 1.0]),
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [0.0, 1.0],
         mu.clone(),
-        Occupation::FermiDirac {
-            temperature_kelvin: T,
-        },
     );
+    intrinsic_params.T = array![T];
     let sigma = model
         .intrinsic_nonlinear_hall(&intrinsic_params)
         .unwrap()

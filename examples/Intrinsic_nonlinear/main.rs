@@ -36,14 +36,8 @@ fn main() {
     let E_n = 2000;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 30.0;
-    let params = IntrinsicNonlinearHallParams::new(
-        [nk, nk],
-        NonlinearHallDirections::new([1.0, 0.0], [0.0, 1.0], [0.0, 1.0]),
-        mu.clone(),
-        Occupation::FermiDirac {
-            temperature_kelvin: T,
-        },
-    );
+    let mut params = Parameters::rank3([nk, nk], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], mu.clone());
+    params.T = array![T];
     let sigma = model
         .intrinsic_nonlinear_hall(&params)
         .unwrap()

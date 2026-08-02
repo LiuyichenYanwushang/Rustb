@@ -31,16 +31,16 @@ fn main() {
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 5.0;
-    let mut response = ExtrinsicNonlinearHallParams::new(
+    let mut response = Parameters::rank3(
         [nk, nk],
-        NonlinearHallDirections::new([0.0, 1.0], [1.0, 0.0], [1.0, 0.0]),
+        [0.0, 1.0],
+        [1.0, 0.0],
+        [1.0, 0.0],
         mu.clone(),
-        Occupation::FermiDirac {
-            temperature_kelvin: T,
-        },
     );
-    response.frequency = og;
-    response.broadening = 1e-5;
+    response.T = array![T];
+    response.omega = array![og];
+    response.eta = 1e-5;
     response.field_symmetry = FieldSymmetry::Ordered;
     let sigma = model
         .extrinsic_nonlinear_hall(&response)
@@ -74,16 +74,16 @@ fn main() {
     let mut omega = Array1::<f64>::zeros(E_n);
     for (i, t0) in t.iter().enumerate() {
         let model = gen_model(*t0, v, ap, eta, m);
-        let mut response = ExtrinsicNonlinearHallParams::new(
+        let mut response = Parameters::rank3(
             [nk, nk],
-            NonlinearHallDirections::new([0.0, 1.0], [1.0, 0.0], [1.0, 0.0]),
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
             mu.clone(),
-            Occupation::FermiDirac {
-                temperature_kelvin: T,
-            },
         );
-        response.frequency = og;
-        response.broadening = 1e-5;
+        response.T = array![T];
+        response.omega = array![og];
+        response.eta = 1e-5;
         response.field_symmetry = FieldSymmetry::Ordered;
         let sigma = model
             .extrinsic_nonlinear_hall(&response)
