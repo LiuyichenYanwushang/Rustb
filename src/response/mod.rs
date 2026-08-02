@@ -109,7 +109,7 @@ mod tracking;
 mod types;
 
 // Stable high-level response API.
-pub use config::{CurrentOperator, DirectionPair, IntegrationDiagnostics};
+pub use config::{CurrentOperator, DirectionPair, Integration, IntegrationDiagnostics, Parameters};
 pub use linear::{HallConductivityParams, HallConductivityResult, HallIntegration};
 pub use nonlinear::{
     ExtrinsicNonlinearHallParams, FieldSymmetry, IntrinsicNonlinearHallParams,
