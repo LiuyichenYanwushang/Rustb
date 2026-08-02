@@ -71,23 +71,17 @@
 //! use Rustb::*;
 //!
 //! # fn calculate(model: &Model<false, 2>) -> Result<()> {
-//! let xy = DirectionPair::new([1.0, 0.0], [0.0, 1.0]);
 //! let chemical_potentials = Array1::linspace(-1.0, 1.0, 201);
 //!
-//! let mut hall = HallConductivityParams::new([101, 101], xy, chemical_potentials);
-//! hall.occupation = Occupation::FermiDirac {
-//!     temperature_kelvin: 20.0,
-//! };
-//! hall.integration = HallIntegration::EnergyCut;
+//! let mut hall = Parameters::rank2([101, 101], [1.0, 0.0], [0.0, 1.0], chemical_potentials)
+//!     .with_temperature(20.0);
+//! hall.integration = Integration::EnergyCut;
 //! let hall_result = model.hall_conductivity(&hall)?;
 //!
-//! let mut optical = OpticalConductivityParams::new(
-//!     [101, 101],
-//!     xy,
-//!     Array1::linspace(0.0, 4.0, 401),
-//!     0.0,
-//! );
-//! optical.integration = OpticalIntegration::Simplex;
+//! let mut optical = Parameters::rank2([101, 101], [1.0, 0.0], [0.0, 1.0], Array1::zeros(1))
+//!     .with_frequency(0.0);
+//! optical.omega = Array1::linspace(0.0, 4.0, 401);
+//! optical.integration = Integration::Simplex;
 //! let optical_result = model.optical_conductivity(&optical)?;
 //! # let _ = (hall_result, optical_result);
 //! # Ok(())
@@ -109,10 +103,7 @@ mod tracking;
 mod types;
 
 // Stable high-level response API.
-pub use config::{
-    CurrentOperator, DirectionPair, FieldSymmetry, Integration, IntegrationDiagnostics,
-    Parameters,
-};
+pub use config::{FieldSymmetry, Integration, IntegrationDiagnostics, Parameters};
 pub use linear::HallConductivityResult;
 pub use nonlinear::NonlinearHallResult;
 pub use optical::OpticalConductivityResult;
