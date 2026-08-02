@@ -10,7 +10,7 @@
 //!
 //! [`QuantumGeometry`] exposes reusable band-resolved kernels. The high-level
 //! [`Model::quantum_geometry`] method performs the Brillouin-zone integration
-//! from one [`QuantumGeometryParams`] value.
+//! from one [`Parameters`] value.
 
 use ndarray::Data;
 use ndarray::prelude::*;

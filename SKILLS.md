@@ -220,14 +220,26 @@ For custom non-collinear seeds, use
 
 ## 4. Velocity, response, and quantum geometry
 
-High-level response calculations follow one pattern:
+Every high-level response calculation shares **one** const-generic parameter
+structure, `Parameters<DIM>`:
 
-1. Build a const-generic parameter structure.
-2. Choose an `Occupation`, current operator, and integration enum explicitly.
-3. Call one model method and read a named result structure.
+| Field | Meaning | Ignored by |
+|-------|---------|-----------|
+| `T` | Temperature in kelvin (`T[0] == 0.0` = zero temperature) | `berry_curvature_at` |
+| `mu` | Chemical potential(s) in eV (single value = 1-element array) | `berry_curvature_at` |
+| `eta` | Denominator broadening in eV | `intrinsic_nonlinear_hall` |
+| `kmesh` | Uniform k-mesh `[usize; DIM]` | per-k-point trait methods |
+| `omega` | Frequency(ies) in eV (optical scans; others use `omega[0]`) | hall, quantum geometry |
+| `spin` | `None` = charge current, `Some(dir)` = spin current | quantum geometry, optical, intrinsic |
+| `direction` | `Array2<f64>` with shape `(rank, DIM)` — rank 2 for Hall / geometry / optical, rank 3 `(current, field_1, field_2)` for nonlinear | — |
+| `integration` | `Integration::Direct` / `Simplex` / `EnergyCut` | per-k-point trait methods |
+| `field_symmetry` | `FieldSymmetry` for extrinsic NLH only | all other methods |
 
-Directions are `[f64; DIM]`, so a direction/model dimension mismatch is a
-compile-time error.
+Fields a method does not need are simply ignored.
+
+Build parameters with `Parameters::new`, `at_mu`, `rank2`, or `rank3`, then
+tune fields directly or via the builder helpers `with_temperature`,
+`with_spin`, `with_frequency`, and `with_integration`.
 
 ### Velocity operators
 
@@ -243,109 +255,94 @@ let (projected_velocity, h_k) =
 `gen_v` returns an array with shape `(DIM, nsta, nsta)`.
 `gen_v_projected` returns one operator for each row of `directions`.
 
-### Occupations
+### Temperature and occupation
+
+`T` selects the electronic occupation: `0.0` is the exact zero-temperature
+step function, `T > 0` is a Fermi-Dirac distribution at that temperature.
 
 ```rust
-let zero_temperature = Occupation::ZeroTemperature;
-let physical_temperature = Occupation::FermiDirac {
-    temperature_kelvin: 30.0,
-};
-let metallic_smearing = Occupation::FermiSmearing { width: 0.01 };
+let zero_temperature = array![0.0];
+let physical_temperature = array![30.0];
 ```
 
-Use a finite thermal or smearing width for direct Fermi-surface calculations
-that contain `-df/dE`. Energy-cut algorithms can represent the exact
-zero-temperature delta function.
+Use a finite temperature for direct Fermi-surface calculations that contain
+`-df/dE`. Energy-cut algorithms can represent the exact zero-temperature
+delta function.
 
 ### Berry curvature
 
 ```rust
-let xy = DirectionPair::new([1.0, 0.0], [0.0, 1.0]);
-let berry_params = BerryCurvatureParams {
-    directions: xy,
-    current: CurrentOperator::Charge,
-    broadening: 1e-3,
-};
+let berry_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
 let k = arr1(&[0.2, 0.3]);
 
 let bands = model.berry_curvature_at(&k, &berry_params)?;
-let occupied = model.occupied_berry_curvature_at(
-    &k,
-    &berry_params,
-    0.0,
-    Occupation::ZeroTemperature,
-)?;
+let occupied = model.occupied_berry_curvature_at(&k, &berry_params)?;
 ```
 
 `bands.berry_curvature` and `bands.energies` contain one value per band.
-For a spin Hall kernel, set
-`current: CurrentOperator::Spin(SpinDirection::Z)`.
+The occupied variants read `params.mu[0]` and `params.T[0]`. For a spin Hall
+kernel, set `berry_params.spin = Some(SpinDirection::Z)`.
 
 ### Hall conductivity
 
 ```rust
 let mu = Array1::linspace(-2.0, 2.0, 101);
-let mut params = HallConductivityParams::new([51, 51], xy, mu);
-params.occupation = Occupation::FermiDirac {
-    temperature_kelvin: 30.0,
-};
-params.current = CurrentOperator::Charge;
-params.broadening = 1e-3;
-params.integration = HallIntegration::EnergyCut;
+let mut params = Parameters::rank2([51, 51], [1.0, 0.0], [0.0, 1.0], mu)
+    .with_temperature(30.0);
+params.eta = 1e-3;
+params.integration = Integration::EnergyCut;
 
 let result = model.hall_conductivity(&params)?;
 let sigma_vs_mu = result.conductivity;
 ```
 
-Use `HallConductivityParams::at_mu` and `result.single()` for a scalar
-chemical potential. `HallIntegration::Direct` performs a uniform k-point sum;
-`EnergyCut` uses band-tracked simplex integration.
+Use `Parameters::at_mu` and `result.single()` for a scalar chemical
+potential. `Integration::Direct` performs a uniform k-point sum;
+`EnergyCut` uses band-tracked simplex integration. For a spin Hall
+calculation set `params.spin = Some(SpinDirection::Z)`.
 
 ### Nonlinear Hall response
 
-All public rank-three directions are current-first:
+All public rank-three directions are current-first — row 0 of the direction
+matrix is the current, rows 1-2 the fields:
 
 ```rust
-let directions = NonlinearHallDirections::new(
+let mu = Array1::linspace(-1.0, 1.0, 101);
+
+let mut intrinsic = Parameters::rank3(
+    [51, 51],
     [1.0, 0.0], // current
     [1.0, 0.0], // field 1
     [0.0, 1.0], // field 2
-);
-let mu = Array1::linspace(-1.0, 1.0, 101);
-
-let mut intrinsic = IntrinsicNonlinearHallParams::new(
-    [51, 51],
-    directions,
     mu.clone(),
-    Occupation::FermiSmearing { width: 0.01 },
-);
-intrinsic.integration = NonlinearHallIntegration::Direct;
+)
+.with_temperature(30.0);
 let intrinsic_result = model.intrinsic_nonlinear_hall(&intrinsic)?;
 
-let mut extrinsic = ExtrinsicNonlinearHallParams::new(
+let mut extrinsic = Parameters::rank3(
     [51, 51],
-    directions,
+    [1.0, 0.0], // current
+    [1.0, 0.0], // field 1
+    [0.0, 1.0], // field 2
     mu,
-    Occupation::FermiSmearing { width: 0.01 },
-);
-extrinsic.field_symmetry = FieldSymmetry::Symmetrized;
-extrinsic.current = CurrentOperator::Charge;
+)
+.with_temperature(30.0);
 let extrinsic_result = model.extrinsic_nonlinear_hall(&extrinsic)?;
 ```
 
-`FieldSymmetry::Ordered` returns one ordered extrinsic kernel;
-`Symmetrized` averages the two external-field permutations. Direct
-integration requires a finite Fermi window. Energy-cut integration accepts
-`Occupation::ZeroTemperature`.
+`FieldSymmetry::Symmetrized` (the default) averages the two external-field
+permutations; `FieldSymmetry::Ordered` returns one raw ordered kernel. Direct
+integration requires a finite temperature. Energy-cut integration accepts
+`T[0] == 0.0` (exact zero-temperature limit) and requires a single DC
+frequency.
 
 ### Quantum geometry
 
 ```rust
 let mu = Array1::linspace(-1.0, 1.0, 101);
-let mut params = QuantumGeometryParams::new([51, 51], xy, mu);
-params.occupation = Occupation::ZeroTemperature;
-params.broadening = 1e-3;
-params.integration = QuantumGeometryIntegration::Simplex;
+let mut params = Parameters::rank2([51, 51], [1.0, 0.0], [0.0, 1.0], mu);
+params.eta = 1e-3;
+params.integration = Integration::Simplex;
 
 let result = model.quantum_geometry(&params)?;
 let metric = result.metric;
@@ -353,29 +350,26 @@ let berry_curvature = result.berry_curvature;
 ```
 
 For reusable band-resolved data, use the `QuantumGeometry` trait methods
-`quantum_geometry_at` and `quantum_geometry_on`.
+`quantum_geometry_at` and `quantum_geometry_on`, which read `direction` and
+`eta` from the same `Parameters` value.
 
 ### Optical conductivity
 
 ```rust
-let frequencies = Array1::linspace(0.0, 4.0, 401);
-let mut params =
-    OpticalConductivityParams::new([51, 51], xy, frequencies, 0.0);
-params.occupation = Occupation::FermiDirac {
-    temperature_kelvin: 30.0,
-};
-params.broadening = 1e-2;
-params.integration = OpticalIntegration::Simplex;
-params.directions = OpticalDirections::Cartesian;
+let mut params = Parameters::rank2([51, 51], [1.0, 0.0], [0.0, 1.0], array![0.0])
+    .with_temperature(30.0);
+params.omega = Array1::linspace(0.0, 4.0, 401);
+params.eta = 1e-2;
+params.integration = Integration::Simplex;
 
 let result = model.optical_conductivity(&params)?;
-let tensor_components = result.directions;
 let sigma = result.conductivity;
 ```
 
-`OpticalDirections::Pair(xy)` computes one projected component.
-`Cartesian` returns all ordered `DIM * DIM` tensor components; rows of
-`conductivity` correspond to entries in `result.directions`.
+`params.mu` must contain a single chemical potential. A two-row direction
+matrix computes one projected component; an **empty** direction matrix
+computes every ordered Cartesian component `(0,0), (0,1), ..., (DIM-1,DIM-1)`
+— rows of `conductivity` correspond to entries in `result.directions`.
 
 ## 5. Wilson loops and topology
 

@@ -104,50 +104,44 @@ let model_with_r: Model<false, 3, HasRMatrix> =
 
 ## Response calculations
 
-High-level response methods use a configuration/result pair. The same
-`Occupation` type is shared with the Hubbard solver, and integration algorithms
-are selected explicitly instead of by calling a different method name:
+Every high-level response method shares a single configuration type,
+`Parameters<DIM>`, with fields `T` (kelvin; `0.0` = zero temperature), `mu`
+(eV), `eta` (broadening), `kmesh`, `omega` (eV), `spin`
+(`None` = charge current), `direction` (`Array2<f64>`, shape `(rank, DIM)`),
+`integration` (`Integration::Direct`/`Simplex`/`EnergyCut`), and
+`field_symmetry` (extrinsic NLH only). Methods ignore the fields they do not
+need, and each returns a named result structure:
 
 ```rust
-let xy = DirectionPair::new([1.0, 0.0], [0.0, 1.0]);
 let mu = Array1::linspace(-1.0, 1.0, 201);
 
-let mut hall = HallConductivityParams::new([101, 101], xy, mu.clone());
-hall.occupation = Occupation::FermiDirac {
-    temperature_kelvin: 20.0,
-};
-hall.integration = HallIntegration::EnergyCut;
+let mut hall = Parameters::rank2([101, 101], [1.0, 0.0], [0.0, 1.0], mu.clone())
+    .with_temperature(20.0);
+hall.integration = Integration::EnergyCut;
 let hall_result = model.hall_conductivity(&hall)?;
 
-let mut geometry = QuantumGeometryParams::new([101, 101], xy, mu.clone());
-geometry.integration = QuantumGeometryIntegration::Simplex;
+let mut geometry = Parameters::rank2([101, 101], [1.0, 0.0], [0.0, 1.0], mu.clone());
+geometry.integration = Integration::Simplex;
 let geometry_result = model.quantum_geometry(&geometry)?;
 
-let mut optical = OpticalConductivityParams::new(
-    [101, 101],
-    xy,
-    Array1::linspace(0.0, 4.0, 401),
-    0.0,
-);
-optical.integration = OpticalIntegration::Simplex;
+let mut optical = Parameters::rank2([101, 101], [1.0, 0.0], [0.0, 1.0], array![0.0]);
+optical.omega = Array1::linspace(0.0, 4.0, 401);
+optical.integration = Integration::Simplex;
 let optical_result = model.optical_conductivity(&optical)?;
 ```
 
-For nonlinear Hall calculations, all tensor indices are current-first and
-encoded in one value:
+For nonlinear Hall calculations, all tensor indices are current-first — row 0
+of the direction matrix is the current, rows 1-2 the fields:
 
 ```rust
-let directions = NonlinearHallDirections::new(
+let params = Parameters::rank3(
+    [101, 101],
     [1.0, 0.0], // current
     [1.0, 0.0], // first field
     [0.0, 1.0], // second field
-);
-let params = IntrinsicNonlinearHallParams::new(
-    [101, 101],
-    directions,
     mu,
-    Occupation::FermiSmearing { width: 0.01 },
-);
+)
+.with_temperature(30.0);
 let nonlinear_result = model.intrinsic_nonlinear_hall(&params)?;
 ```
 

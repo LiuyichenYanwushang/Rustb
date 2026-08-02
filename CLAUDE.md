@@ -70,22 +70,26 @@ model hierarchies with duplicated band, geometry, or response methods.
 
 ### Unified response APIs
 
-- Every high-level response calculation takes one named `*Params` structure
-  and returns one named `*Result` structure. Public directions and k-meshes are
-  const-generic arrays (`[f64; DIM]` and `[usize; DIM]`), making dimensional
-  mistakes visible at compile time.
+- Every high-level response calculation takes one shared `Parameters<DIM>`
+  structure and returns one named `*Result` structure. Fields: `T` (kelvin,
+  `0.0` = zero temperature), `mu` (eV), `eta` (broadening), `kmesh`,
+  `omega` (eV), `spin` (`None` = charge current), `direction`
+  (`Array2<f64>`, shape `(rank, DIM)`), `integration`, `field_symmetry`.
+  Methods read only the fields they need and ignore the rest.
 - The supported entry points are `hall_conductivity`, `quantum_geometry`,
   `optical_conductivity`, `extrinsic_nonlinear_hall`, and
-  `intrinsic_nonlinear_hall`. Algorithm choice belongs in the corresponding
-  integration enum instead of being encoded in alternate method names.
-- `DirectionPair<DIM>` represents ordered rank-two directions;
-  `NonlinearHallDirections<DIM>` makes the current-first nonlinear convention
-  explicit. `CurrentOperator` selects charge or spin current, and
-  `FieldSymmetry` selects ordered or symmetrized nonlinear field indices.
+  `intrinsic_nonlinear_hall`. Algorithm choice belongs in the shared
+  `Integration` enum (`Direct`/`Simplex`/`EnergyCut`) instead of being encoded
+  in alternate method names.
+- `direction` replaces the old `DirectionPair`/`NonlinearHallDirections`/
+  `OpticalDirections`: rank-2 responses use 2 rows, rank-3 responses use
+  `(current, field_1, field_2)`. `spin` replaces `CurrentOperator`,
+  `T` replaces `Occupation` at the response boundary, and `FieldSymmetry`
+  (kept as a field) selects ordered or symmetrized nonlinear field indices.
 - Direct, simplex, and energy-cut paths share the same gauge-invariant response
   kernels and Cartesian reciprocal-space normalization. Optical conductivity
-  returns the full ordered `DIM x DIM` Cartesian tensor unless directions are
-  explicitly selected.
+  returns the full ordered `DIM x DIM` Cartesian tensor when `direction` is an
+  empty matrix, or one projected component for a 2-row direction.
 - Raw `VertexKernel`, band tracking, simplex construction, quadrature, and
   energy-cut helpers are crate-private numerical machinery. Do not expose them
   as compatibility APIs; extend the parameter/result layer instead.
@@ -272,8 +276,8 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 
 ### Nonlinear Hall index conventions
 
-- `extrinsic_nonlinear_hall` and `intrinsic_nonlinear_hall` both take
-  `NonlinearHallDirections { current, field_1, field_2 }`.
+- `extrinsic_nonlinear_hall` and `intrinsic_nonlinear_hall` both read
+  `direction` rows as `(current, field_1, field_2)` — current-first.
 - Extrinsic calculations default to `FieldSymmetry::Symmetrized`, which
   computes `0.5 * (S_ab;c + S_ac;b)`. Select `FieldSymmetry::Ordered` for
   the unsymmetrized kernel.
@@ -285,14 +289,15 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 
 ### Response API conventions
 
-- High-level response methods take one `*Params` structure and return one
-  named `*Result` structure. Direction vectors are `[f64; DIM]`, so dimension
-  mismatches are rejected at compile time.
-- `Occupation` is shared by Hubbard mean field, Hall, nonlinear Hall, quantum
-  geometry, and optical calculations. Kelvin temperatures and eV smearing
-  widths are distinct enum variants.
-- Direct and simplex/energy-cut algorithms are selected by an `Integration`
-  enum rather than separate method names.
+- High-level response methods take one shared `Parameters<DIM>` structure and
+  return one named `*Result` structure. Directions are rows of an
+  `Array2<f64>` matrix, so dimension mismatches are rejected at runtime with
+  structured errors.
+- `T` (kelvin; `T[0] == 0.0` = zero temperature) replaces `Occupation` at the
+  response boundary. The `Occupation` enum itself remains for the Hubbard
+  mean-field solver and spin-moment observables.
+- Direct and simplex/energy-cut algorithms are selected by the shared
+  `Integration` enum rather than separate method names.
 - `compute_velocity_kernel`, `VertexKernel`, raw energy-cut integrators, and
   band-tracking helpers are intentionally not public compatibility surfaces.
 

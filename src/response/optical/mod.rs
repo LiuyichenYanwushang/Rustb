@@ -8,9 +8,9 @@
 //! {(E_n-E_m)^2-(\omega+i\eta)^2}\,dk,
 //! ```
 //!
-//! and therefore share one [`OpticalConductivityParams`] input and one named
+//! and therefore share one [`Parameters`] input and one named
 //! [`OpticalConductivityResult`] output. A component calculation and a full
-//! Cartesian tensor calculation differ only through [`OpticalDirections`].
+//! Cartesian tensor calculation differ only through the direction matrix.
 
 use ndarray::prelude::*;
 use ndarray_linalg::Determinant;
