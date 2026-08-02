@@ -41,9 +41,7 @@ use crate::RMatrixData;
 use crate::error::Result;
 use crate::thermodynamics::Occupation;
 
-use super::config::{
-    Integration, Parameters, mesh_array, parameters_occupation, validate_sorted,
-};
+use super::config::{Integration, Parameters, mesh_array, parameters_occupation, validate_sorted};
 use super::energy_cut::{integrate_fermi_cut_2d, integrate_fermi_cut_3d};
 use super::kernel::quadrature_occupied_geometry_simplex;
 use super::tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
@@ -161,10 +159,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// integration reuses the band-resolved Berry curvature for the entire
     /// chemical-potential grid; energy-cut integration tracks bands between
     /// simplex vertices before integrating the occupied region.
-    pub fn hall_conductivity(
-        &self,
-        params: &Parameters<DIM>,
-    ) -> Result<HallConductivityResult> {
+    pub fn hall_conductivity(&self, params: &Parameters<DIM>) -> Result<HallConductivityResult> {
         params.validate_rank2()?;
         let spin = params.spin;
         if !SPIN && let Some(direction) = spin {
@@ -175,7 +170,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             Integration::Simplex => {
                 return Err(crate::TbError::InvalidResponseParameter {
                     parameter: "integration",
-                    message: "hall_conductivity supports Integration::Direct or EnergyCut, not Simplex".into(),
+                    message:
+                        "hall_conductivity supports Integration::Direct or EnergyCut, not Simplex"
+                            .into(),
                 });
             }
         }
@@ -227,8 +224,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 Array1::from_vec(values)
             }
             Integration::EnergyCut => {
-                let chemical_potentials =
-                    Array1::from_iter(params.mu.iter().copied());
+                let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
                 let kvec = crate::kpoints::gen_kmesh(&k_mesh)?;
                 let mut all_pts: Vec<VertexKernel> = (0..kvec.nrows())
                     .into_par_iter()

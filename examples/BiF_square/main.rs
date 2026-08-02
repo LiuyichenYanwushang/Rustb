@@ -181,7 +181,8 @@ fn main() {
     let eta: f64 = 0.001;
     let mu: f64 = 0.0;
     let start = Instant::now(); // 开始计时
-    let mut hall_params = Parameters::rank2([nk, nk, 1], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], array![mu]);
+    let mut hall_params =
+        Parameters::rank2([nk, nk, 1], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], array![mu]);
     hall_params.eta = eta;
     let conductivity = model
         .hall_conductivity(&hall_params)
@@ -197,7 +198,8 @@ fn main() {
     ); // 输出执行时间
 
     let mu = Array1::<f64>::linspace(-1.0, 1.0, 1001);
-    let mut hall_params = Parameters::rank2([nk, nk, 1], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], mu.clone());
+    let mut hall_params =
+        Parameters::rank2([nk, nk, 1], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], mu.clone());
     hall_params.eta = eta;
     let conductivity = model.hall_conductivity(&hall_params).unwrap().conductivity;
 
@@ -233,9 +235,12 @@ fn main() {
     let kmesh = arr1(&[nk, nk, 1]);
     let kvec = gen_kmesh(&kmesh).unwrap();
     //let kvec=kvec-0.5;
-    let mut berry_params = Parameters::rank2([1, 1, 1], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], array![mu]);
+    let mut berry_params =
+        Parameters::rank2([1, 1, 1], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], array![mu]);
     berry_params.eta = eta;
-    let berry_curv = model.occupied_berry_curvature_on(&kvec, &berry_params).unwrap();
+    let berry_curv = model
+        .occupied_berry_curvature_on(&kvec, &berry_params)
+        .unwrap();
     let data = berry_curv.into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data,
@@ -250,7 +255,9 @@ fn main() {
     ];
     let label = vec!["G", "X", "M", "G"];
     let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
-    let berry_curv = model.occupied_berry_curvature_on(&kvec, &berry_params).unwrap();
+    let berry_curv = model
+        .occupied_berry_curvature_on(&kvec, &berry_params)
+        .unwrap();
 
     let mut fg = Figure::new();
     let x: Vec<f64> = k_dist.to_vec();

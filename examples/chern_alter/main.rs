@@ -44,7 +44,9 @@ fn main() {
     let kvec = kvec.reversed_axes();
     let mut berry_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
     berry_params.T = array![T];
-    let berry_curv = model.occupied_berry_curvature_on(&kvec, &berry_params).unwrap();
+    let berry_curv = model
+        .occupied_berry_curvature_on(&kvec, &berry_params)
+        .unwrap();
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data.map(|x| {
@@ -70,13 +72,8 @@ fn main() {
     let E_n = 2000;
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let mut extrinsic_params = Parameters::rank3(
-        [nk, nk],
-        [1.0, 0.0],
-        [0.0, 1.0],
-        [0.0, 1.0],
-        mu.clone(),
-    );
+    let mut extrinsic_params =
+        Parameters::rank3([nk, nk], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], mu.clone());
     extrinsic_params.T = array![T];
     extrinsic_params.omega = array![og];
     extrinsic_params.eta = 1e-5;
@@ -102,13 +99,8 @@ fn main() {
     let E_max = 1.0;
     let E_n = 2000;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let mut intrinsic_params = Parameters::rank3(
-        [nk, nk],
-        [1.0, 0.0],
-        [0.0, 1.0],
-        [0.0, 1.0],
-        mu.clone(),
-    );
+    let mut intrinsic_params =
+        Parameters::rank3([nk, nk], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], mu.clone());
     intrinsic_params.T = array![T];
     let sigma = model
         .intrinsic_nonlinear_hall(&intrinsic_params)

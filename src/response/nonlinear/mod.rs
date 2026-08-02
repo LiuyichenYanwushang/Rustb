@@ -335,17 +335,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 if width == 0.0 {
                     return Err(TbError::InvalidThermodynamicParameter {
                         parameter: "T",
-                        message: "direct nonlinear Hall integration requires a finite temperature".into(),
+                        message: "direct nonlinear Hall integration requires a finite temperature"
+                            .into(),
                     });
                 }
                 let (kernel, energies) = self.berry_curvature_dipole_n(
-                    &k_points,
-                    current,
-                    field_1,
-                    field_2,
-                    frequency,
-                    spin,
-                    params.eta,
+                    &k_points, current, field_1, field_2, frequency, spin, params.eta,
                 );
                 let values: Vec<f64> = params
                     .mu
@@ -365,8 +360,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 Ok((Array1::from_vec(values), None))
             }
             Integration::EnergyCut => {
-                let chemical_potentials =
-                    Array1::from_iter(params.mu.iter().copied());
+                let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
                 let mut vertices: Vec<VertexKernel> = (0..k_points.nrows())
                     .into_par_iter()
                     .map(|index| {
@@ -714,7 +708,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 if width == 0.0 {
                     return Err(TbError::InvalidThermodynamicParameter {
                         parameter: "T",
-                        message: "direct nonlinear Hall integration requires a finite temperature".into(),
+                        message: "direct nonlinear Hall integration requires a finite temperature"
+                            .into(),
                     });
                 }
                 let (kernel, energies, _) =
@@ -737,8 +732,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 Array1::from_vec(values)
             }
             Integration::EnergyCut => {
-                let chemical_potentials =
-                    Array1::from_iter(params.mu.iter().copied());
+                let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
                 let mut vertices: Vec<VertexKernel> = (0..k_points.nrows())
                     .into_par_iter()
                     .map(|index| {

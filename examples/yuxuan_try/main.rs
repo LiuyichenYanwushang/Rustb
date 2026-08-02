@@ -96,7 +96,9 @@ fn main() {
     let kvec = kvec.reversed_axes();
     let mut berry_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
     berry_params.T = array![T];
-    let berry_curv = model.occupied_berry_curvature_on(&kvec, &berry_params).unwrap();
+    let berry_curv = model
+        .occupied_berry_curvature_on(&kvec, &berry_params)
+        .unwrap();
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data.map(|x| {

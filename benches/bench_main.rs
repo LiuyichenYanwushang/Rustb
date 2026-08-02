@@ -253,9 +253,7 @@ fn bench_occupied_berry_curvature_at(c: &mut Criterion) {
             BenchmarkId::new("scalar", name),
             &(&m, &kvec),
             |b, (m, kv)| {
-                b.iter(|| {
-                    m.occupied_berry_curvature_at(black_box(kv), black_box(&charge_params))
-                })
+                b.iter(|| m.occupied_berry_curvature_at(black_box(kv), black_box(&charge_params)))
             },
         );
     }
@@ -267,9 +265,7 @@ fn bench_occupied_berry_curvature_at(c: &mut Criterion) {
             BenchmarkId::new("scalar", name),
             &(&m, &kvec),
             |b, (m, kv)| {
-                b.iter(|| {
-                    m.occupied_berry_curvature_at(black_box(kv), black_box(&charge_params))
-                })
+                b.iter(|| m.occupied_berry_curvature_at(black_box(kv), black_box(&charge_params)))
             },
         );
         let mut spin_params = charge_params;
@@ -278,9 +274,7 @@ fn bench_occupied_berry_curvature_at(c: &mut Criterion) {
             BenchmarkId::new("spin_z", name),
             &(&m, &kvec),
             |b, (m, kv)| {
-                b.iter(|| {
-                    m.occupied_berry_curvature_at(black_box(kv), black_box(&spin_params))
-                })
+                b.iter(|| m.occupied_berry_curvature_at(black_box(kv), black_box(&spin_params)))
             },
         );
     }

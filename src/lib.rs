@@ -406,7 +406,9 @@ mod tests {
         params.T = array![temperature_kelvin];
         params.spin = spin;
         params.eta = broadening;
-        model.occupied_berry_curvature_on(k_points, &params).unwrap()
+        model
+            .occupied_berry_curvature_on(k_points, &params)
+            .unwrap()
     }
 
     /// Temperature for direct NLH tests with nominal zero temperature:
@@ -446,7 +448,11 @@ mod tests {
             fixed_direction(field_2),
             chemical_potentials.clone(),
         );
-        params.T = array![nonlinear_temperature(temperature_kelvin, k_mesh, integration)];
+        params.T = array![nonlinear_temperature(
+            temperature_kelvin,
+            k_mesh,
+            integration
+        )];
         params.integration = integration;
         Ok(model.intrinsic_nonlinear_hall(&params)?.conductivity)
     }
@@ -473,7 +479,11 @@ mod tests {
             fixed_direction(field_2),
             chemical_potentials.clone(),
         );
-        params.T = array![nonlinear_temperature(temperature_kelvin, k_mesh, integration)];
+        params.T = array![nonlinear_temperature(
+            temperature_kelvin,
+            k_mesh,
+            integration
+        )];
         params.omega = array![frequency];
         params.spin = spin;
         params.eta = broadening;
@@ -2281,28 +2291,12 @@ mod tests {
         let T: f64 = 100.0;
         let mu = Array1::linspace(-1.0, 1.0, 21);
         let km = array![12, 12, 12];
-        let ref_up = intrinsic_nonlinear_values(
-            &model_up,
-            &km,
-            &dx,
-            &dy,
-            &dz,
-            &mu,
-            T,
-            Integration::Direct,
-        )
-        .unwrap();
-        let ref_dn = intrinsic_nonlinear_values(
-            &model_dn,
-            &km,
-            &dx,
-            &dy,
-            &dz,
-            &mu,
-            T,
-            Integration::Direct,
-        )
-        .unwrap();
+        let ref_up =
+            intrinsic_nonlinear_values(&model_up, &km, &dx, &dy, &dz, &mu, T, Integration::Direct)
+                .unwrap();
+        let ref_dn =
+            intrinsic_nonlinear_values(&model_dn, &km, &dx, &dy, &dz, &mu, T, Integration::Direct)
+                .unwrap();
         let sum = max_abs_1d(&(&ref_up + &ref_dn));
         assert!(
             sum < 1e-10,

@@ -75,7 +75,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
             return Err(TbError::SpinNotAllowed(direction));
         }
 
-        let (projected_velocity, hamiltonian) = self.gen_v_projected(k, Gauge::Atom, &params.direction);
+        let (projected_velocity, hamiltonian) =
+            self.gen_v_projected(k, Gauge::Atom, &params.direction);
         let (energies, eigenvectors) = hamiltonian.eigh(UPLO::Lower)?;
 
         let current: Array2<Complex<f64>> = if SPIN && spin.is_some() {

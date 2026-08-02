@@ -177,10 +177,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// algorithms return the same named result and use Cartesian
     /// reciprocal-space normalization. Simplex mode additionally reports the
     /// number of small-gap simplices encountered during band tracking.
-    pub fn quantum_geometry(
-        &self,
-        params: &Parameters<DIM>,
-    ) -> Result<QuantumGeometryResult> {
+    pub fn quantum_geometry(&self, params: &Parameters<DIM>) -> Result<QuantumGeometryResult> {
         params.validate_rank2()?;
         if params.integration == Integration::EnergyCut {
             return Err(TbError::InvalidResponseParameter {
@@ -243,11 +240,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .collect();
                 global_band_track(&mut vertices, &params.kmesh);
                 let (metric, berry, unsafe_simplex_count) = integrate_occupied_geometry(
-                    &vertices,
-                    &k_mesh,
-                    params.eta,
-                    &params.mu,
-                    occupation,
+                    &vertices, &k_mesh, params.eta, &params.mu, occupation,
                 );
                 (
                     metric / determinant,
@@ -308,7 +301,9 @@ mod tests {
     fn named_band_result_has_real_components() {
         let model = massive_dirac_model();
         let params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
-        let geometry = model.quantum_geometry_at(&array![0.0, 0.0], &params).unwrap();
+        let geometry = model
+            .quantum_geometry_at(&array![0.0, 0.0], &params)
+            .unwrap();
         assert_eq!(geometry.metric.len(), model.nsta());
         assert_eq!(geometry.berry_curvature.len(), model.nsta());
         assert_eq!(geometry.energies.len(), model.nsta());

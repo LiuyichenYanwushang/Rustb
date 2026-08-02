@@ -1,7 +1,7 @@
 //! Shared configuration types for response calculations.
 
-use ndarray::{Array1, Array2, ArrayView1};
 use ndarray::array;
+use ndarray::{Array1, Array2, ArrayView1};
 
 use crate::SpinDirection;
 use crate::error::{Result, TbError};
@@ -99,11 +99,7 @@ impl<const DIM: usize> Parameters<DIM> {
         direction_b: [f64; DIM],
         mu: Array1<f64>,
     ) -> Self {
-        Self::new(
-            kmesh,
-            direction_matrix(&[direction_a, direction_b]),
-            mu,
-        )
+        Self::new(kmesh, direction_matrix(&[direction_a, direction_b]), mu)
     }
 
     /// Rank-three charge response from const-generic current and field
@@ -115,11 +111,7 @@ impl<const DIM: usize> Parameters<DIM> {
         field_2: [f64; DIM],
         mu: Array1<f64>,
     ) -> Self {
-        Self::new(
-            kmesh,
-            direction_matrix(&[current, field_1, field_2]),
-            mu,
-        )
+        Self::new(kmesh, direction_matrix(&[current, field_1, field_2]), mu)
     }
 
     /// Set the temperature in kelvin.
@@ -196,7 +188,10 @@ pub(crate) fn validate_temperature(values: &Array1<f64>) -> Result<()> {
             message: "must contain at least one value".into(),
         });
     }
-    if values.iter().any(|value| !value.is_finite() || *value < 0.0) {
+    if values
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+    {
         return Err(TbError::InvalidResponseParameter {
             parameter: "T",
             message: "all values must be finite and non-negative".into(),

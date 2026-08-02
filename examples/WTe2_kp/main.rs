@@ -31,13 +31,7 @@ fn main() {
     let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 5.0;
-    let mut response = Parameters::rank3(
-        [nk, nk],
-        [0.0, 1.0],
-        [1.0, 0.0],
-        [1.0, 0.0],
-        mu.clone(),
-    );
+    let mut response = Parameters::rank3([nk, nk], [0.0, 1.0], [1.0, 0.0], [1.0, 0.0], mu.clone());
     response.T = array![T];
     response.omega = array![og];
     response.eta = 1e-5;
@@ -74,13 +68,8 @@ fn main() {
     let mut omega = Array1::<f64>::zeros(E_n);
     for (i, t0) in t.iter().enumerate() {
         let model = gen_model(*t0, v, ap, eta, m);
-        let mut response = Parameters::rank3(
-            [nk, nk],
-            [0.0, 1.0],
-            [1.0, 0.0],
-            [1.0, 0.0],
-            mu.clone(),
-        );
+        let mut response =
+            Parameters::rank3([nk, nk], [0.0, 1.0], [1.0, 0.0], [1.0, 0.0], mu.clone());
         response.T = array![T];
         response.omega = array![og];
         response.eta = 1e-5;
