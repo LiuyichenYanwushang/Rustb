@@ -565,12 +565,126 @@ let spectral_weight = supercell.unfold(
 - k-points are fractional reciprocal coordinates.
 - The Bloch phase is `exp(2*pi*i*k·R)`.
 - Orbital positions are fractional coordinates stored by rows.
-- Real-space lattice vectors are columns of `Model::lat`.
+- Real-space lattice vectors are rows of `Model::lat`; fractional row
+  coordinates convert as `fractional.dot(lat)`.
 - `Gauge::Lattice` uses only `R` in the Fourier phase.
 - `Gauge::Atom` includes orbital-position phases.
 - A spinful basis is ordered as spin-up orbitals followed by spin-down orbitals.
 - `None` denotes a spin-independent operator; there is no
   `SpinDirection::None` variant.
+
+### Optional cryspglib symmetry
+
+Enable `cryspglib` together with exactly one BLAS backend. Symmetry analysis is
+defined only for 3D models with explicit atoms. Orbital-only models created by
+`tb_model(lat, orb, None)` are valid TB models but deliberately return
+`MissingAtomicStructure` here.
+
+```rust
+let atoms = vec![Atom::with_orbitals(
+    array![0.0, 0.0, 0.0],
+    AtomType::Si,
+    [OrbitalId::new(0)],
+)];
+let mut model = Model::<false, 3>::tb_model(
+    Array2::eye(3),
+    array![[0.0, 0.0, 0.0]],
+    Some(atoms),
+)?;
+
+// Atom moments are optional and default to None.
+model.atoms[0].set_magnetic_moment([0.0, 0.0, 1.0])?;
+let magnetic = model
+    .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())?;
+model.atoms[0].clear_magnetic_moment();
+
+let structural = model.crystal_symmetry(&SymmetryParameters::default())?;
+let kpoints = structural.high_symmetry_kpoints()?;
+let character_table = structural.character_table_at("GM")?;
+let character_columns = structural.character_table_operations()?;
+
+let field_parameters = SymmetryParameters {
+    external_fields: ExternalFields {
+        electric: Some([0.0, 0.0, 1.0]),
+        magnetic: None,
+    },
+    ..Default::default()
+};
+let effective = model.crystal_symmetry(&field_parameters)?;
+assert!(effective.field_preserving_operations.len() <= effective.operations.len());
+```
+
+`operations` describes the atomic lattice. `field_preserving_operations`
+describes the effective subset when a Hamiltonian already contains the
+explicitly supplied uniform E/B fields. The fields are inputs to this analysis,
+not persistent `Model` data. E is treated as a time-even polar vector; B as a
+time-odd axial vector. The context is passed into cryspglib. If a field reduces
+the group, structural high-symmetry tables return `FieldReducedSymmetryData`;
+irreducible meshes instead use the surviving unitary/anti-unitary operations.
+Magnetic order is separate. Every Atom has an optional finite Cartesian moment;
+`None` is the nonmagnetic default, `set_magnetic_moment` attaches one, and
+`clear_magnetic_moment` removes it. Use
+`magnetic_crystal_symmetry_from_atoms` and
+`magnetic_irreducible_kmesh_from_atoms` for stored moments, or the explicit
+`&moments` variants for a per-call override. Character-table column headers
+come from `character_table_operations()` in canonical database basis; do not
+positionally pair them with `operations`, which stays in model basis. For
+mappings onto `gen_kmesh` order, use
+`IrreducibleKMesh::rustb_full_to_irreducible`.
+
+To determine whether the actual TB Hamiltonian preserves those structural
+candidates, call the separate exact real-space checker:
+
+```rust
+let report = model.check_hamiltonian_symmetry(
+    &ScalarSiteBasis::default(),
+    &HamiltonianSymmetryRequest::default(),
+)?;
+```
+
+The default candidate set is the structural grey extension `G + G1'`, filtered
+by `SymmetryParameters::external_fields` before checking. Each operation is
+reported as `Preserved`, `Broken`, or `Unresolved`; use
+`report.is_fully_compatible()` for the safe `Option<bool>` summary and inspect
+`report.final_group` for an identified residual UNI/BNS group or a structured
+inconclusive reason.
+
+`ScalarSiteBasis` is valid only for one atom-centred `s` orbital per Atom and
+requires every orbital to have an Atom owner. Never apply it to a general
+Wannier model merely because `orb_projection` happens to contain `s`; use a
+custom `BasisSymmetryRepresentation` (or a closure implementing its signature)
+that returns the correct `LocalizedBasisAction` matrices and integer cell
+shifts. The checker validates each Laurent action, checks the complete finite
+`hamR` support, verifies survivor closure, and lets cryspglib derive the
+effective family Hall. Do not replace an `Unresolved`/`Inconclusive` outcome by
+calling operation-only magnetic classification or by assuming the structural
+Hall is the reduced group's family Hall.
+
+Forced symmetrization is a separate opt-in constructor:
+
+```rust
+let target = model
+    .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())?;
+let symmetrized = model.symmetrize_hamiltonian(
+    &target,
+    &ScalarSiteBasis,
+    &HamiltonianSymmetrizationParameters::default(),
+)?;
+```
+
+It returns a new Model and leaves `model` unchanged. Before calling the basis
+provider or averaging H, Rustb requires every normalized target operation to
+be compatible with the current lattice, Atom positions/species, optional Atom
+moments, and explicit E/B context. Failure is
+`TbError::TargetMagneticGroupIncompatible`, never a best-effort projection onto
+a smaller group.
+
+The projection validates one projective magnetic corepresentation, averages
+the complete real-space support (including nonsymmorphic shifts and
+antiunitary conjugation), adds missing `hamR` partners, enforces Hermiticity,
+and postchecks every covariance equation. For `HasRMatrix`, old position-matrix
+blocks stay aligned by lattice vector and newly generated support receives
+zeros; `rmatrix` is not incorrectly treated as a scalar Hamiltonian.
 
 ### BLAS/LAPACK backends
 

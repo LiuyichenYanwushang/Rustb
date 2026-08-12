@@ -130,7 +130,11 @@ impl OrbProj {
     /// $$[\ket{0,0},\ket{1,-1},\ket{1,0},\ket{1,1},\ket{2,-2},\cdots,\ket{3,3}]$$
     pub fn to_quantum_number(&self) -> Result<Array1<Complex<f64>>> {
         let s = match self {
-            OrbProj::s => [Complex::new(0.0, 0.0); 16],
+            OrbProj::s => {
+                let mut s = [Complex::new(0.0, 0.0); 16];
+                s[0] = Complex::new(1.0, 0.0);
+                s
+            }
             OrbProj::px => {
                 let mut s = [Complex::new(0.0, 0.0); 16];
                 s[1] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
@@ -360,6 +364,17 @@ pub enum AtomType {
     Rn,
     Fr,
     Ra,
+}
+
+impl AtomType {
+    /// Atomic number associated with this element.
+    ///
+    /// Keeping this conversion in one place avoids leaking the declaration
+    /// order of [`AtomType`] into crystallographic and file-format adapters.
+    #[inline]
+    pub const fn atomic_number(self) -> i32 {
+        self as i32 + 1
+    }
 }
 
 impl AtomType {
@@ -647,40 +662,238 @@ impl fmt::Display for AtomType {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// Strongly typed index of an atom in a [`Model`](crate::Model).
+///
+/// IDs are local to one model. They remain valid while the atom ordering is
+/// unchanged.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub struct AtomId(usize);
+
+impl AtomId {
+    #[inline]
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    #[inline]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
+impl From<usize> for AtomId {
+    fn from(index: usize) -> Self {
+        Self::new(index)
+    }
+}
+
+/// Strongly typed index of a physical (not spin-doubled) orbital in a model.
+///
+/// An `OrbitalId` addresses the same row in `Model::orb` and
+/// `Model::orb_projection`, and the corresponding orbital axes of the
+/// Hamiltonian. It is a safe model-local handle, not a pointer.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub struct OrbitalId(usize);
+
+impl OrbitalId {
+    #[inline]
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    #[inline]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
+impl From<usize> for OrbitalId {
+    fn from(index: usize) -> Self {
+        Self::new(index)
+    }
+}
+
+/// Atomic-site metadata and its explicit references to the model's orbitals.
+///
+/// The model owns the dense orbital arrays. An atom stores only typed orbital
+/// IDs, which keeps the structure movable, cloneable, and serializable while
+/// allowing non-contiguous orbital assignments.
+#[derive(Debug, Clone, Serialize)]
 pub struct Atom {
     position: Array1<f64>,
     name: AtomType,
-    atom_list: usize,
-    magnetic: [f64; 3],
+    #[serde(default)]
+    orbitals: Vec<OrbitalId>,
+    /// Optional Cartesian magnetic moment of this site.
+    ///
+    /// `None` is the default and means that no magnetic moment is attached to
+    /// the atom. `Some([0.0; 3])` is a distinct, explicit zero-moment input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    magnetic_moment: Option<[f64; 3]>,
+}
+
+/// Deserialization wire format supporting both the typed-ID representation
+/// and Rustb's pre-0.7 per-atom orbital counts.
+#[derive(Deserialize)]
+pub(crate) struct AtomWire {
+    position: Array1<f64>,
+    name: AtomType,
+    #[serde(default)]
+    orbitals: Option<Vec<OrbitalId>>,
+    #[serde(default)]
+    atom_list: Option<usize>,
+    #[serde(default, alias = "magnetic")]
+    magnetic_moment: Option<[f64; 3]>,
+}
+
+impl AtomWire {
+    fn into_atom(self, legacy_start: usize) -> std::result::Result<(Atom, usize), String> {
+        if self
+            .magnetic_moment
+            .is_some_and(|moment| moment.iter().any(|component| !component.is_finite()))
+        {
+            return Err("atomic magnetic moment components must be finite".to_string());
+        }
+        let (orbitals, next_legacy) = match (self.orbitals, self.atom_list) {
+            (Some(orbitals), None) => (orbitals, legacy_start),
+            (None, Some(count)) => {
+                let end = legacy_start
+                    .checked_add(count)
+                    .ok_or_else(|| "legacy atom orbital count overflows usize".to_string())?;
+                ((legacy_start..end).map(OrbitalId::new).collect(), end)
+            }
+            (None, None) => (Vec::new(), legacy_start),
+            (Some(_), Some(_)) => {
+                return Err(
+                    "atom contains both typed 'orbitals' and legacy 'atom_list' fields".to_string(),
+                );
+            }
+        };
+        Ok((
+            Atom {
+                position: self.position,
+                name: self.name,
+                orbitals,
+                magnetic_moment: self.magnetic_moment,
+            },
+            next_legacy,
+        ))
+    }
+}
+
+pub(crate) fn atoms_from_wire(wires: Vec<AtomWire>) -> std::result::Result<Vec<Atom>, String> {
+    let has_legacy = wires.iter().any(|wire| wire.atom_list.is_some());
+    let has_typed = wires.iter().any(|wire| wire.orbitals.is_some());
+    if has_legacy && has_typed {
+        return Err("cannot mix legacy atom orbital counts with typed orbital IDs".to_string());
+    }
+    let mut next_legacy = 0;
+    wires
+        .into_iter()
+        .map(|wire| {
+            let (atom, next) = wire.into_atom(next_legacy)?;
+            next_legacy = next;
+            Ok(atom)
+        })
+        .collect()
+}
+
+impl<'de> Deserialize<'de> for Atom {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let wire = AtomWire::deserialize(deserializer)?;
+        wire.into_atom(0)
+            .map(|(atom, _)| atom)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl Atom {
+    /// Fractional position of this atomic site.
     pub fn position(&self) -> Array1<f64> {
         self.position.clone()
     }
-    pub fn norb(&self) -> usize {
-        self.atom_list
+
+    /// Borrow the fractional position without allocating.
+    pub fn position_ref(&self) -> &Array1<f64> {
+        &self.position
     }
+
+    /// Number of model orbitals explicitly assigned to this atom.
+    pub fn norb(&self) -> usize {
+        self.orbitals.len()
+    }
+
     pub fn atom_type(&self) -> AtomType {
         self.name
     }
-    pub fn push_orb(&mut self) {
-        self.atom_list += 1;
+
+    /// Model-local orbital IDs assigned to this atom.
+    pub fn orbitals(&self) -> &[OrbitalId] {
+        &self.orbitals
     }
-    pub fn remove_orb(&mut self) {
-        self.atom_list -= 1;
+
+    /// Optional Cartesian magnetic moment attached to the atomic site.
+    pub fn magnetic_moment(&self) -> Option<[f64; 3]> {
+        self.magnetic_moment
     }
+
+    /// Attach a finite Cartesian magnetic moment to this atom.
+    ///
+    /// The moment is site metadata. Uniform external electric/magnetic fields
+    /// remain per-analysis inputs in `SymmetryParameters` and are not stored
+    /// here.
+    pub fn set_magnetic_moment(&mut self, moment: [f64; 3]) -> Result<()> {
+        if moment.iter().any(|component| !component.is_finite()) {
+            return Err(TbError::InvalidAtomicMagneticMoment { moment });
+        }
+        self.magnetic_moment = Some(moment);
+        Ok(())
+    }
+
+    /// Remove the magnetic moment, restoring the default nonmagnetic Atom.
+    pub fn clear_magnetic_moment(&mut self) {
+        self.magnetic_moment = None;
+    }
+
+    /// Whether an explicit magnetic moment is attached to this atom.
+    pub fn has_magnetic_moment(&self) -> bool {
+        self.magnetic_moment.is_some()
+    }
+
     pub fn change_type(&mut self, new_type: AtomType) {
         self.name = new_type;
     }
-    pub fn new(position: Array1<f64>, atom_list: usize, name: AtomType) -> Atom {
+
+    /// Construct an atom that currently owns no tight-binding orbitals.
+    pub fn new(position: Array1<f64>, name: AtomType) -> Atom {
         Atom {
             position,
-            atom_list,
             name,
-            magnetic: [0.0, 0.0, 0.0],
+            orbitals: Vec::new(),
+            magnetic_moment: None,
         }
+    }
+
+    /// Construct an atom with explicit model-local orbital IDs.
+    pub fn with_orbitals(
+        position: Array1<f64>,
+        name: AtomType,
+        orbitals: impl IntoIterator<Item = OrbitalId>,
+    ) -> Atom {
+        Atom {
+            position,
+            name,
+            orbitals: orbitals.into_iter().collect(),
+            magnetic_moment: None,
+        }
+    }
+
+    pub(crate) fn set_orbitals(&mut self, orbitals: Vec<OrbitalId>) {
+        self.orbitals = orbitals;
     }
 }
 
@@ -688,8 +901,8 @@ impl fmt::Display for Atom {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Atom {{ name: {}, position: {:?}, atom_list: {}, magnetic moment:{:?}}}",
-            self.name, self.position, self.atom_list, self.magnetic
+            "Atom {{ name: {}, position: {:?}, orbitals: {:?}, magnetic moment:{:?}}}",
+            self.name, self.position, self.orbitals, self.magnetic_moment
         )
     }
 }

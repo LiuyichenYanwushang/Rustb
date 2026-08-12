@@ -297,7 +297,7 @@ fn main() {
             del_atom.push(i)
         }
     }
-    new_model.remove_atom(&del_atom);
+    new_model.remove_atom(&del_atom).unwrap();
     */
 
     let mut s = 0;

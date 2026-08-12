@@ -9,11 +9,18 @@ use ndarray_linalg::*;
 use num_complex::{Complex, Complex64};
 use rayon::prelude::*;
 use std::f64::consts::PI;
+
+/// Historical fractional-coordinate tolerance used to identify equivalent
+/// orbital and atom representatives during unfolding.
+const REPRESENTATIVE_POSITION_TOLERANCE: f64 = 5e-2;
 pub trait Unfold {
     //! Band unfolding algorithm. Computes the unfolded band structure, and can be
     //! used to study alloys, supercells, impurities, defects, and charge density
     //! waves projected onto the primitive cell.
     /// The algorithm follows PRL 104, 216401 (2010).
+    /// Representative centers are matched within a fixed fractional-coordinate
+    /// tolerance of `0.05`, retained for compatibility with earlier Rustb
+    /// unfolding results.
     ///
     /// First, define the supercell Brillouin-zone Hamiltonian $H_{\\bm K}$ and its
     /// Green's function $$G(\og,\bm K)=(\og+i\eta-H_{\bm K})^{-1}$$
@@ -82,6 +89,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
         eta: f64,
         precision: f64,
     ) -> Result<Array2<f64>> {
+        self.validate()?;
+        if !self.atoms.is_empty() && self.orbital_owners()?.iter().any(Option::is_none) {
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "unfold_orbital_ownership",
+                message: "band unfolding requires every orbital to belong to an atom".to_string(),
+            });
+        }
         let li: Complex<f64> = Complex::i();
         let E = Array1::<f64>::linspace(E_min, E_max, E_n);
         let mut A0 = Array2::<f64>::zeros((E_n, nk));
@@ -90,8 +104,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
         let V = self.lat.det().unwrap();
         let unfold_V = unfold_lat.det().unwrap();
         let U_det = U.det().unwrap();
-        if U_det <= 1.0 {
+        let cell_count = U_det.round();
+        if U_det <= 1.0 || (U_det - cell_count).abs() > precision {
             return Err(TbError::InvalidSupercellDet { det: U_det });
+        }
+        let cell_count = cell_count as usize;
+        if self.norb() % cell_count != 0 || self.natom() % cell_count != 0 {
+            return Err(TbError::InvalidAtomConfiguration);
         }
         //我们先根据path计算一下k点
         let (kvec, kdist, knode) = {
@@ -150,18 +169,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
         let mut G = G.mapv(|x| -x.im() / PI);
         G.swap_axes(0, 1);
         //接下来我们计算原胞的原子位置和轨道位置
-        let mut unit_atom = Array2::<f64>::zeros((0, self.dim_r()));
         let mut unit_orb = Array2::<f64>::zeros((0, self.dim_r()));
-        let atom_position = self.atom_position();
-        let unfold_atom = &atom_position.dot(U).map(|x| {
-            if (x.fract() - 1.0).abs() < precision || x.fract().abs() < precision {
-                0.0
-            } else if x.fract() < 0.0 {
-                x.fract() + 1.0
-            } else {
-                x.fract()
-            }
-        });
         let unfold_orb = &self.orb.dot(U).map(|x| {
             if (x.fract() - 1.0).abs() < precision || x.fract().abs() < precision {
                 0.0
@@ -171,52 +179,77 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                 x.fract()
             }
         });
-        let mut match_atom_list = Array1::<usize>::zeros(self.natom());
         let mut match_orb_list = Array1::<usize>::zeros(self.norb());
-        let mut unit_atom_orb_match = Vec::<usize>::new(); //这个是原胞中, 原子的第一个轨道对应的轨道list中的位置
-        //接下来我们计算原胞内存在哪些原子, 然后给出原胞和超胞的对应关系, 以及原胞轨道和超胞轨道的对应关系
-        let mut a = 0;
-        let mut b = 0;
-        let mut orb_index = 0;
-        for (i, u_atom) in unfold_atom.outer_iter().enumerate() {
-            let (exist, index): (bool, Option<usize>) = {
-                let mut exist = false;
-                let mut index = None;
-                for (j, u_atom_one) in unit_atom.outer_iter().enumerate() {
-                    let mut a0 = true;
-                    a0 = a0 && ((&u_atom - &u_atom_one).norm() < 5e-2);
-                    if a0 {
-                        exist = true;
-                        index = Some(j);
-                        break;
+        if self.atoms.is_empty() {
+            // Orbital-only models are first-class: derive primitive-orbital
+            // representatives directly from folded Wannier centers.
+            for (orbital, folded) in unfold_orb.outer_iter().enumerate() {
+                let representative = unit_orb.outer_iter().position(|candidate| {
+                    (&folded - &candidate).norm() < REPRESENTATIVE_POSITION_TOLERANCE
+                });
+                match representative {
+                    Some(representative) => match_orb_list[orbital] = representative,
+                    None => {
+                        unit_orb.push_row(folded);
+                        match_orb_list[orbital] = unit_orb.nrows() - 1;
                     }
                 }
-                (exist, index)
-            };
-            if exist && a != 0 {
-                let index = index.unwrap();
-                match_atom_list[[i]] = index;
-                for i0 in
-                    unit_atom_orb_match[index]..unit_atom_orb_match[index] + self.atoms[i].norb()
-                {
-                    match_orb_list[[b]] = i0;
-                    b += 1;
-                }
-            } else {
-                unit_atom.push_row(u_atom);
-                match_atom_list[[i]] = a;
-                unit_atom_orb_match.push(orb_index);
-                for i0 in 0..self.atoms[i].norb() {
-                    unit_orb.push_row(unfold_orb.row(b));
-                    match_orb_list[[b]] = i0 + orb_index;
-                    b += 1;
-                }
-                orb_index += self.atoms[i].norb();
-                a += 1;
             }
-        }
-        if unit_atom.nrows() != self.natom() / (U_det as usize) {
-            return Err(TbError::InvalidAtomConfiguration);
+            if unit_orb.nrows() != self.norb() / cell_count {
+                return Err(TbError::InvalidAtomConfiguration);
+            }
+        } else {
+            let mut unit_atom = Array2::<f64>::zeros((0, self.dim_r()));
+            let atom_position = self.atom_position();
+            let unfold_atom = &atom_position.dot(U).map(|x| {
+                if (x.fract() - 1.0).abs() < precision || x.fract().abs() < precision {
+                    0.0
+                } else if x.fract() < 0.0 {
+                    x.fract() + 1.0
+                } else {
+                    x.fract()
+                }
+            });
+            let mut unit_atom_orbitals = Vec::<Vec<usize>>::new();
+            let mut unit_atom_types = Vec::new();
+            for (atom_index, folded_atom) in unfold_atom.outer_iter().enumerate() {
+                let representative =
+                    unit_atom
+                        .outer_iter()
+                        .enumerate()
+                        .position(|(candidate_index, candidate)| {
+                            (&folded_atom - &candidate).norm() < REPRESENTATIVE_POSITION_TOLERANCE
+                                && unit_atom_types[candidate_index]
+                                    == self.atoms[atom_index].atom_type()
+                        });
+                if let Some(representative) = representative {
+                    if unit_atom_orbitals[representative].len() != self.atoms[atom_index].norb() {
+                        return Err(TbError::InvalidAtomConfiguration);
+                    }
+                    for (&orbital, &unit_orbital) in self.atoms[atom_index]
+                        .orbitals()
+                        .iter()
+                        .zip(&unit_atom_orbitals[representative])
+                    {
+                        match_orb_list[orbital.index()] = unit_orbital;
+                    }
+                } else {
+                    unit_atom.push_row(folded_atom);
+                    unit_atom_types.push(self.atoms[atom_index].atom_type());
+                    let mut representative_orbitals =
+                        Vec::with_capacity(self.atoms[atom_index].norb());
+                    for &orbital in self.atoms[atom_index].orbitals() {
+                        unit_orb.push_row(unfold_orb.row(orbital.index()));
+                        let unit_orbital = unit_orb.nrows() - 1;
+                        match_orb_list[orbital.index()] = unit_orbital;
+                        representative_orbitals.push(unit_orbital);
+                    }
+                    unit_atom_orbitals.push(representative_orbitals);
+                }
+            }
+            if unit_atom.nrows() != self.natom() / cell_count {
+                return Err(TbError::InvalidAtomConfiguration);
+            }
         }
         //好了, 接下来让我们计算权重
         let mut weight = Array2::<Complex<f64>>::zeros((nk, self.nsta()));
@@ -305,6 +338,27 @@ mod tests {
     use num_complex::Complex;
     use std::f64::consts::PI;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn unfold_rejects_nondivisible_orbital_count() {
+        let model = Model::<false, 2>::tb_model(
+            Array2::eye(2),
+            array![[0.0, 0.0], [0.2, 0.0], [0.4, 0.0]],
+            None,
+        )
+        .unwrap();
+        let result = model.unfold(
+            &array![[2.0, 0.0], [0.0, 1.0]],
+            &array![[0.0, 0.0], [0.5, 0.0]],
+            2,
+            -1.0,
+            1.0,
+            2,
+            1e-2,
+            1e-3,
+        );
+        assert!(matches!(result, Err(TbError::InvalidAtomConfiguration)));
+    }
 
     #[test]
     fn unfold_test() {

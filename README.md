@@ -24,6 +24,13 @@ num-complex = "0.4"
 
 Available backends are `intel-mkl-static`, `intel-mkl-system`,
 `openblas-static`, `openblas-system`, `netlib-static`, and `netlib-system`.
+Add the optional `cryspglib` feature to enable crystallographic and magnetic
+symmetry analysis without a C dependency:
+
+```toml
+Rustb = { version = "0.7", features = ["intel-mkl-system", "cryspglib"] }
+```
+
 The optional `mimalloc` and `jemalloc` allocator features are mutually
 exclusive and can be combined with one backend feature.
 
@@ -39,7 +46,7 @@ use ndarray::{arr1, arr2, array, Array1};
 use Rustb::*;
 
 fn main() -> Result<()> {
-    // Lattice vectors are stored as columns; orbital positions are rows in
+    // Lattice vectors are stored as rows; orbital positions are rows in
     // fractional lattice coordinates.
     let lat = arr2(&[
         [3.0_f64.sqrt(), -1.0],
@@ -91,6 +98,178 @@ Model<SPIN, DIM, R>
 `HasRMatrix` stores Wannier position-matrix elements and enables the associated
 commutator contribution in velocity calculations. `NoRMatrix` is a zero-sized
 type.
+
+Atoms explicitly reference the dense orbital basis through typed `OrbitalId`
+values. The model remains the sole owner of orbital positions, projections, and
+Hamiltonian arrays:
+
+```rust
+let carbon = Atom::with_orbitals(
+    array![0.0, 0.0, 0.0],
+    AtomType::C,
+    [OrbitalId::new(0), OrbitalId::new(2)],
+);
+```
+
+`tb_model(lat, orb, None)` creates a genuine orbital-only model and does not
+invent atoms or chemical species. Such a model remains valid for tight-binding
+calculations, but crystal-symmetry analysis returns `MissingAtomicStructure`.
+
+## Optional crystal symmetry
+
+With the `cryspglib` feature, a three-dimensional model with explicit atoms can
+query structure and magnetic symmetry, high-symmetry points, complete character
+tables, and irreducible reciprocal meshes:
+
+```rust
+let atoms = vec![Atom::with_orbitals(
+    array![0.0, 0.0, 0.0],
+    AtomType::Si,
+    [OrbitalId::new(0)],
+)];
+let mut model = Model::<false, 3>::tb_model(
+    Array2::eye(3),
+    array![[0.0, 0.0, 0.0]],
+    Some(atoms),
+)?;
+
+let symmetry = model.crystal_symmetry(&SymmetryParameters::default())?;
+let points = symmetry.high_symmetry_kpoints()?;
+let gamma_table = symmetry.character_table_at("GM")?;
+let gamma_columns = symmetry.character_table_operations()?;
+
+let mesh = model.irreducible_kmesh(
+    [12, 12, 12],
+    [0, 0, 0],
+    true,
+    &SymmetryParameters::default(),
+)?;
+assert!((mesh.weights.sum() - 1.0).abs() < 1e-12);
+```
+
+Character-table operation columns use cryspglib's canonical database basis;
+`character_table_operations()` returns the headers in that exact frame and
+order. `symmetry.operations` instead remains in the input model basis.
+
+Uniform electric and magnetic fields already encoded in a Hamiltonian must be
+supplied explicitly to the symmetry call because the atomic lattice alone does
+not contain this information:
+
+```rust
+let parameters = SymmetryParameters {
+    external_fields: ExternalFields {
+        electric: None,
+        magnetic: Some([0.0, 0.0, 1.0]),
+    },
+    ..Default::default()
+};
+let symmetry = model.crystal_symmetry(&parameters)?;
+```
+
+`symmetry.operations` is the unchanged structural group;
+`symmetry.field_preserving_operations` is the effective subset compatible with
+the supplied fields. Rustb passes this context into cryspglib; it is not merely
+post-processing hidden in the model adapter. If the field reduces the group,
+structural-group high-symmetry points and character tables return
+`FieldReducedSymmetryData` instead of being mislabelled as effective data. The
+irreducible mesh is generated from the effective unitary and anti-unitary
+operations. The fields are analysis inputs and are not stored in `Model`.
+
+Each Atom instead carries an optional Cartesian magnetic moment. It defaults
+to `None`, so ordinary structures are nonmagnetic until a caller explicitly
+attaches a moment:
+
+```rust
+assert_eq!(model.atoms[0].magnetic_moment(), None);
+model.atoms[0].set_magnetic_moment([0.0, 0.0, 1.0])?;
+
+let magnetic = model
+    .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())?;
+
+model.atoms[0].clear_magnetic_moment();
+```
+
+`Some([0.0; 3])` is an explicit zero vector and `None` means no moment was
+attached; both contribute zero to crystallographic magnetic-group detection.
+The explicit `magnetic_crystal_symmetry(&moments, ...)` and
+`magnetic_irreducible_kmesh(&moments, ...)` methods remain available as
+per-call overrides. `SPIN=true` alone is never treated as magnetic order. The
+boolean `time_reversal` argument of `irreducible_kmesh` is likewise an explicit
+Hamiltonian-level assertion, not something inferred from `SPIN`.
+
+### Hamiltonian compatibility and the residual magnetic group
+
+Structure symmetry is only a candidate symmetry of a tight-binding model. To
+test the actual hopping and onsite matrices, use the separate, read-only
+Hamiltonian certification API:
+
+```rust
+let report = model.check_hamiltonian_symmetry(
+    &ScalarSiteBasis::default(),
+    &HamiltonianSymmetryRequest::default(),
+)?;
+
+match &report.final_group {
+    FinalMagneticGroup::Identified(group) => {
+        println!("residual MSG: UNI {}, BNS {}", group.uni_number, group.bns_number);
+    }
+    FinalMagneticGroup::Inconclusive { reason } => {
+        println!("more basis metadata is required: {reason}");
+    }
+}
+```
+
+The default request tests the Atom-derived grey candidate group `G + G1'` so
+that Type-II, Type-III, and Type-IV survivors can be discovered. Optional E/B
+fields in `SymmetryParameters` filter those candidates first. The checker then
+uses Rustb's exact finite real-space hopping support, including nonsymmorphic
+cell shifts; it does not infer a group from a sampled k mesh.
+
+`ScalarSiteBasis` is deliberately limited to one atom-centred `s` orbital per
+Atom (with complete orbital ownership). For `p/d/f`, hybrid, local-frame, SOC
+entangled, or arbitrary Wannier bases, implement
+`BasisSymmetryRepresentation`—closures implementing the same signature are
+accepted as well—and return explicit `LocalizedBasisAction` cell-shift
+matrices. Missing basis metadata is `Unresolved`/`Inconclusive`, not a false
+claim that the Hamiltonian broke the operation.
+
+Every decided operation contains absolute/relative residuals and a worst
+`(R, bra, ket)` witness. Validated sewing actions remain in the report for
+future little-group and band-irrep work. A final UNI/BNS label is returned only
+after cryspglib verifies group closure and derives the survivor's own family
+Hall setting; the original structural Hall is provenance only.
+
+### Forced Hamiltonian symmetrization
+
+To project a slightly symmetry-broken Hamiltonian onto a chosen magnetic group,
+use the separate opt-in constructor. It returns a new Model and never mutates
+the input:
+
+```rust
+let target = model
+    .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())?;
+
+let symmetrized = model.symmetrize_hamiltonian(
+    &target,
+    &ScalarSiteBasis,
+    &HamiltonianSymmetrizationParameters::default(),
+)?;
+```
+
+Before resolving basis matrices or averaging any hopping, Rustb recomputes
+compatibility against the current lattice, Atom positions and species,
+optional Atom moments, and the supplied electric/magnetic field context. A
+target from another structure/setting, or one broken by these moments or
+fields, returns `TbError::TargetMagneticGroupIncompatible` immediately.
+
+For a valid localized action, the implementation applies the complete
+real-space magnetic Reynolds average, including nonsymmorphic cell shifts and
+antiunitary conjugation. It validates projective group composition (so
+spin-half phases and `T^2=-1` are supported), expands `hamR` to every generated
+hopping block, restores Hermiticity, and rechecks every target covariance
+equation. Existing `rmatrix` blocks remain aligned by lattice vector; newly
+generated support receives zero position-matrix blocks. As with certification,
+non-scalar Wannier gauges require an explicit `BasisSymmetryRepresentation`.
 
 Wannier90 models can be loaded as:
 

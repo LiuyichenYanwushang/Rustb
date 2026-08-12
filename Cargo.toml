@@ -13,6 +13,8 @@ repository = "https://github.com/LiuyichenYanwushang/Rustb"
 rust-version = "1.90.0"
 
 [package.metadata.docs.rs]
+features = ["cryspglib"]
+no-default-features = true
 rustdoc-args = [ "--html-in-header", "./docs-header.html" ]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -36,6 +38,7 @@ cblas-sys = "0.2.0"
 katexit = "0.1.5"
 thiserror = "2.0.12"
 toml = "0.8"
+cryspglib = { path = "../cryspglib", version = "0.1.0", optional = true, default-features = false }
 
 
 [dependencies.intel-mkl-src]
@@ -76,6 +79,7 @@ src = "doc/dos_2D.svg"
 dst = "dos_2D.svg"
 
 [features]
+cryspglib = ["dep:cryspglib"]
 intel-mkl-static = ["ndarray-linalg/intel-mkl-static","intel-mkl-src/mkl-static-lp64-seq"]
 intel-mkl-system = ["ndarray-linalg/intel-mkl-system","intel-mkl-src/mkl-dynamic-lp64-seq"]
 

@@ -1,5 +1,5 @@
 #[cfg_attr(doc, katexit::katexit)]
-use crate::atom_struct::{Atom, AtomType, OrbProj};
+use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
 use crate::error::{Result, TbError};
 use crate::math::comm;
 use crate::{Gauge, HasRMatrix, Model, NoRMatrix, RMatrixData, SpinDirection, find_R};
@@ -521,8 +521,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                         let use_pos = new_atom_pos
                             .row(i)
                             .dot(&lat.inv().map_err(TbError::Linalg)?);
-                        let use_atom =
-                            Atom::new(use_pos, proj_list[j], name.as_ref().unwrap().clone());
+                        let first = orb_proj.len();
+                        let use_atom = Atom::with_orbitals(
+                            use_pos,
+                            *name.as_ref().unwrap(),
+                            (first..first + proj_list[j]).map(OrbitalId::new),
+                        );
                         atom.push(use_atom);
                         orb_proj.extend(atom_proj[j].clone());
                     }
@@ -537,10 +541,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                     let name = AtomType::from_str(name);
                     if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok()
                     {
-                        let use_atom = Atom::new(
+                        let first = orb_proj.len();
+                        let use_atom = Atom::with_orbitals(
                             atom_pos.row(i).to_owned(),
-                            proj_list[j],
-                            name.unwrap().clone(),
+                            name.unwrap(),
+                            (first..first + proj_list[j]).map(OrbitalId::new),
                         );
                         orb_proj.extend(atom_proj[j].clone());
                         atom.push(use_atom.clone());
@@ -950,7 +955,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                 supported: vec![3],
             });
         }
-        let mut model = Self {
+        let model = Self {
             lat,
             orb,
             orb_projection: orb_proj,
@@ -959,6 +964,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             hamR,
             rmatrix: R::from_array(rmatrix),
         };
+        model.validate()?;
         Ok(model)
     }
 }

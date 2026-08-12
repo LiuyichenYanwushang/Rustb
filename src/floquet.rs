@@ -211,7 +211,7 @@ use crate::error::{Result, TbError};
 use crate::model::NoRMatrix;
 use crate::model_utils::find_R;
 use crate::ndarray_lapack::eigvalsh_v;
-use crate::{Gauge, Model, RMatrixData};
+use crate::{Gauge, Model, OrbitalId, RMatrixData};
 use ndarray::parallel::prelude::IntoParallelIterator;
 use ndarray::prelude::*;
 use ndarray::*;
@@ -709,7 +709,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         }
 
         let atoms = (0..n_sector)
-            .flat_map(|_| self.atoms.iter().cloned())
+            .flat_map(|sector| {
+                self.atoms.iter().cloned().map(move |mut atom| {
+                    atom.set_orbitals(
+                        atom.orbitals()
+                            .iter()
+                            .map(|id| OrbitalId::new(sector * norb + id.index()))
+                            .collect(),
+                    );
+                    atom
+                })
+            })
             .collect();
         let mut model =
             Model::<SPIN, DIM, NoRMatrix>::tb_model(self.lat.clone(), orb, Some(atoms))?;
@@ -1387,7 +1397,7 @@ fn cross3(a: &Array1<f64>, b: &Array1<f64>) -> Array1<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::atom_struct::{Atom, AtomType, OrbProj};
+    use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
     use crate::model::NoRMatrix;
     use crate::model_build::*;
     use crate::solve_ham::solve;
@@ -1405,8 +1415,12 @@ mod tests {
         let lat = array![[1.0]];
         let orb = array![[0.0], [0.0], [0.35]];
         let atoms = vec![
-            Atom::new(arr1(&[0.0]), 2, AtomType::C),
-            Atom::new(arr1(&[0.35]), 1, AtomType::O),
+            Atom::with_orbitals(
+                arr1(&[0.0]),
+                AtomType::C,
+                [OrbitalId::new(0), OrbitalId::new(1)],
+            ),
+            Atom::with_orbitals(arr1(&[0.35]), AtomType::O, [OrbitalId::new(2)]),
         ];
         let mut model = Model::<false, 1>::tb_model(lat, orb, Some(atoms)).unwrap();
         model.orb_projection = vec![OrbProj::s, OrbProj::px, OrbProj::py];

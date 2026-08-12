@@ -200,12 +200,16 @@
 //! ```
 
 pub mod atom_struct;
+#[cfg(feature = "cryspglib")]
+pub mod crystal_symmetry;
 pub mod cut;
 pub mod error;
 pub mod fermi_surface;
 pub mod floquet;
 pub mod generics;
 pub mod geometry;
+#[cfg(feature = "cryspglib")]
+pub mod hamiltonian_symmetry;
 #[path = "Hubbard.rs"]
 pub mod hubbard;
 pub mod io;
@@ -230,13 +234,28 @@ pub mod thermodynamics;
 pub mod unfold;
 pub mod velocity;
 pub mod wannier90;
-pub use crate::atom_struct::{Atom, OrbProj};
+pub use crate::atom_struct::{Atom, AtomId, AtomType, OrbProj, OrbitalId};
+#[cfg(feature = "cryspglib")]
+pub use crate::crystal_symmetry::{
+    CrystalSymmetry, CrystalSymmetryDataset, CrystalSymmetryOperation, ExternalFields,
+    HighSymmetryKPoint, IrreducibleKMesh, MagneticCrystalSymmetry, MagneticGroupType,
+    MagneticTableColumns, SymmetryParameters,
+};
 pub use crate::cut::*;
 pub use crate::error::{Result, TbError};
 pub use crate::fermi_surface::*;
 pub use crate::floquet::*;
 use crate::generics::usefloat;
 pub use crate::geometry::*;
+#[cfg(feature = "cryspglib")]
+pub use crate::hamiltonian_symmetry::{
+    BasisActionContext, BasisRepresentationError, BasisSymmetryRepresentation, CellShiftAction,
+    FinalMagneticGroup, HamiltonianCompatibility, HamiltonianResidual, HamiltonianResidualWitness,
+    HamiltonianSymmetrizationParameters, HamiltonianSymmetryCandidates,
+    HamiltonianSymmetryCompleteness, HamiltonianSymmetryReport, HamiltonianSymmetryRequest,
+    HamiltonianSymmetryTolerances, IdentifiedMagneticSubgroup, LocalizedBasisAction,
+    OperationHamiltonianCheck, OperationHamiltonianStatus, ScalarSiteBasis,
+};
 pub use crate::hubbard::*;
 pub use crate::io::*;
 pub use crate::kpath::*;

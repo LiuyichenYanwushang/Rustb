@@ -12,6 +12,50 @@ use thiserror::Error;
 /// The primary error type for all fallible operations in this library.
 #[derive(Error, Debug)]
 pub enum TbError {
+    #[cfg(feature = "cryspglib")]
+    #[error("cryspglib symmetry analysis failed: {0}")]
+    Cryspglib(#[from] cryspglib::SymError),
+
+    #[cfg(feature = "cryspglib")]
+    #[error("invalid crystal-symmetry input '{parameter}': {message}")]
+    InvalidCrystalSymmetryInput {
+        parameter: &'static str,
+        message: String,
+    },
+
+    #[cfg(feature = "cryspglib")]
+    #[error(
+        "high-symmetry data uses Hall setting {data_hall}, but the detected structure uses Hall setting {detected_hall}"
+    )]
+    UnsupportedHighSymmetrySetting {
+        detected_hall: usize,
+        data_hall: usize,
+    },
+
+    #[cfg(feature = "cryspglib")]
+    #[error(
+        "external fields reduce the symmetry from {structural_operations} to {effective_operations} operations; canonical high-symmetry points and character tables for the structural group are not valid for this effective symmetry"
+    )]
+    FieldReducedSymmetryData {
+        structural_operations: usize,
+        effective_operations: usize,
+    },
+
+    #[cfg(feature = "cryspglib")]
+    #[error("magnetic irrep/corep analysis failed for UNI {uni}: {message}")]
+    MagneticIrrepAnalysis { uni: usize, message: String },
+
+    #[cfg(feature = "cryspglib")]
+    #[error("invalid Hamiltonian-symmetry input '{parameter}': {message}")]
+    InvalidHamiltonianSymmetryInput {
+        parameter: &'static str,
+        message: String,
+    },
+
+    #[cfg(feature = "cryspglib")]
+    #[error("target magnetic group is incompatible with this Model: {reason}")]
+    TargetMagneticGroupIncompatible { reason: String },
+
     // --- I/O and Parsing Errors ---
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -24,6 +68,9 @@ pub enum TbError {
 
     #[error("Invalid atom type string: '{0}'")]
     InvalidAtomType(String),
+
+    #[error("atomic magnetic moment must have finite Cartesian components, got {moment:?}")]
+    InvalidAtomicMagneticMoment { moment: [f64; 3] },
 
     #[error("Failed to create directory '{path}': {message}")]
     DirectoryCreation { path: String, message: String },
@@ -185,11 +232,39 @@ pub enum TbError {
     #[error("Duplicate orbitals found in orbital list")]
     DuplicateOrbitals,
 
+    #[error("Duplicate atoms found in atom list")]
+    DuplicateAtoms,
+
+    #[error("atom reorder list must be a permutation of 0..{natom}, got {order:?}")]
+    InvalidAtomPermutation { natom: usize, order: Vec<usize> },
+
     #[error("Invalid supercell transformation matrix determinant: {det}")]
     InvalidSupercellDet { det: f64 },
 
     #[error("Invalid atom positions or count in unit cell")]
     InvalidAtomConfiguration,
+
+    #[error("atom index {index} is out of bounds for {natom} atoms")]
+    InvalidAtomId { index: usize, natom: usize },
+
+    #[error("orbital index {index} is out of bounds for {norb} orbitals")]
+    InvalidOrbitalId { index: usize, norb: usize },
+
+    #[error("orbital {orbital} is assigned to both atom {first_atom} and atom {second_atom}")]
+    DuplicateOrbitalOwner {
+        orbital: usize,
+        first_atom: usize,
+        second_atom: usize,
+    },
+
+    #[error("invalid model invariant '{invariant}': {message}")]
+    InvalidModelInvariant {
+        invariant: &'static str,
+        message: String,
+    },
+
+    #[error("this operation requires explicit atomic-site metadata")]
+    MissingAtomicStructure,
 
     #[error("Transformation matrix dimension mismatch: expected {expected}, got {actual}")]
     TransformationMatrixDimMismatch { expected: usize, actual: usize },

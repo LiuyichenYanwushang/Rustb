@@ -215,6 +215,14 @@ Berry (src/geometry.rs)              → Wilson loops, Berry phase, Wannier cent
 CutModel (src/cut.rs)                → slab/ribbon (cut_piece), dot (cut_dot)
 MagneticField (src/magnetic_field.rs)
 Unfold (src/unfold.rs)
+CrystalSymmetry (src/crystal_symmetry.rs, feature `cryspglib`)
+  → Atom-based SG/MSG, effective symmetry under optional E/B fields,
+    character tables, high-symmetry k points, irreducible meshes
+Model::check_hamiltonian_symmetry (src/hamiltonian_symmetry.rs, feature `cryspglib`)
+  → exact real-space operation residuals, validated localized sewing actions,
+    and setting-aware residual UNI/BNS magnetic-group identification
+Model::symmetrize_hamiltonian (src/hamiltonian_symmetry.rs, feature `cryspglib`)
+  → validated magnetic Reynolds projection returning a new Model
 ```
 
 All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait for Model<SPIN, DIM, R>`.
@@ -249,10 +257,12 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `solve_ham.rs` | Parallel diagonalization (`solve_all_parallel`, `solve_range_onek`) |
 | `kpoints.rs`/`kpath.rs`/`kplane.rs` | k-mesh/k-path/k-plane generation |
 | `output.rs` | gnuplot plotting |
-| `model_transform.rs` | Supercell construction, orbital removal/reordering, `shift_to_atom` |
+| `model_build.rs` | Model construction, supercells, typed orbital/atom removal and reordering |
 | `model_utils.rs` | Internal: `find_R()` for lattice vector lookup in `hamR` |
 | `math.rs` | `comm()`, `anti_comm()`, `gauss()` smearing |
 | `atom_struct.rs` | `Atom` and `OrbProj` types |
+| `crystal_symmetry.rs` | Optional `cryspglib` adapter; structure and field-effective symmetry |
+| `hamiltonian_symmetry.rs` | Exact Hamiltonian covariance, residual MSG identification, and forced Hamiltonian symmetrization |
 | `error.rs` | `TbError` enum, `Result` alias |
 | `generics.rs` | Numeric abstractions, `SpinDirection::from_index` |
 | `phy_const.rs` | Physical constants: `e`, `ħ`, `μ_B`, `Φ₀`, quantum of conductance |
@@ -262,7 +272,8 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 
 - **k-points**: Fractional reciprocal coordinates; phase = `exp(2πi k·R)`.
 - **Orbital positions**: Fractional coords (rows of `orb`).
-- **Lattice vectors**: Stored in `Model::lat` (columns = real-space vectors).
+- **Lattice vectors**: Stored as rows of `Model::lat`; Cartesian row
+  coordinates are `fractional.dot(lat)`.
   Reciprocal vectors via `Model::rec_lat()` (rows = reciprocal vectors,
   formula `B = 2π·(Aᵀ)⁻¹`).
 - **Eigenbasis transformation** (`band` ↔ `evec` from `eigh`): the codebase
@@ -523,3 +534,69 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
 - **Constructing models**: `Model::<false, 2>::tb_model(lat, orb, None)?` for spinless 2D;
   `Model::<true, 2>::tb_model(lat, orb, None)?` for spinful 2D;
   `Model::<false, 3, HasRMatrix>::from_hr(path, seed, 0.0)?` for 3D with position matrix.
+- **Atom/orbital ownership**: `Model` owns the dense orbital arrays. `Atom`
+  stores explicit typed `OrbitalId` handles, not a count or pointer. `None` in
+  `tb_model(..., None)` is a genuine orbital-only model; it does not fabricate
+  H atoms. Crystal symmetry always requires explicit `Atom` metadata.
+- **Optional Atom magnetism**: every Atom stores `Option<[f64; 3]>` in Cartesian
+  coordinates. Constructors default to `None`; use `set_magnetic_moment` and
+  `clear_magnetic_moment`. `magnetic_crystal_symmetry_from_atoms` and the
+  matching irreducible-mesh method consume this metadata directly, mapping
+  `None` to a zero moment for cryspglib. Explicit `&moments` methods remain
+  per-call overrides. Supercells, cuts, serde, and Model validation preserve or
+  validate the optional moment.
+- **External fields in symmetry analysis**: uniform electric/magnetic fields
+  already encoded in the Hamiltonian are supplied as optional Cartesian vectors
+  in `SymmetryParameters::external_fields`. They are per-analysis context, not
+  `Model` fields. Rustb passes them explicitly into cryspglib. Return both the
+  structural operation group and the operation subset that preserves E
+  (time-even polar) and B (time-odd axial), including surviving combined
+  anti-unitary operations. Effective meshes use this subset; structural
+  high-symmetry tables error when the field has reduced the group. Magnetic
+  mesh reduction requires explicit moments via `magnetic_irreducible_kmesh`;
+  `irreducible_kmesh(..., time_reversal=true, ...)` is a caller assertion about
+  the Hamiltonian. Character-table operation headers are canonical database
+  operations, while detected structural operations remain in model basis.
+- **Hamiltonian symmetry is Atom-based and explicit**: call
+  `Model::check_hamiltonian_symmetry(provider, request)`. It always obtains
+  structural candidates from Atom positions; an orbital-only model is
+  rejected. The default checks the structural grey extension after optional
+  E/B filtering. `ScalarSiteBasis` is deliberately strict (one atom-centred
+  `s` orbital per Atom and complete ownership). General Wannier gauges must
+  implement `BasisSymmetryRepresentation`; missing metadata is `Unresolved`,
+  never `Broken`.
+- **Exact real-space convention**: for
+  `g|b,R> = sum_(s,a) D_s[a,b]|a,W R+s>`, evaluate
+  `K_g(R) = sum_(s,t) D_s^dag H(W R+t-s) D_t`. A unitary operation requires
+  `H(R)=K_g(R)`; an anti-unitary operation requires `H(R)=K_g(R)*`. Compare the
+  union of stored `hamR` and every inverse-transformed support point, treating
+  absent blocks as zero. Never replace this proof by sparse k sampling.
+- **Residual magnetic-group identification**: survivors must pass cryspglib's
+  identity/duplicate/inverse/closure validator. Derive the final group's family
+  Hall from its own spatial projection, then identify UNI/BNS. The original
+  structural Hall is provenance only and is not a valid family-Hall hint after
+  symmetry reduction. A nonclosed threshold result or unresolved action is
+  explicitly `FinalMagneticGroup::Inconclusive`; never repair or guess it.
+- **Forced symmetrization is strict and non-mutating**: call
+  `Model::symmetrize_hamiltonian(target, provider, parameters)`. Validate the
+  target group, then recompute its compatibility with the current lattice,
+  Atom positions/types, optional Atom moments, and E/B context before invoking
+  the provider or averaging H. Any target mismatch is
+  `TargetMagneticGroupIncompatible`; never silently use a smaller group. The
+  localized actions must form a projective magnetic corepresentation. Average
+  the complete symmetry-generated support, restore Hermiticity, keep `R=0` at
+  row zero, realign old `rmatrix` blocks by R, zero-fill generated rmatrix rows,
+  and postcheck every target covariance equation. Return a new Model.
+- **Current integration status (2026-08-12)**: milestones A–E, Hamiltonian
+  certification/MSG identification F1, and forced symmetrization F2 are
+  implemented. Final independent reviews found no critical/high defect after
+  the orbital-cell-gauge and tolerance fixes. Rustb release library tests pass
+  122/122; the focused Hamiltonian suite passes 28/28. cryspglib passes 210
+  unit tests plus every integration
+  suite and 26 doctests. Strict release clippy passes for both crates,
+  feature-off Rustb compiles, and Rustb doctests pass 22/22 (2 ignored).
+- **Still deferred**: automatic shell/channel/local-frame representations for
+  non-s orbitals, gauge-covariant Peierls transformations, numerical band
+  irrep/corep assignment, and wiring weighted meshes into response solvers
+  remain follow-up work in
+  `CRYSPGLIB_INTEGRATION_PLAN.md`.

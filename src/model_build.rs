@@ -31,7 +31,7 @@
 
 use crate::Model;
 use crate::SpinDirection;
-use crate::atom_struct::{Atom, AtomType, OrbProj};
+use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
 use crate::error::{Result, TbError};
 use crate::generics::hop_use;
 use crate::model::RMatrixData;
@@ -154,10 +154,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// start with a single on-site block (for `R = 0`) and are populated using
     /// [`set_hop`], [`set_onsite`], and related methods.
     ///
-    /// If no `atom` list is provided, atoms are inferred from the orbital
-    /// positions: orbitals closer than `1e-2` (in fractional coordinates) are
-    /// assigned to the same atom. This heuristic works best when orbitals from
-    /// different atoms are well separated.
+    /// If no `atom` list is provided, the result is an orbital-only model with
+    /// an empty atomic structure. Rustb never invents atomic species or treats
+    /// Wannier centers as crystallographic sites.
     ///
     /// # Arguments
     /// * `lat` - Lattice vectors as a `DIM x DIM` matrix. Each row is a
@@ -165,8 +164,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///   const generic on [`Model<SPIN, DIM>`] (default: 3).
     /// * `orb` - Orbital positions in fractional coordinates, shape
     ///   `(norb, DIM)`.
-    /// * `atom` - Optional list of [`Atom`] objects. If `None`, atoms are
-    ///   inferred from `orb`.
+    /// * `atom` - Optional explicit list of [`Atom`] objects. `None` creates an
+    ///   orbital-only model.
     ///
     /// The `SPIN` and `DIM` const generics determine the basis and
     /// dimensionality. Use `Model::<true>::tb_model(...)` for spinful models,
@@ -204,7 +203,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///                  [0.0, 1.0, 0.0],
     ///                  [0.0, 0.0, 1.0]];
     /// let orb = array![[0.0, 0.0, 0.0]];
-    /// let atom = vec![Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H)];
+    /// let atom = vec![Atom::with_orbitals(
+    ///     arr1(&[0.0, 0.0, 0.0]),
+    ///     AtomType::H,
+    ///     [OrbitalId::new(0)],
+    /// )];
     /// let mut model = Model::<true>::tb_model(lat, orb, Some(atom)).unwrap();
     /// ```
     pub fn tb_model(
@@ -214,8 +217,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ) -> Result<Model<SPIN, DIM, R>> {
         let norb: usize = orb.len_of(Axis(0));
         let nsta: usize = if SPIN { 2 * norb } else { norb };
-        let mut new_atom_list: Vec<usize> = vec![1];
-        let mut new_atom = Array2::<f64>::zeros((0, DIM));
         if lat.len_of(Axis(1)) != DIM {
             return Err(TbError::LatticeDimensionError {
                 expected: DIM,
@@ -230,31 +231,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         let new_atom = match atom {
             Some(atom0) => atom0,
-            None => {
-                // Determine if orbitals belong to the same atom by checking if they are too close;
-                // this method only works when wannier90 does not perform maximal localization.
-                let mut new_atom = Vec::new();
-                new_atom.push(Atom::new(orb.row(0).to_owned(), 1, AtomType::H));
-                for i in 1..norb {
-                    if (orb.row(i).to_owned() - new_atom[new_atom.len() - 1].position()).norm_l2()
-                        > 1e-2
-                    {
-                        let use_atom = Atom::new(orb.row(i).to_owned(), 1, AtomType::H);
-                        new_atom.push(use_atom);
-                    } else {
-                        let n = new_atom.len();
-                        new_atom[n - 1].push_orb();
-                    }
-                }
-                new_atom
-            }
+            None => Vec::new(),
         };
-        let natom = new_atom.len();
         let ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta));
         let hamR = Array2::<isize>::zeros((1, DIM));
         let rmatrix = R::from_orb(&orb, norb, SPIN, DIM);
         let orb_projection = vec![OrbProj::s; norb];
-        let mut model = Model {
+        let model = Model {
             lat,
             orb,
             orb_projection,
@@ -263,6 +246,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             hamR,
             rmatrix,
         };
+        model.validate()?;
         Ok(model)
     }
 
@@ -860,20 +844,22 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///                  [0.0, 0.0, 1.0]];
     /// let orb = array![[0.1, 0.1, 0.0], [0.6, 0.6, 0.0]];
     /// let atoms = vec![
-    ///     Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H),
-    ///     Atom::new(arr1(&[0.5, 0.5, 0.0]), 1, AtomType::H),
+    ///     Atom::with_orbitals(arr1(&[0.0, 0.0, 0.0]), AtomType::H, [OrbitalId::new(0)]),
+    ///     Atom::with_orbitals(arr1(&[0.5, 0.5, 0.0]), AtomType::H, [OrbitalId::new(1)]),
     /// ];
     /// let mut model = Model::<false>::tb_model(lat, orb, Some(atoms)).unwrap();
-    /// model.shift_to_atom();
+    /// model.shift_to_atom().unwrap();
     /// ```
-    pub fn shift_to_atom(&mut self) {
-        let mut a = 0;
-        for (i, atom) in self.atoms.iter().enumerate() {
-            for j in 0..atom.norb() {
-                self.orb.row_mut(a).assign(&atom.position());
-                a += 1;
+    pub fn shift_to_atom(&mut self) -> Result<()> {
+        self.validate()?;
+        for atom in &self.atoms {
+            for &orbital in atom.orbitals() {
+                self.orb
+                    .row_mut(orbital.index())
+                    .assign(atom.position_ref());
             }
         }
+        Ok(())
     }
 
     /// Move the orbital positions to the positions of their parent atoms
@@ -882,21 +868,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Performs the same operation as [`shift_to_atom`] but uses a different
     /// indexing pattern (iterates by atom index rather than by atom reference).
     /// See [`shift_to_atom`] for details.
-    pub fn move_to_atom(&mut self) {
-        let mut a = 0;
-        for i in 0..self.natom() {
-            for j in 0..self.atoms[i].norb() {
-                self.orb.row_mut(a).assign(&self.atoms[i].position());
-                a += 1;
-            }
-        }
+    pub fn move_to_atom(&mut self) -> Result<()> {
+        self.shift_to_atom()
     }
 
     /// Remove orbitals from the model.
     ///
     /// Deletes the specified orbitals together with all Hamiltonian and
     /// position matrix elements involving them. The `orb_projection` list
-    /// is updated, and atoms whose orbital count drops to zero are removed.
+    /// is updated. Atoms whose orbital list becomes empty are retained as
+    /// valid structural sites; call [`Model::prune_empty_atoms`] explicitly if
+    /// they should also be removed.
     ///
     /// For spinful models, the corresponding spin-doubled indices are also
     /// removed (index `i + norb` is removed alongside `i`).
@@ -905,47 +887,55 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `orb_list` - Indices of orbitals to remove (0-based, spinless
     ///   basis). Duplicate entries are not allowed.
     ///
-    /// # Panics
-    /// Panics if `orb_list` contains duplicate entries.
-    pub fn remove_orb(&mut self, orb_list: &Vec<usize>) {
-        let mut use_orb_list = orb_list.clone();
-        use_orb_list.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    /// Returns a structured error for duplicate or out-of-range IDs.
+    pub fn remove_orb(&mut self, orb_list: &[usize]) -> Result<()> {
+        self.validate()?;
+        let mut use_orb_list = orb_list.to_vec();
+        use_orb_list.sort_unstable();
         let has_duplicates = { use_orb_list.windows(2).any(|window| window[0] == window[1]) };
         if has_duplicates {
-            panic!("Wrong, make sure no duplicates in orb_list");
+            return Err(TbError::DuplicateOrbitals);
         }
-        let mut index: Vec<_> = (0..=self.norb() - 1)
-            .filter(|&num| !use_orb_list.contains(&num))
+        if let Some(&index) = use_orb_list.iter().find(|&&index| index >= self.norb()) {
+            return Err(TbError::InvalidOrbitalId {
+                index,
+                norb: self.norb(),
+            });
+        }
+        if use_orb_list.is_empty() {
+            return Ok(());
+        }
+        let old_norb = self.norb();
+        let mut index: Vec<_> = (0..old_norb)
+            .filter(|num| use_orb_list.binary_search(num).is_err())
             .collect(); //要保留下来的元素
-        let delete_n = orb_list.len();
+        let mut old_to_new = vec![None; old_norb];
+        for (new, &old) in index.iter().enumerate() {
+            old_to_new[old] = Some(OrbitalId::new(new));
+        }
         self.orb = self.orb.select(Axis(0), &index);
-        let mut new_orb_proj = Vec::new();
-        for i in index.iter() {
-            new_orb_proj.push(self.orb_projection[*i])
+        self.orb_projection = index.iter().map(|&old| self.orb_projection[old]).collect();
+        for atom in &mut self.atoms {
+            let remapped = atom
+                .orbitals()
+                .iter()
+                .filter_map(|id| old_to_new[id.index()])
+                .collect();
+            atom.set_orbitals(remapped);
         }
-        self.orb_projection = new_orb_proj;
-
-        let mut b = 0;
-        for (i, a) in self.atoms.clone().iter().enumerate() {
-            b += a.norb();
-            while b > use_orb_list[0] {
-                self.atoms[i].remove_orb();
-                let _ = use_orb_list.remove(0);
-            }
-        }
-        self.atoms.retain(|x| x.norb() != 0);
         //开始计算nsta
         if SPIN {
-            let index_add: Vec<_> = index.iter().map(|x| *x + self.norb()).collect();
+            let index_add: Vec<_> = index.iter().map(|x| *x + old_norb).collect();
             index.extend(index_add);
         }
-        let mut b = 0;
         //开始操作哈密顿量
         let new_ham = self.ham.select(Axis(1), &index);
         let new_ham = new_ham.select(Axis(2), &index);
         self.ham = new_ham;
         //开始操作rmatrix
         self.rmatrix = self.rmatrix.select_axes(Axis(2), &index, Axis(3), &index);
+        self.validate()?;
+        Ok(())
     }
 
     /// Remove entire atoms from the model.
@@ -958,68 +948,83 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `atom_list` - Indices of atoms to remove (0-based). Duplicates are
     ///   not allowed.
     ///
-    /// # Panics
-    /// Panics if `atom_list` contains duplicates.
-    pub fn remove_atom(&mut self, atom_list: &Vec<usize>) {
+    /// Returns a structured error for duplicate or out-of-range IDs.
+    pub fn remove_atom(&mut self, atom_list: &[usize]) -> Result<()> {
+        self.validate()?;
         //----------判断是否存在重复, 并给出保留的index
-        let mut use_atom_list = atom_list.clone();
-        use_atom_list.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut use_atom_list = atom_list.to_vec();
+        use_atom_list.sort_unstable();
         let has_duplicates = {
             use_atom_list
                 .windows(2)
                 .any(|window| window[0] == window[1])
         };
         if has_duplicates {
-            panic!("Wrong, make sure no duplicates in orb_list");
+            return Err(TbError::DuplicateAtoms);
         }
 
-        let mut atom_index: Vec<_> = (0..=self.natom() - 1)
-            .filter(|&num| !use_atom_list.contains(&num))
-            .collect(); //要保留下来的元素
+        if let Some(&index) = use_atom_list.iter().find(|&&index| index >= self.natom()) {
+            return Err(TbError::InvalidAtomId {
+                index,
+                natom: self.natom(),
+            });
+        }
+        if use_atom_list.is_empty() {
+            return Ok(());
+        }
+        let mut removed_orbitals = use_atom_list
+            .iter()
+            .flat_map(|&atom| self.atoms[atom].orbitals().iter())
+            .map(|id| id.index())
+            .collect::<Vec<_>>();
+        removed_orbitals.sort_unstable();
+        self.atoms = self
+            .atoms
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| use_atom_list.binary_search(index).is_err())
+            .map(|(_, atom)| atom.clone())
+            .collect();
+        self.remove_orb(&removed_orbitals)
+    }
 
-        let new_atoms = {
-            let mut new_atoms = Vec::new();
-            for i in atom_index.iter() {
-                new_atoms.push(self.atoms[*i].clone());
-            }
-            new_atoms
-        }; //选出需要的原子以及需要的轨道
-        //接下来选择需要的轨道
+    /// Remove atoms together with every orbital they own.
+    ///
+    /// This is the explicit name for the historical cascade behavior of
+    /// [`Self::remove_atom`].
+    pub fn remove_atoms_and_orbitals(&mut self, atom_list: &[usize]) -> Result<()> {
+        self.remove_atom(atom_list)
+    }
 
-        let mut b = 0;
-        let mut orb_index = Vec::new(); //要保留下来的轨道
-        let atom_list = self.atom_list();
-        let mut int_atom_list = Array1::zeros(self.natom());
-        int_atom_list[[0]] = 0;
-        for i in 1..self.natom() {
-            int_atom_list[[i]] = int_atom_list[[i - 1]] + atom_list[i - 1];
+    /// Remove only atomic-site metadata and leave its orbitals unassigned.
+    pub fn remove_atoms_only(&mut self, atom_list: &[usize]) -> Result<()> {
+        self.validate()?;
+        let mut removed = atom_list.to_vec();
+        removed.sort_unstable();
+        if removed.windows(2).any(|window| window[0] == window[1]) {
+            return Err(TbError::DuplicateAtoms);
         }
-        for i in atom_index.iter() {
-            for j in 0..self.atoms[*i].norb() {
-                orb_index.push(int_atom_list[[*i]] + j);
-            }
+        if let Some(&index) = removed.iter().find(|&&index| index >= self.natom()) {
+            return Err(TbError::InvalidAtomId {
+                index,
+                natom: self.natom(),
+            });
         }
-        let norb = self.norb(); //保留之前的norb
-        self.orb = self.orb.select(Axis(0), &orb_index);
-        self.atoms = new_atoms;
+        self.atoms = self
+            .atoms
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| removed.binary_search(index).is_err())
+            .map(|(_, atom)| atom.clone())
+            .collect();
+        self.validate()
+    }
 
-        let mut new_orb_proj = Vec::new();
-        for i in orb_index.iter() {
-            new_orb_proj.push(self.orb_projection[*i])
-        }
-        self.orb_projection = new_orb_proj;
-        if SPIN {
-            let index_add: Vec<_> = orb_index.iter().map(|x| *x + norb).collect();
-            orb_index.extend(index_add);
-        }
-        //开始操作哈密顿量
-        let new_ham = self.ham.select(Axis(1), &orb_index);
-        let new_ham = new_ham.select(Axis(2), &orb_index);
-        self.ham = new_ham;
-        //开始操作rmatrix
-        self.rmatrix = self
-            .rmatrix
-            .select_axes(Axis(2), &orb_index, Axis(3), &orb_index);
+    /// Remove atomic sites that currently own no tight-binding orbitals.
+    pub fn prune_empty_atoms(&mut self) -> Result<()> {
+        self.validate()?;
+        self.atoms.retain(|atom| !atom.orbitals().is_empty());
+        self.validate()
     }
 
     /// Reorder atoms and their associated orbitals.
@@ -1034,9 +1039,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `order` - A permutation of `0..natom()` giving the new atom order.
     ///   Must have length `natom()`.
     ///
-    /// # Panics
-    /// Panics if `order.len() != natom()`.
-    ///
     /// # Examples
     ///
     /// ```
@@ -1049,36 +1051,45 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///                  [0.0, 0.0, 1.0]];
     /// let orb = array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.0]];
     /// let atoms = vec![
-    ///     Atom::new(arr1(&[0.0, 0.0, 0.0]), 1, AtomType::H),
-    ///     Atom::new(arr1(&[0.5, 0.5, 0.0]), 1, AtomType::H),
+    ///     Atom::with_orbitals(arr1(&[0.0, 0.0, 0.0]), AtomType::H, [OrbitalId::new(0)]),
+    ///     Atom::with_orbitals(arr1(&[0.5, 0.5, 0.0]), AtomType::H, [OrbitalId::new(1)]),
     /// ];
     /// let mut model = Model::<false>::tb_model(lat, orb, Some(atoms)).unwrap();
     ///
     /// // Swap atom 0 and atom 1
-    /// model.reorder_atom(&vec![1, 0]);
+    /// model.reorder_atom(&[1, 0]).unwrap();
     /// ```
-    pub fn reorder_atom(&mut self, order: &Vec<usize>) {
+    pub fn reorder_atom(&mut self, order: &[usize]) -> Result<()> {
+        self.validate()?;
         if order.len() != self.natom() {
-            panic!(
-                "Wrong! when you using reorder_atom, the order's length {} must equal to the num of atoms {}.",
-                order.len(),
-                self.natom()
-            );
+            return Err(TbError::InvalidAtomPermutation {
+                natom: self.natom(),
+                order: order.to_vec(),
+            });
         };
-        //首先我们根据原子顺序得到轨道顺序
-        let mut new_orb_order = Vec::new();
-        //第n个原子的最开始的轨道数
-        let mut orb_atom_map = Vec::new();
-        let mut a = 0;
-        for atom in self.atoms.iter() {
-            orb_atom_map.push(a);
-            a += atom.norb();
+        let mut sorted_order = order.to_vec();
+        sorted_order.sort_unstable();
+        if sorted_order != (0..self.natom()).collect::<Vec<_>>() {
+            return Err(TbError::InvalidAtomPermutation {
+                natom: self.natom(),
+                order: order.to_vec(),
+            });
         }
-        for i in order.iter() {
-            let mut s = String::new();
-            for j in 0..self.atoms[*i].norb() {
-                new_orb_order.push(orb_atom_map[*i] + j);
-            }
+        let owners = self.orbital_owners()?;
+        let mut new_orb_order = order
+            .iter()
+            .flat_map(|&atom| self.atoms[atom].orbitals().iter())
+            .map(|id| id.index())
+            .collect::<Vec<_>>();
+        new_orb_order.extend(
+            owners
+                .iter()
+                .enumerate()
+                .filter_map(|(orbital, owner)| owner.is_none().then_some(orbital)),
+        );
+        let mut old_to_new = vec![0usize; self.norb()];
+        for (new, &old) in new_orb_order.iter().enumerate() {
+            old_to_new[old] = new;
         }
         //重排轨道顺序
         self.orb = self.orb.select(Axis(0), &new_orb_order);
@@ -1089,9 +1100,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             new_orb_proj.push(self.orb_projection[*i]);
         }
         self.orb_projection = new_orb_proj;
-        //重排原子顺序
-        for i in 0..self.natom() {
-            new_atom.push(self.atoms[order[i]].clone());
+        //重排原子顺序并重映射其轨道引用
+        for &old_atom in order {
+            let mut atom = self.atoms[old_atom].clone();
+            atom.set_orbitals(
+                atom.orbitals()
+                    .iter()
+                    .map(|id| OrbitalId::new(old_to_new[id.index()]))
+                    .collect(),
+            );
+            new_atom.push(atom);
         }
         self.atoms = new_atom;
         //开始重排哈密顿量
@@ -1110,6 +1128,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         self.rmatrix =
             self.rmatrix
                 .select_axes(Axis(2), &new_state_order, Axis(3), &new_state_order);
+        self.validate()?;
+        Ok(())
     }
 
     /// Build a supercell by applying an integer transformation matrix `U`.
@@ -1147,6 +1167,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// - [`TbError::InvalidSupercellMatrix`] if `U` contains non-integer
     ///   entries.
     pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM, R>> {
+        self.validate()?;
+        let orbital_owners = self.orbital_owners()?;
         if self.dim_r() != U.len_of(Axis(0)) {
             return Err(TbError::TransformationMatrixDimMismatch {
                 expected: self.dim_r(),
@@ -1172,18 +1194,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut use_orb = self.orb.dot(&U_inv);
         //新的原子位置
         let use_atom_position = self.atom_position().dot(&U_inv);
-        //新的atom_list
-        let mut use_atom_list: Vec<usize> = Vec::new();
         let mut orb_list: Vec<usize> = Vec::new();
         let mut new_orb = Array2::<f64>::zeros((0, self.dim_r()));
         let mut new_orb_proj = Vec::new();
         let mut new_atom = Vec::new();
-        let mut a = 0;
-        for i in 0..self.natom() {
-            use_atom_list.push(a);
-            a += self.atoms[i].norb();
-        }
-
         // Pre-fetch U_inv rows and use scalar arithmetic: avoids per-iteration
         // .to_owned() heap allocations, replacing 3-5 allocs/iter with 1 arr1! call.
         match self.dim_r() {
@@ -1226,14 +1240,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                     atoms[[2]]
                                 };
                                 if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                                    new_atom.push(Atom::new(
-                                        atoms,
-                                        self.atoms[n].norb(),
-                                        self.atoms[n].atom_type(),
-                                    ));
-                                    for n0 in
-                                        use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb()
-                                    {
+                                    let first_new_orbital = new_orb.nrows();
+                                    for &source_orbital in self.atoms[n].orbitals() {
+                                        let n0 = source_orbital.index();
                                         let o = use_orb.row(n0);
                                         let orbs = arr1(&[
                                             o[0] + i_f * u0[0] + j_f * u1[0] + k_f * u2[0],
@@ -1244,6 +1253,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                         new_orb_proj.push(self.orb_projection[n0]);
                                         orb_list.push(n0);
                                     }
+                                    let mut atom = Atom::with_orbitals(
+                                        atoms,
+                                        self.atoms[n].atom_type(),
+                                        (first_new_orbital..new_orb.nrows()).map(OrbitalId::new),
+                                    );
+                                    if let Some(moment) = self.atoms[n].magnetic_moment() {
+                                        atom.set_magnetic_moment(moment)?;
+                                    }
+                                    new_atom.push(atom);
                                 }
                             }
                         }
@@ -1278,13 +1296,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                 atoms[[1]]
                             };
                             if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                                new_atom.push(Atom::new(
-                                    atoms,
-                                    self.atoms[n].norb(),
-                                    self.atoms[n].atom_type(),
-                                ));
-                                for n0 in use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb()
-                                {
+                                let first_new_orbital = new_orb.nrows();
+                                for &source_orbital in self.atoms[n].orbitals() {
+                                    let n0 = source_orbital.index();
                                     let o = use_orb.row(n0);
                                     let orbs = arr1(&[
                                         o[0] + i_f * u0[0] + j_f * u1[0],
@@ -1294,6 +1308,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                     new_orb_proj.push(self.orb_projection[n0]);
                                     orb_list.push(n0);
                                 }
+                                let mut atom = Atom::with_orbitals(
+                                    atoms,
+                                    self.atoms[n].atom_type(),
+                                    (first_new_orbital..new_orb.nrows()).map(OrbitalId::new),
+                                );
+                                if let Some(moment) = self.atoms[n].magnetic_moment() {
+                                    atom.set_magnetic_moment(moment)?;
+                                }
+                                new_atom.push(atom);
                             }
                         }
                     }
@@ -1314,23 +1337,92 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             atoms[[0]]
                         };
                         if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                            new_atom.push(Atom::new(
-                                atoms,
-                                self.atoms[n].norb(),
-                                self.atoms[n].atom_type(),
-                            ));
-                            for n0 in use_atom_list[n]..use_atom_list[n] + self.atoms[n].norb() {
+                            let first_new_orbital = new_orb.nrows();
+                            for &source_orbital in self.atoms[n].orbitals() {
+                                let n0 = source_orbital.index();
                                 let o = use_orb.row(n0);
                                 let orbs = arr1(&[o[0] + i_f * u0[0]]);
                                 new_orb.push_row(orbs.view());
                                 new_orb_proj.push(self.orb_projection[n0]);
                                 orb_list.push(n0);
                             }
+                            let mut atom = Atom::with_orbitals(
+                                atoms,
+                                self.atoms[n].atom_type(),
+                                (first_new_orbital..new_orb.nrows()).map(OrbitalId::new),
+                            );
+                            if let Some(moment) = self.atoms[n].magnetic_moment() {
+                                atom.set_magnetic_moment(moment)?;
+                            }
+                            new_atom.push(atom);
                         }
                     }
                 }
             }
             _ => todo!(),
+        }
+
+        // Orbitals without an atomic owner are independent first-class basis
+        // states. Replicate them by their own positions so orbital-only models
+        // survive supercell construction without fabricated atoms.
+        let unassigned_orbitals = orbital_owners
+            .iter()
+            .enumerate()
+            .filter_map(|(orbital, owner)| owner.is_none().then_some(orbital))
+            .collect::<Vec<_>>();
+        let shifts = match self.dim_r() {
+            3 => {
+                let mut shifts = Vec::new();
+                for i in -U_det - 1..U_det + 1 {
+                    for j in -U_det - 1..U_det + 1 {
+                        for k in -U_det - 1..U_det + 1 {
+                            shifts.push(
+                                i as f64 * U_inv.row(0).to_owned()
+                                    + j as f64 * U_inv.row(1).to_owned()
+                                    + k as f64 * U_inv.row(2).to_owned(),
+                            );
+                        }
+                    }
+                }
+                shifts
+            }
+            2 => {
+                let mut shifts = Vec::new();
+                for i in -U_det - 1..U_det + 1 {
+                    for j in -U_det - 1..U_det + 1 {
+                        shifts.push(
+                            i as f64 * U_inv.row(0).to_owned() + j as f64 * U_inv.row(1).to_owned(),
+                        );
+                    }
+                }
+                shifts
+            }
+            1 => (-U_det - 1..U_det + 1)
+                .map(|i| i as f64 * U_inv.row(0).to_owned())
+                .collect(),
+            _ => {
+                return Err(TbError::InvalidDimension {
+                    dim: self.dim_r(),
+                    supported: vec![1, 2, 3],
+                });
+            }
+        };
+        for shift in shifts {
+            for &source in &unassigned_orbitals {
+                let mut position = use_orb.row(source).to_owned() + &shift;
+                for component in &mut position {
+                    if component.abs() < 1e-8 {
+                        *component = 0.0;
+                    } else if (*component - 1.0).abs() < 1e-8 {
+                        *component = 1.0;
+                    }
+                }
+                if position.iter().all(|&value| (0.0..1.0).contains(&value)) {
+                    new_orb.push_row(position.view());
+                    new_orb_proj.push(self.orb_projection[source]);
+                    orb_list.push(source);
+                }
+            }
         }
         //轨道位置和原子位置构建完成, 接下来我们开始构建哈密顿量
         let norb = new_orb.len_of(Axis(0));
@@ -1587,7 +1679,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 new_rmatrix.push(Axis(0), zero_rm.view());
             }
         }
-        let mut model = Model {
+        let model = Model {
             lat: new_lat,
             orb: new_orb,
             orb_projection: new_orb_proj,
@@ -1596,6 +1688,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             hamR: new_hamR,
             rmatrix: R::from_array(new_rmatrix),
         };
+        model.validate()?;
         Ok(model)
     }
 }

@@ -654,7 +654,7 @@ fn cut(model: &Model<true>, num: usize, cut_type: usize, name: &str) {
                     del_atom.push(i)
                 }
             }
-            new_model.remove_atom(&del_atom);
+            new_model.remove_atom(&del_atom).unwrap();
             new_model
         }
         2 => {
