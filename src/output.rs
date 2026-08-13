@@ -404,6 +404,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
     fn output_xyz(&self, path: &str, seedname: &str) {
         //!Output a Wannier90 `_centres.xyz` file. Note: projections must be added
         //!manually, since projection data is not stored in the model.
+        assert!(
+            self.natom() > 0,
+            "output_xyz requires atom data, but this model has no atoms. \
+             Build the model with explicit Atom metadata via tb_model(..., Some(atoms))."
+        );
         let mut name = String::new();
         name.push_str(path);
         name.push_str(seedname);
