@@ -8,6 +8,27 @@ use ndarray_linalg::conjugate;
 use ndarray_linalg::*;
 use num_complex::{Complex, Complex64};
 
+const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_67;
+
+fn win_data_line(line: &str) -> &str {
+    line.split('!').next().unwrap_or_default().trim()
+}
+
+fn length_unit_scale(token: &str) -> Option<f64> {
+    match token.to_ascii_lowercase().as_str() {
+        "ang" | "angstrom" | "angstroms" => Some(1.0),
+        "bohr" => Some(BOHR_TO_ANGSTROM),
+        _ => None,
+    }
+}
+
+fn parse_coordinate_component(token: &str, file: &str, context: &str) -> Result<f64> {
+    token.parse::<f64>().map_err(|error| TbError::FileParse {
+        file: file.to_string(),
+        message: format!("Failed to parse {context}: {error}"),
+    })
+}
+
 /// Trait for loading a tight-binding model from Wannier90 output files.
 ///
 /// The implementing type controls which data is loaded:
@@ -260,81 +281,80 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                     file: win_path.clone(),
                     message: "Unexpected end of file".to_string(),
                 })?;
-                if a.contains("begin unit_cell_cart") {
-                    let mut lat1 = read_iter
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
+                let keyword = win_data_line(a).to_ascii_lowercase();
+                if keyword.contains("begin unit_cell_cart") {
+                    let mut unit_scale = 1.0_f64;
+                    let mut rows = Vec::<[f64; 3]>::with_capacity(3);
+                    while rows.len() < 3 {
+                        let line = read_iter.next().ok_or_else(|| TbError::FileParse {
                             file: win_path.clone(),
                             message: "Missing lattice vector line".to_string(),
-                        })?
-                        .trim()
-                        .split_whitespace(); //将数字放到
-                    let mut lat2 = read_iter
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: win_path.clone(),
-                            message: "Missing lattice vector line".to_string(),
-                        })?
-                        .trim()
-                        .split_whitespace();
-                    let mut lat3 = read_iter
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: win_path.clone(),
-                            message: "Missing lattice vector line".to_string(),
-                        })?
-                        .trim()
-                        .split_whitespace();
-                    for i in 0..3 {
-                        lat[[0, i]] = lat1
-                            .next()
-                            .ok_or_else(|| TbError::FileParse {
+                        })?;
+                        let line = win_data_line(line);
+                        if line.is_empty() {
+                            continue;
+                        }
+                        let tokens = line.split_whitespace().collect::<Vec<_>>();
+                        if rows.is_empty() && tokens.len() == 1 {
+                            unit_scale =
+                                length_unit_scale(tokens[0]).ok_or_else(|| TbError::FileParse {
+                                    file: win_path.clone(),
+                                    message: format!("Unknown unit_cell_cart unit '{}'", tokens[0]),
+                                })?;
+                            continue;
+                        }
+                        if tokens.len() != 3 {
+                            return Err(TbError::FileParse {
                                 file: win_path.clone(),
-                                message: "Missing lattice vector component".to_string(),
-                            })?
-                            .parse::<f64>()
-                            .map_err(|e| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!("Failed to parse lattice vector: {}", e),
-                            })?;
-                        lat[[1, i]] = lat2
-                            .next()
-                            .ok_or_else(|| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: "Missing lattice vector component".to_string(),
-                            })?
-                            .parse::<f64>()
-                            .map_err(|e| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!("Failed to parse lattice vector: {}", e),
-                            })?;
-                        lat[[2, i]] = lat3
-                            .next()
-                            .ok_or_else(|| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: "Missing lattice vector component".to_string(),
-                            })?
-                            .parse::<f64>()
-                            .map_err(|e| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!("Failed to parse lattice vector: {}", e),
-                            })?;
+                                message: format!(
+                                    "A unit_cell_cart row must contain 3 numbers, found {} in '{line}'",
+                                    tokens.len()
+                                ),
+                            });
+                        }
+                        rows.push([
+                            parse_coordinate_component(tokens[0], &win_path, "lattice vector")?
+                                * unit_scale,
+                            parse_coordinate_component(tokens[1], &win_path, "lattice vector")?
+                                * unit_scale,
+                            parse_coordinate_component(tokens[2], &win_path, "lattice vector")?
+                                * unit_scale,
+                        ]);
                     }
-                } else if a.contains("spinors") && (a.contains("T") || a.contains("t")) {
+                    for row in 0..3 {
+                        for column in 0..3 {
+                            lat[[row, column]] = rows[row][column];
+                        }
+                    }
+                } else if keyword.contains("spinors")
+                    && (keyword.contains('t') || keyword.contains("true"))
+                {
                     spin = true;
-                } else if a.contains("begin projections") {
+                } else if keyword.contains("begin projections") {
                     loop {
                         let string = read_iter.next().ok_or_else(|| TbError::FileParse {
                             file: win_path.clone(),
                             message: "Unexpected end of file".to_string(),
                         })?;
-                        if string.contains("end projections") {
+                        let string = win_data_line(string);
+                        if string.is_empty() {
+                            continue;
+                        }
+                        if string.to_ascii_lowercase().contains("end projections") {
                             break;
                         } else {
                             let prj: Vec<&str> = string
                                 .split(|c| c == ',' || c == ';' || c == ':')
                                 .map(|x| x.trim())
                                 .collect();
+                            if prj.len() < 2 || prj[0].is_empty() {
+                                return Err(TbError::FileParse {
+                                    file: win_path.clone(),
+                                    message: format!(
+                                        "Malformed projection line '{string}': expected species:orbital"
+                                    ),
+                                });
+                            }
                             let mut atom_orb_number: usize = 0;
                             let mut proj_orb = Vec::new();
                             for item in prj[1..].iter() {
@@ -428,60 +448,63 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                             proj_name.push(proj_type);
                         }
                     }
-                } else if a.contains("begin atoms_cart") {
-                    let mut cartesian_unit = 1.0_f64; // angstrom
-                    let mut first_line = true;
+                } else if keyword.contains("begin atoms_cart") {
+                    let mut cartesian_unit = 1.0_f64;
+                    let mut first_data_line = true;
                     loop {
                         let string = read_iter.next().ok_or_else(|| TbError::FileParse {
                             file: win_path.clone(),
                             message: "Unexpected end of file".to_string(),
                         })?;
-                        if string.contains("end atoms_cart") {
-                            break;
-                        } else {
-                            let prj: Vec<&str> = string.split_whitespace().collect();
-                            // Wannier90 allows a unit line ("ang" or "bohr")
-                            // as the first entry of the block.
-                            if first_line && prj.len() == 1 {
-                                match prj[0] {
-                                    "ang" => cartesian_unit = 1.0,
-                                    "bohr" => cartesian_unit = 0.529_177_210_67,
-                                    _ => {
-                                        return Err(TbError::FileParse {
-                                            file: win_path.clone(),
-                                            message: format!(
-                                                "Unknown atoms_cart unit '{}'",
-                                                prj[0]
-                                            ),
-                                        });
-                                    }
-                                }
-                                first_line = false;
-                                continue;
-                            }
-                            first_line = false;
-                            atom_name.push(prj[0]);
-                            let a1 = prj[1].parse::<f64>().map_err(|e| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!("Failed to parse atom position: {}", e),
-                            })?;
-                            let a2 = prj[2].parse::<f64>().map_err(|e| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!("Failed to parse atom position: {}", e),
-                            })?;
-                            let a3 = prj[3].parse::<f64>().map_err(|e| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!("Failed to parse atom position: {}", e),
-                            })?;
-                            let a = array![
-                                a1 * cartesian_unit,
-                                a2 * cartesian_unit,
-                                a3 * cartesian_unit
-                            ];
-                            atom_pos.push_row(a.view()); //这里我们不用win 里面的, 因为这个和orb没法对应, 如果没有xyz文件才考虑用这个
+                        let string = win_data_line(string);
+                        if string.is_empty() {
+                            continue;
                         }
+                        if string.to_ascii_lowercase().contains("end atoms_cart") {
+                            break;
+                        }
+                        let fields = string.split_whitespace().collect::<Vec<_>>();
+                        if first_data_line && fields.len() == 1 {
+                            cartesian_unit =
+                                length_unit_scale(fields[0]).ok_or_else(|| TbError::FileParse {
+                                    file: win_path.clone(),
+                                    message: format!("Unknown atoms_cart unit '{}'", fields[0]),
+                                })?;
+                            first_data_line = false;
+                            continue;
+                        }
+                        first_data_line = false;
+                        if fields.len() != 4 {
+                            return Err(TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!(
+                                    "An atoms_cart row must contain a species and 3 coordinates, found {} fields in '{string}'",
+                                    fields.len()
+                                ),
+                            });
+                        }
+                        atom_name.push(fields[0]);
+                        let position = array![
+                            parse_coordinate_component(
+                                fields[1],
+                                &win_path,
+                                "Cartesian atom position",
+                            )? * cartesian_unit,
+                            parse_coordinate_component(
+                                fields[2],
+                                &win_path,
+                                "Cartesian atom position",
+                            )? * cartesian_unit,
+                            parse_coordinate_component(
+                                fields[3],
+                                &win_path,
+                                "Cartesian atom position",
+                            )? * cartesian_unit,
+                        ];
+                        // Only used when no _centres.xyz file is available.
+                        atom_pos.push_row(position.view());
                     }
-                } else if a.contains("begin atoms_frac") {
+                } else if keyword.contains("begin atoms_frac") {
                     // Fractional positions; convert to Cartesian at parse
                     // time so the fallback path stays uniform.
                     loop {
@@ -489,26 +512,43 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                             file: win_path.clone(),
                             message: "Unexpected end of file".to_string(),
                         })?;
-                        if string.contains("end atoms_frac") {
-                            break;
-                        } else {
-                            let prj: Vec<&str> = string.split_whitespace().collect();
-                            atom_name.push(prj[0]);
-                            let f1 = prj[1].parse::<f64>().map_err(|e| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!("Failed to parse atom position: {}", e),
-                            })?;
-                            let f2 = prj[2].parse::<f64>().map_err(|e| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!("Failed to parse atom position: {}", e),
-                            })?;
-                            let f3 = prj[3].parse::<f64>().map_err(|e| TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!("Failed to parse atom position: {}", e),
-                            })?;
-                            let a = array![f1, f2, f3].dot(&lat);
-                            atom_pos.push_row(a.view());
+                        let string = win_data_line(string);
+                        if string.is_empty() {
+                            continue;
                         }
+                        if string.to_ascii_lowercase().contains("end atoms_frac") {
+                            break;
+                        }
+                        let fields = string.split_whitespace().collect::<Vec<_>>();
+                        if fields.len() != 4 {
+                            return Err(TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!(
+                                    "An atoms_frac row must contain a species and 3 coordinates, found {} fields in '{string}'",
+                                    fields.len()
+                                ),
+                            });
+                        }
+                        atom_name.push(fields[0]);
+                        let fractional = array![
+                            parse_coordinate_component(
+                                fields[1],
+                                &win_path,
+                                "fractional atom position",
+                            )?,
+                            parse_coordinate_component(
+                                fields[2],
+                                &win_path,
+                                "fractional atom position",
+                            )?,
+                            parse_coordinate_component(
+                                fields[3],
+                                &win_path,
+                                "fractional atom position",
+                            )?,
+                        ];
+                        let position = fractional.dot(&lat);
+                        atom_pos.push_row(position.view());
                     }
                 }
             }
@@ -536,47 +576,77 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                 })?;
                 reads.push(line.clone());
             }
-            //let nsta=reads[0].trim().parse::<usize>().unwrap()-natom;
+            if reads.len() < 2 {
+                return Err(TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: "_centres.xyz must contain a count and comment line".to_string(),
+                });
+            }
+            let declared_entries =
+                reads[0]
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|error| TbError::FileParse {
+                        file: xyz_path.clone(),
+                        message: format!("Invalid _centres.xyz entry count: {error}"),
+                    })?;
+            let available_entries = reads.len() - 2;
+            if declared_entries < nsta || available_entries < declared_entries {
+                return Err(TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!(
+                        "Truncated _centres.xyz: header declares {declared_entries} entries, \
+                         HR requires {nsta} Wannier-centre entries, but only {} data lines are present",
+                        available_entries
+                    ),
+                });
+            }
             let norb = if spin { nsta / 2 } else { nsta };
             let mut orb = Array2::<f64>::zeros((norb, 3));
             for i in 0..norb {
-                let a: Vec<&str> = reads[i + 2].trim().split_whitespace().collect();
-                orb[[i, 0]] = a[1].parse::<f64>().map_err(|e| TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!("Failed to parse orbital position: {}", e),
-                })?;
-                orb[[i, 1]] = a[2].parse::<f64>().map_err(|e| TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!("Failed to parse orbital position: {}", e),
-                })?;
-                orb[[i, 2]] = a[3].parse::<f64>().map_err(|e| TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!("Failed to parse orbital position: {}", e),
-                })?
+                let fields = reads[i + 2].split_whitespace().collect::<Vec<_>>();
+                if fields.len() < 4 {
+                    return Err(TbError::FileParse {
+                        file: xyz_path.clone(),
+                        message: format!(
+                            "Malformed Wannier-centre row {}: expected a label and 3 coordinates",
+                            i + 1
+                        ),
+                    });
+                }
+                for axis in 0..3 {
+                    orb[[i, axis]] = parse_coordinate_component(
+                        fields[axis + 1],
+                        &xyz_path,
+                        "Wannier-centre position",
+                    )?;
+                }
             }
             orb = orb.dot(&lat.inv().map_err(TbError::Linalg)?);
-            let mut new_atom_pos = Array2::<f64>::zeros((reads.len() - 2 - nsta, 3));
-            let mut new_atom_name = Vec::new();
-            for i in 0..reads.len() - 2 - nsta {
-                let a: Vec<&str> = reads[i + 2 + nsta].trim().split_whitespace().collect();
-                new_atom_pos[[i, 0]] = a[1].parse::<f64>().map_err(|e| TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!("Failed to parse atom position: {}", e),
-                })?;
-                new_atom_pos[[i, 1]] = a[2].parse::<f64>().map_err(|e| TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!("Failed to parse atom position: {}", e),
-                })?;
-                new_atom_pos[[i, 2]] = a[3].parse::<f64>().map_err(|e| TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!("Failed to parse atom position: {}", e),
-                })?;
-                let name = AtomType::from_str(a[0]).map_err(|_| TbError::FileParse {
+            let atom_count = declared_entries - nsta;
+            let mut new_atom_pos = Array2::<f64>::zeros((atom_count, 3));
+            let mut new_atom_name = Vec::with_capacity(atom_count);
+            for i in 0..atom_count {
+                let fields = reads[i + 2 + nsta].split_whitespace().collect::<Vec<_>>();
+                if fields.len() < 4 {
+                    return Err(TbError::FileParse {
+                        file: xyz_path.clone(),
+                        message: format!(
+                            "Malformed atom row {} in _centres.xyz: expected a species and 3 coordinates",
+                            i + 1
+                        ),
+                    });
+                }
+                for axis in 0..3 {
+                    new_atom_pos[[i, axis]] =
+                        parse_coordinate_component(fields[axis + 1], &xyz_path, "atom position")?;
+                }
+                let name = AtomType::from_str(fields[0]).map_err(|_| TbError::FileParse {
                     file: xyz_path.clone(),
                     message: format!(
                         "Unknown atomic species '{}' in _centres.xyz; \
                          species must be listed in the win file's begin projections block",
-                        a[0]
+                        fields[0]
                     ),
                 })?;
                 new_atom_name.push(name);
@@ -1231,20 +1301,30 @@ mod tests {
     }
 
     #[test]
-    fn from_hr_accepts_cartesian_unit_line_and_frac_block() {
-        // Regression: the atoms_cart unit line ("ang"/"bohr") panicked at
-        // prj[1], and begin atoms_frac was not parsed at all.
-        for (block, unit_line) in [
-            ("atoms_cart\nang\nFe 0.0 0.0 0.0\nend atoms_cart", false),
-            ("atoms_frac\nFe 0.0 0.0 0.0\nend atoms_frac", true),
+    fn from_hr_handles_coordinate_blocks_and_units_consistently() {
+        // Regression: unit_cell_cart treated its optional unit as the first
+        // lattice row, atoms_cart only accepted lower-case units, and
+        // atoms_frac was not parsed at all. Each case below describes the same
+        // atom at fractional x=0.5 in a two-unit cubic cell.
+        for (lattice_unit, block, expected_lattice) in [
+            (
+                "BoHr",
+                "ATOMS_CART\nBOHR\nFe 1.0 0.0 0.0 ! inline comment\nEND ATOMS_CART",
+                2.0 * BOHR_TO_ANGSTROM,
+            ),
+            (
+                "AnG",
+                "atoms_cart\nAngstrom\nFe 1.0 0.0 0.0\nend atoms_cart",
+                2.0,
+            ),
+            ("Ang", "atoms_frac\nFe 0.5 0.0 0.0\nend atoms_frac", 2.0),
         ] {
             let dir = "tests/tmp_w90_units/";
             let _ = fs::remove_dir_all(dir);
             fs::create_dir_all(dir).unwrap();
             let win = format!(
-                "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin {block}\n\nbegin projections\nFe:s\nend projections\n"
+                "BEGIN UNIT_CELL_CART\n{lattice_unit}\n2.0 0.0 0.0\n0.0 2.0 0.0\n0.0 0.0 2.0\nEND UNIT_CELL_CART\n\nBEGIN {block}\n\nbegin projections\nFe:s\nend projections\n"
             );
-            let _ = unit_line;
             let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
             let mut f = fs::File::create(format!("{dir}seedname.win")).unwrap();
             f.write_all(win.as_bytes()).unwrap();
@@ -1253,8 +1333,51 @@ mod tests {
             let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
             assert_eq!(model.norb(), 1);
             assert_eq!(model.natom(), 1);
+            assert!((model.lat[[0, 0]] - expected_lattice).abs() < 1e-12);
+            assert!((model.atoms[0].position()[0] - 0.5).abs() < 1e-12);
+            assert!((model.orb[[0, 0]] - 0.5).abs() < 1e-12);
         }
         let _ = fs::remove_dir_all("tests/tmp_w90_units");
+    }
+
+    #[test]
+    fn from_hr_rejects_malformed_atom_rows_without_panicking() {
+        let dir = "tests/tmp_w90_malformed_atom/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1 0 0\n0 1 0\n0 0 1\nend unit_cell_cart\n\nbegin atoms_cart\nFe 0.0 0.0\nend atoms_cart\n\nbegin projections\nFe:s\nend projections\n";
+        let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+
+        let result = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0);
+        assert!(matches!(result, Err(TbError::FileParse { .. })));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_rejects_truncated_centres_xyz_without_panicking() {
+        let dir = "tests/tmp_w90_truncated_xyz/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1 0 0\n0 1 0\n0 0 1\nend unit_cell_cart\n\nbegin projections\nFe:s,p\nend projections\n";
+        let mut hr = String::from("generated\n4\n1\n1\n");
+        for i in 1..=4 {
+            for j in 1..=4 {
+                hr.push_str(&format!("0 0 0 {i} {j} 0.0 0.0\n"));
+            }
+        }
+        // The header declares four centres plus one atom, but only one centre
+        // and one atom line are present.
+        let xyz = "5\nWannier centres\nX 0.0 0.0 0.0\nFe 0.0 0.0 0.0\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let error = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap_err();
+        assert!(matches!(&error, TbError::FileParse { .. }));
+        assert!(error.to_string().contains("Truncated"));
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

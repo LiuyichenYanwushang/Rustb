@@ -1,4 +1,5 @@
 use crate::Model;
+use crate::OrbProj;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::output::*;
@@ -27,11 +28,95 @@ const REPRESENTATIVE_POSITION_TOLERANCE: f64 = 1e-8;
 fn periodic_distance(a: ArrayView1<'_, f64>, b: ArrayView1<'_, f64>) -> f64 {
     let mut sum = 0.0;
     for axis in 0..a.len() {
-        let d = (a[axis] - b[axis]).abs();
+        let d = (a[axis] - b[axis]).abs().rem_euclid(1.0);
         let d = d.min(1.0 - d);
         sum += d * d;
     }
     sum.sqrt()
+}
+
+/// Find a complete one-to-one match from an atom's orbitals to the primitive
+/// representatives using both orbital projection and periodic position.
+fn match_periodic_orbitals(
+    orbitals: &[usize],
+    representatives: &[usize],
+    folded_orbitals: &Array2<f64>,
+    unit_orbitals: &Array2<f64>,
+    orbital_projections: &[OrbProj],
+    unit_projections: &[OrbProj],
+) -> Option<Vec<usize>> {
+    if orbitals.len() != representatives.len() {
+        return None;
+    }
+
+    let mut options = Vec::<Vec<(usize, f64)>>::with_capacity(orbitals.len());
+    for &orbital in orbitals {
+        let projection = orbital_projections[orbital];
+        let folded = folded_orbitals.row(orbital);
+        let mut candidates = representatives
+            .iter()
+            .enumerate()
+            .filter_map(|(candidate, &unit_orbital)| {
+                if unit_projections[unit_orbital] != projection {
+                    return None;
+                }
+                let distance = periodic_distance(folded, unit_orbitals.row(unit_orbital));
+                (distance < REPRESENTATIVE_POSITION_TOLERANCE).then_some((candidate, distance))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.1.total_cmp(&right.1));
+        if candidates.is_empty() {
+            return None;
+        }
+        options.push(candidates);
+    }
+
+    // Match the most constrained orbital first. An augmenting-path matcher is
+    // used instead of nearest-only greediness: several same-projection
+    // orbitals may lie within tolerance, but the assignment must still be
+    // complete and one-to-one. This stays polynomial rather than exploring
+    // every permutation in an ambiguous cluster.
+    let mut order = (0..orbitals.len()).collect::<Vec<_>>();
+    order.sort_by_key(|&orbital| options[orbital].len());
+    let mut candidate_owner = vec![None::<usize>; representatives.len()];
+
+    fn augment(
+        orbital: usize,
+        options: &[Vec<(usize, f64)>],
+        seen: &mut [bool],
+        candidate_owner: &mut [Option<usize>],
+    ) -> bool {
+        for &(candidate, _) in &options[orbital] {
+            if seen[candidate] {
+                continue;
+            }
+            seen[candidate] = true;
+            let can_reassign = match candidate_owner[candidate] {
+                None => true,
+                Some(previous) => augment(previous, options, seen, candidate_owner),
+            };
+            if can_reassign {
+                candidate_owner[candidate] = Some(orbital);
+                return true;
+            }
+        }
+        false
+    }
+
+    for orbital in order {
+        let mut seen = vec![false; representatives.len()];
+        if !augment(orbital, &options, &mut seen, &mut candidate_owner) {
+            return None;
+        }
+    }
+    let mut assignment = vec![usize::MAX; orbitals.len()];
+    for (candidate, orbital) in candidate_owner.into_iter().enumerate() {
+        assignment[orbital?] = representatives[candidate];
+    }
+    assignment
+        .iter()
+        .all(|&index| index != usize::MAX)
+        .then_some(assignment)
 }
 pub trait Unfold {
     //! Band unfolding algorithm. Computes the unfolded band structure, and can be
@@ -39,7 +124,7 @@ pub trait Unfold {
     //! waves projected onto the primitive cell.
     /// The algorithm follows PRL 104, 216401 (2010).
     /// Representative centers are matched within a fixed fractional-coordinate
-    /// tolerance of `1e-3`.
+    /// tolerance of `1e-8`.
     ///
     /// First, define the supercell Brillouin-zone Hamiltonian $H_{\\bm K}$ and its
     /// Green's function $$G(\og,\bm K)=(\og+i\eta-H_{\bm K})^{-1}$$
@@ -201,6 +286,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
         // physical positions.
         const SNAP_TOLERANCE: f64 = 1e-10;
         let mut unit_orb = Array2::<f64>::zeros((0, self.dim_r()));
+        let mut unit_orb_projection = Vec::<OrbProj>::new();
         let unfold_orb = &self.orb.dot(U).map(|x| {
             if (x.fract() - 1.0).abs() < SNAP_TOLERANCE || x.fract().abs() < SNAP_TOLERANCE {
                 0.0
@@ -215,13 +301,21 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
             // Orbital-only models are first-class: derive primitive-orbital
             // representatives directly from folded Wannier centers.
             for (orbital, folded) in unfold_orb.outer_iter().enumerate() {
-                let representative = unit_orb.outer_iter().position(|candidate| {
-                    periodic_distance(folded, candidate) < REPRESENTATIVE_POSITION_TOLERANCE
-                });
+                let projection = self.orb_projection[orbital];
+                let representative =
+                    unit_orb
+                        .outer_iter()
+                        .enumerate()
+                        .position(|(candidate_index, candidate)| {
+                            unit_orb_projection[candidate_index] == projection
+                                && periodic_distance(folded, candidate)
+                                    < REPRESENTATIVE_POSITION_TOLERANCE
+                        });
                 match representative {
                     Some(representative) => match_orb_list[orbital] = representative,
                     None => {
                         unit_orb.push_row(folded);
+                        unit_orb_projection.push(projection);
                         match_orb_list[orbital] = unit_orb.nrows() - 1;
                     }
                 }
@@ -244,47 +338,34 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
             let mut unit_atom_orbitals = Vec::<Vec<usize>>::new();
             let mut unit_atom_types = Vec::new();
             for (atom_index, folded_atom) in unfold_atom.outer_iter().enumerate() {
-                let representative =
-                    unit_atom
-                        .outer_iter()
-                        .enumerate()
-                        .position(|(candidate_index, candidate)| {
-                            periodic_distance(folded_atom, candidate)
-                                < REPRESENTATIVE_POSITION_TOLERANCE
-                                && unit_atom_types[candidate_index]
-                                    == self.atoms[atom_index].atom_type()
-                        });
-                if let Some(representative) = representative {
-                    if unit_atom_orbitals[representative].len() != self.atoms[atom_index].norb() {
-                        return Err(TbError::InvalidAtomConfiguration);
-                    }
-                    // One-to-one assignment by periodic position and orbital
-                    // projection: supercell copies may list their orbitals in
-                    // any order, so positional zip pairing is not reliable.
-                    let mut used = vec![false; unit_atom_orbitals[representative].len()];
-                    for &orbital in self.atoms[atom_index].orbitals() {
-                        let folded = unfold_orb.row(orbital.index());
-                        let projection = self.orb_projection[orbital.index()];
-                        let candidate = unit_atom_orbitals[representative]
-                            .iter()
-                            .enumerate()
-                            .filter(|&(index, &unit_orbital)| {
-                                !used[index] && self.orb_projection[unit_orbital] == projection
-                            })
-                            .min_by(|&(_, &u1), &(_, &u2)| {
-                                periodic_distance(folded, unit_orb.row(u1))
-                                    .partial_cmp(&periodic_distance(folded, unit_orb.row(u2)))
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            });
-                        match candidate {
-                            Some((index, &unit_orbital)) => {
-                                used[index] = true;
-                                match_orb_list[orbital.index()] = unit_orbital;
-                            }
-                            None => {
-                                return Err(TbError::InvalidAtomConfiguration);
-                            }
-                        }
+                let orbitals = self.atoms[atom_index]
+                    .orbitals()
+                    .iter()
+                    .map(|orbital| orbital.index())
+                    .collect::<Vec<_>>();
+                let representative = unit_atom
+                    .outer_iter()
+                    .enumerate()
+                    .filter(|(candidate_index, candidate)| {
+                        periodic_distance(folded_atom, *candidate)
+                            < REPRESENTATIVE_POSITION_TOLERANCE
+                            && unit_atom_types[*candidate_index]
+                                == self.atoms[atom_index].atom_type()
+                    })
+                    .find_map(|(candidate_index, _)| {
+                        match_periodic_orbitals(
+                            &orbitals,
+                            &unit_atom_orbitals[candidate_index],
+                            unfold_orb,
+                            &unit_orb,
+                            &self.orb_projection,
+                            &unit_orb_projection,
+                        )
+                        .map(|mapping| (candidate_index, mapping))
+                    });
+                if let Some((_representative, mapping)) = representative {
+                    for (&orbital, unit_orbital) in orbitals.iter().zip(mapping) {
+                        match_orb_list[orbital] = unit_orbital;
                     }
                 } else {
                     unit_atom.push_row(folded_atom);
@@ -293,6 +374,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                         Vec::with_capacity(self.atoms[atom_index].norb());
                     for &orbital in self.atoms[atom_index].orbitals() {
                         unit_orb.push_row(unfold_orb.row(orbital.index()));
+                        unit_orb_projection.push(self.orb_projection[orbital.index()]);
                         let unit_orbital = unit_orb.nrows() - 1;
                         match_orb_list[orbital.index()] = unit_orbital;
                         representative_orbitals.push(unit_orbital);
@@ -300,7 +382,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                     unit_atom_orbitals.push(representative_orbitals);
                 }
             }
-            if unit_atom.nrows() != self.natom() / cell_count {
+            if unit_atom.nrows() != self.natom() / cell_count
+                || unit_orb.nrows() != self.norb() / cell_count
+            {
                 return Err(TbError::InvalidAtomConfiguration);
             }
         }
@@ -379,9 +463,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SpinDirection;
     use crate::draw_heatmap;
     use crate::kpath::*;
+    use crate::{Atom, AtomType, OrbitalId, SpinDirection};
     use gnuplot::{
         AutoOption, AxesCommon, Color, Figure, Fix, Font, LineStyle, Major, PointSymbol, Rotate,
         Solid, TextOffset,
@@ -391,6 +475,26 @@ mod tests {
     use num_complex::Complex;
     use std::f64::consts::PI;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn periodic_orbital_matcher_finds_a_complete_non_greedy_assignment() {
+        // Orbital 0 can use either representative, while orbital 1 can use
+        // only representative 0. The complete matcher must reserve 0 for the
+        // constrained orbital instead of duplicating or dropping a match.
+        let folded = array![[0.75e-8], [0.0]];
+        let representatives = array![[0.0], [1.5e-8]];
+        let projections = [OrbProj::s, OrbProj::s];
+        let mapping = match_periodic_orbitals(
+            &[0, 1],
+            &[0, 1],
+            &folded,
+            &representatives,
+            &projections,
+            &projections,
+        )
+        .unwrap();
+        assert_eq!(mapping, vec![1, 0]);
+    }
 
     #[test]
     fn unfold_rejects_nan_determinant() {
@@ -453,6 +557,74 @@ mod tests {
             2,
             1e-2,
             1e-3,
+        );
+        assert!(matches!(result, Err(TbError::InvalidAtomConfiguration)));
+    }
+
+    #[test]
+    fn unfold_matches_noncontiguous_orbitals_with_their_own_projections() {
+        // Primitive representatives are created in Atom orbital-list order,
+        // not global OrbitalId order. Their projection must therefore be
+        // stored alongside unit_orb instead of indexing the original list by
+        // the representative's local row number.
+        let atoms = vec![
+            Atom::with_orbitals(
+                array![0.0, 0.0],
+                AtomType::C,
+                [OrbitalId::new(2), OrbitalId::new(0)],
+            ),
+            Atom::with_orbitals(
+                array![0.5, 0.0],
+                AtomType::C,
+                [OrbitalId::new(3), OrbitalId::new(1)],
+            ),
+        ];
+        let mut model = Model::<false, 2>::tb_model(
+            array![[2.0, 0.0], [0.0, 1.0]],
+            array![[0.02, 0.0], [0.52, 0.0], [0.0, 0.0], [0.5, 0.0]],
+            Some(atoms),
+        )
+        .unwrap();
+        model.orb_projection = vec![OrbProj::py, OrbProj::py, OrbProj::px, OrbProj::px];
+
+        let result = model.unfold(
+            &array![[2.0, 0.0], [0.0, 1.0]],
+            &array![[0.0, 0.0], [0.5, 0.0]],
+            2,
+            -1.0,
+            1.0,
+            2,
+            1e-2,
+            1e-8,
+        );
+        assert!(result.is_ok(), "unfold failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn unfold_rejects_an_orbital_copy_outside_matching_tolerance() {
+        // Sharing an atom type and projection is insufficient: the folded
+        // orbital must also be at the same periodic position. The old nearest
+        // candidate code silently accepted this 0.08 mismatch.
+        let atoms = vec![
+            Atom::with_orbitals(array![0.0, 0.0], AtomType::C, [OrbitalId::new(0)]),
+            Atom::with_orbitals(array![0.5, 0.0], AtomType::C, [OrbitalId::new(1)]),
+        ];
+        let model = Model::<false, 2>::tb_model(
+            array![[2.0, 0.0], [0.0, 1.0]],
+            array![[0.0, 0.0], [0.54, 0.0]],
+            Some(atoms),
+        )
+        .unwrap();
+
+        let result = model.unfold(
+            &array![[2.0, 0.0], [0.0, 1.0]],
+            &array![[0.0, 0.0], [0.5, 0.0]],
+            2,
+            -1.0,
+            1.0,
+            2,
+            1e-2,
+            1e-8,
         );
         assert!(matches!(result, Err(TbError::InvalidAtomConfiguration)));
     }

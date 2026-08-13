@@ -39,8 +39,8 @@ use crate::model_utils::find_R;
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::Norm;
-use ndarray_linalg::{Determinant, Inverse};
 use num_complex::Complex;
+use std::collections::{HashMap, VecDeque};
 
 /// Overwrite Hamiltonian matrix elements with spin decoration.
 ///
@@ -1191,13 +1191,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// # Algorithm
     ///
-    /// 1. Compute the new lattice `L' = U * L`.
-    /// 2. Map all orbitals into the enlarged cell, keeping those whose
-    ///    fractional coordinates fall in `[0, 1)` on the new basis.
-    /// 3. For each orbital pair and each possible supercell lattice vector
-    ///    `R'`, compute the corresponding primitive-cell `R0` and copy the
-    ///    hopping from the original Hamiltonian.
-    /// 4. Position matrix elements are also mapped if present.
+    /// 1. Round the tolerance-validated input to an exact integer matrix and
+    ///    compute its determinant and adjugate with checked integer arithmetic.
+    /// 2. Enumerate the row-vector quotient `Z^DIM / (Z^DIM U)` exactly using
+    ///    the canonical key `r adj(U) mod det(U)`.
+    /// 3. Normalize each orbital to its parent atom, replicate every quotient
+    ///    image, and retain its exact primitive-cell label.
+    /// 4. Map each existing Hamiltonian and position-matrix block directly to
+    ///    its unique target image and new lattice vector. No candidate-`R`
+    ///    search or floating-point block lookup is used.
     ///
     /// # Arguments
     /// * `U` - A `DIM x DIM` integer matrix with `det(U) > 0`.
@@ -1209,16 +1211,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// - [`TbError::TransformationMatrixDimMismatch`] if `U` has wrong
     ///   dimensions.
     /// - [`TbError::InvalidSupercellDet`] if `det(U) <= 0`.
-    /// - [`TbError::InvalidSupercellMatrix`] if `U` contains non-integer
-    ///   entries.
+    /// - [`TbError::InvalidSupercellMatrix`] if `U` contains non-finite or
+    ///   non-integer entries, or if an integer label overflows the supported
+    ///   range.
     pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM, R>> {
         self.validate()?;
         let orbital_owners = self.orbital_owners()?;
         if !self.atoms.is_empty() && orbital_owners.iter().any(Option::is_none) {
-            // In a model with atoms, orbitals follow their parent atom; an
-            // orbital without an owner has no atom whose image selection it
-            // can follow, so reject the mixed state instead of treating it
-            // independently.
             return Err(TbError::InvalidModelInvariant {
                 invariant: "supercell_orbital_ownership",
                 message: "the model has atoms, but some orbitals do not belong to \
@@ -1232,467 +1231,329 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 actual: U.len_of(Axis(0)),
             });
         }
-        // Validate shape, finiteness, and integrality before dot/det/inv:
-        // `x.fract()` keeps the sign (fract(-0.5) = -0.5), so the old test
-        // accepted negative non-integer entries.
-        if !U.iter().all(|value| value.is_finite()) {
+        if !U.iter().all(|value| value.is_finite())
+            || U.iter().any(|&value| (value - value.round()).abs() > 1e-8)
+        {
             return Err(TbError::InvalidSupercellMatrix);
         }
-        if U.iter().any(|&x| (x - x.round()).abs() > 1e-8) {
-            return Err(TbError::InvalidSupercellMatrix);
-        }
-        //新的lattice
-        let new_lat = U.dot(&self.lat);
-        //体积的扩大倍数
-        let U_det = U.det().map_err(TbError::Linalg)?;
-        let U_det_int = U_det.round() as isize;
-        if U_det <= 0.0 || (U_det - U_det_int as f64).abs() > 1e-8 {
-            return Err(TbError::InvalidSupercellDet { det: U_det });
-        }
-        let U_det = U_det_int;
-        let U_inv = U.inv().map_err(TbError::Linalg)?;
 
-        //开始构建新的轨道位置和原子位置
-        //新的轨道
-        // Fold each owned orbital to the representative nearest its parent
-        // atom before the basis change: the image shift is chosen to bring
-        // the ATOM into [0, 1), and only an atom-adjacent orbital
-        // representative can follow it into the supercell frame.  The
-        // nearest representative is unambiguous because validate() enforces
-        // |orb - atom| <= ORBITAL_ATOM_POSITION_TOLERANCE < 1/2 (mod 1).
-        let mut use_orb = self.orb.clone();
-        // Track the per-component span of the fold vectors: the R-vector
-        // candidate range below must cover (n_j - n_i) · U_inv, otherwise
-        // hoppings between oppositely folded orbitals fall outside the
-        // enumeration and are silently dropped.
-        let mut fold_min = Array1::<isize>::zeros(DIM);
-        let mut fold_max = Array1::<isize>::zeros(DIM);
-        for atom in &self.atoms {
-            for &orbital_id in atom.orbitals() {
-                let orbital = orbital_id.index();
-                for axis in 0..DIM {
-                    let shift = (use_orb[[orbital, axis]] - atom.position_ref()[[axis]]).round();
-                    use_orb[[orbital, axis]] -= shift;
-                    let shift = shift as isize;
-                    fold_min[axis] = fold_min[axis].min(shift);
-                    fold_max[axis] = fold_max[axis].max(shift);
+        // Canonicalize values accepted within the integer tolerance. Using the
+        // rounded matrix consistently avoids building the lattice with U while
+        // enumerating images with round(U).
+        let rounded_u = U.mapv(f64::round);
+        let mut integer_u = vec![vec![0_i128; DIM]; DIM];
+        for row in 0..DIM {
+            for column in 0..DIM {
+                let value = rounded_u[[row, column]];
+                if value < isize::MIN as f64 || value > isize::MAX as f64 {
+                    return Err(TbError::InvalidSupercellMatrix);
+                }
+                integer_u[row][column] = value as i128;
+            }
+        }
+        let determinant =
+            checked_integer_determinant(&integer_u).ok_or(TbError::InvalidSupercellMatrix)?;
+        if determinant <= 0 {
+            return Err(TbError::InvalidSupercellDet {
+                det: determinant as f64,
+            });
+        }
+        let cell_count =
+            usize::try_from(determinant).map_err(|_| TbError::InvalidSupercellMatrix)?;
+        let expected_norb = self
+            .norb()
+            .checked_mul(cell_count)
+            .ok_or(TbError::InvalidSupercellMatrix)?;
+        let expected_natom = self
+            .natom()
+            .checked_mul(cell_count)
+            .ok_or(TbError::InvalidSupercellMatrix)?;
+        let nsta = if SPIN {
+            expected_norb
+                .checked_mul(2)
+                .ok_or(TbError::InvalidSupercellMatrix)?
+        } else {
+            expected_norb
+        };
+
+        let adjugate =
+            checked_integer_adjugate(&integer_u).ok_or(TbError::InvalidSupercellMatrix)?;
+        // Defend the exact quotient construction against arithmetic mistakes:
+        // U * adj(U) must equal det(U) I.
+        for row in 0..DIM {
+            let product = checked_integer_row_product(&integer_u[row], &adjugate)
+                .ok_or(TbError::InvalidSupercellMatrix)?;
+            for column in 0..DIM {
+                let expected = if row == column { determinant } else { 0 };
+                if product[column] != expected {
+                    return Err(TbError::InvalidSupercellMatrix);
                 }
             }
         }
-        let mut use_orb = use_orb.dot(&U_inv);
-        //新的原子位置
-        let use_atom_position = self.atom_position().dot(&U_inv);
-        let unassigned_orbitals: Vec<usize> = orbital_owners
-            .iter()
-            .enumerate()
-            .filter_map(|(s, owner)| owner.is_none().then_some(s))
-            .collect();
-        let mut orb_list: Vec<usize> = Vec::new();
-        let mut new_orb = Array2::<f64>::zeros((0, self.dim_r()));
-        let mut new_orb_proj = Vec::new();
-        let mut new_atom = Vec::new();
-        // Exact enumeration of the det(U) image cosets via the column
-        // Hermite normal form of U: the integer representatives
-        // r = (r_1, ..., r_DIM) with 0 <= r_i < H[i, i] enumerate
-        // Z^DIM / (U Z^DIM) bijectively, independent of shear entries
-        // (e.g. U = [[1, 10, 100], [0, 1, 10], [0, 0, 1]] needs
-        // coefficients up to ~55 while a fixed box bound misses them,
-        // and [[1, N], [0, 1]] needs only ONE coset but an O(N^2) box).
-        let u_int = U.mapv(|x| x.round() as isize);
-        let hnf = column_hnf::<DIM>(&u_int);
-        let mut coset_reps: Vec<Array1<isize>> = vec![Array1::<isize>::zeros(DIM)];
-        for axis in 0..DIM {
-            let d = hnf[[axis, axis]];
-            let mut next = Vec::with_capacity(coset_reps.len() * d as usize);
-            for rep in &coset_reps {
-                for r in 0..d {
-                    let mut rep = rep.clone();
-                    rep[axis] = r;
-                    next.push(rep);
-                }
-            }
-            coset_reps = next;
+        let u_inverse = Array2::from_shape_fn((DIM, DIM), |(row, column)| {
+            adjugate[row][column] as f64 / determinant as f64
+        });
+        let coset_representatives = row_coset_representatives(&adjugate, determinant)
+            .ok_or(TbError::InvalidSupercellMatrix)?;
+        if coset_representatives.len() != cell_count {
+            return Err(TbError::InvalidSupercellMatrix);
         }
-        // Track the actual image shifts (fractional position minus the
-        // source position) so the Hamiltonian R-vector range below can
-        // cover them exactly.
-        let mut shift_min = Array1::<f64>::zeros(DIM);
-        let mut shift_max = Array1::<f64>::zeros(DIM);
-        let mut record_shift =
-            |shift: &Array1<f64>, shift_min: &mut Array1<f64>, shift_max: &mut Array1<f64>| {
-                for axis in 0..DIM {
-                    shift_min[axis] = shift_min[axis].min(shift[axis]);
-                    shift_max[axis] = shift_max[axis].max(shift[axis]);
-                }
-            };
-        let mut snap_and_fold = |mut position: Array1<f64>| {
+        let new_lat = rounded_u.dot(&self.lat);
+
+        // Canonicalize the source gauge before replicating it. Atoms are
+        // brought into [0,1); each owned orbital is moved to the image nearest
+        // its parent. The corresponding integer n_s is retained so every old
+        // block is relabeled as R -> R + n_j - n_i.
+        let mut normalized_atom_positions = self.atom_position();
+        for mut position in normalized_atom_positions.outer_iter_mut() {
             for component in &mut position {
                 *component -= component.floor();
-                if component.abs() < 1e-8 {
-                    *component = 0.0;
-                } else if (*component - 1.0).abs() < 1e-8 {
-                    *component = 0.0;
-                }
-            }
-            position
-        };
-        for n in 0..self.natom() {
-            let a = use_atom_position.row(n).to_owned();
-            for rep in &coset_reps {
-                let shift = rep.mapv(|x| x as f64).dot(&U_inv);
-                let mut position = snap_and_fold(&a + &shift);
-                // Snapping may push a value just outside [0, 1); fold once
-                // more defensively.
-                if !position.iter().all(|&x| (0.0..1.0).contains(&x)) {
-                    continue;
-                }
-                let used_shift = &position - &a;
-                record_shift(&used_shift, &mut shift_min, &mut shift_max);
-                let first_new_orbital = new_orb.nrows();
-                for &source_orbital in self.atoms[n].orbitals() {
-                    let n0 = source_orbital.index();
-                    let o = use_orb.row(n0);
-                    let orbs = &o + &used_shift;
-                    new_orb.push_row(orbs.view());
-                    new_orb_proj.push(self.orb_projection[n0]);
-                    orb_list.push(n0);
-                }
-                let mut atom = Atom::with_orbitals(
-                    position,
-                    self.atoms[n].atom_type(),
-                    (first_new_orbital..new_orb.nrows()).map(OrbitalId::new),
-                );
-                if let Some(moment) = self.atoms[n].magnetic_moment() {
-                    atom.set_magnetic_moment(moment)?;
-                }
-                new_atom.push(atom);
             }
         }
-        for &source in &unassigned_orbitals {
-            let o = use_orb.row(source).to_owned();
-            for rep in &coset_reps {
-                let shift = rep.mapv(|x| x as f64).dot(&U_inv);
-                let position = snap_and_fold(&o + &shift);
-                if !position.iter().all(|&x| (0.0..1.0).contains(&x)) {
-                    continue;
+        let mut normalized_orb = self.orb.clone();
+        let mut orbital_gauge_shift = vec![vec![0_i128; DIM]; self.norb()];
+        for (orbital, owner) in orbital_owners.iter().enumerate() {
+            for axis in 0..DIM {
+                let shift = match owner {
+                    Some(atom) => (normalized_orb[[orbital, axis]]
+                        - normalized_atom_positions[[atom.index(), axis]])
+                    .round(),
+                    None => normalized_orb[[orbital, axis]].floor(),
+                };
+                if !shift.is_finite() || shift < isize::MIN as f64 || shift > isize::MAX as f64 {
+                    return Err(TbError::InvalidSupercellMatrix);
                 }
-                let used_shift = &position - &o;
-                record_shift(&used_shift, &mut shift_min, &mut shift_max);
-                new_orb.push_row(position.view());
-                new_orb_proj.push(self.orb_projection[source]);
-                orb_list.push(source);
+                orbital_gauge_shift[orbital][axis] = shift as i128;
+                normalized_orb[[orbital, axis]] -= shift;
             }
         }
-        // 校验每个源轨道恰好生成 det(U) 个副本: 陪集枚举是精确的, 这里只作为
-        // 防御性检查, 枚举出错时显式报错而不是静默返回缺原子的模型。
-        for source in 0..self.norb() {
-            let copies = orb_list.iter().filter(|&&src| src == source).count();
-            if copies != U_det as usize {
-                return Err(TbError::Other(format!(
-                    "make_supercell: source orbital {source} produced {copies} images, \
-                     expected {} (det U); the image-shift enumeration was incomplete",
-                    U_det
-                )));
-            }
-        }
-        //轨道位置和原子位置构建完成, 接下来我们开始构建哈密顿量
-        let norb = new_orb.len_of(Axis(0));
-        let nsta = if SPIN { 2 * norb } else { norb };
-        let natom = new_atom.len();
-        let n_R = self.hamR.len_of(Axis(0));
-        let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r())); //超胞准备用的hamR
-        let mut use_hamR = Array2::<isize>::zeros((1, self.dim_r())); //超胞的hamR的可能, 如果这个hamR没有对应的hopping就会被删除
-        let mut new_ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta)); //超胞准备用的ham
-        //超胞准备用的rmatrix
-        let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), nsta, nsta));
-        let max_use_hamR = self.hamR.mapv(|x| x as f64);
-        let max_use_hamR = max_use_hamR.dot(&U.inv().unwrap());
-        let mut max_hamR =
-            max_use_hamR
-                .outer_iter()
-                .fold(Array1::zeros(self.dim_r()), |mut acc, x| {
-                    for i in 0..self.dim_r() {
-                        acc[[i]] = if acc[[i]] > x[[i]].abs() {
-                            acc[[i]]
-                        } else {
-                            x[[i]].abs()
-                        };
-                    }
-                    acc
-                });
-        // Extend the candidate range by the pre-fold span mapped through
-        // U_inv: the R0 lookup includes the -n_j + n_i contribution, so the
-        // enumerated supercell vectors must reach
-        // (R0 + n_j - n_i) · U_inv for every pair of fold vectors.
-        let fold_span = &fold_max - &fold_min;
-        let fold_extra = fold_span
-            .mapv(|x| x as f64)
-            .dot(&U_inv.mapv(|x| x.abs()))
-            .mapv(|x| x.ceil() as isize);
-        // And by the actual image-shift span (S_j - S_i): with skew basis
-        // changes the shifts can be large (e.g. (0, 50) for
-        // U = [[1, 100], [0, 1]]) and hopping blocks would otherwise fall
-        // outside the enumeration and be silently dropped.
-        let shift_extra = (&shift_max - &shift_min).mapv(|x| x.ceil() as isize);
-        let max_R = max_hamR.mapv(|x| (x.ceil() as isize) + 1) + fold_extra + shift_extra;
-        //let mut max_R=Array1::<isize>::zeros(self.dim_r());
-        //let max_R:isize=U_det.abs()*(self.dim_r() as isize);
-        //let max_R=Array1::<isize>::ones(self.dim_r())*max_R;
-        //用来产生可能的hamR
-        match self.dim_r() {
-            1 => {
-                for i in -max_R[[0]]..max_R[[0]] + 1 {
-                    if i != 0 {
-                        use_hamR.push_row(array![i].view());
-                    }
-                }
-            }
-            2 => {
-                for j in -max_R[[1]]..max_R[[1]] + 1 {
-                    for i in -max_R[[0]]..max_R[[0]] + 1 {
-                        if i != 0 || j != 0 {
-                            use_hamR.push_row(array![i, j].view());
-                        }
-                    }
-                }
-            }
-            3 => {
-                for k in -max_R[[2]]..max_R[[2]] + 1 {
-                    for i in -max_R[[0]]..max_R[[0]] + 1 {
-                        for j in -max_R[[1]]..max_R[[1]] + 1 {
-                            if i != 0 || j != 0 || k != 0 {
-                                use_hamR.push_row(array![i, j, k].view());
-                            }
-                        }
-                    }
-                }
-            }
-            _ => todo!(),
-        }
-        let use_n_R = use_hamR.len_of(Axis(0));
-        if !<R as RMatrixData>::HAS_RMATRIX {
-            for i in 0..self.dim_r() {
-                for s in 0..norb {
-                    new_rmatrix[[0, i, s, s]] = Complex::new(new_orb[[s, i]], 0.0);
-                }
-            }
-            if SPIN {
-                for i in 0..self.dim_r() {
-                    for s in 0..norb {
-                        new_rmatrix[[0, i, s + norb, s + norb]] =
-                            Complex::new(new_orb[[s, i]], 0.0);
-                    }
-                }
-            }
-        }
-        if SPIN && R::HAS_RMATRIX {
-            for (R, use_R) in use_hamR.outer_iter().enumerate() {
-                let mut add_R: bool = false;
-                let mut useham = Array2::<Complex<f64>>::zeros((nsta, nsta));
-                let mut use_rmatrix = Array3::<Complex<f64>>::zeros((self.dim_r(), nsta, nsta));
-                for (int_i, use_i) in orb_list.iter().enumerate() {
-                    for (int_j, use_j) in orb_list.iter().enumerate() {
-                        //接下来计算超胞中的R在原胞中对应的hamR
-                        let R0: Array1<f64> = new_orb.row(int_j).to_owned()
-                            - new_orb.row(int_i).to_owned()
-                            + use_R.mapv(|x| x as f64); //超胞的 R 在原始原胞的 R
-                        let R0: Array1<isize> =
-                            (R0.dot(U) - self.orb.row(*use_j) + self.orb.row(*use_i)).mapv(|x| {
-                                if x.fract().abs() < 1e-8 || x.fract().abs() > 1.0 - 1e-8 {
-                                    x.round() as isize
-                                } else {
-                                    x.floor() as isize
-                                }
-                            });
-                        if let Some(index) = find_R(&self.hamR, &R0) {
-                            add_R = true;
-                            useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
-                            useham[[int_i + norb, int_j]] =
-                                self.ham[[index, *use_i + self.norb(), *use_j]];
-                            useham[[int_i, int_j + norb]] =
-                                self.ham[[index, *use_i, *use_j + self.norb()]];
-                            useham[[int_i + norb, int_j + norb]] =
-                                self.ham[[index, *use_i + self.norb(), *use_j + self.norb()]];
-                            for r in 0..self.dim_r() {
-                                let rmat = self.rmatrix.as_array4();
-                                use_rmatrix[[r, int_i, int_j]] = rmat[[index, r, *use_i, *use_j]];
-                                use_rmatrix[[r, int_i + norb, int_j]] =
-                                    rmat[[index, r, *use_i + self.norb(), *use_j]];
-                                use_rmatrix[[r, int_i, int_j + norb]] =
-                                    rmat[[index, r, *use_i, *use_j + self.norb()]];
-                                use_rmatrix[[r, int_i + norb, int_j + norb]] =
-                                    rmat[[index, r, *use_i + self.norb(), *use_j + self.norb()]];
-                            }
-                        } else {
-                            continue;
-                        }
-                    }
-                }
-                if add_R && R != 0 {
-                    new_ham.push(Axis(0), useham.view());
-                    new_hamR.push_row(use_R.view());
-                    new_rmatrix.push(Axis(0), use_rmatrix.view());
-                } else if R == 0 {
-                    new_ham.slice_mut(s![0, .., ..]).assign(&useham);
-                    new_rmatrix
-                        .slice_mut(s![0, .., .., ..])
-                        .assign(&use_rmatrix);
-                }
-            }
-        } else if R::HAS_RMATRIX && !SPIN {
-            for (R, use_R) in use_hamR.outer_iter().enumerate() {
-                let mut add_R: bool = false;
-                let mut useham = Array2::<Complex<f64>>::zeros((norb, norb));
-                let mut use_rmatrix = Array3::<Complex<f64>>::zeros((self.dim_r(), norb, norb));
-                for (int_i, use_i) in orb_list.iter().enumerate() {
-                    for (int_j, use_j) in orb_list.iter().enumerate() {
-                        //接下来计算超胞中的R在原胞中对应的hamR
-                        let R0: Array1<f64> = new_orb.row(int_j).to_owned()
-                            - new_orb.row(int_i).to_owned()
-                            + use_R.mapv(|x| x as f64); //超胞的 R 在原始原胞的 R
-                        let R0: Array1<isize> =
-                            (R0.dot(U) - self.orb.row(*use_j) + self.orb.row(*use_i)).mapv(|x| {
-                                if x.fract().abs() < 1e-8 || x.fract().abs() > 1.0 - 1e-8 {
-                                    x.round() as isize
-                                } else {
-                                    x.floor() as isize
-                                }
-                            });
-                        if let Some(index) = find_R(&self.hamR, &R0) {
-                            add_R = true;
-                            useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
-                            for r in 0..self.dim_r() {
-                                let rmat = self.rmatrix.as_array4();
-                                use_rmatrix[[r, int_i, int_j]] = rmat[[index, r, *use_i, *use_j]]
-                            }
-                        } else {
-                            continue;
-                        }
-                    }
-                }
-                if add_R && R != 0 {
-                    new_ham.push(Axis(0), useham.view());
-                    new_rmatrix.push(Axis(0), use_rmatrix.view());
-                    new_hamR.push_row(use_R);
-                } else if R == 0 {
-                    new_ham.slice_mut(s![0, .., ..]).assign(&useham);
-                    new_rmatrix
-                        .slice_mut(s![0, .., .., ..])
-                        .assign(&use_rmatrix);
-                }
-            }
-        } else if SPIN {
-            for (R, use_R) in use_hamR.outer_iter().enumerate() {
-                let mut add_R: bool = false;
-                let mut useham = Array2::<Complex<f64>>::zeros((nsta, nsta));
-                for (int_i, use_i) in orb_list.iter().enumerate() {
-                    for (int_j, use_j) in orb_list.iter().enumerate() {
-                        //接下来计算超胞中的R在原胞中对应的hamR
-                        let R0: Array1<f64> =
-                            &new_orb.row(int_j) - &new_orb.row(int_i) + &use_R.map(|x| *x as f64); //超胞的 R 在原始原胞的 R
 
-                        let R0: Array1<isize> =
-                            (R0.dot(U) - self.orb.row(*use_j) + self.orb.row(*use_i)).mapv(|x| {
-                                if x.fract().abs() < 1e-8 || x.fract().abs() > 1.0 - 1e-8 {
-                                    x.round() as isize
-                                } else {
-                                    x.floor() as isize
-                                }
-                            });
+        let mut new_orb = Array2::<f64>::zeros((0, DIM));
+        let mut new_orb_projection = Vec::with_capacity(expected_norb);
+        let mut new_atoms = Vec::with_capacity(expected_natom);
+        let mut source_orbital = Vec::with_capacity(expected_norb);
+        let mut primitive_label = Vec::<Vec<i128>>::with_capacity(expected_norb);
+        let mut copies_by_source = vec![Vec::<usize>::with_capacity(cell_count); self.norb()];
+        let mut copy_by_source_and_coset =
+            vec![HashMap::<Vec<i128>, usize>::with_capacity(cell_count); self.norb()];
 
-                        if let Some(index) = find_R(&self.hamR, &R0) {
-                            add_R = true;
-                            useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
-                            useham[[int_i + norb, int_j]] =
-                                self.ham[[index, *use_i + self.norb(), *use_j]];
-                            useham[[int_i, int_j + norb]] =
-                                self.ham[[index, *use_i, *use_j + self.norb()]];
-                            useham[[int_i + norb, int_j + norb]] =
-                                self.ham[[index, *use_i + self.norb(), *use_j + self.norb()]];
-                        } else {
-                            continue;
-                        }
+        if self.atoms.is_empty() {
+            for source in 0..self.norb() {
+                for representative in &coset_representatives {
+                    let (position, label) = fold_supercell_copy(
+                        normalized_orb.row(source),
+                        representative,
+                        &u_inverse,
+                        &integer_u,
+                    )?;
+                    let copy = new_orb.nrows();
+                    new_orb.push_row(position.view());
+                    new_orb_projection.push(self.orb_projection[source]);
+                    source_orbital.push(source);
+                    primitive_label.push(label);
+                    copies_by_source[source].push(copy);
+                    let key = row_coset_key(representative, &adjugate, determinant)
+                        .ok_or(TbError::InvalidSupercellMatrix)?;
+                    if copy_by_source_and_coset[source].insert(key, copy).is_some() {
+                        return Err(TbError::InvalidSupercellMatrix);
                     }
-                }
-                if add_R && R != 0 {
-                    new_ham.push(Axis(0), useham.view());
-                    new_hamR.push_row(use_R.view());
-                } else if R == 0 {
-                    new_ham.slice_mut(s![0, .., ..]).assign(&useham);
                 }
             }
         } else {
-            for (R, use_R) in use_hamR.outer_iter().enumerate() {
-                let mut add_R: bool = false;
-                let mut useham = Array2::<Complex<f64>>::zeros((nsta, nsta));
-                for (int_i, use_i) in orb_list.iter().enumerate() {
-                    for (int_j, use_j) in orb_list.iter().enumerate() {
-                        //接下来计算超胞中的R在原胞中对应的hamR
-                        let R0: Array1<f64> = new_orb.row(int_j).to_owned()
-                            - new_orb.row(int_i).to_owned()
-                            + use_R.mapv(|x| x as f64); //超胞的 R 在原始原胞的 R
-                        let R0: Array1<isize> =
-                            (R0.dot(U) - self.orb.row(*use_j) + self.orb.row(*use_i)).mapv(|x| {
-                                if x.fract().abs() < 1e-8 || x.fract().abs() > 1.0 - 1e-8 {
-                                    x.round() as isize
-                                } else {
-                                    x.floor() as isize
+            for (atom_index, atom) in self.atoms.iter().enumerate() {
+                for representative in &coset_representatives {
+                    let (atom_position, _) = fold_supercell_copy(
+                        normalized_atom_positions.row(atom_index),
+                        representative,
+                        &u_inverse,
+                        &integer_u,
+                    )?;
+                    let first_orbital = new_orb.nrows();
+                    for &orbital_id in atom.orbitals() {
+                        let source = orbital_id.index();
+                        let (position, label) = fold_supercell_copy(
+                            normalized_orb.row(source),
+                            representative,
+                            &u_inverse,
+                            &integer_u,
+                        )?;
+                        let copy = new_orb.nrows();
+                        new_orb.push_row(position.view());
+                        new_orb_projection.push(self.orb_projection[source]);
+                        source_orbital.push(source);
+                        primitive_label.push(label);
+                        copies_by_source[source].push(copy);
+                        let key = row_coset_key(representative, &adjugate, determinant)
+                            .ok_or(TbError::InvalidSupercellMatrix)?;
+                        if copy_by_source_and_coset[source].insert(key, copy).is_some() {
+                            return Err(TbError::InvalidSupercellMatrix);
+                        }
+                    }
+                    let mut new_atom = Atom::with_orbitals(
+                        atom_position,
+                        atom.atom_type(),
+                        (first_orbital..new_orb.nrows()).map(OrbitalId::new),
+                    );
+                    if let Some(moment) = atom.magnetic_moment() {
+                        new_atom.set_magnetic_moment(moment)?;
+                    }
+                    new_atoms.push(new_atom);
+                }
+            }
+        }
+
+        if new_orb.nrows() != expected_norb
+            || new_atoms.len() != expected_natom
+            || copies_by_source
+                .iter()
+                .any(|copies| copies.len() != cell_count)
+            || copy_by_source_and_coset
+                .iter()
+                .any(|copies| copies.len() != cell_count)
+        {
+            return Err(TbError::Other(
+                "make_supercell: exact row-coset enumeration produced an incomplete image set"
+                    .to_string(),
+            ));
+        }
+
+        // Map each existing primitive block forward. Integer labels identify
+        // the unique target image and give R_new exactly, so no shear-dependent
+        // candidate-R box or floating-point reverse lookup is needed.
+        let mut new_ham_r = Array2::<isize>::zeros((1, DIM));
+        let mut new_ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta));
+        let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, DIM, nsta, nsta));
+        let mut block_by_vector = HashMap::<Vec<isize>, usize>::new();
+        block_by_vector.insert(vec![0_isize; DIM], 0);
+        let old_rmatrix = if R::HAS_RMATRIX {
+            Some(self.rmatrix.as_array4())
+        } else {
+            None
+        };
+        let spin_components = if SPIN { 2 } else { 1 };
+
+        for (old_block, old_r) in self.hamR.outer_iter().enumerate() {
+            for old_source in 0..self.norb() {
+                for old_target in 0..self.norb() {
+                    let mut has_data = false;
+                    for source_spin in 0..spin_components {
+                        for target_spin in 0..spin_components {
+                            let old_i = old_source + source_spin * self.norb();
+                            let old_j = old_target + target_spin * self.norb();
+                            has_data |= self.ham[[old_block, old_i, old_j]].norm_sqr() != 0.0;
+                            if let Some(rmatrix) = old_rmatrix {
+                                for axis in 0..DIM {
+                                    has_data |=
+                                        rmatrix[[old_block, axis, old_i, old_j]].norm_sqr() != 0.0;
                                 }
-                            });
-                        if let Some(index) = find_R(&self.hamR, &R0) {
-                            add_R = true;
-                            useham[[int_i, int_j]] = self.ham[[index, *use_i, *use_j]];
-                        } else {
-                            continue;
+                            }
+                        }
+                    }
+                    if !has_data {
+                        continue;
+                    }
+
+                    let normalized_r = (0..DIM)
+                        .map(|axis| {
+                            (old_r[axis] as i128)
+                                .checked_add(orbital_gauge_shift[old_target][axis])
+                                .and_then(|value| {
+                                    value.checked_sub(orbital_gauge_shift[old_source][axis])
+                                })
+                                .ok_or(TbError::InvalidSupercellMatrix)
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+
+                    for &new_source in &copies_by_source[old_source] {
+                        let target_class = primitive_label[new_source]
+                            .iter()
+                            .zip(&normalized_r)
+                            .map(|(&label, &r)| {
+                                label.checked_add(r).ok_or(TbError::InvalidSupercellMatrix)
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        let target_key = row_coset_key(&target_class, &adjugate, determinant)
+                            .ok_or(TbError::InvalidSupercellMatrix)?;
+                        let &new_target = copy_by_source_and_coset[old_target]
+                            .get(&target_key)
+                            .ok_or_else(|| {
+                                TbError::Other(
+                                    "make_supercell: target image is absent from its row coset"
+                                        .to_string(),
+                                )
+                            })?;
+                        let primitive_delta = target_class
+                            .iter()
+                            .zip(&primitive_label[new_target])
+                            .map(|(&target, &representative)| {
+                                target
+                                    .checked_sub(representative)
+                                    .ok_or(TbError::InvalidSupercellMatrix)
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        let new_r =
+                            supercell_lattice_vector(&primitive_delta, &adjugate, determinant)?;
+                        let new_block = match block_by_vector.get(&new_r) {
+                            Some(&block) => block,
+                            None => {
+                                let block = new_ham_r.nrows();
+                                let row = Array1::from_vec(new_r.clone());
+                                new_ham_r.push_row(row.view());
+                                new_ham.push(
+                                    Axis(0),
+                                    Array2::<Complex<f64>>::zeros((nsta, nsta)).view(),
+                                );
+                                new_rmatrix.push(
+                                    Axis(0),
+                                    Array3::<Complex<f64>>::zeros((DIM, nsta, nsta)).view(),
+                                );
+                                block_by_vector.insert(new_r, block);
+                                block
+                            }
+                        };
+
+                        for source_spin in 0..spin_components {
+                            for target_spin in 0..spin_components {
+                                let old_i = old_source + source_spin * self.norb();
+                                let old_j = old_target + target_spin * self.norb();
+                                let new_i = new_source + source_spin * expected_norb;
+                                let new_j = new_target + target_spin * expected_norb;
+                                new_ham[[new_block, new_i, new_j]] +=
+                                    self.ham[[old_block, old_i, old_j]];
+                                if let Some(rmatrix) = old_rmatrix {
+                                    for axis in 0..DIM {
+                                        new_rmatrix[[new_block, axis, new_i, new_j]] +=
+                                            rmatrix[[old_block, axis, old_i, old_j]];
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-                if add_R && R != 0 {
-                    new_ham.push(Axis(0), useham.view());
-                    new_hamR.push_row(use_R);
-                } else if R == 0 {
-                    new_ham.slice_mut(s![0, .., ..]).assign(&useham);
-                }
             }
         }
-        // Keep new_rmatrix in sync with new_ham for magnetic field compatibility
-        let n_r = new_ham.len_of(Axis(0));
-        if new_rmatrix.len_of(Axis(0)) < n_r {
-            let extra = n_r - new_rmatrix.len_of(Axis(0));
-            let zero_rm = Array3::<Complex<f64>>::zeros((self.dim_r(), nsta, nsta));
-            for _ in 0..extra {
-                new_rmatrix.push(Axis(0), zero_rm.view());
-            }
+
+        if R::HAS_RMATRIX {
+            let old_diagonal = rmatrix_diagonal_cartesian::<SPIN, DIM, R>(self);
+            set_rmatrix_diagonal_with_displacement::<DIM>(
+                &mut new_rmatrix,
+                &new_ham_r,
+                &new_orb,
+                &new_lat,
+                &self.orb,
+                &self.lat,
+                &old_diagonal,
+                &source_orbital,
+                SPIN,
+            );
         }
-        fold_supercell_positions_covariantly::<DIM>(
-            &mut new_orb,
-            &mut new_ham,
-            &mut new_hamR,
-            &mut new_rmatrix,
-            SPIN,
-        );
-        // Covariant translation of the position-matrix diagonal: preserve
-        // the source offset r_old(ss, 0) and add the Cartesian cell
-        // displacement tau_new·L_new - tau_old·L_old of each copy.
-        let old_diagonal = rmatrix_diagonal_cartesian::<SPIN, DIM, R>(self);
-        set_rmatrix_diagonal_with_displacement::<DIM>(
-            &mut new_rmatrix,
-            &new_hamR,
-            &new_orb,
-            &new_lat,
-            &self.orb,
-            &self.lat,
-            &old_diagonal,
-            &orb_list,
-            SPIN,
-        );
         let model = Model {
             lat: new_lat,
             orb: new_orb,
-            orb_projection: new_orb_proj,
-            atoms: new_atom,
+            orb_projection: new_orb_projection,
+            atoms: new_atoms,
             ham: new_ham,
-            hamR: new_hamR,
+            hamR: new_ham_r,
             rmatrix: R::from_array(new_rmatrix),
         };
         model.validate()?;
@@ -1700,42 +1561,238 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     }
 }
 
-/// Column Hermite normal form of an integer matrix: `H = U · V` with `V`
-/// unimodular and `H` lower-triangular with a positive diagonal.
-///
-/// The quotient `Z^DIM / (U · Z^DIM)` has `det(U)` elements, enumerated
-/// bijectively by the box `0 <= r_i < H[i, i]` — this makes the supercell
-/// image enumeration exact and shear-independent (a fixed coefficient box
-/// both misses large nested-shear shifts and wastes work on single-coset
-/// matrices).
-fn column_hnf<const DIM: usize>(u: &Array2<isize>) -> Array2<isize> {
-    let mut h = u.clone();
-    for i in 0..DIM {
-        // Eliminate the row-i entries of all later columns via column
-        // operations (right multiplication by unimodular V preserves the
-        // lattice U·Z^DIM).
-        loop {
-            let Some(j) = (i + 1..DIM).find(|&j| h[[i, j]] != 0) else {
-                break;
-            };
-            if h[[i, i]] == 0 {
-                for k in 0..DIM {
-                    h.swap([k, i], [k, j]);
+/// Exact determinant of a square integer matrix using fraction-free Gaussian
+/// elimination (Bareiss). Checked arithmetic turns an unrepresentable
+/// transformation into an error instead of wrapping an integer cell label.
+fn checked_integer_determinant(matrix: &[Vec<i128>]) -> Option<i128> {
+    let n = matrix.len();
+    if matrix.iter().any(|row| row.len() != n) {
+        return None;
+    }
+    if n == 0 {
+        return Some(1);
+    }
+    if n == 1 {
+        return Some(matrix[0][0]);
+    }
+
+    let mut work = matrix.to_vec();
+    let mut sign = 1_i128;
+    let mut previous_pivot = 1_i128;
+    for pivot_index in 0..n - 1 {
+        let Some(pivot_row) = (pivot_index..n).find(|&row| work[row][pivot_index] != 0) else {
+            return Some(0);
+        };
+        if pivot_row != pivot_index {
+            work.swap(pivot_row, pivot_index);
+            sign = sign.checked_neg()?;
+        }
+        let pivot = work[pivot_index][pivot_index];
+        for row in pivot_index + 1..n {
+            for column in pivot_index + 1..n {
+                let diagonal = work[row][column].checked_mul(pivot)?;
+                let cross = work[row][pivot_index].checked_mul(work[pivot_index][column])?;
+                let numerator = diagonal.checked_sub(cross)?;
+                if pivot_index > 0 && numerator % previous_pivot != 0 {
+                    return None;
                 }
+                work[row][column] = if pivot_index == 0 {
+                    numerator
+                } else {
+                    numerator / previous_pivot
+                };
+            }
+            work[row][pivot_index] = 0;
+        }
+        previous_pivot = pivot;
+    }
+    sign.checked_mul(work[n - 1][n - 1])
+}
+
+/// Exact adjugate satisfying `U * adj(U) = det(U) * I`.
+fn checked_integer_adjugate(matrix: &[Vec<i128>]) -> Option<Vec<Vec<i128>>> {
+    let n = matrix.len();
+    if matrix.iter().any(|row| row.len() != n) {
+        return None;
+    }
+    if n == 0 {
+        return Some(Vec::new());
+    }
+    if n == 1 {
+        return Some(vec![vec![1]]);
+    }
+
+    let mut adjugate = vec![vec![0_i128; n]; n];
+    for adjugate_row in 0..n {
+        for adjugate_column in 0..n {
+            // adj(U)[i,j] is the cofactor C[j,i].
+            let removed_row = adjugate_column;
+            let removed_column = adjugate_row;
+            let minor = matrix
+                .iter()
+                .enumerate()
+                .filter(|(row, _)| *row != removed_row)
+                .map(|(_, row)| {
+                    row.iter()
+                        .enumerate()
+                        .filter_map(|(column, &value)| (column != removed_column).then_some(value))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let cofactor = checked_integer_determinant(&minor)?;
+            adjugate[adjugate_row][adjugate_column] = if (removed_row + removed_column) % 2 == 0 {
+                cofactor
+            } else {
+                cofactor.checked_neg()?
+            };
+        }
+    }
+    Some(adjugate)
+}
+
+fn checked_integer_row_product(row: &[i128], matrix: &[Vec<i128>]) -> Option<Vec<i128>> {
+    if row.len() != matrix.len()
+        || matrix
+            .iter()
+            .any(|matrix_row| matrix_row.len() != row.len())
+    {
+        return None;
+    }
+    (0..row.len())
+        .map(|column| {
+            row.iter()
+                .zip(matrix)
+                .try_fold(0_i128, |sum, (&value, matrix_row)| {
+                    sum.checked_add(value.checked_mul(matrix_row[column])?)
+                })
+        })
+        .collect()
+}
+
+/// Canonical key for the row-vector quotient `Z^d / (Z^d U)`.
+///
+/// Two primitive-cell labels `a` and `b` represent the same supercell image
+/// exactly when `(a-b) * adj(U)` vanishes modulo `det(U)`.
+fn row_coset_key(row: &[i128], adjugate: &[Vec<i128>], determinant: i128) -> Option<Vec<i128>> {
+    (determinant > 0).then_some(())?;
+    Some(
+        checked_integer_row_product(row, adjugate)?
+            .into_iter()
+            .map(|value| value.rem_euclid(determinant))
+            .collect(),
+    )
+}
+
+/// Enumerate exactly `det(U)` representatives of the row-vector quotient.
+/// Adding the positive coordinate generators is sufficient because the
+/// quotient is finite; the canonical adjugate key prevents duplicates.
+fn row_coset_representatives(adjugate: &[Vec<i128>], determinant: i128) -> Option<Vec<Vec<i128>>> {
+    let count = usize::try_from(determinant).ok()?;
+    let dim = adjugate.len();
+    let zero = vec![0_i128; dim];
+    let zero_key = row_coset_key(&zero, adjugate, determinant)?;
+    let mut representatives = vec![zero.clone()];
+    let mut seen = HashMap::<Vec<i128>, usize>::from([(zero_key, 0)]);
+    let mut frontier = VecDeque::from([zero]);
+
+    while representatives.len() < count {
+        let representative = frontier.pop_front()?;
+        for axis in 0..dim {
+            let mut candidate = representative.clone();
+            candidate[axis] = candidate[axis].checked_add(1)?;
+            let key = row_coset_key(&candidate, adjugate, determinant)?;
+            if seen.contains_key(&key) {
                 continue;
             }
-            let q = (h[[i, j]] as f64 / h[[i, i]] as f64).round() as isize;
-            for k in 0..DIM {
-                h[[k, j]] -= q * h[[k, i]];
-            }
-        }
-        if h[[i, i]] < 0 {
-            for k in 0..DIM {
-                h[[k, i]] = -h[[k, i]];
+            let index = representatives.len();
+            seen.insert(key, index);
+            representatives.push(candidate.clone());
+            frontier.push_back(candidate);
+            if representatives.len() == count {
+                break;
             }
         }
     }
-    h
+    Some(representatives)
+}
+
+/// Fold `(tau + representative) * U^-1` into the supercell and return both
+/// its fractional representative and the exact primitive-cell label `ell`
+/// satisfying `fractional * U = tau + ell`.
+fn fold_supercell_copy(
+    tau: ArrayView1<'_, f64>,
+    representative: &[i128],
+    u_inverse: &Array2<f64>,
+    u_integer: &[Vec<i128>],
+) -> Result<(Array1<f64>, Vec<i128>)> {
+    const SNAP_TOLERANCE: f64 = 1e-10;
+    let dim = tau.len();
+    if representative.len() != dim
+        || u_inverse.dim() != (dim, dim)
+        || u_integer.len() != dim
+        || u_integer.iter().any(|row| row.len() != dim)
+    {
+        return Err(TbError::InvalidSupercellMatrix);
+    }
+
+    let translated = Array1::from_iter(
+        tau.iter()
+            .zip(representative)
+            .map(|(&position, &shift)| position + shift as f64),
+    );
+    let raw = translated.dot(u_inverse);
+    let mut fractional = Array1::<f64>::zeros(dim);
+    let mut supercell_shift = vec![0_i128; dim];
+    for axis in 0..dim {
+        let value = raw[axis];
+        if !value.is_finite() {
+            return Err(TbError::InvalidSupercellMatrix);
+        }
+        let nearest = value.round();
+        let (cell, position) = if (value - nearest).abs() < SNAP_TOLERANCE {
+            (nearest, 0.0)
+        } else {
+            let floor = value.floor();
+            (floor, value - floor)
+        };
+        if cell < isize::MIN as f64 || cell > isize::MAX as f64 {
+            return Err(TbError::InvalidSupercellMatrix);
+        }
+        fractional[axis] = position;
+        supercell_shift[axis] = cell as i128;
+    }
+
+    let shift_in_primitive = checked_integer_row_product(&supercell_shift, u_integer)
+        .ok_or(TbError::InvalidSupercellMatrix)?;
+    let primitive_label = representative
+        .iter()
+        .zip(shift_in_primitive)
+        .map(|(&representative, shift)| {
+            representative
+                .checked_sub(shift)
+                .ok_or(TbError::InvalidSupercellMatrix)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((fractional, primitive_label))
+}
+
+/// Solve the exact row equation `new_r * U = primitive_delta`.
+fn supercell_lattice_vector(
+    primitive_delta: &[i128],
+    adjugate: &[Vec<i128>],
+    determinant: i128,
+) -> Result<Vec<isize>> {
+    let numerator = checked_integer_row_product(primitive_delta, adjugate)
+        .ok_or(TbError::InvalidSupercellMatrix)?;
+    numerator
+        .into_iter()
+        .map(|value| {
+            if value % determinant != 0 {
+                return Err(TbError::InvalidSupercellMatrix);
+            }
+            isize::try_from(value / determinant).map_err(|_| TbError::InvalidSupercellMatrix)
+        })
+        .collect()
 }
 
 /// Extract the `R = 0` position-matrix diagonal (Cartesian, shape
@@ -1998,6 +2055,7 @@ mod fold_tests {
     use super::*;
     use crate::solve_ham::solve;
     use crate::{Atom, AtomType, Gauge, HasRMatrix, OrbitalId};
+    use std::collections::HashSet;
 
     /// 1D model whose orbital sits just across the cell boundary from its
     /// atom: atom at 0.99, orbital at `orbital_x`.  Both representatives
@@ -2015,6 +2073,210 @@ mod fold_tests {
         .unwrap();
         model.add_hop(-1.0, 0, 0, &array![1], None);
         model
+    }
+
+    #[test]
+    fn exact_row_cosets_follow_the_model_row_vector_convention() {
+        // For row vectors, Z^2/(Z^2 U) with U=[[2,1],[0,1]] is classified by
+        // the parity of the first coordinate. A column-lattice HNF computes a
+        // different quotient and the former rounded Euclidean loop did not
+        // terminate for this matrix.
+        let u = vec![vec![2_i128, 1_i128], vec![0_i128, 1_i128]];
+        let determinant = checked_integer_determinant(&u).unwrap();
+        let adjugate = checked_integer_adjugate(&u).unwrap();
+        assert_eq!(determinant, 2);
+        assert_eq!(
+            checked_integer_row_product(&u[0], &adjugate).unwrap(),
+            vec![determinant, 0]
+        );
+        let representatives = row_coset_representatives(&adjugate, determinant).unwrap();
+        assert_eq!(representatives.len(), 2);
+        let keys = representatives
+            .iter()
+            .map(|representative| row_coset_key(representative, &adjugate, determinant).unwrap())
+            .collect::<Vec<_>>();
+        assert_ne!(keys[0], keys[1]);
+        assert_eq!(
+            row_coset_key(&[2, 1], &adjugate, determinant).unwrap(),
+            keys[0],
+            "a row of U must be equivalent to zero"
+        );
+    }
+
+    #[test]
+    fn exact_row_cosets_exhaust_small_two_dimensional_matrices() {
+        for a in -3_i128..=3 {
+            for b in -3_i128..=3 {
+                for c in -3_i128..=3 {
+                    for d in -3_i128..=3 {
+                        let expected_determinant = a * d - b * c;
+                        if !(1..=12).contains(&expected_determinant) {
+                            continue;
+                        }
+                        let u = vec![vec![a, b], vec![c, d]];
+                        let determinant = checked_integer_determinant(&u).unwrap();
+                        let adjugate = checked_integer_adjugate(&u).unwrap();
+                        assert_eq!(determinant, expected_determinant);
+                        let representatives =
+                            row_coset_representatives(&adjugate, determinant).unwrap();
+                        let keys = representatives
+                            .iter()
+                            .map(|representative| {
+                                row_coset_key(representative, &adjugate, determinant).unwrap()
+                            })
+                            .collect::<HashSet<_>>();
+                        assert_eq!(keys.len(), determinant as usize, "U={u:?}");
+                        let zero_key = row_coset_key(&[0, 0], &adjugate, determinant).unwrap();
+                        assert_eq!(
+                            row_coset_key(&u[0], &adjugate, determinant).unwrap(),
+                            zero_key,
+                            "first row of U must be the zero coset: U={u:?}"
+                        );
+                        assert_eq!(
+                            row_coset_key(&u[1], &adjugate, determinant).unwrap(),
+                            zero_key,
+                            "second row of U must be the zero coset: U={u:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn supercell_off_diagonal_pivot_terminates_with_distinct_images() {
+        // The former rounded HNF loop stalled forever because round(1/3)=0.
+        let atom = Atom::with_orbitals(array![0.5, 0.5], AtomType::C, [OrbitalId::new(0)]);
+        let model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.5, 0.5]], Some(vec![atom]))
+                .unwrap();
+        let supercell = model
+            .make_supercell(&array![[3.0, 1.0], [0.0, 1.0]])
+            .unwrap();
+        let expected = [[1.0 / 6.0, 1.0 / 3.0], [0.5, 0.0], [5.0 / 6.0, 2.0 / 3.0]];
+        assert_eq!(supercell.norb(), expected.len());
+        for (position, expected) in supercell.orb.outer_iter().zip(expected) {
+            for axis in 0..2 {
+                assert!((position[axis] - expected[axis]).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn supercell_uses_row_quotient_for_nonsymmetric_transform() {
+        // The old column quotient returned six copies but only four distinct
+        // positions for this matrix, silently omitting two physical images.
+        let atom = Atom::with_orbitals(array![0.25, 0.25], AtomType::C, [OrbitalId::new(0)]);
+        let model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.25, 0.25]], Some(vec![atom]))
+                .unwrap();
+        let supercell = model
+            .make_supercell(&array![[2.0, 4.0], [-1.0, 1.0]])
+            .unwrap();
+        let expected = [
+            [1.0 / 12.0, 11.0 / 12.0],
+            [0.25, 0.25],
+            [5.0 / 12.0, 7.0 / 12.0],
+            [7.0 / 12.0, 11.0 / 12.0],
+            [0.75, 0.25],
+            [11.0 / 12.0, 7.0 / 12.0],
+        ];
+        assert_eq!(supercell.norb(), expected.len());
+        for (position, expected) in supercell.orb.outer_iter().zip(expected) {
+            for axis in 0..2 {
+                assert!((position[axis] - expected[axis]).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn skew_supercell_spectrum_matches_primitive_band_folding() {
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.13, 0.27]], None).unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.add_hop(-0.4, 0, 0, &array![0, 1], None);
+        let supercell = model
+            .make_supercell(&array![[2.0, 1.0], [0.0, 1.0]])
+            .unwrap();
+
+        let k_supercell = array![0.23, 0.37];
+        let u_inverse_transpose = array![[0.5, 0.0], [-0.5, 1.0]];
+        let mut expected = [[0.0, 0.0], [1.0, 0.0]]
+            .into_iter()
+            .map(|reciprocal_image| {
+                let reciprocal_image = Array1::from_vec(reciprocal_image.to_vec());
+                let primitive_k = (&k_supercell + &reciprocal_image).dot(&u_inverse_transpose);
+                model.solve_band_onek(&primitive_k)[0]
+            })
+            .collect::<Vec<_>>();
+        let mut actual = supercell.solve_band_onek(&k_supercell).to_vec();
+        expected.sort_by(f64::total_cmp);
+        actual.sort_by(f64::total_cmp);
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn skew_supercell_preserves_spin_dependent_cartesian_rmatrix_offsets() {
+        let lattice = array![[2.0, 0.4], [0.0, 1.5]];
+        let mut model =
+            Model::<true, 2, HasRMatrix>::tb_model(lattice, array![[0.2, 0.3]], None).unwrap();
+        let old_cartesian = model.orb.dot(&model.lat);
+        let up = [old_cartesian[[0, 0]] + 0.1, old_cartesian[[0, 1]] - 0.2];
+        let down = [old_cartesian[[0, 0]] - 0.3, old_cartesian[[0, 1]] + 0.4];
+        for axis in 0..2 {
+            model.rmatrix.as_array4_mut()[[0, axis, 0, 0]] = Complex::new(up[axis], 0.0);
+            model.rmatrix.as_array4_mut()[[0, axis, 1, 1]] = Complex::new(down[axis], 0.0);
+        }
+
+        let supercell = model
+            .make_supercell(&array![[2.0, 1.0], [0.0, 1.0]])
+            .unwrap();
+        let new_cartesian = supercell.orb.dot(&supercell.lat);
+        for orbital in 0..supercell.norb() {
+            for axis in 0..2 {
+                let displacement = new_cartesian[[orbital, axis]] - old_cartesian[[0, axis]];
+                assert!(
+                    (supercell.rmatrix.as_array4()[[0, axis, orbital, orbital]].re
+                        - (up[axis] + displacement))
+                        .abs()
+                        < 1e-12
+                );
+                let down_state = orbital + supercell.norb();
+                assert!(
+                    (supercell.rmatrix.as_array4()[[0, axis, down_state, down_state]].re
+                        - (down[axis] + displacement))
+                        .abs()
+                        < 1e-12
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nonsymmetric_supercell_preserves_empty_atoms_and_3d_images() {
+        let atoms = vec![
+            Atom::with_orbitals(array![0.2, 0.3, 0.4], AtomType::C, [OrbitalId::new(0)]),
+            Atom::with_orbitals(array![0.6, 0.7, 0.8], AtomType::H, []),
+        ];
+        let model =
+            Model::<false, 3>::tb_model(Array2::eye(3), array![[0.2, 0.3, 0.4]], Some(atoms))
+                .unwrap();
+        let supercell = model
+            .make_supercell(&array![[2.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+            .unwrap();
+        assert_eq!(supercell.norb(), 2);
+        assert_eq!(supercell.natom(), 4);
+        assert_eq!(
+            supercell
+                .atoms
+                .iter()
+                .filter(|atom| atom.atom_type() == AtomType::H && atom.norb() == 0)
+                .count(),
+            2
+        );
+        assert_ne!(supercell.orb.row(0), supercell.orb.row(1));
     }
 
     #[test]
