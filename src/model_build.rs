@@ -1854,12 +1854,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 }
 
 /// Extract the `R = 0` position-matrix diagonal (Cartesian, shape
-/// `(norb, DIM)`); all zeros for `NoRMatrix` models.
+/// `(nsta, DIM)`); all zeros for `NoRMatrix` models.
+///
+/// The diagonal is stored per STATE so spin-dependent position diagonals
+/// (e.g. distinct r↑↑ and r↓↓ offsets) survive identity transforms.
 pub(crate) fn rmatrix_diagonal_cartesian<const SPIN: bool, const DIM: usize, R: RMatrixData>(
     model: &Model<SPIN, DIM, R>,
 ) -> Array2<f64> {
-    let norb = model.norb();
-    let mut diagonal = Array2::<f64>::zeros((norb, DIM));
+    let nsta = model.nsta();
+    let mut diagonal = Array2::<f64>::zeros((nsta, DIM));
     if !R::HAS_RMATRIX {
         return diagonal;
     }
@@ -1868,7 +1871,7 @@ pub(crate) fn rmatrix_diagonal_cartesian<const SPIN: bool, const DIM: usize, R: 
         return diagonal;
     };
     let rmatrix = model.rmatrix.as_array4();
-    for s in 0..norb {
+    for s in 0..nsta {
         for axis in 0..DIM {
             diagonal[[s, axis]] = rmatrix[[r0, axis, s, s]].re;
         }
@@ -1906,14 +1909,26 @@ pub(crate) fn set_rmatrix_diagonal_with_displacement<const DIM: usize>(
     };
     let nsta = rmatrix.dim().2;
     let norb = new_orb.nrows();
+    let norb_old = old_orb.nrows();
     let new_cart = new_orb.dot(new_lat);
     let old_cart = old_orb.dot(old_lat);
     for i in 0..nsta {
         let s = if spin { i % norb } else { i };
-        let src = source[s];
+        let src_orb = source[s];
+        // The source STATE preserves the spin component of state i
+        // (up block before down block in both models).
+        let src_state = if spin {
+            if i < norb {
+                src_orb
+            } else {
+                src_orb + norb_old
+            }
+        } else {
+            src_orb
+        };
         for axis in 0..DIM {
             rmatrix[[r0, axis, i, i]] = Complex::new(
-                old_diagonal[[src, axis]] + (new_cart[[s, axis]] - old_cart[[src, axis]]),
+                old_diagonal[[src_state, axis]] + (new_cart[[s, axis]] - old_cart[[src_orb, axis]]),
                 0.0,
             );
         }
@@ -2251,6 +2266,38 @@ mod fold_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn identity_supercell_preserves_spin_split_rmatrix_diagonal() {
+        // Regression: the old diagonal was stored per orbital and written
+        // to both spin states via i % norb, scrambling distinct r↑↑/r↓↓
+        // offsets into (r↑↑, r↑↑) under the identity supercell.
+        let mut model = Model::<true, 1, HasRMatrix>::tb_model(
+            array![[1.0]],
+            array![[0.5]],
+            None,
+        )
+        .unwrap();
+        model.rmatrix.as_array4_mut()[[0, 0, 0, 0]] = Complex::new(0.7, 0.0);
+        model.rmatrix.as_array4_mut()[[0, 0, 1, 1]] = Complex::new(0.9, 0.0);
+        model.add_hop(-1.0, 0, 0, &array![1], None);
+
+        let sc = model.make_supercell(&array![[1.0]]).unwrap();
+        sc.validate().unwrap();
+        let rmatrix = sc.rmatrix.as_array4();
+        let zero_r = Array1::<isize>::zeros(1);
+        let r0 = find_R(&sc.hamR, &zero_r).unwrap();
+        assert!(
+            (rmatrix[[r0, 0, 0, 0]] - Complex::new(0.7, 0.0)).norm() < 1e-12,
+            "r↑↑ must stay 0.7, found {}",
+            rmatrix[[r0, 0, 0, 0]]
+        );
+        assert!(
+            (rmatrix[[r0, 0, 1, 1]] - Complex::new(0.9, 0.0)).norm() < 1e-12,
+            "r↓↓ must stay 0.9, found {}",
+            rmatrix[[r0, 0, 1, 1]]
+        );
     }
 
     #[test]
