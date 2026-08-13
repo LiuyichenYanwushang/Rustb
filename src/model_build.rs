@@ -41,6 +41,7 @@ use ndarray::*;
 use ndarray_linalg::Norm;
 use ndarray_linalg::{Determinant, Inverse};
 use num_complex::Complex;
+use std::collections::HashSet;
 
 /// Overwrite Hamiltonian matrix elements with spin decoration.
 ///
@@ -1222,6 +1223,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         if U.iter().any(|&x| x.fract() > 1e-8) {
             return Err(TbError::InvalidSupercellMatrix);
         }
+        // Coefficient range for the image-shift enumeration.  A legal
+        // integer basis change can require shifts whose coefficients scale
+        // with the entries of U_inv (e.g. U = [[1, 100], [0, 1]] needs
+        // shift (0, 50)); the range must cover every coset of
+        // Z^DIM · U_inv, whose index is det(U).
+        let u_inv_max = U_inv.iter().fold(0.0_f64, |acc, x| acc.max(x.abs()));
+        let shift_box = (U_det as f64 * u_inv_max).ceil() as isize + 2;
 
         //开始构建新的轨道位置和原子位置
         //新的轨道
@@ -1257,6 +1265,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut new_orb = Array2::<f64>::zeros((0, self.dim_r()));
         let mut new_orb_proj = Vec::new();
         let mut new_atom = Vec::new();
+        // The enlarged shift range can visit the same fractional image twice;
+        // deduplicate by (atom index, snapped position bits).
+        let mut seen_atom_images: HashSet<(usize, Vec<u64>)> = HashSet::new();
+        let mut seen_orbital_images: HashSet<(usize, Vec<u64>)> = HashSet::new();
         // Pre-fetch U_inv rows and use scalar arithmetic: avoids per-iteration
         // .to_owned() heap allocations, replacing 3-5 allocs/iter with 1 arr1! call.
         match self.dim_r() {
@@ -1264,11 +1276,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 let u0 = U_inv.row(0).to_owned();
                 let u1 = U_inv.row(1).to_owned();
                 let u2 = U_inv.row(2).to_owned();
-                for i in -U_det - 1..U_det + 1 {
+                for i in -shift_box..=shift_box {
                     let i_f = i as f64;
-                    for j in -U_det - 1..U_det + 1 {
+                    for j in -shift_box..=shift_box {
                         let j_f = j as f64;
-                        for k in -U_det - 1..U_det + 1 {
+                        for k in -shift_box..=shift_box {
                             let k_f = k as f64;
                             for n in 0..self.natom() {
                                 let a = use_atom_position.row(n);
@@ -1298,6 +1310,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                 } else {
                                     atoms[[2]]
                                 };
+                                let image_key = atoms.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                                if !seen_atom_images.insert((n, image_key)) {
+                                    continue;
+                                }
                                 if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
                                     let first_new_orbital = new_orb.nrows();
                                     for &source_orbital in self.atoms[n].orbitals() {
@@ -1330,9 +1346,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             2 => {
                 let u0 = U_inv.row(0).to_owned();
                 let u1 = U_inv.row(1).to_owned();
-                for i in -U_det - 1..U_det + 1 {
+                for i in -shift_box..=shift_box {
                     let i_f = i as f64;
-                    for j in -U_det - 1..U_det + 1 {
+                    for j in -shift_box..=shift_box {
                         let j_f = j as f64;
                         for n in 0..self.natom() {
                             let a = use_atom_position.row(n);
@@ -1354,6 +1370,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             } else {
                                 atoms[[1]]
                             };
+                            let image_key = atoms.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                            if !seen_atom_images.insert((n, image_key)) {
+                                continue;
+                            }
                             if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
                                 let first_new_orbital = new_orb.nrows();
                                 for &source_orbital in self.atoms[n].orbitals() {
@@ -1383,7 +1403,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
             1 => {
                 let u0 = U_inv.row(0).to_owned();
-                for i in -U_det - 1..U_det + 1 {
+                for i in -shift_box..=shift_box {
                     let i_f = i as f64;
                     for n in 0..self.natom() {
                         let a = use_atom_position.row(n);
@@ -1395,6 +1415,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         } else {
                             atoms[[0]]
                         };
+                        let image_key = atoms.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                        if !seen_atom_images.insert((n, image_key)) {
+                            continue;
+                        }
                         if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
                             let first_new_orbital = new_orb.nrows();
                             for &source_orbital in self.atoms[n].orbitals() {
@@ -1432,9 +1456,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let shifts = match self.dim_r() {
             3 => {
                 let mut shifts = Vec::new();
-                for i in -U_det - 1..U_det + 1 {
-                    for j in -U_det - 1..U_det + 1 {
-                        for k in -U_det - 1..U_det + 1 {
+                for i in -shift_box..=shift_box {
+                    for j in -shift_box..=shift_box {
+                        for k in -shift_box..=shift_box {
                             shifts.push(
                                 i as f64 * U_inv.row(0).to_owned()
                                     + j as f64 * U_inv.row(1).to_owned()
@@ -1447,8 +1471,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
             2 => {
                 let mut shifts = Vec::new();
-                for i in -U_det - 1..U_det + 1 {
-                    for j in -U_det - 1..U_det + 1 {
+                for i in -shift_box..=shift_box {
+                    for j in -shift_box..=shift_box {
                         shifts.push(
                             i as f64 * U_inv.row(0).to_owned() + j as f64 * U_inv.row(1).to_owned(),
                         );
@@ -1456,7 +1480,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
                 shifts
             }
-            1 => (-U_det - 1..U_det + 1)
+            1 => (-shift_box..=shift_box)
                 .map(|i| i as f64 * U_inv.row(0).to_owned())
                 .collect(),
             _ => {
@@ -1476,11 +1500,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         *component = 1.0;
                     }
                 }
+                let image_key = position.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                if !seen_orbital_images.insert((source, image_key)) {
+                    continue;
+                }
                 if position.iter().all(|&value| (0.0..1.0).contains(&value)) {
                     new_orb.push_row(position.view());
                     new_orb_proj.push(self.orb_projection[source]);
                     orb_list.push(source);
                 }
+            }
+        }
+        // 校验每个源轨道恰好生成 det(U) 个副本: 枚举范围不足或存在重复时
+        // 会在这里显式报错, 而不是静默返回缺原子的模型。
+        for source in 0..self.norb() {
+            let copies = orb_list.iter().filter(|&&src| src == source).count();
+            if copies != U_det as usize {
+                return Err(TbError::Other(format!(
+                    "make_supercell: source orbital {source} produced {copies} images, \
+                     expected {} (det U); the image-shift enumeration was incomplete",
+                    U_det
+                )));
             }
         }
         //轨道位置和原子位置构建完成, 接下来我们开始构建哈密顿量
@@ -2136,6 +2176,38 @@ mod fold_tests {
                 (a - b).abs() < 1e-10,
                 "identity supercell band {b} does not match original band {a}"
             );
+        }
+    }
+
+    #[test]
+    fn skew_integer_basis_change_supercell_succeeds() {
+        // Regression: the image-shift enumeration was bounded by det(U)
+        // per coefficient; U = [[1, 100], [0, 1]] with det = 1 needs the
+        // shift (0, 50) to bring atom (0.5, 0.5) into the cell, so the old
+        // range returned Err(NoOrbitals).
+        let atoms = vec![Atom::with_orbitals(
+            array![0.5, 0.5],
+            AtomType::C,
+            [OrbitalId::new(0)],
+        )];
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.5, 0.5]], Some(atoms)).unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.add_hop(-1.0, 0, 0, &array![0, 1], None);
+
+        let sc = model.make_supercell(&array![[1.0, 100.0], [0.0, 1.0]]).unwrap();
+        sc.validate().unwrap();
+        // det = 1: exactly one copy of the source orbital.
+        assert_eq!(sc.norb(), 1);
+        assert_eq!(sc.natom(), 1);
+        for s in 0..sc.norb() {
+            for axis in 0..2 {
+                assert!(
+                    (0.0..1.0).contains(&sc.orb[[s, axis]]),
+                    "supercell orbital {s} axis {axis} = {} outside [0, 1)",
+                    sc.orb[[s, axis]]
+                );
+            }
         }
     }
 
