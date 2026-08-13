@@ -603,8 +603,12 @@ mod tests {
         .unwrap();
 
         // Case 1: update an existing R != 0 hopping with i == j.
-        model.add_element(Complex::new(1.0, 0.0), 0, 0, &array![1, 0]).unwrap();
-        model.add_element(Complex::new(2.0, 0.0), 0, 0, &array![1, 0]).unwrap();
+        model
+            .add_element(Complex::new(1.0, 0.0), 0, 0, &array![1, 0])
+            .unwrap();
+        model
+            .add_element(Complex::new(2.0, 0.0), 0, 0, &array![1, 0])
+            .unwrap();
         let i_plus = find_R(&model.hamR, &array![1, 0]).unwrap();
         let i_minus = find_R(&model.hamR, &array![-1, 0]).unwrap();
         assert_eq!(model.ham[[i_plus, 0, 0]], Complex::new(2.0, 0.0));
@@ -615,8 +619,12 @@ mod tests {
         );
 
         // Case 2: update an R = 0 off-diagonal element.
-        model.add_element(Complex::new(0.3, 0.1), 0, 1, &array![0, 0]).unwrap();
-        model.add_element(Complex::new(0.4, 0.2), 0, 1, &array![0, 0]).unwrap();
+        model
+            .add_element(Complex::new(0.3, 0.1), 0, 1, &array![0, 0])
+            .unwrap();
+        model
+            .add_element(Complex::new(0.4, 0.2), 0, 1, &array![0, 0])
+            .unwrap();
         let i_0 = find_R(&model.hamR, &array![0, 0]).unwrap();
         assert_eq!(model.ham[[i_0, 0, 1]], Complex::new(0.4, 0.2));
         assert_eq!(

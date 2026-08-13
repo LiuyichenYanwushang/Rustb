@@ -562,9 +562,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                 let xyz_species: Vec<&str> = new_atom_name.iter().map(|n| n.to_str()).collect();
                 let proj_species: Vec<&str> = proj_name.iter().map(|n| n.to_str()).collect();
                 let detail = if orb_proj.len() < norb {
-                    format!("{norb} orbitals declared in the projections block, but only {} could be assigned to atoms", orb_proj.len())
+                    format!(
+                        "{norb} orbitals declared in the projections block, but only {} could be assigned to atoms",
+                        orb_proj.len()
+                    )
                 } else {
-                    format!("{norb} orbitals declared in the projections block, but {} were assigned to atoms", orb_proj.len())
+                    format!(
+                        "{norb} orbitals declared in the projections block, but {} were assigned to atoms",
+                        orb_proj.len()
+                    )
                 };
                 return Err(TbError::FileParse {
                     file: xyz_path.clone(),
@@ -582,9 +588,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             for (i, name) in atom_name.iter().enumerate() {
                 let name = AtomType::from_str(name).map_err(|_| TbError::FileParse {
                     file: win_path.clone(),
-                    message: format!(
-                        "Unknown atomic species '{name}' in begin atoms_frac block"
-                    ),
+                    message: format!("Unknown atomic species '{name}' in begin atoms_frac block"),
                 })?;
                 // Wannier90 permits multiple projection lines per species
                 // (e.g. separate spin-up/down blocks): all lines of this
@@ -621,9 +625,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             if orb_proj.len() != norb {
                 let proj_species: Vec<&str> = proj_name.iter().map(|n| n.to_str()).collect();
                 let detail = if orb_proj.len() < norb {
-                    format!("{norb} orbitals declared in the projections block, but only {} could be assigned to atoms", orb_proj.len())
+                    format!(
+                        "{norb} orbitals declared in the projections block, but only {} could be assigned to atoms",
+                        orb_proj.len()
+                    )
                 } else {
-                    format!("{norb} orbitals declared in the projections block, but {} were assigned to atoms", orb_proj.len())
+                    format!(
+                        "{norb} orbitals declared in the projections block, but {} were assigned to atoms",
+                        orb_proj.len()
+                    )
                 };
                 return Err(TbError::FileParse {
                     file: win_path.clone(),
@@ -1146,7 +1156,11 @@ mod tests {
         f.write_all(hr.as_bytes()).unwrap();
         let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
         assert_eq!(model.norb(), 4);
-        assert_eq!(model.natom(), 1, "multi-line projections must merge into one Atom");
+        assert_eq!(
+            model.natom(),
+            1,
+            "multi-line projections must merge into one Atom"
+        );
         assert_eq!(model.atoms[0].norb(), 4);
         fs::remove_dir_all(dir).ok();
     }
