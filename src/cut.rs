@@ -461,10 +461,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
                     new_orb_proj.push(old_model.orb_projection[*use_i])
                 }
+                // nrows() is the orbital count; len() would count all
+                // matrix elements (norb * DIM).
                 let new_nsta = if SPIN {
-                    new_orb.len() * 2
+                    new_orb.nrows() * 2
                 } else {
-                    new_orb.len()
+                    new_orb.nrows()
                 };
                 let n_R = old_model.hamR.len_of(Axis(0));
                 let mut new_ham = Array3::<Complex<f64>>::zeros((n_R, new_nsta, new_nsta));
@@ -679,6 +681,52 @@ mod ownership_tests {
     use crate::HasRMatrix;
     use crate::solve_ham::solve;
     use ndarray::array;
+
+    #[test]
+    fn three_dimensional_cut_dot_selects_orbitals() {
+        // Regression: new_orb.len() counted matrix elements (norb * 3)
+        // instead of orbitals, so every non-empty 3D cut_dot built a
+        // wrong-shaped Hamiltonian and failed validate().
+        let orbital_model = |spin: bool| -> Result<Model<false, 3>> {
+            let mut model = Model::<false, 3>::tb_model(
+                Array2::eye(3),
+                array![[0.2, 0.2, 0.0]],
+                Some(vec![Atom::with_orbitals(
+                    array![0.2, 0.2, 0.0],
+                    AtomType::C,
+                    [OrbitalId::new(0)],
+                )]),
+            )?;
+            model.add_hop(-1.0, 0, 0, &array![1, 0, 0], None);
+            model.add_hop(-1.0, 0, 0, &array![0, 1, 0], None);
+            let _ = spin;
+            Ok(model)
+        };
+
+        let model = orbital_model(false).unwrap();
+        let dot = model.cut_dot(1, 4, Some(vec![0, 1])).unwrap();
+        dot.validate().unwrap();
+        assert_eq!(dot.norb(), 1);
+        assert_eq!(dot.nsta(), 1);
+
+        // Spinful variant exercises the nsta doubling path.
+        let mut spinful = Model::<true, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.2, 0.2, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.2, 0.2, 0.0],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        spinful.add_hop(-1.0, 0, 0, &array![1, 0, 0], None);
+        spinful.add_hop(-1.0, 0, 0, &array![0, 1, 0], None);
+        let dot = spinful.cut_dot(1, 4, Some(vec![0, 1])).unwrap();
+        dot.validate().unwrap();
+        assert_eq!(dot.norb(), 1);
+        assert_eq!(dot.nsta(), 2);
+    }
 
     #[test]
     fn cut_dot_rejects_empty_selection() {
