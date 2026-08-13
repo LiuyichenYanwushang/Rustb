@@ -1336,7 +1336,20 @@ mod tests {
         let rashba = 0.0 * t;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
         let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
+        // Honeycomb A/B sublattice sites, one orbital each
+        let atoms = vec![
+            Atom::with_orbitals(
+                arr1(&[1.0 / 3.0, 1.0 / 3.0]),
+                AtomType::C,
+                [OrbitalId::new(0)],
+            ),
+            Atom::with_orbitals(
+                arr1(&[2.0 / 3.0, 2.0 / 3.0]),
+                AtomType::C,
+                [OrbitalId::new(1)],
+            ),
+        ];
+        let mut model = Model::<true, 2>::tb_model(lat, orb, Some(atoms)).unwrap();
         model.set_onsite(&arr1(&[delta, -delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
         for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
@@ -1876,7 +1889,14 @@ mod tests {
         let i0 = -1.0;
         let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]]);
-        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        // Four lattice sites, one orbital each
+        let atoms = vec![
+            Atom::with_orbitals(arr1(&[0.0, 0.0]), AtomType::C, [OrbitalId::new(0)]),
+            Atom::with_orbitals(arr1(&[0.5, 0.0]), AtomType::C, [OrbitalId::new(1)]),
+            Atom::with_orbitals(arr1(&[0.5, 0.5]), AtomType::C, [OrbitalId::new(2)]),
+            Atom::with_orbitals(arr1(&[0.0, 0.5]), AtomType::C, [OrbitalId::new(3)]),
+        ];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, Some(atoms)).unwrap();
         model.add_hop(t1, 0, 1, &array![0, 0], None);
         model.add_hop(t1, 1, 2, &array![0, 0], None);
         model.add_hop(t1, 2, 3, &array![0, 0], None);
