@@ -618,7 +618,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         if let Some(index) = find_R(&self.hamR, &R) {
             let index_inv = find_R(&self.hamR, &(-R)).expect("Negative R not found in hamR");
             self.ham[[index, ind_i, ind_j]] = tmp;
-            if index != 0 && ind_i != ind_j {
+            if index != 0 || ind_i != ind_j {
                 self.ham[[index_inv, ind_j, ind_i]] = tmp.conj();
             }
             if ind_i == ind_j && tmp.im != 0.0 && index == 0 {

@@ -592,6 +592,41 @@ mod tests {
     }
 
     #[test]
+    fn add_element_updates_existing_hopping_hermitically() {
+        // Regression: updating an existing R with i == j, or an R = 0
+        // off-diagonal element, wrote only one side and broke Hermiticity.
+        let mut model = Model::<false, 2>::tb_model(
+            array![[1.0, 0.0], [0.0, 1.0]],
+            array![[0.0, 0.0], [0.5, 0.0]],
+            None,
+        )
+        .unwrap();
+
+        // Case 1: update an existing R != 0 hopping with i == j.
+        model.add_element(Complex::new(1.0, 0.0), 0, 0, &array![1, 0]).unwrap();
+        model.add_element(Complex::new(2.0, 0.0), 0, 0, &array![1, 0]).unwrap();
+        let i_plus = find_R(&model.hamR, &array![1, 0]).unwrap();
+        let i_minus = find_R(&model.hamR, &array![-1, 0]).unwrap();
+        assert_eq!(model.ham[[i_plus, 0, 0]], Complex::new(2.0, 0.0));
+        assert_eq!(
+            model.ham[[i_minus, 0, 0]],
+            Complex::new(2.0, 0.0),
+            "H(-R) must follow H(R) when updating an existing hopping"
+        );
+
+        // Case 2: update an R = 0 off-diagonal element.
+        model.add_element(Complex::new(0.3, 0.1), 0, 1, &array![0, 0]).unwrap();
+        model.add_element(Complex::new(0.4, 0.2), 0, 1, &array![0, 0]).unwrap();
+        let i_0 = find_R(&model.hamR, &array![0, 0]).unwrap();
+        assert_eq!(model.ham[[i_0, 0, 1]], Complex::new(0.4, 0.2));
+        assert_eq!(
+            model.ham[[i_0, 1, 0]],
+            Complex::new(0.4, -0.2),
+            "R = 0 off-diagonal update must write the Hermitian conjugate"
+        );
+    }
+
+    #[test]
     fn test_gen_v() {
         //判断两个Array1<f64> 是否足够接近
         fn are_arrays_close(a: &Array1<f64>, b: &Array1<f64>, tolerance: f64) -> bool {
