@@ -1241,14 +1241,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // rounded matrix consistently avoids building the lattice with U while
         // enumerating images with round(U).
         let rounded_u = U.mapv(f64::round);
-        let mut integer_u = vec![vec![0_i128; DIM]; DIM];
+        let mut integer_u = vec![vec![0_isize; DIM]; DIM];
         for row in 0..DIM {
             for column in 0..DIM {
                 let value = rounded_u[[row, column]];
                 if value < isize::MIN as f64 || value > isize::MAX as f64 {
                     return Err(TbError::InvalidSupercellMatrix);
                 }
-                integer_u[row][column] = value as i128;
+                integer_u[row][column] = value as isize;
             }
         }
         let determinant =
@@ -1311,7 +1311,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
         let mut normalized_orb = self.orb.clone();
-        let mut orbital_gauge_shift = vec![vec![0_i128; DIM]; self.norb()];
+        let mut orbital_gauge_shift = vec![vec![0_isize; DIM]; self.norb()];
         for (orbital, owner) in orbital_owners.iter().enumerate() {
             for axis in 0..DIM {
                 let shift = match owner {
@@ -1323,7 +1323,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 if !shift.is_finite() || shift < isize::MIN as f64 || shift > isize::MAX as f64 {
                     return Err(TbError::InvalidSupercellMatrix);
                 }
-                orbital_gauge_shift[orbital][axis] = shift as i128;
+                orbital_gauge_shift[orbital][axis] = shift as isize;
                 normalized_orb[[orbital, axis]] -= shift;
             }
         }
@@ -1332,10 +1332,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut new_orb_projection = Vec::with_capacity(expected_norb);
         let mut new_atoms = Vec::with_capacity(expected_natom);
         let mut source_orbital = Vec::with_capacity(expected_norb);
-        let mut primitive_label = Vec::<Vec<i128>>::with_capacity(expected_norb);
+        let mut primitive_label = Vec::<Vec<isize>>::with_capacity(expected_norb);
         let mut copies_by_source = vec![Vec::<usize>::with_capacity(cell_count); self.norb()];
         let mut copy_by_source_and_coset =
-            vec![HashMap::<Vec<i128>, usize>::with_capacity(cell_count); self.norb()];
+            vec![HashMap::<Vec<isize>, usize>::with_capacity(cell_count); self.norb()];
 
         if self.atoms.is_empty() {
             for source in 0..self.norb() {
@@ -1455,7 +1455,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
                     let normalized_r = (0..DIM)
                         .map(|axis| {
-                            (old_r[axis] as i128)
+                            (old_r[axis] as isize)
                                 .checked_add(orbital_gauge_shift[old_target][axis])
                                 .and_then(|value| {
                                     value.checked_sub(orbital_gauge_shift[old_source][axis])
@@ -1564,7 +1564,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 /// Exact determinant of a square integer matrix using fraction-free Gaussian
 /// elimination (Bareiss). Checked arithmetic turns an unrepresentable
 /// transformation into an error instead of wrapping an integer cell label.
-fn checked_integer_determinant(matrix: &[Vec<i128>]) -> Option<i128> {
+fn checked_integer_determinant(matrix: &[Vec<isize>]) -> Option<isize> {
     let n = matrix.len();
     if matrix.iter().any(|row| row.len() != n) {
         return None;
@@ -1577,8 +1577,8 @@ fn checked_integer_determinant(matrix: &[Vec<i128>]) -> Option<i128> {
     }
 
     let mut work = matrix.to_vec();
-    let mut sign = 1_i128;
-    let mut previous_pivot = 1_i128;
+    let mut sign = 1_isize;
+    let mut previous_pivot = 1_isize;
     for pivot_index in 0..n - 1 {
         let Some(pivot_row) = (pivot_index..n).find(|&row| work[row][pivot_index] != 0) else {
             return Some(0);
@@ -1610,7 +1610,7 @@ fn checked_integer_determinant(matrix: &[Vec<i128>]) -> Option<i128> {
 }
 
 /// Exact adjugate satisfying `U * adj(U) = det(U) * I`.
-fn checked_integer_adjugate(matrix: &[Vec<i128>]) -> Option<Vec<Vec<i128>>> {
+fn checked_integer_adjugate(matrix: &[Vec<isize>]) -> Option<Vec<Vec<isize>>> {
     let n = matrix.len();
     if matrix.iter().any(|row| row.len() != n) {
         return None;
@@ -1622,7 +1622,7 @@ fn checked_integer_adjugate(matrix: &[Vec<i128>]) -> Option<Vec<Vec<i128>>> {
         return Some(vec![vec![1]]);
     }
 
-    let mut adjugate = vec![vec![0_i128; n]; n];
+    let mut adjugate = vec![vec![0_isize; n]; n];
     for adjugate_row in 0..n {
         for adjugate_column in 0..n {
             // adj(U)[i,j] is the cofactor C[j,i].
@@ -1650,7 +1650,7 @@ fn checked_integer_adjugate(matrix: &[Vec<i128>]) -> Option<Vec<Vec<i128>>> {
     Some(adjugate)
 }
 
-fn checked_integer_row_product(row: &[i128], matrix: &[Vec<i128>]) -> Option<Vec<i128>> {
+fn checked_integer_row_product(row: &[isize], matrix: &[Vec<isize>]) -> Option<Vec<isize>> {
     if row.len() != matrix.len()
         || matrix
             .iter()
@@ -1662,7 +1662,7 @@ fn checked_integer_row_product(row: &[i128], matrix: &[Vec<i128>]) -> Option<Vec
         .map(|column| {
             row.iter()
                 .zip(matrix)
-                .try_fold(0_i128, |sum, (&value, matrix_row)| {
+                .try_fold(0_isize, |sum, (&value, matrix_row)| {
                     sum.checked_add(value.checked_mul(matrix_row[column])?)
                 })
         })
@@ -1673,7 +1673,7 @@ fn checked_integer_row_product(row: &[i128], matrix: &[Vec<i128>]) -> Option<Vec
 ///
 /// Two primitive-cell labels `a` and `b` represent the same supercell image
 /// exactly when `(a-b) * adj(U)` vanishes modulo `det(U)`.
-fn row_coset_key(row: &[i128], adjugate: &[Vec<i128>], determinant: i128) -> Option<Vec<i128>> {
+fn row_coset_key(row: &[isize], adjugate: &[Vec<isize>], determinant: isize) -> Option<Vec<isize>> {
     (determinant > 0).then_some(())?;
     Some(
         checked_integer_row_product(row, adjugate)?
@@ -1686,13 +1686,13 @@ fn row_coset_key(row: &[i128], adjugate: &[Vec<i128>], determinant: i128) -> Opt
 /// Enumerate exactly `det(U)` representatives of the row-vector quotient.
 /// Adding the positive coordinate generators is sufficient because the
 /// quotient is finite; the canonical adjugate key prevents duplicates.
-fn row_coset_representatives(adjugate: &[Vec<i128>], determinant: i128) -> Option<Vec<Vec<i128>>> {
+fn row_coset_representatives(adjugate: &[Vec<isize>], determinant: isize) -> Option<Vec<Vec<isize>>> {
     let count = usize::try_from(determinant).ok()?;
     let dim = adjugate.len();
-    let zero = vec![0_i128; dim];
+    let zero = vec![0_isize; dim];
     let zero_key = row_coset_key(&zero, adjugate, determinant)?;
     let mut representatives = vec![zero.clone()];
-    let mut seen = HashMap::<Vec<i128>, usize>::from([(zero_key, 0)]);
+    let mut seen = HashMap::<Vec<isize>, usize>::from([(zero_key, 0)]);
     let mut frontier = VecDeque::from([zero]);
 
     while representatives.len() < count {
@@ -1721,10 +1721,10 @@ fn row_coset_representatives(adjugate: &[Vec<i128>], determinant: i128) -> Optio
 /// satisfying `fractional * U = tau + ell`.
 fn fold_supercell_copy(
     tau: ArrayView1<'_, f64>,
-    representative: &[i128],
+    representative: &[isize],
     u_inverse: &Array2<f64>,
-    u_integer: &[Vec<i128>],
-) -> Result<(Array1<f64>, Vec<i128>)> {
+    u_integer: &[Vec<isize>],
+) -> Result<(Array1<f64>, Vec<isize>)> {
     const SNAP_TOLERANCE: f64 = 1e-10;
     let dim = tau.len();
     if representative.len() != dim
@@ -1742,7 +1742,7 @@ fn fold_supercell_copy(
     );
     let raw = translated.dot(u_inverse);
     let mut fractional = Array1::<f64>::zeros(dim);
-    let mut supercell_shift = vec![0_i128; dim];
+    let mut supercell_shift = vec![0_isize; dim];
     for axis in 0..dim {
         let value = raw[axis];
         if !value.is_finite() {
@@ -1759,7 +1759,7 @@ fn fold_supercell_copy(
             return Err(TbError::InvalidSupercellMatrix);
         }
         fractional[axis] = position;
-        supercell_shift[axis] = cell as i128;
+        supercell_shift[axis] = cell as isize;
     }
 
     let shift_in_primitive = checked_integer_row_product(&supercell_shift, u_integer)
@@ -1778,9 +1778,9 @@ fn fold_supercell_copy(
 
 /// Solve the exact row equation `new_r * U = primitive_delta`.
 fn supercell_lattice_vector(
-    primitive_delta: &[i128],
-    adjugate: &[Vec<i128>],
-    determinant: i128,
+    primitive_delta: &[isize],
+    adjugate: &[Vec<isize>],
+    determinant: isize,
 ) -> Result<Vec<isize>> {
     let numerator = checked_integer_row_product(primitive_delta, adjugate)
         .ok_or(TbError::InvalidSupercellMatrix)?;
@@ -2081,7 +2081,7 @@ mod fold_tests {
         // the parity of the first coordinate. A column-lattice HNF computes a
         // different quotient and the former rounded Euclidean loop did not
         // terminate for this matrix.
-        let u = vec![vec![2_i128, 1_i128], vec![0_i128, 1_i128]];
+        let u = vec![vec![2_isize, 1_isize], vec![0_isize, 1_isize]];
         let determinant = checked_integer_determinant(&u).unwrap();
         let adjugate = checked_integer_adjugate(&u).unwrap();
         assert_eq!(determinant, 2);
@@ -2105,10 +2105,10 @@ mod fold_tests {
 
     #[test]
     fn exact_row_cosets_exhaust_small_two_dimensional_matrices() {
-        for a in -3_i128..=3 {
-            for b in -3_i128..=3 {
-                for c in -3_i128..=3 {
-                    for d in -3_i128..=3 {
+        for a in -3_isize..=3 {
+            for b in -3_isize..=3 {
+                for c in -3_isize..=3 {
+                    for d in -3_isize..=3 {
                         let expected_determinant = a * d - b * c;
                         if !(1..=12).contains(&expected_determinant) {
                             continue;
