@@ -1232,12 +1232,21 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // nearest representative is unambiguous because validate() enforces
         // |orb - atom| <= ORBITAL_ATOM_POSITION_TOLERANCE < 1/2 (mod 1).
         let mut use_orb = self.orb.clone();
+        // Track the per-component span of the fold vectors: the R-vector
+        // candidate range below must cover (n_j - n_i) · U_inv, otherwise
+        // hoppings between oppositely folded orbitals fall outside the
+        // enumeration and are silently dropped.
+        let mut fold_min = Array1::<isize>::zeros(DIM);
+        let mut fold_max = Array1::<isize>::zeros(DIM);
         for atom in &self.atoms {
             for &orbital_id in atom.orbitals() {
                 let orbital = orbital_id.index();
                 for axis in 0..DIM {
                     let shift = (use_orb[[orbital, axis]] - atom.position_ref()[[axis]]).round();
                     use_orb[[orbital, axis]] -= shift;
+                    let shift = shift as isize;
+                    fold_min[axis] = fold_min[axis].min(shift);
+                    fold_max[axis] = fold_max[axis].max(shift);
                 }
             }
         }
@@ -1499,7 +1508,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     }
                     acc
                 });
-        let max_R = max_hamR.mapv(|x| (x.ceil() as isize) + 1);
+        // Extend the candidate range by the pre-fold span mapped through
+        // U_inv: the R0 lookup includes the -n_j + n_i contribution, so the
+        // enumerated supercell vectors must reach
+        // (R0 + n_j - n_i) · U_inv for every pair of fold vectors.
+        let fold_span = &fold_max - &fold_min;
+        let fold_extra = fold_span
+            .mapv(|x| x as f64)
+            .dot(&U_inv.mapv(|x| x.abs()))
+            .mapv(|x| x.ceil() as isize);
+        let max_R = max_hamR.mapv(|x| (x.ceil() as isize) + 1) + fold_extra;
         //let mut max_R=Array1::<isize>::zeros(self.dim_r());
         //let max_R:isize=U_det.abs()*(self.dim_r() as isize);
         //let max_R=Array1::<isize>::ones(self.dim_r())*max_R;
@@ -1949,6 +1967,46 @@ mod fold_tests {
             assert!(
                 (a - b).abs() < 1e-10,
                 "supercell band {b} does not match folded primitive band {a} at k_sc = {k_sc}"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_supercell_preserves_spectrum_with_opposite_folds() {
+        // Regression: the R-vector candidate range did not cover the
+        // pre-fold contribution (n_j - n_i)·U_inv.  With two orbitals
+        // folded in opposite directions (n_0 = -1, n_1 = +1) and a hopping
+        // at the largest R, the identity supercell (U = 1) silently dropped
+        // the hopping and its spectrum differed from the original model.
+        let atoms = vec![
+            Atom::with_orbitals(array![0.01], AtomType::C, [OrbitalId::new(0)]),
+            Atom::with_orbitals(array![0.99], AtomType::O, [OrbitalId::new(1)]),
+        ];
+        // Orbital 0 sits just left of atom A (fold n_0 = -1), orbital 1
+        // just right of atom B (fold n_1 = +1).
+        let mut model = Model::<false, 1>::tb_model(
+            array![[1.0]],
+            array![[-1.01], [1.99]],
+            Some(atoms),
+        )
+        .unwrap();
+        model.add_hop(-0.7, 0, 1, &array![1], None);
+        model.validate().unwrap();
+
+        let sc = model.make_supercell(&array![[1.0]]).unwrap();
+        sc.validate().unwrap();
+        assert_eq!(sc.norb(), model.norb(), "identity supercell must keep norb");
+
+        // The identity supercell spectrum must equal the original spectrum.
+        let k = array![0.3];
+        let mut expected: Vec<f64> = model.solve_band_onek(&k).to_vec();
+        let mut got: Vec<f64> = sc.solve_band_onek(&k).to_vec();
+        expected.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for (a, b) in expected.iter().zip(got.iter()) {
+            assert!(
+                (a - b).abs() < 1e-10,
+                "identity supercell band {b} does not match original band {a}"
             );
         }
     }
