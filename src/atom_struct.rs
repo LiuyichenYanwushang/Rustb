@@ -378,6 +378,9 @@ impl AtomType {
 }
 
 impl AtomType {
+    /// Parse a chemical element symbol (e.g. `"C"`, `"Fe"`) into an [`AtomType`].
+    ///
+    /// Returns [`TbError::InvalidAtomType`] for unrecognized symbols.
     pub fn from_str(s: &str) -> Result<Self> {
         match s {
             "H" => Ok(AtomType::H),
@@ -471,6 +474,7 @@ impl AtomType {
             _ => Err(TbError::InvalidAtomType(s.to_string())),
         }
     }
+    /// Standard chemical element symbol of this [`AtomType`] (e.g. `"Fe"`).
     pub fn to_str(&self) -> &str {
         let symbol = match self {
             AtomType::H => "H",
@@ -840,6 +844,7 @@ impl Atom {
         self.orbitals.len()
     }
 
+    /// Chemical species of this atomic site.
     pub fn atom_type(&self) -> AtomType {
         self.name
     }
@@ -877,6 +882,12 @@ impl Atom {
         self.magnetic_moment.is_some()
     }
 
+    /// Change the chemical species of this atom.
+    ///
+    /// Only the species label changes; position, owned orbitals, and the
+    /// optional magnetic moment are left untouched.  Symmetry analyses and
+    /// `from_hr` species matching use the current species, so call this
+    /// before running them.
     pub fn change_type(&mut self, new_type: AtomType) {
         self.name = new_type;
     }
