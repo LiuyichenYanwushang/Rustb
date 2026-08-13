@@ -37,7 +37,11 @@ pub trait OutPut {
     fn output_hr(&self, path: &str, seedname: &str);
     fn output_POSCAR(&self, path: &str);
     fn output_win(&self, path: &str, seedname: &str);
-    fn output_xyz(&self, path: &str, seedname: &str);
+    /// Writes a Wannier90 `_centres.xyz` file.
+    ///
+    /// Returns [`TbError::MissingAtomicStructure`] when the model has no
+    /// atom metadata (e.g. built via `tb_model(..., None)`).
+    fn output_xyz(&self, path: &str, seedname: &str) -> Result<()>;
     fn show_band(&self, path: &Array2<f64>, label: &Vec<&str>, nk: usize, name: &str)
     -> Result<()>;
 }
@@ -401,14 +405,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         writeln!(file, "begin projections");
         writeln!(file, "end projections");
     }
-    fn output_xyz(&self, path: &str, seedname: &str) {
+    fn output_xyz(&self, path: &str, seedname: &str) -> Result<()> {
         //!Output a Wannier90 `_centres.xyz` file. Note: projections must be added
         //!manually, since projection data is not stored in the model.
-        assert!(
-            self.natom() > 0,
-            "output_xyz requires atom data, but this model has no atoms. \
-             Build the model with explicit Atom metadata via tb_model(..., Some(atoms))."
-        );
+        if self.natom() == 0 {
+            return Err(TbError::MissingAtomicStructure);
+        }
         let mut name = String::new();
         name.push_str(path);
         name.push_str(seedname);
@@ -528,6 +530,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
             _ => unreachable!(),
         };
         writeln!(file, "{}", s);
+        Ok(())
     }
 
     ///Quickly plot a band structure using Python (gnuplot), since Rust-side
