@@ -99,17 +99,23 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
         let li: Complex<f64> = Complex::i();
         let E = Array1::<f64>::linspace(E_min, E_max, E_n);
         let mut A0 = Array2::<f64>::zeros((E_n, nk));
-        let inv_U = U.inv().unwrap();
+        let inv_U = U.inv().map_err(TbError::Linalg)?;
         let unfold_lat = &inv_U.dot(&self.lat);
-        let V = self.lat.det().unwrap();
-        let unfold_V = unfold_lat.det().unwrap();
-        let U_det = U.det().unwrap();
+        let V = self.lat.det().map_err(TbError::Linalg)?;
+        let unfold_V = unfold_lat.det().map_err(TbError::Linalg)?;
+        let U_det = U.det().map_err(TbError::Linalg)?;
+        if !U_det.is_finite() || U_det <= 1.0 {
+            // NaN must not reach the rounding/modulo below: NaN passes the
+            // arithmetic guards and NaN.round() as usize saturates to 0,
+            // which would panic in `norb % 0`.
+            return Err(TbError::InvalidSupercellDet { det: U_det });
+        }
         let cell_count = U_det.round();
-        if U_det <= 1.0 || (U_det - cell_count).abs() > precision {
+        if (U_det - cell_count).abs() > precision {
             return Err(TbError::InvalidSupercellDet { det: U_det });
         }
         let cell_count = cell_count as usize;
-        if self.norb() % cell_count != 0 || self.natom() % cell_count != 0 {
+        if cell_count == 0 || self.norb() % cell_count != 0 || self.natom() % cell_count != 0 {
             return Err(TbError::InvalidAtomConfiguration);
         }
         //我们先根据path计算一下k点
@@ -338,6 +344,26 @@ mod tests {
     use num_complex::Complex;
     use std::f64::consts::PI;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn unfold_rejects_nan_determinant() {
+        // Regression: a NaN determinant used to pass both arithmetic guards
+        // (NaN <= 1.0 is false, (NaN - 0).abs() > prec is false), then
+        // NaN.round() as usize saturated to 0 and `norb % 0` panicked.
+        let model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
+        let result = model.unfold(
+            &array![[f64::NAN, 0.0], [0.0, 1.0]],
+            &array![[0.0, 0.0], [0.5, 0.0]],
+            2,
+            -1.0,
+            1.0,
+            2,
+            1e-2,
+            1e-3,
+        );
+        assert!(matches!(result, Err(TbError::InvalidSupercellDet { .. })));
+    }
 
     #[test]
     fn unfold_rejects_nondivisible_orbital_count() {
