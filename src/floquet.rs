@@ -1268,6 +1268,67 @@ fn validate_target_hamr<const DIM: usize>(target_ham_r: &Array2<isize>) -> Resul
     Ok(())
 }
 
+/// Integer-order Bessel function of the first kind, `J_m(r)`, for real
+/// non-negative arguments.
+///
+/// Evaluated with the ascending series
+///
+/// ```math
+/// J_m(r) = \sum_{k=0}^{\infty}
+/// \frac{(-1)^k\,(r/2)^{2k+m}}{k!\,(k+m)!},
+/// ```
+///
+/// whose terms decay like `(r/2)^{2k}/(k!)^2` — comfortably within 1e-15
+/// relative error for the arguments used by the Floquet Bessel backend
+/// (`r` up to roughly 8).  Negative orders use the symmetry
+/// `J_{-m}(r) = (-1)^m J_m(r)`.
+///
+/// # Arguments
+/// * `m` - integer order (may be negative).
+/// * `r` - non-negative real argument.
+///
+/// # Panics
+/// Panics on a negative argument (`r < 0` is not part of the Floquet
+/// backend's domain; call sites pass bond lengths `|a·d|`).
+pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
+    assert!(
+        r >= 0.0,
+        "bessel_j expects a non-negative argument, got {r}"
+    );
+    if m < 0 {
+        // J_{-m}(r) = (-1)^m J_m(r)
+        return if m.rem_euclid(2) == 1 {
+            -bessel_j(-m, r)
+        } else {
+            bessel_j(-m, r)
+        };
+    }
+    let m = m as usize;
+    if r == 0.0 {
+        return if m == 0 { 1.0 } else { 0.0 };
+    }
+    // First term: (r/2)^m / m!.
+    let mut term = (r / 2.0).powi(m as i32) / factorial(m);
+    let mut sum = term;
+    let negative_r_squared_over_4 = -(r * r) / 4.0;
+    for k in 1.. {
+        term *= negative_r_squared_over_4 / ((k * (k + m)) as f64);
+        sum += term;
+        // The series is alternating once k is large enough; break when the
+        // term is negligible relative to the accumulated sum.
+        if term.abs() <= sum.abs() * 1e-16 {
+            break;
+        }
+    }
+    sum
+}
+
+/// `n!` for `n <= 170` (beyond that the f64 factorial overflows; the Bessel
+/// series only ever needs orders up to ~`R + margin`, well below this).
+fn factorial(n: usize) -> f64 {
+    (1..=n).fold(1.0, |acc, k| acc * k as f64)
+}
+
 fn peierls_fourier_coeffs(
     d_cart: &Array1<f64>,
     q_min: isize,
@@ -1402,6 +1463,56 @@ mod tests {
     use crate::model_build::*;
     use crate::solve_ham::solve;
     use ndarray::{arr1, array};
+
+    #[test]
+    fn bessel_j_matches_tabulated_values() {
+        // Reference values (NIST DLMF, mpmath 50-digit evaluation).
+        let table: [(isize, f64, f64); 12] = [
+            (0, 0.0, 1.0),
+            (1, 0.0, 0.0),
+            (5, 0.0, 0.0),
+            (0, 1.0, 0.76519768655796655145),
+            (1, 1.0, 0.44005058574493351596),
+            (5, 1.0, 0.00024975773021123443176),
+            (0, 2.0, 0.22389077914123566805),
+            (1, 2.0, 0.57672480775687338720),
+            (2, 2.0, 0.35283402861563771915),
+            (3, 2.0, 0.12894324947440205110),
+            (0, 5.0, -0.17759677131433830435),
+            (10, 5.0, 0.00146780264731047436),
+        ];
+        for (m, r, expected) in table {
+            let got = bessel_j(m, r);
+            assert!(
+                (got - expected).abs() < 1e-14,
+                "J_{m}({r}) = {got}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn bessel_j_satisfies_recurrence_and_negative_order_symmetry() {
+        // Recurrence: J_{m-1}(r) + J_{m+1}(r) = (2m/r) J_m(r).
+        for r in [0.3, 0.7, 1.3, 2.5, 4.0, 7.0] {
+            for m in 1..12 {
+                let left = bessel_j(m - 1, r) + bessel_j(m + 1, r);
+                let right = (2.0 * m as f64 / r) * bessel_j(m, r);
+                assert!(
+                    (left - right).abs() < 1e-12,
+                    "recurrence failed at m={m}, r={r}: {left} vs {right}"
+                );
+            }
+        }
+        // Negative-order symmetry: J_{-m}(r) = (-1)^m J_m(r).
+        for m in 1..8 {
+            let expected = if m % 2 == 0 {
+                bessel_j(m, 1.7)
+            } else {
+                -bessel_j(m, 1.7)
+            };
+            assert!((bessel_j(-m, 1.7) - expected).abs() < 1e-15);
+        }
+    }
 
     fn chain_model() -> Model<false, 1, NoRMatrix> {
         let lat = array![[1.0]];
