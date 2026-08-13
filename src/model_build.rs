@@ -426,6 +426,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     update_hamiltonian!(SPIN, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
                 self.ham.push(Axis(0), new_ham.view()).unwrap();
                 self.hamR.push(Axis(0), negative_R.view()).unwrap();
+                self.grow_rmatrix_rows(2);
             }
         }
     }
@@ -537,6 +538,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     update_hamiltonian!(SPIN, pauli, tmp.conj(), new_ham, ind_j, ind_i, norb);
                 self.ham.push(Axis(0), new_ham.view()).unwrap();
                 self.hamR.push(Axis(0), negative_R.view()).unwrap();
+                self.grow_rmatrix_rows(2);
             }
         }
     }
@@ -632,6 +634,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             new_ham[[ind_j, ind_i]] = tmp.conj();
             self.ham.push(Axis(0), new_ham.view()).unwrap();
             self.hamR.push(Axis(0), (-R).view()).unwrap();
+            self.grow_rmatrix_rows(2);
         }
         Ok(())
     }
@@ -820,6 +823,25 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             )
         }
         self.set_hop(Complex::new(0.0, 0.0), ind_i, ind_j, &R, pauli);
+    }
+
+    /// Append `count` zero position-matrix blocks for newly added hopping vectors.
+    ///
+    /// Keeps `rmatrix` shape in sync with `hamR` when new hopping vectors are
+    /// added by [`set_hop`], [`add_hop`], or [`add_element`]: a hopping
+    /// introduced through these methods has no position-matrix elements yet,
+    /// so the corresponding blocks are zero-filled.  Compile-time eliminated
+    /// for `NoRMatrix` models.
+    fn grow_rmatrix_rows(&mut self, count: usize) {
+        if R::HAS_RMATRIX {
+            let zero_block = Array3::<Complex<f64>>::zeros((DIM, self.nsta(), self.nsta()));
+            for _ in 0..count {
+                self.rmatrix
+                    .as_array4_mut()
+                    .push(Axis(0), zero_block.view())
+                    .expect("rmatrix row push cannot fail");
+            }
+        }
     }
 }
 

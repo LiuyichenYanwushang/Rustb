@@ -549,6 +549,49 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn test_rmatrix_grows_with_new_hoppings() {
+        // Regression: set_hop/add_hop/add_element must keep rmatrix in sync with
+        // hamR, otherwise validate() (and make_supercell/cut_*) reject
+        // HasRMatrix models built with these methods.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0]];
+        let mut model = Model::<false, 2, HasRMatrix>::tb_model(lat, orb, None).unwrap();
+
+        // set_hop adds R=(1,0) and -R -> hamR grows to 3 rows
+        model.set_hop(-1.0, 0, 0, &arr1(&[1isize, 0]), None);
+        // add_hop adds R=(0,1) and -R -> hamR grows to 5 rows
+        model.add_hop(-1.0, 0, 0, &arr1(&[0isize, 1]), None);
+        // add_element adds R=(1,1) and -R -> hamR grows to 7 rows
+        model
+            .add_element(Complex::new(-0.2, 0.0), 0, 0, &arr1(&[1isize, 1]))
+            .unwrap();
+
+        // The rmatrix shape must match hamR.nrows() x DIM x nsta x nsta
+        let expected = (model.hamR.nrows(), 2, model.nsta(), model.nsta());
+        assert_eq!(
+            model.rmatrix.as_array4().dim(),
+            expected,
+            "rmatrix must grow in sync with hamR"
+        );
+        // validate() must pass (previously returned InvalidModelInvariant)
+        model.validate().unwrap();
+        // Newly added hopping vectors must carry zero position-matrix blocks
+        for i_r in 1..model.hamR.nrows() {
+            let block = model.rmatrix.as_array4().index_axis(Axis(0), i_r);
+            assert!(
+                block.iter().all(|x| x.norm_sqr() == 0.0),
+                "position matrix block for R={:?} must be zero",
+                model.hamR.row(i_r)
+            );
+        }
+        // make_supercell (documented HasRMatrix workflow) must work
+        let supercell = model
+            .make_supercell(&array![[2.0, 0.0], [0.0, 1.0]])
+            .unwrap();
+        supercell.validate().unwrap();
+    }
+
+    #[test]
     fn test_gen_v() {
         //判断两个Array1<f64> 是否足够接近
         fn are_arrays_close(a: &Array1<f64>, b: &Array1<f64>, tolerance: f64) -> bool {
