@@ -234,6 +234,14 @@ pub struct HamiltonianSymmetryTolerances {
     /// This must lie in $(0,\frac12)$ so distinct lattice cosets remain
     /// separable.
     pub operation: f64,
+    /// Tolerance for matching supplied target operations against the
+    /// operation set detected from the Model structure.
+    ///
+    /// Structural detection only guarantees [`SymmetryParameters::symprec`]
+    /// accuracy, so a target group assembled from database-rounded values can
+    /// legitimately differ from the detected operations by more than
+    /// [`Self::operation`].  `None` reuses [`SymmetryParameters::symprec`].
+    pub membership: Option<f64>,
 }
 
 impl Default for HamiltonianSymmetryTolerances {
@@ -245,6 +253,7 @@ impl Default for HamiltonianSymmetryTolerances {
             hermiticity: 1e-10,
             representation: 1e-8,
             operation: 1e-8,
+            membership: None,
         }
     }
 }
@@ -1985,10 +1994,20 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                 ),
             })?;
         let structure_compatible_operations = &atom_magnetic_structure.field_preserving_operations;
+        // Structural detection only guarantees symprec accuracy, so target
+        // operations may legitimately differ from detected ones by more than
+        // tolerances.operation (e.g. database values rounded to 6 decimals).
+        // Use a dedicated membership tolerance: by default the same symprec
+        // used to detect the structure in the first place.
+        let membership_tolerance = parameters
+            .tolerances
+            .membership
+            .unwrap_or(parameters.structural_parameters.symprec);
         for (index, operation) in normalized_target_operations.iter().enumerate() {
-            if !structure_compatible_operations.iter().any(|candidate| {
-                operations_equivalent(operation, candidate, parameters.tolerances.operation)
-            }) {
+            if !structure_compatible_operations
+                .iter()
+                .any(|candidate| operations_equivalent(operation, candidate, membership_tolerance))
+            {
                 return Err(TbError::TargetMagneticGroupIncompatible {
                     reason: format!(
                         "operation {index} is not compatible with the current Model lattice, Atom positions/types, optional Atom magnetic moments, and external-field context"
