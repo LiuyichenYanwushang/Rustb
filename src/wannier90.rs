@@ -418,7 +418,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                             }
                             proj_list.push(atom_orb_number);
                             atom_proj.push(proj_orb);
-                            let proj_type = AtomType::from_str(prj[0]);
+                            let proj_type = AtomType::from_str(prj[0]).map_err(|_| {
+                                TbError::FileParse {
+                                    file: win_path.clone(),
+                                    message: format!(
+                                        "Unknown atomic species '{}' in begin projections",
+                                        prj[0]
+                                    ),
+                                }
+                            })?;
                             proj_name.push(proj_type);
                         }
                     }
@@ -510,21 +518,28 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                     file: xyz_path.clone(),
                     message: format!("Failed to parse atom position: {}", e),
                 })?;
-                new_atom_name.push(AtomType::from_str(a[0]));
+                let name = AtomType::from_str(a[0]).map_err(|_| TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!(
+                        "Unknown atomic species '{}' in _centres.xyz; \
+                         species must be listed in the win file's begin projections block",
+                        a[0]
+                    ),
+                })?;
+                new_atom_name.push(name);
             }
             //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
 
             for (i, name) in new_atom_name.iter().enumerate() {
                 for (j, j_name) in proj_name.iter().enumerate() {
-                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok()
-                    {
+                    if j_name == name {
                         let use_pos = new_atom_pos
                             .row(i)
                             .dot(&lat.inv().map_err(TbError::Linalg)?);
                         let first = orb_proj.len();
                         let use_atom = Atom::with_orbitals(
                             use_pos,
-                            *name.as_ref().unwrap(),
+                            *name,
                             (first..first + proj_list[j]).map(OrbitalId::new),
                         );
                         atom.push(use_atom);
@@ -532,19 +547,38 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                     }
                 }
             }
+            // 所有轨道都必须能被 xyz 物种与 projections 物种的匹配覆盖,
+            // 否则 orb_proj 条目数少于 norb, validate() 会报 orbital_projection_count。
+            if orb_proj.len() != norb {
+                let xyz_species: Vec<&str> = new_atom_name.iter().map(|n| n.to_str()).collect();
+                let proj_species: Vec<&str> = proj_name.iter().map(|n| n.to_str()).collect();
+                return Err(TbError::FileParse {
+                    file: xyz_path.clone(),
+                    message: format!(
+                        "species mismatch between _centres.xyz and the win projections block: \
+                         {} of {norb} orbitals could not be assigned to atoms. \
+                         _centres.xyz species: {xyz_species:?}; projection species: {proj_species:?}",
+                        norb - orb_proj.len(),
+                    ),
+                });
+            }
             orb
         } else {
             let mut orb = Array2::<f64>::zeros((0, 3));
             let atom_pos = atom_pos.dot(&lat.inv().map_err(TbError::Linalg)?);
             for (i, name) in atom_name.iter().enumerate() {
                 for (j, j_name) in proj_name.iter().enumerate() {
-                    let name = AtomType::from_str(name);
-                    if name.as_ref().ok() == j_name.as_ref().ok() && name.is_ok() && j_name.is_ok()
-                    {
+                    let name = AtomType::from_str(name).map_err(|_| TbError::FileParse {
+                        file: win_path.clone(),
+                        message: format!(
+                            "Unknown atomic species '{name}' in begin atoms_frac block"
+                        ),
+                    })?;
+                    if name == *j_name {
                         let first = orb_proj.len();
                         let use_atom = Atom::with_orbitals(
                             atom_pos.row(i).to_owned(),
-                            name.unwrap(),
+                            name,
                             (first..first + proj_list[j]).map(OrbitalId::new),
                         );
                         orb_proj.extend(atom_proj[j].clone());
@@ -554,6 +588,20 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                         }
                     }
                 }
+            }
+            // 与 xyz 分支相同的物种覆盖检查: atoms_frac 的物种必须全部出现在
+            // projections 块中, 否则 orb_proj 条目数不足, validate() 会失败。
+            if orb_proj.len() != norb {
+                let proj_species: Vec<&str> = proj_name.iter().map(|n| n.to_str()).collect();
+                return Err(TbError::FileParse {
+                    file: win_path.clone(),
+                    message: format!(
+                        "species mismatch between begin atoms_frac and the projections block: \
+                         {} of {norb} orbitals could not be assigned to atoms. \
+                         atom species: {atom_name:?}; projection species: {proj_species:?}",
+                        norb - orb_proj.len(),
+                    ),
+                });
             }
             orb
         };
@@ -981,5 +1029,58 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM, HasRMatrix> {
     /// Returns `TbError::FileCreation` if `_r.dat` is missing.
     pub fn from_hr_with_rmatrix(path: &str, file_name: &str, zero_energy: f64) -> Result<Self> {
         <Self as Wannier90>::from_hr(path, file_name, zero_energy)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+
+    /// Write a minimal valid Wannier90 dataset (one C atom, one s orbital)
+    /// to `dir/seedname.*`, returning the directory name.
+    fn write_minimal_dataset(dir: &str, atom_species: &str) {
+        fs::create_dir_all(dir).unwrap();
+        let win = format!(
+            "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin projections\nC:s\nend projections\n"
+        );
+        let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
+        let xyz = format!(
+            "2\nWannier centres\nC 0.0 0.0 0.0\n{atom_species} 0.0 0.0 0.0\n"
+        );
+        for (suffix, content) in [("_hr.dat", hr), ("_centres.xyz", xyz.as_str())] {
+            let mut f = fs::File::create(format!("{dir}/seedname{suffix}")).unwrap();
+            f.write_all(content.as_bytes()).unwrap();
+        }
+        let mut f = fs::File::create(format!("{dir}/seedname.win")).unwrap();
+        f.write_all(win.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn from_hr_loads_minimal_dataset() {
+        let dir = "tests/tmp_w90_ok/";
+        write_minimal_dataset(dir, "C");
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 1);
+        assert_eq!(model.natom(), 1);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_rejects_species_mismatch_with_clear_error() {
+        // Regression: an xyz species absent from the projections block used to
+        // be silently skipped, then validate() failed with the cryptic
+        // orbital_projection_count invariant. It must now produce a clear
+        // species-mismatch error at parse time.
+        let dir = "tests/tmp_w90_mismatch/";
+        write_minimal_dataset(dir, "Fe");
+        let err = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("species mismatch"),
+            "unexpected error: {message}"
+        );
+        fs::remove_dir_all(dir).ok();
     }
 }
