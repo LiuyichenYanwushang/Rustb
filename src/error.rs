@@ -266,6 +266,9 @@ pub enum TbError {
     #[error("this operation requires explicit atomic-site metadata")]
     MissingAtomicStructure,
 
+    #[error("a model must contain at least one orbital")]
+    NoOrbitals,
+
     #[error("Transformation matrix dimension mismatch: expected {expected}, got {actual}")]
     TransformationMatrixDimMismatch { expected: usize, actual: usize },
 

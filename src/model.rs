@@ -533,6 +533,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Validate synchronized model arrays and atom-to-orbital references.
     pub fn validate(&self) -> Result<()> {
+        if self.norb() == 0 {
+            return Err(TbError::NoOrbitals);
+        }
         if self.lat.dim() != (DIM, DIM) {
             return Err(TbError::InvalidModelInvariant {
                 invariant: "lattice_shape",
@@ -803,6 +806,16 @@ mod ownership_tests {
             model.orb_angular(),
             Err(TbError::MissingAtomicStructure)
         ));
+    }
+
+    #[test]
+    fn tb_model_rejects_empty_orbital_set() {
+        // Regression: tb_model with a zero-row orb matrix used to succeed and
+        // produce a model that silently flowed into solve/response entry
+        // points. It must now fail with NoOrbitals.
+        let result =
+            Model::<false, 3>::tb_model(Array2::eye(3), Array2::<f64>::zeros((0, 3)), None);
+        assert!(matches!(result, Err(TbError::NoOrbitals)));
     }
 
     #[test]
