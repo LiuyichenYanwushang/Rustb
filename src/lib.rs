@@ -635,6 +635,28 @@ mod tests {
     }
 
     #[test]
+    fn add_element_complex_onsite_errors_before_writing() {
+        // Regression: the OnsiteHoppingMustBeReal error fired after the
+        // Hamiltonian block was already written, corrupting the caller's
+        // model. The error must leave the model untouched.
+        let mut model = Model::<false, 2>::tb_model(
+            array![[1.0, 0.0], [0.0, 1.0]],
+            array![[0.0, 0.0]],
+            None,
+        )
+        .unwrap();
+        let before = model.ham.clone();
+        let result = model.add_element(Complex::new(1.0, 2.0), 0, 0, &array![0, 0]);
+        assert!(matches!(result, Err(TbError::OnsiteHoppingMustBeReal(_))));
+        for (a, b) in model.ham.iter().zip(before.iter()) {
+            assert_eq!(
+                a, b,
+                "failed add_element must not modify the Hamiltonian"
+            );
+        }
+    }
+
+    #[test]
     fn test_gen_v() {
         //判断两个Array1<f64> 是否足够接近
         fn are_arrays_close(a: &Array1<f64>, b: &Array1<f64>, tolerance: f64) -> bool {

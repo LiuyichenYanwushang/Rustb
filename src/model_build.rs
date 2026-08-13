@@ -625,14 +625,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 found: std::cmp::max(ind_i, ind_j),
             });
         }
+        // Transactional pre-check: an on-site term with a non-zero imaginary
+        // part must error before any Hamiltonian block is written.
+        let onsite = ind_i == ind_j && R.iter().all(|&x| x == 0);
+        if onsite && tmp.im != 0.0 {
+            return Err(TbError::OnsiteHoppingMustBeReal(tmp));
+        }
         if let Some(index) = find_R(&self.hamR, &R) {
             let index_inv = find_R(&self.hamR, &(-R)).expect("Negative R not found in hamR");
             self.ham[[index, ind_i, ind_j]] = tmp;
             if index != 0 || ind_i != ind_j {
                 self.ham[[index_inv, ind_j, ind_i]] = tmp.conj();
-            }
-            if ind_i == ind_j && tmp.im != 0.0 && index == 0 {
-                return Err(TbError::OnsiteHoppingMustBeReal(tmp));
             }
         } else {
             let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
