@@ -10,17 +10,22 @@ use num_complex::{Complex, Complex64};
 use rayon::prelude::*;
 use std::f64::consts::PI;
 
-/// Historical fractional-coordinate tolerance used to identify equivalent
-/// orbital and atom representatives during unfolding.
-const REPRESENTATIVE_POSITION_TOLERANCE: f64 = 5e-2;
+/// Fractional-coordinate tolerance used to identify equivalent orbital and
+/// atom representatives during unfolding.
+///
+/// Previously `5e-2`, which merged genuinely distinct primitive orbitals whose
+/// centers were closer than 0.05 (e.g. `0.0` and `0.03`) into one
+/// representative and made unfold hard-fail with `InvalidAtomConfiguration`.
+/// `1e-3` is far above the floating-point noise of the fold (`~1e-15`) and far
+/// below the typical distance between distinct Wannier centers.
+const REPRESENTATIVE_POSITION_TOLERANCE: f64 = 1e-3;
 pub trait Unfold {
     //! Band unfolding algorithm. Computes the unfolded band structure, and can be
     //! used to study alloys, supercells, impurities, defects, and charge density
     //! waves projected onto the primitive cell.
     /// The algorithm follows PRL 104, 216401 (2010).
     /// Representative centers are matched within a fixed fractional-coordinate
-    /// tolerance of `0.05`, retained for compatibility with earlier Rustb
-    /// unfolding results.
+    /// tolerance of `1e-3`.
     ///
     /// First, define the supercell Brillouin-zone Hamiltonian $H_{\\bm K}$ and its
     /// Green's function $$G(\og,\bm K)=(\og+i\eta-H_{\bm K})^{-1}$$
@@ -363,6 +368,29 @@ mod tests {
             1e-3,
         );
         assert!(matches!(result, Err(TbError::InvalidSupercellDet { .. })));
+    }
+
+    #[test]
+    fn unfold_distinguishes_close_primitive_orbitals() {
+        // Regression: with the historical 5e-2 representative tolerance,
+        // primitive orbitals at 0.0 and 0.03 both matched the (0,0)
+        // representative, unit_orb got 1 row instead of norb/cell_count = 2,
+        // and unfold returned Err(InvalidAtomConfiguration) for a valid model.
+        let model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0], [0.03, 0.0]], None)
+                .unwrap();
+        let supercell = model.make_supercell(&array![[2.0, 0.0], [0.0, 1.0]]).unwrap();
+        let result = supercell.unfold(
+            &array![[2.0, 0.0], [0.0, 1.0]],
+            &array![[0.0, 0.0], [0.5, 0.0]],
+            2,
+            -1.0,
+            1.0,
+            2,
+            1e-2,
+            1e-3,
+        );
+        assert!(result.is_ok(), "unfold failed: {:?}", result.err());
     }
 
     #[test]
