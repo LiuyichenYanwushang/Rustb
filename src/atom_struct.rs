@@ -839,6 +839,11 @@ impl Atom {
         &self.position
     }
 
+    /// Overwrite the fractional position (crate-internal normalization).
+    pub(crate) fn set_position(&mut self, position: Array1<f64>) {
+        self.position = position;
+    }
+
     /// Number of model orbitals explicitly assigned to this atom.
     pub fn norb(&self) -> usize {
         self.orbitals.len()

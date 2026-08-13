@@ -25,6 +25,7 @@ use crate::NoRMatrix;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::find_R;
+use crate::model_build::normalized_to_atoms;
 use crate::{Atom, OrbitalId};
 use ndarray::prelude::*;
 use ndarray::*;
@@ -184,6 +185,26 @@ fn select_atoms_and_orbitals<const SPIN: bool, const DIM: usize, R: RMatrixData>
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> CutModel for Model<SPIN, DIM, R> {
     fn cut_piece(&self, num: usize, dir: usize) -> Result<Model<SPIN, DIM, R>> {
+        // Normalize the orbital gauge first: atoms into [0, 1), orbitals to
+        // their atom-adjacent periodic image, with covariant relabeling of
+        // the Hamiltonian and position matrix.
+        let model = normalized_to_atoms(self)?;
+        model.cut_piece_impl(num, dir)
+    }
+
+    fn cut_dot(
+        &self,
+        num: usize,
+        shape: usize,
+        dir: Option<Vec<usize>>,
+    ) -> Result<Model<SPIN, DIM, R>> {
+        let model = normalized_to_atoms(self)?;
+        model.cut_dot_impl(num, shape, dir)
+    }
+}
+
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    fn cut_piece_impl(&self, num: usize, dir: usize) -> Result<Model<SPIN, DIM, R>> {
         self.validate()?;
         if num < 1 {
             return Err(TbError::InvalidSupercellSize(num));
@@ -377,7 +398,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> CutModel for Model<SPIN
         Ok(model)
     }
 
-    fn cut_dot(
+    fn cut_dot_impl(
         &self,
         num: usize,
         shape: usize,
@@ -635,7 +656,58 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> CutModel for Model<SPIN
 mod ownership_tests {
     use super::*;
     use crate::AtomType;
+    use crate::solve_ham::solve;
     use ndarray::array;
+
+    #[test]
+    fn boundary_cut_keeps_atom_adjacent_representative() {
+        // Regression: cutting a model whose orbital sits just across the
+        // cell boundary from its atom (atom = 0.99, orb = 0.01) must
+        // normalize every gauge-equivalent representative (0.01, 1.01,
+        // -0.99) to the same atom-adjacent canonical form with covariant
+        // Hamiltonian relabeling; a bare floor into [0, 1) would leave the
+        // Hamiltonian uncompensated and silently change the physics.
+        let boundary_model = |orb_x: f64| {
+            let mut model = Model::<false, 1>::tb_model(
+                array![[1.0]],
+                array![[orb_x]],
+                Some(vec![Atom::with_orbitals(
+                    array![0.99],
+                    AtomType::C,
+                    [OrbitalId::new(0)],
+                )]),
+            )
+            .unwrap();
+            model.add_hop(-1.0, 0, 0, &array![1], None);
+            model
+        };
+
+        let cut_a = boundary_model(0.01).cut_piece(2, 0).unwrap();
+        let cut_b = boundary_model(1.01).cut_piece(2, 0).unwrap();
+        let cut_c = boundary_model(-0.99).cut_piece(2, 0).unwrap();
+
+        cut_a.validate().unwrap();
+        // Gauge equivalence: all three representatives must produce the
+        // identical normalized cut.
+        for (other, name) in [(&cut_b, "1.01"), (&cut_c, "-0.99")] {
+            assert_eq!(cut_a.orb, other.orb, "orb differs for representative {name}");
+            assert_eq!(cut_a.hamR, other.hamR, "hamR differs for representative {name}");
+            for (block_a, block_b) in cut_a.ham.outer_iter().zip(other.ham.outer_iter()) {
+                assert!(
+                    block_a
+                        .iter()
+                        .zip(block_b.iter())
+                        .all(|(a, b)| (*a - *b).norm() < 1e-14),
+                    "hopping blocks differ for representative {name}"
+                );
+            }
+        }
+        // The cut keeps the atom-adjacent periodic images (0.505 for the
+        // first layer, 1.005 for the second — the latter is the canonical
+        // representative nearest its atom at 0.995).
+        assert!((cut_a.orb[[0, 0]] - 0.505).abs() < 1e-12);
+        assert!((cut_a.orb[[1, 0]] - 1.005).abs() < 1e-12);
+    }
 
     #[test]
     fn orbital_only_dot_uses_orbital_positions() {

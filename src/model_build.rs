@@ -1842,6 +1842,24 @@ fn fold_supercell_positions_covariantly<const DIM: usize>(
             orb[[s, axis]] -= n as f64;
         }
     }
+    relabel_hamiltonian_by_orbital_fold::<DIM>(ham, ham_r, rmatrix, &fold, spin);
+}
+
+/// Apply an orbital gauge fold `τ_s → τ_s − n_s` to the Hamiltonian blocks.
+///
+/// The caller has already subtracted `n_s` from the orbital positions; this
+/// function moves every hopping block `H_ij(R)` (and position-matrix block)
+/// to `R + n_j − n_i`, keeping the physical link displacement
+/// `(R + τ_j − τ_i)·L` and the `[r, H]` commutator invariant.
+fn relabel_hamiltonian_by_orbital_fold<const DIM: usize>(
+    ham: &mut Array3<Complex<f64>>,
+    ham_r: &mut Array2<isize>,
+    rmatrix: &mut Array4<Complex<f64>>,
+    fold: &Array2<isize>,
+    spin: bool,
+) {
+    let nsta = ham.dim().1;
+    let norb = fold.nrows();
     // Fold vector per state: spin copies share their orbital's position.
     let mut state_fold = Vec::with_capacity(nsta);
     for i in 0..nsta {
@@ -1890,6 +1908,70 @@ fn fold_supercell_positions_covariantly<const DIM: usize>(
             }
         }
     }
+}
+
+/// Normalize a model's orbital gauge before operations that interpret
+/// positions geometrically (cutting).
+///
+/// 1. Bring every atom into `[0, 1)`.
+/// 2. Fold each owned orbital to the periodic image **nearest its parent
+///    atom** (which may lie just outside `[0, 1)`, e.g. `atom = 0.99`
+///    keeps `orb = 1.01`); unowned orbitals are folded into `[0, 1)`.
+/// 3. Covariantly relabel the Hamiltonian blocks and reset the position
+///    matrix diagonal to `τ · L`.
+///
+/// The result is physically identical to the input; the fold is a pure
+/// gauge transformation `H_ij(R) → H_ij(R + n_j − n_i)`.
+pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+    model: &Model<SPIN, DIM, R>,
+) -> Result<Model<SPIN, DIM, R>> {
+    let mut out = model.clone();
+    // 1. Atoms into the cell.
+    for atom in &mut out.atoms {
+        let mut position = atom.position();
+        for axis in 0..DIM {
+            position[axis] -= position[axis].floor();
+        }
+        atom.set_position(position);
+    }
+    // 2. Per-orbital fold vectors.
+    let owners = out.orbital_owners()?;
+    let mut fold = Array2::<isize>::zeros((out.norb(), DIM));
+    for (s, owner) in owners.iter().enumerate() {
+        for axis in 0..DIM {
+            let n = match owner {
+                Some(atom_id) => {
+                    (out.orb[[s, axis]]
+                        - out.atoms[atom_id.index()].position_ref()[[axis]])
+                    .round()
+                }
+                None => out.orb[[s, axis]].floor(),
+            } as isize;
+            fold[[s, axis]] = n;
+            out.orb[[s, axis]] -= n as f64;
+        }
+    }
+    // 3. Covariant relabel + Cartesian position diagonal.
+    let mut ham = out.ham.clone();
+    let mut ham_r = out.hamR.clone();
+    let mut rmatrix = if R::HAS_RMATRIX {
+        out.rmatrix.as_array4().clone()
+    } else {
+        Array4::<Complex<f64>>::zeros((ham_r.nrows(), DIM, out.nsta(), out.nsta()))
+    };
+    relabel_hamiltonian_by_orbital_fold::<DIM>(&mut ham, &mut ham_r, &mut rmatrix, &fold, SPIN);
+    set_rmatrix_diagonal_to_cartesian_positions::<DIM>(
+        &mut rmatrix,
+        &ham_r,
+        &out.orb,
+        &out.lat,
+        SPIN,
+    );
+    out.ham = ham;
+    out.hamR = ham_r;
+    out.rmatrix = R::from_array(rmatrix);
+    out.validate()?;
+    Ok(out)
 }
 
 #[cfg(test)]
