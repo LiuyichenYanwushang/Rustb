@@ -429,6 +429,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                         }
                     }
                 } else if a.contains("begin atoms_cart") {
+                    let mut cartesian_unit = 1.0_f64; // angstrom
+                    let mut first_line = true;
                     loop {
                         let string = read_iter.next().ok_or_else(|| TbError::FileParse {
                             file: win_path.clone(),
@@ -438,6 +440,26 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                             break;
                         } else {
                             let prj: Vec<&str> = string.split_whitespace().collect();
+                            // Wannier90 allows a unit line ("ang" or "bohr")
+                            // as the first entry of the block.
+                            if first_line && prj.len() == 1 {
+                                match prj[0] {
+                                    "ang" => cartesian_unit = 1.0,
+                                    "bohr" => cartesian_unit = 0.529_177_210_67,
+                                    _ => {
+                                        return Err(TbError::FileParse {
+                                            file: win_path.clone(),
+                                            message: format!(
+                                                "Unknown atoms_cart unit '{}'",
+                                                prj[0]
+                                            ),
+                                        });
+                                    }
+                                }
+                                first_line = false;
+                                continue;
+                            }
+                            first_line = false;
                             atom_name.push(prj[0]);
                             let a1 = prj[1].parse::<f64>().map_err(|e| TbError::FileParse {
                                 file: win_path.clone(),
@@ -451,8 +473,37 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                                 file: win_path.clone(),
                                 message: format!("Failed to parse atom position: {}", e),
                             })?;
-                            let a = array![a1, a2, a3];
+                            let a = array![a1 * cartesian_unit, a2 * cartesian_unit, a3 * cartesian_unit];
                             atom_pos.push_row(a.view()); //这里我们不用win 里面的, 因为这个和orb没法对应, 如果没有xyz文件才考虑用这个
+                        }
+                    }
+                } else if a.contains("begin atoms_frac") {
+                    // Fractional positions; convert to Cartesian at parse
+                    // time so the fallback path stays uniform.
+                    loop {
+                        let string = read_iter.next().ok_or_else(|| TbError::FileParse {
+                            file: win_path.clone(),
+                            message: "Unexpected end of file".to_string(),
+                        })?;
+                        if string.contains("end atoms_frac") {
+                            break;
+                        } else {
+                            let prj: Vec<&str> = string.split_whitespace().collect();
+                            atom_name.push(prj[0]);
+                            let f1 = prj[1].parse::<f64>().map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse atom position: {}", e),
+                            })?;
+                            let f2 = prj[2].parse::<f64>().map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse atom position: {}", e),
+                            })?;
+                            let f3 = prj[3].parse::<f64>().map_err(|e| TbError::FileParse {
+                                file: win_path.clone(),
+                                message: format!("Failed to parse atom position: {}", e),
+                            })?;
+                            let a = array![f1, f2, f3].dot(&lat);
+                            atom_pos.push_row(a.view());
                         }
                     }
                 }
@@ -1173,6 +1224,33 @@ mod tests {
         assert_eq!(model.atoms[0].norb(), 4);
         assert_eq!(model.atoms[1].norb(), 4);
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_accepts_cartesian_unit_line_and_frac_block() {
+        // Regression: the atoms_cart unit line ("ang"/"bohr") panicked at
+        // prj[1], and begin atoms_frac was not parsed at all.
+        for (block, unit_line) in [
+            ("atoms_cart\nang\nFe 0.0 0.0 0.0\nend atoms_cart", false),
+            ("atoms_frac\nFe 0.0 0.0 0.0\nend atoms_frac", true),
+        ] {
+            let dir = "tests/tmp_w90_units/";
+            let _ = fs::remove_dir_all(dir);
+            fs::create_dir_all(dir).unwrap();
+            let win = format!(
+                "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin {block}\n\nbegin projections\nFe:s\nend projections\n"
+            );
+            let _ = unit_line;
+            let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
+            let mut f = fs::File::create(format!("{dir}seedname.win")).unwrap();
+            f.write_all(win.as_bytes()).unwrap();
+            let mut f = fs::File::create(format!("{dir}seedname_hr.dat")).unwrap();
+            f.write_all(hr.as_bytes()).unwrap();
+            let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+            assert_eq!(model.norb(), 1);
+            assert_eq!(model.natom(), 1);
+        }
+        let _ = fs::remove_dir_all("tests/tmp_w90_units");
     }
 
     #[test]
