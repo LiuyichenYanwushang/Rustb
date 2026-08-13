@@ -235,7 +235,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
         let ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta));
         let hamR = Array2::<isize>::zeros((1, DIM));
-        let rmatrix = R::from_orb(&orb, norb, SPIN, DIM);
+        let rmatrix = R::from_orb(&orb, &lat, norb, SPIN, DIM);
         let orb_projection = vec![OrbProj::s; norb];
         let model = Model {
             lat,

@@ -18,7 +18,17 @@ use std::ops::{Deref, DerefMut};
 pub trait RMatrixData: Clone + std::fmt::Debug + Sync {
     const HAS_RMATRIX: bool;
     /// Create the default rmatrix with orbital positions on the diagonal.
-    fn from_orb(orb: &Array2<f64>, norb: usize, spin: bool, dim: usize) -> Self;
+    ///
+    /// Position matrix elements are stored in **Cartesian** coordinates
+    /// (matching Wannier90 `_r.dat`), so the fractional orbital positions are
+    /// converted via `cart = frac · lat`.
+    fn from_orb(
+        orb: &Array2<f64>,
+        lat: &Array2<f64>,
+        norb: usize,
+        spin: bool,
+        dim: usize,
+    ) -> Self;
     /// Wrap an Array4 into the RMatrixData type.
     fn from_array(arr: Array4<Complex<f64>>) -> Self;
     /// Get a reference to the underlying Array4. Panics for NoRMatrix.
@@ -37,14 +47,15 @@ pub struct HasRMatrix(pub Array4<Complex<f64>>);
 
 impl RMatrixData for HasRMatrix {
     const HAS_RMATRIX: bool = true;
-    fn from_orb(orb: &Array2<f64>, norb: usize, spin: bool, dim: usize) -> Self {
+    fn from_orb(orb: &Array2<f64>, lat: &Array2<f64>, norb: usize, spin: bool, dim: usize) -> Self {
         let nsta = if spin { 2 * norb } else { norb };
+        let cart = orb.dot(lat);
         let mut r = Array4::<Complex<f64>>::zeros((1, dim, nsta, nsta));
         for i in 0..norb {
             for ri in 0..dim {
-                r[[0, ri, i, i]] = Complex::<f64>::from(orb[[i, ri]]);
+                r[[0, ri, i, i]] = Complex::<f64>::from(cart[[i, ri]]);
                 if spin {
-                    r[[0, ri, i + norb, i + norb]] = Complex::<f64>::from(orb[[i, ri]]);
+                    r[[0, ri, i + norb, i + norb]] = Complex::<f64>::from(cart[[i, ri]]);
                 }
             }
         }
@@ -89,7 +100,13 @@ pub struct NoRMatrix;
 
 impl RMatrixData for NoRMatrix {
     const HAS_RMATRIX: bool = false;
-    fn from_orb(_orb: &Array2<f64>, _norb: usize, _spin: bool, _dim: usize) -> Self {
+    fn from_orb(
+        _orb: &Array2<f64>,
+        _lat: &Array2<f64>,
+        _norb: usize,
+        _spin: bool,
+        _dim: usize,
+    ) -> Self {
         NoRMatrix
     }
     fn from_array(_arr: Array4<Complex<f64>>) -> Self {
@@ -838,6 +855,28 @@ mod ownership_tests {
             model.orb_angular(),
             Err(TbError::MissingAtomicStructure)
         ));
+    }
+
+    #[test]
+    fn rmatrix_diagonal_is_cartesian_orbital_position() {
+        // Position matrix elements are Cartesian (matching Wannier90
+        // _r.dat); the default diagonal must equal frac · lat, not the raw
+        // fractional coordinates.
+        let lat = array![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
+        let orb = array![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]];
+        let model = Model::<true, 3, HasRMatrix>::tb_model(lat, orb, None).unwrap();
+        let rmatrix = model.rmatrix.as_array4();
+        let cart = model.orb.dot(&model.lat);
+        for i in 0..model.nsta() {
+            let s = i % model.norb();
+            for axis in 0..3 {
+                assert!(
+                    (rmatrix[[0, axis, i, i]] - Complex::new(cart[[s, axis]], 0.0)).norm() < 1e-12,
+                    "rmatrix diagonal ({i}, {axis}) must equal frac·lat = {}",
+                    cart[[s, axis]]
+                );
+            }
+        }
     }
 
     #[test]
