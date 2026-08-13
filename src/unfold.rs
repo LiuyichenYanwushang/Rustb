@@ -215,9 +215,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
             // Orbital-only models are first-class: derive primitive-orbital
             // representatives directly from folded Wannier centers.
             for (orbital, folded) in unfold_orb.outer_iter().enumerate() {
-                let representative = unit_orb
-                    .outer_iter()
-                    .position(|candidate| periodic_distance(folded, candidate) < REPRESENTATIVE_POSITION_TOLERANCE);
+                let representative = unit_orb.outer_iter().position(|candidate| {
+                    periodic_distance(folded, candidate) < REPRESENTATIVE_POSITION_TOLERANCE
+                });
                 match representative {
                     Some(representative) => match_orb_list[orbital] = representative,
                     None => {

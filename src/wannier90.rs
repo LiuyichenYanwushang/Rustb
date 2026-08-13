@@ -473,7 +473,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                                 file: win_path.clone(),
                                 message: format!("Failed to parse atom position: {}", e),
                             })?;
-                            let a = array![a1 * cartesian_unit, a2 * cartesian_unit, a3 * cartesian_unit];
+                            let a = array![
+                                a1 * cartesian_unit,
+                                a2 * cartesian_unit,
+                                a3 * cartesian_unit
+                            ];
                             atom_pos.push_row(a.view()); //这里我们不用win 里面的, 因为这个和orb没法对应, 如果没有xyz文件才考虑用这个
                         }
                     }

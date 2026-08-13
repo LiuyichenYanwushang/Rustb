@@ -1318,13 +1318,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // cover them exactly.
         let mut shift_min = Array1::<f64>::zeros(DIM);
         let mut shift_max = Array1::<f64>::zeros(DIM);
-        let mut record_shift = |shift: &Array1<f64>, shift_min: &mut Array1<f64>,
-                                shift_max: &mut Array1<f64>| {
-            for axis in 0..DIM {
-                shift_min[axis] = shift_min[axis].min(shift[axis]);
-                shift_max[axis] = shift_max[axis].max(shift[axis]);
-            }
-        };
+        let mut record_shift =
+            |shift: &Array1<f64>, shift_min: &mut Array1<f64>, shift_max: &mut Array1<f64>| {
+                for axis in 0..DIM {
+                    shift_min[axis] = shift_min[axis].min(shift[axis]);
+                    shift_max[axis] = shift_max[axis].max(shift[axis]);
+                }
+            };
         let mut snap_and_fold = |mut position: Array1<f64>| {
             for component in &mut position {
                 *component -= component.floor();
@@ -2113,8 +2113,7 @@ mod fold_tests {
     fn supercell_rejects_negative_non_integer_entries() {
         // Regression: fract(-0.5) = -0.5 passed the old `fract() > 1e-8`
         // test, so [[1, -0.5], [0, 1]] was accepted as a supercell matrix.
-        let model =
-            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.5, 0.5]], None).unwrap();
+        let model = Model::<false, 2>::tb_model(Array2::eye(2), array![[0.5, 0.5]], None).unwrap();
         let result = model.make_supercell(&array![[1.0, -0.5], [0.0, 1.0]]);
         assert!(matches!(result, Err(TbError::InvalidSupercellMatrix)));
     }
@@ -2129,12 +2128,19 @@ mod fold_tests {
             Atom::with_orbitals(array![0.3, 0.3], AtomType::C, [OrbitalId::new(0)]),
             Atom::with_orbitals(array![0.5, 0.5], AtomType::O, [OrbitalId::new(1)]),
         ];
-        let mut model =
-            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.3, 0.3], [0.5, 0.5]], Some(atoms))
-                .unwrap();
-        model.add_element(Complex::new(0.7, 0.0), 0, 1, &array![0, 0]).unwrap();
+        let mut model = Model::<false, 2>::tb_model(
+            Array2::eye(2),
+            array![[0.3, 0.3], [0.5, 0.5]],
+            Some(atoms),
+        )
+        .unwrap();
+        model
+            .add_element(Complex::new(0.7, 0.0), 0, 1, &array![0, 0])
+            .unwrap();
 
-        let sc = model.make_supercell(&array![[1.0, 100.0], [0.0, 1.0]]).unwrap();
+        let sc = model
+            .make_supercell(&array![[1.0, 100.0], [0.0, 1.0]])
+            .unwrap();
         sc.validate().unwrap();
         // det = 1: one copy per orbital; the onsite hopping H_01(0) must
         // survive the transform.
@@ -2149,7 +2155,10 @@ mod fold_tests {
                 }
             }
         }
-        assert!(found, "onsite hopping 0.7 must survive the skew basis change");
+        assert!(
+            found,
+            "onsite hopping 0.7 must survive the skew basis change"
+        );
     }
 
     #[test]
@@ -2161,16 +2170,17 @@ mod fold_tests {
             AtomType::C,
             [OrbitalId::new(0)],
         )];
-        let mut model = Model::<false, 3>::tb_model(
-            Array2::eye(3),
-            array![[0.5, 0.5, 0.5]],
-            Some(atoms),
-        )
-        .unwrap();
+        let mut model =
+            Model::<false, 3>::tb_model(Array2::eye(3), array![[0.5, 0.5, 0.5]], Some(atoms))
+                .unwrap();
         model.add_hop(-1.0, 0, 0, &array![1, 0, 0], None);
 
         let sc = model
-            .make_supercell(&array![[1.0, 10.0, 100.0], [0.0, 1.0, 10.0], [0.0, 0.0, 1.0]])
+            .make_supercell(&array![
+                [1.0, 10.0, 100.0],
+                [0.0, 1.0, 10.0],
+                [0.0, 0.0, 1.0]
+            ])
             .unwrap();
         sc.validate().unwrap();
         assert_eq!(sc.norb(), 1);
@@ -2185,15 +2195,13 @@ mod fold_tests {
             Atom::with_orbitals(array![0.5, 0.5], AtomType::C, [OrbitalId::new(0)]),
             Atom::new(array![0.7, 0.7], AtomType::O), // no orbitals
         ];
-        let mut model = Model::<false, 2>::tb_model(
-            Array2::eye(2),
-            array![[0.5, 0.5]],
-            Some(atoms),
-        )
-        .unwrap();
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.5, 0.5]], Some(atoms)).unwrap();
         model.add_hop(-1.0, 0, 0, &array![1, 0], None);
 
-        let sc = model.make_supercell(&array![[2.0, 0.0], [0.0, 1.0]]).unwrap();
+        let sc = model
+            .make_supercell(&array![[2.0, 0.0], [0.0, 1.0]])
+            .unwrap();
         sc.validate().unwrap();
         assert_eq!(sc.natom(), 4, "both atoms must keep det(U) images each");
         assert_eq!(sc.norb(), 2);
@@ -2238,12 +2246,8 @@ mod fold_tests {
         // Regression: the old diagonal was stored per orbital and written
         // to both spin states via i % norb, scrambling distinct r↑↑/r↓↓
         // offsets into (r↑↑, r↑↑) under the identity supercell.
-        let mut model = Model::<true, 1, HasRMatrix>::tb_model(
-            array![[1.0]],
-            array![[0.5]],
-            None,
-        )
-        .unwrap();
+        let mut model =
+            Model::<true, 1, HasRMatrix>::tb_model(array![[1.0]], array![[0.5]], None).unwrap();
         model.rmatrix.as_array4_mut()[[0, 0, 0, 0]] = Complex::new(0.7, 0.0);
         model.rmatrix.as_array4_mut()[[0, 0, 1, 1]] = Complex::new(0.9, 0.0);
         model.add_hop(-1.0, 0, 0, &array![1], None);
