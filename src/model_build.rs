@@ -41,7 +41,6 @@ use ndarray::*;
 use ndarray_linalg::Norm;
 use ndarray_linalg::{Determinant, Inverse};
 use num_complex::Complex;
-use std::collections::HashSet;
 
 /// Overwrite Hamiltonian matrix elements with spin decoration.
 ///
@@ -1252,13 +1251,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         let U_det = U_det_int;
         let U_inv = U.inv().map_err(TbError::Linalg)?;
-        // Coefficient range for the image-shift enumeration.  A legal
-        // integer basis change can require shifts whose coefficients scale
-        // with the entries of U_inv (e.g. U = [[1, 100], [0, 1]] needs
-        // shift (0, 50)); the range must cover every coset of
-        // Z^DIM · U_inv, whose index is det(U).
-        let u_inv_max = U_inv.iter().fold(0.0_f64, |acc, x| acc.max(x.abs()));
-        let shift_box = (U_det as f64 * u_inv_max).ceil() as isize + 2;
 
         //开始构建新的轨道位置和原子位置
         //新的轨道
@@ -1290,259 +1282,109 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut use_orb = use_orb.dot(&U_inv);
         //新的原子位置
         let use_atom_position = self.atom_position().dot(&U_inv);
+        let unassigned_orbitals: Vec<usize> = orbital_owners
+            .iter()
+            .enumerate()
+            .filter_map(|(s, owner)| owner.is_none().then_some(s))
+            .collect();
         let mut orb_list: Vec<usize> = Vec::new();
         let mut new_orb = Array2::<f64>::zeros((0, self.dim_r()));
         let mut new_orb_proj = Vec::new();
         let mut new_atom = Vec::new();
-        // The enlarged shift range can visit the same fractional image twice;
-        // deduplicate by (atom index, snapped position bits).
-        let mut seen_atom_images: HashSet<(usize, Vec<u64>)> = HashSet::new();
-        let mut seen_orbital_images: HashSet<(usize, Vec<u64>)> = HashSet::new();
-        // Pre-fetch U_inv rows and use scalar arithmetic: avoids per-iteration
-        // .to_owned() heap allocations, replacing 3-5 allocs/iter with 1 arr1! call.
-        match self.dim_r() {
-            3 => {
-                let u0 = U_inv.row(0).to_owned();
-                let u1 = U_inv.row(1).to_owned();
-                let u2 = U_inv.row(2).to_owned();
-                for i in -shift_box..=shift_box {
-                    let i_f = i as f64;
-                    for j in -shift_box..=shift_box {
-                        let j_f = j as f64;
-                        for k in -shift_box..=shift_box {
-                            let k_f = k as f64;
-                            for n in 0..self.natom() {
-                                let a = use_atom_position.row(n);
-                                let mut atoms = arr1(&[
-                                    a[0] + i_f * u0[0] + j_f * u1[0] + k_f * u2[0],
-                                    a[1] + i_f * u0[1] + j_f * u1[1] + k_f * u2[1],
-                                    a[2] + i_f * u0[2] + j_f * u1[2] + k_f * u2[2],
-                                ]);
-                                atoms[[0]] = if atoms[[0]].abs() < 1e-8 {
-                                    0.0
-                                } else if (atoms[[0]] - 1.0).abs() < 1e-8 {
-                                    1.0
-                                } else {
-                                    atoms[[0]]
-                                };
-                                atoms[[1]] = if atoms[[1]].abs() < 1e-8 {
-                                    0.0
-                                } else if (atoms[[1]] - 1.0).abs() < 1e-8 {
-                                    1.0
-                                } else {
-                                    atoms[[1]]
-                                };
-                                atoms[[2]] = if atoms[[2]].abs() < 1e-8 {
-                                    0.0
-                                } else if (atoms[[2]] - 1.0).abs() < 1e-8 {
-                                    1.0
-                                } else {
-                                    atoms[[2]]
-                                };
-                                let image_key =
-                                    atoms.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-                                if !seen_atom_images.insert((n, image_key)) {
-                                    continue;
-                                }
-                                if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                                    let first_new_orbital = new_orb.nrows();
-                                    for &source_orbital in self.atoms[n].orbitals() {
-                                        let n0 = source_orbital.index();
-                                        let o = use_orb.row(n0);
-                                        let orbs = arr1(&[
-                                            o[0] + i_f * u0[0] + j_f * u1[0] + k_f * u2[0],
-                                            o[1] + i_f * u0[1] + j_f * u1[1] + k_f * u2[1],
-                                            o[2] + i_f * u0[2] + j_f * u1[2] + k_f * u2[2],
-                                        ]);
-                                        new_orb.push_row(orbs.view());
-                                        new_orb_proj.push(self.orb_projection[n0]);
-                                        orb_list.push(n0);
-                                    }
-                                    let mut atom = Atom::with_orbitals(
-                                        atoms,
-                                        self.atoms[n].atom_type(),
-                                        (first_new_orbital..new_orb.nrows()).map(OrbitalId::new),
-                                    );
-                                    if let Some(moment) = self.atoms[n].magnetic_moment() {
-                                        atom.set_magnetic_moment(moment)?;
-                                    }
-                                    new_atom.push(atom);
-                                }
-                            }
-                        }
-                    }
+        // Exact enumeration of the det(U) image cosets via the column
+        // Hermite normal form of U: the integer representatives
+        // r = (r_1, ..., r_DIM) with 0 <= r_i < H[i, i] enumerate
+        // Z^DIM / (U Z^DIM) bijectively, independent of shear entries
+        // (e.g. U = [[1, 10, 100], [0, 1, 10], [0, 0, 1]] needs
+        // coefficients up to ~55 while a fixed box bound misses them,
+        // and [[1, N], [0, 1]] needs only ONE coset but an O(N^2) box).
+        let u_int = U.mapv(|x| x.round() as isize);
+        let hnf = column_hnf::<DIM>(&u_int);
+        let mut coset_reps: Vec<Array1<isize>> = vec![Array1::<isize>::zeros(DIM)];
+        for axis in 0..DIM {
+            let d = hnf[[axis, axis]];
+            let mut next = Vec::with_capacity(coset_reps.len() * d as usize);
+            for rep in &coset_reps {
+                for r in 0..d {
+                    let mut rep = rep.clone();
+                    rep[axis] = r;
+                    next.push(rep);
                 }
             }
-            2 => {
-                let u0 = U_inv.row(0).to_owned();
-                let u1 = U_inv.row(1).to_owned();
-                for i in -shift_box..=shift_box {
-                    let i_f = i as f64;
-                    for j in -shift_box..=shift_box {
-                        let j_f = j as f64;
-                        for n in 0..self.natom() {
-                            let a = use_atom_position.row(n);
-                            let mut atoms = arr1(&[
-                                a[0] + i_f * u0[0] + j_f * u1[0],
-                                a[1] + i_f * u0[1] + j_f * u1[1],
-                            ]);
-                            atoms[[0]] = if atoms[[0]].abs() < 1e-8 {
-                                0.0
-                            } else if (atoms[[0]] - 1.0).abs() < 1e-8 {
-                                1.0
-                            } else {
-                                atoms[[0]]
-                            };
-                            atoms[[1]] = if atoms[[1]].abs() < 1e-8 {
-                                0.0
-                            } else if (atoms[[1]] - 1.0).abs() < 1e-8 {
-                                1.0
-                            } else {
-                                atoms[[1]]
-                            };
-                            let image_key = atoms.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-                            if !seen_atom_images.insert((n, image_key)) {
-                                continue;
-                            }
-                            if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                                let first_new_orbital = new_orb.nrows();
-                                for &source_orbital in self.atoms[n].orbitals() {
-                                    let n0 = source_orbital.index();
-                                    let o = use_orb.row(n0);
-                                    let orbs = arr1(&[
-                                        o[0] + i_f * u0[0] + j_f * u1[0],
-                                        o[1] + i_f * u0[1] + j_f * u1[1],
-                                    ]);
-                                    new_orb.push_row(orbs.view());
-                                    new_orb_proj.push(self.orb_projection[n0]);
-                                    orb_list.push(n0);
-                                }
-                                let mut atom = Atom::with_orbitals(
-                                    atoms,
-                                    self.atoms[n].atom_type(),
-                                    (first_new_orbital..new_orb.nrows()).map(OrbitalId::new),
-                                );
-                                if let Some(moment) = self.atoms[n].magnetic_moment() {
-                                    atom.set_magnetic_moment(moment)?;
-                                }
-                                new_atom.push(atom);
-                            }
-                        }
-                    }
-                }
-            }
-            1 => {
-                let u0 = U_inv.row(0).to_owned();
-                for i in -shift_box..=shift_box {
-                    let i_f = i as f64;
-                    for n in 0..self.natom() {
-                        let a = use_atom_position.row(n);
-                        let mut atoms = arr1(&[a[0] + i_f * u0[0]]);
-                        atoms[[0]] = if atoms[[0]].abs() < 1e-8 {
-                            0.0
-                        } else if (atoms[[0]] - 1.0).abs() < 1e-8 {
-                            1.0
-                        } else {
-                            atoms[[0]]
-                        };
-                        let image_key = atoms.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-                        if !seen_atom_images.insert((n, image_key)) {
-                            continue;
-                        }
-                        if atoms.iter().all(|x| *x >= 0.0 && *x < 1.0) {
-                            let first_new_orbital = new_orb.nrows();
-                            for &source_orbital in self.atoms[n].orbitals() {
-                                let n0 = source_orbital.index();
-                                let o = use_orb.row(n0);
-                                let orbs = arr1(&[o[0] + i_f * u0[0]]);
-                                new_orb.push_row(orbs.view());
-                                new_orb_proj.push(self.orb_projection[n0]);
-                                orb_list.push(n0);
-                            }
-                            let mut atom = Atom::with_orbitals(
-                                atoms,
-                                self.atoms[n].atom_type(),
-                                (first_new_orbital..new_orb.nrows()).map(OrbitalId::new),
-                            );
-                            if let Some(moment) = self.atoms[n].magnetic_moment() {
-                                atom.set_magnetic_moment(moment)?;
-                            }
-                            new_atom.push(atom);
-                        }
-                    }
-                }
-            }
-            _ => todo!(),
+            coset_reps = next;
         }
-
-        // Orbitals without an atomic owner are independent first-class basis
-        // states. Replicate them by their own positions so orbital-only models
-        // survive supercell construction without fabricated atoms.
-        let unassigned_orbitals = orbital_owners
-            .iter()
-            .enumerate()
-            .filter_map(|(orbital, owner)| owner.is_none().then_some(orbital))
-            .collect::<Vec<_>>();
-        let shifts = match self.dim_r() {
-            3 => {
-                let mut shifts = Vec::new();
-                for i in -shift_box..=shift_box {
-                    for j in -shift_box..=shift_box {
-                        for k in -shift_box..=shift_box {
-                            shifts.push(
-                                i as f64 * U_inv.row(0).to_owned()
-                                    + j as f64 * U_inv.row(1).to_owned()
-                                    + k as f64 * U_inv.row(2).to_owned(),
-                            );
-                        }
-                    }
-                }
-                shifts
-            }
-            2 => {
-                let mut shifts = Vec::new();
-                for i in -shift_box..=shift_box {
-                    for j in -shift_box..=shift_box {
-                        shifts.push(
-                            i as f64 * U_inv.row(0).to_owned() + j as f64 * U_inv.row(1).to_owned(),
-                        );
-                    }
-                }
-                shifts
-            }
-            1 => (-shift_box..=shift_box)
-                .map(|i| i as f64 * U_inv.row(0).to_owned())
-                .collect(),
-            _ => {
-                return Err(TbError::InvalidDimension {
-                    dim: self.dim_r(),
-                    supported: vec![1, 2, 3],
-                });
+        // Track the actual image shifts (fractional position minus the
+        // source position) so the Hamiltonian R-vector range below can
+        // cover them exactly.
+        let mut shift_min = Array1::<f64>::zeros(DIM);
+        let mut shift_max = Array1::<f64>::zeros(DIM);
+        let mut record_shift = |shift: &Array1<f64>, shift_min: &mut Array1<f64>,
+                                shift_max: &mut Array1<f64>| {
+            for axis in 0..DIM {
+                shift_min[axis] = shift_min[axis].min(shift[axis]);
+                shift_max[axis] = shift_max[axis].max(shift[axis]);
             }
         };
-        for shift in shifts {
-            for &source in &unassigned_orbitals {
-                let mut position = use_orb.row(source).to_owned() + &shift;
-                for component in &mut position {
-                    if component.abs() < 1e-8 {
-                        *component = 0.0;
-                    } else if (*component - 1.0).abs() < 1e-8 {
-                        *component = 1.0;
-                    }
-                }
-                let image_key = position.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-                if !seen_orbital_images.insert((source, image_key)) {
-                    continue;
-                }
-                if position.iter().all(|&value| (0.0..1.0).contains(&value)) {
-                    new_orb.push_row(position.view());
-                    new_orb_proj.push(self.orb_projection[source]);
-                    orb_list.push(source);
+        let mut snap_and_fold = |mut position: Array1<f64>| {
+            for component in &mut position {
+                *component -= component.floor();
+                if component.abs() < 1e-8 {
+                    *component = 0.0;
+                } else if (*component - 1.0).abs() < 1e-8 {
+                    *component = 0.0;
                 }
             }
+            position
+        };
+        for n in 0..self.natom() {
+            let a = use_atom_position.row(n).to_owned();
+            for rep in &coset_reps {
+                let shift = rep.mapv(|x| x as f64).dot(&U_inv);
+                let mut position = snap_and_fold(&a + &shift);
+                // Snapping may push a value just outside [0, 1); fold once
+                // more defensively.
+                if !position.iter().all(|&x| (0.0..1.0).contains(&x)) {
+                    continue;
+                }
+                let used_shift = &position - &a;
+                record_shift(&used_shift, &mut shift_min, &mut shift_max);
+                let first_new_orbital = new_orb.nrows();
+                for &source_orbital in self.atoms[n].orbitals() {
+                    let n0 = source_orbital.index();
+                    let o = use_orb.row(n0);
+                    let orbs = &o + &used_shift;
+                    new_orb.push_row(orbs.view());
+                    new_orb_proj.push(self.orb_projection[n0]);
+                    orb_list.push(n0);
+                }
+                let mut atom = Atom::with_orbitals(
+                    position,
+                    self.atoms[n].atom_type(),
+                    (first_new_orbital..new_orb.nrows()).map(OrbitalId::new),
+                );
+                if let Some(moment) = self.atoms[n].magnetic_moment() {
+                    atom.set_magnetic_moment(moment)?;
+                }
+                new_atom.push(atom);
+            }
         }
-        // 校验每个源轨道恰好生成 det(U) 个副本: 枚举范围不足或存在重复时
-        // 会在这里显式报错, 而不是静默返回缺原子的模型。
+        for &source in &unassigned_orbitals {
+            let o = use_orb.row(source).to_owned();
+            for rep in &coset_reps {
+                let shift = rep.mapv(|x| x as f64).dot(&U_inv);
+                let position = snap_and_fold(&o + &shift);
+                if !position.iter().all(|&x| (0.0..1.0).contains(&x)) {
+                    continue;
+                }
+                let used_shift = &position - &o;
+                record_shift(&used_shift, &mut shift_min, &mut shift_max);
+                new_orb.push_row(position.view());
+                new_orb_proj.push(self.orb_projection[source]);
+                orb_list.push(source);
+            }
+        }
+        // 校验每个源轨道恰好生成 det(U) 个副本: 陪集枚举是精确的, 这里只作为
+        // 防御性检查, 枚举出错时显式报错而不是静默返回缺原子的模型。
         for source in 0..self.norb() {
             let copies = orb_list.iter().filter(|&&src| src == source).count();
             if copies != U_det as usize {
@@ -1587,7 +1429,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .mapv(|x| x as f64)
             .dot(&U_inv.mapv(|x| x.abs()))
             .mapv(|x| x.ceil() as isize);
-        let max_R = max_hamR.mapv(|x| (x.ceil() as isize) + 1) + fold_extra;
+        // And by the actual image-shift span (S_j - S_i): with skew basis
+        // changes the shifts can be large (e.g. (0, 50) for
+        // U = [[1, 100], [0, 1]]) and hopping blocks would otherwise fall
+        // outside the enumeration and be silently dropped.
+        let shift_extra = (&shift_max - &shift_min).mapv(|x| x.ceil() as isize);
+        let max_R = max_hamR.mapv(|x| (x.ceil() as isize) + 1) + fold_extra + shift_extra;
         //let mut max_R=Array1::<isize>::zeros(self.dim_r());
         //let max_R:isize=U_det.abs()*(self.dim_r() as isize);
         //let max_R=Array1::<isize>::ones(self.dim_r())*max_R;
@@ -1853,6 +1700,44 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     }
 }
 
+/// Column Hermite normal form of an integer matrix: `H = U · V` with `V`
+/// unimodular and `H` lower-triangular with a positive diagonal.
+///
+/// The quotient `Z^DIM / (U · Z^DIM)` has `det(U)` elements, enumerated
+/// bijectively by the box `0 <= r_i < H[i, i]` — this makes the supercell
+/// image enumeration exact and shear-independent (a fixed coefficient box
+/// both misses large nested-shear shifts and wastes work on single-coset
+/// matrices).
+fn column_hnf<const DIM: usize>(u: &Array2<isize>) -> Array2<isize> {
+    let mut h = u.clone();
+    for i in 0..DIM {
+        // Eliminate the row-i entries of all later columns via column
+        // operations (right multiplication by unimodular V preserves the
+        // lattice U·Z^DIM).
+        loop {
+            let Some(j) = (i + 1..DIM).find(|&j| h[[i, j]] != 0) else {
+                break;
+            };
+            if h[[i, i]] == 0 {
+                for k in 0..DIM {
+                    h.swap([k, i], [k, j]);
+                }
+                continue;
+            }
+            let q = (h[[i, j]] as f64 / h[[i, i]] as f64).round() as isize;
+            for k in 0..DIM {
+                h[[k, j]] -= q * h[[k, i]];
+            }
+        }
+        if h[[i, i]] < 0 {
+            for k in 0..DIM {
+                h[[k, i]] = -h[[k, i]];
+            }
+        }
+    }
+    h
+}
+
 /// Extract the `R = 0` position-matrix diagonal (Cartesian, shape
 /// `(nsta, DIM)`); all zeros for `NoRMatrix` models.
 ///
@@ -2112,7 +1997,7 @@ pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrix
 mod fold_tests {
     use super::*;
     use crate::solve_ham::solve;
-    use crate::{Atom, AtomType, HasRMatrix, OrbitalId};
+    use crate::{Atom, AtomType, Gauge, HasRMatrix, OrbitalId};
 
     /// 1D model whose orbital sits just across the cell boundary from its
     /// atom: atom at 0.99, orbital at `orbital_x`.  Both representatives
@@ -2232,6 +2117,86 @@ mod fold_tests {
             Model::<false, 2>::tb_model(Array2::eye(2), array![[0.5, 0.5]], None).unwrap();
         let result = model.make_supercell(&array![[1.0, -0.5], [0.0, 1.0]]);
         assert!(matches!(result, Err(TbError::InvalidSupercellMatrix)));
+    }
+
+    #[test]
+    fn skew_supercell_preserves_hoppings_beyond_small_r_range() {
+        // Regression: the R-vector candidate range did not include the
+        // actual image shifts, so a skew basis change silently dropped
+        // hoppings (H_01(0) = 0.7 became 0 at k = 0 for
+        // U = [[1, 100], [0, 1]]).
+        let atoms = vec![
+            Atom::with_orbitals(array![0.3, 0.3], AtomType::C, [OrbitalId::new(0)]),
+            Atom::with_orbitals(array![0.5, 0.5], AtomType::O, [OrbitalId::new(1)]),
+        ];
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.3, 0.3], [0.5, 0.5]], Some(atoms))
+                .unwrap();
+        model.add_element(Complex::new(0.7, 0.0), 0, 1, &array![0, 0]).unwrap();
+
+        let sc = model.make_supercell(&array![[1.0, 100.0], [0.0, 1.0]]).unwrap();
+        sc.validate().unwrap();
+        // det = 1: one copy per orbital; the onsite hopping H_01(0) must
+        // survive the transform.
+        assert_eq!(sc.norb(), 2);
+        let k = array![0.0, 0.0];
+        let ham = sc.gen_ham(&k, Gauge::Lattice);
+        let mut found = false;
+        for i in 0..sc.nsta() {
+            for j in 0..sc.nsta() {
+                if i != j && (ham[[i, j]] - Complex::new(0.7, 0.0)).norm() < 1e-10 {
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "onsite hopping 0.7 must survive the skew basis change");
+    }
+
+    #[test]
+    fn nested_shear_3d_supercell_succeeds() {
+        // Regression: U = [[1, 10, 100], [0, 1, 10], [0, 0, 1]] needs image
+        // coefficients up to ~55, far beyond any fixed coefficient box.
+        let atoms = vec![Atom::with_orbitals(
+            array![0.5, 0.5, 0.5],
+            AtomType::C,
+            [OrbitalId::new(0)],
+        )];
+        let mut model = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.5, 0.5, 0.5]],
+            Some(atoms),
+        )
+        .unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0, 0], None);
+
+        let sc = model
+            .make_supercell(&array![[1.0, 10.0, 100.0], [0.0, 1.0, 10.0], [0.0, 0.0, 1.0]])
+            .unwrap();
+        sc.validate().unwrap();
+        assert_eq!(sc.norb(), 1);
+        assert_eq!(sc.natom(), 1);
+    }
+
+    #[test]
+    fn supercell_preserves_empty_orbital_atoms() {
+        // Regression: the copy-count check only counted orbitals, so an
+        // atom owning no orbitals was silently dropped (natom 2 -> 1).
+        let atoms = vec![
+            Atom::with_orbitals(array![0.5, 0.5], AtomType::C, [OrbitalId::new(0)]),
+            Atom::new(array![0.7, 0.7], AtomType::O), // no orbitals
+        ];
+        let mut model = Model::<false, 2>::tb_model(
+            Array2::eye(2),
+            array![[0.5, 0.5]],
+            Some(atoms),
+        )
+        .unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0], None);
+
+        let sc = model.make_supercell(&array![[2.0, 0.0], [0.0, 1.0]]).unwrap();
+        sc.validate().unwrap();
+        assert_eq!(sc.natom(), 4, "both atoms must keep det(U) images each");
+        assert_eq!(sc.norb(), 2);
     }
 
     #[test]
