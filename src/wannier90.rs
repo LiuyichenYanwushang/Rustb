@@ -251,7 +251,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
         let mut atom_name: Vec<&str> = Vec::new();
         let mut atom_pos = Array2::<f64>::zeros((0, 3));
         let mut atom_proj = Vec::new();
-        let mut norb = 0;
         loop {
             let a = read_iter.next();
             if a == None {
@@ -417,7 +416,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                                 proj_orb.extend(use_proj_orb);
                             }
                             proj_list.push(atom_orb_number);
-                            norb += atom_orb_number;
                             atom_proj.push(proj_orb);
                             let proj_type =
                                 AtomType::from_str(prj[0]).map_err(|_| TbError::FileParse {
@@ -622,16 +620,21 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             }
             // 与 xyz 分支相同的物种覆盖检查: atoms_frac 的物种必须全部出现在
             // projections 块中, 否则 orb_proj 条目数不足, validate() 会失败。
-            if orb_proj.len() != norb {
+            // The HR file's nsta is authoritative: every atom of a species
+            // gets its own copy of each projection line, so the constructed
+            // count is (projection lines x atoms), not the once-only win
+            // declaration count.
+            let expected_norb = if spin { nsta / 2 } else { nsta };
+            if orb_proj.len() != expected_norb {
                 let proj_species: Vec<&str> = proj_name.iter().map(|n| n.to_str()).collect();
-                let detail = if orb_proj.len() < norb {
+                let detail = if orb_proj.len() < expected_norb {
                     format!(
-                        "{norb} orbitals declared in the projections block, but only {} could be assigned to atoms",
+                        "{expected_norb} orbitals declared in the HR file, but only {} could be assigned to atoms",
                         orb_proj.len()
                     )
                 } else {
                     format!(
-                        "{norb} orbitals declared in the projections block, but {} were assigned to atoms",
+                        "{expected_norb} orbitals declared in the HR file, but {} were assigned to atoms",
                         orb_proj.len()
                     )
                 };
@@ -1138,6 +1141,37 @@ mod tests {
         let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
         assert_eq!(model.norb(), 1);
         assert_eq!(model.natom(), 1);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_without_xyz_loads_multiple_atoms_of_same_species() {
+        // Regression: the no-xyz fallback compared the constructed orbital
+        // count against the once-only win projection declaration (4 for
+        // Fe:s,p), but two Fe atoms each get their own copy (8 orbitals),
+        // which the HR file confirms via nsta.
+        let dir = "tests/tmp_w90_multi_atom/";
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin atoms_cart\nFe 0.0 0.0 0.0\nFe 1.0 0.0 0.0\nend atoms_cart\n\nbegin projections\nFe:s\nFe:p\nend projections\n";
+        // 8 orbitals: 8x8 identity Hamiltonian at R=0.
+        let mut hr = String::from("generated\n8\n1\n1\n0 0 0 1 1 0.0 0.0\n");
+        for i in 1..=8 {
+            for j in 1..=8 {
+                if i != 1 || j != 1 {
+                    let value = if i == j { "0.0 0.0" } else { "0.0 0.0" };
+                    hr.push_str(&format!("0 0 0 {i} {j} {value}\n"));
+                }
+            }
+        }
+        let mut f = fs::File::create(format!("{dir}seedname.win")).unwrap();
+        f.write_all(win.as_bytes()).unwrap();
+        let mut f = fs::File::create(format!("{dir}seedname_hr.dat")).unwrap();
+        f.write_all(hr.as_bytes()).unwrap();
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 8);
+        assert_eq!(model.natom(), 2);
+        assert_eq!(model.atoms[0].norb(), 4);
+        assert_eq!(model.atoms[1].norb(), 4);
         fs::remove_dir_all(dir).ok();
     }
 
