@@ -385,6 +385,22 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
             }
         }
+        // Each layer shifts the orbital's Cartesian position by the layer
+        // displacement along dir; the position-matrix diagonal must follow.
+        // New orbital order: (layer, source orbital) — layer i, orbital s
+        // at index i*norb + s, so source repeats per layer.
+        let source: Vec<usize> = (0..num).flat_map(|_| 0..self.norb()).collect();
+        crate::model_build::set_rmatrix_diagonal_with_displacement::<DIM>(
+            &mut new_rmatrix,
+            &new_hamR,
+            &new_orb,
+            &new_lat,
+            &self.orb,
+            &self.lat,
+            &crate::model_build::rmatrix_diagonal_cartesian(self),
+            &source,
+            SPIN,
+        );
         let model = Self {
             lat: new_lat,
             orb: new_orb,
@@ -656,8 +672,40 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 mod ownership_tests {
     use super::*;
     use crate::AtomType;
+    use crate::HasRMatrix;
     use crate::solve_ham::solve;
     use ndarray::array;
+
+    #[test]
+    fn cut_piece_shifts_rmatrix_diagonal_by_layer_displacement() {
+        // Regression: each cut layer shifts the orbital's Cartesian position
+        // by the layer displacement along dir, but the position-matrix
+        // diagonal was copied unchanged. 1D, lat=2, orb=0.25, two layers:
+        // correct diagonals are 0.5 and 2.5 A.
+        let mut model = Model::<false, 1, HasRMatrix>::tb_model(
+            array![[2.0]],
+            array![[0.25]],
+            None,
+        )
+        .unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1], None);
+
+        let cut = model.cut_piece(2, 0).unwrap();
+        cut.validate().unwrap();
+        let rmatrix = cut.rmatrix.as_array4();
+        let zero_r = Array1::<isize>::zeros(1);
+        let r0 = find_R(&cut.hamR, &zero_r).unwrap();
+        let expected = [0.5, 2.5];
+        for layer in 0..2 {
+            assert!(
+                (rmatrix[[r0, 0, layer, layer]] - Complex::new(expected[layer], 0.0)).norm()
+                    < 1e-12,
+                "layer {layer} diagonal must be {}, found {}",
+                expected[layer],
+                rmatrix[[r0, 0, layer, layer]]
+            );
+        }
+    }
 
     #[test]
     fn boundary_cut_keeps_atom_adjacent_representative() {

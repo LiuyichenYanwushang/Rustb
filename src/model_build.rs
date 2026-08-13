@@ -1754,11 +1754,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             &mut new_rmatrix,
             SPIN,
         );
-        set_rmatrix_diagonal_to_cartesian_positions::<DIM>(
+        // Covariant translation of the position-matrix diagonal: preserve
+        // the source offset r_old(ss, 0) and add the Cartesian cell
+        // displacement tau_new·L_new - tau_old·L_old of each copy.
+        let old_diagonal = rmatrix_diagonal_cartesian::<SPIN, DIM, R>(self);
+        set_rmatrix_diagonal_with_displacement::<DIM>(
             &mut new_rmatrix,
             &new_hamR,
             &new_orb,
             &new_lat,
+            &self.orb,
+            &self.lat,
+            &old_diagonal,
+            &orb_list,
             SPIN,
         );
         let model = Model {
@@ -1775,23 +1783,51 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     }
 }
 
-/// Overwrite the `R = 0` position-matrix diagonal with the Cartesian orbital
-/// positions `frac · lat`.
+/// Extract the `R = 0` position-matrix diagonal (Cartesian, shape
+/// `(norb, DIM)`); all zeros for `NoRMatrix` models.
+pub(crate) fn rmatrix_diagonal_cartesian<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+    model: &Model<SPIN, DIM, R>,
+) -> Array2<f64> {
+    let norb = model.norb();
+    let mut diagonal = Array2::<f64>::zeros((norb, DIM));
+    if !R::HAS_RMATRIX {
+        return diagonal;
+    }
+    let zero_r = Array1::<isize>::zeros(DIM);
+    let Some(r0) = find_R(&model.hamR, &zero_r) else {
+        return diagonal;
+    };
+    let rmatrix = model.rmatrix.as_array4();
+    for s in 0..norb {
+        for axis in 0..DIM {
+            diagonal[[s, axis]] = rmatrix[[r0, axis, s, s]].re;
+        }
+    }
+    diagonal
+}
+
+/// Translate the `R = 0` position-matrix diagonal covariantly with a change
+/// of orbital representative and lattice.
 ///
 /// Position matrix elements are Cartesian (matching Wannier90 `_r.dat`), and
-/// the on-site diagonal `r_ii(0)` is the physical orbital position.  Supercell
-/// replication (which adds the per-image cell displacement `S·L_new`) and
-/// gauge folding (which moves `τ → τ − n` together with the hopping blocks)
-/// must end with this invariant holding:
+/// the on-site diagonal `r_ii(0)` may carry an arbitrary offset relative to
+/// the orbital center (e.g. custom `_r.dat` data).  Moving orbital `s` from
+/// `τ_old` on lattice `L_old` to `τ_new` on lattice `L_new` must translate
+/// the diagonal by the Cartesian displacement without discarding the offset:
 ///
 /// ```math
-/// r_{ii}(0) = \tau_i \cdot L .
+/// r^{new}_{ii}(0) = r^{old}_{ss}(0) + \tau^{new}_i \cdot L_{new}
+///                   - \tau^{old}_s \cdot L_{old}.
 /// ```
-fn set_rmatrix_diagonal_to_cartesian_positions<const DIM: usize>(
+pub(crate) fn set_rmatrix_diagonal_with_displacement<const DIM: usize>(
     rmatrix: &mut Array4<Complex<f64>>,
     ham_r: &Array2<isize>,
-    orb: &Array2<f64>,
-    lat: &Array2<f64>,
+    new_orb: &Array2<f64>,
+    new_lat: &Array2<f64>,
+    old_orb: &Array2<f64>,
+    old_lat: &Array2<f64>,
+    old_diagonal: &Array2<f64>,
+    source: &[usize],
     spin: bool,
 ) {
     let zero_r = Array1::<isize>::zeros(DIM);
@@ -1799,12 +1835,17 @@ fn set_rmatrix_diagonal_to_cartesian_positions<const DIM: usize>(
         return;
     };
     let nsta = rmatrix.dim().2;
-    let norb = orb.nrows();
-    let cart = orb.dot(lat);
+    let norb = new_orb.nrows();
+    let new_cart = new_orb.dot(new_lat);
+    let old_cart = old_orb.dot(old_lat);
     for i in 0..nsta {
         let s = if spin { i % norb } else { i };
+        let src = source[s];
         for axis in 0..DIM {
-            rmatrix[[r0, axis, i, i]] = Complex::new(cart[[s, axis]], 0.0);
+            rmatrix[[r0, axis, i, i]] = Complex::new(
+                old_diagonal[[src, axis]] + (new_cart[[s, axis]] - old_cart[[src, axis]]),
+                0.0,
+            );
         }
     }
 }
@@ -1926,6 +1967,9 @@ pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrix
     model: &Model<SPIN, DIM, R>,
 ) -> Result<Model<SPIN, DIM, R>> {
     let mut out = model.clone();
+    let old_orb = model.orb.clone();
+    let old_lat = model.lat.clone();
+    let old_diagonal = rmatrix_diagonal_cartesian::<SPIN, DIM, R>(model);
     // 1. Atoms into the cell.
     for atom in &mut out.atoms {
         let mut position = atom.position();
@@ -1949,7 +1993,9 @@ pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrix
             out.orb[[s, axis]] -= n as f64;
         }
     }
-    // 3. Covariant relabel + Cartesian position diagonal.
+    // 3. Covariant relabel + covariant Cartesian diagonal translation
+    // (preserving any offset the source diagonal carried relative to the
+    // orbital center).
     let mut ham = out.ham.clone();
     let mut ham_r = out.hamR.clone();
     let mut rmatrix = if R::HAS_RMATRIX {
@@ -1958,11 +2004,16 @@ pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrix
         Array4::<Complex<f64>>::zeros((ham_r.nrows(), DIM, out.nsta(), out.nsta()))
     };
     relabel_hamiltonian_by_orbital_fold::<DIM>(&mut ham, &mut ham_r, &mut rmatrix, &fold, SPIN);
-    set_rmatrix_diagonal_to_cartesian_positions::<DIM>(
+    let identity_source: Vec<usize> = (0..out.norb()).collect();
+    set_rmatrix_diagonal_with_displacement::<DIM>(
         &mut rmatrix,
         &ham_r,
         &out.orb,
         &out.lat,
+        &old_orb,
+        &old_lat,
+        &old_diagonal,
+        &identity_source,
         SPIN,
     );
     out.ham = ham;
@@ -2086,6 +2137,32 @@ mod fold_tests {
                 "identity supercell band {b} does not match original band {a}"
             );
         }
+    }
+
+    #[test]
+    fn identity_supercell_preserves_custom_rmatrix_diagonal() {
+        // Regression: the diagonal was unconditionally overwritten with
+        // tau·L, clobbering a legitimate custom offset from _r.dat data.
+        // The identity supercell must preserve r_old(ss, 0) exactly.
+        let mut model = Model::<false, 1, HasRMatrix>::tb_model(
+            array![[1.0]],
+            array![[0.5]],
+            None,
+        )
+        .unwrap();
+        model.rmatrix.as_array4_mut()[[0, 0, 0, 0]] = Complex::new(0.7, 0.0);
+        model.add_hop(-1.0, 0, 0, &array![1], None);
+
+        let sc = model.make_supercell(&array![[1.0]]).unwrap();
+        sc.validate().unwrap();
+        let rmatrix = sc.rmatrix.as_array4();
+        let zero_r = Array1::<isize>::zeros(1);
+        let r0 = find_R(&sc.hamR, &zero_r).unwrap();
+        assert!(
+            (rmatrix[[r0, 0, 0, 0]] - Complex::new(0.7, 0.0)).norm() < 1e-12,
+            "identity supercell must preserve the custom diagonal 0.7, found {}",
+            rmatrix[[r0, 0, 0, 0]]
+        );
     }
 
     #[test]
