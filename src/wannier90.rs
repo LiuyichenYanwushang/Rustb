@@ -417,6 +417,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                                 proj_orb.extend(use_proj_orb);
                             }
                             proj_list.push(atom_orb_number);
+                            norb += atom_orb_number;
                             atom_proj.push(proj_orb);
                             let proj_type =
                                 AtomType::from_str(prj[0]).map_err(|_| TbError::FileParse {
@@ -530,34 +531,47 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
 
             for (i, name) in new_atom_name.iter().enumerate() {
+                // Multiple projection lines of the same species belong to the
+                // SAME atom; merge them into one Atom.
+                let mut atom_orbitals = Vec::new();
                 for (j, j_name) in proj_name.iter().enumerate() {
                     if j_name == name {
-                        let use_pos = new_atom_pos
-                            .row(i)
-                            .dot(&lat.inv().map_err(TbError::Linalg)?);
                         let first = orb_proj.len();
-                        let use_atom = Atom::with_orbitals(
-                            use_pos,
-                            *name,
-                            (first..first + proj_list[j]).map(OrbitalId::new),
-                        );
-                        atom.push(use_atom);
+                        atom_orbitals.extend((first..first + proj_list[j]).map(OrbitalId::new));
                         orb_proj.extend(atom_proj[j].clone());
                     }
                 }
+                if atom_orbitals.is_empty() {
+                    return Err(TbError::FileParse {
+                        file: xyz_path.clone(),
+                        message: format!(
+                            "species '{}' in _centres.xyz is not listed in the win \
+                             projections block",
+                            name.to_str()
+                        ),
+                    });
+                }
+                let use_pos = new_atom_pos
+                    .row(i)
+                    .dot(&lat.inv().map_err(TbError::Linalg)?);
+                atom.push(Atom::with_orbitals(use_pos, *name, atom_orbitals));
             }
             // 所有轨道都必须能被 xyz 物种与 projections 物种的匹配覆盖,
             // 否则 orb_proj 条目数少于 norb, validate() 会报 orbital_projection_count。
             if orb_proj.len() != norb {
                 let xyz_species: Vec<&str> = new_atom_name.iter().map(|n| n.to_str()).collect();
                 let proj_species: Vec<&str> = proj_name.iter().map(|n| n.to_str()).collect();
+                let detail = if orb_proj.len() < norb {
+                    format!("{norb} orbitals declared in the projections block, but only {} could be assigned to atoms", orb_proj.len())
+                } else {
+                    format!("{norb} orbitals declared in the projections block, but {} were assigned to atoms", orb_proj.len())
+                };
                 return Err(TbError::FileParse {
                     file: xyz_path.clone(),
                     message: format!(
                         "species mismatch between _centres.xyz and the win projections block: \
-                         {} of {norb} orbitals could not be assigned to atoms. \
-                         _centres.xyz species: {xyz_species:?}; projection species: {proj_species:?}",
-                        norb - orb_proj.len(),
+                         {detail}. _centres.xyz species: {xyz_species:?}; \
+                         projection species: {proj_species:?}"
                     ),
                 });
             }
@@ -566,39 +580,57 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             let mut orb = Array2::<f64>::zeros((0, 3));
             let atom_pos = atom_pos.dot(&lat.inv().map_err(TbError::Linalg)?);
             for (i, name) in atom_name.iter().enumerate() {
+                let name = AtomType::from_str(name).map_err(|_| TbError::FileParse {
+                    file: win_path.clone(),
+                    message: format!(
+                        "Unknown atomic species '{name}' in begin atoms_frac block"
+                    ),
+                })?;
+                // Wannier90 permits multiple projection lines per species
+                // (e.g. separate spin-up/down blocks): all lines of this
+                // species belong to the SAME atom, so merge them into one
+                // Atom instead of creating one Atom per line.
+                let mut atom_orbitals = Vec::new();
                 for (j, j_name) in proj_name.iter().enumerate() {
-                    let name = AtomType::from_str(name).map_err(|_| TbError::FileParse {
-                        file: win_path.clone(),
-                        message: format!(
-                            "Unknown atomic species '{name}' in begin atoms_frac block"
-                        ),
-                    })?;
                     if name == *j_name {
                         let first = orb_proj.len();
-                        let use_atom = Atom::with_orbitals(
-                            atom_pos.row(i).to_owned(),
-                            name,
-                            (first..first + proj_list[j]).map(OrbitalId::new),
-                        );
+                        atom_orbitals.extend((first..first + proj_list[j]).map(OrbitalId::new));
                         orb_proj.extend(atom_proj[j].clone());
-                        atom.push(use_atom.clone());
                         for _ in 0..proj_list[j] {
-                            orb.push_row(use_atom.position().view());
+                            orb.push_row(atom_pos.row(i).view());
                         }
                     }
                 }
+                if atom_orbitals.is_empty() {
+                    return Err(TbError::FileParse {
+                        file: win_path.clone(),
+                        message: format!(
+                            "species '{name}' in begin atoms_frac is not listed in the \
+                             projections block"
+                        ),
+                    });
+                }
+                atom.push(Atom::with_orbitals(
+                    atom_pos.row(i).to_owned(),
+                    name,
+                    atom_orbitals,
+                ));
             }
             // 与 xyz 分支相同的物种覆盖检查: atoms_frac 的物种必须全部出现在
             // projections 块中, 否则 orb_proj 条目数不足, validate() 会失败。
             if orb_proj.len() != norb {
                 let proj_species: Vec<&str> = proj_name.iter().map(|n| n.to_str()).collect();
+                let detail = if orb_proj.len() < norb {
+                    format!("{norb} orbitals declared in the projections block, but only {} could be assigned to atoms", orb_proj.len())
+                } else {
+                    format!("{norb} orbitals declared in the projections block, but {} were assigned to atoms", orb_proj.len())
+                };
                 return Err(TbError::FileParse {
                     file: win_path.clone(),
                     message: format!(
                         "species mismatch between begin atoms_frac and the projections block: \
-                         {} of {norb} orbitals could not be assigned to atoms. \
-                         atom species: {atom_name:?}; projection species: {proj_species:?}",
-                        norb - orb_proj.len(),
+                         {detail}. atom species: {atom_name:?}; \
+                         projection species: {proj_species:?}"
                     ),
                 });
             }
@@ -1075,9 +1107,47 @@ mod tests {
         let err = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap_err();
         let message = err.to_string();
         assert!(
-            message.contains("species mismatch"),
+            message.contains("not listed in the win projections block"),
             "unexpected error: {message}"
         );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_without_centres_xyz_uses_atoms_cart_fallback() {
+        // Regression: without _centres.xyz the outer norb stayed 0 and the
+        // atoms_cart fallback underflowed (0 - 1) in debug builds.
+        let dir = "tests/tmp_w90_no_xyz/";
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin atoms_cart\nFe 0.0 0.0 0.0\nend atoms_cart\n\nbegin projections\nFe:s\nend projections\n";
+        let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
+        let mut f = fs::File::create(format!("{dir}seedname.win")).unwrap();
+        f.write_all(win.as_bytes()).unwrap();
+        let mut f = fs::File::create(format!("{dir}seedname_hr.dat")).unwrap();
+        f.write_all(hr.as_bytes()).unwrap();
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 1);
+        assert_eq!(model.natom(), 1);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_merges_multi_line_projections_into_one_atom() {
+        // Regression: multiple projection lines of the same species (e.g.
+        // Fe:s and Fe:p) created one Atom per line; Wannier90 supports
+        // multiple lines per site and they must merge into a single Atom.
+        let dir = "tests/tmp_w90_multiline/";
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin atoms_cart\nFe 0.0 0.0 0.0\nend atoms_cart\n\nbegin projections\nFe:s\nFe:p\nend projections\n";
+        let hr = "generated\n4\n1\n1\n0 0 0 1 1 0.0 0.0\n0 0 0 1 2 0.0 0.0\n0 0 0 1 3 0.0 0.0\n0 0 0 1 4 0.0 0.0\n0 0 0 2 1 0.0 0.0\n0 0 0 2 2 0.0 0.0\n0 0 0 2 3 0.0 0.0\n0 0 0 2 4 0.0 0.0\n0 0 0 3 1 0.0 0.0\n0 0 0 3 2 0.0 0.0\n0 0 0 3 3 0.0 0.0\n0 0 0 3 4 0.0 0.0\n0 0 0 4 1 0.0 0.0\n0 0 0 4 2 0.0 0.0\n0 0 0 4 3 0.0 0.0\n0 0 0 4 4 0.0 0.0\n";
+        let mut f = fs::File::create(format!("{dir}seedname.win")).unwrap();
+        f.write_all(win.as_bytes()).unwrap();
+        let mut f = fs::File::create(format!("{dir}seedname_hr.dat")).unwrap();
+        f.write_all(hr.as_bytes()).unwrap();
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 4);
+        assert_eq!(model.natom(), 1, "multi-line projections must merge into one Atom");
+        assert_eq!(model.atoms[0].norb(), 4);
         fs::remove_dir_all(dir).ok();
     }
 }
