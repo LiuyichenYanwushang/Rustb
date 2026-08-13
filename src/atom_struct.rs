@@ -805,6 +805,19 @@ impl<'de> Deserialize<'de> for Atom {
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         let wire = AtomWire::deserialize(deserializer)?;
+        // The legacy per-atom orbital-count format cannot be decoded for a
+        // standalone Atom: each atom would independently assign IDs starting
+        // at 0, producing overlapping OrbitalIds that fail later at Model
+        // attach with a cryptic DuplicateOrbitalOwner. The Model-level
+        // deserializer assigns IDs sequentially instead.
+        if wire.atom_list.is_some() {
+            return Err(serde::de::Error::custom(
+                "legacy per-atom orbital counts cannot be deserialized as a \
+                 standalone Atom; deserialize the full Model (which assigns \
+                 orbital IDs sequentially) or migrate the data to typed \
+                 orbital IDs",
+            ));
+        }
         wire.into_atom(0)
             .map(|(atom, _)| atom)
             .map_err(serde::de::Error::custom)

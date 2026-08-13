@@ -963,6 +963,37 @@ mod ownership_tests {
     }
 
     #[test]
+    fn standalone_legacy_atom_deserialization_is_rejected() {
+        // Regression: deserializing a standalone Atom in the legacy
+        // per-atom-count format assigned IDs 0..N to each atom independently,
+        // producing overlapping OrbitalIds that surfaced later as a cryptic
+        // DuplicateOrbitalOwner at Model attach. It must now be rejected with
+        // a migration hint.
+        let model = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.0, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        let mut value = toml::Value::try_from(&model).unwrap();
+        let atom = value["atoms"].as_array_mut().unwrap()[0]
+            .as_table_mut()
+            .unwrap();
+        atom.remove("orbitals").unwrap();
+        atom.insert("atom_list".to_string(), toml::Value::Integer(1));
+        let wire = toml::to_string(&atom).unwrap();
+        let err = toml::from_str::<Atom>(&wire).unwrap_err();
+        assert!(
+            err.to_string().contains("standalone Atom"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn legacy_zero_magnetic_alias_is_distinct_from_a_missing_moment() {
         let model = Model::<false, 3>::tb_model(
             Array2::eye(3),
