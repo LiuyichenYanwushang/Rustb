@@ -690,8 +690,14 @@ mod ownership_tests {
         // Gauge equivalence: all three representatives must produce the
         // identical normalized cut.
         for (other, name) in [(&cut_b, "1.01"), (&cut_c, "-0.99")] {
-            assert_eq!(cut_a.orb, other.orb, "orb differs for representative {name}");
-            assert_eq!(cut_a.hamR, other.hamR, "hamR differs for representative {name}");
+            assert_eq!(
+                cut_a.orb, other.orb,
+                "orb differs for representative {name}"
+            );
+            assert_eq!(
+                cut_a.hamR, other.hamR,
+                "hamR differs for representative {name}"
+            );
             for (block_a, block_b) in cut_a.ham.outer_iter().zip(other.ham.outer_iter()) {
                 assert!(
                     block_a

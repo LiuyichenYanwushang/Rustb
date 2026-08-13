@@ -1941,9 +1941,7 @@ pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrix
         for axis in 0..DIM {
             let n = match owner {
                 Some(atom_id) => {
-                    (out.orb[[s, axis]]
-                        - out.atoms[atom_id.index()].position_ref()[[axis]])
-                    .round()
+                    (out.orb[[s, axis]] - out.atoms[atom_id.index()].position_ref()[[axis]]).round()
                 }
                 None => out.orb[[s, axis]].floor(),
             } as isize;
@@ -2066,12 +2064,9 @@ mod fold_tests {
         ];
         // Orbital 0 sits just left of atom A (fold n_0 = -1), orbital 1
         // just right of atom B (fold n_1 = +1).
-        let mut model = Model::<false, 1>::tb_model(
-            array![[1.0]],
-            array![[-1.01], [1.99]],
-            Some(atoms),
-        )
-        .unwrap();
+        let mut model =
+            Model::<false, 1>::tb_model(array![[1.0]], array![[-1.01], [1.99]], Some(atoms))
+                .unwrap();
         model.add_hop(-0.7, 0, 1, &array![1], None);
         model.validate().unwrap();
 

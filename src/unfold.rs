@@ -433,7 +433,7 @@ mod tests {
         model.add_hop(t1, 0, 1, &array![-1, 0], None);
         model.add_hop(t1, 2, 1, &array![-1, 1], None);
 
-        let nk: usize = 101;
+        let nk: usize = 301;
         let path = array![[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.], [0.0, 0.0]];
         let label = vec!["G", "K", "M", "G"];
         let (kvec, kdist, knode) = model.k_path(&path, nk).unwrap();

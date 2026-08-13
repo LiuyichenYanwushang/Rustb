@@ -22,13 +22,7 @@ pub trait RMatrixData: Clone + std::fmt::Debug + Sync {
     /// Position matrix elements are stored in **Cartesian** coordinates
     /// (matching Wannier90 `_r.dat`), so the fractional orbital positions are
     /// converted via `cart = frac · lat`.
-    fn from_orb(
-        orb: &Array2<f64>,
-        lat: &Array2<f64>,
-        norb: usize,
-        spin: bool,
-        dim: usize,
-    ) -> Self;
+    fn from_orb(orb: &Array2<f64>, lat: &Array2<f64>, norb: usize, spin: bool, dim: usize) -> Self;
     /// Wrap an Array4 into the RMatrixData type.
     fn from_array(arr: Array4<Complex<f64>>) -> Self;
     /// Get a reference to the underlying Array4. Panics for NoRMatrix.
