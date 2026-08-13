@@ -657,6 +657,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             return Err(TbError::MissingAtomicStructure);
         }
         self.validate()?;
+        // Every orbital must be owned by an atom.  Unowned orbitals (reachable
+        // through remove_atoms_only or partial-ownership Atom construction)
+        // would silently keep zero angular-momentum matrix elements, which is
+        // indistinguishable from a genuine s-orbital zero.
+        let owners = self.orbital_owners()?;
+        if let Some(unowned) = owners.iter().position(Option::is_none) {
+            return Err(TbError::Other(format!(
+                "orb_angular requires every orbital to be owned by an atom, \
+                 but orbital {unowned} has no owner. \
+                 Remove the orbital or attach it to an Atom first."
+            )));
+        }
         let li = Complex::i() * 1.0;
         let mut L = Array3::<Complex<f64>>::zeros((self.dim_r(), self.norb(), self.norb()));
         let mut Lx = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
@@ -791,6 +803,28 @@ mod ownership_tests {
             model.orb_angular(),
             Err(TbError::MissingAtomicStructure)
         ));
+    }
+
+    #[test]
+    fn orb_angular_rejects_unowned_orbitals() {
+        // Regression: an orbital not owned by any atom used to silently keep
+        // zero angular-momentum matrix elements (indistinguishable from a
+        // genuine s-orbital). It must now produce a clear error.
+        let model = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.0, 0.0, 0.0], [0.2, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        let err = model.orb_angular().unwrap_err();
+        assert!(
+            err.to_string().contains("has no owner"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
