@@ -20,6 +20,19 @@ use std::f64::consts::PI;
 /// differ only by floating-point noise from `orb · U` (`~1e-14`), so `1e-8`
 /// separates identical representatives from distinct Wannier centers.
 const REPRESENTATIVE_POSITION_TOLERANCE: f64 = 1e-8;
+
+/// Periodic distance between two fractional positions: each component is
+/// wrapped onto the torus before the Euclidean norm is taken, so `5e-9` and
+/// `0.999999995` are `1e-8` apart rather than `~1`.
+fn periodic_distance(a: ArrayView1<'_, f64>, b: ArrayView1<'_, f64>) -> f64 {
+    let mut sum = 0.0;
+    for axis in 0..a.len() {
+        let d = (a[axis] - b[axis]).abs();
+        let d = d.min(1.0 - d);
+        sum += d * d;
+    }
+    sum.sqrt()
+}
 pub trait Unfold {
     //! Band unfolding algorithm. Computes the unfolded band structure, and can be
     //! used to study alloys, supercells, impurities, defects, and charge density
@@ -202,9 +215,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
             // Orbital-only models are first-class: derive primitive-orbital
             // representatives directly from folded Wannier centers.
             for (orbital, folded) in unfold_orb.outer_iter().enumerate() {
-                let representative = unit_orb.outer_iter().position(|candidate| {
-                    (&folded - &candidate).norm() < REPRESENTATIVE_POSITION_TOLERANCE
-                });
+                let representative = unit_orb
+                    .outer_iter()
+                    .position(|candidate| periodic_distance(folded, candidate) < REPRESENTATIVE_POSITION_TOLERANCE);
                 match representative {
                     Some(representative) => match_orb_list[orbital] = representative,
                     None => {
@@ -236,7 +249,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                         .outer_iter()
                         .enumerate()
                         .position(|(candidate_index, candidate)| {
-                            (&folded_atom - &candidate).norm() < REPRESENTATIVE_POSITION_TOLERANCE
+                            periodic_distance(folded_atom, candidate)
+                                < REPRESENTATIVE_POSITION_TOLERANCE
                                 && unit_atom_types[candidate_index]
                                     == self.atoms[atom_index].atom_type()
                         });
@@ -244,21 +258,33 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                     if unit_atom_orbitals[representative].len() != self.atoms[atom_index].norb() {
                         return Err(TbError::InvalidAtomConfiguration);
                     }
-                    for (&orbital, &unit_orbital) in self.atoms[atom_index]
-                        .orbitals()
-                        .iter()
-                        .zip(&unit_atom_orbitals[representative])
-                    {
-                        // The positional zip must pair physically identical
-                        // orbitals; verify instead of silently misattributing
-                        // weights when orbital-ID order differs between
-                        // supercell copies.
+                    // One-to-one assignment by periodic position and orbital
+                    // projection: supercell copies may list their orbitals in
+                    // any order, so positional zip pairing is not reliable.
+                    let mut used = vec![false; unit_atom_orbitals[representative].len()];
+                    for &orbital in self.atoms[atom_index].orbitals() {
                         let folded = unfold_orb.row(orbital.index());
-                        let unit = unit_orb.row(unit_orbital);
-                        if (&folded - &unit).norm() >= REPRESENTATIVE_POSITION_TOLERANCE {
-                            return Err(TbError::InvalidAtomConfiguration);
+                        let projection = self.orb_projection[orbital.index()];
+                        let candidate = unit_atom_orbitals[representative]
+                            .iter()
+                            .enumerate()
+                            .filter(|&(index, &unit_orbital)| {
+                                !used[index] && self.orb_projection[unit_orbital] == projection
+                            })
+                            .min_by(|&(_, &u1), &(_, &u2)| {
+                                periodic_distance(folded, unit_orb.row(u1))
+                                    .partial_cmp(&periodic_distance(folded, unit_orb.row(u2)))
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            });
+                        match candidate {
+                            Some((index, &unit_orbital)) => {
+                                used[index] = true;
+                                match_orb_list[orbital.index()] = unit_orbital;
+                            }
+                            None => {
+                                return Err(TbError::InvalidAtomConfiguration);
+                            }
                         }
-                        match_orb_list[orbital.index()] = unit_orbital;
                     }
                 } else {
                     unit_atom.push_row(folded_atom);
