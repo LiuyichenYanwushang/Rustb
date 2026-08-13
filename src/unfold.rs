@@ -355,8 +355,7 @@ mod tests {
         // Regression: a NaN determinant used to pass both arithmetic guards
         // (NaN <= 1.0 is false, (NaN - 0).abs() > prec is false), then
         // NaN.round() as usize saturated to 0 and `norb % 0` panicked.
-        let model =
-            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
+        let model = Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
         let result = model.unfold(
             &array![[f64::NAN, 0.0], [0.0, 1.0]],
             &array![[0.0, 0.0], [0.5, 0.0]],
@@ -379,7 +378,9 @@ mod tests {
         let model =
             Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0], [0.03, 0.0]], None)
                 .unwrap();
-        let supercell = model.make_supercell(&array![[2.0, 0.0], [0.0, 1.0]]).unwrap();
+        let supercell = model
+            .make_supercell(&array![[2.0, 0.0], [0.0, 1.0]])
+            .unwrap();
         let result = supercell.unfold(
             &array![[2.0, 0.0], [0.0, 1.0]],
             &array![[0.0, 0.0], [0.5, 0.0]],

@@ -865,7 +865,13 @@ mod ownership_tests {
             )]),
         );
         assert!(
-            matches!(bad, Err(TbError::InvalidModelInvariant { invariant: "orbital_atom_position", .. })),
+            matches!(
+                bad,
+                Err(TbError::InvalidModelInvariant {
+                    invariant: "orbital_atom_position",
+                    ..
+                })
+            ),
             "deviation beyond tolerance must fail with orbital_atom_position"
         );
 
@@ -880,7 +886,10 @@ mod ownership_tests {
                 [OrbitalId::new(0)],
             )]),
         );
-        assert!(across_boundary.is_ok(), "mod-1 distance 0.06 must be allowed");
+        assert!(
+            across_boundary.is_ok(),
+            "mod-1 distance 0.06 must be allowed"
+        );
     }
 
     #[test]

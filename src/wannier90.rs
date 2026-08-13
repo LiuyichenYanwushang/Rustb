@@ -418,15 +418,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                             }
                             proj_list.push(atom_orb_number);
                             atom_proj.push(proj_orb);
-                            let proj_type = AtomType::from_str(prj[0]).map_err(|_| {
-                                TbError::FileParse {
+                            let proj_type =
+                                AtomType::from_str(prj[0]).map_err(|_| TbError::FileParse {
                                     file: win_path.clone(),
                                     message: format!(
                                         "Unknown atomic species '{}' in begin projections",
                                         prj[0]
                                     ),
-                                }
-                            })?;
+                                })?;
                             proj_name.push(proj_type);
                         }
                     }
@@ -1046,9 +1045,7 @@ mod tests {
             "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin projections\nC:s\nend projections\n"
         );
         let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
-        let xyz = format!(
-            "2\nWannier centres\nC 0.0 0.0 0.0\n{atom_species} 0.0 0.0 0.0\n"
-        );
+        let xyz = format!("2\nWannier centres\nC 0.0 0.0 0.0\n{atom_species} 0.0 0.0 0.0\n");
         for (suffix, content) in [("_hr.dat", hr), ("_centres.xyz", xyz.as_str())] {
             let mut f = fs::File::create(format!("{dir}/seedname{suffix}")).unwrap();
             f.write_all(content.as_bytes()).unwrap();

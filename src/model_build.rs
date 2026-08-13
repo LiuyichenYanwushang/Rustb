@@ -1816,10 +1816,7 @@ fn fold_supercell_positions_covariantly<const DIM: usize>(
                     Some(target) => target,
                     None => {
                         ham_r.push_row(new_r.view());
-                        ham.push(
-                            Axis(0),
-                            Array2::<Complex<f64>>::zeros((nsta, nsta)).view(),
-                        );
+                        ham.push(Axis(0), Array2::<Complex<f64>>::zeros((nsta, nsta)).view());
                         rmatrix.push(
                             Axis(0),
                             Array3::<Complex<f64>>::zeros((DIM, nsta, nsta)).view(),
