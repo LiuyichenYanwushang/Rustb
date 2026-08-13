@@ -551,6 +551,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     }
                     new_model.rmatrix = R::from_array(new_rmatrix);
                 }
+                // The shape cut can select zero orbitals; reject that
+                // explicitly instead of returning an invalid empty model.
+                new_model.validate()?;
                 return Ok(new_model);
             }
             2 => {
@@ -656,6 +659,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     }
                     new_model.rmatrix = R::from_array(new_rmatrix);
                 }
+                new_model.validate()?;
                 return Ok(new_model);
             }
             _ => {
@@ -677,17 +681,32 @@ mod ownership_tests {
     use ndarray::array;
 
     #[test]
+    fn cut_dot_rejects_empty_selection() {
+        // Regression: the 3D cut_dot path returned an invalid zero-orbital
+        // model without validate() when the shape selected nothing.
+        let mut model = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.9, 0.9, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.9, 0.9, 0.0],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0, 0], None);
+        let result = model.cut_dot(1, 3, Some(vec![0, 1]));
+        assert!(matches!(result, Err(TbError::NoOrbitals)));
+    }
+
+    #[test]
     fn cut_piece_shifts_rmatrix_diagonal_by_layer_displacement() {
         // Regression: each cut layer shifts the orbital's Cartesian position
         // by the layer displacement along dir, but the position-matrix
         // diagonal was copied unchanged. 1D, lat=2, orb=0.25, two layers:
         // correct diagonals are 0.5 and 2.5 A.
-        let mut model = Model::<false, 1, HasRMatrix>::tb_model(
-            array![[2.0]],
-            array![[0.25]],
-            None,
-        )
-        .unwrap();
+        let mut model =
+            Model::<false, 1, HasRMatrix>::tb_model(array![[2.0]], array![[0.25]], None).unwrap();
         model.add_hop(-1.0, 0, 0, &array![1], None);
 
         let cut = model.cut_piece(2, 0).unwrap();

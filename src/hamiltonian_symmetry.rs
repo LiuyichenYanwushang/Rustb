@@ -1170,6 +1170,15 @@ fn validate_tolerances(tolerances: HamiltonianSymmetryTolerances) -> Result<()> 
             message: "must be finite and lie in (0, 0.5)".to_string(),
         });
     }
+    if tolerances
+        .membership
+        .is_some_and(|value| !value.is_finite() || value <= 0.0 || value >= 0.5)
+    {
+        return Err(TbError::InvalidHamiltonianSymmetryInput {
+            parameter: "membership_tolerance",
+            message: "must be None or finite and lie in (0, 0.5)".to_string(),
+        });
+    }
     Ok(())
 }
 

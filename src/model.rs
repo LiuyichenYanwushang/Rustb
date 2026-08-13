@@ -131,6 +131,14 @@ impl RMatrixData for NoRMatrix {
 /// Enforced by [`Model::validate`].  Kept well below 1/2 so supercell image
 /// folding is unambiguous, and below the typical nearest-neighbour distance so
 /// bond-centered orbitals remain representable.
+///
+/// # Known limitation
+///
+/// The check is component-wise on the CURRENT lattice basis and is therefore
+/// not invariant under general `GL(d, Z)` basis changes: a model valid in one
+/// integer basis may be rejected after an arbitrary integer basis transform.
+/// `make_supercell` / `cut_*` re-validate their outputs, so such transforms
+/// fail loudly rather than silently.
 pub const ORBITAL_ATOM_POSITION_TOLERANCE: f64 = 0.1;
 
 /// Tight-binding model structure.
@@ -922,6 +930,37 @@ mod ownership_tests {
         assert!(
             across_boundary.is_ok(),
             "mod-1 distance 0.06 must be allowed"
+        );
+    }
+
+    #[test]
+    fn remove_last_orbital_is_transactional() {
+        // Regression: removing every orbital mutated all arrays before the
+        // final validate() reported NoOrbitals, leaving the caller's model
+        // corrupted. The error must fire before any mutation.
+        let mut model = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.0, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        let norb_before = model.norb();
+        assert!(matches!(model.remove_orb(&[0]), Err(TbError::NoOrbitals)));
+        assert_eq!(
+            model.norb(),
+            norb_before,
+            "failed removal must not mutate the model"
+        );
+        assert!(matches!(model.remove_atom(&[0]), Err(TbError::NoOrbitals)));
+        assert_eq!(model.norb(), norb_before);
+        assert_eq!(
+            model.natom(),
+            1,
+            "failed atom removal must not mutate atoms"
         );
     }
 

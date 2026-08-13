@@ -230,6 +230,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 actual: lat.len_of(Axis(0)),
             });
         }
+        // Check the orbital shape before from_orb: the Cartesian conversion
+        // orb.dot(lat) would otherwise panic on a column mismatch instead of
+        // returning a structured error.
+        if orb.len_of(Axis(1)) != DIM {
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "orbital_position_shape",
+                message: format!("expected {DIM} columns, found {}", orb.len_of(Axis(1))),
+            });
+        }
         let new_atom = match atom {
             Some(atom0) => atom0,
             None => Vec::new(),
@@ -928,6 +937,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         if use_orb_list.is_empty() {
             return Ok(());
         }
+        // Transactional pre-check: removing every orbital would leave the
+        // model empty, and validate() would only report it after the arrays
+        // were already mutated.
+        if use_orb_list.len() == self.norb() {
+            return Err(TbError::NoOrbitals);
+        }
         let old_norb = self.norb();
         let mut index: Vec<_> = (0..old_norb)
             .filter(|num| use_orb_list.binary_search(num).is_err())
@@ -1001,6 +1016,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .map(|id| id.index())
             .collect::<Vec<_>>();
         removed_orbitals.sort_unstable();
+        // Transactional pre-check: removing every orbital would leave the
+        // model empty, and the error must fire before any mutation.
+        if removed_orbitals.len() == self.norb() {
+            return Err(TbError::NoOrbitals);
+        }
         self.atoms = self
             .atoms
             .iter()
@@ -1310,7 +1330,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                 } else {
                                     atoms[[2]]
                                 };
-                                let image_key = atoms.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                                let image_key =
+                                    atoms.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
                                 if !seen_atom_images.insert((n, image_key)) {
                                     continue;
                                 }
@@ -2195,7 +2216,9 @@ mod fold_tests {
         model.add_hop(-1.0, 0, 0, &array![1, 0], None);
         model.add_hop(-1.0, 0, 0, &array![0, 1], None);
 
-        let sc = model.make_supercell(&array![[1.0, 100.0], [0.0, 1.0]]).unwrap();
+        let sc = model
+            .make_supercell(&array![[1.0, 100.0], [0.0, 1.0]])
+            .unwrap();
         sc.validate().unwrap();
         // det = 1: exactly one copy of the source orbital.
         assert_eq!(sc.norb(), 1);
@@ -2216,12 +2239,8 @@ mod fold_tests {
         // Regression: the diagonal was unconditionally overwritten with
         // tau·L, clobbering a legitimate custom offset from _r.dat data.
         // The identity supercell must preserve r_old(ss, 0) exactly.
-        let mut model = Model::<false, 1, HasRMatrix>::tb_model(
-            array![[1.0]],
-            array![[0.5]],
-            None,
-        )
-        .unwrap();
+        let mut model =
+            Model::<false, 1, HasRMatrix>::tb_model(array![[1.0]], array![[0.5]], None).unwrap();
         model.rmatrix.as_array4_mut()[[0, 0, 0, 0]] = Complex::new(0.7, 0.0);
         model.add_hop(-1.0, 0, 0, &array![1], None);
 

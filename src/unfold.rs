@@ -13,12 +13,13 @@ use std::f64::consts::PI;
 /// Fractional-coordinate tolerance used to identify equivalent orbital and
 /// atom representatives during unfolding.
 ///
-/// Previously `5e-2`, which merged genuinely distinct primitive orbitals whose
-/// centers were closer than 0.05 (e.g. `0.0` and `0.03`) into one
-/// representative and made unfold hard-fail with `InvalidAtomConfiguration`.
-/// `1e-3` is far above the floating-point noise of the fold (`~1e-15`) and far
-/// below the typical distance between distinct Wannier centers.
-const REPRESENTATIVE_POSITION_TOLERANCE: f64 = 1e-3;
+/// Historically `5e-2` and then `1e-3`, both of which merged genuinely
+/// distinct primitive orbitals (e.g. centers at `0.3000` and `0.3004`) into
+/// one representative and made unfold hard-fail with
+/// `InvalidAtomConfiguration`.  Folded copies of the SAME primitive orbital
+/// differ only by floating-point noise from `orb · U` (`~1e-14`), so `1e-8`
+/// separates identical representatives from distinct Wannier centers.
+const REPRESENTATIVE_POSITION_TOLERANCE: f64 = 1e-8;
 pub trait Unfold {
     //! Band unfolding algorithm. Computes the unfolded band structure, and can be
     //! used to study alloys, supercells, impurities, defects, and charge density
@@ -126,7 +127,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
         //我们先根据path计算一下k点
         let (kvec, kdist, knode) = {
             let n_node: usize = path.len_of(Axis(0));
-            let k_metric = (&unfold_lat.dot(&unfold_lat.t())).inv().unwrap();
+            let k_metric = (&unfold_lat.dot(&unfold_lat.t()))
+                .inv()
+                .map_err(TbError::Linalg)?;
             let mut k_node = Array1::<f64>::zeros(n_node);
             for n in 1..n_node {
                 //let dk=path.slice(s![n,..]).to_owned()-path.slice(s![n-1,..]).to_owned();
@@ -180,9 +183,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
         let mut G = G.mapv(|x| -x.im() / PI);
         G.swap_axes(0, 1);
         //接下来我们计算原胞的原子位置和轨道位置
+        // The geometric snap uses a fixed floating-point tolerance: `precision`
+        // is the caller's determinant-matching tolerance and must not stretch
+        // physical positions.
+        const SNAP_TOLERANCE: f64 = 1e-10;
         let mut unit_orb = Array2::<f64>::zeros((0, self.dim_r()));
         let unfold_orb = &self.orb.dot(U).map(|x| {
-            if (x.fract() - 1.0).abs() < precision || x.fract().abs() < precision {
+            if (x.fract() - 1.0).abs() < SNAP_TOLERANCE || x.fract().abs() < SNAP_TOLERANCE {
                 0.0
             } else if x.fract() < 0.0 {
                 x.fract() + 1.0
@@ -213,7 +220,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
             let mut unit_atom = Array2::<f64>::zeros((0, self.dim_r()));
             let atom_position = self.atom_position();
             let unfold_atom = &atom_position.dot(U).map(|x| {
-                if (x.fract() - 1.0).abs() < precision || x.fract().abs() < precision {
+                if (x.fract() - 1.0).abs() < SNAP_TOLERANCE || x.fract().abs() < SNAP_TOLERANCE {
                     0.0
                 } else if x.fract() < 0.0 {
                     x.fract() + 1.0
@@ -242,6 +249,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                         .iter()
                         .zip(&unit_atom_orbitals[representative])
                     {
+                        // The positional zip must pair physically identical
+                        // orbitals; verify instead of silently misattributing
+                        // weights when orbital-ID order differs between
+                        // supercell copies.
+                        let folded = unfold_orb.row(orbital.index());
+                        let unit = unit_orb.row(unit_orbital);
+                        if (&folded - &unit).norm() >= REPRESENTATIVE_POSITION_TOLERANCE {
+                            return Err(TbError::InvalidAtomConfiguration);
+                        }
                         match_orb_list[orbital.index()] = unit_orbital;
                     }
                 } else {
