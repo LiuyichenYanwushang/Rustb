@@ -315,21 +315,38 @@ impl MagneticCrystalSymmetry {
     }
 
     /// Canonical fixed-k magnetic corep labels and coordinates.
+    ///
+    /// The returned coordinates are in the **canonical database frame**
+    /// (cryspglib's fixed data-Hall setting), not in the original model's
+    /// reciprocal basis.  The structural
+    /// [`CrystalSymmetry::high_symmetry_kpoints`] additionally returns
+    /// model-basis coordinates; this magnetic API does not yet, so transform
+    /// the coordinates explicitly when the model setting differs from the
+    /// database setting.
     pub fn high_symmetry_kpoints(&self) -> Result<Vec<(String, [f64; 3])>> {
         self.ensure_database_symmetry_is_effective()?;
         let summary = self.corep_summary()?;
-        Ok(summary
+        summary
             .kpoints
             .iter()
             .map(|point| {
                 let (kx, ky, kz, kd) = point.coords;
                 let d = kd as f64;
-                (
+                if d == 0.0 {
+                    return Err(TbError::MagneticIrrepAnalysis {
+                        uni: self.uni_number,
+                        message: format!(
+                            "k point '{}' has a zero coordinate denominator in the database",
+                            point.label
+                        ),
+                    });
+                }
+                Ok((
                     point.label.clone(),
                     [kx as f64 / d, ky as f64 / d, kz as f64 / d],
-                )
+                ))
             })
-            .collect())
+            .collect()
     }
 
     /// Formal magnetic character table at a selected fixed-k label.
@@ -892,9 +909,11 @@ mod tests {
     use ndarray_linalg::Inverse;
 
     fn simple_cubic() -> Model<false, 3> {
+        // The orbital must sit at its atom's position (validate() enforces
+        // ORBITAL_ATOM_POSITION_TOLERANCE).
         Model::tb_model(
             Array2::eye(3),
-            array![[0.31, 0.27, 0.19]],
+            array![[0.0, 0.0, 0.0]],
             Some(vec![Atom::with_orbitals(
                 array![0.0, 0.0, 0.0],
                 AtomType::Si,
