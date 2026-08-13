@@ -1736,6 +1736,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             &mut new_rmatrix,
             SPIN,
         );
+        set_rmatrix_diagonal_to_cartesian_positions::<DIM>(
+            &mut new_rmatrix,
+            &new_hamR,
+            &new_orb,
+            &new_lat,
+            SPIN,
+        );
         let model = Model {
             lat: new_lat,
             orb: new_orb,
@@ -1747,6 +1754,40 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
         model.validate()?;
         Ok(model)
+    }
+}
+
+/// Overwrite the `R = 0` position-matrix diagonal with the Cartesian orbital
+/// positions `frac · lat`.
+///
+/// Position matrix elements are Cartesian (matching Wannier90 `_r.dat`), and
+/// the on-site diagonal `r_ii(0)` is the physical orbital position.  Supercell
+/// replication (which adds the per-image cell displacement `S·L_new`) and
+/// gauge folding (which moves `τ → τ − n` together with the hopping blocks)
+/// must end with this invariant holding:
+///
+/// ```math
+/// r_{ii}(0) = \tau_i \cdot L .
+/// ```
+fn set_rmatrix_diagonal_to_cartesian_positions<const DIM: usize>(
+    rmatrix: &mut Array4<Complex<f64>>,
+    ham_r: &Array2<isize>,
+    orb: &Array2<f64>,
+    lat: &Array2<f64>,
+    spin: bool,
+) {
+    let zero_r = Array1::<isize>::zeros(DIM);
+    let Some(r0) = find_R(ham_r, &zero_r) else {
+        return;
+    };
+    let nsta = rmatrix.dim().2;
+    let norb = orb.nrows();
+    let cart = orb.dot(lat);
+    for i in 0..nsta {
+        let s = if spin { i % norb } else { i };
+        for axis in 0..DIM {
+            rmatrix[[r0, axis, i, i]] = Complex::new(cart[[s, axis]], 0.0);
+        }
     }
 }
 
@@ -1837,7 +1878,7 @@ fn fold_supercell_positions_covariantly<const DIM: usize>(
 mod fold_tests {
     use super::*;
     use crate::solve_ham::solve;
-    use crate::{Atom, AtomType, OrbitalId};
+    use crate::{Atom, AtomType, HasRMatrix, OrbitalId};
 
     /// 1D model whose orbital sits just across the cell boundary from its
     /// atom: atom at 0.99, orbital at `orbital_x`.  Both representatives
@@ -1908,6 +1949,40 @@ mod fold_tests {
             assert!(
                 (a - b).abs() < 1e-10,
                 "supercell band {b} does not match folded primitive band {a} at k_sc = {k_sc}"
+            );
+        }
+    }
+
+    #[test]
+    fn supercell_rmatrix_diagonal_is_cartesian_position() {
+        // Regression: supercell copies must carry the per-image Cartesian
+        // cell displacement in the position-matrix diagonal, and the fold
+        // must translate it consistently, so that
+        // rmatrix[0, :, i, i] == orb[i, :].dot(lat) holds for the folded
+        // supercell (HasRMatrix variant of the boundary model).
+        let lat = array![[1.0]];
+        let orb = array![[1.01]];
+        let atoms = vec![Atom::with_orbitals(
+            array![0.99],
+            AtomType::C,
+            [OrbitalId::new(0)],
+        )];
+        let mut model = Model::<false, 1, HasRMatrix>::tb_model(lat, orb, Some(atoms)).unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1], None);
+
+        let sc = model.make_supercell(&array![[2.0]]).unwrap();
+        sc.validate().unwrap();
+
+        let rmatrix = sc.rmatrix.as_array4();
+        let cart = sc.orb.dot(&sc.lat);
+        let zero_r = Array1::<isize>::zeros(1);
+        let r0 = find_R(&sc.hamR, &zero_r).unwrap();
+        for i in 0..sc.nsta() {
+            assert!(
+                (rmatrix[[r0, 0, i, i]] - Complex::new(cart[[i, 0]], 0.0)).norm() < 1e-12,
+                "rmatrix diagonal ({i}) must equal frac·lat = {}, found {}",
+                cart[[i, 0]],
+                rmatrix[[r0, 0, i, i]]
             );
         }
     }
