@@ -1227,25 +1227,31 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .to_string(),
             });
         }
-        if self.dim_r() != U.len_of(Axis(0)) {
+        if U.dim() != (DIM, DIM) {
             return Err(TbError::TransformationMatrixDimMismatch {
-                expected: self.dim_r(),
+                expected: DIM,
                 actual: U.len_of(Axis(0)),
             });
+        }
+        // Validate shape, finiteness, and integrality before dot/det/inv:
+        // `x.fract()` keeps the sign (fract(-0.5) = -0.5), so the old test
+        // accepted negative non-integer entries.
+        if !U.iter().all(|value| value.is_finite()) {
+            return Err(TbError::InvalidSupercellMatrix);
+        }
+        if U.iter().any(|&x| (x - x.round()).abs() > 1e-8) {
+            return Err(TbError::InvalidSupercellMatrix);
         }
         //新的lattice
         let new_lat = U.dot(&self.lat);
         //体积的扩大倍数
-        let U_det = U.det().unwrap() as isize;
-        if U_det < 0 {
-            return Err(TbError::InvalidSupercellDet { det: U_det as f64 });
-        } else if U_det == 0 {
-            return Err(TbError::InvalidSupercellDet { det: 0.0 });
+        let U_det = U.det().map_err(TbError::Linalg)?;
+        let U_det_int = U_det.round() as isize;
+        if U_det <= 0.0 || (U_det - U_det_int as f64).abs() > 1e-8 {
+            return Err(TbError::InvalidSupercellDet { det: U_det });
         }
-        let U_inv = U.inv().unwrap();
-        if U.iter().any(|&x| x.fract() > 1e-8) {
-            return Err(TbError::InvalidSupercellMatrix);
-        }
+        let U_det = U_det_int;
+        let U_inv = U.inv().map_err(TbError::Linalg)?;
         // Coefficient range for the image-shift enumeration.  A legal
         // integer basis change can require shifts whose coefficients scale
         // with the entries of U_inv (e.g. U = [[1, 100], [0, 1]] needs
@@ -2201,6 +2207,16 @@ mod fold_tests {
                 "identity supercell band {b} does not match original band {a}"
             );
         }
+    }
+
+    #[test]
+    fn supercell_rejects_negative_non_integer_entries() {
+        // Regression: fract(-0.5) = -0.5 passed the old `fract() > 1e-8`
+        // test, so [[1, -0.5], [0, 1]] was accepted as a supercell matrix.
+        let model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.5, 0.5]], None).unwrap();
+        let result = model.make_supercell(&array![[1.0, -0.5], [0.0, 1.0]]);
+        assert!(matches!(result, Err(TbError::InvalidSupercellMatrix)));
     }
 
     #[test]
