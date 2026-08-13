@@ -1191,6 +1191,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     pub fn make_supercell(&self, U: &Array2<f64>) -> Result<Model<SPIN, DIM, R>> {
         self.validate()?;
         let orbital_owners = self.orbital_owners()?;
+        if !self.atoms.is_empty() && orbital_owners.iter().any(Option::is_none) {
+            // In a model with atoms, orbitals follow their parent atom; an
+            // orbital without an owner has no atom whose image selection it
+            // can follow, so reject the mixed state instead of treating it
+            // independently.
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "supercell_orbital_ownership",
+                message: "the model has atoms, but some orbitals do not belong to \
+                          any atom; orbitals must follow their parent atom in a supercell"
+                    .to_string(),
+            });
+        }
         if self.dim_r() != U.len_of(Axis(0)) {
             return Err(TbError::TransformationMatrixDimMismatch {
                 expected: self.dim_r(),
@@ -1213,7 +1225,23 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         //开始构建新的轨道位置和原子位置
         //新的轨道
-        let mut use_orb = self.orb.dot(&U_inv);
+        // Fold each owned orbital to the representative nearest its parent
+        // atom before the basis change: the image shift is chosen to bring
+        // the ATOM into [0, 1), and only an atom-adjacent orbital
+        // representative can follow it into the supercell frame.  The
+        // nearest representative is unambiguous because validate() enforces
+        // |orb - atom| <= ORBITAL_ATOM_POSITION_TOLERANCE < 1/2 (mod 1).
+        let mut use_orb = self.orb.clone();
+        for atom in &self.atoms {
+            for &orbital_id in atom.orbitals() {
+                let orbital = orbital_id.index();
+                for axis in 0..DIM {
+                    let shift = (use_orb[[orbital, axis]] - atom.position_ref()[[axis]]).round();
+                    use_orb[[orbital, axis]] -= shift;
+                }
+            }
+        }
+        let mut use_orb = use_orb.dot(&U_inv);
         //新的原子位置
         let use_atom_position = self.atom_position().dot(&U_inv);
         let mut orb_list: Vec<usize> = Vec::new();
@@ -1701,6 +1729,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 new_rmatrix.push(Axis(0), zero_rm.view());
             }
         }
+        fold_supercell_positions_covariantly::<DIM>(
+            &mut new_orb,
+            &mut new_ham,
+            &mut new_hamR,
+            &mut new_rmatrix,
+            SPIN,
+        );
         let model = Model {
             lat: new_lat,
             orb: new_orb,
@@ -1712,5 +1747,171 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
         model.validate()?;
         Ok(model)
+    }
+}
+
+/// Fold supercell orbital positions into `[0, 1)` and compensate every hopping
+/// block so the physical link `(R + τ_j − τ_i)·L` is unchanged.
+///
+/// A supercell image places atom and orbital at the same shifted position, but
+/// only the atom is tested against `[0, 1)`; an orbital displaced from its
+/// parent atom can land outside the cell.  Folding orbital `s` by an integer
+/// vector `n_s` must therefore move the hopping block `H_ij(R)` to
+/// `R + n_j − n_i` (and the position-matrix block identically), which keeps the
+/// Peierls link displacement and the `[r, H]` commutator invariant.
+///
+/// [`Model::validate`] guarantees every orbital sits within
+/// [`ORBITAL_ATOM_POSITION_TOLERANCE`] of its parent atom (modulo a lattice
+/// vector), so after folding the orbital remains attached to its atom; pure
+/// orbital-only models already store in-cell positions and this function is a
+/// no-op for them.
+fn fold_supercell_positions_covariantly<const DIM: usize>(
+    orb: &mut Array2<f64>,
+    ham: &mut Array3<Complex<f64>>,
+    ham_r: &mut Array2<isize>,
+    rmatrix: &mut Array4<Complex<f64>>,
+    spin: bool,
+) {
+    let nsta = ham.dim().1;
+    let norb = orb.nrows();
+    // Component-wise floor brings each coordinate into [0, 1).
+    let mut fold = Array2::<isize>::zeros((norb, DIM));
+    for s in 0..norb {
+        for axis in 0..DIM {
+            let n = orb[[s, axis]].floor() as isize;
+            fold[[s, axis]] = n;
+            orb[[s, axis]] -= n as f64;
+        }
+    }
+    // Fold vector per state: spin copies share their orbital's position.
+    let mut state_fold = Vec::with_capacity(nsta);
+    for i in 0..nsta {
+        let s = if spin { i % norb } else { i };
+        state_fold.push(fold.row(s).to_owned());
+    }
+    if state_fold.iter().all(|n| n.iter().all(|&x| x == 0)) {
+        return;
+    }
+    // Rebuild the blocks with compensated R vectors.  A compensated vector may
+    // leave the original hamR set, so find-or-append a row for it.
+    let old_ham = ham.clone();
+    let old_rmatrix = rmatrix.clone();
+    let old_ham_r = ham_r.clone();
+    ham.fill(Complex::new(0.0, 0.0));
+    rmatrix.fill(Complex::new(0.0, 0.0));
+    for (i_r, r_vec) in old_ham_r.outer_iter().enumerate() {
+        for i in 0..nsta {
+            for j in 0..nsta {
+                let element = old_ham[[i_r, i, j]];
+                let mut has_rmatrix = false;
+                for axis in 0..DIM {
+                    has_rmatrix |= old_rmatrix[[i_r, axis, i, j]].norm_sqr() != 0.0;
+                }
+                if element.norm_sqr() == 0.0 && !has_rmatrix {
+                    continue;
+                }
+                let shift = &state_fold[j] - &state_fold[i];
+                let new_r = &r_vec + &shift;
+                let target = match find_R(ham_r, &new_r) {
+                    Some(target) => target,
+                    None => {
+                        ham_r.push_row(new_r.view());
+                        ham.push(
+                            Axis(0),
+                            Array2::<Complex<f64>>::zeros((nsta, nsta)).view(),
+                        );
+                        rmatrix.push(
+                            Axis(0),
+                            Array3::<Complex<f64>>::zeros((DIM, nsta, nsta)).view(),
+                        );
+                        ham_r.nrows() - 1
+                    }
+                };
+                ham[[target, i, j]] += element;
+                for axis in 0..DIM {
+                    rmatrix[[target, axis, i, j]] += old_rmatrix[[i_r, axis, i, j]];
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+    use crate::solve_ham::solve;
+    use crate::{Atom, AtomType, OrbitalId};
+
+    /// 1D model whose orbital sits just across the cell boundary from its
+    /// atom: atom at 0.99, orbital at `orbital_x`.  Both representatives
+    /// (`1.01` and `0.01`) describe the same physical site.
+    fn boundary_model(orbital_x: f64) -> Model<false, 1> {
+        let mut model = Model::<false, 1>::tb_model(
+            array![[1.0]],
+            array![[orbital_x]],
+            Some(vec![Atom::with_orbitals(
+                array![0.99],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1], None);
+        model
+    }
+
+    #[test]
+    fn supercell_fold_preserves_physics_across_gauge_choices() {
+        // With U = [2] the second supercell image places the atom at 0.995
+        // but pushes the orbital at 1.005 outside [0, 1); the covariant fold
+        // plus R compensation must keep the physics identical.
+        let model_a = boundary_model(1.01);
+        let model_b = boundary_model(0.01); // same site, other representative
+
+        let sc_a = model_a.make_supercell(&array![[2.0]]).unwrap();
+        let sc_b = model_b.make_supercell(&array![[2.0]]).unwrap();
+
+        // The fold must bring every orbital back into [0, 1).
+        for s in 0..sc_a.norb() {
+            assert!(
+                (0.0..1.0).contains(&sc_a.orb[[s, 0]]),
+                "supercell orbital {s} = {} outside [0, 1)",
+                sc_a.orb[[s, 0]]
+            );
+        }
+        // Atoms keep owning orbitals within tolerance after folding.
+        sc_a.validate().unwrap();
+        sc_b.validate().unwrap();
+
+        // Gauge equivalence: the two representatives must produce identical
+        // supercells (same folded positions, same compensated hoppings).
+        assert_eq!(sc_a.orb, sc_b.orb);
+        assert_eq!(sc_a.hamR, sc_b.hamR);
+        for (block_a, block_b) in sc_a.ham.outer_iter().zip(sc_b.ham.outer_iter()) {
+            assert!(
+                block_a
+                    .iter()
+                    .zip(block_b.iter())
+                    .all(|(a, b)| (*a - *b).norm() < 1e-14),
+                "supercell hopping blocks differ between gauge choices"
+            );
+        }
+
+        // Band-folding check: the supercell spectrum at fractional k_sc must
+        // equal the primitive spectrum at k = k_sc / 2 and k = k_sc / 2 + 1/2.
+        let k_sc = 0.3;
+        let band_sc = sc_a.solve_band_onek(&array![k_sc]);
+        let e_prim_1 = model_a.solve_band_onek(&array![k_sc / 2.0])[0];
+        let e_prim_2 = model_a.solve_band_onek(&array![k_sc / 2.0 + 0.5])[0];
+        let mut expected = vec![e_prim_1, e_prim_2];
+        expected.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut got: Vec<f64> = band_sc.to_vec();
+        got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for (a, b) in expected.iter().zip(got.iter()) {
+            assert!(
+                (a - b).abs() < 1e-10,
+                "supercell band {b} does not match folded primitive band {a} at k_sc = {k_sc}"
+            );
+        }
     }
 }

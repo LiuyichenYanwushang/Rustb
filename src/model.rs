@@ -114,6 +114,14 @@ impl RMatrixData for NoRMatrix {
 
 // ── Model struct ────────────────────────────────────────────────────────────
 
+/// Maximum allowed distance (fractional coordinates, modulo a lattice vector)
+/// between an orbital and its parent atom's position.
+///
+/// Enforced by [`Model::validate`].  Kept well below 1/2 so supercell image
+/// folding is unambiguous, and below the typical nearest-neighbour distance so
+/// bond-centered orbitals remain representable.
+pub const ORBITAL_ATOM_POSITION_TOLERANCE: f64 = 0.1;
+
 /// Tight-binding model structure.
 ///
 /// Const generic `SPIN`: spinless (false, default) / spinful (true).
@@ -589,6 +597,28 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
         self.orbital_owners()?;
+        for (atom_index, atom) in self.atoms.iter().enumerate() {
+            for &orbital_id in atom.orbitals() {
+                let orbital = orbital_id.index();
+                for axis in 0..DIM {
+                    let delta = (self.orb[[orbital, axis]] - atom.position_ref()[[axis]])
+                        .abs()
+                        .rem_euclid(1.0);
+                    let distance = delta.min(1.0 - delta);
+                    if distance > ORBITAL_ATOM_POSITION_TOLERANCE {
+                        return Err(TbError::InvalidModelInvariant {
+                            invariant: "orbital_atom_position",
+                            message: format!(
+                                "orbital {orbital} is {distance:.3} (fractional, modulo a \
+                                 lattice vector) away from its parent atom {atom_index}, \
+                                 exceeding the tolerance {ORBITAL_ATOM_POSITION_TOLERANCE}; \
+                                 orbitals must sit at their parent atom's position"
+                            ),
+                        });
+                    }
+                }
+            }
+        }
 
         let expected_ham = (self.hamR.nrows(), self.nsta(), self.nsta());
         if self.ham.dim() != expected_ham {
@@ -748,7 +778,7 @@ mod ownership_tests {
     {
         let mut model = Model::<SPIN, 3, R>::tb_model(
             Array2::eye(3),
-            array![[0.0, 0.0, 0.0], [0.2, 0.0, 0.0]],
+            array![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
             Some(vec![Atom::with_orbitals(
                 array![0.0, 0.0, 0.0],
                 AtomType::C,
@@ -771,9 +801,11 @@ mod ownership_tests {
     }
 
     fn non_contiguous_model() -> Model<false, 3> {
+        // Orbitals must sit at their parent atom's position (validate()
+        // enforces ORBITAL_ATOM_POSITION_TOLERANCE).
         Model::tb_model(
             Array2::eye(3),
-            array![[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.4, 0.0, 0.0]],
+            array![[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.0, 0.0]],
             Some(vec![
                 Atom::with_orbitals(
                     array![0.0, 0.0, 0.0],
@@ -793,7 +825,7 @@ mod ownership_tests {
         assert_eq!(atom.orbitals().len(), 2);
         assert_eq!(atom.orbitals()[0].id(), OrbitalId::new(0));
         assert_eq!(atom.orbitals()[1].id(), OrbitalId::new(2));
-        assert_eq!(atom.orbitals()[1].position(), array![0.4, 0.0, 0.0].view());
+        assert_eq!(atom.orbitals()[1].position(), array![0.0, 0.0, 0.0].view());
     }
 
     #[test]
@@ -806,6 +838,49 @@ mod ownership_tests {
             model.orb_angular(),
             Err(TbError::MissingAtomicStructure)
         ));
+    }
+
+    #[test]
+    fn validate_rejects_orbitals_far_from_their_atom() {
+        // An orbital displaced beyond ORBITAL_ATOM_POSITION_TOLERANCE from its
+        // parent atom must be rejected at construction.
+        let ok = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.05, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        );
+        assert!(ok.is_ok(), "deviation within tolerance must pass");
+
+        let bad = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.15, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        );
+        assert!(
+            matches!(bad, Err(TbError::InvalidModelInvariant { invariant: "orbital_atom_position", .. })),
+            "deviation beyond tolerance must fail with orbital_atom_position"
+        );
+
+        // Periodicity-aware: 0.97 vs 0.03 is 0.06 apart mod 1 (across the
+        // boundary) — must pass even though the raw difference is 0.94.
+        let across_boundary = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.97, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.03, 0.0, 0.0],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        );
+        assert!(across_boundary.is_ok(), "mod-1 distance 0.06 must be allowed");
     }
 
     #[test]

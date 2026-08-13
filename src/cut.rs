@@ -147,20 +147,31 @@ fn select_atoms_and_orbitals<const SPIN: bool, const DIM: usize, R: RMatrixData>
         }
     }
 
-    // Orbital-only models, and intentionally unassigned orbitals in mixed
-    // models, are cut according to their own Wannier-center positions.
-    for (orbital, owner) in owners.iter().enumerate() {
-        if owner.is_none()
-            && position_is_inside_shape(
+    if model.atoms.is_empty() {
+        // Orbital-only models are cut according to their own
+        // Wannier-center positions.
+        for (orbital, owner) in owners.iter().enumerate() {
+            debug_assert!(owner.is_none());
+            if position_is_inside_shape(
                 model.orb.row(orbital),
                 num,
                 shape,
                 directions,
                 trim_outer_square,
-            )?
-        {
-            selected_orbitals[orbital] = true;
+            )? {
+                selected_orbitals[orbital] = true;
+            }
         }
+    } else if owners.iter().any(Option::is_none) {
+        // In a model with atoms, an orbital without an owner has no atom
+        // whose deletion decision it can follow; reject the mixed state
+        // instead of deciding independently.
+        return Err(TbError::InvalidModelInvariant {
+            invariant: "cut_orbital_ownership",
+            message: "the model has atoms, but some orbitals do not belong to \
+                      any atom; orbitals must follow their parent atom when cutting"
+                .to_string(),
+        });
     }
 
     let selected_orbitals = selected_orbitals
