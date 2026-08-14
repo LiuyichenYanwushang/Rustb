@@ -2402,10 +2402,10 @@ mod tests {
         );
     }
 
-    /// Build the `q = ±1` harmonic blocks of a 1D model and return them
-    /// aligned with `model.hamR`, together with the cache itself.
-    fn commutator_test_blocks(
-        model: &Model<false, 1, NoRMatrix>,
+    /// Build the `q = ±1` harmonic blocks of a spinless model and return
+    /// them aligned with `model.hamR`, together with the cache itself.
+    fn commutator_test_blocks<const DIM: usize>(
+        model: &Model<false, DIM, NoRMatrix>,
         drive: &FloquetDrive,
     ) -> (
         FloquetHarmonicCache,
@@ -2439,36 +2439,90 @@ mod tests {
         // validates the two-convolution structure (the naive "P − P†"
         // single-convolution simplification is wrong) against the
         // existing, independently validated harmonic evaluator.
-        let lat = array![[1.0]];
-        let orb = array![[0.0], [0.35]];
-        let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
-        model.set_hop(-1.0, 0, 0, &array![1], None);
-        model.set_hop(-0.3, 0, 1, &array![1], None);
-        model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![2], None);
+        //
+        // The drive must be circularly polarized in 2D: for any single
+        // linear mode H^(1)(k) is a scalar multiple of an anti-Hermitian
+        // matrix (T_1(R) = t(R)·(−i)·J_1(r)·e^{iθ}·sgn(d)), whose
+        // commutator [X, X†] vanishes identically — the first-order van
+        // Vleck correction is exactly zero there, and the oracle would
+        // be vacuous (it could not catch swapped operand order or
+        // transposed-product bugs).
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.35, 0.2]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.set_hop(-0.3, 0, 1, &array![0, 1], None);
+        model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![1, 1], None);
 
-        let drive =
-            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        // Circular polarization: a = 0.3·(e_x + i·e_y).
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)],
+            )],
+        );
         let (cache, a_blocks, b_blocks) = commutator_test_blocks(&model, &drive);
         let (comm_blocks, comm_r) =
             real_space_commutator(&a_blocks, &b_blocks, &model.hamR).unwrap();
 
         let nsta = model.nsta();
-        for k in [0.0, 0.123, 0.5, 0.877] {
-            let kvec = array![k];
+        let mut oracle_scale = 0.0_f64;
+        for k in [[0.0, 0.0], [0.123, 0.321], [0.5, 0.5], [0.877, 0.111]] {
+            let kvec = array![k[0], k[1]];
             let a_k = model.floquet_cached_harmonic_onek(&kvec, 1, Gauge::Lattice, &cache);
             let b_k = model.floquet_cached_harmonic_onek(&kvec, -1, Gauge::Lattice, &cache);
             let oracle = a_k.dot(&b_k) - b_k.dot(&a_k);
+            oracle_scale = oracle_scale.max(oracle.iter().fold(0.0, |m, c| m.max(c.norm())));
             let mut from_rs = Array2::<Complex<f64>>::zeros((nsta, nsta));
             for (i_r, row) in comm_r.outer_iter().enumerate() {
-                let phase = Complex::new(0.0, TAU * (row[0] as f64) * k).exp();
+                let mut phase_arg = 0.0;
+                for a in 0..2 {
+                    phase_arg += row[a] as f64 * kvec[a];
+                }
+                let phase = Complex::new(0.0, TAU * phase_arg).exp();
                 from_rs.scaled_add(phase, &comm_blocks[i_r]);
             }
             for (a, b) in from_rs.iter().zip(oracle.iter()) {
                 assert!(
                     (a - b).norm() < 1e-12,
-                    "k = {k}: real-space {a} vs k-space {b}"
+                    "k = {k:?}: real-space {a} vs k-space {b}"
                 );
             }
+        }
+        assert!(
+            oracle_scale > 1e-6,
+            "oracle must be non-trivial (circular 2D drive); otherwise \
+             the comparison is vacuous, got {oracle_scale}"
+        );
+    }
+
+    #[test]
+    fn real_space_commutator_vanishes_for_linear_polarization() {
+        // For a single linear mode in 1D the first-order van Vleck
+        // commutator vanishes exactly (H^(1)(k) is a scalar multiple of
+        // an anti-Hermitian matrix).  The wrong "P − P†"
+        // single-convolution implementation produces a nonzero answer
+        // here, so this pins the double-convolution structure from the
+        // other side.
+        let lat = array![[1.0]];
+        let orb = array![[0.0], [0.35]];
+        let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1], None);
+        model.set_hop(Complex::new(-0.3, 0.1), 0, 1, &array![1], None);
+        model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![2], None);
+
+        let drive =
+            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let (_cache, a_blocks, b_blocks) = commutator_test_blocks(&model, &drive);
+        let (comm_blocks, _comm_r) =
+            real_space_commutator(&a_blocks, &b_blocks, &model.hamR).unwrap();
+        for block in &comm_blocks {
+            let max = block.iter().fold(0.0_f64, |m, c| m.max(c.norm()));
+            assert!(
+                max < 1e-15,
+                "linear-polarization commutator must vanish exactly, got {max}"
+            );
         }
     }
 
