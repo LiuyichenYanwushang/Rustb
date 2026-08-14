@@ -837,7 +837,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
-    /// Build a same-size high-frequency Floquet effective model.
+    /// Legacy k-space reference path for the high-frequency Floquet
+    /// effective model, retained for cross-validation and for callers
+    /// that need a custom `target_hamR`.  The main entry point is
+    /// [`Model::floquet_effective_model`] (real-space Bessel backend),
+    /// which needs neither `k_mesh` nor `target_hamR`.
     ///
     /// With the Fourier convention used in this module,
     ///
@@ -870,7 +874,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// The returned model has the same number of states as the input model.
     /// It is an approximation to the off-resonant Floquet problem, not the full
     /// enlarged Sambe model returned by [`Floquet::floquet_model`].
-    pub fn floquet_effective_model(
+    pub fn floquet_effective_model_legacy(
         &self,
         drive: &FloquetDrive,
         trunc: &FloquetTruncation,
@@ -960,10 +964,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(model)
     }
 
-    /// Real-space first-order van Vleck effective model via the Bessel
-    /// backend — no `k_mesh` parameter, and `n_time` only enters for
-    /// links whose amplitude exceeds the Bessel range (`R > 8`), which
-    /// fall back to the time grid per link.
+    /// Real-space first-order van Vleck effective model via the
+    /// generalized Bessel backend — no `k_mesh` parameter, and `n_time`
+    /// only enters for links whose amplitude exceeds the Bessel range
+    /// (`R > 8`), which fall back to the time grid per link.
+    ///
+    /// This is the main entry point.  [`Model::floquet_effective_model_legacy`]
+    /// is the k-space reference implementation, kept for cross-validation
+    /// and for custom `target_hamR` needs.
     ///
     /// The effective hopping blocks are built entirely in real space
     /// (`FLOQUET_REAL_SPACE_PLAN.md` §3):
@@ -1002,7 +1010,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// ([`validate_floquet_drive`]), `order > 1`, a negative `q_max`, a
     /// supplied `target_hamR`, or a support that is not closed under
     /// `R -> −R`.
-    pub fn floquet_effective_model_bessel(
+    pub fn floquet_effective_model(
         &self,
         drive: &FloquetDrive,
         trunc: &FloquetTruncation,
@@ -2776,12 +2784,12 @@ mod tests {
         let trunc = FloquetTruncation::new(2, 4096);
         let options = FloquetEffectiveOptions::new().with_q_max(4);
         let bessel = model
-            .floquet_effective_model_bessel(&drive, &trunc, Some(&options))
+            .floquet_effective_model(&drive, &trunc, Some(&options))
             .unwrap();
 
         // Legacy path on the same (automatically determined) support.
         let legacy = model
-            .floquet_effective_model(
+            .floquet_effective_model_legacy(
                 &drive,
                 &trunc,
                 [64, 64],
@@ -2814,7 +2822,7 @@ mod tests {
             FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
         let trunc = FloquetTruncation::new(1, 4096);
         let bessel = model
-            .floquet_effective_model_bessel(
+            .floquet_effective_model(
                 &drive,
                 &trunc,
                 Some(&FloquetEffectiveOptions::new().with_order(0)),
@@ -2823,7 +2831,7 @@ mod tests {
         // order-0 support = input hamR.
         assert_eq!(bessel.hamR.nrows(), model.hamR.nrows());
         let legacy = model
-            .floquet_effective_model(
+            .floquet_effective_model_legacy(
                 &drive,
                 &trunc,
                 [64],
@@ -2859,7 +2867,7 @@ mod tests {
             )],
         );
         let bessel = model
-            .floquet_effective_model_bessel(&drive, &FloquetTruncation::new(1, 512), None)
+            .floquet_effective_model(&drive, &FloquetTruncation::new(1, 512), None)
             .unwrap();
 
         // Expected support: the Minkowski sum of the input hamR with
@@ -2896,7 +2904,7 @@ mod tests {
         // order > 1 is not implemented.
         assert!(
             model
-                .floquet_effective_model_bessel(
+                .floquet_effective_model(
                     &drive,
                     &trunc,
                     Some(&FloquetEffectiveOptions::new().with_order(2))
@@ -2907,7 +2915,7 @@ mod tests {
         let target = array![[-1], [0], [1]];
         assert!(
             model
-                .floquet_effective_model_bessel(
+                .floquet_effective_model(
                     &drive,
                     &trunc,
                     Some(&FloquetEffectiveOptions::new().with_target_hamR(target))
@@ -2917,12 +2925,141 @@ mod tests {
         // negative q_max.
         assert!(
             model
-                .floquet_effective_model_bessel(
+                .floquet_effective_model(
                     &drive,
                     &trunc,
                     Some(&FloquetEffectiveOptions::new().with_q_max(-1))
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn floquet_effective_model_spinful_matches_legacy() {
+        // Spinful 2D model: the real-space path must be agnostic to the
+        // spin structure (blocks are nsta x nsta with nsta = 2·norb).
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.35, 0.2]];
+        let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.set_hop(-0.3, 0, 1, &array![0, 1], SpinDirection::X);
+        model.set_hop(
+            Complex::new(0.1, -0.2),
+            1,
+            1,
+            &array![1, 1],
+            SpinDirection::Z,
+        );
+
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)],
+            )],
+        );
+        let trunc = FloquetTruncation::new(1, 4096);
+        let bessel = model.floquet_effective_model(&drive, &trunc, None).unwrap();
+        let legacy = model
+            .floquet_effective_model_legacy(
+                &drive,
+                &trunc,
+                [32, 32],
+                Some(&FloquetEffectiveOptions::new().with_target_hamR(bessel.hamR.clone())),
+            )
+            .unwrap();
+        for k in [[0.1, 0.2], [0.5, 0.5]] {
+            let kvec = array![k[0], k[1]];
+            let e_b = eigvalsh_v(&bessel.gen_ham(&kvec, Gauge::Lattice), UPLO::Lower);
+            let e_l = eigvalsh_v(&legacy.gen_ham(&kvec, Gauge::Lattice), UPLO::Lower);
+            for (a, b) in e_b.iter().zip(e_l.iter()) {
+                assert!((a - b).abs() < 1e-8, "k = {k:?}: Bessel {a} vs legacy {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn floquet_effective_model_no_drive_matches_static_bands() {
+        // Empty drive: the real-space path returns T_0 = static blocks
+        // plus exact-zero commutator blocks on the Minkowski support —
+        // the bands must equal the static model's.
+        let model = chain_model();
+        let drive = FloquetDrive::new(0.9);
+        let trunc = FloquetTruncation::new(2, 64);
+        let effective = model.floquet_effective_model(&drive, &trunc, None).unwrap();
+
+        let k = arr1(&[0.271]);
+        for gauge in [Gauge::Lattice, Gauge::Atom] {
+            let from_effective = effective.gen_ham(&k, gauge);
+            let from_static = model.gen_ham(&k, gauge);
+            let mut max_diff = 0.0f64;
+            for i in 0..from_effective.nrows() {
+                for j in 0..from_effective.ncols() {
+                    max_diff = max_diff.max((from_effective[[i, j]] - from_static[[i, j]]).norm());
+                }
+            }
+            assert!(
+                max_diff < 1e-12,
+                "no-drive effective mismatch in {gauge:?}: {max_diff:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn floquet_effective_model_bessel_perf_smoke() {
+        // The real-space path must be far faster than the k-space
+        // reference at comparable accuracy: the legacy cost scales with
+        // the k-mesh (and its n_time DFT), while the Bessel path is
+        // k-mesh-independent.  The plan's target is >100x; the assertion
+        // uses a generous 10x lower bound with a 100 µs floor so the
+        // test is robust on loaded machines.  The comparison doubles as
+        // a cross-check.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.35, 0.2]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.set_hop(-0.3, 0, 1, &array![0, 1], None);
+        model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![1, 1], None);
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)],
+            )],
+        );
+        let trunc = FloquetTruncation::new(1, 512);
+
+        // Warm up once: the first call pays rayon thread-pool
+        // initialization and cold caches, which would distort the ratio.
+        let warmup = model.floquet_effective_model(&drive, &trunc, None).unwrap();
+        let legacy_options = FloquetEffectiveOptions::new().with_target_hamR(warmup.hamR.clone());
+        let _ = model
+            .floquet_effective_model_legacy(&drive, &trunc, [64, 64], Some(&legacy_options))
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let bessel = model.floquet_effective_model(&drive, &trunc, None).unwrap();
+        let t_bessel = start.elapsed();
+
+        let start = std::time::Instant::now();
+        let legacy = model
+            .floquet_effective_model_legacy(&drive, &trunc, [64, 64], Some(&legacy_options))
+            .unwrap();
+        let t_legacy = start.elapsed();
+
+        // Sanity: both paths agree (the smoke doubles as a cross-check).
+        let kvec = array![0.37, 0.19];
+        let e_b = eigvalsh_v(&bessel.gen_ham(&kvec, Gauge::Lattice), UPLO::Lower);
+        let e_l = eigvalsh_v(&legacy.gen_ham(&kvec, Gauge::Lattice), UPLO::Lower);
+        for (a, b) in e_b.iter().zip(e_l.iter()) {
+            assert!((a - b).abs() < 1e-8, "Bessel {a} vs legacy {b}");
+        }
+
+        let ratio = t_legacy.as_secs_f64() / t_bessel.as_secs_f64().max(1e-9);
+        eprintln!("perf smoke: bessel {t_bessel:?} vs legacy {t_legacy:?} ({ratio:.0}x)");
+        assert!(
+            t_legacy > 10 * t_bessel.max(std::time::Duration::from_micros(100)),
+            "real-space path should be far faster than the k-space path ({ratio:.0}x)"
         );
     }
 
@@ -3183,9 +3320,7 @@ mod tests {
             .collect();
         assert_eq!(sambe.orb_projection, expected_projection);
 
-        let effective = model
-            .floquet_effective_model(&drive, &trunc, [16], None)
-            .unwrap();
+        let effective = model.floquet_effective_model(&drive, &trunc, None).unwrap();
         assert_eq!(effective.natom(), model.natom());
         for i_atom in 0..model.natom() {
             assert_same_atom_metadata(&model.atoms[i_atom], &effective.atoms[i_atom]);
@@ -3201,7 +3336,7 @@ mod tests {
         let options = FloquetEffectiveOptions::new().with_target_hamR(array![[0isize], [1isize]]);
 
         let err = model
-            .floquet_effective_model(&drive, &trunc, [8], Some(&options))
+            .floquet_effective_model_legacy(&drive, &trunc, [8], Some(&options))
             .unwrap_err();
         match err {
             TbError::MissingHermitianConjugateHopping { r } => {
@@ -3219,7 +3354,7 @@ mod tests {
         let options = FloquetEffectiveOptions::new().with_target_hamR(array![[0isize], [0isize]]);
 
         let err = model
-            .floquet_effective_model(&drive, &trunc, [8], Some(&options))
+            .floquet_effective_model_legacy(&drive, &trunc, [8], Some(&options))
             .unwrap_err();
         match err {
             TbError::Other(message) => {
@@ -3239,7 +3374,7 @@ mod tests {
         let trunc = FloquetTruncation::new(2, 512);
         let options = FloquetEffectiveOptions::new().with_order(0);
         let effective = model
-            .floquet_effective_model(&drive, &trunc, [32], Some(&options))
+            .floquet_effective_model_legacy(&drive, &trunc, [32], Some(&options))
             .unwrap();
 
         assert_eq!(effective.nsta(), model.nsta());
@@ -3265,7 +3400,7 @@ mod tests {
         let drive = FloquetDrive::new(0.9);
         let trunc = FloquetTruncation::new(2, 64);
         let effective = model
-            .floquet_effective_model(&drive, &trunc, [32], None)
+            .floquet_effective_model_legacy(&drive, &trunc, [32], None)
             .unwrap();
 
         assert_eq!(effective.nsta(), model.nsta());

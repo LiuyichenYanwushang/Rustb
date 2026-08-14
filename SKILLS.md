@@ -466,7 +466,7 @@ let quasienergy =
     model.floquet_quasienergy_onek(&k, &drive, &truncation, Gauge::Lattice)?;
 
 let effective =
-    model.floquet_effective_model(&drive, &truncation, [32, 32], None)?;
+    model.floquet_effective_model(&drive, &truncation, None)?;
 ```
 
 | API | Basis size | Intended regime |
@@ -474,8 +474,12 @@ let effective =
 | `floquet_model` / `floquet_ham_onek` | `nsta * (2*n_max + 1)` | Full truncated Sambe problem |
 | `floquet_effective_model` | `nsta` | Off-resonant, high-frequency expansion |
 
-For a custom effective hopping range, the target vectors must be unique and
-closed under `R -> -R`:
+`floquet_effective_model` uses the real-space generalized-Bessel backend:
+no `k_mesh` and no `target_hamR` (the effective hopping support is
+determined automatically as the Minkowski sum of the input `hamR`).
+The legacy k-space reference path `floquet_effective_model_legacy` is kept
+for cross-validation and custom hopping ranges; there the target vectors
+must be unique and closed under `R -> -R`:
 
 ```rust
 let options = FloquetEffectiveOptions::new()
@@ -489,7 +493,7 @@ let options = FloquetEffectiveOptions::new()
         [1, 0],
     ]);
 
-let effective = model.floquet_effective_model(
+let effective = model.floquet_effective_model_legacy(
     &drive,
     &truncation,
     [32, 32],

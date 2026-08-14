@@ -243,16 +243,18 @@ pub fn floquet_effective_model_bessel(
    `T_eff(R) += comm_q(R)/(q·ħΩ₀)`（按 R 合并块、去重）
 4. Hermiticity 安全检查 + `Model` 组装（orb/atoms 照抄静态模型）
 
-### 4.6 旧路径保留
+### 4.6 旧路径保留（已实现）
 
 ```rust
-/// 现状（k 空间 + 逆 FT）改名为 *_legacy，供交叉验证测试调用
+/// k 空间 + 逆 FT 参考路径，改名 *_legacy，供交叉验证与自定义 target_hamR 使用
 pub fn floquet_effective_model_legacy(
     &self, drive, trunc, k_mesh, options
 ) -> Result<Model<SPIN, DIM, NoRMatrix>>
 ```
 
-最终公开 API：`floquet_effective_model` 指向 Bessel 路径，`k_mesh` 参数删除（0.7 预发布允许 breaking）。
+最终公开 API（已落地）：`floquet_effective_model(drive, trunc, options)` 指向 Bessel 实空间
+路径，`k_mesh` 参数删除（0.7 预发布允许 breaking）；`target_hamR` 在新路径上显式报错
+（支持集自动确定）。SKILLS.md 已同步更新。
 
 ---
 
