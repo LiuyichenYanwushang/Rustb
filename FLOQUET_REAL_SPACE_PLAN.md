@@ -194,7 +194,8 @@ floquet_harmonic_cache(drive, trunc, q_min, q_max, method)
 ```
 
 新增：**按 distinct `d` 去重的 `C_q` 缓存**（`HashMap<[u64; DIM] 位模式, Vec<Complex<f64>>>`）——
-spin up/down 共用同一 `d`，对称键 `±d` 通过 `C_q(−d) = C_{−q}(d)*` 互查，避免重复 Bessel 求值。
+spin up/down 共用同一 `d`。对称键 `±d` 互查（`C_q(−d) = C_{−q}(d)*`）留作后续优化
+（要求 q 范围对称；当前调用点均满足，先保持最小改动）。
 
 ### 4.4 实空间对易子
 

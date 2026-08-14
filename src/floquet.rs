@@ -219,6 +219,7 @@ use ndarray_linalg::UPLO;
 use num_complex::Complex;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use std::f64::consts::TAU;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// One commensurate Fourier component of the vector potential.
 ///
@@ -453,15 +454,9 @@ impl FloquetEffectiveOptions {
     }
 }
 
-/// Precomputed `t_ij(R) * C_q(d)` for all harmonics `q ∈ [q_min, q_max]`.
-///
-/// `blocks` has shape `(q_count, n_r, nsta, nsta)` where `q_count = q_max - q_min + 1`.
-/// Index `[iq, i_r, i, j]` stores the `q = q_min + iq` Fourier component of hopping
-/// from orbital `j` in cell `R = hamR[i_r]` to orbital `i` at the origin.
-/// This is independent of `k` and reusable across the entire k-mesh.
 /// Backend selection for the Peierls Fourier coefficients `C_q(d)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PeierlsFourierMethod {
+pub(crate) enum PeierlsFourierMethod {
     /// Numerical DFT on a uniform time grid (`FloquetTruncation::n_time`
     /// samples).  The reference implementation: handles arbitrary drives,
     /// including non-commensurate content and large amplitudes.
@@ -477,6 +472,12 @@ pub enum PeierlsFourierMethod {
     },
 }
 
+/// Precomputed `t_ij(R) * C_q(d)` for all harmonics `q ∈ [q_min, q_max]`.
+///
+/// `blocks` has shape `(q_count, n_r, nsta, nsta)` where `q_count = q_max - q_min + 1`.
+/// Index `[iq, i_r, i, j]` stores the `q = q_min + iq` Fourier component of hopping
+/// from orbital `j` in cell `R = hamR[i_r]` to orbital `i` at the origin.
+/// This is independent of `k` and reusable across the entire k-mesh.
 struct FloquetHarmonicCache {
     q_min: isize,
     q_max: isize,
@@ -661,7 +662,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
         let q_min = -2 * trunc.n_max;
         let q_max = 2 * trunc.n_max;
-        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, q_min, q_max, &PeierlsFourierMethod::TimeGrid);
+        let harmonic_cache = self.floquet_harmonic_cache(
+            drive,
+            trunc,
+            q_min,
+            q_max,
+            &PeierlsFourierMethod::TimeGrid,
+        );
 
         let mut orb = Array2::<f64>::zeros((new_norb, DIM));
         for isec in 0..n_sector {
@@ -768,7 +775,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
 
         let q_min = -2 * trunc.n_max;
         let q_max = 2 * trunc.n_max;
-        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, q_min, q_max, &PeierlsFourierMethod::TimeGrid);
+        let harmonic_cache = self.floquet_harmonic_cache(
+            drive,
+            trunc,
+            q_min,
+            q_max,
+            &PeierlsFourierMethod::TimeGrid,
+        );
         let hq: Vec<Array2<Complex<f64>>> = (q_min..=q_max)
             .map(|q| self.floquet_cached_harmonic_onek(kvec, q, gauge, &harmonic_cache))
             .collect();
@@ -890,7 +903,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             )));
         }
 
-        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, -q_max, q_max, &PeierlsFourierMethod::TimeGrid);
+        let harmonic_cache = self.floquet_harmonic_cache(
+            drive,
+            trunc,
+            -q_max,
+            q_max,
+            &PeierlsFourierMethod::TimeGrid,
+        );
         let kpoints = floquet_uniform_kmesh(&k_mesh);
         let norm = 1.0 / (kpoints.len() as f64);
         let ham = kpoints
@@ -1010,7 +1029,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // hoppings.  Spin copies of the same orbital pair share the same
         // d, so this deduplicates the coefficient computation (a 4x saving
         // for spinful models).
-        let mut d_index = std::collections::HashMap::<Vec<u64>, usize>::new();
+        // Distinct-link map keyed by the bit pattern of the Cartesian
+        // displacement (a fixed-size array avoids a heap allocation per
+        // hopping entry).
+        let mut d_index = std::collections::HashMap::<[u64; DIM], usize>::new();
         let mut unique_d = Vec::<Array1<f64>>::new();
         let mut entries = Vec::<(usize, usize, usize, usize)>::new(); // (i_r, i, j, d_idx)
         for i_r in 0..n_r {
@@ -1021,7 +1043,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         continue;
                     }
                     let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
-                    let key: Vec<u64> = d_cart.iter().map(|value| value.to_bits()).collect();
+                    let mut key = [0_u64; DIM];
+                    for a in 0..DIM {
+                        key[a] = d_cart[a].to_bits();
+                    }
                     let index = *d_index.entry(key).or_insert_with(|| {
                         unique_d.push(d_cart);
                         unique_d.len() - 1
@@ -1035,6 +1060,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // constructed eagerly as the Bessel fallback reference — its cost is
         // negligible compared with the per-link coefficient work.
         let time_grid = FloquetTimeGrid::new(drive, trunc, q_min, q_max, DIM);
+        // Per-call warn-once flag: the parallel loop below may hit the
+        // fallback branch for many links, but the user only needs one
+        // message per cache build.
+        let fallback_warned = AtomicBool::new(false);
         let coeffs_per_d: Vec<Array1<Complex<f64>>> = unique_d
             .par_iter()
             .map(|d| match method {
@@ -1042,19 +1071,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     match bessel_peierls_coeffs(d, drive, q_min, q_max, *cutoff_margin) {
                         Ok(coeffs) => coeffs,
                         Err(error) => {
-                            eprintln!(
-                                "Bessel backend unavailable for this link ({error}); \
-                                 falling back to the time grid"
-                            );
-                            Array1::from(peierls_fourier_coeffs(
-                                d, q_min, q_max, drive, &time_grid,
-                            ))
+                            if !fallback_warned.swap(true, Ordering::Relaxed) {
+                                eprintln!(
+                                    "Bessel backend unavailable for some links \
+                                     ({error}); falling back to the time grid"
+                                );
+                            }
+                            Array1::from(peierls_fourier_coeffs(d, q_min, q_max, drive, &time_grid))
                         }
                     }
                 }
-                PeierlsFourierMethod::TimeGrid => Array1::from(peierls_fourier_coeffs(
-                    d, q_min, q_max, drive, &time_grid,
-                )),
+                PeierlsFourierMethod::TimeGrid => {
+                    Array1::from(peierls_fourier_coeffs(d, q_min, q_max, drive, &time_grid))
+                }
             })
             .collect();
 
@@ -1686,11 +1715,11 @@ fn cross3(a: &Array1<f64>, b: &Array1<f64>) -> Array1<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SpinDirection;
     use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
     use crate::model::NoRMatrix;
     use crate::model_build::*;
     use crate::solve_ham::solve;
-    use crate::SpinDirection;
     use ndarray::{arr1, array};
 
     #[test]
@@ -1846,7 +1875,10 @@ mod tests {
                 0.7,
                 vec![
                     LightMode::new(1, array![Complex::new(0.3, 0.1), Complex::new(-0.1, 0.2)]),
-                    LightMode::new(-3, array![Complex::new(0.08, -0.04), Complex::new(0.02, 0.06)]),
+                    LightMode::new(
+                        -3,
+                        array![Complex::new(0.08, -0.04), Complex::new(0.02, 0.06)],
+                    ),
                 ],
             ),
             FloquetDrive::with_modes(
@@ -1854,7 +1886,10 @@ mod tests {
                 vec![
                     LightMode::new(1, array![Complex::new(0.2, 0.0), Complex::new(0.0, 0.2)]),
                     LightMode::new(2, array![Complex::new(0.05, 0.0), Complex::new(0.0, -0.05)]),
-                    LightMode::new(3, array![Complex::new(0.02, 0.01), Complex::new(0.01, -0.02)]),
+                    LightMode::new(
+                        3,
+                        array![Complex::new(0.02, 0.01), Complex::new(0.01, -0.02)],
+                    ),
                 ],
             ),
         ];
@@ -1862,7 +1897,8 @@ mod tests {
             let q_min = -5_isize;
             let q_max = 5_isize;
             let bessel = bessel_peierls_coeffs(&d, drive, q_min, q_max, 6).unwrap();
-            let time_grid = FloquetTimeGrid::new(drive, &FloquetTruncation::new(3, 512), q_min, q_max, 2);
+            let time_grid =
+                FloquetTimeGrid::new(drive, &FloquetTruncation::new(3, 512), q_min, q_max, 2);
             let dft = peierls_fourier_coeffs(&d, q_min, q_max, drive, &time_grid);
             for (q, (got, expected)) in bessel.iter().zip(dft.iter()).enumerate() {
                 assert!(
@@ -1900,7 +1936,43 @@ mod tests {
         let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
         model.add_hop(-1.0, 0, 0, &array![1, 0], None);
         model.add_hop(-0.5, 0, 1, &array![0, 1], None);
-        model.add_hop(Complex::new(0.1, 0.2), 0, 1, &array![1, 1], SpinDirection::X);
+        model.add_hop(
+            Complex::new(0.1, 0.2),
+            0,
+            1,
+            &array![1, 1],
+            SpinDirection::X,
+        );
+
+        // Observable dedup premise: the model's non-zero hopping entries
+        // share only 6 distinct link displacements (3 bonds and their
+        // Hermitian partners at -R; the spin blocks of a bond share one d).
+        let mut distinct_d = Vec::<Vec<u64>>::new();
+        for i_r in 0..model.hamR.nrows() {
+            let r_vec = model.hamR.row(i_r);
+            for i in 0..model.nsta() {
+                for j in 0..model.nsta() {
+                    if model.ham[[i_r, i, j]].norm_sqr() == 0.0 {
+                        continue;
+                    }
+                    let d_cart = model.link_displacement_cartesian(
+                        i % model.norb(),
+                        j % model.norb(),
+                        &r_vec,
+                    );
+                    let key: Vec<u64> = d_cart.iter().map(|value| value.to_bits()).collect();
+                    if !distinct_d.contains(&key) {
+                        distinct_d.push(key);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            distinct_d.len(),
+            6,
+            "dedup premise: expected 6 distinct link displacements, found {}",
+            distinct_d.len()
+        );
 
         let drive = FloquetDrive::with_modes(
             0.8,
@@ -1936,15 +2008,20 @@ mod tests {
     fn harmonic_cache_bessel_falls_back_for_large_amplitudes() {
         // |a·d| > 8 must silently fall back to the time grid per link, so
         // the Bessel-method cache still matches the time-grid cache.
+        // The (0,1) hopping at R=(0,1) has d = (10, 1), so |a·d| = 9.0 > 8
+        // and the fallback branch must actually execute.
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
-        let orb = array![[0.0, 0.0], [5.0, 0.0]];
+        let orb = array![[0.0, 0.0], [10.0, 0.0]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.add_hop(-1.0, 0, 0, &array![1, 0], None);
         model.add_hop(-0.5, 0, 1, &array![0, 1], None);
 
         let drive = FloquetDrive::with_modes(
             1.0,
-            vec![LightMode::new(1, array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)])],
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+            )],
         );
         let trunc = FloquetTruncation::new(1, 512);
         let time_grid_cache =
@@ -1973,11 +2050,13 @@ mod tests {
         // R > 8 must error (the caller falls back to the time grid) instead
         // of silently violating the 1e-12 error budget via the 64 cap.
         let d = array![60.0];
-        let drive = FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(1.0, 0.0)])]);
+        let drive =
+            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(1.0, 0.0)])]);
         assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, 6).is_err());
 
         // Harmonic ranges that exclude 0 must not panic; q_min > q_max errors.
-        let zero_l = FloquetDrive::with_modes(1.0, vec![LightMode::new(0, array![Complex::new(0.1, 0.0)])]);
+        let zero_l =
+            FloquetDrive::with_modes(1.0, vec![LightMode::new(0, array![Complex::new(0.1, 0.0)])]);
         let out_of_range = bessel_peierls_coeffs(&d, &zero_l, 5, 7, 6).unwrap();
         for q in 5..=7 {
             assert!((out_of_range[(q - 5) as usize]).norm() == 0.0);
@@ -2229,7 +2308,8 @@ mod tests {
 
         let k = arr1(&[0.173]);
         let from_model = effective.gen_ham(&k, Gauge::Lattice);
-        let harmonic_cache = model.floquet_harmonic_cache(&drive, &trunc, 0, 0, &PeierlsFourierMethod::TimeGrid);
+        let harmonic_cache =
+            model.floquet_harmonic_cache(&drive, &trunc, 0, 0, &PeierlsFourierMethod::TimeGrid);
         let h0 = model.floquet_cached_harmonic_onek(&k, 0, Gauge::Lattice, &harmonic_cache);
         let mut max_diff = 0.0f64;
         for i in 0..from_model.nrows() {
