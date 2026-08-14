@@ -444,8 +444,9 @@ Each hopping dressed by `exp[−i a(t)·d_{ijR}]`. Fourier coefficient:
 C_q(d) = (1/T) ∫_0^T dt e^{iqΩ₀t} exp[−i a(t)·d]
 ```
 
-Evaluated by uniform discrete Fourier sampling — more general than Bessel
-formulas for arbitrary complex polarization and harmonic mixing.
+Main path: the generalized Bessel backend (exact, no `n_time`); the uniform
+time-grid DFT is retained per link as the fallback for `R_α = |a_α·d| > 8` and
+as the crate-internal cross-validation reference.
 
 ### Sambe Hamiltonian
 
@@ -459,14 +460,61 @@ H^{(q)}_{ij}(k) = Σ_R t_{ij}(R) C_q(d_{ijR}) e^{i2πk·R}
 
 Quasienergies can be folded to `[−Ω₀/2, Ω₀/2)` via `fold_quasienergy`.
 
-### van Vleck effective model
+### Real-space Bessel backend (main path of `floquet_effective_model`)
+
+First-order van Vleck entirely in real space — no `k_mesh`, no `n_time`
+(only `R > 8` fallback links touch the time grid):
 
 ```math
-H_eff(k) = H^{(0)}(k) + Σ_{q=1}^{q_max} [H^{(q)}(k), H^{(−q)}(k)] / (qΩ) + O(Ω^{−2})
+T_eff(R) = T_0(R) + Σ_{q=1}^{q_max} comm_q(R) / (q ħΩ₀),
+\qquad
+comm_q(R) = (AB)(R) − (BA)(R),
 ```
 
-Returns a same-size `Model<SPIN, DIM, NoRMatrix>` by inverse Fourier transform
-from a uniform k-mesh.
+with `A_R = T_q(R)`, `B_R = T_{−q}(R)` and BOTH discrete convolutions
+`(AB)(R) = Σ A_{R−R'}B_{R'}` and `(BA)(R) = Σ B_{R−R'}A_{R'}` (the "P − P†"
+single-convolution simplification is wrong for non-commuting blocks).
+The output support is the Minkowski sum `{R1+R2 : R1,R2 ∈ hamR}` in
+lexicographic order — `target_hamR` is rejected. Hermiticity
+`T(R) = T(−R)†` is enforced exactly.
+
+**Commutator-order convention (verified against the literature):** the code
+uses `[H^(q), H^(−q)]/(qħΩ)`, opposite to the literature's
+`[H^{(−q)}, H^{(q)}]/(qħω)`. Combined with our k-convention
+`H(k) = Σ t(R)e^{+i2πk·R}` being the literature's mirror (`H_n(k) = H_n^lit(−k)`),
+the two sign flips cancel for the TR-odd first-order terms — the results match
+the literature pointwise. Do not "fix" either sign in isolation.
+
+Machinery: `bessel_peierls_coeffs` (recursive one-mode convolutions,
+adaptive tail truncation, `cutoff_margin ∈ [0,48]`, all integer arithmetic
+checked), `floquet_harmonic_cache` (dedup by distinct `d`, `[u64; DIM]` bit
+keys), `real_space_commutator` (two zgemm convolutions via the
+`(A·B)^T = B^T·A^T` transpose trick, fp symmetrization),
+`floquet_effective_model_legacy` (crate-internal k-space reference,
+`pub(crate)` with `FloquetEffectiveOptions::target_hamR`/`with_target_hamR`).
+
+### Graphene circular-light benchmarks (tests in `src/floquet.rs`)
+
+`floquet::tests::graphene_*` pins the implementation against the analytic
+derivation (arXiv:1511.00755 conventions, plan §9). Drive `a = α(1, i)` for
+right-handed CPL reproduces `a(t)·e_l = α sin(ωt − 2πl/3)`; the single-mode
+closed form gives `C_n(e_l) = J_n(α)e^{i2πnl/3}`.
+
+- **A**: `H_n(k)` equals the literature `H_n(−k)` elementwise (1e-12);
+  the literature phase uses Cartesian `k`, converted as `k_cart·e_l =
+  2π·k_frac·R_int` (the non-orthonormal `lat` must not be dropped).
+- **B**: order-0 effective model = `J·J_0(α)` renormalized literature `H_0`.
+- **C**: Sambe quasienergy gap at `K = (1/3, 1/3)` converges to
+  `Δ_exact = √((ħω)²+4g²) − ħω` (`g = (3/2)|J|α`), measured as the outermost
+  folded branch — the minimal folded spacing is wrong (near-zero states from
+  higher photon sectors). At K the `n ≡ 0 (mod 3)` harmonics vanish and
+  `n ≡ 1 (mod 3)` survive with amplitude `3jJ_n(α)` (nilpotent).
+- **D**: order-1 `d_z(k) = 2K_eff Σ_j sin(2πk·b_j)` with
+  `K_eff = −(2J²/ħω) Σ J_n²(α)/n·sin(2πn/3)`; `n = 3m` terms vanish exactly;
+  a sign-flipped implementation fails the test.
+
+Second-order van Vleck (`order = 2`, plan §9.5) is deferred — do not enable
+`with_order(2)` until implemented.
 
 ### Key API types
 
@@ -485,7 +533,8 @@ from a uniform k-mesh.
 | Path | Returns | Basis size | When |
 |------|---------|------------|------|
 | `floquet_model` | Enlarged `Model` | `nsta·(2N+1)` | Exact, any Ω |
-| `floquet_effective_model` | Same-size `Model` | `nsta` | Ω ≫ bandwidth |
+| `floquet_effective_model` | Same-size `Model` | `nsta` | Ω ≫ bandwidth; real-space Bessel backend, no `k_mesh` |
+| `floquet_effective_model_legacy` | Same-size `Model` | `nsta` | `pub(crate)` k-space reference: cross-validation, custom `target_hamR` |
 
 `floquet_model` encodes photon sectors as additional orbitals. Spinless basis
 order: `(photon sector, orbital)`. Spinful: `(spin, photon sector, orbital)`.
