@@ -960,6 +960,162 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(model)
     }
 
+    /// Real-space first-order van Vleck effective model via the Bessel
+    /// backend — no `k_mesh` and no `n_time` dependence.
+    ///
+    /// The effective hopping blocks are built entirely in real space
+    /// (`FLOQUET_REAL_SPACE_PLAN.md` §3):
+    ///
+    /// ```math
+    /// T_{\mathrm{eff}}(R)
+    /// =
+    /// T_0(R)
+    /// +
+    /// \sum_{q=1}^{q_{\max}} \frac{\mathrm{comm}_q(R)}{q\,\hbar\Omega_0},
+    /// ```
+    ///
+    /// where `T_0(R) = t(R)·C_0(d)` are the Peierls-dressed static blocks
+    /// and `comm_q(R)` are the two-convolution commutator blocks of
+    /// [`real_space_commutator`] for the harmonic pair `(T_q, T_{−q})`.
+    /// The support is determined automatically as the union of the input
+    /// `hamR` and the Minkowski sums `{R1 + R2 : R1, R2 ∈ hamR}` — no
+    /// `target_hamR` parameter is needed, and the output is guaranteed
+    /// Hermitian (`T(R) = T(−R)†` enforced exactly).
+    ///
+    /// `options.order = 0` keeps only `T_0`; `order = 1` adds the
+    /// commutator terms up to `q_max` (default `2 * trunc.n_max`).
+    /// [`FloquetEffectiveOptions::target_hamR`] is rejected: the
+    /// real-space path determines its own support.
+    ///
+    /// The returned model has the same lattice, orbitals, atoms, and
+    /// state count as the input model, and differs only in `ham`/`hamR`.
+    /// It is an approximation to the off-resonant Floquet problem, not
+    /// the full enlarged Sambe model returned by [`Floquet::floquet_model`].
+    ///
+    /// # Errors
+    /// Returns an error for an invalid drive or truncation
+    /// ([`validate_floquet_drive`]), `order > 1`, a negative `q_max`, a
+    /// supplied `target_hamR`, or a support that is not closed under
+    /// `R -> −R`.
+    pub fn floquet_effective_model_bessel(
+        &self,
+        drive: &FloquetDrive,
+        trunc: &FloquetTruncation,
+        options: Option<&FloquetEffectiveOptions>,
+    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+        let default_options;
+        let options = match options {
+            Some(options) => options,
+            None => {
+                default_options = FloquetEffectiveOptions::default();
+                &default_options
+            }
+        };
+
+        validate_floquet_drive::<DIM>(drive, trunc)?;
+        if options.order > 1 {
+            return Err(TbError::Other(format!(
+                "FloquetEffectiveOptions.order must be 0 or 1, got {}",
+                options.order
+            )));
+        }
+        if let Some(target) = &options.target_hamR {
+            return Err(TbError::Other(format!(
+                "FloquetEffectiveOptions.target_hamR is not supported by the \
+                 real-space path: the effective support is determined \
+                 automatically (got {} target vectors)",
+                target.nrows()
+            )));
+        }
+        let q_max = options.q_max.unwrap_or(2 * trunc.n_max);
+        if q_max < 0 {
+            return Err(TbError::Other(format!(
+                "FloquetEffectiveOptions.q_max must be non-negative, got {q_max}"
+            )));
+        }
+
+        let nsta = self.nsta();
+        let harmonic_cache = self.floquet_harmonic_cache(
+            drive,
+            trunc,
+            -q_max,
+            q_max,
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+        );
+
+        // Zeroth order: the Peierls-dressed static blocks on the input
+        // support.  The BTreeMap merges the per-q contributions onto the
+        // final support in lexicographic order (matching
+        // real_space_commutator's deterministic output).
+        let mut blocks = std::collections::BTreeMap::<Vec<isize>, Array2<Complex<f64>>>::new();
+        let iq0 = harmonic_cache.q_index(0);
+        for (i_r, row) in self.hamR.outer_iter().enumerate() {
+            blocks.insert(
+                row.to_vec(),
+                harmonic_cache.blocks.slice(s![iq0, i_r, .., ..]).to_owned(),
+            );
+        }
+
+        // First order: sum over q of comm_q/(q·ħΩ₀); omega0_ev carries
+        // the ħΩ₀ energy (same convention as the legacy k-space path).
+        if options.order == 1 {
+            for q in 1..=q_max {
+                let q_idx = harmonic_cache.q_index(q);
+                let m_idx = harmonic_cache.q_index(-q);
+                let a_blocks: Vec<Array2<Complex<f64>>> = (0..self.hamR.nrows())
+                    .map(|i_r| {
+                        harmonic_cache
+                            .blocks
+                            .slice(s![q_idx, i_r, .., ..])
+                            .to_owned()
+                    })
+                    .collect();
+                let b_blocks: Vec<Array2<Complex<f64>>> = (0..self.hamR.nrows())
+                    .map(|i_r| {
+                        harmonic_cache
+                            .blocks
+                            .slice(s![m_idx, i_r, .., ..])
+                            .to_owned()
+                    })
+                    .collect();
+                let (comm_blocks, comm_r) =
+                    real_space_commutator(&a_blocks, &b_blocks, &self.hamR)?;
+                let scale = 1.0 / ((q as f64) * drive.omega0_ev);
+                for (i_r, row) in comm_r.outer_iter().enumerate() {
+                    let contribution = comm_blocks[i_r].mapv(|x| x * scale);
+                    blocks
+                        .entry(row.to_vec())
+                        .and_modify(|block| *block += &contribution)
+                        .or_insert(contribution);
+                }
+            }
+        }
+
+        // Assemble the model on the merged support and enforce exact
+        // real-space Hermiticity.
+        let n_r_out = blocks.len();
+        let mut ham = Array3::<Complex<f64>>::zeros((n_r_out, nsta, nsta));
+        let mut ham_r = Array2::<isize>::zeros((n_r_out, DIM));
+        for (i, (key, block)) in blocks.into_iter().enumerate() {
+            for (a, v) in key.iter().enumerate() {
+                ham_r[[i, a]] = *v;
+            }
+            ham.index_axis_mut(Axis(0), i).assign(&block);
+        }
+        enforce_real_space_hermiticity(&mut ham, &ham_r)?;
+
+        let mut model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
+            self.lat.clone(),
+            self.orb.clone(),
+            Some(self.atoms.clone()),
+        )?;
+        model.ham = ham;
+        model.hamR = ham_r;
+        model.orb_projection = self.orb_projection.clone();
+
+        Ok(model)
+    }
+
     fn floquet_effective_ham_onek_lattice<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
@@ -2586,6 +2742,183 @@ mod tests {
                 block[[0, 0]]
             );
         }
+    }
+
+    #[test]
+    fn floquet_effective_model_bessel_matches_legacy_bands() {
+        // Cross-validate the real-space Bessel path against the legacy
+        // k-space path on the same support: the legacy path is given the
+        // Bessel output's support as target_hamR (its default — the
+        // original hamR — would truncate the longer-range commutator
+        // terms) and a fine k-mesh / time grid, so both compute the same
+        // H_eff.  The two-mode drive exercises the multi-mode Bessel
+        // convolution end to end.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.35, 0.2]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.set_hop(-0.3, 0, 1, &array![0, 1], None);
+        model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![1, 1], None);
+
+        // Circular l = 1 plus a second harmonic l = 2.
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)]),
+                LightMode::new(2, array![Complex::new(0.05, -0.05), Complex::new(0.0, 0.0)]),
+            ],
+        );
+        let trunc = FloquetTruncation::new(2, 4096);
+        let options = FloquetEffectiveOptions::new().with_q_max(4);
+        let bessel = model
+            .floquet_effective_model_bessel(&drive, &trunc, Some(&options))
+            .unwrap();
+
+        // Legacy path on the same (automatically determined) support.
+        let legacy = model
+            .floquet_effective_model(
+                &drive,
+                &trunc,
+                [64, 64],
+                Some(&options.with_target_hamR(bessel.hamR.clone())),
+            )
+            .unwrap();
+
+        for k in [[0.1, 0.2], [0.5, 0.5], [0.9, 0.7]] {
+            let kvec = array![k[0], k[1]];
+            let e_b = eigvalsh_v(&bessel.gen_ham(&kvec, Gauge::Lattice), UPLO::Lower);
+            let e_l = eigvalsh_v(&legacy.gen_ham(&kvec, Gauge::Lattice), UPLO::Lower);
+            for (a, b) in e_b.iter().zip(e_l.iter()) {
+                assert!((a - b).abs() < 1e-8, "k = {k:?}: Bessel {a} vs legacy {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn floquet_effective_model_bessel_order_zero() {
+        // order = 0 keeps only the Peierls-dressed static model T_0(R);
+        // the support must stay the original hamR and the bands must
+        // match the legacy order-0 path.
+        let lat = array![[1.0]];
+        let orb = array![[0.0], [0.35]];
+        let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1], None);
+        model.set_hop(Complex::new(-0.3, 0.1), 0, 1, &array![1], None);
+
+        let drive =
+            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let trunc = FloquetTruncation::new(1, 4096);
+        let bessel = model
+            .floquet_effective_model_bessel(
+                &drive,
+                &trunc,
+                Some(&FloquetEffectiveOptions::new().with_order(0)),
+            )
+            .unwrap();
+        // order-0 support = input hamR.
+        assert_eq!(bessel.hamR.nrows(), model.hamR.nrows());
+        let legacy = model
+            .floquet_effective_model(
+                &drive,
+                &trunc,
+                [64],
+                Some(&FloquetEffectiveOptions::new().with_order(0)),
+            )
+            .unwrap();
+        for k in [0.0, 0.23, 0.5, 0.71] {
+            let kvec = array![k];
+            let e_b = eigvalsh_v(&bessel.gen_ham(&kvec, Gauge::Lattice), UPLO::Lower);
+            let e_l = eigvalsh_v(&legacy.gen_ham(&kvec, Gauge::Lattice), UPLO::Lower);
+            for (a, b) in e_b.iter().zip(e_l.iter()) {
+                assert!((a - b).abs() < 1e-8, "k = {k}: Bessel {a} vs legacy {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn floquet_effective_model_bessel_support_and_hermiticity() {
+        // First-order support = Minkowski sum of hamR with itself, in
+        // lexicographic order, and the output blocks satisfy
+        // T(R) = T(−R)† exactly.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.35, 0.2]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.set_hop(-0.3, 0, 1, &array![0, 1], None);
+        model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![1, 1], None);
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)],
+            )],
+        );
+        let bessel = model
+            .floquet_effective_model_bessel(&drive, &FloquetTruncation::new(1, 512), None)
+            .unwrap();
+
+        // Expected support: the Minkowski sum of the input hamR with
+        // itself, lexicographically ordered.
+        let mut expected = std::collections::BTreeSet::<Vec<isize>>::new();
+        for r1 in model.hamR.outer_iter() {
+            for r2 in model.hamR.outer_iter() {
+                expected.insert(r1.iter().zip(r2.iter()).map(|(a, b)| a + b).collect());
+            }
+        }
+        let got: Vec<Vec<isize>> = bessel.hamR.outer_iter().map(|row| row.to_vec()).collect();
+        assert_eq!(got, Vec::from_iter(expected), "support mismatch");
+
+        // Exact Hermiticity pairing.
+        for i in 0..bessel.hamR.nrows() {
+            let j = find_R(&bessel.hamR, &bessel.hamR.row(i).mapv(|v| -v)).unwrap();
+            let conj = hermitian_conjugate(&bessel.ham.index_axis(Axis(0), j).to_owned());
+            for (a, b) in bessel.ham.index_axis(Axis(0), i).iter().zip(conj.iter()) {
+                assert!((a - b).norm() < 1e-15, "T(R) != T(−R)† at row {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn floquet_effective_model_bessel_rejects_invalid_options() {
+        let lat = array![[1.0]];
+        let orb = array![[0.0]];
+        let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1], None);
+        let drive =
+            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let trunc = FloquetTruncation::new(1, 512);
+
+        // order > 1 is not implemented.
+        assert!(
+            model
+                .floquet_effective_model_bessel(
+                    &drive,
+                    &trunc,
+                    Some(&FloquetEffectiveOptions::new().with_order(2))
+                )
+                .is_err()
+        );
+        // target_hamR is rejected on the real-space path.
+        let target = array![[-1], [0], [1]];
+        assert!(
+            model
+                .floquet_effective_model_bessel(
+                    &drive,
+                    &trunc,
+                    Some(&FloquetEffectiveOptions::new().with_target_hamR(target))
+                )
+                .is_err()
+        );
+        // negative q_max.
+        assert!(
+            model
+                .floquet_effective_model_bessel(
+                    &drive,
+                    &trunc,
+                    Some(&FloquetEffectiveOptions::new().with_q_max(-1))
+                )
+                .is_err()
+        );
     }
 
     #[test]
