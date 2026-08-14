@@ -3197,6 +3197,167 @@ mod tests {
     }
 
     #[test]
+    fn graphene_dirac_gap_matches_exact_rotating_frame() {
+        // Benchmark C: the Dirac-point quasienergy gap of the full Sambe
+        // matrix converges to the exact rotating-frame value
+        //
+        //   Δ_exact = √((ħω)² + 4g²) − ħω,  g = ev_F A₀ = (3/2)|J|α,
+        //
+        // measured as the outermost folded branch separation (twice the
+        // largest |folded eigenvalue|).  Small α = 0.2 keeps the lattice
+        // corrections to the Dirac model at O(α⁴) ≈ 0.2%; the folded
+        // spectrum also contains near-zero states from higher photon
+        // sectors (the "minimal spacing" would pick those instead of the
+        // physical branch gap).  The outer branches must simultaneously
+        // agree with the first-order van Vleck mass d_z(K) = 3√3·|K_eff|
+        // (Benchmark D's series), tying the Sambe construction to the
+        // real-space effective model.
+        let j = -1.0;
+        let model = graphene_model(j);
+        let alpha = 0.2;
+        let drive = FloquetDrive::with_modes(
+            5.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(alpha, 0.0), Complex::new(0.0, alpha)],
+            )],
+        );
+        let w = drive.omega0_ev;
+        let g = 1.5 * j.abs() * alpha;
+        let delta_exact = (w * w + 4.0 * g * g).sqrt() - w;
+        let k = array![1.0 / 3.0, 1.0 / 3.0];
+
+        // First-order van Vleck mass at K (Benchmark D series).
+        let n_cut = 8;
+        let k_eff = -(2.0 * j * j / w)
+            * (1..=n_cut)
+                .map(|n| bessel_j(n, alpha).powi(2) / (n as f64) * (TAU * (n as f64) / 3.0).sin())
+                .sum::<f64>();
+        let d_z_k = -3.0 * 3f64.sqrt() * k_eff;
+
+        let mut outer_previous = f64::INFINITY;
+        for n_max in [4, 8, 12] {
+            let trunc = FloquetTruncation::new(n_max, 512);
+            let hf = model
+                .floquet_ham_onek(&k, &drive, &trunc, Gauge::Lattice)
+                .unwrap();
+            let e = eigvalsh_v(&hf, UPLO::Lower);
+            let outer = e
+                .iter()
+                .map(|x| ((*x + w / 2.0).rem_euclid(w) - w / 2.0).abs())
+                .fold(0.0_f64, f64::max);
+            // Outermost branch ≈ Δ_exact/2; lattice corrections O(α⁴)
+            // and truncation corrections shrink with n_max.
+            let tol = if n_max <= 4 { 2e-3 } else { 1e-3 };
+            assert!(
+                (outer - delta_exact / 2.0).abs() < tol,
+                "n_max = {n_max}: outer branch {outer} vs exact {:.6}",
+                delta_exact / 2.0
+            );
+            // The van Vleck mass (all-photon Bessel series) must agree
+            // with the outer branch to O(1/W²) corrections.
+            assert!(
+                (outer - d_z_k.abs()).abs() < 5e-3,
+                "n_max = {n_max}: outer branch {outer} vs van Vleck mass {d_z_k}"
+            );
+            assert!(
+                outer <= outer_previous + 1e-12,
+                "outer branch must converge downward: {outer} vs previous {outer_previous}"
+            );
+            outer_previous = outer;
+        }
+    }
+
+    #[test]
+    fn graphene_haldane_mass_matches_full_bessel_series() {
+        // Benchmark D: the order-1 effective model's mass term must equal
+        //
+        //   d_z(k) = 2·K_eff·Σ_j sin(2πk·b_j),
+        //   K_eff  = −(2J²/ħω)·Σ_{n=1..N} J_n²(α)/n · sin(2πn/3),
+        //
+        // with N the q_max truncation (n = 3m terms vanish exactly).
+        //
+        // Convention note: the van Vleck commutator order here is
+        // [H_q, H_{−q}]/(qħω), opposite to the literature's
+        // [H_{−q}, H_q]/(qħω); combined with our k-convention being the
+        // literature's mirror (H_n(k) = H_n^lit(−k)) the two sign flips
+        // cancel for the TR-odd Haldane term — our d_z(k) equals the
+        // literature's pointwise, and the Dirac-point mass reproduces
+        // the exact rotating-frame leading order +g²/(ħω).
+        let j = -1.0;
+        let model = graphene_model(j);
+        let alpha = 0.5;
+        let drive = FloquetDrive::with_modes(
+            5.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(alpha, 0.0), Complex::new(0.0, alpha)],
+            )],
+        );
+        let w = drive.omega0_ev;
+        let trunc = FloquetTruncation::new(4, 512);
+
+        // Integer NNN vectors: b_1 = e_2 − e_1, b_2 = e_0 − e_2,
+        // b_3 = e_1 − e_0.
+        let b_int = [[1, 1], [1, -2], [-2, 1]];
+        let k_eff_series = |n_cut: isize| -> f64 {
+            -(2.0 * j * j / w)
+                * (1..=n_cut)
+                    .map(|n| {
+                        bessel_j(n, alpha).powi(2) / (n as f64) * (TAU * (n as f64) / 3.0).sin()
+                    })
+                    .sum::<f64>()
+        };
+        let d_z_lit = |k: &[f64; 2], n_cut: isize| -> f64 {
+            2.0 * k_eff_series(n_cut)
+                * b_int
+                    .iter()
+                    .map(|b| (TAU * (k[0] * b[0] as f64 + k[1] * b[1] as f64)).sin())
+                    .sum::<f64>()
+        };
+
+        let eff = model
+            .floquet_effective_model(
+                &drive,
+                &trunc,
+                Some(&FloquetEffectiveOptions::new().with_q_max(8)),
+            )
+            .unwrap();
+        let eff2 = model
+            .floquet_effective_model(
+                &drive,
+                &trunc,
+                Some(&FloquetEffectiveOptions::new().with_q_max(2)),
+            )
+            .unwrap();
+        for k in [[0.1, 0.05], [0.23, 0.11], [-0.07, 0.31]] {
+            let kvec = array![k[0], k[1]];
+            let h = eff.gen_ham(&kvec, Gauge::Lattice);
+            let h2 = eff2.gen_ham(&kvec, Gauge::Lattice);
+            // The mass term is the diagonal difference (T_0 is purely
+            // off-diagonal for graphene).
+            let d_z = ((h[[0, 0]] - h[[1, 1]]).re) / 2.0;
+            let d_z_2 = ((h2[[0, 0]] - h2[[1, 1]]).re) / 2.0;
+            assert!(
+                (d_z - d_z_lit(&k, 8)).abs() < 1e-8,
+                "k = {k:?}: d_z {d_z} vs series {expect}",
+                expect = d_z_lit(&k, 8)
+            );
+            assert!(
+                (d_z_2 - d_z_lit(&k, 2)).abs() < 1e-8,
+                "k = {k:?}: q_max = 2: d_z {d_z_2} vs series {}",
+                d_z_lit(&k, 2)
+            );
+            // The neglected tail (n = 3m vanishes; n = 4, 5 are the
+            // next contributors at ~1e-7 for α = 0.5).
+            assert!(
+                (d_z - d_z_2).abs() < 1e-5,
+                "k = {k:?}: truncation tail {d_z} vs {d_z_2}"
+            );
+        }
+    }
+
+    #[test]
     fn graphene_order_zero_matches_renormalized_nn_hopping() {
         // Benchmark B: the order-0 effective model renormalizes the NN
         // hopping to J·J_0(α) (non-perturbative in α); its Hamiltonian
