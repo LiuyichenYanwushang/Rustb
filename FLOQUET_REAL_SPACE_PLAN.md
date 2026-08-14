@@ -336,7 +336,8 @@ order-0 有效模型的 NN hopping = `J·J_0(α)`（非微扰）。断言有效�
 
 ### 9.3 Benchmark C（Dirac 点精确 gap）
 
-在 K 点只有 n ≡ 0 (mod 3) 的谐波存活，完整 Sambe 矩阵的 quasienergy gap 有
+在 K 点 n ≡ 0 (mod 3) 的谐波**消失**、n ≡ 1 (mod 3) 存活（振幅 3jJ_n(α)，
+nilpotent 结构），完整 Sambe 矩阵的 quasienergy gap 有
 旋转框架严格解：
 
 ```

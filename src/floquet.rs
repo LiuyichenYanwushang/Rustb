@@ -3205,7 +3205,8 @@ mod tests {
         //
         // measured as the outermost folded branch separation (twice the
         // largest |folded eigenvalue|).  Small α = 0.2 keeps the lattice
-        // corrections to the Dirac model at O(α⁴) ≈ 0.2%; the folded
+        // corrections to the Dirac model are O(α⁴) in absolute units
+        // (~1% relative at α = 0.2); the folded
         // spectrum also contains near-zero states from higher photon
         // sectors (the "minimal spacing" would pick those instead of the
         // physical branch gap).  The outer branches must simultaneously
@@ -3246,8 +3247,10 @@ mod tests {
                 .iter()
                 .map(|x| ((*x + w / 2.0).rem_euclid(w) - w / 2.0).abs())
                 .fold(0.0_f64, f64::max);
-            // Outermost branch ≈ Δ_exact/2; lattice corrections O(α⁴)
-            // and truncation corrections shrink with n_max.
+            // Outermost branch ≈ Δ_exact/2; the residual deviation from
+            // Δ_exact/2 is physical (higher van Vleck orders + lattice
+            // corrections O(α⁴)), not truncation — the branch is
+            // converged already at n_max = 4.
             let tol = if n_max <= 4 { 2e-3 } else { 1e-3 };
             assert!(
                 (outer - delta_exact / 2.0).abs() < tol,
@@ -3330,7 +3333,7 @@ mod tests {
                 Some(&FloquetEffectiveOptions::new().with_q_max(2)),
             )
             .unwrap();
-        for k in [[0.1, 0.05], [0.23, 0.11], [-0.07, 0.31]] {
+        for k in [[0.13, 0.07], [0.23, 0.11], [-0.07, 0.31]] {
             let kvec = array![k[0], k[1]];
             let h = eff.gen_ham(&kvec, Gauge::Lattice);
             let h2 = eff2.gen_ham(&kvec, Gauge::Lattice);
@@ -3349,7 +3352,7 @@ mod tests {
                 d_z_lit(&k, 2)
             );
             // The neglected tail (n = 3m vanishes; n = 4, 5 are the
-            // next contributors at ~1e-7 for α = 0.5).
+            // next contributors at ~1e-8 for α = 0.5).
             assert!(
                 (d_z - d_z_2).abs() < 1e-5,
                 "k = {k:?}: truncation tail {d_z} vs {d_z_2}"
