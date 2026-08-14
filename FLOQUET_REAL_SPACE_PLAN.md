@@ -208,17 +208,21 @@ fn real_space_commutator(
     a_blocks: &[Array2<Complex<f64>>],   // T_q(R)，长度 = hamR.nrows()
     b_blocks: &[Array2<Complex<f64>>],   // T_{−q}(R)，长度 = hamR.nrows()
     ham_r: &Array2<isize>,
-) -> (Vec<Array2<Complex<f64>>>, Array2<isize>)
+) -> Result<(Vec<Array2<Complex<f64>>>, Array2<isize>)>
 ```
 
 步骤：
-1. `supp = {R1 + R2 : R1, R2 ∈ hamR}`（Minkowski 和，去重、含 0）
+1. `supp = {R1 + R2 : R1, R2 ∈ hamR}`（Minkowski 和，去重、字典序输出）
 2. 对每个 `R ∈ supp`：
    `(AB)(R) = Σ_{R'} A_{R−R'} · zgemm B_{R'}`，
-   `(BA)(R) = Σ_{R'} B_{R−R'} · zgemm A_{R'}`（块索引用 `HashMap<R, usize>` 查）
-3. `comm(R) = (AB)(R) − (BA)(R)`
-4. fp 后处理：强制 `comm(R) = comm(−R)†`（对称化，容差 `1e-12`；构造本身已 Hermitian，
-   这一步只清浮点噪声）
+   `(BA)(R) = Σ_{R'} B_{R−R'} · zgemm A_{R'}`（块索引用 `HashMap<R, usize>` 查，
+   同一 `R−R'` 查表共享给两个卷积；行主序 `C += α·A·B` 用转置恒等式
+   `(A·B)^T = B^T·A^T` 直接喂列主序 `zgemm('N','N')`，无转置拷贝）
+3. `comm(R) = (AB)(R) − (BA)(R)`（AB 项 α=+1、BA 项 α=−1，同一累加器）
+4. fp 后处理：强制 `comm(R) = comm(−R)†`（复用 `enforce_real_space_hermiticity`
+   做 ±R 对平均；构造本身已 Hermitian，这一步只清浮点噪声）
+5. support 不闭合于 `R → −R` 时返回 `MissingHermitianConjugateHopping`
+   （仅手改 hamR 破坏 Model 不变式时发生）
 
 ### 4.5 顶层入口
 

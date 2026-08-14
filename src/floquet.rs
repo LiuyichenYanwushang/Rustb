@@ -1781,6 +1781,149 @@ fn fallback_time_grid_coeffs(
     Array1::from(coeffs)
 }
 
+/// Row-major in-place accumulation `C += α·A·B` via BLAS `zgemm`.
+///
+/// ndarray stores row-major (C order) while BLAS is column-major; the
+/// identity `(A·B)^T = B^T·A^T` turns the row-major product into a
+/// column-major `zgemm('N', 'N')` over the same memory with the operands
+/// swapped, so no transposition copies are needed.
+///
+/// # Panics
+/// Debug-asserts that all three matrices are square `n x n` of one
+/// common size.
+fn zgemm_row_accumulate(
+    alpha: Complex<f64>,
+    a: &Array2<Complex<f64>>,
+    b: &Array2<Complex<f64>>,
+    c: &mut Array2<Complex<f64>>,
+) {
+    let n = a.nrows();
+    debug_assert_eq!(
+        (a.ncols(), b.nrows(), b.ncols(), c.nrows(), c.ncols()),
+        (n, n, n, n, n),
+        "zgemm_row_accumulate: square n x n blocks required"
+    );
+    let n_i = n as i32;
+    let beta = Complex::new(1.0, 0.0);
+    // Safety: owned ndarray matrices are contiguous standard-layout
+    // buffers of length n·n; the transpose trick above makes every
+    // leading dimension equal to n.
+    unsafe {
+        blas::zgemm(
+            b'N',
+            b'N',
+            n_i,
+            n_i,
+            n_i,
+            alpha,
+            b.as_slice().unwrap(),
+            n_i,
+            a.as_slice().unwrap(),
+            n_i,
+            beta,
+            c.as_slice_mut().unwrap(),
+            n_i,
+        );
+    }
+}
+
+/// Real-space commutator blocks `comm_q(R) = (AB)(R) − (BA)(R)` for the
+/// harmonic pair `A_R = T_q(R)` and `B_R = T_{−q}(R)` (see
+/// `FLOQUET_REAL_SPACE_PLAN.md` §3):
+///
+/// ```math
+/// (AB)(R) = \sum_{R'} A_{R-R'}\, B_{R'}, \qquad
+/// (BA)(R) = \sum_{R'} B_{R-R'}\, A_{R'}.
+/// ```
+///
+/// Both convolutions are accumulated with BLAS `zgemm`
+/// ([`zgemm_row_accumulate`]); the returned support is the Minkowski sum
+/// `{R1 + R2 : R1, R2 ∈ hamR}` in lexicographic order.  The result
+/// satisfies the Hermiticity pairing `comm(R) = comm(−R)†` exactly — a
+/// final pass ([`enforce_real_space_hermiticity`]) averages each ±R pair
+/// with its conjugate-transposed partner, removing the summation-order
+/// noise of the two independent convolutions.
+///
+/// # Errors
+/// Returns [`TbError::MissingHermitianConjugateHopping`] if the support
+/// is not closed under `R -> −R`; that can only happen for hand-built
+/// models whose `hamR` itself violates the closure (a `Model` invariant
+/// for all constructed models).
+///
+/// # Panics
+/// Debug-asserts that `a_blocks` and `b_blocks` each contain
+/// `ham_r.nrows()` square blocks of one common size.
+fn real_space_commutator(
+    a_blocks: &[Array2<Complex<f64>>],
+    b_blocks: &[Array2<Complex<f64>>],
+    ham_r: &Array2<isize>,
+) -> Result<(Vec<Array2<Complex<f64>>>, Array2<isize>)> {
+    let n_r = ham_r.nrows();
+    debug_assert_eq!(a_blocks.len(), n_r, "a_blocks must match hamR row count");
+    debug_assert_eq!(b_blocks.len(), n_r, "b_blocks must match hamR row count");
+    let nsta = a_blocks.first().map_or(0, |block| block.nrows());
+    for block in a_blocks.iter().chain(b_blocks) {
+        debug_assert_eq!(
+            (block.nrows(), block.ncols()),
+            (nsta, nsta),
+            "all blocks must be square nsta x nsta"
+        );
+    }
+
+    // Output support: the Minkowski sum, deduplicated and deterministically
+    // ordered (BTreeSet iterates lexicographically).
+    let mut support = std::collections::BTreeSet::<Vec<isize>>::new();
+    for r1 in ham_r.outer_iter() {
+        for r2 in ham_r.outer_iter() {
+            support.insert(r1.iter().zip(r2.iter()).map(|(a, b)| a + b).collect());
+        }
+    }
+    let mut support_rows = Array2::<isize>::zeros((support.len(), ham_r.ncols()));
+    for (i, r) in support.iter().enumerate() {
+        for (a, v) in r.iter().enumerate() {
+            support_rows[[i, a]] = *v;
+        }
+    }
+
+    // Block lookup by R vector.
+    let mut index = std::collections::HashMap::<Vec<isize>, usize>::with_capacity(n_r);
+    for (i_r, row) in ham_r.outer_iter().enumerate() {
+        index.insert(row.to_vec(), i_r);
+    }
+
+    let one = Complex::new(1.0, 0.0);
+    let minus_one = Complex::new(-1.0, 0.0);
+    let mut blocks = Vec::<Array2<Complex<f64>>>::with_capacity(support.len());
+    for r in &support {
+        let mut comm = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        for (i_r2, r2_row) in ham_r.outer_iter().enumerate() {
+            // Both convolutions pair R' with R − R'; a missing R − R' just
+            // means a zero block, i.e. no term.
+            let r1: Vec<isize> = r.iter().zip(r2_row.iter()).map(|(a, b)| a - b).collect();
+            let Some(&i_r1) = index.get(&r1) else {
+                continue;
+            };
+            // comm += A_{R-R'} · B_{R'} — the (AB) term.
+            zgemm_row_accumulate(one, &a_blocks[i_r1], &b_blocks[i_r2], &mut comm);
+            // comm -= B_{R-R'} · A_{R'} — the (BA) term.
+            zgemm_row_accumulate(minus_one, &b_blocks[i_r1], &a_blocks[i_r2], &mut comm);
+        }
+        blocks.push(comm);
+    }
+
+    // Enforce comm(R) = comm(−R)† exactly (fp symmetrization).
+    let mut stacked = Array3::<Complex<f64>>::zeros((support.len(), nsta, nsta));
+    for (i, block) in blocks.iter().enumerate() {
+        stacked.index_axis_mut(Axis(0), i).assign(block);
+    }
+    enforce_real_space_hermiticity(&mut stacked, &support_rows)?;
+    let blocks: Vec<Array2<Complex<f64>>> = (0..support.len())
+        .map(|i| stacked.index_axis(Axis(0), i).to_owned())
+        .collect();
+
+    Ok((blocks, support_rows))
+}
+
 fn bloch_phase<const DIM: usize, S: Data<Elem = f64>>(
     r_vec: &ArrayView1<'_, isize>,
     kvec: &ArrayBase<S, Ix1>,
@@ -2257,6 +2400,138 @@ mod tests {
             (c0 - Complex::new(-bessel_j(0, 50.0), 0.0)).norm() < 1e-10,
             "C_0 on the r = 50 link should be -J_0(50) (t = -1), got {c0}"
         );
+    }
+
+    /// Build the `q = ±1` harmonic blocks of a 1D model and return them
+    /// aligned with `model.hamR`, together with the cache itself.
+    fn commutator_test_blocks(
+        model: &Model<false, 1, NoRMatrix>,
+        drive: &FloquetDrive,
+    ) -> (
+        FloquetHarmonicCache,
+        Vec<Array2<Complex<f64>>>,
+        Vec<Array2<Complex<f64>>>,
+    ) {
+        let trunc = FloquetTruncation::new(1, 512);
+        let cache = model.floquet_harmonic_cache(
+            drive,
+            &trunc,
+            -1,
+            1,
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+        );
+        let n_r = model.hamR.nrows();
+        let q1 = cache.q_index(1);
+        let qm1 = cache.q_index(-1);
+        let a_blocks = (0..n_r)
+            .map(|i_r| cache.blocks.slice(s![q1, i_r, .., ..]).to_owned())
+            .collect();
+        let b_blocks = (0..n_r)
+            .map(|i_r| cache.blocks.slice(s![qm1, i_r, .., ..]).to_owned())
+            .collect();
+        (cache, a_blocks, b_blocks)
+    }
+
+    #[test]
+    fn real_space_commutator_matches_k_space_commutator() {
+        // The real-space convolution must equal the Fourier transform of
+        // the k-space commutator [H^(1)(k), H^(-1)(k)] at every k: this
+        // validates the two-convolution structure (the naive "P − P†"
+        // single-convolution simplification is wrong) against the
+        // existing, independently validated harmonic evaluator.
+        let lat = array![[1.0]];
+        let orb = array![[0.0], [0.35]];
+        let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1], None);
+        model.set_hop(-0.3, 0, 1, &array![1], None);
+        model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![2], None);
+
+        let drive =
+            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let (cache, a_blocks, b_blocks) = commutator_test_blocks(&model, &drive);
+        let (comm_blocks, comm_r) =
+            real_space_commutator(&a_blocks, &b_blocks, &model.hamR).unwrap();
+
+        let nsta = model.nsta();
+        for k in [0.0, 0.123, 0.5, 0.877] {
+            let kvec = array![k];
+            let a_k = model.floquet_cached_harmonic_onek(&kvec, 1, Gauge::Lattice, &cache);
+            let b_k = model.floquet_cached_harmonic_onek(&kvec, -1, Gauge::Lattice, &cache);
+            let oracle = a_k.dot(&b_k) - b_k.dot(&a_k);
+            let mut from_rs = Array2::<Complex<f64>>::zeros((nsta, nsta));
+            for (i_r, row) in comm_r.outer_iter().enumerate() {
+                let phase = Complex::new(0.0, TAU * (row[0] as f64) * k).exp();
+                from_rs.scaled_add(phase, &comm_blocks[i_r]);
+            }
+            for (a, b) in from_rs.iter().zip(oracle.iter()) {
+                assert!(
+                    (a - b).norm() < 1e-12,
+                    "k = {k}: real-space {a} vs k-space {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn real_space_commutator_support_and_hermiticity() {
+        // hamR = {−2, −1, 1, 2} ⇒ the Minkowski sum is {−4..=4}; and the
+        // symmetrized blocks must satisfy comm(R) = comm(−R)† exactly.
+        let lat = array![[1.0]];
+        let orb = array![[0.0], [0.35]];
+        let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1], None);
+        model.set_hop(-0.3, 0, 1, &array![1], None);
+        model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![2], None);
+
+        let drive =
+            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let (_cache, a_blocks, b_blocks) = commutator_test_blocks(&model, &drive);
+        let (comm_blocks, comm_r) =
+            real_space_commutator(&a_blocks, &b_blocks, &model.hamR).unwrap();
+
+        // Support: the Minkowski sum of {−2, −1, 1, 2} with itself.
+        let expected: Vec<Vec<isize>> = (-4..=4).map(|r| vec![r]).collect();
+        let got: Vec<Vec<isize>> = comm_r.outer_iter().map(|row| row.to_vec()).collect();
+        assert_eq!(
+            got, expected,
+            "commutator support must be the Minkowski sum"
+        );
+
+        // Hermiticity pairing, exact after symmetrization.
+        for i in 0..comm_r.nrows() {
+            let j = find_R(&comm_r, &comm_r.row(i).mapv(|v| -v)).unwrap();
+            let conj = hermitian_conjugate(&comm_blocks[j]);
+            for (a, b) in comm_blocks[i].iter().zip(conj.iter()) {
+                assert!(
+                    (a - b).norm() < 1e-15,
+                    "comm(R) != comm(−R)† at R = {:?}",
+                    comm_r.row(i).to_vec()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn real_space_commutator_scalar_blocks_vanish() {
+        // nsta = 1: matrix products commute, so comm(R) = 0 for every R —
+        // a structural check on the (AB) − (BA) accumulation.
+        let lat = array![[1.0]];
+        let orb = array![[0.0]];
+        let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1], None);
+
+        let drive =
+            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let (_cache, a_blocks, b_blocks) = commutator_test_blocks(&model, &drive);
+        let (comm_blocks, _comm_r) =
+            real_space_commutator(&a_blocks, &b_blocks, &model.hamR).unwrap();
+        for block in &comm_blocks {
+            assert!(
+                block[[0, 0]].norm() < 1e-15,
+                "scalar commutator must vanish, got {}",
+                block[[0, 0]]
+            );
+        }
     }
 
     #[test]
