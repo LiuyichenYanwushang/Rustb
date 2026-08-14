@@ -1064,6 +1064,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // fallback branch for many links, but the user only needs one
         // message per cache build.
         let fallback_warned = AtomicBool::new(false);
+        let fallback_clamped = AtomicBool::new(false);
         let coeffs_per_d: Vec<Array1<Complex<f64>>> = unique_d
             .par_iter()
             .map(|d| match method {
@@ -1077,7 +1078,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                      ({error}); falling back to the time grid"
                                 );
                             }
-                            Array1::from(peierls_fourier_coeffs(d, q_min, q_max, drive, &time_grid))
+                            fallback_time_grid_coeffs(
+                                d,
+                                drive,
+                                trunc,
+                                q_min,
+                                q_max,
+                                DIM,
+                                &time_grid,
+                                &fallback_clamped,
+                            )
                         }
                     }
                 }
@@ -1668,6 +1678,87 @@ fn peierls_fourier_coeffs(
     coeffs
 }
 
+/// Time-grid fallback for links outside the Bessel backend's range.
+///
+/// The shared grid uses `trunc.n_time`, which is only adequate for small
+/// harmonics: a link's Peierls exponential has spectral content up to
+/// `Σ_α |l_α|·M_α(R_α)` (with `M_α` the adaptive tail cutoff), and a
+/// coarse grid aliases it silently — e.g. for `l = 100`, `R = 50`,
+/// `n_time = 512` gives `C_0 ≈ 0.02` instead of `J_0(50) ≈ 0.019986` and
+/// `C_±8 ≈ −0.19` instead of `~0`.  When the shared grid cannot resolve
+/// the link, this evaluates the DFT directly at the Nyquist size
+/// `2·Σ_α |l_α|·M_α + 4`, clamped to `FALLBACK_GRID_MAX = 2^20` points
+/// (beyond that the drive is pathological; accuracy degrades and a
+/// warn-once message is printed).
+fn fallback_time_grid_coeffs(
+    d: &Array1<f64>,
+    drive: &FloquetDrive,
+    trunc: &FloquetTruncation,
+    q_min: isize,
+    q_max: isize,
+    dim: usize,
+    time_grid: &FloquetTimeGrid,
+    clamped: &AtomicBool,
+) -> Array1<Complex<f64>> {
+    // Nyquist bandwidth of the Peierls exponential on this link.
+    let mut bandwidth = 0_usize;
+    for mode in &drive.modes {
+        let z: Complex<f64> = mode
+            .a_complex
+            .iter()
+            .zip(d.iter())
+            .map(|(a, d)| *a * *d)
+            .sum();
+        let r = z.norm();
+        if r == 0.0 {
+            continue;
+        }
+        // Same adaptive tail cutoff the Bessel path would have used; the
+        // margin of 48 is a starting estimate that already meets the
+        // 1e-12 budget for R ≲ 65.
+        let m_cap = bessel_adaptive_m_cap(r, 1e-12, 48);
+        let drift = (mode.harmonic.unsigned_abs() as usize).saturating_mul(m_cap as usize);
+        bandwidth = bandwidth.saturating_add(drift);
+    }
+    let required = bandwidth.saturating_mul(2).saturating_add(4);
+    if required <= trunc.n_time {
+        // The shared grid already resolves the link.
+        return Array1::from(peierls_fourier_coeffs(d, q_min, q_max, drive, time_grid));
+    }
+    const FALLBACK_GRID_MAX: usize = 1 << 20;
+    let n_req = required.min(FALLBACK_GRID_MAX);
+    if required > FALLBACK_GRID_MAX && !clamped.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "Floquet fallback grid clamped to {FALLBACK_GRID_MAX} time points \
+             (link requires {required}); coefficients on this link may be \
+             inaccurate"
+        );
+    }
+    // Direct DFT at the fine resolution, avoiding the shared grid's
+    // q_count × n_time Fourier matrix.
+    let q_count = (q_max - q_min + 1) as usize;
+    let inv_n = 1.0 / (n_req as f64);
+    let mut coeffs = vec![Complex::new(0.0, 0.0); q_count];
+    for it in 0..n_req {
+        let theta = TAU * (it as f64) * inv_n;
+        let mut link_phase = 0.0;
+        for mode in &drive.modes {
+            let harmonic_phase = Complex::new(0.0, -(mode.harmonic as f64) * theta).exp();
+            for a in 0..dim {
+                link_phase += (mode.a_complex[a] * harmonic_phase).re * d[a];
+            }
+        }
+        let peierls = Complex::new(0.0, -link_phase).exp();
+        for (iq, q) in (q_min..=q_max).enumerate() {
+            coeffs[iq] += Complex::new(0.0, (q as f64) * theta).exp() * peierls;
+        }
+    }
+    for coeff in &mut coeffs {
+        *coeff *= inv_n;
+    }
+    Array1::from(coeffs)
+}
+
 fn bloch_phase<const DIM: usize, S: Data<Elem = f64>>(
     r_vec: &ArrayView1<'_, isize>,
     kvec: &ArrayBase<S, Ix1>,
@@ -2092,6 +2183,56 @@ mod tests {
                 "fallback Bessel cache {b} vs time-grid cache {a}"
             );
         }
+    }
+
+    #[test]
+    fn harmonic_cache_bessel_fallback_uses_alias_free_grid() {
+        // R > 8 forces the per-link time-grid fallback.  A fixed
+        // n_time = 512 aliases badly for l = 100, R = 50 (C_0 ≈ 0.02
+        // instead of J_0(50) ≈ 0.019986 and C_±8 ≈ −0.19 instead of ~0).
+        // The fallback must size its grid to the link's bandwidth
+        // (n ≳ 2·|l|·M(R)) and match a 65536-point oracle.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [55.555_555_555_555_56, 0.0]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.add_hop(-1.0, 0, 1, &array![0, 1], None);
+
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                100,
+                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        );
+        let oracle = model.floquet_harmonic_cache(
+            &drive,
+            &FloquetTruncation::new(100, 65536),
+            -10,
+            10,
+            &PeierlsFourierMethod::TimeGrid,
+        );
+        let bessel_cache = model.floquet_harmonic_cache(
+            &drive,
+            &FloquetTruncation::new(100, 512),
+            -10,
+            10,
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+        );
+        for (a, b) in oracle.blocks.iter().zip(bessel_cache.blocks.iter()) {
+            assert!(
+                (a - b).norm() < 1e-10,
+                "65536-point oracle {a} vs adaptive fallback {b}"
+            );
+        }
+
+        // Physical anchor: the block stores t·C_0 with t = -1, so its
+        // q = 0 entry on the r = 50 link is -J_0(50).
+        let i_r_link = find_R(&model.hamR, &array![0, 1]).unwrap();
+        let c0 = bessel_cache.blocks[[bessel_cache.q_index(0), i_r_link, 0, 1]];
+        assert!(
+            (c0 - Complex::new(-bessel_j(0, 50.0), 0.0)).norm() < 1e-10,
+            "C_0 on the r = 50 link should be -J_0(50) (t = -1), got {c0}"
+        );
     }
 
     #[test]

@@ -281,7 +281,10 @@ pub fn floquet_effective_model_legacy(
 
 ## 7. 兜底与回退规则
 
-- `R_α > R_max`（如 8）或模数 > 8：自动回退 `TimeGrid`（保持通用性）
+- `R_α > R_max`（如 8）或模数 > 8：自动回退 `TimeGrid`（保持通用性）。回退网格的
+  `n_time` 按该键的 Nyquist 带宽 `2·Σ_α |l_α|·M_α(R_α) + 4` 自适应放大（`M_α` 与
+  Bessel 路径同一自适应截断，margin 48 起步），避免大谐波下 DFT 混叠；超过
+  `2^20` 点时截断并 warn-once。
 - `bessel_peierls_coeffs` 内所有整数算术 `checked_*`，溢出报错不静默
 - 不可公度频率检测：`l_α` 集合的 gcd ≠ 1 且存在非 1 基频 → 显式 `TbError`
 - Bessel 与 DFT 的 `C_q` 在测试中交叉验证，发布前默认后端以测试通过为准
