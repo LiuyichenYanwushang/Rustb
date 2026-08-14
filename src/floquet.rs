@@ -1410,9 +1410,16 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
 ///
 /// The growth loop is bounded at `m = 4096`: a tail that still exceeds the
 /// share there means the input amplitude is beyond any practical use (the
-/// fallback sizing clamps its grid and warns).
+/// fallback sizing clamps its grid and warns).  `r` must be finite and
+/// non-negative; huge `r` saturates the start estimate at 4096.
 fn bessel_adaptive_m_cap(r: f64, error_share: f64, margin: isize) -> isize {
-    let mut m_cap = (r.ceil() as isize) + margin;
+    debug_assert!(
+        r.is_finite() && r >= 0.0,
+        "bessel_adaptive_m_cap: r must be finite and non-negative"
+    );
+    // The float-to-int cast saturates for huge r; saturating_add keeps the
+    // +margin step overflow-free before the growth loop clamps at 4096.
+    let mut m_cap = (r.ceil() as isize).saturating_add(margin).min(4096);
     while m_cap <= 4096 {
         // Tail = Σ_{m>M} |J_m(r)|: seed with |J_{M+1}|, then accumulate the
         // following orders until they decay below the noise floor.
@@ -1631,7 +1638,15 @@ pub(crate) fn bessel_peierls_coeffs(
             let shift = mode.harmonic * m;
             for (index, _) in sequence.iter().enumerate() {
                 let q = work_min + index as isize;
-                let source_index = q + shift - work_min;
+                // Sources outside the working window contribute nothing;
+                // checked arithmetic also skips the (q, m) pairs whose
+                // source would leave the isize range entirely.
+                let Some(source) = q.checked_add(shift) else {
+                    continue;
+                };
+                let Some(source_index) = source.checked_sub(work_min) else {
+                    continue;
+                };
                 if source_index >= 0 && (source_index as usize) < work_len {
                     next[index] += sequence[source_index as usize] * weight;
                 }
@@ -1683,9 +1698,10 @@ fn peierls_fourier_coeffs(
 /// The shared grid uses `trunc.n_time`, which is only adequate for small
 /// harmonics: a link's Peierls exponential has spectral content up to
 /// `Σ_α |l_α|·M_α(R_α)` (with `M_α` the adaptive tail cutoff), and a
-/// coarse grid aliases it silently — e.g. for `l = 100`, `R = 50`,
-/// `n_time = 512` gives `C_0 ≈ 0.02` instead of `J_0(50) ≈ 0.019986` and
-/// `C_±8 ≈ −0.19` instead of `~0`.  When the shared grid cannot resolve
+/// coarse grid aliases it silently — e.g. for a single `l = 100` mode at
+/// `R = 50`, `n_time = 512` puts `C_−8 ≈ −J_46(50) ≈ −0.17` where the
+/// true value is `0` (`C_0 = J_0(50) = 0.0558` survives there only by a
+/// divisibility coincidence).  When the shared grid cannot resolve
 /// the link, this evaluates the DFT directly at the Nyquist size
 /// `2·Σ_α |l_α|·M_α + 4`, clamped to `FALLBACK_GRID_MAX = 2^20` points
 /// (beyond that the drive is pathological; accuracy degrades and a
@@ -1711,6 +1727,12 @@ fn fallback_time_grid_coeffs(
             .sum();
         let r = z.norm();
         if r == 0.0 {
+            continue;
+        }
+        if !r.is_finite() {
+            // Degenerate amplitude (NaN/inf): skip the sizing and let the
+            // shared grid's DFT propagate the NaN visibly instead of
+            // panicking inside the Bessel order search.
             continue;
         }
         // Same adaptive tail cutoff the Bessel path would have used; the
@@ -2188,10 +2210,12 @@ mod tests {
     #[test]
     fn harmonic_cache_bessel_fallback_uses_alias_free_grid() {
         // R > 8 forces the per-link time-grid fallback.  A fixed
-        // n_time = 512 aliases badly for l = 100, R = 50 (C_0 ≈ 0.02
-        // instead of J_0(50) ≈ 0.019986 and C_±8 ≈ −0.19 instead of ~0).
-        // The fallback must size its grid to the link's bandwidth
-        // (n ≳ 2·|l|·M(R)) and match a 65536-point oracle.
+        // n_time = 512 aliases the high-order Bessel tails into the
+        // wrong bins for l = 100, R = 50 (C_−8 ≈ −J_46(50) ≈ −0.17
+        // instead of 0; C_0 = J_0(50) = 0.0558 survives there only by a
+        // divisibility coincidence).  The fallback must size its grid to
+        // the link's bandwidth (n ≳ 2·|l|·M(R)) and match a 65536-point
+        // oracle.
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
         let orb = array![[0.0, 0.0], [55.555_555_555_555_56, 0.0]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
@@ -2286,6 +2310,30 @@ mod tests {
                 "q = {q}: got {got}, expected {expected}"
             );
         }
+    }
+
+    #[test]
+    fn bessel_coeffs_window_edge_overflows_are_skipped() {
+        // The fold evaluates q + l·m for every (q, m) pair in the working
+        // window; pairs whose source would leave the isize range must be
+        // skipped, not panic (they contribute nothing — the source is
+        // outside the window).  With l = 400, r = 8 and margin 48 the
+        // drift is 400·56 = 22400, so a request near isize::MAX pushes
+        // the window's top edge past isize::MAX during the fold.
+        // Regression for the previously unchecked q + shift addition.
+        let d = array![1.0, 0.0];
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                400,
+                array![Complex::new(8.0, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        );
+        let q = isize::MAX - 23_999;
+        let coeffs = bessel_peierls_coeffs(&d, &drive, q, q, 48).unwrap();
+        // The requested bin is far outside the mode's spectral support
+        // (±22400), so C_q = 0.
+        assert!(coeffs[0].norm() == 0.0);
     }
 
     fn chain_model() -> Model<false, 1, NoRMatrix> {
