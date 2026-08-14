@@ -1392,6 +1392,37 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
     puruspe::Jn(m as u32, r)
 }
 
+/// Adaptive Bessel order cutoff for amplitude `r`: the smallest
+/// `M ≥ ⌈r⌉ + margin` such that the two-sided tail `2·Σ_{m>M} |J_m(r)|`
+/// stays at or below `error_share`.  Used by [`bessel_peierls_coeffs`]
+/// (with `r ≤ 8`) and by the time-grid fallback sizing for arbitrary `r`;
+/// there, `margin` doubles as a higher starting estimate.
+///
+/// The growth loop is bounded at `m = 4096`: a tail that still exceeds the
+/// share there means the input amplitude is beyond any practical use (the
+/// fallback sizing clamps its grid and warns).
+fn bessel_adaptive_m_cap(r: f64, error_share: f64, margin: isize) -> isize {
+    let mut m_cap = (r.ceil() as isize) + margin;
+    while m_cap <= 4096 {
+        // Tail = Σ_{m>M} |J_m(r)|: seed with |J_{M+1}|, then accumulate the
+        // following orders until they decay below the noise floor.
+        let mut tail = 0.0;
+        let mut current = bessel_j(m_cap + 1, r).abs();
+        for m in (m_cap + 2)..(m_cap + 201) {
+            tail += current;
+            if current < 1e-20 {
+                break;
+            }
+            current = bessel_j(m, r).abs();
+        }
+        if 2.0 * tail <= error_share {
+            return m_cap;
+        }
+        m_cap += 1;
+    }
+    m_cap.min(4096)
+}
+
 /// Peierls Fourier coefficients `C_q(d)` via the generalized Bessel
 /// expansion, for `q ∈ [q_min, q_max]`.
 ///
@@ -1418,8 +1449,10 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
 /// which costs `O(N_mode · N_q · M_avg)` — independent of the time-grid
 /// size.  Each mode's cutoff `M_α` is chosen adaptively so the truncated
 /// tail `Σ_{|m|>M_α} |J_m(R_α)|` stays below a per-mode error share
-/// (`1e-12 / N_mode`), with `cutoff_margin` as an additional minimum and a
-/// hard cap at 64 orders.
+/// (`1e-12 / N_mode`), with `cutoff_margin` as an additional minimum.
+/// With `R_α ≤ 8` and `cutoff_margin ≤ 48` every cutoff stays below the
+/// 64-order safety bound (`⌈8⌉ + 48 = 56`, and the tail there is already
+/// far below the share, so the growth loop never runs).
 ///
 /// Verified against the independent time-grid DFT
 /// ([`peierls_fourier_coeffs`]) for linear, circular, elliptical, and
@@ -1429,13 +1462,19 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
 /// * `d` - real link displacement (Cartesian, length `DIM`).
 /// * `drive` - the light drive (modes `(l_α, a_α)`, base frequency `Ω₀`).
 /// * `q_min`, `q_max` - inclusive harmonic range to return.
-/// * `cutoff_margin` - minimum number of Bessel orders beyond `⌈R_α⌉`
-///   (the adaptive tail check may push `M_α` higher; only lower bounded
-///   by this).
+/// * `cutoff_margin` - minimum number of Bessel orders beyond `⌈R_α⌉`,
+///   in `0..=48` (the adaptive tail check may push `M_α` higher; only
+///   lower bounded by this).
 ///
 /// # Returns
 /// `C_q(d)` for `q = q_min..=q_max` as an [`Array1<Complex<f64>>`] of
 /// length `q_max - q_min + 1`.
+///
+/// # Errors
+/// Returns [`TbError::Other`] when `q_min > q_max`, when `cutoff_margin`
+/// is outside `0..=48`, when any mode amplitude `R_α` exceeds 8 (the
+/// caller must fall back to the time-grid backend), or when the harmonic
+/// range / working window would overflow `isize`.
 pub(crate) fn bessel_peierls_coeffs(
     d: &Array1<f64>,
     drive: &FloquetDrive,
@@ -1448,7 +1487,17 @@ pub(crate) fn bessel_peierls_coeffs(
             "bessel_peierls_coeffs: empty harmonic range [{q_min}, {q_max}]"
         )));
     }
-    let q_count = (q_max - q_min + 1) as usize;
+    if !(0..=48).contains(&cutoff_margin) {
+        return Err(TbError::Other(format!(
+            "bessel_peierls_coeffs: cutoff_margin = {cutoff_margin} outside [0, 48]"
+        )));
+    }
+    // q_max >= q_min here, so the span is non-negative; checked_sub guards
+    // the isize::MIN..=isize::MAX range against overflow.
+    let q_count = q_max.checked_sub(q_min).ok_or_else(|| {
+        TbError::Other("bessel_peierls_coeffs: harmonic range too wide".to_string())
+    })? as usize
+        + 1;
     // Empty drive: the Peierls exponential is 1, so only C_0 survives.
     if drive.modes.is_empty() {
         let mut coeffs = Array1::<Complex<f64>>::zeros(q_count);
@@ -1491,32 +1540,19 @@ pub(crate) fn bessel_peierls_coeffs(
         }
         // Adaptive cutoff: grow M until the two-sided Bessel tail
         // 2 * Σ_{m>M} |J_m(r)| falls below the per-mode error share.  With
-        // R ≤ 8 the tail reaches ~1e-13 near M ≈ 30, far below the safety
-        // cap of 64 — the cap is unreachable and asserted explicitly.
-        let mut m_cap = (r.ceil() as isize) + cutoff_margin.max(0);
-        loop {
-            // Tail = Σ_{m>M} |J_m(r)|: seed with |J_{M+1}|, then accumulate
-            // the following orders until they decay below the noise floor.
-            let mut tail = 0.0;
-            let mut current = bessel_j(m_cap + 1, r).abs();
-            for m in (m_cap + 2)..(m_cap + 201) {
-                tail += current;
-                if current < 1e-20 {
-                    break;
-                }
-                current = bessel_j(m, r).abs();
-            }
-            if 2.0 * tail <= error_share {
-                break;
-            }
-            m_cap += 1;
-            assert!(
-                m_cap <= 64,
-                "Bessel cutoff exceeded the safety cap for R = {r}"
-            );
-        }
+        // R ≤ 8 and cutoff_margin ≤ 48 the result is provably ≤ 64
+        // (⌈8⌉ + 48 = 56 and the tail there is already ~1e-64, far below
+        // the share, so the growth loop never runs) — asserted explicitly.
+        let m_cap = bessel_adaptive_m_cap(r, error_share, cutoff_margin);
+        assert!(
+            m_cap <= 64,
+            "Bessel cutoff exceeded the safety cap for R = {r}"
+        );
+        let harmonic_abs = mode.harmonic.checked_abs().ok_or_else(|| {
+            TbError::Other("bessel_peierls_coeffs: harmonic drift overflow".to_string())
+        })?;
         total_drift = total_drift
-            .checked_add(mode.harmonic.abs().checked_mul(m_cap).ok_or_else(|| {
+            .checked_add(harmonic_abs.checked_mul(m_cap).ok_or_else(|| {
                 TbError::Other("bessel_peierls_coeffs: harmonic drift overflow".to_string())
             })?)
             .ok_or_else(|| {
@@ -1533,9 +1569,21 @@ pub(crate) fn bessel_peierls_coeffs(
     // Second pass: the working window must cover the actual reachable
     // support [−drift, +drift] around [q_min, q_max], because intermediates
     // outside the requested range can fold back into it.
-    let work_min = q_min - total_drift;
-    let work_max = q_max + total_drift;
-    let work_len = (work_max - work_min + 1) as usize;
+    let work_min = q_min.checked_sub(total_drift).ok_or_else(|| {
+        TbError::Other("bessel_peierls_coeffs: working window underflow".to_string())
+    })?;
+    let work_max = q_max.checked_add(total_drift).ok_or_else(|| {
+        TbError::Other("bessel_peierls_coeffs: working window overflow".to_string())
+    })?;
+    // work_max >= work_min by construction (q_max >= q_min, drift >= 0), so
+    // the span is non-negative; checked_sub and usize::try_from are kept
+    // for hygiene.
+    let work_span = work_max.checked_sub(work_min).ok_or_else(|| {
+        TbError::Other("bessel_peierls_coeffs: working window span overflow".to_string())
+    })?;
+    let work_len = usize::try_from(work_span).map_err(|_| {
+        TbError::Other("bessel_peierls_coeffs: working window too large".to_string())
+    })? + 1;
 
     let mut sequence = vec![Complex::new(0.0, 0.0); work_len];
     if (0_isize..work_len as isize).contains(&(0 - work_min)) {
@@ -1546,6 +1594,7 @@ pub(crate) fn bessel_peierls_coeffs(
         // One-mode sequence B(m) = (-i)^m J_m(r) e^{-imδ}, m ∈ [-M, M].
         // Accumulate (-i)^m iteratively.
         let mut minus_i_power = Complex::new(1.0, 0.0); // (-i)^0
+        // m_cap <= 64 by the assert in the first pass, so this cannot overflow.
         let mut b = Vec::<(isize, Complex<f64>)>::with_capacity((2 * mode.m_cap + 1) as usize);
         for m in 0..=mode.m_cap {
             let value = minus_i_power
@@ -2062,6 +2111,40 @@ mod tests {
             assert!((out_of_range[(q - 5) as usize]).norm() == 0.0);
         }
         assert!(bessel_peierls_coeffs(&d, &drive, 3, 2, 6).is_err());
+
+        // cutoff_margin is bounded to [0, 48]: beyond that the starting
+        // cutoff can reach the Bessel library's inf region and the
+        // 64-order invariant breaks.
+        assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, 49).is_err());
+        assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, -1).is_err());
+    }
+
+    #[test]
+    fn bessel_coeffs_large_harmonics_stay_within_error_budget() {
+        // Regression for the two-pass window sizing: two modes l = ±400 at
+        // r = 8 make e^{-i a(t)·d} = e^{-i·16·cos(400·Ω₀·t)}, whose closed
+        // form is C_q = (-i)^q J_q(16) on bins divisible by 400 and zero
+        // for |q| < 400.  A fixed window capped at 4096 drift units
+        // clipped the fold support and got C_0 wrong by ~1e-3 for this
+        // drive.
+        let d = array![1.0, 0.0];
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(400, array![Complex::new(8.0, 0.0), Complex::new(0.0, 0.0)]),
+                LightMode::new(-400, array![Complex::new(8.0, 0.0), Complex::new(0.0, 0.0)]),
+            ],
+        );
+        let coeffs = bessel_peierls_coeffs(&d, &drive, -10, 10, 0).unwrap();
+        for q in -10..=10 {
+            // Graf's addition theorem: C_0 = Σ_m (-1)^m J_m(8)² = J_0(16).
+            let expected = if q == 0 { bessel_j(0, 16.0) } else { 0.0 };
+            let got = coeffs[(q + 10) as usize];
+            assert!(
+                (got - Complex::new(expected, 0.0)).norm() < 1e-12,
+                "q = {q}: got {got}, expected {expected}"
+            );
+        }
     }
 
     fn chain_model() -> Model<false, 1, NoRMatrix> {
