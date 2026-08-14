@@ -1359,7 +1359,12 @@ pub(crate) fn bessel_peierls_coeffs(
     q_min: isize,
     q_max: isize,
     cutoff_margin: isize,
-) -> Array1<Complex<f64>> {
+) -> Result<Array1<Complex<f64>>> {
+    if q_min > q_max {
+        return Err(TbError::Other(format!(
+            "bessel_peierls_coeffs: empty harmonic range [{q_min}, {q_max}]"
+        )));
+    }
     let q_count = (q_max - q_min + 1) as usize;
     // Empty drive: the Peierls exponential is 1, so only C_0 survives.
     if drive.modes.is_empty() {
@@ -1367,29 +1372,21 @@ pub(crate) fn bessel_peierls_coeffs(
         if q_min <= 0 && 0 <= q_max {
             coeffs[(0 - q_min) as usize] = Complex::new(1.0, 0.0);
         }
-        return coeffs;
+        return Ok(coeffs);
     }
 
-    // Total harmonic drift of one full fold pass: intermediates outside
-    // [q_min, q_max] can fold back into range, so the working window must
-    // cover the whole reachable support.
-    let max_order_guess = 64_isize;
-    let l_sum: isize = drive
-        .modes
-        .iter()
-        .map(|mode| mode.harmonic.abs())
-        .sum::<isize>()
-        .min(max_order_guess);
-    let drift = l_sum * max_order_guess.min(64);
-    let work_min = q_min - drift;
-    let work_max = q_max + drift;
-    let work_len = (work_max - work_min + 1) as usize;
-
-    let mut sequence = vec![Complex::new(0.0, 0.0); work_len];
-    sequence[(0 - work_min) as usize] = Complex::new(1.0, 0.0);
-
+    // Two-pass construction.  First pass: per-mode projections and adaptive
+    // cutoffs.  The Bessel path only supports R_α ≤ 8; the caller falls back
+    // to the time-grid backend beyond that (plan §7).
+    struct ModeData {
+        r: f64,
+        delta: f64,
+        harmonic: isize,
+        m_cap: isize,
+    }
+    let mut modes = Vec::<ModeData>::with_capacity(drive.modes.len());
     let error_share = 1e-12 / (drive.modes.len() as f64);
-
+    let mut total_drift = 0_isize;
     for mode in &drive.modes {
         // Mode projection onto the link: z = a·d = R e^{iδ}.
         let z: Complex<f64> = mode
@@ -1403,36 +1400,74 @@ pub(crate) fn bessel_peierls_coeffs(
             // Degenerate mode: only m = 0 contributes (B = 1), a no-op fold.
             continue;
         }
-        let delta = z.arg();
-        let l = mode.harmonic;
-
+        if r > 8.0 {
+            return Err(TbError::Other(format!(
+                "bessel_peierls_coeffs: mode amplitude R = {r:.3} exceeds the \
+                 Bessel backend's range (R ≤ 8); use the time-grid backend"
+            )));
+        }
         // Adaptive cutoff: grow M until the two-sided Bessel tail
-        // 2 * Σ_{m>M} |J_m(r)| falls below the per-mode error share.
+        // 2 * Σ_{m>M} |J_m(r)| falls below the per-mode error share.  With
+        // R ≤ 8 the tail reaches ~1e-13 near M ≈ 30, far below the safety
+        // cap of 64 — the cap is unreachable and asserted explicitly.
         let mut m_cap = (r.ceil() as isize) + cutoff_margin.max(0);
         loop {
+            // Tail = Σ_{m>M} |J_m(r)|: seed with |J_{M+1}|, then accumulate
+            // the following orders until they decay below the noise floor.
             let mut tail = 0.0;
             let mut current = bessel_j(m_cap + 1, r).abs();
-            for m in (m_cap + 1)..(m_cap + 200) {
+            for m in (m_cap + 2)..(m_cap + 201) {
                 tail += current;
                 if current < 1e-20 {
                     break;
                 }
-                current = bessel_j(m + 1, r).abs();
+                current = bessel_j(m, r).abs();
             }
-            if 2.0 * tail <= error_share || m_cap >= 64 {
+            if 2.0 * tail <= error_share {
                 break;
             }
             m_cap += 1;
+            assert!(
+                m_cap <= 64,
+                "Bessel cutoff exceeded the safety cap for R = {r}"
+            );
         }
+        total_drift = total_drift
+            .checked_add(mode.harmonic.abs().checked_mul(m_cap).ok_or_else(|| {
+                TbError::Other("bessel_peierls_coeffs: harmonic drift overflow".to_string())
+            })?)
+            .ok_or_else(|| {
+                TbError::Other("bessel_peierls_coeffs: harmonic drift overflow".to_string())
+            })?;
+        modes.push(ModeData {
+            r,
+            delta: z.arg(),
+            harmonic: mode.harmonic,
+            m_cap,
+        });
+    }
 
+    // Second pass: the working window must cover the actual reachable
+    // support [−drift, +drift] around [q_min, q_max], because intermediates
+    // outside the requested range can fold back into it.
+    let work_min = q_min - total_drift;
+    let work_max = q_max + total_drift;
+    let work_len = (work_max - work_min + 1) as usize;
+
+    let mut sequence = vec![Complex::new(0.0, 0.0); work_len];
+    if (0_isize..work_len as isize).contains(&(0 - work_min)) {
+        sequence[(0 - work_min) as usize] = Complex::new(1.0, 0.0);
+    }
+
+    for mode in &modes {
         // One-mode sequence B(m) = (-i)^m J_m(r) e^{-imδ}, m ∈ [-M, M].
         // Accumulate (-i)^m iteratively.
         let mut minus_i_power = Complex::new(1.0, 0.0); // (-i)^0
-        let mut b = Vec::<(isize, Complex<f64>)>::with_capacity((2 * m_cap + 1) as usize);
-        for m in 0..=m_cap {
+        let mut b = Vec::<(isize, Complex<f64>)>::with_capacity((2 * mode.m_cap + 1) as usize);
+        for m in 0..=mode.m_cap {
             let value = minus_i_power
-                * bessel_j(m, r)
-                * Complex::from_polar(1.0, -(m as f64) * delta);
+                * bessel_j(m, mode.r)
+                * Complex::from_polar(1.0, -(m as f64) * mode.delta);
             if m == 0 {
                 b.push((0, value));
             } else {
@@ -1440,8 +1475,8 @@ pub(crate) fn bessel_peierls_coeffs(
                 //       = i^m · (-1)^m J_m(r) e^{+imδ}
                 //       = (-i)^m J_m(r) e^{+imδ} (since i^m (-1)^m = (-i)^m)
                 let neg = minus_i_power
-                    * bessel_j(m, r)
-                    * Complex::from_polar(1.0, (m as f64) * delta);
+                    * bessel_j(m, mode.r)
+                    * Complex::from_polar(1.0, (m as f64) * mode.delta);
                 b.push((-m, neg));
                 b.push((m, value));
             }
@@ -1451,11 +1486,10 @@ pub(crate) fn bessel_peierls_coeffs(
         // Fold: S'_q = Σ_m S_{q + l·m} B(m).
         let mut next = vec![Complex::new(0.0, 0.0); work_len];
         for &(m, weight) in &b {
-            let shift = l * m;
+            let shift = mode.harmonic * m;
             for (index, _) in sequence.iter().enumerate() {
                 let q = work_min + index as isize;
-                let source_q = q + shift;
-                let source_index = source_q - work_min;
+                let source_index = q + shift - work_min;
                 if source_index >= 0 && (source_index as usize) < work_len {
                     next[index] += sequence[source_index as usize] * weight;
                 }
@@ -1464,9 +1498,9 @@ pub(crate) fn bessel_peierls_coeffs(
         sequence = next;
     }
 
-    Array1::from(
+    Ok(Array1::from(
         sequence[(q_min - work_min) as usize..(q_max - work_min + 1) as usize].to_vec(),
-    )
+    ))
 }
 
 fn peierls_fourier_coeffs(
@@ -1725,7 +1759,7 @@ mod tests {
             let drive = FloquetDrive::with_modes(0.8, vec![LightMode::new(1, amplitude.clone())]);
             let r = amplitude[0].norm();
             let delta = amplitude[0].arg();
-            let coeffs = bessel_peierls_coeffs(&d, &drive, -6, 6, 6);
+            let coeffs = bessel_peierls_coeffs(&d, &drive, -6, 6, 6).unwrap();
             for q in -6..=6 {
                 let expected = Complex::from_polar(1.0, -(q as f64) * std::f64::consts::FRAC_PI_2)
                     * bessel_j(q, r)
@@ -1772,7 +1806,7 @@ mod tests {
         for (case, drive) in cases.iter().enumerate() {
             let q_min = -5_isize;
             let q_max = 5_isize;
-            let bessel = bessel_peierls_coeffs(&d, drive, q_min, q_max, 6);
+            let bessel = bessel_peierls_coeffs(&d, drive, q_min, q_max, 6).unwrap();
             let time_grid = FloquetTimeGrid::new(drive, &FloquetTruncation::new(3, 512), q_min, q_max, 2);
             let dft = peierls_fourier_coeffs(&d, q_min, q_max, drive, &time_grid);
             for (q, (got, expected)) in bessel.iter().zip(dft.iter()).enumerate() {
@@ -1789,7 +1823,7 @@ mod tests {
     fn bessel_coeffs_handle_empty_drive() {
         let d = array![0.5];
         let drive = FloquetDrive::new(1.0);
-        let coeffs = bessel_peierls_coeffs(&d, &drive, -3, 3, 6);
+        let coeffs = bessel_peierls_coeffs(&d, &drive, -3, 3, 6).unwrap();
         for q in -3..=3 {
             let expected = if q == 0 {
                 Complex::new(1.0, 0.0)
@@ -1798,6 +1832,23 @@ mod tests {
             };
             assert!((coeffs[(q + 3) as usize] - expected).norm() < 1e-15);
         }
+    }
+
+    #[test]
+    fn bessel_coeffs_reject_large_amplitudes_and_bad_ranges() {
+        // R > 8 must error (the caller falls back to the time grid) instead
+        // of silently violating the 1e-12 error budget via the 64 cap.
+        let d = array![60.0];
+        let drive = FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(1.0, 0.0)])]);
+        assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, 6).is_err());
+
+        // Harmonic ranges that exclude 0 must not panic; q_min > q_max errors.
+        let zero_l = FloquetDrive::with_modes(1.0, vec![LightMode::new(0, array![Complex::new(0.1, 0.0)])]);
+        let out_of_range = bessel_peierls_coeffs(&d, &zero_l, 5, 7, 6).unwrap();
+        for q in 5..=7 {
+            assert!((out_of_range[(q - 5) as usize]).norm() == 0.0);
+        }
+        assert!(bessel_peierls_coeffs(&d, &drive, 3, 2, 6).is_err());
     }
 
     fn chain_model() -> Model<false, 1, NoRMatrix> {
