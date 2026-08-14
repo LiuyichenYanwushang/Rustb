@@ -4,7 +4,7 @@
 直接在实空间用广义 Bessel 展开构造一阶 van Vleck 有效模型。消除 `k_mesh` 与 `n_time`
 两个人为参数，主路径变为精确的实空间卷积。
 
-状态：设计阶段，未实现。时间网格路径保留为 reference backend。
+状态：一阶（order 0/1）实空间 Bessel 后端已实现并通过 benchmark（Step 1–6、§9 石墨烯 A–D，以及一般两带解析基准 Level I/II 与异频驱动 κ³ 标度）。**二阶 van Vleck（order=2，§9.5）暂不实现**。时间网格路径保留为 reference backend。
 
 ---
 
@@ -359,7 +359,10 @@ N 即 q_max 截断；断言 d_z(k) 的 k 依赖与系数随 q_max 增大收敛�
 不贡献是强结构性检查）。钉住：commutator 顺序、nħω 分母、H_{−n}=H_n† 配对、
 多光子 Bessel 内容。
 
-### 9.5 二阶 van Vleck（**未来批次，暂缓**）
+### 9.5 二阶 van Vleck（**暂不实现**）
+
+> **状态：暂不实现。** 代码目前只支持 order 0/1；`floquet_effective_model` 与
+> legacy 路径对 `order > 1` 显式返回错误。以下内容仅作未来参考，保留在计划中。
 
 文献二阶（arXiv:1511.00755 约定）：
 
@@ -380,4 +383,4 @@ Pauli 代数 σ_x,y → σ_z → σ_x,y 的结构性断言）。
 
 - G1：graphene 模型构造 + Benchmark A、B
 - G2：Benchmark C、D
-- G3（**未来批次，暂缓**）：order=2（support 泛化 + 双对易子 + legacy 同步）+ §15–16 基准
+- G3（**暂不实现**）：order=2（support 泛化 + 双对易子 + legacy 同步）+ §15–16 基准

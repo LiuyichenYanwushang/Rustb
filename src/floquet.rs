@@ -2071,31 +2071,38 @@ fn real_space_commutator(
 
     let one = Complex::new(1.0, 0.0);
     let minus_one = Complex::new(-1.0, 0.0);
-    let mut blocks = Vec::<Array2<Complex<f64>>>::with_capacity(support.len());
-    for r in &support {
-        let mut comm = Array2::<Complex<f64>>::zeros((nsta, nsta));
-        for (i_r2, r2_row) in ham_r.outer_iter().enumerate() {
-            // Both convolutions pair R' with R − R'; a missing R − R' just
-            // means a zero block, i.e. no term.
-            let r1: Vec<isize> = r.iter().zip(r2_row.iter()).map(|(a, b)| a - b).collect();
-            let Some(&i_r1) = index.get(&r1) else {
-                continue;
-            };
-            // comm += A_{R-R'} · B_{R'} — the (AB) term.
-            zgemm_row_accumulate(one, &a_blocks[i_r1], &b_blocks[i_r2], &mut comm);
-            // comm -= B_{R-R'} · A_{R'} — the (BA) term.
-            zgemm_row_accumulate(minus_one, &b_blocks[i_r1], &a_blocks[i_r2], &mut comm);
-        }
-        blocks.push(comm);
-    }
+    // Each output R is independent (it only reads the shared `a_blocks` /
+    // `b_blocks` and the lookup `index`), so the per-R double convolution is
+    // embarrassingly parallel.  `support` is a BTreeSet; converting it to a Vec
+    // first keeps the lexicographic order, and Rayon's `collect` preserves it.
+    let support_ordered: Vec<Vec<isize>> = support.into_iter().collect();
+    let blocks: Vec<Array2<Complex<f64>>> = support_ordered
+        .par_iter()
+        .map(|r| {
+            let mut comm = Array2::<Complex<f64>>::zeros((nsta, nsta));
+            for (i_r2, r2_row) in ham_r.outer_iter().enumerate() {
+                // Both convolutions pair R' with R − R'; a missing R − R' just
+                // means a zero block, i.e. no term.
+                let r1: Vec<isize> = r.iter().zip(r2_row.iter()).map(|(a, b)| a - b).collect();
+                let Some(&i_r1) = index.get(&r1) else {
+                    continue;
+                };
+                // comm += A_{R-R'} · B_{R'} — the (AB) term.
+                zgemm_row_accumulate(one, &a_blocks[i_r1], &b_blocks[i_r2], &mut comm);
+                // comm -= B_{R-R'} · A_{R'} — the (BA) term.
+                zgemm_row_accumulate(minus_one, &b_blocks[i_r1], &a_blocks[i_r2], &mut comm);
+            }
+            comm
+        })
+        .collect();
 
     // Enforce comm(R) = comm(−R)† exactly (fp symmetrization).
-    let mut stacked = Array3::<Complex<f64>>::zeros((support.len(), nsta, nsta));
+    let mut stacked = Array3::<Complex<f64>>::zeros((blocks.len(), nsta, nsta));
     for (i, block) in blocks.iter().enumerate() {
         stacked.index_axis_mut(Axis(0), i).assign(block);
     }
     enforce_real_space_hermiticity(&mut stacked, &support_rows)?;
-    let blocks: Vec<Array2<Complex<f64>>> = (0..support.len())
+    let blocks: Vec<Array2<Complex<f64>>> = (0..blocks.len())
         .map(|i| stacked.index_axis(Axis(0), i).to_owned())
         .collect();
 
@@ -3828,5 +3835,423 @@ mod tests {
                 "quasienergy {x} is outside the first Floquet zone"
             );
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // General two-band analytical benchmarks (square & rectangular lattices).
+    //
+    // These verify the first-order van Vleck effective model against analytic
+    // results for H_0(k) = ε(k) σ_0 + d(k)·σ under three drives:
+    //   * circular   a(t) = κ (cos Ωt, η sin Ωt)          (η = ±1 helicity),
+    //   * elliptical a(t) = (A_x cos Ωt, A_y sin Ωt),
+    //   * an exotic two-harmonic drive (cos Ωt, sin(2Ωt+α)) whose harmonics are
+    //     each linearly polarized, so its first-order commutator is O(κ³).
+    //
+    // Two independent analytic predictions are checked (fractional-k units,
+    // Ω = ħω in eV, κ = |e|A₀/ħ):
+    //   Level I  (exact in field): d_eff = d_0 + (2i/Ω) Σ_{q>0} (d_q × d_{−q})/q
+    //   Level II (weak field):     δd_CPL = (A_x A_y / 4π²Ω)(∂_x d × ∂_y d),
+    //                              δd_A²  = (κ² / 16π²)(∂_x² + ∂_y²) d.
+
+    /// Two-band QWZ-type model on a rectangular lattice `lat` (rows = lattice
+    /// vectors, both orbitals at the origin):
+    ///   d(k) = ( t_x cos 2πk_x, t_y sin 2πk_y, m − 2t_z (cos 2πk_x + cos 2πk_y) ),
+    ///   ε(k) = 0.
+    fn two_band_qwz(
+        tx: f64,
+        ty: f64,
+        tz: f64,
+        m: f64,
+        lat: [[f64; 2]; 2],
+    ) -> Model<false, 2, NoRMatrix> {
+        let lat = array![lat[0], lat[1]];
+        let orb = array![[0.0, 0.0], [0.0, 0.0]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(m, 0, 0, &array![0, 0], None);
+        model.set_hop(-m, 1, 1, &array![0, 0], None);
+        for r in [[1, 0], [0, 1]] {
+            model.set_hop(-tz, 0, 0, &array![r[0], r[1]], None);
+            model.set_hop(tz, 1, 1, &array![r[0], r[1]], None);
+        }
+        model.set_hop(tx / 2.0, 0, 1, &array![1, 0], None);
+        model.set_hop(tx / 2.0, 0, 1, &array![-1, 0], None);
+        model.set_hop(-ty / 2.0, 0, 1, &array![0, 1], None);
+        model.set_hop(ty / 2.0, 0, 1, &array![0, -1], None);
+        model
+    }
+
+    /// Analytic d(k) of `two_band_qwz` (fractional k, independent of `lat`).
+    fn qwz_d(k: &[f64; 2], tx: f64, ty: f64, tz: f64, m: f64) -> [f64; 3] {
+        let (kx, ky) = (TAU * k[0], TAU * k[1]);
+        [
+            tx * kx.cos(),
+            ty * ky.sin(),
+            m - 2.0 * tz * (kx.cos() + ky.cos()),
+        ]
+    }
+
+    /// Decompose a Hermitian 2×2 matrix H = ε σ_0 + d·σ into (ε, [d_x,d_y,d_z]).
+    fn decompose_two_band(h: &Array2<Complex<f64>>) -> (f64, [f64; 3]) {
+        let eps = (h[[0, 0]] + h[[1, 1]]).re / 2.0;
+        let dz = (h[[0, 0]] - h[[1, 1]]).re / 2.0;
+        let dx = h[[0, 1]].re;
+        let dy = -h[[0, 1]].im;
+        (eps, [dx, dy, dz])
+    }
+
+    /// Independent (non-Bessel, non-convolution) reference for H^(q)(k), the
+    /// q-th Fourier block of the Peierls-dressed Hamiltonian, by direct
+    /// trapezoidal integration of H(k,t) = Σ_R t(R) e^{i2πk·R} e^{−i a(t)·d_R}
+    /// over one period, with a(t) reconstructed from the drive modes.  Shares
+    /// no code with the Bessel / convolution / commutator machinery under test.
+    fn independent_dressed_harmonic(
+        model: &Model<false, 2, NoRMatrix>,
+        k: &[f64; 2],
+        drive: &FloquetDrive,
+        q: isize,
+        n_time: usize,
+    ) -> Array2<Complex<f64>> {
+        let nsta = model.nsta();
+        let norb = model.norb();
+        let mut hq = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        for it in 0..n_time {
+            let theta = TAU * (it as f64) / (n_time as f64);
+            let mut a = [0.0f64; 2];
+            for mode in &drive.modes {
+                let phase = Complex::new(0.0, -(mode.harmonic as f64) * theta).exp();
+                for (comp, ai) in mode.a_complex.iter().enumerate() {
+                    a[comp] += (ai * phase).re;
+                }
+            }
+            let mut h = Array2::<Complex<f64>>::zeros((nsta, nsta));
+            for (i_r, r_row) in model.hamR.outer_iter().enumerate() {
+                let r = [r_row[0], r_row[1]];
+                let bloch =
+                    Complex::new(0.0, TAU * (r[0] as f64 * k[0] + r[1] as f64 * k[1])).exp();
+                for i in 0..nsta {
+                    for j in 0..nsta {
+                        let t = model.ham[[i_r, i, j]];
+                        if t.norm_sqr() == 0.0 {
+                            continue;
+                        }
+                        let mut d = [0.0f64; 2];
+                        for c in 0..2 {
+                            let mut acc = 0.0;
+                            for b in 0..2 {
+                                let frac = r[b] as f64
+                                    + model.orb[[j % norb, b]]
+                                    - model.orb[[i % norb, b]];
+                                acc += frac * model.lat[[b, c]];
+                            }
+                            d[c] = acc;
+                        }
+                        let peierls = Complex::new(0.0, -(a[0] * d[0] + a[1] * d[1])).exp();
+                        h[[i, j]] += t * bloch * peierls;
+                    }
+                }
+            }
+            // C_q = (1/T)∫ e^{+iqΩt} (⋯) dt — matches the code's convention.
+            let fourier = Complex::new(0.0, (q as f64) * theta).exp();
+            hq.scaled_add(fourier, &h);
+        }
+        hq.mapv(|x| x / (n_time as f64))
+    }
+
+    /// Independent first-order van Vleck H_eff from the integrated harmonics.
+    fn independent_heff(
+        model: &Model<false, 2, NoRMatrix>,
+        k: &[f64; 2],
+        drive: &FloquetDrive,
+        q_max: isize,
+        n_time: usize,
+    ) -> Array2<Complex<f64>> {
+        let mut h_eff = independent_dressed_harmonic(model, k, drive, 0, n_time);
+        for q in 1..=q_max {
+            let hp = independent_dressed_harmonic(model, k, drive, q, n_time);
+            let hm = independent_dressed_harmonic(model, k, drive, -q, n_time);
+            let comm = hp.dot(&hm) - hm.dot(&hp);
+            let scale = Complex::new(1.0 / ((q as f64) * drive.omega0_ev), 0.0);
+            h_eff.scaled_add(scale, &comm);
+        }
+        h_eff
+    }
+
+    /// Code's first-order H_eff as a 2×2 matrix at fractional k.
+    fn code_heff(
+        model: &Model<false, 2, NoRMatrix>,
+        k: &[f64; 2],
+        drive: &FloquetDrive,
+        n_max: isize,
+        q_max: isize,
+    ) -> Array2<Complex<f64>> {
+        let trunc = FloquetTruncation::new(n_max, 512);
+        let options = FloquetEffectiveOptions::new().with_q_max(q_max);
+        let eff = model
+            .floquet_effective_model(drive, &trunc, Some(&options))
+            .unwrap();
+        eff.gen_ham(&array![k[0], k[1]], Gauge::Lattice)
+    }
+
+    /// Code's order-0 (Peierls-dressed static) H_eff at fractional k.
+    fn code_heff_order0(
+        model: &Model<false, 2, NoRMatrix>,
+        k: &[f64; 2],
+        drive: &FloquetDrive,
+        n_max: isize,
+    ) -> Array2<Complex<f64>> {
+        let trunc = FloquetTruncation::new(n_max, 512);
+        let options = FloquetEffectiveOptions::new().with_order(0);
+        let eff = model
+            .floquet_effective_model(drive, &trunc, Some(&options))
+            .unwrap();
+        eff.gen_ham(&array![k[0], k[1]], Gauge::Lattice)
+    }
+
+    fn circular_drive(kappa: f64, eta: f64, omega: f64) -> FloquetDrive {
+        FloquetDrive::with_modes(
+            omega,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(kappa, 0.0), Complex::new(0.0, eta * kappa)],
+            )],
+        )
+    }
+
+    fn elliptical_drive(ax: f64, ay: f64, omega: f64) -> FloquetDrive {
+        FloquetDrive::with_modes(
+            omega,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(ax, 0.0), Complex::new(0.0, ay)],
+            )],
+        )
+    }
+
+    /// a(t) = κ (cos Ωt, sin(2Ωt+α)): mode l=1 along x, l=2 along y with
+    /// a_y = κ(sin α + i cos α) (⇒ Re[…e^{−i2Ωt}] = κ sin(2Ωt+α)).
+    fn exotic_drive(kappa: f64, alpha: f64, omega: f64) -> FloquetDrive {
+        FloquetDrive::with_modes(
+            omega,
+            vec![
+                LightMode::new(
+                    1,
+                    array![Complex::new(kappa, 0.0), Complex::new(0.0, 0.0)],
+                ),
+                LightMode::new(
+                    2,
+                    array![
+                        Complex::new(0.0, 0.0),
+                        Complex::new(kappa * alpha.sin(), kappa * alpha.cos()),
+                    ],
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn two_band_level1_matches_independent_integration() {
+        // Level I: for a general two-band model the first-order van Vleck
+        // effective model must equal H^(0) + Σ_{q≥1} [H^(q),H^(−q)]/(qΩ) with
+        // H^(q) the dressed harmonics — checked against an independent
+        // time-integration of the dressed Hamiltonian, for circular, elliptical
+        // and exotic drives on both square and rectangular lattices.
+        let (tx, ty, tz, m) = (1.0, 0.7, 0.5, 0.8);
+        let omega = 8.0;
+        let n_time = 4096;
+        let q_max = 4;
+        let ks = [[0.13, 0.27], [0.44, 0.61]];
+        let lattices = [
+            ("square", [[1.0, 0.0], [0.0, 1.0]]),
+            ("rectangular", [[1.0, 0.0], [0.0, 1.6]]),
+        ];
+        for (lname, lat) in lattices {
+            let model = two_band_qwz(tx, ty, tz, m, lat);
+            let drives: Vec<(&str, FloquetDrive)> = vec![
+                ("circular", circular_drive(0.5, 1.0, omega)),
+                ("elliptical", elliptical_drive(0.5, 0.3, omega)),
+                ("exotic", exotic_drive(0.4, 0.6, omega)),
+            ];
+            for (dname, drive) in drives {
+                for k in ks {
+                    let code = code_heff(&model, &k, &drive, 2, q_max);
+                    let indep = independent_heff(&model, &k, &drive, q_max, n_time);
+                    for i in 0..2 {
+                        for j in 0..2 {
+                            assert!(
+                                (code[[i, j]] - indep[[i, j]]).norm() < 1e-8,
+                                "[{lname}/{dname}] k={k:?}: code {} vs independent {}",
+                                code[[i, j]],
+                                indep[[i, j]]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn two_band_weak_field_matches_cross_product() {
+        // Level II: in the weak-field limit the helicity-odd and -even parts of
+        // δd obey (fractional k, lat = I)
+        //   δd_CPL = η (κ²/4π²Ω) (∂_x d × ∂_y d),
+        //   δd_A²  =   (κ²/16π²) (∂_x² + ∂_y²) d.
+        // They are isolated from the exact (all-κ) code result by a two-point
+        // Richardson extrapolation in κ, removing the O(κ⁴) truncation error.
+        let (tx, ty, tz, m) = (1.0, 0.7, 0.5, 0.8);
+        let omega = 8.0;
+        let k = [0.17, 0.31];
+        let model = two_band_qwz(tx, ty, tz, m, [[1.0, 0.0], [0.0, 1.0]]);
+
+        let (kx, ky) = (TAU * k[0], TAU * k[1]);
+        let dx_d = [-TAU * tx * kx.sin(), 0.0, 2.0 * TAU * tz * kx.sin()];
+        let dy_d = [0.0, TAU * ty * ky.cos(), 2.0 * TAU * tz * ky.sin()];
+        let cross = [
+            dx_d[1] * dy_d[2] - dx_d[2] * dy_d[1],
+            dx_d[2] * dy_d[0] - dx_d[0] * dy_d[2],
+            dx_d[0] * dy_d[1] - dx_d[1] * dy_d[0],
+        ];
+        let lap = [
+            -TAU * TAU * tx * kx.cos(),
+            -TAU * TAU * ty * ky.sin(),
+            2.0 * tz * TAU * TAU * (kx.cos() + ky.cos()),
+        ];
+        let d_static = qwz_d(&k, tx, ty, tz, m);
+
+        // d_eff(η) at order 1 (q_max = 1 isolates the O(κ²) cross product).
+        let d_eff = |kappa: f64, eta: f64| -> [f64; 3] {
+            let drive = circular_drive(kappa, eta, omega);
+            let h = code_heff(&model, &k, &drive, 1, 1);
+            decompose_two_band(&h).1
+        };
+
+        let cpl = |kappa: f64| -> [f64; 3] {
+            let dp = d_eff(kappa, 1.0);
+            let dm = d_eff(kappa, -1.0);
+            [
+                (dp[0] - dm[0]) / 2.0,
+                (dp[1] - dm[1]) / 2.0,
+                (dp[2] - dm[2]) / 2.0,
+            ]
+        };
+        let a2 = |kappa: f64| -> [f64; 3] {
+            let dp = d_eff(kappa, 1.0);
+            let dm = d_eff(kappa, -1.0);
+            [
+                (dp[0] + dm[0]) / 2.0 - d_static[0],
+                (dp[1] + dm[1]) / 2.0 - d_static[1],
+                (dp[2] + dm[2]) / 2.0 - d_static[2],
+            ]
+        };
+
+        // f(κ) = C κ² + O(κ⁴) ⇒ C = (16 f(κ/2) − f(κ)) / (3 κ²).
+        let richardson = |f1: [f64; 3], f2: [f64; 3], k1: f64| -> [f64; 3] {
+            [
+                (16.0 * f2[0] - f1[0]) / (3.0 * k1 * k1),
+                (16.0 * f2[1] - f1[1]) / (3.0 * k1 * k1),
+                (16.0 * f2[2] - f1[2]) / (3.0 * k1 * k1),
+            ]
+        };
+
+        let kappa1 = 0.1;
+        let cpl_coeff = richardson(cpl(kappa1), cpl(kappa1 / 2.0), kappa1);
+        let a2_coeff = richardson(a2(kappa1), a2(kappa1 / 2.0), kappa1);
+
+        // Predicted coefficients (η = +1): cross/(4π²Ω) = cross/(TAU²Ω),
+        // lap/(16π²) = lap/(4·TAU²).
+        let cpl_pred = [
+            cross[0] / (TAU * TAU * omega),
+            cross[1] / (TAU * TAU * omega),
+            cross[2] / (TAU * TAU * omega),
+        ];
+        let a2_pred = [
+            lap[0] / (4.0 * TAU * TAU),
+            lap[1] / (4.0 * TAU * TAU),
+            lap[2] / (4.0 * TAU * TAU),
+        ];
+
+        for comp in 0..3 {
+            assert!(
+                (cpl_coeff[comp] - cpl_pred[comp]).abs() < 1e-4,
+                "CPL coefficient[{comp}]: {:.6} vs analytic {:.6}",
+                cpl_coeff[comp],
+                cpl_pred[comp]
+            );
+            assert!(
+                (a2_coeff[comp] - a2_pred[comp]).abs() < 1e-4,
+                "A² coefficient[{comp}]: {:.6} vs analytic {:.6}",
+                a2_coeff[comp],
+                a2_pred[comp]
+            );
+        }
+
+        // Elliptical generalization: δd_CPL = (A_x A_y / 4π²Ω) (∂_x d × ∂_y d).
+        // Isolate the helicity-odd part by A_y → −A_y; the O(κ⁴) truncation
+        // error is ~ (A δ)² relative ≈ 3e-3, i.e. ~1e-6 absolute — below the
+        // 1e-5 tolerance.
+        let d_eff_ell = |ax: f64, ay: f64| -> [f64; 3] {
+            let drive = elliptical_drive(ax, ay, omega);
+            let h = code_heff(&model, &k, &drive, 1, 1);
+            decompose_two_band(&h).1
+        };
+        let (ax, ay) = (0.08, 0.05);
+        let dp = d_eff_ell(ax, ay);
+        let dm = d_eff_ell(ax, -ay);
+        let cpl_ell = [
+            (dp[0] - dm[0]) / 2.0,
+            (dp[1] - dm[1]) / 2.0,
+            (dp[2] - dm[2]) / 2.0,
+        ];
+        for comp in 0..3 {
+            let pred = ax * ay * cross[comp] / (TAU * TAU * omega);
+            assert!(
+                (cpl_ell[comp] - pred).abs() < 1e-5,
+                "elliptical CPL[{comp}]: {:.6} vs analytic {:.6}",
+                cpl_ell[comp],
+                pred
+            );
+        }
+    }
+
+    #[test]
+    fn two_band_exotic_drive_first_order_commutator_is_cubic() {
+        // For a(t) = κ(cos Ωt, sin(2Ωt+α)) each harmonic is linearly polarized,
+        // so the O(κ²) first-order van Vleck commutator vanishes identically;
+        // the leading correction is O(κ³) (mode 1's cos² feeds q = 2 and mixes
+        // with mode 2's linear q = 2).  Verify the commutator part of the code's
+        // d scales as κ³ (ratio 8 for κ→κ/2), in contrast to circular (κ², ratio 4).
+        let (tx, ty, tz, m) = (1.0, 0.7, 0.5, 0.8);
+        let omega = 8.0;
+        let k = [0.21, 0.37];
+        let model = two_band_qwz(tx, ty, tz, m, [[1.0, 0.0], [0.0, 1.0]]);
+
+        let commutator_norm = |kappa: f64, drive: FloquetDrive| -> f64 {
+            let h1 = code_heff(&model, &k, &drive, 2, 4);
+            let h0 = code_heff_order0(&model, &k, &drive, 2);
+            let d1 = decompose_two_band(&h1).1;
+            let d0 = decompose_two_band(&h0).1;
+            ((d1[0] - d0[0]).powi(2) + (d1[1] - d0[1]).powi(2) + (d1[2] - d0[2]).powi(2))
+                .sqrt()
+        };
+
+        let exo1 = commutator_norm(0.3, exotic_drive(0.3, 0.6, omega));
+        let exo2 = commutator_norm(0.15, exotic_drive(0.15, 0.6, omega));
+        let ratio_exo = exo1 / exo2;
+        assert!(
+            exo1 > 1e-8,
+            "exotic-drive commutator must be non-vanishing at O(κ³), got {exo1:e}"
+        );
+        assert!(
+            (ratio_exo - 8.0).abs() < 1.0,
+            "exotic-drive commutator should scale as κ³ (ratio ≈ 8), got {ratio_exo:.2}"
+        );
+
+        let circ1 = commutator_norm(0.3, circular_drive(0.3, 1.0, omega));
+        let circ2 = commutator_norm(0.15, circular_drive(0.15, 1.0, omega));
+        let ratio_circ = circ1 / circ2;
+        assert!(
+            (ratio_circ - 4.0).abs() < 0.5,
+            "circular-drive commutator should scale as κ² (ratio ≈ 4), got {ratio_circ:.2}"
+        );
     }
 }
