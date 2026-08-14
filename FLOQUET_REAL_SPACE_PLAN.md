@@ -101,8 +101,8 @@ S^{(\alpha)}_q = \sum_{m=-M_\alpha}^{M_\alpha} S^{(\alpha-1)}_{q + l_\alpha m}\;
 
 ### 2.2 Bessel 函数求值
 
-`J_m(R)`：`m ≥ 0` 用级数（小 R）或 Miller 递推（大 R）；`J_{−m} = (−1)^m J_m`。
-一个纯函数 `bessel_j(m: isize, r: f64) -> f64`，单元测试对 `scipy.special.jv` 的查表值。
+`J_m(R)`：包装 `puruspe::Jn`（纯 Rust 特殊函数库，MIT/Apache-2.0；实测本范围最坏相对误差 ~2e-15）。
+负阶用 `J_{−m} = (−1)^m J_m`。一个纯函数 `bessel_j(m: isize, r: f64) -> f64`，单元测试对照 NIST 查表值 + 独立的 Miller 下行递推参照。
 
 ---
 
@@ -159,7 +159,7 @@ pub enum PeierlsFourierMethod {
     /// 时间网格数值 DFT（现状；reference/兜底）
     TimeGrid,
     /// 广义 Bessel 解析展开（精确、O(N_mode·N_q·M)）
-    Bessel { cutoff_margin: isize },   // M_α = ceil(R_α) + cutoff_margin
+    Bessel { cutoff_margin: isize },   // 最小 margin 与测试钩子；实际截断自适应（见 §2.1）
 }
 ```
 
@@ -181,7 +181,7 @@ fn bessel_peierls_coeffs(
 
 内部步骤：
 1. 每模算 `z_α = a_α·d` → `R_α, δ_α`（`R_α = 0` 时模退化为 `δ_{m,0}`，跳过）
-2. `M_α = ceil(R_α) + cutoff_margin`
+2. 自适应截断 `M_α`（尾部 `Σ_{|m|>M_α}|J_m(R_α)| ≤ ε`，`ε=1e-12`）；`cutoff_margin` 仅作最小 margin
 3. `S` 序列按 §2.1 折叠（长度 `q_max − q_min + 1`，卷积边界 clamp 到范围外=0）
 4. 返回 `S`
 
@@ -257,7 +257,7 @@ pub fn floquet_effective_model_legacy(
 | 圆偏振单束 | 单模，`a_α = a₀(e₁ ± i e₂)/√2` | 一般复 `z_α` → `R_α, δ_α` |
 | 椭圆偏振 | 单模，任意复 `a_α` | 同上 |
 | 多束同频相干 | 多模 `l_α = 1` | 递归卷积自动含束间干涉（交叉 `m_α` 项） |
-| 多频公度 | 多模 `l_α = p_α` | 选择定则 `Σ l_α m_α = q` 自动处理 |
+| 多频公度 | 多模 `l_α = p_α` | 选择定则 `Σ l_α m_α = −q` 自动处理 |
 | 多束非相干 | **不合并**：逐束构造模型后相加 | 调用方负责（与 DFT 路径语义一致） |
 | 不可公度频率 | 超出范围（需多维 Floquet） | 显式返回错误（检测基频不可约） |
 
@@ -266,12 +266,12 @@ pub fn floquet_effective_model_legacy(
 ## 6. 测试计划（每层独立 + 交叉验证）
 
 1. **Bessel 函数**：`bessel_j` 对照查表值（`m=0..20`，`R=0.1..5`），误差 < 1e-12
-2. **单模系数**：`C_q = (−i)^q J_q(R)e^{−iqδ}` 显式公式 vs `bessel_peierls_coeffs`
+2. **单模系数**：`C_q = (−i)^q J_q(R)e^{+iqδ}`（复振幅情形的正确相位；`δ ∈ {0,π}` 时退化为实形式）显式公式 vs `bessel_peierls_coeffs`
 3. **多模混频**：`l=(1,2)`、`l=(1,3)` 的 `C_q` vs 时间网格 DFT（误差 < 1e-10）
 4. **四束 tetrahedral**：`C_q` vs DFT；`T_eff` vs legacy k 空间路径（块级比较，误差 < 1e-10）
 5. **规范不变性**：同一物理位点不同代表点 → 相同能带（现有 `supercell_fold_preserves_physics_across_gauge_choices` 模式）
 6. **Hermiticity**：`T_eff(R) − T_eff(−R)† = 0`（逐块断言）
-7. **截断收敛**：`cutoff_margin` 翻倍 → 系数变化 < 1e-12
+7. **截断收敛**：最小 margin 翻倍 → 系数变化 < 1e-12（自适应截断在更小 margin 下即应稳定）
 8. **性能 smoke**：100×100 原胞、q_max=2 的 Bessel 路径 vs legacy 路径计时比（目标 >100×）
 
 ---
@@ -290,6 +290,6 @@ pub fn floquet_effective_model_legacy(
 1. `bessel_j` + 单模 `C_q` + 测试 1–2
 2. 递归卷积多模 `bessel_peierls_coeffs` + 测试 3
 3. d 去重缓存接入 `floquet_harmonic_cache`
-4. `real_space_commutator`（含 zgemm、P−P†）+ 单 q 测试
+4. `real_space_commutator`（两个卷积 `(AB)(R)`、`(BA)(R)`，均 zgemm）+ 单 q 测试
 5. `floquet_effective_model_bessel` 组装 + 测试 4–7
 6. legacy 保留与公开 API 切换 + 性能 smoke

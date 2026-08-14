@@ -1271,9 +1271,9 @@ fn validate_target_hamr<const DIM: usize>(target_ham_r: &Array2<isize>) -> Resul
 /// Integer-order Bessel function of the first kind, `J_m(r)`, for real
 /// non-negative arguments.
 ///
-/// Thin wrapper over [`puruspe::Jn`] (pure Rust, zero dependencies,
-/// MIT/Apache-2.0), which supplies full double precision over the Floquet
-/// backend's range (`r ≤ 8`, `|m| ≤ ~24`).  Negative orders use the
+/// Thin wrapper over [`puruspe::Jn`] (pure Rust special-functions crate,
+/// MIT/Apache-2.0; measured worst relative error ~2e-15 over the Floquet
+/// backend's range `r ≤ 8`, `|m| ≤ ~24`).  Negative orders use the
 /// symmetry
 ///
 /// ```math
