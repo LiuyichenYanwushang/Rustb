@@ -476,7 +476,7 @@ from a uniform k-mesh.
 | `FloquetDrive` | `omega0_ev` + `Vec<LightMode>`; builder: `new()`, `with_modes()`, `add_mode()` |
 | `FloquetTruncation` | Photon cutoff `n_max` and time-grid `n_time`; `n_sector()` = `2n_max+1` |
 | `IncidentBasis` | Transverse polarization basis from incident direction |
-| `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_q_max(q)`, `with_target_hamR(rs)` |
+| `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_q_max(q)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
 | `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
 | `Model::floquet_effective_model` | Inherent method returning same-size effective Model |
 

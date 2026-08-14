@@ -282,9 +282,9 @@ pub(crate) fn floquet_effective_model_legacy(
 6. **Hermiticity**：`T_eff(R) − T_eff(−R)† = 0`（逐块断言）
 7. **截断收敛**：最小 margin 翻倍 → 系数变化 < 1e-12（自适应截断在更小 margin 下即应稳定）
 8. **性能 smoke**（已实现）：2D 双轨道模型、q_max=2，warmup 后 Bessel 路径 vs legacy
-   （[64,64] k-mesh）计时比——断言 10x 下限 + 100µs 地板 + Bessel 侧 min-of-3 采样
-   （防负载尖峰；legacy 成本随 k_mesh² 增长而 Bessel 路径与 k_mesh 无关，
-   更大网格下比值远超 100x）
+   （[128,128] k-mesh）计时比——断言 10x 下限 + 100µs 地板 + 两侧 min-of-3 采样
+   （防负载尖峰；实测比值 98–134x；legacy 成本随 k_mesh² 增长而 Bessel 路径与
+   k_mesh 无关，更大网格下比值远超 100x）
 
 ---
 
