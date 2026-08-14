@@ -1271,29 +1271,29 @@ fn validate_target_hamr<const DIM: usize>(target_ham_r: &Array2<isize>) -> Resul
 /// Integer-order Bessel function of the first kind, `J_m(r)`, for real
 /// non-negative arguments.
 ///
-/// Evaluated with the ascending series
+/// Thin wrapper over [`puruspe::Jn`] (pure Rust, zero dependencies,
+/// MIT/Apache-2.0), which supplies full double precision over the Floquet
+/// backend's range (`r ≤ 8`, `|m| ≤ ~24`).  Negative orders use the
+/// symmetry
 ///
 /// ```math
-/// J_m(r) = \sum_{k=0}^{\infty}
-/// \frac{(-1)^k\,(r/2)^{2k+m}}{k!\,(k+m)!},
+/// J_{-m}(r) = (-1)^m J_m(r).
 /// ```
 ///
-/// whose terms decay like `(r/2)^{2k}/(k!)^2` — comfortably within 1e-15
-/// relative error for the arguments used by the Floquet Bessel backend
-/// (`r` up to roughly 8).  Negative orders use the symmetry
-/// `J_{-m}(r) = (-1)^m J_m(r)`.
+/// Cross-checked in tests against an independent Miller downward-recurrence
+/// reference and tabulated NIST values.
 ///
 /// # Arguments
 /// * `m` - integer order (may be negative).
-/// * `r` - non-negative real argument.
+/// * `r` - non-negative finite argument (call sites pass `|a·d|`).
 ///
 /// # Panics
-/// Panics on a negative argument (`r < 0` is not part of the Floquet
-/// backend's domain; call sites pass bond lengths `|a·d|`).
+/// Panics on a negative or non-finite argument, both outside the Floquet
+/// backend's domain.
 pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
     assert!(
-        r >= 0.0,
-        "bessel_j expects a non-negative argument, got {r}"
+        r.is_finite() && r >= 0.0,
+        "bessel_j expects a non-negative finite argument, got {r}"
     );
     if m < 0 {
         // J_{-m}(r) = (-1)^m J_m(r)
@@ -1303,30 +1303,10 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
             bessel_j(-m, r)
         };
     }
-    let m = m as usize;
     if r == 0.0 {
         return if m == 0 { 1.0 } else { 0.0 };
     }
-    // First term: (r/2)^m / m!.
-    let mut term = (r / 2.0).powi(m as i32) / factorial(m);
-    let mut sum = term;
-    let negative_r_squared_over_4 = -(r * r) / 4.0;
-    for k in 1.. {
-        term *= negative_r_squared_over_4 / ((k * (k + m)) as f64);
-        sum += term;
-        // The series is alternating once k is large enough; break when the
-        // term is negligible relative to the accumulated sum.
-        if term.abs() <= sum.abs() * 1e-16 {
-            break;
-        }
-    }
-    sum
-}
-
-/// `n!` for `n <= 170` (beyond that the f64 factorial overflows; the Bessel
-/// series only ever needs orders up to ~`R + margin`, well below this).
-fn factorial(n: usize) -> f64 {
-    (1..=n).fold(1.0, |acc, k| acc * k as f64)
+    puruspe::Jn(m as u32, r)
 }
 
 fn peierls_fourier_coeffs(
@@ -1488,6 +1468,63 @@ mod tests {
                 "J_{m}({r}) = {got}, expected {expected}"
             );
         }
+    }
+
+    #[test]
+    fn bessel_j_matches_independent_miller_reference() {
+        // The planned Bessel backend operates up to r = 8 with orders up to
+        // ~r + 16.  Cross-check the ascending series against an INDEPENDENT
+        // algorithm: Miller's downward recurrence, normalized by the
+        // identity J_0(r) + 2*sum_k J_{2k}(r) = 1 (stable in the direction
+        // the series is not).
+        let miller = |r: f64, mmax: usize| -> Vec<f64> {
+            let start = mmax + 20;
+            let mut next = 0.0_f64; // J_{start+1} ~ 0
+            let mut current = 1.0_f64; // J_start (unscaled)
+            let mut values = vec![0.0_f64; start + 1];
+            for k in (0..start).rev() {
+                values[k] = current;
+                let k_prev = k as f64;
+                // J_{k-1} = (2k/r) J_k - J_{k+1}
+                let prev = if k == 0 {
+                    0.0
+                } else {
+                    (2.0 * k_prev / r) * current - next
+                };
+                next = current;
+                current = prev;
+            }
+            // Normalize: J_0(r) + 2 sum_{k>=1} J_{2k}(r) = 1.
+            let j0_unscaled = values[0];
+            let even_sum: f64 = values.iter().step_by(2).skip(1).sum::<f64>();
+            let scale = 1.0 / (j0_unscaled + 2.0 * even_sum);
+            values.iter().map(|v| v * scale).collect()
+        };
+
+        for r in [0.3, 1.0, 3.0, 5.0, 8.0] {
+            let reference = miller(r, 20);
+            for m in 0..=16 {
+                let got = bessel_j(m as isize, r);
+                assert!(
+                    (got - reference[m]).abs() < 1e-11,
+                    "J_{m}({r}) = {got}, Miller reference {}",
+                    reference[m]
+                );
+            }
+        }
+
+        // Near a Bessel zero only absolute error is meaningful
+        // (J_1 has a zero at 7.01559...).
+        let near_zero = bessel_j(1, 7.015586669815619);
+        assert!(
+            near_zero.abs() < 1e-12,
+            "J_1 near its zero must be tiny in absolute value, got {near_zero}"
+        );
+        // Tiny argument: J_0(1e-12) = 1 - 2.5e-25, J_1(1e-12) = 5e-13.
+        // puruspe is accurate to ~1 ulp of 1.0 (2.2e-16), so assert the
+        // 1-ulp bound rather than the exact analytic deviation.
+        assert!((bessel_j(0, 1e-12) - 1.0).abs() < 3e-16);
+        assert!((bessel_j(1, 1e-12) - 5e-13).abs() < 1e-25);
     }
 
     #[test]

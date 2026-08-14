@@ -59,14 +59,15 @@ e^{-i a(t)\cdot d}
 \prod_{\alpha} \sum_{m_\alpha} (-i)^{m_\alpha} J_{m_\alpha}(R_\alpha)\, e^{-i m_\alpha \delta_\alpha}\, e^{i m_\alpha l_\alpha \Omega_0 t}.
 ```
 
-Fourier 投影 `C_q(d) = (1/T_0)\int e^{iq\Omega_0 t} e^{-ia(t)\cdot d} dt`（`T_0 = 2π/Ω₀`）给出选择定则
-`Σ_α l_α m_α = q`：
+Fourier 投影 `C_q(d) = (1/T_0)\int e^{iq\Omega_0 t} e^{-ia(t)\cdot d} dt`（`T_0 = 2π/Ω₀`）。
+共振条件 `q + Σ_α l_α m_α = 0`，即选择定则 **`Σ_α l_α m_α = −q`**（已由直接数值积分验证；
+等价的另一种写法是 `Σ l m = +q` 配相位 `e^{+imδ}`——两者不可混用）：
 
 ```math
 \boxed{
 C_q(d)
 =
-\sum_{\{m_\alpha\}\,:\,\sum_\alpha l_\alpha m_\alpha = q}
+\sum_{\{m_\alpha\}\,:\,\sum_\alpha l_\alpha m_\alpha = -q}
 \;\prod_\alpha\; (-i)^{m_\alpha}\, J_{m_\alpha}\!\big(R_\alpha(d)\big)\,
 e^{-i m_\alpha \delta_\alpha(d)}
 }
@@ -81,18 +82,21 @@ B_\alpha(m) := (-i)^m\, J_m(R_\alpha)\, e^{-i m \delta_\alpha},
 \qquad -M_\alpha \le m \le M_\alpha.
 ```
 
-顺序折叠（离散卷积）：
+顺序折叠（离散卷积，注意 **`+l_α m`** 的方向来自共振条件 `q + Σ l m = 0`）：
 
 ```math
 S^{(0)}_q = \delta_{q,0},
 \qquad
-S^{(\alpha)}_q = \sum_{m=-M_\alpha}^{M_\alpha} S^{(\alpha-1)}_{q - l_\alpha m}\; B_\alpha(m).
+S^{(\alpha)}_q = \sum_{m=-M_\alpha}^{M_\alpha} S^{(\alpha-1)}_{q + l_\alpha m}\; B_\alpha(m).
 ```
 
 全部模折叠完成后 `C_q = S^{(N_mode)}_q`。
 
 **复杂度**：`O(N_mode × N_q × M_avg)`，与 `n_time` 无关。
-**截断**：`J_m(R) ~ (R/2)^m/m!`，取 `M_α = ⌈R_α⌉ + 6`（误差 < `(R/2)^M/M!`，对 `R ≤ 5` 即 < 1e-12）。
+**截断**：截断误差以尾部 `Σ_{|m|>M_α}|J_m(R_α)|` 衡量（实测：`R=5`、`M=11`（margin 6）→ **1.9e-4**；`R=8`、`M=14` → ~8e-4——单模尾并非 `(R/2)^M/M!` 单一项，而是整条尾之和）。
+达到 <1e-12 需 `M = ⌈R⌉ + 16` 量级。**实现采用自适应截断**：逐模增大 `M_α` 直到
+`Σ_{|m|>M_α}|J_m(R_α)| ≤ ε/(N_mode·S_α)`（`S_α` 为当前部分和上界，`ε = 1e-12`），
+而非固定 margin。`cutoff_margin` 参数仅作最小 margin 与测试钩子保留。
 对超大 `R_α`（强场）退化为渐近展开或回退时间网格（见 §7）。
 
 ### 2.2 Bessel 函数求值
@@ -104,26 +108,26 @@ S^{(\alpha)}_q = \sum_{m=-M_\alpha}^{M_\alpha} S^{(\alpha-1)}_{q - l_\alpha m}\;
 
 ## 3. 实空间一阶 van Vleck（精确、无 k 空间）
 
-记号：`A_R := T_q(R) = t(R)·C_q(d_R)`（就是 `FloquetHarmonicCache` 的块）。
-实空间 Hermiticity 对（已验证）：`T_{−q}(R) = T_q(−R)^\dagger`。
+记号：`A_R := T_q(R) = t(R)·C_q(d_R)`，`B_R := T_{−q}(R)`（都是 `FloquetHarmonicCache` 的块）。
+实空间 Hermiticity 对（已验证）：`B_R = A_{−R}^\dagger`，且 k 空间里 `B(k) = A(k)^\dagger`。
 
-k 空间乘积的实空间块 = 离散卷积：
-
-```math
-(A A^\dagger)(R) = \sum_{R'} A_{R-R'}\, A_{-R'}^\dagger,
-\qquad
-(A^\dagger A)(R) = (A A^\dagger)(R)^\dagger.
-```
-
-故对易子只需**一个方向的卷积**：
+对易子块 = **两个方向的离散卷积**（已验证 `(BA)(R) ≠ (AB)(R)^\dagger`——块一般不交换，
+"单卷积 + 共轭"的简化是**错误的**，会让 `H_eff` 产生 O(1) 误差）：
 
 ```math
 \boxed{
-\mathrm{comm}_q(R) = P_q(R) - P_q(R)^\dagger,
+\mathrm{comm}_q(R)
+=
+(AB)(R) - (BA)(R),
 \qquad
-P_q(R) = \sum_{R'} A_{R-R'}\, A_{-R'}^\dagger
+(AB)(R) = \sum_{R'} A_{R-R'}\, B_{R'},
+\qquad
+(BA)(R) = \sum_{R'} B_{R-R'}\, A_{R'}
 }
 ```
+
+Hermiticity 由构造保证（k 空间 `comm(k) = [A, A†]` Hermitian ⇒ 实空间对
+`comm(R) = comm(−R)^\dagger`），fp 噪声在后处理中对称化。
 
 一阶有效模型（**完全实空间、精确、自动 Hermitian**）：
 
@@ -137,10 +141,11 @@ T_0(R)
 }
 ```
 
-- **support 自动确定**：`supp(T_eff) = supp(T_0) ∪ ⋃_q [supp(A) + supp(A)]`（Minkowski 和），
+- **support 自动确定**：`supp(T_eff) = supp(T_0) ∪ ⋃_q [supp(A) + supp(B)]`（Minkowski 和），
   不再需要 `target_hamR` 参数；
 - **无 k_mesh、无混叠、无逆 FT**；
-- 复杂度 `O(|supp|² × q_max × nsta³)`，且每个 `A_{R−R'}·A_{−R'}†` 用 `blas::zgemm`。
+- 复杂度 `O(|supp|² × q_max × nsta³)`，每个乘积 `A_{R−R'}·B_{R'}`、`B_{R−R'}·A_{R'}` 用 `blas::zgemm`
+  （两个卷积都要算，"P − P† 半乘法"不成立）。
 
 ---
 
@@ -194,20 +199,23 @@ spin up/down 共用同一 `d`，对称键 `±d` 通过 `C_q(−d) = C_{−q}(d)*
 ### 4.4 实空间对易子
 
 ```rust
-/// A_R 块与 hamR 一一对应（T_q(R)）。
+/// A_R = T_q(R)、B_R = T_{−q}(R)，均与 hamR 一一对应（来自谐波缓存）。
 /// 返回 (comm(R) 块序列, 其 R 矢量序列)。
 fn real_space_commutator(
-    a_blocks: &[Array2<Complex<f64>>],   // 长度 = hamR.nrows()
+    a_blocks: &[Array2<Complex<f64>>],   // T_q(R)，长度 = hamR.nrows()
+    b_blocks: &[Array2<Complex<f64>>],   // T_{−q}(R)，长度 = hamR.nrows()
     ham_r: &Array2<isize>,
 ) -> (Vec<Array2<Complex<f64>>>, Array2<isize>)
 ```
 
 步骤：
 1. `supp = {R1 + R2 : R1, R2 ∈ hamR}`（Minkowski 和，去重、含 0）
-2. 对每个 `R ∈ supp`：`P(R) = Σ_{R' ∈ hamR, R−R' ∈ hamR} A_{R−R'} · zgemm A_{−R'}†`
-   （`A_{−R'}†` = 缓存块取 `−R'` 的共轭转置；按块索引查找，用 `HashMap<R, usize>`）
-3. `comm(R) = P(R) − P(R)†`
-4. fp 后处理：强制 `comm(R) = comm(−R)†`（对称化，容差 `1e-12`）
+2. 对每个 `R ∈ supp`：
+   `(AB)(R) = Σ_{R'} A_{R−R'} · zgemm B_{R'}`，
+   `(BA)(R) = Σ_{R'} B_{R−R'} · zgemm A_{R'}`（块索引用 `HashMap<R, usize>` 查）
+3. `comm(R) = (AB)(R) − (BA)(R)`
+4. fp 后处理：强制 `comm(R) = comm(−R)†`（对称化，容差 `1e-12`；构造本身已 Hermitian，
+   这一步只清浮点噪声）
 
 ### 4.5 顶层入口
 

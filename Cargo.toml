@@ -38,6 +38,7 @@ cblas-sys = "0.2.0"
 katexit = "0.1.5"
 thiserror = "2.0.12"
 toml = "0.8"
+puruspe = "0.4"
 cryspglib = { path = "../cryspglib", version = "0.1.0", optional = true, default-features = false }
 
 
