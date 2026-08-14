@@ -224,15 +224,15 @@ fn real_space_commutator(
 5. support 不闭合于 `R → −R` 时返回 `MissingHermitianConjugateHopping`
    （仅手改 hamR 破坏 Model 不变式时发生）
 
-### 4.5 顶层入口
+### 4.5 顶层入口（已实现，Step 6 起为 `floquet_effective_model`）
 
 ```rust
-/// 实空间 Bessel 有效模型（新主路径）
-pub fn floquet_effective_model_bessel(
+/// 实空间 Bessel 有效模型（最终主路径，Step 6 起占用此名字）
+pub fn floquet_effective_model(
     &self,
     drive: &FloquetDrive,
     trunc: &FloquetTruncation,
-    options: &FloquetEffectiveOptions,     // 只含 order=1、q_max
+    options: Option<&FloquetEffectiveOptions>,   // order=1、q_max；target_hamR 报错
 ) -> Result<Model<SPIN, DIM, NoRMatrix>>
 ```
 
@@ -246,8 +246,8 @@ pub fn floquet_effective_model_bessel(
 ### 4.6 旧路径保留（已实现）
 
 ```rust
-/// k 空间 + 逆 FT 参考路径，改名 *_legacy，供交叉验证与自定义 target_hamR 使用
-pub fn floquet_effective_model_legacy(
+/// k 空间 + 逆 FT 参考路径，改名 *_legacy，pub(crate)——仅内部交叉验证使用
+pub(crate) fn floquet_effective_model_legacy(
     &self, drive, trunc, k_mesh, options
 ) -> Result<Model<SPIN, DIM, NoRMatrix>>
 ```
@@ -281,7 +281,10 @@ pub fn floquet_effective_model_legacy(
 5. **规范不变性**：同一物理位点不同代表点 → 相同能带（现有 `supercell_fold_preserves_physics_across_gauge_choices` 模式）
 6. **Hermiticity**：`T_eff(R) − T_eff(−R)† = 0`（逐块断言）
 7. **截断收敛**：最小 margin 翻倍 → 系数变化 < 1e-12（自适应截断在更小 margin 下即应稳定）
-8. **性能 smoke**：100×100 原胞、q_max=2 的 Bessel 路径 vs legacy 路径计时比（目标 >100×）
+8. **性能 smoke**（已实现）：2D 双轨道模型、q_max=2，warmup 后 Bessel 路径 vs legacy
+   （[64,64] k-mesh）计时比——断言 10x 下限 + 100µs 地板 + Bessel 侧 min-of-3 采样
+   （防负载尖峰；legacy 成本随 k_mesh² 增长而 Bessel 路径与 k_mesh 无关，
+   更大网格下比值远超 100x）
 
 ---
 
@@ -303,6 +306,6 @@ pub fn floquet_effective_model_legacy(
 2. 递归卷积多模 `bessel_peierls_coeffs` + 测试 3
 3. d 去重缓存接入 `floquet_harmonic_cache`
 4. `real_space_commutator`（两个卷积 `(AB)(R)`、`(BA)(R)`，均 zgemm）+ 单 q 测试
-5. `floquet_effective_model_bessel` 组装 + 测试 4–7
+5. `floquet_effective_model`（初名 `floquet_effective_model_bessel`，Step 6 起占用主名）组装 + 测试 4–7
 6. legacy 保留与公开 API 切换 + 性能 smoke + SKILLS.md/README 文档更新
    （最终 API 定型后一次性更新）+ spinful 模型交叉验证测试

@@ -491,8 +491,9 @@ from a uniform k-mesh.
 order: `(photon sector, orbital)`. Spinful: `(spin, photon sector, orbital)`.
 It replicates the input atom metadata and orbital projections in the same
 sector-major order. `floquet_effective_model` preserves the input metadata
-unchanged. A custom `target_hamR` must contain unique vectors and be closed
-under `R -> -R`.
+unchanged and determines its own real-space support (Minkowski sum of the
+input `hamR`); a custom `target_hamR` (legacy path only) must contain unique
+vectors and be closed under `R -> -R`.
 
 ---
 

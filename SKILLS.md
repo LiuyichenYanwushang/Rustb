@@ -475,31 +475,8 @@ let effective =
 | `floquet_effective_model` | `nsta` | Off-resonant, high-frequency expansion |
 
 `floquet_effective_model` uses the real-space generalized-Bessel backend:
-no `k_mesh` and no `target_hamR` (the effective hopping support is
-determined automatically as the Minkowski sum of the input `hamR`).
-The legacy k-space reference path `floquet_effective_model_legacy` is kept
-for cross-validation and custom hopping ranges; there the target vectors
-must be unique and closed under `R -> -R`:
-
-```rust
-let options = FloquetEffectiveOptions::new()
-    .with_order(1)
-    .with_q_max(2)
-    .with_target_hamR(array![
-        [-1, 0],
-        [0, -1],
-        [0, 0],
-        [0, 1],
-        [1, 0],
-    ]);
-
-let effective = model.floquet_effective_model_legacy(
-    &drive,
-    &truncation,
-    [32, 32],
-    Some(&options),
-)?;
-```
+no `k_mesh` and no `target_hamR` — the effective hopping support is
+determined automatically as the Minkowski sum of the input `hamR`.
 
 For three-dimensional illumination, `IncidentBasis::from_direction` constructs
 two transverse polarization vectors from a propagation direction.
