@@ -3102,6 +3102,139 @@ mod tests {
         );
     }
 
+    /// Honeycomb graphene: two sublattices at the origin, nearest-neighbour
+    /// hopping `j` along `e_0 = (0,1)a`, `e_1 = (−√3/2, −1/2)a`,
+    /// `e_2 = (√3/2, −1/2)a` (with `a = 1`), using the triangular Bravais
+    /// basis `a1 = (√3/2, 1/2)`, `a2 = (√3/2, −1/2)`.
+    fn graphene_model(j: f64) -> Model<false, 2, NoRMatrix> {
+        let lat = array![[3f64.sqrt() / 2.0, 0.5], [3f64.sqrt() / 2.0, -0.5],];
+        let orb = array![[0.0, 0.0], [0.0, 0.0]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        // e_0 = a1 − a2, e_1 = −a1, e_2 = a2.
+        for r in [[1, -1], [-1, 0], [0, 1]] {
+            model.set_hop(j, 0, 1, &array![r[0], r[1]], None);
+        }
+        model
+    }
+
+    /// Literature Fourier component for right-handed circular light
+    /// (arXiv:1511.00755 conventions):
+    /// `q_n(k) = J·J_n(α)·Σ_l e^{−ik·e_l} e^{i2πnl/3}` with the matrix
+    /// `H_n = [[0, q_n], [q*_{−n}, 0]]`.  The literature `k` is the
+    /// Cartesian wavevector; with fractional `k` the bond phase is
+    /// `k_cart·e_l = 2π·k_frac·R_int` where `R_int` is the integer
+    /// lattice vector of the bond (the non-orthonormal `lat` matrix must
+    /// not be dropped).
+    fn graphene_q_n_lit(n: isize, k: &[f64; 2], j: f64, alpha: f64) -> Complex<f64> {
+        // Integer bond vectors: e_0 = a1 − a2, e_1 = −a1, e_2 = a2.
+        let e_int = [[1, -1], [-1, 0], [0, 1]];
+        let mut sum = Complex::new(0.0, 0.0);
+        for (l, r) in e_int.iter().enumerate() {
+            let phase = -TAU * (k[0] * r[0] as f64 + k[1] * r[1] as f64)
+                + TAU * (n as f64) * (l as f64) / 3.0;
+            sum += Complex::new(0.0, phase).exp();
+        }
+        j * bessel_j(n, alpha) * sum
+    }
+
+    /// Right-handed circular drive `a = α·(1, i)`, which reproduces the
+    /// literature `a(t)·e_l = α·sin(ωt − 2πl/3)`.
+    fn graphene_circular_drive(alpha: f64) -> FloquetDrive {
+        FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(alpha, 0.0), Complex::new(0.0, alpha)],
+            )],
+        )
+    }
+
+    #[test]
+    fn graphene_harmonics_match_literature_fourier_components() {
+        // Benchmark A: H_n(k) elementwise against the literature Fourier
+        // components.  Convention mapping: this library's gen_ham uses
+        // e^{+i2πk·R}, the literature uses e^{−ik·R}, so our H_n(k)
+        // equals the literature H_n(−k) — asserted elementwise to 1e-12.
+        // This pins the Peierls phase sign, the Bessel phase δ_l
+        // (including the (−1)^n structure from e^{±in(θ_l+π)}), and the
+        // H_{−n} = H_n† pairing.
+        let j = -1.0;
+        let model = graphene_model(j);
+        let trunc = FloquetTruncation::new(4, 512);
+        for alpha in [0.3, 0.8] {
+            let drive = graphene_circular_drive(alpha);
+            let cache = model.floquet_harmonic_cache(
+                &drive,
+                &trunc,
+                -4,
+                4,
+                &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            );
+            for k in [[0.13, 0.21], [0.5, 0.5], [0.87, 0.11]] {
+                let kvec = array![k[0], k[1]];
+                let k_neg = [-k[0], -k[1]];
+                for q in -4..=4 {
+                    let hq = model.floquet_cached_harmonic_onek(&kvec, q, Gauge::Lattice, &cache);
+                    let lit = array![
+                        [
+                            Complex::new(0.0, 0.0),
+                            graphene_q_n_lit(q, &k_neg, j, alpha),
+                        ],
+                        [
+                            graphene_q_n_lit(-q, &k_neg, j, alpha).conj(),
+                            Complex::new(0.0, 0.0),
+                        ],
+                    ];
+                    for (a, b) in hq.iter().zip(lit.iter()) {
+                        assert!(
+                            (a - b).norm() < 1e-12,
+                            "alpha = {alpha}, k = {k:?}, q = {q}: {a} vs {b}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn graphene_order_zero_matches_renormalized_nn_hopping() {
+        // Benchmark B: the order-0 effective model renormalizes the NN
+        // hopping to J·J_0(α) (non-perturbative in α); its Hamiltonian
+        // equals the literature H_0(−k) elementwise.
+        let j = -1.0;
+        let model = graphene_model(j);
+        let trunc = FloquetTruncation::new(1, 512);
+        let alpha = 0.6;
+        let drive = graphene_circular_drive(alpha);
+        let eff = model
+            .floquet_effective_model(
+                &drive,
+                &trunc,
+                Some(&FloquetEffectiveOptions::new().with_order(0)),
+            )
+            .unwrap();
+        for k in [[0.13, 0.21], [0.5, 0.5], [0.87, 0.11]] {
+            let kvec = array![k[0], k[1]];
+            let h0 = eff.gen_ham(&kvec, Gauge::Lattice);
+            let lit = array![
+                [
+                    Complex::new(0.0, 0.0),
+                    graphene_q_n_lit(0, &[-k[0], -k[1]], j, alpha),
+                ],
+                [
+                    graphene_q_n_lit(0, &[-k[0], -k[1]], j, alpha).conj(),
+                    Complex::new(0.0, 0.0),
+                ],
+            ];
+            for (a, b) in h0.iter().zip(lit.iter()) {
+                assert!(
+                    (a - b).norm() < 1e-12,
+                    "alpha = {alpha}, k = {k:?}: {a} vs {b}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn bessel_coeffs_reject_large_amplitudes_and_bad_ranges() {
         // R > 8 must error (the caller falls back to the time grid) instead

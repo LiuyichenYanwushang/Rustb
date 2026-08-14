@@ -309,3 +309,74 @@ pub(crate) fn floquet_effective_model_legacy(
 5. `floquet_effective_model`（初名 `floquet_effective_model_bessel`，Step 6 起占用主名）组装 + 测试 4–7
 6. legacy 保留与公开 API 切换 + 性能 smoke + SKILLS.md/README 文档更新
    （最终 API 定型后一次性更新）+ spinful 模型交叉验证测试
+
+---
+
+## 9. Graphene 圆偏光 benchmark（新批次）
+
+单层石墨烯最近邻 TB + 右旋圆偏光 A(t) = A₀(cos ωt, sin ωt)，无量纲强度
+α = eA₀a/ħ。本库驱动约定 a(t) = Re Σ a_α e^{−il_αΩt} 取 `a = α(1, i)`（1/Å 单位）
+时与文献推导逐项一致：
+
+- `a(t)·e_l = α sin(ωt − 2πl/3)`（e_l 为三条 NN 键，θ_l = π/2 + 2πl/3）
+- 单模闭式 `C_n(d_l) = (−i)^n J_n(α) e^{+inθ_l} = J_n(α) e^{+i2πnl/3}`，与文献一致
+- **约定映射**：本库 `H_n(k)[i,j] = Σ_R t_ij(R) C_n(d) e^{+i2πk·R}`，等于文献的
+  `H_n(−k)`（逐元素，机器精度）——纯 k→−k Fourier 约定差
+
+### 9.1 Benchmark A（H_n 机器精度）
+
+`q_n^lit(k) = J·J_n(α)·Σ_l e^{−ik·e_l} e^{i2πnl/3}`。断言
+`H_n^ours(k) == H_n^lit(−k)` 逐元素（1e-12），覆盖 q ∈ [−q_max, q_max]、多个 k、
+α ∈ {0.3, 0.8}。钉住：Fourier 约定、Bessel 相位、C_n 与 d 的映射。
+
+### 9.2 Benchmark B（零阶重整化）
+
+order-0 有效模型的 NN hopping = `J·J_0(α)`（非微扰）。断言有效模型
+`H_eff^{(0)}(k) = H^lit_0(−k)` 逐元素。
+
+### 9.3 Benchmark C（Dirac 点精确 gap）
+
+在 K 点只有 n ≡ 0 (mod 3) 的谐波存活，完整 Sambe 矩阵的 quasienergy gap 有
+旋转框架严格解：
+
+```
+Δ_exact = √((ħω)² + 4g²) − ħω,   g = ev_F A₀ = (3/2)|J|α
+```
+
+断言 `floquet_model` 在 K 点对角化的 gap 随 n_max 收敛到 Δ_exact（如 1e-6）。
+钉住：Sambe 构造、ħω 对角线、quasienergy folding、truncation 收敛。
+
+### 9.4 Benchmark D（一阶 Haldane mass 完整级数）
+
+order-1 有效模型给出 `d_z(k) = −2K_eff^lit(−k 约定映射后)·Σ_j sin(k·b_j)`，其中
+
+```
+K_eff = −(2J²/ħω) Σ_{n=1}^N J_n²(α)/n · sin(2πn/3)
+```
+
+N 即 q_max 截断；断言 d_z(k) 的 k 依赖与系数随 q_max 增大收敛（n=3m 项严格
+不贡献是强结构性检查）。钉住：commutator 顺序、nħω 分母、H_{−n}=H_n† 配对、
+多光子 Bessel 内容。
+
+### 9.5 二阶 van Vleck（**未来批次，暂缓**）
+
+文献二阶（arXiv:1511.00755 约定）：
+
+```
+H_eff^(2) = Σ_{m≠0} [[H_{−m},H_0],H_m]/(2m²W²)
+          + Σ_{m≠0,n≠0,n≠m} [[H_{−m},H_{m−n}],H_n]/(3mnW²),   W = ħω
+```
+
+实空间实现：`real_space_commutator` 推广为**两个不同支持集**（a_blocks 在
+hamR_A、b_blocks 在 hamR_B，输出支持 = Minkowski 和 hamR_A ⊕ hamR_B），
+嵌套两次即得双对易子。order=2 加入 `floquet_effective_model` 与 legacy 路径。
+
+基准：§15–16 的 `J_eff^(2)`、`L_eff`、`M_eff` 解析级数（Bessel 三元积）+ Dirac
+语言检查 `v_F^eff = v_F(1 − g²/(ħω)²)`（1/ω² 只重整化动能、不产生质量——
+Pauli 代数 σ_x,y → σ_z → σ_x,y 的结构性断言）。
+
+### 9.6 实施顺序（延续每步可提交 + review）
+
+- G1：graphene 模型构造 + Benchmark A、B
+- G2：Benchmark C、D
+- G3（**未来批次，暂缓**）：order=2（support 泛化 + 双对易子 + legacy 同步）+ §15–16 基准
