@@ -302,4 +302,5 @@ pub fn floquet_effective_model_legacy(
 3. d 去重缓存接入 `floquet_harmonic_cache`
 4. `real_space_commutator`（两个卷积 `(AB)(R)`、`(BA)(R)`，均 zgemm）+ 单 q 测试
 5. `floquet_effective_model_bessel` 组装 + 测试 4–7
-6. legacy 保留与公开 API 切换 + 性能 smoke
+6. legacy 保留与公开 API 切换 + 性能 smoke + SKILLS.md/README 文档更新
+   （最终 API 定型后一次性更新）+ spinful 模型交叉验证测试

@@ -961,7 +961,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     }
 
     /// Real-space first-order van Vleck effective model via the Bessel
-    /// backend — no `k_mesh` and no `n_time` dependence.
+    /// backend — no `k_mesh` parameter, and `n_time` only enters for
+    /// links whose amplitude exceeds the Bessel range (`R > 8`), which
+    /// fall back to the time grid per link.
     ///
     /// The effective hopping blocks are built entirely in real space
     /// (`FLOQUET_REAL_SPACE_PLAN.md` §3):
@@ -985,7 +987,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// `options.order = 0` keeps only `T_0`; `order = 1` adds the
     /// commutator terms up to `q_max` (default `2 * trunc.n_max`).
     /// [`FloquetEffectiveOptions::target_hamR`] is rejected: the
-    /// real-space path determines its own support.
+    /// real-space path determines its own support.  Blocks with
+    /// vanishing coefficients (e.g. harmonics outside the drive's
+    /// selection-rule reach) are retained as exact zeros — the support
+    /// depends only on the input `hamR`, not on the drive content.
     ///
     /// The returned model has the same lattice, orbitals, atoms, and
     /// state count as the input model, and differs only in `ham`/`hamR`.
