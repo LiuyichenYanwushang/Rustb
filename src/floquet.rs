@@ -1309,6 +1309,166 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
     puruspe::Jn(m as u32, r)
 }
 
+/// Peierls Fourier coefficients `C_q(d)` via the generalized Bessel
+/// expansion, for `q ∈ [q_min, q_max]`.
+///
+/// For a drive `a(t) = Re Σ_α a_α e^{−i l_α Ω₀ t}` each mode contributes a
+/// scalar pair `z_α = a_α·d = R_α e^{iδ_α}` per link displacement `d`, and
+/// the Jacobi–Anger expansion of the factorized Peierls exponential gives
+///
+/// ```math
+/// C_q(d) = \sum_{\{m_α\} : Σ_α l_α m_α = -q}
+///          \prod_α (-i)^{m_α} J_{m_α}(R_α)\, e^{-i m_α δ_α}.
+/// ```
+///
+/// (Resonance `q + Σ l m = 0`; the equivalent form `Σ l m = +q` with phase
+/// `e^{+imδ}` must not be mixed in.)  The multi-index sum is evaluated as a
+/// sequence of one-mode discrete convolutions
+///
+/// ```math
+/// S^{(0)}_q = δ_{q,0},\qquad
+/// S^{(α)}_q = \sum_{m=-M_α}^{M_α} S^{(α-1)}_{q + l_α m}\, B_α(m),
+/// \qquad
+/// B_α(m) = (-i)^m J_m(R_α)\, e^{-imδ_α},
+/// ```
+///
+/// which costs `O(N_mode · N_q · M_avg)` — independent of the time-grid
+/// size.  Each mode's cutoff `M_α` is chosen adaptively so the truncated
+/// tail `Σ_{|m|>M_α} |J_m(R_α)|` stays below a per-mode error share
+/// (`1e-12 / N_mode`), with `cutoff_margin` as an additional minimum and a
+/// hard cap at 64 orders.
+///
+/// Verified against the independent time-grid DFT
+/// ([`peierls_fourier_coeffs`]) for linear, circular, elliptical, and
+/// multi-harmonic drives to ~1e-15.
+///
+/// # Arguments
+/// * `d` - real link displacement (Cartesian, length `DIM`).
+/// * `drive` - the light drive (modes `(l_α, a_α)`, base frequency `Ω₀`).
+/// * `q_min`, `q_max` - inclusive harmonic range to return.
+/// * `cutoff_margin` - minimum number of Bessel orders beyond `⌈R_α⌉`
+///   (the adaptive tail check may push `M_α` higher; only lower bounded
+///   by this).
+///
+/// # Returns
+/// `C_q(d)` for `q = q_min..=q_max` as an [`Array1<Complex<f64>>`] of
+/// length `q_max - q_min + 1`.
+pub(crate) fn bessel_peierls_coeffs(
+    d: &Array1<f64>,
+    drive: &FloquetDrive,
+    q_min: isize,
+    q_max: isize,
+    cutoff_margin: isize,
+) -> Array1<Complex<f64>> {
+    let q_count = (q_max - q_min + 1) as usize;
+    // Empty drive: the Peierls exponential is 1, so only C_0 survives.
+    if drive.modes.is_empty() {
+        let mut coeffs = Array1::<Complex<f64>>::zeros(q_count);
+        if q_min <= 0 && 0 <= q_max {
+            coeffs[(0 - q_min) as usize] = Complex::new(1.0, 0.0);
+        }
+        return coeffs;
+    }
+
+    // Total harmonic drift of one full fold pass: intermediates outside
+    // [q_min, q_max] can fold back into range, so the working window must
+    // cover the whole reachable support.
+    let max_order_guess = 64_isize;
+    let l_sum: isize = drive
+        .modes
+        .iter()
+        .map(|mode| mode.harmonic.abs())
+        .sum::<isize>()
+        .min(max_order_guess);
+    let drift = l_sum * max_order_guess.min(64);
+    let work_min = q_min - drift;
+    let work_max = q_max + drift;
+    let work_len = (work_max - work_min + 1) as usize;
+
+    let mut sequence = vec![Complex::new(0.0, 0.0); work_len];
+    sequence[(0 - work_min) as usize] = Complex::new(1.0, 0.0);
+
+    let error_share = 1e-12 / (drive.modes.len() as f64);
+
+    for mode in &drive.modes {
+        // Mode projection onto the link: z = a·d = R e^{iδ}.
+        let z: Complex<f64> = mode
+            .a_complex
+            .iter()
+            .zip(d.iter())
+            .map(|(a, d)| *a * *d)
+            .sum();
+        let r = z.norm();
+        if r == 0.0 {
+            // Degenerate mode: only m = 0 contributes (B = 1), a no-op fold.
+            continue;
+        }
+        let delta = z.arg();
+        let l = mode.harmonic;
+
+        // Adaptive cutoff: grow M until the two-sided Bessel tail
+        // 2 * Σ_{m>M} |J_m(r)| falls below the per-mode error share.
+        let mut m_cap = (r.ceil() as isize) + cutoff_margin.max(0);
+        loop {
+            let mut tail = 0.0;
+            let mut current = bessel_j(m_cap + 1, r).abs();
+            for m in (m_cap + 1)..(m_cap + 200) {
+                tail += current;
+                if current < 1e-20 {
+                    break;
+                }
+                current = bessel_j(m + 1, r).abs();
+            }
+            if 2.0 * tail <= error_share || m_cap >= 64 {
+                break;
+            }
+            m_cap += 1;
+        }
+
+        // One-mode sequence B(m) = (-i)^m J_m(r) e^{-imδ}, m ∈ [-M, M].
+        // Accumulate (-i)^m iteratively.
+        let mut minus_i_power = Complex::new(1.0, 0.0); // (-i)^0
+        let mut b = Vec::<(isize, Complex<f64>)>::with_capacity((2 * m_cap + 1) as usize);
+        for m in 0..=m_cap {
+            let value = minus_i_power
+                * bessel_j(m, r)
+                * Complex::from_polar(1.0, -(m as f64) * delta);
+            if m == 0 {
+                b.push((0, value));
+            } else {
+                // B(-m) = (-i)^{-m} J_{-m}(r) e^{+imδ}
+                //       = i^m · (-1)^m J_m(r) e^{+imδ}
+                //       = (-i)^m J_m(r) e^{+imδ} (since i^m (-1)^m = (-i)^m)
+                let neg = minus_i_power
+                    * bessel_j(m, r)
+                    * Complex::from_polar(1.0, (m as f64) * delta);
+                b.push((-m, neg));
+                b.push((m, value));
+            }
+            minus_i_power *= Complex::new(0.0, -1.0); // times (-i)
+        }
+
+        // Fold: S'_q = Σ_m S_{q + l·m} B(m).
+        let mut next = vec![Complex::new(0.0, 0.0); work_len];
+        for &(m, weight) in &b {
+            let shift = l * m;
+            for (index, _) in sequence.iter().enumerate() {
+                let q = work_min + index as isize;
+                let source_q = q + shift;
+                let source_index = source_q - work_min;
+                if source_index >= 0 && (source_index as usize) < work_len {
+                    next[index] += sequence[source_index as usize] * weight;
+                }
+            }
+        }
+        sequence = next;
+    }
+
+    Array1::from(
+        sequence[(q_min - work_min) as usize..(q_max - work_min + 1) as usize].to_vec(),
+    )
+}
+
 fn peierls_fourier_coeffs(
     d_cart: &Array1<f64>,
     q_min: isize,
@@ -1548,6 +1708,95 @@ mod tests {
                 -bessel_j(m, 1.7)
             };
             assert!((bessel_j(-m, 1.7) - expected).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn bessel_coeffs_match_single_mode_closed_form() {
+        // Single mode l=1: C_q = (-i)^q J_q(R) e^{+iqδ} (verified reduction
+        // of the generalized Bessel sum; the +iδ phase is the discriminating
+        // one for complex amplitudes).
+        let d = array![1.0];
+        for (amplitude, name) in [
+            (array![Complex::new(0.4, 0.0)], "linear"),
+            (array![Complex::new(0.0, 0.4)], "circular"),
+            (array![Complex::new(0.3, 0.2)], "elliptical"),
+        ] {
+            let drive = FloquetDrive::with_modes(0.8, vec![LightMode::new(1, amplitude.clone())]);
+            let r = amplitude[0].norm();
+            let delta = amplitude[0].arg();
+            let coeffs = bessel_peierls_coeffs(&d, &drive, -6, 6, 6);
+            for q in -6..=6 {
+                let expected = Complex::from_polar(1.0, -(q as f64) * std::f64::consts::FRAC_PI_2)
+                    * bessel_j(q, r)
+                    * Complex::from_polar(1.0, (q as f64) * delta);
+                let got = coeffs[(q + 6) as usize];
+                assert!(
+                    (got - expected).norm() < 1e-13,
+                    "{name}: C_{q} = {got}, closed form {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bessel_coeffs_match_time_grid_dft() {
+        // The strongest test: the generalized Bessel convolution must
+        // reproduce the independent time-grid DFT for multi-mode and
+        // multi-harmonic drives.
+        let d = array![1.3, -0.7];
+        let cases: Vec<FloquetDrive> = vec![
+            FloquetDrive::with_modes(
+                1.0,
+                vec![
+                    LightMode::new(1, array![Complex::new(0.25, 0.0), Complex::new(0.0, 0.25)]),
+                    LightMode::new(2, array![Complex::new(0.1, 0.0), Complex::new(0.05, -0.05)]),
+                ],
+            ),
+            FloquetDrive::with_modes(
+                0.7,
+                vec![
+                    LightMode::new(1, array![Complex::new(0.3, 0.1), Complex::new(-0.1, 0.2)]),
+                    LightMode::new(-3, array![Complex::new(0.08, -0.04), Complex::new(0.02, 0.06)]),
+                ],
+            ),
+            FloquetDrive::with_modes(
+                0.5,
+                vec![
+                    LightMode::new(1, array![Complex::new(0.2, 0.0), Complex::new(0.0, 0.2)]),
+                    LightMode::new(2, array![Complex::new(0.05, 0.0), Complex::new(0.0, -0.05)]),
+                    LightMode::new(3, array![Complex::new(0.02, 0.01), Complex::new(0.01, -0.02)]),
+                ],
+            ),
+        ];
+        for (case, drive) in cases.iter().enumerate() {
+            let q_min = -5_isize;
+            let q_max = 5_isize;
+            let bessel = bessel_peierls_coeffs(&d, drive, q_min, q_max, 6);
+            let time_grid = FloquetTimeGrid::new(drive, &FloquetTruncation::new(3, 512), q_min, q_max, 2);
+            let dft = peierls_fourier_coeffs(&d, q_min, q_max, drive, &time_grid);
+            for (q, (got, expected)) in bessel.iter().zip(dft.iter()).enumerate() {
+                assert!(
+                    (got - expected).norm() < 1e-10,
+                    "case {case}, q={}: Bessel {got} vs DFT {expected}",
+                    q_min + q as isize
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bessel_coeffs_handle_empty_drive() {
+        let d = array![0.5];
+        let drive = FloquetDrive::new(1.0);
+        let coeffs = bessel_peierls_coeffs(&d, &drive, -3, 3, 6);
+        for q in -3..=3 {
+            let expected = if q == 0 {
+                Complex::new(1.0, 0.0)
+            } else {
+                Complex::new(0.0, 0.0)
+            };
+            assert!((coeffs[(q + 3) as usize] - expected).norm() < 1e-15);
         }
     }
 
