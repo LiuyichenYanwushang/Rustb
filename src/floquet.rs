@@ -459,6 +459,24 @@ impl FloquetEffectiveOptions {
 /// Index `[iq, i_r, i, j]` stores the `q = q_min + iq` Fourier component of hopping
 /// from orbital `j` in cell `R = hamR[i_r]` to orbital `i` at the origin.
 /// This is independent of `k` and reusable across the entire k-mesh.
+/// Backend selection for the Peierls Fourier coefficients `C_q(d)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeierlsFourierMethod {
+    /// Numerical DFT on a uniform time grid (`FloquetTruncation::n_time`
+    /// samples).  The reference implementation: handles arbitrary drives,
+    /// including non-commensurate content and large amplitudes.
+    TimeGrid,
+    /// Generalized Bessel expansion via sequential one-mode convolutions.
+    /// Exact and independent of `n_time`, but restricted to per-mode
+    /// projections `R_α = |a_α·d| ≤ 8`; the cache falls back to
+    /// [`PeierlsFourierMethod::TimeGrid`] per link beyond that.
+    Bessel {
+        /// Minimum number of Bessel orders beyond `⌈R_α⌉` (the adaptive tail
+        /// check may push the cutoff higher).
+        cutoff_margin: isize,
+    },
+}
+
 struct FloquetHarmonicCache {
     q_min: isize,
     q_max: isize,
@@ -643,7 +661,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
         let q_min = -2 * trunc.n_max;
         let q_max = 2 * trunc.n_max;
-        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, q_min, q_max);
+        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, q_min, q_max, &PeierlsFourierMethod::TimeGrid);
 
         let mut orb = Array2::<f64>::zeros((new_norb, DIM));
         for isec in 0..n_sector {
@@ -750,7 +768,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
 
         let q_min = -2 * trunc.n_max;
         let q_max = 2 * trunc.n_max;
-        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, q_min, q_max);
+        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, q_min, q_max, &PeierlsFourierMethod::TimeGrid);
         let hq: Vec<Array2<Complex<f64>>> = (q_min..=q_max)
             .map(|q| self.floquet_cached_harmonic_onek(kvec, q, gauge, &harmonic_cache))
             .collect();
@@ -872,7 +890,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             )));
         }
 
-        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, -q_max, q_max);
+        let harmonic_cache = self.floquet_harmonic_cache(drive, trunc, -q_max, q_max, &PeierlsFourierMethod::TimeGrid);
         let kpoints = floquet_uniform_kmesh(&k_mesh);
         let norm = 1.0 / (kpoints.len() as f64);
         let ham = kpoints
@@ -967,6 +985,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         trunc: &FloquetTruncation,
         q_min: isize,
         q_max: isize,
+        method: &PeierlsFourierMethod,
     ) -> FloquetHarmonicCache {
         let nsta = self.nsta();
         let norb = self.norb();
@@ -987,32 +1006,67 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             };
         }
 
-        let time_grid = FloquetTimeGrid::new(drive, trunc, q_min, q_max, DIM);
-        blocks
-            .axis_iter_mut(Axis(1))
-            .into_par_iter()
-            .enumerate()
-            .for_each(|(i_r, mut out_r)| {
-                let r_vec = self.hamR.row(i_r);
-                let block = self.ham.index_axis(Axis(0), i_r);
-                for i in 0..nsta {
-                    for j in 0..nsta {
-                        let t = block[[i, j]];
-                        if t.norm_sqr() == 0.0 {
-                            continue;
-                        }
+        // Phase 1: collect the DISTINCT link displacements among non-zero
+        // hoppings.  Spin copies of the same orbital pair share the same
+        // d, so this deduplicates the coefficient computation (a 4x saving
+        // for spinful models).
+        let mut d_index = std::collections::HashMap::<Vec<u64>, usize>::new();
+        let mut unique_d = Vec::<Array1<f64>>::new();
+        let mut entries = Vec::<(usize, usize, usize, usize)>::new(); // (i_r, i, j, d_idx)
+        for i_r in 0..n_r {
+            let r_vec = self.hamR.row(i_r);
+            for i in 0..nsta {
+                for j in 0..nsta {
+                    if self.ham[[i_r, i, j]].norm_sqr() == 0.0 {
+                        continue;
+                    }
+                    let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
+                    let key: Vec<u64> = d_cart.iter().map(|value| value.to_bits()).collect();
+                    let index = *d_index.entry(key).or_insert_with(|| {
+                        unique_d.push(d_cart);
+                        unique_d.len() - 1
+                    });
+                    entries.push((i_r, i, j, index));
+                }
+            }
+        }
 
-                        let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
-                        let coeffs =
-                            peierls_fourier_coeffs(&d_cart, q_min, q_max, drive, &time_grid);
-                        for (iq, coeff) in coeffs.into_iter().enumerate() {
-                            if coeff.norm_sqr() != 0.0 {
-                                out_r[[iq, i, j]] = t * coeff;
-                            }
+        // Phase 2: coefficients per distinct d (parallel).  The time grid is
+        // constructed eagerly as the Bessel fallback reference — its cost is
+        // negligible compared with the per-link coefficient work.
+        let time_grid = FloquetTimeGrid::new(drive, trunc, q_min, q_max, DIM);
+        let coeffs_per_d: Vec<Array1<Complex<f64>>> = unique_d
+            .par_iter()
+            .map(|d| match method {
+                PeierlsFourierMethod::Bessel { cutoff_margin } => {
+                    match bessel_peierls_coeffs(d, drive, q_min, q_max, *cutoff_margin) {
+                        Ok(coeffs) => coeffs,
+                        Err(error) => {
+                            eprintln!(
+                                "Bessel backend unavailable for this link ({error}); \
+                                 falling back to the time grid"
+                            );
+                            Array1::from(peierls_fourier_coeffs(
+                                d, q_min, q_max, drive, &time_grid,
+                            ))
                         }
                     }
                 }
-            });
+                PeierlsFourierMethod::TimeGrid => Array1::from(peierls_fourier_coeffs(
+                    d, q_min, q_max, drive, &time_grid,
+                )),
+            })
+            .collect();
+
+        // Phase 3: fill the blocks.
+        for (i_r, i, j, d_index) in entries {
+            let t = self.ham[[i_r, i, j]];
+            for (iq, coeff) in coeffs_per_d[d_index].iter().enumerate() {
+                if coeff.norm_sqr() != 0.0 {
+                    blocks[[iq, i_r, i, j]] = t * coeff;
+                }
+            }
+        }
 
         FloquetHarmonicCache {
             q_min,
@@ -1636,6 +1690,7 @@ mod tests {
     use crate::model::NoRMatrix;
     use crate::model_build::*;
     use crate::solve_ham::solve;
+    use crate::SpinDirection;
     use ndarray::{arr1, array};
 
     #[test]
@@ -1831,6 +1886,85 @@ mod tests {
                 Complex::new(0.0, 0.0)
             };
             assert!((coeffs[(q + 3) as usize] - expected).norm() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn harmonic_cache_bessel_matches_time_grid_and_dedupes_links() {
+        // Spinful 2-orbital model: the four spin blocks of every hopping
+        // share the same link displacement, so the dedup path must produce
+        // identical blocks to the non-dedup reference, and the Bessel
+        // backend must agree with the time grid.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.3, 0.0]];
+        let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None);
+        model.add_hop(Complex::new(0.1, 0.2), 0, 1, &array![1, 1], SpinDirection::X);
+
+        let drive = FloquetDrive::with_modes(
+            0.8,
+            vec![
+                LightMode::new(1, array![Complex::new(0.2, 0.0), Complex::new(0.0, 0.2)]),
+                LightMode::new(2, array![Complex::new(0.05, -0.05), Complex::new(0.0, 0.0)]),
+            ],
+        );
+        let trunc = FloquetTruncation::new(2, 512);
+        let time_grid_cache =
+            model.floquet_harmonic_cache(&drive, &trunc, -4, 4, &PeierlsFourierMethod::TimeGrid);
+        let bessel_cache = model.floquet_harmonic_cache(
+            &drive,
+            &trunc,
+            -4,
+            4,
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+        );
+        assert_eq!(time_grid_cache.blocks.dim(), bessel_cache.blocks.dim());
+        for (a, b) in time_grid_cache
+            .blocks
+            .iter()
+            .zip(bessel_cache.blocks.iter())
+        {
+            assert!(
+                (a - b).norm() < 1e-10,
+                "Bessel cache {b} vs time-grid cache {a}"
+            );
+        }
+    }
+
+    #[test]
+    fn harmonic_cache_bessel_falls_back_for_large_amplitudes() {
+        // |a·d| > 8 must silently fall back to the time grid per link, so
+        // the Bessel-method cache still matches the time-grid cache.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [5.0, 0.0]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None);
+
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(1, array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)])],
+        );
+        let trunc = FloquetTruncation::new(1, 512);
+        let time_grid_cache =
+            model.floquet_harmonic_cache(&drive, &trunc, -3, 3, &PeierlsFourierMethod::TimeGrid);
+        let bessel_cache = model.floquet_harmonic_cache(
+            &drive,
+            &trunc,
+            -3,
+            3,
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+        );
+        for (a, b) in time_grid_cache
+            .blocks
+            .iter()
+            .zip(bessel_cache.blocks.iter())
+        {
+            assert!(
+                (a - b).norm() < 1e-10,
+                "fallback Bessel cache {b} vs time-grid cache {a}"
+            );
         }
     }
 
@@ -2095,7 +2229,7 @@ mod tests {
 
         let k = arr1(&[0.173]);
         let from_model = effective.gen_ham(&k, Gauge::Lattice);
-        let harmonic_cache = model.floquet_harmonic_cache(&drive, &trunc, 0, 0);
+        let harmonic_cache = model.floquet_harmonic_cache(&drive, &trunc, 0, 0, &PeierlsFourierMethod::TimeGrid);
         let h0 = model.floquet_cached_harmonic_onek(&k, 0, Gauge::Lattice, &harmonic_cache);
         let mut max_diff = 0.0f64;
         for i in 0..from_model.nrows() {
