@@ -178,6 +178,12 @@ pub enum TbError {
         message: String,
     },
 
+    #[error("Invalid DOS parameter '{parameter}': {message}")]
+    InvalidDosParameter {
+        parameter: &'static str,
+        message: String,
+    },
+
     // --- Slater-Koster Specific Errors ---
     #[error(
         "Missing Slater-Koster parameter '{param}' for atom pair {atom1:?}-{atom2:?} at shell {shell}"

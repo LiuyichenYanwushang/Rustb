@@ -36,10 +36,21 @@ use ndarray::{Array1, Array2, Array3, Axis};
 /// Returns `TbError` if the mesh dimensions are invalid
 #[allow(non_snake_case)]
 #[inline(always)]
+fn validate_kmesh(k_mesh: &Array1<usize>) -> Result<()> {
+    if k_mesh.is_empty() {
+        return Err(TbError::InvalidKmeshDimensions(k_mesh.to_owned()));
+    }
+    if k_mesh.iter().any(|&n| n == 0) {
+        return Err(TbError::InvalidKmeshDimensions(k_mesh.to_owned()));
+    }
+    Ok(())
+}
+
 pub fn gen_kmesh<T>(k_mesh: &Array1<usize>) -> Result<Array2<T>>
 where
     T: usefloat + std::ops::Div<Output = T>,
 {
+    validate_kmesh(k_mesh)?;
     let dim: usize = k_mesh.len();
     let mut nk: usize = 1;
     for i in 0..dim {
@@ -84,6 +95,7 @@ pub fn gen_krange<T>(k_mesh: &Array1<usize>) -> Result<Array3<T>>
 where
     T: usefloat + std::ops::Div<Output = T>,
 {
+    validate_kmesh(k_mesh)?;
     let dim_r = k_mesh.len();
     let mut k_range = Array3::<T>::zeros((0, dim_r, 2));
     match dim_r {

@@ -184,6 +184,24 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         E_n: usize,
         sigma: f64,
     ) -> Result<(Array1<f64>, Array1<f64>)> {
+        if E_min >= E_max {
+            return Err(TbError::InvalidEnergyRange {
+                min: E_min,
+                max: E_max,
+            });
+        }
+        if E_n == 0 {
+            return Err(TbError::InvalidDosParameter {
+                parameter: "E_n",
+                message: "number of energy bins must be at least 1".to_string(),
+            });
+        }
+        if !sigma.is_finite() || sigma <= 0.0 {
+            return Err(TbError::InvalidDosParameter {
+                parameter: "sigma",
+                message: "Gaussian smearing width must be finite and positive".to_string(),
+            });
+        }
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk = kvec.len_of(Axis(0));
         let eigenvalues = self.solve_band_all_parallel(&kvec);
