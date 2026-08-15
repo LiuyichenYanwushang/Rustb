@@ -440,7 +440,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                             proj_list.push(atom_orb_number);
                             atom_proj.push(proj_orb);
                             let proj_type =
-                                AtomType::from_str(prj[0]).map_err(|_| TbError::FileParse {
+                                prj[0].parse::<AtomType>().map_err(|_| TbError::FileParse {
                                     file: win_path.clone(),
                                     message: format!(
                                         "Unknown atomic species '{}' in begin projections",
@@ -643,14 +643,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                     new_atom_pos[[i, axis]] =
                         parse_coordinate_component(fields[axis + 1], &xyz_path, "atom position")?;
                 }
-                let name = AtomType::from_str(fields[0]).map_err(|_| TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!(
-                        "Unknown atomic species '{}' in _centres.xyz; \
+                let name = fields[0]
+                    .parse::<AtomType>()
+                    .map_err(|_| TbError::FileParse {
+                        file: xyz_path.clone(),
+                        message: format!(
+                            "Unknown atomic species '{}' in _centres.xyz; \
                          species must be listed in the win file's begin projections block",
-                        fields[0]
-                    ),
-                })?;
+                            fields[0]
+                        ),
+                    })?;
                 new_atom_name.push(name);
             }
             //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
@@ -716,7 +718,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             let atom_pos = atom_pos.dot(&lat.inv().map_err(TbError::Linalg)?);
             let mut dropped: Vec<AtomType> = Vec::new();
             for (i, name) in atom_name.iter().enumerate() {
-                let name = AtomType::from_str(name).map_err(|_| TbError::FileParse {
+                let name = name.parse::<AtomType>().map_err(|_| TbError::FileParse {
                     file: win_path.clone(),
                     message: format!("Unknown atomic species '{name}' in begin atoms_frac block"),
                 })?;
@@ -1319,6 +1321,30 @@ mod tests {
         assert!(matches!(err, TbError::FileParse { .. }));
         assert!(
             err.to_string().contains("species mismatch"),
+            "unexpected error: {err}"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_rejects_unknown_projection_species() {
+        // Regression: `parse::<AtomType>()` must reject an unknown species in
+        // the projections block with the same FileParse error as before.
+        let dir = "tests/tmp_w90_bad_proj_species/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin projections\nXx:s\nend projections\n";
+        let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
+        let xyz = "1\nWannier centres\nC 0.0 0.0 0.0\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let err = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap_err();
+        assert!(matches!(err, TbError::FileParse { .. }));
+        assert!(
+            err.to_string()
+                .contains("Unknown atomic species 'Xx' in begin projections"),
             "unexpected error: {err}"
         );
         fs::remove_dir_all(dir).ok();

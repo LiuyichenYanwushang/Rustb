@@ -46,7 +46,7 @@ impl Default for SymmetryParameters {
 }
 
 impl SymmetryParameters {
-    fn validate(self) -> Result<Self> {
+    fn validate(&self) -> Result<()> {
         if !self.symprec.is_finite() || self.symprec <= 0.0 {
             return Err(TbError::InvalidCrystalSymmetryInput {
                 parameter: "symprec",
@@ -76,7 +76,7 @@ impl SymmetryParameters {
                 });
             }
         }
-        Ok(self)
+        Ok(())
     }
 }
 
@@ -124,7 +124,9 @@ pub struct CrystalSymmetryDataset {
     pub site_symmetry_symbols: Vec<String>,
     pub equivalent_atoms: Vec<usize>,
     pub crystallographic_orbits: Vec<usize>,
-    pub mapping_to_primitive: Vec<usize>,
+    /// Input-cell atom index mapped to its primitive-cell representative, or
+    /// `None` when no primitive atom corresponds to that input atom.
+    pub mapping_to_primitive: Vec<Option<usize>>,
     /// Standard lattice in Rustb's row-vector convention.
     pub standard_lattice: Array2<f64>,
     pub standard_positions: Array2<f64>,
@@ -475,7 +477,7 @@ pub trait CrystalSymmetry {
 
 impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
     fn crystal_symmetry(&self, parameters: &SymmetryParameters) -> Result<CrystalSymmetryDataset> {
-        let parameters = parameters.validate()?;
+        parameters.validate()?;
         let crystal = model_crystal(self, None)?;
         let analysis = crystal
             .analyze()
@@ -501,7 +503,7 @@ impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
         moments: &[[f64; 3]],
         parameters: &SymmetryParameters,
     ) -> Result<MagneticCrystalSymmetry> {
-        let parameters = parameters.validate()?;
+        parameters.validate()?;
         if moments.len() != self.natom() {
             return Err(TbError::InvalidCrystalSymmetryInput {
                 parameter: "moments",
@@ -539,7 +541,7 @@ impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
         time_reversal: bool,
         parameters: &SymmetryParameters,
     ) -> Result<IrreducibleKMesh> {
-        let parameters = parameters.validate()?;
+        parameters.validate()?;
         let crystal = model_crystal(self, None)?;
         let analysis = crystal
             .analyze()
@@ -584,7 +586,7 @@ impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
         mesh: [i32; 3],
         parameters: &SymmetryParameters,
     ) -> Result<IrreducibleKMesh> {
-        let parameters = parameters.validate()?;
+        parameters.validate()?;
         if moments.len() != self.natom() {
             return Err(TbError::InvalidCrystalSymmetryInput {
                 parameter: "moments",
@@ -680,13 +682,7 @@ fn model_crystal<const SPIN: bool, R: RMatrixData>(
         });
     }
 
-    // Rustb: lattice vectors are rows. cryspglib: lattice[cart][vec].
-    let mut lattice = [[0.0; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            lattice[i][j] = model.lat[[j, i]];
-        }
-    }
+    let lattice = cry_lattice(model);
     let positions = model
         .atoms
         .iter()
@@ -743,24 +739,12 @@ fn convert_dataset(
         wyckoff_letters: dataset
             .wyckoffs
             .iter()
-            .map(|&value| char::from_u32('a' as u32 + value.max(0) as u32).unwrap_or('?'))
+            .map(|value| value.as_char())
             .collect(),
         site_symmetry_symbols: dataset.site_symmetry_symbols,
-        equivalent_atoms: dataset
-            .equivalent_atoms
-            .iter()
-            .map(|&value| value.max(0) as usize)
-            .collect(),
-        crystallographic_orbits: dataset
-            .crystallographic_orbits
-            .iter()
-            .map(|&value| value.max(0) as usize)
-            .collect(),
-        mapping_to_primitive: dataset
-            .mapping_to_primitive
-            .iter()
-            .map(|&value| value.max(0) as usize)
-            .collect(),
+        equivalent_atoms: dataset.equivalent_atoms,
+        crystallographic_orbits: dataset.crystallographic_orbits,
+        mapping_to_primitive: dataset.mapping_to_primitive,
         standard_lattice: lattice_from_cry(dataset.std_lattice),
         standard_positions: positions_array(&dataset.std_positions),
         standard_types: dataset.std_types,
@@ -773,13 +757,7 @@ fn convert_magnetic(
     effective_operations: cryspglib::SymmetryOps,
     external_fields: ExternalFields,
 ) -> Result<MagneticCrystalSymmetry> {
-    let magnetic_type = match result.magnetic_type {
-        cryspglib::MagneticType::NonMagnetic => MagneticGroupType::NonMagnetic,
-        cryspglib::MagneticType::Ordinary => MagneticGroupType::Ordinary,
-        cryspglib::MagneticType::Grey => MagneticGroupType::Grey,
-        cryspglib::MagneticType::BlackWhite => MagneticGroupType::BlackWhite,
-        cryspglib::MagneticType::AntiTranslation => MagneticGroupType::AntiTranslation,
-    };
+    let magnetic_type = convert_magnetic_type(result.magnetic_type);
     let operations: Vec<CrystalSymmetryOperation> = result
         .rotations
         .iter()
@@ -820,6 +798,23 @@ fn convert_operation(operation: cryspglib::SymmetryOp) -> CrystalSymmetryOperati
         translation: operation.translation,
         time_reversal: operation.time_reversal,
     }
+}
+
+pub(crate) fn convert_magnetic_type(value: cryspglib::MagneticType) -> MagneticGroupType {
+    match value {
+        cryspglib::MagneticType::NonMagnetic => MagneticGroupType::NonMagnetic,
+        cryspglib::MagneticType::Ordinary => MagneticGroupType::Ordinary,
+        cryspglib::MagneticType::Grey => MagneticGroupType::Grey,
+        cryspglib::MagneticType::BlackWhite => MagneticGroupType::BlackWhite,
+        cryspglib::MagneticType::AntiTranslation => MagneticGroupType::AntiTranslation,
+    }
+}
+
+/// Rustb stores lattice vectors as rows; cryspglib uses `lattice[cart][vec]`.
+pub(crate) fn cry_lattice<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+) -> [[f64; 3]; 3] {
+    std::array::from_fn(|cartesian| std::array::from_fn(|vector| model.lat[[vector, cartesian]]))
 }
 
 fn cryspglib_fields(fields: ExternalFields) -> cryspglib::ExternalFields {
@@ -949,7 +944,7 @@ fn convert_mesh(raw: cryspglib::IrMesh, mesh: [i32; 3]) -> Result<IrreducibleKMe
     })
 }
 
-fn matrix3(matrix: [[f64; 3]; 3]) -> Array2<f64> {
+pub(crate) fn matrix3(matrix: [[f64; 3]; 3]) -> Array2<f64> {
     Array2::from_shape_fn((3, 3), |(i, j)| matrix[i][j])
 }
 
@@ -1002,6 +997,10 @@ mod tests {
         assert_eq!(dataset.spacegroup_number, 221);
         assert_eq!(dataset.hall_number, 517);
         assert_eq!(dataset.operations.len(), 48);
+        assert_eq!(dataset.wyckoff_letters, vec!['a']);
+        assert_eq!(dataset.equivalent_atoms, vec![0]);
+        assert_eq!(dataset.crystallographic_orbits, vec![0]);
+        assert_eq!(dataset.mapping_to_primitive, vec![Some(0)]);
         let points = dataset.high_symmetry_kpoints().unwrap();
         assert!(points.iter().any(|point| point.label == "GM"));
         let table = dataset.character_table_at("GM").unwrap();

@@ -49,7 +49,7 @@
 use crate::atom_struct::OrbProj;
 use crate::crystal_symmetry::{
     CrystalSymmetry, CrystalSymmetryDataset, CrystalSymmetryOperation, MagneticCrystalSymmetry,
-    MagneticGroupType, SymmetryParameters,
+    MagneticGroupType, SymmetryParameters, convert_magnetic_type, cry_lattice, matrix3,
 };
 use crate::error::{Result, TbError};
 use crate::model::{Model, RMatrixData};
@@ -267,21 +267,12 @@ pub struct HamiltonianSymmetryRequest {
 }
 
 /// Parameters for projecting a Hamiltonian onto a supplied magnetic group.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct HamiltonianSymmetrizationParameters {
     /// Parameters used to re-detect and verify the current Atom structure.
     pub structural_parameters: SymmetryParameters,
     /// Numerical tolerances shared with Hamiltonian certification.
     pub tolerances: HamiltonianSymmetryTolerances,
-}
-
-impl Default for HamiltonianSymmetrizationParameters {
-    fn default() -> Self {
-        Self {
-            structural_parameters: SymmetryParameters::default(),
-            tolerances: HamiltonianSymmetryTolerances::default(),
-        }
-    }
 }
 
 impl Default for HamiltonianSymmetryRequest {
@@ -384,7 +375,7 @@ pub struct IdentifiedMagneticSubgroup {
 /// Final group-label status.
 #[derive(Debug, Clone)]
 pub enum FinalMagneticGroup {
-    Identified(IdentifiedMagneticSubgroup),
+    Identified(Box<IdentifiedMagneticSubgroup>),
     Inconclusive { reason: String },
 }
 
@@ -955,7 +946,7 @@ fn inverse_rotation(rotation: &[[i32; 3]; 3]) -> Option<[[i128; 3]; 3]> {
             .collect::<Vec<_>>();
         let minor = value(rows[0], columns[0]) * value(rows[1], columns[1])
             - value(rows[0], columns[1]) * value(rows[1], columns[0]);
-        if (row + column) % 2 == 0 {
+        if (row + column).is_multiple_of(2) {
             minor
         } else {
             -minor
@@ -1182,10 +1173,6 @@ fn validate_tolerances(tolerances: HamiltonianSymmetryTolerances) -> Result<()> 
     Ok(())
 }
 
-fn cry_lattice<const SPIN: bool, R: RMatrixData>(model: &Model<SPIN, 3, R>) -> [[f64; 3]; 3] {
-    std::array::from_fn(|cartesian| std::array::from_fn(|vector| model.lat[[vector, cartesian]]))
-}
-
 fn to_cry_operations(operations: &[CrystalSymmetryOperation]) -> cryspglib::SymmetryOps {
     cryspglib::SymmetryOps {
         operations: operations
@@ -1204,20 +1191,6 @@ fn from_cry_operation(operation: &cryspglib::SymmetryOp) -> CrystalSymmetryOpera
         rotation: operation.rotation,
         translation: operation.translation,
         time_reversal: operation.time_reversal,
-    }
-}
-
-fn matrix3(matrix: [[f64; 3]; 3]) -> Array2<f64> {
-    Array2::from_shape_fn((3, 3), |(row, column)| matrix[row][column])
-}
-
-fn magnetic_type(value: cryspglib::MagneticType) -> MagneticGroupType {
-    match value {
-        cryspglib::MagneticType::NonMagnetic => MagneticGroupType::NonMagnetic,
-        cryspglib::MagneticType::Ordinary => MagneticGroupType::Ordinary,
-        cryspglib::MagneticType::Grey => MagneticGroupType::Grey,
-        cryspglib::MagneticType::BlackWhite => MagneticGroupType::BlackWhite,
-        cryspglib::MagneticType::AntiTranslation => MagneticGroupType::AntiTranslation,
     }
 }
 
@@ -2047,7 +2020,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
         // identifier's spacegroup_number instead describes the MSG family
         // space group, so those intentionally different quantities must not
         // be compared here.
-        if magnetic_type(identified.magnetic_type) != target_group.magnetic_type
+        if convert_magnetic_type(identified.magnetic_type) != target_group.magnetic_type
             || identified.bns_number != target_group.bns_number
             || identified.og_number != target_group.og_number
         {
@@ -2056,7 +2029,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                     "the supplied magnetic-group metadata does not match the normalized operations (identified BNS {}, OG {}, type {:?}; supplied BNS {}, OG {}, type {:?})",
                     identified.bns_number,
                     identified.og_number,
-                    magnetic_type(identified.magnetic_type),
+                    convert_magnetic_type(identified.magnetic_type),
                     target_group.bns_number,
                     target_group.og_number,
                     target_group.magnetic_type,
@@ -2158,7 +2131,7 @@ fn identify_surviving_group(
             };
         }
     };
-    if candidate_count % validated.len() != 0 {
+    if !candidate_count.is_multiple_of(validated.len()) {
         return FinalMagneticGroup::Inconclusive {
             reason: format!(
                 "a closed survivor set of order {} does not divide the candidate order {candidate_count}",
@@ -2178,13 +2151,13 @@ fn identify_surviving_group(
             };
         }
     };
-    FinalMagneticGroup::Identified(IdentifiedMagneticSubgroup {
+    FinalMagneticGroup::Identified(Box::new(IdentifiedMagneticSubgroup {
         uni_number: identification.uni_number,
         litvin_number: identification.litvin_number,
         family_spacegroup_number: identification.spacegroup_number,
         bns_number: identification.bns_number,
         og_number: identification.og_number,
-        magnetic_type: magnetic_type(identification.magnetic_type),
+        magnetic_type: convert_magnetic_type(identification.magnetic_type),
         family_hall_number: identification.family_hall_number,
         hall_number: identification.hall_number,
         structural_supergroup_hall: structural_hall_number,
@@ -2192,7 +2165,7 @@ fn identify_surviving_group(
         origin_shift: identification.origin_shift,
         standard_rotation_matrix: matrix3(identification.std_rotation_matrix),
         subgroup_index_in_candidates: candidate_count / validated.len(),
-    })
+    }))
 }
 
 #[cfg(test)]

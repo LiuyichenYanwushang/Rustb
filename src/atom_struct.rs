@@ -3,6 +3,7 @@ use ndarray::Array1;
 use num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 ///This is the orbital projection
 ///
 /// Variant names follow the physical orbital labels (`s`, `px`, `d_{z^2}`,
@@ -87,48 +88,6 @@ pub enum OrbProj {
 }
 
 impl OrbProj {
-    pub fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "s" => Ok(OrbProj::s),
-            "px" => Ok(OrbProj::px),
-            "py" => Ok(OrbProj::py),
-            "pz" => Ok(OrbProj::pz),
-            "dxy" => Ok(OrbProj::dxy),
-            "dxz" => Ok(OrbProj::dxz),
-            "dyz" => Ok(OrbProj::dyz),
-            "dz2" => Ok(OrbProj::dz2),
-            "dx2-y2" => Ok(OrbProj::dx2y2),
-            "fz3" => Ok(OrbProj::fz3),
-            "fxz2" => Ok(OrbProj::fxz2),
-            "fyz2" => Ok(OrbProj::fyz2),
-            "fzx2y2" => Ok(OrbProj::fzx2y2),
-            "fxyz" => Ok(OrbProj::fxyz),
-            "fxx2-3y2" => Ok(OrbProj::fxx23y2),
-            "fy3x2-y2" => Ok(OrbProj::fy3x2y2),
-            "sp-1" => Ok(OrbProj::sp_1),
-            "sp-2" => Ok(OrbProj::sp_2),
-            "sp2-1" => Ok(OrbProj::sp2_1),
-            "sp2-2" => Ok(OrbProj::sp2_2),
-            "sp2-3" => Ok(OrbProj::sp2_3),
-            "sp3-1" => Ok(OrbProj::sp3_1),
-            "sp3-2" => Ok(OrbProj::sp3_2),
-            "sp3-3" => Ok(OrbProj::sp3_3),
-            "sp3-4" => Ok(OrbProj::sp3_4),
-            "sp3d-1" => Ok(OrbProj::sp3d_1),
-            "sp3d-2" => Ok(OrbProj::sp3d_2),
-            "sp3d-3" => Ok(OrbProj::sp3d_3),
-            "sp3d-4" => Ok(OrbProj::sp3d_4),
-            "sp3d-5" => Ok(OrbProj::sp3d_5),
-            "sp3d2-1" => Ok(OrbProj::sp3d2_1),
-            "sp3d2-2" => Ok(OrbProj::sp3d2_2),
-            "sp3d2-3" => Ok(OrbProj::sp3d2_3),
-            "sp3d2-4" => Ok(OrbProj::sp3d2_4),
-            "sp3d2-5" => Ok(OrbProj::sp3d2_5),
-            "sp3d2-6" => Ok(OrbProj::sp3d2_6),
-            //_ => panic!("Wrong, unrecognised projections {}", s),
-            _ => Err(TbError::InvalidOrbitalProjection(s.to_string())),
-        }
-    }
     /// Converts atomic orbital basis functions ($\ket{p_x}$, $\ket{p_y}$, $\ket{p_z}$, etc.) into the $(l, m)$ quantum-number basis.
     /// Takes an atomic orbital such as $\ket{p_x}$ as input and returns a 16-element `Array1<Complex<f64>>` representing the expansion in:
     /// $$[\ket{0,0},\ket{1,-1},\ket{1,0},\ket{1,1},\ket{2,-2},\cdots,\ket{3,3}]$$
@@ -229,6 +188,52 @@ impl OrbProj {
             _ => return Err(TbError::HybridOrbitalNotSupported("sp,sp2,sp3".to_string())),
         };
         Ok(Array1::from(s.to_vec()))
+    }
+}
+
+impl FromStr for OrbProj {
+    type Err = TbError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "s" => Ok(OrbProj::s),
+            "px" => Ok(OrbProj::px),
+            "py" => Ok(OrbProj::py),
+            "pz" => Ok(OrbProj::pz),
+            "dxy" => Ok(OrbProj::dxy),
+            "dxz" => Ok(OrbProj::dxz),
+            "dyz" => Ok(OrbProj::dyz),
+            "dz2" => Ok(OrbProj::dz2),
+            "dx2-y2" => Ok(OrbProj::dx2y2),
+            "fz3" => Ok(OrbProj::fz3),
+            "fxz2" => Ok(OrbProj::fxz2),
+            "fyz2" => Ok(OrbProj::fyz2),
+            "fzx2y2" => Ok(OrbProj::fzx2y2),
+            "fxyz" => Ok(OrbProj::fxyz),
+            "fxx2-3y2" => Ok(OrbProj::fxx23y2),
+            "fy3x2-y2" => Ok(OrbProj::fy3x2y2),
+            "sp-1" => Ok(OrbProj::sp_1),
+            "sp-2" => Ok(OrbProj::sp_2),
+            "sp2-1" => Ok(OrbProj::sp2_1),
+            "sp2-2" => Ok(OrbProj::sp2_2),
+            "sp2-3" => Ok(OrbProj::sp2_3),
+            "sp3-1" => Ok(OrbProj::sp3_1),
+            "sp3-2" => Ok(OrbProj::sp3_2),
+            "sp3-3" => Ok(OrbProj::sp3_3),
+            "sp3-4" => Ok(OrbProj::sp3_4),
+            "sp3d-1" => Ok(OrbProj::sp3d_1),
+            "sp3d-2" => Ok(OrbProj::sp3d_2),
+            "sp3d-3" => Ok(OrbProj::sp3d_3),
+            "sp3d-4" => Ok(OrbProj::sp3d_4),
+            "sp3d-5" => Ok(OrbProj::sp3d_5),
+            "sp3d2-1" => Ok(OrbProj::sp3d2_1),
+            "sp3d2-2" => Ok(OrbProj::sp3d2_2),
+            "sp3d2-3" => Ok(OrbProj::sp3d2_3),
+            "sp3d2-4" => Ok(OrbProj::sp3d2_4),
+            "sp3d2-5" => Ok(OrbProj::sp3d2_5),
+            "sp3d2-6" => Ok(OrbProj::sp3d2_6),
+            _ => Err(TbError::InvalidOrbitalProjection(s.to_string())),
+        }
     }
 }
 
@@ -382,10 +387,105 @@ impl AtomType {
 }
 
 impl AtomType {
-    /// Parse a chemical element symbol (e.g. `"C"`, `"Fe"`) into an [`AtomType`].
-    ///
-    /// Returns [`TbError::InvalidAtomType`] for unrecognized symbols.
-    pub fn from_str(s: &str) -> Result<Self> {
+    /// Standard chemical element symbol of this [`AtomType`] (e.g. `"Fe"`).
+    pub fn to_str(&self) -> &str {
+        match self {
+            AtomType::H => "H",
+            AtomType::He => "He",
+            AtomType::Li => "Li",
+            AtomType::Be => "Be",
+            AtomType::B => "B",
+            AtomType::C => "C",
+            AtomType::N => "N",
+            AtomType::O => "O",
+            AtomType::F => "F",
+            AtomType::Ne => "Ne",
+            AtomType::Na => "Na",
+            AtomType::Mg => "Mg",
+            AtomType::Al => "Al",
+            AtomType::Si => "Si",
+            AtomType::P => "P",
+            AtomType::S => "S",
+            AtomType::Cl => "Cl",
+            AtomType::Ar => "Ar",
+            AtomType::K => "K",
+            AtomType::Ca => "Ca",
+            AtomType::Sc => "Sc",
+            AtomType::Ti => "Ti",
+            AtomType::V => "V",
+            AtomType::Cr => "Cr",
+            AtomType::Mn => "Mn",
+            AtomType::Fe => "Fe",
+            AtomType::Co => "Co",
+            AtomType::Ni => "Ni",
+            AtomType::Cu => "Cu",
+            AtomType::Zn => "Zn",
+            AtomType::Ga => "Ga",
+            AtomType::Ge => "Ge",
+            AtomType::As => "As",
+            AtomType::Se => "Se",
+            AtomType::Br => "Br",
+            AtomType::Kr => "Kr",
+            AtomType::Rb => "Rb",
+            AtomType::Sr => "Sr",
+            AtomType::Y => "Y",
+            AtomType::Zr => "Zr",
+            AtomType::Nb => "Nb",
+            AtomType::Mo => "Mo",
+            AtomType::Tc => "Tc",
+            AtomType::Ru => "Ru",
+            AtomType::Rh => "Rh",
+            AtomType::Pd => "Pd",
+            AtomType::Ag => "Ag",
+            AtomType::Cd => "Cd",
+            AtomType::In => "In",
+            AtomType::Sn => "Sn",
+            AtomType::Sb => "Sb",
+            AtomType::Te => "Te",
+            AtomType::I => "I",
+            AtomType::Xe => "Xe",
+            AtomType::Cs => "Cs",
+            AtomType::Ba => "Ba",
+            AtomType::La => "La",
+            AtomType::Ce => "Ce",
+            AtomType::Pr => "Pr",
+            AtomType::Nd => "Nd",
+            AtomType::Pm => "Pm",
+            AtomType::Sm => "Sm",
+            AtomType::Eu => "Eu",
+            AtomType::Gd => "Gd",
+            AtomType::Tb => "Tb",
+            AtomType::Dy => "Dy",
+            AtomType::Ho => "Ho",
+            AtomType::Er => "Er",
+            AtomType::Tm => "Tm",
+            AtomType::Yb => "Yb",
+            AtomType::Lu => "Lu",
+            AtomType::Hf => "Hf",
+            AtomType::Ta => "Ta",
+            AtomType::W => "W",
+            AtomType::Re => "Re",
+            AtomType::Os => "Os",
+            AtomType::Ir => "Ir",
+            AtomType::Pt => "Pt",
+            AtomType::Au => "Au",
+            AtomType::Hg => "Hg",
+            AtomType::Tl => "Tl",
+            AtomType::Pb => "Pb",
+            AtomType::Bi => "Bi",
+            AtomType::Po => "Po",
+            AtomType::At => "At",
+            AtomType::Rn => "Rn",
+            AtomType::Fr => "Fr",
+            AtomType::Ra => "Ra",
+        }
+    }
+}
+
+impl FromStr for AtomType {
+    type Err = TbError;
+
+    fn from_str(s: &str) -> Result<Self> {
         match s {
             "H" => Ok(AtomType::H),
             "He" => Ok(AtomType::He),
@@ -478,195 +578,11 @@ impl AtomType {
             _ => Err(TbError::InvalidAtomType(s.to_string())),
         }
     }
-    /// Standard chemical element symbol of this [`AtomType`] (e.g. `"Fe"`).
-    pub fn to_str(&self) -> &str {
-        let symbol = match self {
-            AtomType::H => "H",
-            AtomType::He => "He",
-            AtomType::Li => "Li",
-            AtomType::Be => "Be",
-            AtomType::B => "B",
-            AtomType::C => "C",
-            AtomType::N => "N",
-            AtomType::O => "O",
-            AtomType::F => "F",
-            AtomType::Ne => "Ne",
-            AtomType::Na => "Na",
-            AtomType::Mg => "Mg",
-            AtomType::Al => "Al",
-            AtomType::Si => "Si",
-            AtomType::P => "P",
-            AtomType::S => "S",
-            AtomType::Cl => "Cl",
-            AtomType::Ar => "Ar",
-            AtomType::K => "K",
-            AtomType::Ca => "Ca",
-            AtomType::Sc => "Sc",
-            AtomType::Ti => "Ti",
-            AtomType::V => "V",
-            AtomType::Cr => "Cr",
-            AtomType::Mn => "Mn",
-            AtomType::Fe => "Fe",
-            AtomType::Co => "Co",
-            AtomType::Ni => "Ni",
-            AtomType::Cu => "Cu",
-            AtomType::Zn => "Zn",
-            AtomType::Ga => "Ga",
-            AtomType::Ge => "Ge",
-            AtomType::As => "As",
-            AtomType::Se => "Se",
-            AtomType::Br => "Br",
-            AtomType::Kr => "Kr",
-            AtomType::Rb => "Rb",
-            AtomType::Sr => "Sr",
-            AtomType::Y => "Y",
-            AtomType::Zr => "Zr",
-            AtomType::Nb => "Nb",
-            AtomType::Mo => "Mo",
-            AtomType::Tc => "Tc",
-            AtomType::Ru => "Ru",
-            AtomType::Rh => "Rh",
-            AtomType::Pd => "Pd",
-            AtomType::Ag => "Ag",
-            AtomType::Cd => "Cd",
-            AtomType::In => "In",
-            AtomType::Sn => "Sn",
-            AtomType::Sb => "Sb",
-            AtomType::Te => "Te",
-            AtomType::I => "I",
-            AtomType::Xe => "Xe",
-            AtomType::Cs => "Cs",
-            AtomType::Ba => "Ba",
-            AtomType::La => "La",
-            AtomType::Ce => "Ce",
-            AtomType::Pr => "Pr",
-            AtomType::Nd => "Nd",
-            AtomType::Pm => "Pm",
-            AtomType::Sm => "Sm",
-            AtomType::Eu => "Eu",
-            AtomType::Gd => "Gd",
-            AtomType::Tb => "Tb",
-            AtomType::Dy => "Dy",
-            AtomType::Ho => "Ho",
-            AtomType::Er => "Er",
-            AtomType::Tm => "Tm",
-            AtomType::Yb => "Yb",
-            AtomType::Lu => "Lu",
-            AtomType::Hf => "Hf",
-            AtomType::Ta => "Ta",
-            AtomType::W => "W",
-            AtomType::Re => "Re",
-            AtomType::Os => "Os",
-            AtomType::Ir => "Ir",
-            AtomType::Pt => "Pt",
-            AtomType::Au => "Au",
-            AtomType::Hg => "Hg",
-            AtomType::Tl => "Tl",
-            AtomType::Pb => "Pb",
-            AtomType::Bi => "Bi",
-            AtomType::Po => "Po",
-            AtomType::At => "At",
-            AtomType::Rn => "Rn",
-            AtomType::Fr => "Fr",
-            AtomType::Ra => "Ra",
-        };
-        symbol
-    }
 }
 
 impl fmt::Display for AtomType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let symbol = match self {
-            AtomType::H => "H ",
-            AtomType::He => "He",
-            AtomType::Li => "Li",
-            AtomType::Be => "Be",
-            AtomType::B => "B ",
-            AtomType::C => "C ",
-            AtomType::N => "N ",
-            AtomType::O => "O ",
-            AtomType::F => "F ",
-            AtomType::Ne => "Ne",
-            AtomType::Na => "Na",
-            AtomType::Mg => "Mg",
-            AtomType::Al => "Al",
-            AtomType::Si => "Si",
-            AtomType::P => "P ",
-            AtomType::S => "S ",
-            AtomType::Cl => "Cl",
-            AtomType::Ar => "Ar",
-            AtomType::K => "K ",
-            AtomType::Ca => "Ca",
-            AtomType::Sc => "Sc",
-            AtomType::Ti => "Ti",
-            AtomType::V => "V ",
-            AtomType::Cr => "Cr",
-            AtomType::Mn => "Mn",
-            AtomType::Fe => "Fe",
-            AtomType::Co => "Co",
-            AtomType::Ni => "Ni",
-            AtomType::Cu => "Cu",
-            AtomType::Zn => "Zn",
-            AtomType::Ga => "Ga",
-            AtomType::Ge => "Ge",
-            AtomType::As => "As",
-            AtomType::Se => "Se",
-            AtomType::Br => "Br",
-            AtomType::Kr => "Kr",
-            AtomType::Rb => "Rb",
-            AtomType::Sr => "Sr",
-            AtomType::Y => "Y ",
-            AtomType::Zr => "Zr",
-            AtomType::Nb => "Nb",
-            AtomType::Mo => "Mo",
-            AtomType::Tc => "Tc",
-            AtomType::Ru => "Ru",
-            AtomType::Rh => "Rh",
-            AtomType::Pd => "Pd",
-            AtomType::Ag => "Ag",
-            AtomType::Cd => "Cd",
-            AtomType::In => "In",
-            AtomType::Sn => "Sn",
-            AtomType::Sb => "Sb",
-            AtomType::Te => "Te",
-            AtomType::I => "I ",
-            AtomType::Xe => "Xe",
-            AtomType::Cs => "Cs",
-            AtomType::Ba => "Ba",
-            AtomType::La => "La",
-            AtomType::Ce => "Ce",
-            AtomType::Pr => "Pr",
-            AtomType::Nd => "Nd",
-            AtomType::Pm => "Pm",
-            AtomType::Sm => "Sm",
-            AtomType::Eu => "Eu",
-            AtomType::Gd => "Gd",
-            AtomType::Tb => "Tb",
-            AtomType::Dy => "Dy",
-            AtomType::Ho => "Ho",
-            AtomType::Er => "Er",
-            AtomType::Tm => "Tm",
-            AtomType::Yb => "Yb",
-            AtomType::Lu => "Lu",
-            AtomType::Hf => "Hf",
-            AtomType::Ta => "Ta",
-            AtomType::W => "W ",
-            AtomType::Re => "Re",
-            AtomType::Os => "Os",
-            AtomType::Ir => "Ir",
-            AtomType::Pt => "Pt",
-            AtomType::Au => "Au",
-            AtomType::Hg => "Hg",
-            AtomType::Tl => "Tl",
-            AtomType::Pb => "Pb",
-            AtomType::Bi => "Bi",
-            AtomType::Po => "Po",
-            AtomType::At => "At",
-            AtomType::Rn => "Rn",
-            AtomType::Fr => "Fr",
-            AtomType::Ra => "Ra",
-        };
-        write!(f, "{}", symbol)
+        write!(f, "{:<2}", self.to_str())
     }
 }
 
@@ -937,5 +853,31 @@ impl fmt::Display for Atom {
             "Atom {{ name: {}, position: {:?}, orbitals: {:?}, magnetic moment:{:?}}}",
             self.name, self.position, self.orbitals, self.magnetic_moment
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_orbitals_from_str() {
+        assert_eq!("s".parse::<OrbProj>().unwrap(), OrbProj::s);
+        assert_eq!("dx2-y2".parse::<OrbProj>().unwrap(), OrbProj::dx2y2);
+        assert!("xx".parse::<OrbProj>().is_err());
+    }
+
+    #[test]
+    fn parse_atom_types_from_str() {
+        assert_eq!("H".parse::<AtomType>().unwrap(), AtomType::H);
+        assert_eq!("Fe".parse::<AtomType>().unwrap(), AtomType::Fe);
+        assert!("Xx".parse::<AtomType>().is_err());
+    }
+
+    #[test]
+    fn atom_type_display_keeps_two_column_padding() {
+        assert_eq!(format!("{}", AtomType::H), "H ");
+        assert_eq!(format!("{}", AtomType::He), "He");
+        assert_eq!(format!("{}", AtomType::W), "W ");
     }
 }
