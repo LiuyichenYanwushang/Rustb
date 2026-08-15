@@ -1,0 +1,5 @@
+# Build cache (cargo target directory)
+/target/
+
+# Generated test outputs (plots, band data, surface DOS, hr exports)
+/tests/
