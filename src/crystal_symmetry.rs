@@ -526,9 +526,10 @@ impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
             &result.rotations,
             &result.translations,
             &result.time_reversals,
-        );
+        )?;
+        let lattice = crystal.lattice();
         let effective_operations = operations.preserving_fields(
-            &crystal.lattice,
+            &lattice,
             cryspglib_fields(parameters.external_fields),
             parameters.field_tolerance,
         )?;
@@ -555,8 +556,9 @@ impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
         } else {
             structural_operations
         };
+        let lattice = crystal.lattice();
         let effective_operations = candidates.preserving_fields(
-            &crystal.lattice,
+            &lattice,
             cryspglib_fields(parameters.external_fields),
             parameters.field_tolerance,
         )?;
@@ -609,9 +611,10 @@ impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
             &result.rotations,
             &result.translations,
             &result.time_reversals,
-        )
-        .preserving_fields(
-            &crystal.lattice,
+        )?;
+        let lattice = crystal.lattice();
+        let operations = operations.preserving_fields(
+            &lattice,
             cryspglib_fields(parameters.external_fields),
             parameters.field_tolerance,
         )?;
@@ -696,9 +699,9 @@ fn model_crystal<const SPIN: bool, R: RMatrixData>(
         .iter()
         .map(|atom| atom.atom_type().atomic_number())
         .collect::<Vec<_>>();
-    let mut crystal = cryspglib::Crystal::new(lattice, positions, types);
+    let mut crystal = cryspglib::Crystal::new(lattice, positions, types)?;
     if let Some(moments) = moments {
-        crystal = crystal.with_magnetic(moments.to_vec());
+        crystal = crystal.with_magnetic(moments.to_vec())?;
     }
     Ok(crystal)
 }
@@ -983,10 +986,11 @@ mod tests {
         let mut model = simple_cubic();
         model.lat = array![[2.0, 0.1, 0.2], [0.3, 3.0, 0.4], [0.5, 0.6, 4.0]];
         let crystal = model_crystal(&model, None).unwrap();
-        assert_eq!(crystal.lattice[0], [2.0, 0.3, 0.5]);
-        assert_eq!(crystal.lattice[1], [0.1, 3.0, 0.6]);
-        assert_eq!(crystal.positions, vec![[0.0, 0.0, 0.0]]);
-        assert_eq!(crystal.types, vec![14]);
+        assert_eq!(crystal.lattice()[0], [2.0, 0.3, 0.5]);
+        assert_eq!(crystal.lattice()[1], [0.1, 3.0, 0.6]);
+        assert_eq!(crystal.lattice()[2], [0.2, 0.4, 4.0]);
+        assert_eq!(crystal.positions(), &[[0.0, 0.0, 0.0]]);
+        assert_eq!(crystal.types(), &[14]);
     }
 
     #[test]
