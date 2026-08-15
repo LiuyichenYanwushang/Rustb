@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Code review before commit (mandatory)
+
+Before committing any code change or new code, run an adversarial review loop and do not commit until it converges:
+
+1. Spawn a review agent (subagent) to review the diff. The reviewer must raise concrete, detailed questions and challenges — physics/sign/convention correctness, thread-safety, determinism, edge cases, test adequacy — not merely approve.
+2. The main agent examines each challenge and either ACCEPTS it (fix the issue) or REBUTS it (with explicit reasoning why it is not a problem).
+3. After applying accepted fixes, re-run the review loop (a fresh review agent on the updated changes).
+4. Repeat until every challenge is resolved and both sides are convinced. Only then commit or otherwise finalize the change.
+
 ---
 
 ## Project Overview
