@@ -144,7 +144,6 @@ let gamma_columns = symmetry.character_table_operations()?;
 
 let mesh = model.irreducible_kmesh(
     [12, 12, 12],
-    [0, 0, 0],
     true,
     &SymmetryParameters::default(),
 )?;

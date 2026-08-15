@@ -15,7 +15,7 @@ use cryspglib::irrep::magnetic_summary::{
 };
 use cryspglib::irrep::query::{format_character_table, irreps_of, kpoints_of};
 use cryspglib::irrep::types::generated_data::SG_DATA_HALL;
-use ndarray::{Array1, Array2, Array3};
+use ndarray::{Array1, Array2};
 use ndarray_linalg::Determinant;
 use std::collections::BTreeMap;
 
@@ -402,7 +402,14 @@ pub struct IrreducibleKMesh {
     pub weights: Array1<f64>,
     /// cryspglib full-grid index to compact irreducible row.
     pub full_to_irreducible: Array1<usize>,
-    /// Rustb [`crate::gen_kmesh`] row index to compact irreducible row.
+    /// Rustb [`crate::gen_kmesh`] row index to the compact irreducible row.
+    ///
+    /// This is the `gen_kmesh`-ordered counterpart of
+    /// [`Self::full_to_irreducible`]: the two arrays hold the same values but
+    /// under different full-grid row orderings (Rustb's `x`-major order versus
+    /// cryspglib's `z`-major order). The mesh is always Gamma-centered,
+    /// matching [`crate::gen_kmesh`], so this field and [`Self::kpoints`]
+    /// always describe the same mesh.
     pub rustb_full_to_irreducible: Array1<usize>,
     /// cryspglib full-grid addresses. Their linear order is not Rustb's
     /// `gen_kmesh` order.
@@ -431,32 +438,37 @@ pub trait CrystalSymmetry {
         parameters: &SymmetryParameters,
     ) -> Result<MagneticCrystalSymmetry>;
 
-    /// Reduce a structural/non-magnetic mesh. `time_reversal=true` is an
-    /// explicit assertion about the Hamiltonian; for magnetic order use
+    /// Reduce a structural/non-magnetic mesh.
+    ///
+    /// The mesh is always Gamma-centered, matching [`crate::gen_kmesh`]; use
+    /// `cryspglib::stabilized_reciprocal_mesh` directly for a shifted
+    /// (Monkhorst-Pack) mesh. `time_reversal=true` is an explicit assertion
+    /// about the Hamiltonian; for magnetic order use
     /// [`Self::magnetic_irreducible_kmesh`] with site moments.
     fn irreducible_kmesh(
         &self,
         mesh: [i32; 3],
-        shift: [i32; 3],
         time_reversal: bool,
         parameters: &SymmetryParameters,
     ) -> Result<IrreducibleKMesh>;
 
     /// Mesh reduced by the magnetic operations detected from explicit site
     /// moments, including anti-unitary operations and external-field context.
+    ///
+    /// The mesh is always Gamma-centered, matching [`crate::gen_kmesh`].
     fn magnetic_irreducible_kmesh(
         &self,
         moments: &[[f64; 3]],
         mesh: [i32; 3],
-        shift: [i32; 3],
         parameters: &SymmetryParameters,
     ) -> Result<IrreducibleKMesh>;
 
     /// Reduce a mesh by magnetic moments stored directly on the Atoms.
+    ///
+    /// The mesh is always Gamma-centered, matching [`crate::gen_kmesh`].
     fn magnetic_irreducible_kmesh_from_atoms(
         &self,
         mesh: [i32; 3],
-        shift: [i32; 3],
         parameters: &SymmetryParameters,
     ) -> Result<IrreducibleKMesh>;
 }
@@ -524,7 +536,6 @@ impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
     fn irreducible_kmesh(
         &self,
         mesh: [i32; 3],
-        shift: [i32; 3],
         time_reversal: bool,
         parameters: &SymmetryParameters,
     ) -> Result<IrreducibleKMesh> {
@@ -558,20 +569,19 @@ impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
             })
             .collect::<Vec<_>>();
         let stabilized =
-            cryspglib::stabilized_reciprocal_mesh(mesh, shift, false, &rotations, &[])?;
+            cryspglib::stabilized_reciprocal_mesh(mesh, [0, 0, 0], false, &rotations, &[])?;
         let raw = cryspglib::IrMesh {
             grid_addresses: stabilized.grid_addresses,
             mapping_table: stabilized.mapping_table,
             num_ir: stabilized.num_ir,
         };
-        convert_mesh(raw, mesh, shift)
+        convert_mesh(raw, mesh)
     }
 
     fn magnetic_irreducible_kmesh(
         &self,
         moments: &[[f64; 3]],
         mesh: [i32; 3],
-        shift: [i32; 3],
         parameters: &SymmetryParameters,
     ) -> Result<IrreducibleKMesh> {
         let parameters = parameters.validate()?;
@@ -613,8 +623,13 @@ impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
                 }
             })
             .collect::<Vec<_>>();
-        let stabilized =
-            cryspglib::stabilized_reciprocal_mesh(mesh, shift, false, &reciprocal_actions, &[])?;
+        let stabilized = cryspglib::stabilized_reciprocal_mesh(
+            mesh,
+            [0, 0, 0],
+            false,
+            &reciprocal_actions,
+            &[],
+        )?;
         convert_mesh(
             cryspglib::IrMesh {
                 grid_addresses: stabilized.grid_addresses,
@@ -622,18 +637,16 @@ impl<const SPIN: bool, R: RMatrixData> CrystalSymmetry for Model<SPIN, 3, R> {
                 num_ir: stabilized.num_ir,
             },
             mesh,
-            shift,
         )
     }
 
     fn magnetic_irreducible_kmesh_from_atoms(
         &self,
         mesh: [i32; 3],
-        shift: [i32; 3],
         parameters: &SymmetryParameters,
     ) -> Result<IrreducibleKMesh> {
         let moments = atom_magnetic_moments(self)?;
-        self.magnetic_irreducible_kmesh(&moments, mesh, shift, parameters)
+        self.magnetic_irreducible_kmesh(&moments, mesh, parameters)
     }
 }
 
@@ -816,11 +829,62 @@ fn cryspglib_fields(fields: ExternalFields) -> cryspglib::ExternalFields {
     }
 }
 
-fn convert_mesh(
-    raw: cryspglib::IrMesh,
+/// Build the `gen_kmesh`-ordered full-grid → irreducible-row mapping.
+///
+/// cryspglib stores grid addresses in a Gamma-centered reduced frame and
+/// orders them by `z * nx * ny + y * nx + x`, whereas `gen_kmesh` orders rows
+/// by `x * ny * nz + y * nz + z`. This helper reorders the already-compacted
+/// `full_to_irreducible` array onto `gen_kmesh` row indices, verifying that
+/// the address reconstruction is a bijection.
+fn build_rustb_full_to_irreducible(
+    grid_addresses: &[[i32; 3]],
+    full_to_irreducible: &Array1<usize>,
     mesh: [i32; 3],
-    shift: [i32; 3],
-) -> Result<IrreducibleKMesh> {
+) -> Result<Array1<usize>> {
+    if mesh.iter().any(|&value| value <= 0) {
+        return Err(TbError::InvalidCrystalSymmetryInput {
+            parameter: "mesh",
+            message: "all mesh dimensions must be positive".to_string(),
+        });
+    }
+    if full_to_irreducible.len() != grid_addresses.len() {
+        return Err(TbError::InvalidModelInvariant {
+            invariant: "cryspglib_mesh_mapping",
+            message: format!(
+                "full-to-irreducible length {} does not match grid address count {}",
+                full_to_irreducible.len(),
+                grid_addresses.len()
+            ),
+        });
+    }
+    let mut rustb_full_to_irreducible = Array1::zeros(grid_addresses.len());
+    let mut written = vec![false; grid_addresses.len()];
+    for (row, address) in grid_addresses.iter().enumerate() {
+        let x = address[0].rem_euclid(mesh[0]) as usize;
+        let y = address[1].rem_euclid(mesh[1]) as usize;
+        let z = address[2].rem_euclid(mesh[2]) as usize;
+        let rustb_row = x * mesh[1] as usize * mesh[2] as usize + y * mesh[2] as usize + z;
+        if written[rustb_row] {
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "cryspglib_grid_address_bijection",
+                message: format!(
+                    "gen_kmesh row {rustb_row} is produced by more than one grid address"
+                ),
+            });
+        }
+        written[rustb_row] = true;
+        rustb_full_to_irreducible[rustb_row] = full_to_irreducible[row];
+    }
+    if let Some(unwritten) = written.iter().position(|&was_written| !was_written) {
+        return Err(TbError::InvalidModelInvariant {
+            invariant: "cryspglib_grid_address_bijection",
+            message: format!("gen_kmesh row {unwritten} is not produced by any grid address"),
+        });
+    }
+    Ok(rustb_full_to_irreducible)
+}
+
+fn convert_mesh(raw: cryspglib::IrMesh, mesh: [i32; 3]) -> Result<IrreducibleKMesh> {
     if mesh.iter().any(|&value| value <= 0) {
         return Err(TbError::InvalidCrystalSymmetryInput {
             parameter: "mesh",
@@ -854,7 +918,7 @@ fn convert_mesh(
     for (&representative, &compact) in &representative_to_compact {
         let address = raw.grid_addresses[representative];
         for d in 0..3 {
-            let coordinate = (2 * address[d] + shift[d]) as f64 / (2 * mesh[d]) as f64;
+            let coordinate = address[d] as f64 / mesh[d] as f64;
             kpoints[[compact, d]] = coordinate.rem_euclid(1.0);
         }
     }
@@ -868,17 +932,13 @@ fn convert_mesh(
     let full_size = raw.mapping_table.len() as f64;
     let weights = multiplicities.mapv(|count| count as f64 / full_size);
     let mut full_grid_addresses = Array2::zeros((raw.grid_addresses.len(), 3));
-    let mut rustb_full_to_irreducible = Array1::zeros(raw.grid_addresses.len());
     for (row, address) in raw.grid_addresses.iter().enumerate() {
         for d in 0..3 {
             full_grid_addresses[[row, d]] = address[d];
         }
-        let x = address[0].rem_euclid(mesh[0]) as usize;
-        let y = address[1].rem_euclid(mesh[1]) as usize;
-        let z = address[2].rem_euclid(mesh[2]) as usize;
-        let rustb_row = x * mesh[1] as usize * mesh[2] as usize + y * mesh[2] as usize + z;
-        rustb_full_to_irreducible[rustb_row] = full_to_irreducible[row];
     }
+    let rustb_full_to_irreducible =
+        build_rustb_full_to_irreducible(&raw.grid_addresses, &full_to_irreducible, mesh)?;
     Ok(IrreducibleKMesh {
         kpoints,
         multiplicities,
@@ -994,12 +1054,32 @@ mod tests {
     #[test]
     fn irreducible_mesh_has_normalized_weights() {
         let reduced = simple_cubic()
-            .irreducible_kmesh([2, 3, 4], [1, 0, 1], true, &SymmetryParameters::default())
+            .irreducible_kmesh([2, 3, 4], true, &SymmetryParameters::default())
             .unwrap();
         assert_eq!(reduced.multiplicities.sum(), 24);
         assert!((reduced.weights.sum() - 1.0).abs() < 1e-12);
         assert_eq!(reduced.full_to_irreducible.len(), 24);
         assert_eq!(reduced.rustb_full_to_irreducible.len(), 24);
+
+        // rustb_full_to_irreducible is the gen_kmesh-ordered view of the same
+        // reduction: it must be a permutation of full_to_irreducible, its
+        // targets must be in range, and its distinct values must cover the
+        // full irreducible set 0..kpoints.nrows()-1.
+        let mut rustb_sorted: Vec<usize> = reduced.rustb_full_to_irreducible.to_vec();
+        rustb_sorted.sort_unstable();
+        let mut full_sorted: Vec<usize> = reduced.full_to_irreducible.to_vec();
+        full_sorted.sort_unstable();
+        assert_eq!(rustb_sorted, full_sorted);
+        assert!(
+            reduced
+                .rustb_full_to_irreducible
+                .iter()
+                .all(|&index| index < reduced.kpoints.nrows())
+        );
+        let mut covered: Vec<usize> = reduced.rustb_full_to_irreducible.to_vec();
+        covered.sort_unstable();
+        covered.dedup();
+        assert_eq!(covered, (0..reduced.kpoints.nrows()).collect::<Vec<_>>());
     }
 
     #[test]
@@ -1065,17 +1145,12 @@ mod tests {
         assert_eq!(magnetic.magnetic_type, MagneticGroupType::BlackWhite);
         assert!(magnetic.operations.len() < nonmagnetic.operations.len());
         let stored_mesh = model
-            .magnetic_irreducible_kmesh_from_atoms(
-                [4, 4, 4],
-                [0, 0, 0],
-                &SymmetryParameters::default(),
-            )
+            .magnetic_irreducible_kmesh_from_atoms([4, 4, 4], &SymmetryParameters::default())
             .unwrap();
         let explicit_mesh = model
             .magnetic_irreducible_kmesh(
                 &[[0.0, 0.0, 1.0]],
                 [4, 4, 4],
-                [0, 0, 0],
                 &SymmetryParameters::default(),
             )
             .unwrap();
@@ -1092,12 +1167,11 @@ mod tests {
     #[test]
     fn external_fields_reduce_the_irreducible_mesh_with_effective_operations() {
         let structural = simple_cubic()
-            .irreducible_kmesh([4, 4, 4], [0, 0, 0], true, &SymmetryParameters::default())
+            .irreducible_kmesh([4, 4, 4], true, &SymmetryParameters::default())
             .unwrap();
         let electric = simple_cubic()
             .irreducible_kmesh(
                 [4, 4, 4],
-                [0, 0, 0],
                 true,
                 &SymmetryParameters {
                     external_fields: ExternalFields {
@@ -1111,7 +1185,6 @@ mod tests {
         let magnetic_without_time_reversal = simple_cubic()
             .irreducible_kmesh(
                 [4, 4, 4],
-                [0, 0, 0],
                 true,
                 &SymmetryParameters {
                     external_fields: ExternalFields {
@@ -1151,13 +1224,12 @@ mod tests {
     #[test]
     fn magnetic_mesh_uses_detected_antiunitary_group_not_pure_time_reversal() {
         let nonmagnetic = simple_cubic()
-            .irreducible_kmesh([4, 4, 4], [0, 0, 0], true, &SymmetryParameters::default())
+            .irreducible_kmesh([4, 4, 4], true, &SymmetryParameters::default())
             .unwrap();
         let magnetic = simple_cubic()
             .magnetic_irreducible_kmesh(
                 &[[0.0, 0.0, 1.0]],
                 [4, 4, 4],
-                [0, 0, 0],
                 &SymmetryParameters::default(),
             )
             .unwrap();

@@ -611,7 +611,9 @@ Magnetic order is separate. Every Atom has an optional finite Cartesian moment;
 come from `character_table_operations()` in canonical database basis; do not
 positionally pair them with `operations`, which stays in model basis. For
 mappings onto `gen_kmesh` order, use
-`IrreducibleKMesh::rustb_full_to_irreducible`.
+`IrreducibleKMesh::rustb_full_to_irreducible`. The mesh methods are always
+Gamma-centered, matching `gen_kmesh`; use `cryspglib::stabilized_reciprocal_mesh`
+directly for a shifted (Monkhorst-Pack) mesh.
 
 To determine whether the actual TB Hamiltonian preserves those structural
 candidates, call the separate exact real-space checker:
