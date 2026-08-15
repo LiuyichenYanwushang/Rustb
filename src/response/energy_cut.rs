@@ -40,8 +40,7 @@ use rayon::prelude::*;
 use super::kernel::{eval_berry_band_at_lam_buf, eval_berry_complex_at_lam_buf, eval_berry_kernel};
 use super::quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
 use super::tracking::{
-    build_tetrahedra_3d_diagavg_ref,
-    build_tetrahedra_3d_ref, build_triangles_2d_diagavg_ref,
+    build_tetrahedra_3d_diagavg_ref, build_tetrahedra_3d_ref, build_triangles_2d_diagavg_ref,
 };
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, TrackedSimplexRef, VertexKernel};
 

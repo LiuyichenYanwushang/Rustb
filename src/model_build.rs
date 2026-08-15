@@ -1692,7 +1692,10 @@ fn row_coset_key(row: &[isize], adjugate: &[Vec<isize>], determinant: isize) -> 
 /// Enumerate exactly `det(U)` representatives of the row-vector quotient.
 /// Adding the positive coordinate generators is sufficient because the
 /// quotient is finite; the canonical adjugate key prevents duplicates.
-fn row_coset_representatives(adjugate: &[Vec<isize>], determinant: isize) -> Option<Vec<Vec<isize>>> {
+fn row_coset_representatives(
+    adjugate: &[Vec<isize>],
+    determinant: isize,
+) -> Option<Vec<Vec<isize>>> {
     let count = usize::try_from(determinant).ok()?;
     let dim = adjugate.len();
     let zero = vec![0_isize; dim];
@@ -1969,17 +1972,17 @@ fn relabel_hamiltonian_by_orbital_fold<const DIM: usize>(
                 let target = match find_R(ham_r, &new_r) {
                     Some(target) => target,
                     None => {
-                        ham_r.push_row(new_r.view()).expect("ham_r row must match DIM");
-                        ham.push(
-                            Axis(0),
-                            Array2::<Complex<f64>>::zeros((nsta, nsta)).view(),
-                        )
-                        .expect("ham block shape must match (nsta, nsta)");
-                        rmatrix.push(
-                            Axis(0),
-                            Array3::<Complex<f64>>::zeros((DIM, nsta, nsta)).view(),
-                        )
-                        .expect("rmatrix block shape must match (DIM, nsta, nsta)");
+                        ham_r
+                            .push_row(new_r.view())
+                            .expect("ham_r row must match DIM");
+                        ham.push(Axis(0), Array2::<Complex<f64>>::zeros((nsta, nsta)).view())
+                            .expect("ham block shape must match (nsta, nsta)");
+                        rmatrix
+                            .push(
+                                Axis(0),
+                                Array3::<Complex<f64>>::zeros((DIM, nsta, nsta)).view(),
+                            )
+                            .expect("rmatrix block shape must match (DIM, nsta, nsta)");
                         ham_r.nrows() - 1
                     }
                 };

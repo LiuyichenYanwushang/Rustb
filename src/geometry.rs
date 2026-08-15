@@ -41,9 +41,9 @@
 //! let wcc = model.wannier_centre(&occ, &k_start, &dir1, &dir2, nk1, nk2);
 //! ```
 
+use crate::Model;
 use crate::RMatrixData;
 use crate::solve_ham::Solve;
-use crate::Model;
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::*;
@@ -169,7 +169,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, D
         }
         let use_orb = if SPIN {
             let mut orb0 = self.orb.to_owned();
-            orb0.append(Axis(0), self.orb.view()).expect("appending spin-doubled orbitals must succeed");
+            orb0.append(Axis(0), self.orb.view())
+                .expect("appending spin-doubled orbitals must succeed");
             orb0
         } else {
             self.orb.to_owned()
@@ -229,7 +230,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, D
         }
         let use_orb = if SPIN {
             let mut orb0 = self.orb.to_owned();
-            orb0.append(Axis(0), self.orb.view()).expect("appending spin-doubled orbitals must succeed");
+            orb0.append(Axis(0), self.orb.view())
+                .expect("appending spin-doubled orbitals must succeed");
             orb0
         } else {
             self.orb.to_owned()

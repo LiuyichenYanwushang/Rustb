@@ -677,7 +677,7 @@ mod ownership_tests {
     use super::*;
     use crate::AtomType;
     use crate::HasRMatrix;
-    
+
     use ndarray::array;
 
     #[test]

@@ -490,9 +490,30 @@ impl<const SPIN: bool, R: RMatrixData> BxsfExport for Model<SPIN, 3, R> {
         writeln!(out, "    {nsta}").ok();
         writeln!(out, "    {nx} {ny} {nz}").ok();
         writeln!(out, "    0.0 0.0 0.0").ok(); // origin = Γ point
-        writeln!(out, "    {:.10} {:.10} {:.10}", b[[0, 0]], b[[0, 1]], b[[0, 2]]).ok();
-        writeln!(out, "    {:.10} {:.10} {:.10}", b[[1, 0]], b[[1, 1]], b[[1, 2]]).ok();
-        writeln!(out, "    {:.10} {:.10} {:.10}", b[[2, 0]], b[[2, 1]], b[[2, 2]]).ok();
+        writeln!(
+            out,
+            "    {:.10} {:.10} {:.10}",
+            b[[0, 0]],
+            b[[0, 1]],
+            b[[0, 2]]
+        )
+        .ok();
+        writeln!(
+            out,
+            "    {:.10} {:.10} {:.10}",
+            b[[1, 0]],
+            b[[1, 1]],
+            b[[1, 2]]
+        )
+        .ok();
+        writeln!(
+            out,
+            "    {:.10} {:.10} {:.10}",
+            b[[2, 0]],
+            b[[2, 1]],
+            b[[2, 2]]
+        )
+        .ok();
 
         for ib in 0..nsta {
             writeln!(out, "    BAND: {}", ib + 1).ok();

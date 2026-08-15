@@ -2215,7 +2215,7 @@ mod tests {
     use crate::SpinDirection;
     use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
     use crate::model::NoRMatrix;
-    
+
     use crate::solve_ham::Solve;
     use ndarray::{arr1, array};
 
@@ -3113,7 +3113,10 @@ mod tests {
         // 这是一个防回归冒烟测试，不是严格的 benchmark。不同 BLAS 后端和
         // release/debug 组合下常数差异很大；这里只要求仍然“显著快于”
         // k-space 路径，避免把 timing-sensitive 的阈值卡得太死。
-        let speedup = t_legacy.as_secs_f64() / t_bessel.max(std::time::Duration::from_micros(100)).as_secs_f64();
+        let speedup = t_legacy.as_secs_f64()
+            / t_bessel
+                .max(std::time::Duration::from_micros(100))
+                .as_secs_f64();
         assert!(
             speedup > 5.0,
             "real-space path should be far faster than the k-space path ({speedup:.1}x)"
@@ -3949,8 +3952,7 @@ mod tests {
                         for c in 0..2 {
                             let mut acc = 0.0;
                             for b in 0..2 {
-                                let frac = r[b] as f64
-                                    + model.orb[[j % norb, b]]
+                                let frac = r[b] as f64 + model.orb[[j % norb, b]]
                                     - model.orb[[i % norb, b]];
                                 acc += frac * model.lat[[b, c]];
                             }
@@ -4044,10 +4046,7 @@ mod tests {
         FloquetDrive::with_modes(
             omega,
             vec![
-                LightMode::new(
-                    1,
-                    array![Complex::new(kappa, 0.0), Complex::new(0.0, 0.0)],
-                ),
+                LightMode::new(1, array![Complex::new(kappa, 0.0), Complex::new(0.0, 0.0)]),
                 LightMode::new(
                     2,
                     array![
@@ -4241,8 +4240,7 @@ mod tests {
             let h0 = code_heff_order0(&model, &k, &drive, 2);
             let d1 = decompose_two_band(&h1).1;
             let d0 = decompose_two_band(&h0).1;
-            ((d1[0] - d0[0]).powi(2) + (d1[1] - d0[1]).powi(2) + (d1[2] - d0[2]).powi(2))
-                .sqrt()
+            ((d1[0] - d0[0]).powi(2) + (d1[1] - d0[1]).powi(2) + (d1[2] - d0[2]).powi(2)).sqrt()
         };
 
         let exo1 = commutator_norm(0.3, exotic_drive(0.3, 0.6, omega));

@@ -1260,7 +1260,11 @@ mod tests {
 
         let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
         assert_eq!(model.norb(), 1);
-        assert_eq!(model.natom(), 1, "Cs atom has no orbitals and must be dropped");
+        assert_eq!(
+            model.natom(),
+            1,
+            "Cs atom has no orbitals and must be dropped"
+        );
         fs::remove_dir_all(dir).ok();
     }
 
@@ -1274,7 +1278,8 @@ mod tests {
         fs::create_dir_all(dir).unwrap();
         let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin projections\nC:s\nend projections\n";
         let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
-        let xyz = "4\nWannier centres\nX 0.0 0.0 0.0\nC 0.1 0.0 0.0\nCs 0.2 0.0 0.0\nCs 0.3 0.0 0.0\n";
+        let xyz =
+            "4\nWannier centres\nX 0.0 0.0 0.0\nC 0.1 0.0 0.0\nCs 0.2 0.0 0.0\nCs 0.3 0.0 0.0\n";
         fs::write(format!("{dir}seedname.win"), win).unwrap();
         fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
         fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
@@ -1312,7 +1317,10 @@ mod tests {
         write_minimal_dataset(dir, "Fe");
         let err = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap_err();
         assert!(matches!(err, TbError::FileParse { .. }));
-        assert!(err.to_string().contains("species mismatch"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("species mismatch"),
+            "unexpected error: {err}"
+        );
         fs::remove_dir_all(dir).ok();
     }
 
@@ -1321,7 +1329,10 @@ mod tests {
         assert_eq!(win_data_line("spinors = .true."), "spinors = .true.");
         assert_eq!(win_data_line("# spinors = .true."), "");
         assert_eq!(win_data_line("#spinors=true"), "");
-        assert_eq!(win_data_line("spinors = .true. ! enable spin"), "spinors = .true.");
+        assert_eq!(
+            win_data_line("spinors = .true. ! enable spin"),
+            "spinors = .true."
+        );
         assert_eq!(win_data_line("Fe 1.0 0.0 0.0 # position"), "Fe 1.0 0.0 0.0");
         assert_eq!(win_data_line("  \t"), "");
     }

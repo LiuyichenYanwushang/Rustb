@@ -30,13 +30,7 @@ pub trait OutPut {
     /// Returns [`TbError::MissingAtomicStructure`] when the model has no
     /// atom metadata (e.g. built via `tb_model(..., None)`).
     fn output_xyz(&self, path: &str, seedname: &str) -> Result<()>;
-    fn show_band(
-        &self,
-        path: &Array2<f64>,
-        label: &[&str],
-        nk: usize,
-        name: &str,
-    ) -> Result<()>;
+    fn show_band(&self, path: &Array2<f64>, label: &[&str], nk: usize, name: &str) -> Result<()>;
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, DIM, R> {
@@ -535,13 +529,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
     ///Quickly plot a band structure using Python (gnuplot), since Rust-side
     ///plotting is less convenient.
     #[allow(non_snake_case)]
-    fn show_band(
-        &self,
-        path: &Array2<f64>,
-        label: &[&str],
-        nk: usize,
-        name: &str,
-    ) -> Result<()> {
+    fn show_band(&self, path: &Array2<f64>, label: &[&str], nk: usize, name: &str) -> Result<()> {
         use gnuplot::AutoOption::*;
         use gnuplot::AxesCommon;
         use gnuplot::Tick::*;
@@ -629,7 +617,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         let mut pdf_name = name.clone();
         pdf_name.push_str("/plot.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show().map_err(|e| TbError::Other(format!("gnuplot: {e}")))?;
+        fg.show()
+            .map_err(|e| TbError::Other(format!("gnuplot: {e}")))?;
         Ok(())
     }
 }

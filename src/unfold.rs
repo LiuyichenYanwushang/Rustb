@@ -464,11 +464,9 @@ mod tests {
     use crate::draw_heatmap;
     use crate::kpath::*;
     use crate::{Atom, AtomType, OrbitalId};
-    
-    
-    
+
     use num_complex::Complex;
-    
+
     use std::time::Instant;
 
     #[test]

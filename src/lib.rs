@@ -314,11 +314,8 @@ mod tests {
     use super::*;
     use crate::response::config::direction_matrix;
     use crate::solve_ham::Solve;
-    use gnuplot::{
-        AxesCommon, Color, Figure, Fix, Font, Major, PointSymbol, Rotate, TextOffset,
-    };
-    
-    
+    use gnuplot::{AxesCommon, Color, Figure, Fix, Font, Major, PointSymbol, Rotate, TextOffset};
+
     use ndarray::prelude::*;
     use ndarray_linalg::*;
     use ndarray_linalg::{Eigh, UPLO};
@@ -1346,7 +1343,9 @@ mod tests {
         let (_eval, _evec) = super_model.solve_all_parallel(&k_vec);
         //let label=vec!["G","X","M","Y","G"];
         let label = vec!["G", "M", "G"];
-        zig_model.show_band(&path, &label, nk, "tests/graphene_zig").unwrap();
+        zig_model
+            .show_band(&path, &label, nk, "tests/graphene_zig")
+            .unwrap();
 
         //开始计算石墨烯的态密度
         let nk: usize = 51;
@@ -1789,7 +1788,9 @@ mod tests {
         ];
         let label = vec!["G", "K", "M", "G", "K", "H", "G", "A", "H", "L", "A"];
         let nk = 101;
-        model.show_band(&path, &label, nk, "tests/Enonlinear").unwrap();
+        model
+            .show_band(&path, &label, nk, "tests/Enonlinear")
+            .unwrap();
 
         //开始计算非线性霍尔电导
         let dir_1 = arr1(&[1.0, 0.0, 0.0]);
@@ -1905,7 +1906,9 @@ mod tests {
         let (k_vec, _k_dist, _k_node) = super_model.k_path(&path, nk).unwrap();
         let (_eval, _evec) = super_model.solve_all_parallel(&k_vec);
         let label = vec!["G", "M", "G"];
-        zig_model.show_band(&path, &label, nk, "tests/kagome_zig/").unwrap();
+        zig_model
+            .show_band(&path, &label, nk, "tests/kagome_zig/")
+            .unwrap();
 
         let green = SurfGreen::from_Model(&super_model, 0, 1e-3, None).unwrap();
         let E_min = -2.0;
