@@ -306,6 +306,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, D
             dir_2.len(),
             self.dim_r()
         );
+        assert!(
+            nk1 >= 1 && nk2 >= 1,
+            "Wrong!, nk1 and nk2 must be at least 1, but nk1={} and nk2={}",
+            nk1,
+            nk2
+        );
         // Construct plaquette loops
         let mut k_loop = Array3::<f64>::zeros((nk1 * nk2, 5, self.dim_r()));
         for i in 0..nk1 {
@@ -367,25 +373,33 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, D
         nk1: usize,
         nk2: usize,
     ) -> Array2<f64> {
-        if k_start.len() != self.dim_r() {
-            panic!(
-                "Wrong!, the k_start's length is {} but dim_r is {}, it's not equal!",
-                k_start.len(),
-                self.dim_r()
-            );
-        } else if dir_1.len() != self.dim_r() {
-            panic!(
-                "Wrong!, the dir_1's length is {} but dim_r is {}, it's not equal!",
-                dir_1.len(),
-                self.dim_r()
-            );
-        } else if dir_1.len() != self.dim_r() {
-            panic!(
-                "Wrong!, the dir_2's length is {} but dim_r is {}, it's not equal!",
-                dir_2.len(),
-                self.dim_r()
-            );
-        }
+        assert_eq!(
+            k_start.len(),
+            self.dim_r(),
+            "Wrong!, the k_start's length is {} but dim_r is {}, it's not equal!",
+            k_start.len(),
+            self.dim_r()
+        );
+        assert_eq!(
+            dir_1.len(),
+            self.dim_r(),
+            "Wrong!, the dir_1's length is {} but dim_r is {}, it's not equal!",
+            dir_1.len(),
+            self.dim_r()
+        );
+        assert_eq!(
+            dir_2.len(),
+            self.dim_r(),
+            "Wrong!, the dir_2's length is {} but dim_r is {}, it's not equal!",
+            dir_2.len(),
+            self.dim_r()
+        );
+        assert!(
+            nk1 >= 2 && nk2 >= 2,
+            "Wrong!, nk1 and nk2 must be at least 2 for a finite-difference k-mesh, but nk1={} and nk2={}",
+            nk1,
+            nk2
+        );
         let mut kvec = Array3::zeros((nk1, nk2, self.dim_r()));
         for i in 0..nk1 {
             for j in 0..nk2 {
