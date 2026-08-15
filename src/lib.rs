@@ -1992,7 +1992,7 @@ mod tests {
         let path = arr2(&path);
         let label = vec!["G", "X", "M", "G"];
         model.show_band(&path, &label, nk, "tests/BBH/").unwrap();
-        model.output_hr("tests/BBH/", "wannier90");
+        model.output_hr("tests/BBH/", "wannier90").unwrap();
 
         //算一下wilson loop
         let n = 51;

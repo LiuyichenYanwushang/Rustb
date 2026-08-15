@@ -34,28 +34,30 @@ use std::ops::MulAssign;
 
 pub trait OutPut {
     /// Writes the tight-binding model to `wannier90_hr.dat` format.
-    fn output_hr(&self, path: &str, seedname: &str);
-    fn output_POSCAR(&self, path: &str);
-    fn output_win(&self, path: &str, seedname: &str);
+    fn output_hr(&self, path: &str, seedname: &str) -> Result<()>;
+    fn output_POSCAR(&self, path: &str) -> Result<()>;
+    fn output_win(&self, path: &str, seedname: &str) -> Result<()>;
     /// Writes a Wannier90 `_centres.xyz` file.
     ///
     /// Returns [`TbError::MissingAtomicStructure`] when the model has no
     /// atom metadata (e.g. built via `tb_model(..., None)`).
     fn output_xyz(&self, path: &str, seedname: &str) -> Result<()>;
-    fn show_band(&self, path: &Array2<f64>, label: &Vec<&str>, nk: usize, name: &str)
-    -> Result<()>;
+    fn show_band(
+        &self,
+        path: &Array2<f64>,
+        label: &[&str],
+        nk: usize,
+        name: &str,
+    ) -> Result<()>;
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, DIM, R> {
-    fn output_hr(&self, path: &str, seedname: &str) {
+    fn output_hr(&self, path: &str, seedname: &str) -> Result<()> {
         let n_R = self.hamR.nrows(); //length of hamR
-        let mut hr_name = String::new();
-        hr_name.push_str(path);
-        hr_name.push_str(seedname);
-        hr_name.push_str("_hr.dat");
-        let mut file = File::create(hr_name).expect("Unable to BAND.dat");
-        writeln!(file, "{}", self.nsta());
-        writeln!(file, "{}", n_R);
+        let hr_name = format!("{path}{seedname}_hr.dat");
+        let mut file = File::create(&hr_name)?;
+        writeln!(file, "{}", self.nsta())?;
+        writeln!(file, "{}", n_R)?;
         let mut weight = String::new();
         let lines = n_R.div_euclid(15);
         let last_lines = n_R % 15;
@@ -69,13 +71,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         for i in 0..last_lines {
             weight.push_str("    1");
         }
-        writeln!(file, "{}", weight);
+        writeln!(file, "{}", weight)?;
         //接下来我们进行数据的写入
         match self.dim_r() {
             1 => {
                 let max_R1 = self.hamR.outer_iter().map(|x| x[[0]].abs()).max().unwrap();
                 let mut s = String::new();
-                for i in -max_R1..max_R1 {
+                for i in -max_R1..=max_R1 {
                     match (
                         find_R(&self.hamR, &array![i as isize]),
                         find_R(&self.hamR, &(-array![i as isize])),
@@ -113,7 +115,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                         (None, None) => {}
                     }
                 }
-                writeln!(file, "{}", s);
+                writeln!(file, "{}", s)?;
             }
             2 => {
                 let max_values = self
@@ -122,8 +124,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                         *max.max(&value.abs())
                     });
                 let mut s = String::new();
-                for R1 in -max_values[[0]]..max_values[[0]] {
-                    for R2 in -max_values[[1]]..max_values[[1]] {
+                for R1 in -max_values[[0]]..=max_values[[0]] {
+                    for R2 in -max_values[[1]]..=max_values[[1]] {
                         let R0 = array![R1 as isize, R2 as isize];
                         let R0_inv = -array![R1 as isize, R2 as isize];
                         match (find_R(&self.hamR, &R0), find_R(&self.hamR, &R0_inv)) {
@@ -163,7 +165,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                         }
                     }
                 }
-                writeln!(file, "{}", s);
+                writeln!(file, "{}", s)?;
             }
             3 => {
                 let max_values = self
@@ -172,9 +174,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                         *max.max(&value.abs())
                     });
                 let mut s = String::new();
-                for R1 in -max_values[[0]]..max_values[[0]] {
-                    for R2 in -max_values[[1]]..max_values[[1]] {
-                        for R3 in -max_values[[2]]..max_values[[2]] {
+                for R1 in -max_values[[0]]..=max_values[[0]] {
+                    for R2 in -max_values[[1]]..=max_values[[1]] {
+                        for R3 in -max_values[[2]]..=max_values[[2]] {
                             let R0 = array![R1 as isize, R2 as isize, R3 as isize];
                             let R0_inv = -array![R1 as isize, R2 as isize, R3 as isize];
                             match (find_R(&self.hamR, &R0), find_R(&self.hamR, &R0_inv)) {
@@ -217,19 +219,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                         }
                     }
                 }
-                writeln!(file, "{}", s);
+                writeln!(file, "{}", s)?;
             }
             _ => unreachable!(),
         }
+        Ok(())
     }
 
-    fn output_POSCAR(&self, path: &str) {
-        let mut name = String::new();
-        name.push_str(path);
-        name.push_str("POSCAR");
-        let mut file = File::create(&name).expect("Unable to BAND.dat");
-        writeln!(file, "Generate by Rustb");
-        writeln!(file, "1.0");
+    fn output_POSCAR(&self, path: &str) -> Result<()> {
+        let name = format!("{path}POSCAR");
+        let mut file = File::create(&name)?;
+        writeln!(file, "Generate by Rustb")?;
+        writeln!(file, "1.0")?;
         let s = match self.dim_r() {
             3 => {
                 let mut s = String::new();
@@ -248,7 +249,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
             }
             _ => unreachable!(),
         };
-        writeln!(file, "{}", s);
+        writeln!(file, "{}", s)?;
         //开始弄atom
         let mut atom_type = vec![];
         let mut atom_num = vec![];
@@ -272,13 +273,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         for i in 0..atom_type.len() {
             s.push_str(&format!("   {}", atom_type[i]));
         }
-        writeln!(file, "{}", s);
+        writeln!(file, "{}", s)?;
         let mut s = String::new();
         for i in 0..atom_type.len() {
             s.push_str(&format!("{:>4}", atom_num[i]));
         }
-        writeln!(file, "{}", s);
-        writeln!(file, "Direct");
+        writeln!(file, "{}", s)?;
+        writeln!(file, "Direct")?;
         let mut s = String::new();
         for i in 0..atom_type.len() {
             for j in 0..new_atom_position[i].len() {
@@ -315,20 +316,22 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                     }
                     _ => unreachable!(),
                 };
-                writeln!(file, "{}", s);
+                writeln!(file, "{}", s)?;
             }
         }
+        Ok(())
     }
 
-    fn output_win(&self, path: &str, seedname: &str) {
+    fn output_win(&self, path: &str, seedname: &str) -> Result<()> {
         //!Output a Wannier90 `.win` file. Note: projections must be added manually,
         //!since projection data is not stored in the model.
-        let mut name = String::new();
-        name.push_str(path);
-        name.push_str(seedname);
-        name.push_str(".win");
-        let mut file = File::create(name).expect("Wrong, can't create seedname.win");
-        writeln!(file, "begin atoms_cart");
+        let name = format!("{path}{seedname}.win");
+        let mut file = File::create(&name)?;
+
+        // Atom positions are stored in fractional lattice coordinates, so the
+        // Wannier90 block must be `atoms_frac` (previously `atoms_cart` was
+        // written with fractional values).
+        writeln!(file, "begin atoms_frac")?;
         for at in self.atoms.iter() {
             let atom_position = at.position();
             match self.dim_r() {
@@ -339,8 +342,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                         at.atom_type(),
                         atom_position[0],
                         atom_position[1],
-                        atom_position[1]
-                    );
+                        atom_position[2]
+                    )?;
                 }
                 2 => {
                     writeln!(
@@ -350,7 +353,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                         atom_position[0],
                         atom_position[1],
                         0.0
-                    );
+                    )?;
                 }
                 1 => {
                     writeln!(
@@ -360,50 +363,61 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                         atom_position[0],
                         0.0,
                         0.0
-                    );
+                    )?;
                 }
-                _ => unreachable!(),
+                _ => {
+                    return Err(TbError::InvalidDimension {
+                        dim: self.dim_r(),
+                        supported: vec![1, 2, 3],
+                    });
+                }
             }
         }
-        writeln!(file, "end atoms_cart");
-        writeln!(file, "\n");
-        writeln!(file, "begin unit_cell_cart");
+        writeln!(file, "end atoms_frac")?;
+        writeln!(file)?;
+        writeln!(file, "begin unit_cell_cart")?;
         match self.dim_r() {
             3 => {
-                let mut s = String::new();
                 for i in 0..3 {
+                    let mut s = String::new();
                     for j in 0..3 {
                         s.push_str(&format!("{:>10.6}  ", self.lat[[i, j]]));
                     }
-                    writeln!(file, "{}", s);
+                    writeln!(file, "{}", s)?;
                 }
             }
             2 => {
-                let mut s = String::new();
                 for i in 0..2 {
+                    let mut s = String::new();
                     for j in 0..2 {
                         s.push_str(&format!("{:>10.6}  ", self.lat[[i, j]]));
                     }
                     s.push_str("   0.000000");
-                    writeln!(file, "{}", s);
+                    writeln!(file, "{}", s)?;
                 }
-                writeln!(file, "   0.000000     0.000000     1.000000");
+                writeln!(file, "   0.000000     0.000000     1.000000")?;
             }
             1 => {
                 let mut s = String::new();
                 s.push_str(&format!("{:>10.6}  ", self.lat[[0, 0]]));
                 s.push_str("   0.000000     0.000000");
-                writeln!(file, "{}", s);
-                writeln!(file, "   0.000000     0.000000     1.000000");
-                writeln!(file, "   0.000000     0.000000     1.000000");
+                writeln!(file, "{}", s)?;
+                writeln!(file, "   0.000000     0.000000     1.000000")?;
+                writeln!(file, "   0.000000     0.000000     1.000000")?;
             }
-            _ => unreachable!(),
+            _ => {
+                return Err(TbError::InvalidDimension {
+                    dim: self.dim_r(),
+                    supported: vec![1, 2, 3],
+                });
+            }
         }
-        writeln!(file, "end unit_cell_cart");
-        writeln!(file, "\n");
+        writeln!(file, "end unit_cell_cart")?;
+        writeln!(file)?;
         //TODO: projections still need to be written
-        writeln!(file, "begin projections");
-        writeln!(file, "end projections");
+        writeln!(file, "begin projections")?;
+        writeln!(file, "end projections")?;
+        Ok(())
     }
     fn output_xyz(&self, path: &str, seedname: &str) -> Result<()> {
         //!Output a Wannier90 `_centres.xyz` file. Note: projections must be added
@@ -411,16 +425,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         if self.natom() == 0 {
             return Err(TbError::MissingAtomicStructure);
         }
-        let mut name = String::new();
-        name.push_str(path);
-        name.push_str(seedname);
-        name.push_str("_centres.xyz");
-        let mut file = File::create(name).expect("Wrong, can't create seedname.win");
+        let name = format!("{path}{seedname}_centres.xyz");
+        let mut file = File::create(&name)?;
         let number = self.nsta() + self.natom();
         let orb_real = self.orb.dot(&self.lat);
         let atom_position_real = self.atom_position().dot(&self.lat);
-        writeln!(file, "{}", number);
-        writeln!(file, "Wannier centres, written by Rustb");
+        writeln!(file, "{}", number)?;
+        writeln!(file, "Wannier centres, written by Rustb")?;
         let mut s = match self.dim_r() {
             3 => {
                 let mut s = String::new();
@@ -529,7 +540,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
             }
             _ => unreachable!(),
         };
-        writeln!(file, "{}", s);
+        writeln!(file, "{}", s)?;
         Ok(())
     }
 
@@ -539,7 +550,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
     fn show_band(
         &self,
         path: &Array2<f64>,
-        label: &Vec<&str>,
+        label: &[&str],
         nk: usize,
         name: &str,
     ) -> Result<()> {
@@ -550,11 +561,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         use std::fs::create_dir_all;
         use std::path::Path;
         if path.len_of(Axis(0)) != label.len() {
-            panic!(
-                "Error, the path's length {} and label's length {} must be equal!",
-                path.len_of(Axis(0)),
-                label.len()
-            )
+            return Err(TbError::PathLengthMismatch {
+                expected: path.len_of(Axis(0)),
+                actual: label.len(),
+            });
         }
         let (k_vec, k_dist, k_node) = self.k_path(&path, nk)?;
         let eval = self.solve_band_all_parallel(&k_vec);
@@ -569,7 +579,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         let mut band_name = name.clone();
         band_name.push_str("/BAND.dat");
         let band_name = Path::new(&band_name);
-        let mut file = File::create(band_name).expect("Unable to BAND.dat");
+        let mut file = File::create(band_name)?;
         for i in 0..nk {
             let mut s = String::new();
             let aa = format!("{:.6}", k_dist[[i]]);
@@ -588,7 +598,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         let mut k_name = name.clone();
         k_name.push_str("/KLABELS");
         let k_name = Path::new(&k_name);
-        let mut file = File::create(k_name).expect("Unable to create KLBAELS"); //写下高对称点的位置
+        let mut file = File::create(k_name)?; //写下高对称点的位置
         for i in 0..path.len_of(Axis(0)) {
             let mut s = String::new();
             let aa = format!("{:.6}", k_node[[i]]);
@@ -600,7 +610,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         let mut py_name = name.clone();
         py_name.push_str("/print.py");
         let py_name = Path::new(&py_name);
-        let mut file = File::create(py_name).expect("Unable to create print.py");
+        let mut file = File::create(py_name)?;
         writeln!(
             file,
             "import numpy as np\nimport matplotlib.pyplot as plt\ndata=np.loadtxt('BAND.dat')\nk_nodes=[]\nlabel=[]\nf=open('KLABELS')\nfor i in f.readlines():\n    k_nodes.append(float(i.split()[0]))\n    label.append(i.split()[1])\nfig,ax=plt.subplots()\nax.plot(data[:,0],data[:,1:],c='b')\nfor x in k_nodes:\n    ax.axvline(x,c='k')\nax.set_xticks(k_nodes)\nax.set_xticklabels(label)\nax.set_xlim([0,k_nodes[-1]])\nfig.savefig('band.pdf')"
@@ -631,7 +641,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         let mut pdf_name = name.clone();
         pdf_name.push_str("/plot.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().map_err(|e| TbError::Other(format!("gnuplot: {e}")))?;
         Ok(())
     }
 }
