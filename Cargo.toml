@@ -13,7 +13,7 @@ repository = "https://github.com/LiuyichenYanwushang/Rustb"
 rust-version = "1.90.0"
 
 [package.metadata.docs.rs]
-features = ["cryspglib"]
+features = ["cryspglib", "openblas-system"]
 no-default-features = true
 rustdoc-args = [ "--html-in-header", "./docs-header.html" ]
 
@@ -80,6 +80,7 @@ src = "doc/dos_2D.svg"
 dst = "dos_2D.svg"
 
 [features]
+default = ["openblas-system"]
 cryspglib = ["dep:cryspglib"]
 intel-mkl-static = ["ndarray-linalg/intel-mkl-static","intel-mkl-src/mkl-static-lp64-seq"]
 intel-mkl-system = ["ndarray-linalg/intel-mkl-system","intel-mkl-src/mkl-dynamic-lp64-seq"]

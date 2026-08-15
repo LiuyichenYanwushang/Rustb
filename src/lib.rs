@@ -275,6 +275,29 @@ pub use crate::unfold::*;
 pub use crate::velocity::*;
 pub use crate::wannier90::*;
 
+// --- BLAS/LAPACK 后端（互斥，只能开一个） ---
+//
+// `ndarray-linalg` 默认不链接任何后端，而且多个后端同时启用时会在
+// `intel-mkl-src`/`openblas-src`/`netlib-src` 或本 crate 的
+// `ndarray_lapack` 中产生重复符号/重复 extern crate。这里在 const
+// 求值阶段强制“有且仅有一个后端”。
+const _: () = {
+    let backends = cfg!(feature = "intel-mkl-static") as usize
+        + cfg!(feature = "intel-mkl-system") as usize
+        + cfg!(feature = "openblas-static") as usize
+        + cfg!(feature = "openblas-system") as usize
+        + cfg!(feature = "netlib-static") as usize
+        + cfg!(feature = "netlib-system") as usize;
+    assert!(
+        backends <= 1,
+        "Rustb: enable exactly one BLAS/LAPACK backend feature (intel-mkl-static, intel-mkl-system, openblas-static, openblas-system, netlib-static, netlib-system); they are mutually exclusive"
+    );
+    assert!(
+        backends >= 1,
+        "Rustb: no BLAS/LAPACK backend selected. Enable one backend feature (e.g. the default openblas-system, or use --features intel-mkl-system)"
+    );
+};
+
 // --- 可选高性能分配器（互斥，只能开一个 feature） ---
 #[cfg(all(feature = "mimalloc", feature = "jemalloc"))]
 compile_error!("mimalloc and jemalloc are mutually exclusive — enable only one.");
