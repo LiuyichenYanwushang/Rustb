@@ -363,7 +363,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let pauli: Option<SpinDirection> = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
         if pauli.is_some() && !SPIN {
-            eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
+            eprintln!("Warning: pauli is ignored because this Model is spinless (SPIN=false)")
         }
         assert!(
             R.len() == self.dim_r(),
@@ -375,6 +375,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             self.norb(),
             ind_i,
             ind_j
+        );
+
+        // Transactional pre-check: on-site terms (R = 0, i == j) must be
+        // real. This must happen before any Hamiltonian block is written, so a
+        // rejected input leaves the model unchanged.
+        let is_onsite = ind_i == ind_j && R.iter().all(|&x| x == 0);
+        assert!(
+            !(is_onsite && tmp.im != 0.0),
+            "Wrong, the onsite hopping must be real, but here is {}",
+            tmp
         );
 
         let norb = self.norb();
@@ -415,13 +425,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         norb
                     );
                 }
-
-                // Check if onsite matrix element is real
-                assert!(
-                    !(ind_i == ind_j && tmp.im != 0.0 && index == 0),
-                    "Wrong, the onsite hopping must be real, but here is {}",
-                    tmp
-                )
             }
             None => {
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
@@ -483,7 +486,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let pauli: Option<SpinDirection> = pauli.into();
         let tmp: Complex<f64> = tmp.to_complex();
         if pauli.is_some() && !SPIN {
-            eprintln!("Wrong, if spin is True and pauli is not zero, the pauli is not use")
+            eprintln!("Warning: pauli is ignored because this Model is spinless (SPIN=false)")
         }
         assert!(
             R.len() == self.dim_r(),
@@ -496,6 +499,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             ind_i,
             ind_j
         );
+
+        // Transactional pre-check: on-site terms (R = 0, i == j) must be
+        // real. This must happen before any Hamiltonian block is written, so a
+        // rejected input leaves the model unchanged.
+        let is_onsite = ind_i == ind_j && R.iter().all(|&x| x == 0);
+        assert!(
+            !(is_onsite && tmp.im != 0.0),
+            "Wrong, the onsite hopping must be real, but here is {}",
+            tmp
+        );
+
         let norb = self.norb();
         let negative_R = &(-R);
         match find_R(&self.hamR, &R) {
@@ -527,13 +541,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         norb
                     );
                 }
-
-                // Check if onsite matrix element is real
-                assert!(
-                    !(ind_i == ind_j && tmp.im != 0.0 && index == 0),
-                    "Wrong, the onsite hopping must be real, but here is {}",
-                    tmp
-                )
             }
             None => {
                 let mut new_ham = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
