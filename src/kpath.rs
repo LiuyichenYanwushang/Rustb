@@ -29,7 +29,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Kpath for Model<SPIN, D
                 actual: path.len_of(Axis(1)),
             });
         }
-        let k_metric = (self.lat.dot(&self.lat.t())).inv().unwrap();
+        let k_metric = (self.lat.dot(&self.lat.t()))
+            .inv()
+            .map_err(TbError::Linalg)?;
         let mut k_node = Array1::<f64>::zeros(n_node);
         for n in 1..n_node {
             //let dk=path.slice(s![n,..]).to_owned()-path.slice(s![n-1,..]).to_owned();

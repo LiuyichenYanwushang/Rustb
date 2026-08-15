@@ -3,7 +3,7 @@ use ndarray::*;
 pub fn write_txt<T: UseFloat>(data: &Array2<T>, output: &str) -> std::io::Result<()> {
     use std::fs::File;
     use std::io::Write;
-    let mut file = File::create(output).expect("Unable to BAND.dat");
+    let mut file = File::create(output)?;
     let n = data.len_of(Axis(0));
     let s = data.len_of(Axis(1));
     let mut s0 = String::new();
@@ -26,7 +26,7 @@ pub fn write_txt<T: UseFloat>(data: &Array2<T>, output: &str) -> std::io::Result
 pub fn write_txt_1<T: UseFloat>(data: &Array1<T>, output: &str) -> std::io::Result<()> {
     use std::fs::File;
     use std::io::Write;
-    let mut file = File::create(output).expect("Unable to BAND.dat");
+    let mut file = File::create(output)?;
     let n = data.len_of(Axis(0));
     let mut s0 = String::new();
     for i in 0..n {
