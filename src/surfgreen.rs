@@ -416,12 +416,13 @@ impl SurfGreen {
                 s.push_str("   ");
             }
             s.push_str(&cc);
-            let _cc: String = format!("{:.6}", N_R[[i]]);
+            let cc: String = format!("{:.6}", N_R[[i]]);
             if N_R[[i]] >= 0.0 {
                 s.push_str("    ");
             } else {
                 s.push_str("   ");
             }
+            s.push_str(&cc);
             let cc: String = format!("{:.6}", N_B[[i]]);
             if N_B[[i]] >= 0.0 {
                 s.push_str("    ");
