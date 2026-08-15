@@ -21,12 +21,12 @@ Rustb is a Rust library for tight-binding model calculations in condensed matter
 - **Repo**: https://github.com/LiuyichenYanwushang/Rustb
 - **Error handling**: Uses `thiserror` for `TbError` enum.
 - **Docs**: `katexit` renders LaTeX in rustdoc; `docs-header.html` for custom CSS.
-- **Version**: 0.7.0.
+- **Version**: 0.7.1.
 - **SKILLS.md**: Practical usage guide with code examples for the entire crate. When adding or changing any public API, update that file as well.
 
 > **Note**: README.md and SKILLS.md both use the current const-generic API.
 
-## 0.7.0 Pre-release Refactor Summary
+## 0.7.x Refactor Summary
 
 Version 0.7 is the next release after the crates.io version 0.6.7 and
 deliberately breaks the previous response API. The central design rule is that
