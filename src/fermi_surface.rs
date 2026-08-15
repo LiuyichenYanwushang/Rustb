@@ -29,12 +29,10 @@ use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kplane::gen_kplane;
 use crate::kpoints::gen_kmesh;
-use crate::solve_ham::solve;
+use crate::solve_ham::Solve;
 use ndarray::prelude::*;
-use ndarray::*;
-use rayon::prelude::*;
 use std::fs;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::process::Command;
 
 // ── Marching squares (2D) ────────────────────────────────────────────
@@ -355,13 +353,15 @@ fn render_fermi_3d(triangles: &[[Array1<f64>; 3]], name: &str) -> Result<()> {
     let pdf_path = format!("{}/fermi_surface.pdf", name);
 
     {
-        let mut f = fs::File::create(&data_path)?;
+        // Buffer the many small per-vertex writes into large flushes.
+        let mut f = BufWriter::with_capacity(1 << 20, fs::File::create(&data_path)?);
         for tri in triangles {
             for v in tri {
                 writeln!(f, "{:.8} {:.8} {:.8}", v[0], v[1], v[2])?;
             }
             writeln!(f)?;
         }
+        f.flush()?;
     }
 
     let mut gnuplot = Command::new("gnuplot")
@@ -470,50 +470,34 @@ impl<const SPIN: bool, R: RMatrixData> BxsfExport for Model<SPIN, 3, R> {
             format!("{filename}.bxsf")
         };
 
-        // 4. Write BXSF (plain ASCII)
-        let mut f = fs::File::create(&path)?;
+        // 4. Build the whole file in one String buffer, then write it in a
+        //    single `fs::write` — the same bulk-write pattern as
+        //    `write_spin_frmsf` (format into memory, then one write_all).
+        use std::fmt::Write as _;
+        let mut out = String::with_capacity(1024 + nsta * nk * 20);
 
-        writeln!(f, "BEGIN_INFO")?;
-        writeln!(f, "  # BXSF exported by Rustb")?;
-        writeln!(f, "  # Number of k-points: {nx}×{ny}×{nz} = {nk}")?;
-        writeln!(f, "  # Number of bands: {nsta}")?;
-        writeln!(f, "  Fermi Energy: {e_fermi:.12}")?;
-        writeln!(f, "END_INFO")?;
-        writeln!(f)?;
+        writeln!(out, "BEGIN_INFO").ok();
+        writeln!(out, "  # BXSF exported by Rustb").ok();
+        writeln!(out, "  # Number of k-points: {nx}×{ny}×{nz} = {nk}").ok();
+        writeln!(out, "  # Number of bands: {nsta}").ok();
+        writeln!(out, "  Fermi Energy: {e_fermi:.12}").ok();
+        writeln!(out, "END_INFO").ok();
+        writeln!(out).ok();
 
-        writeln!(f, "BEGIN_BLOCK_BANDGRID_3D")?;
-        writeln!(f, "  band_energies")?;
-        writeln!(f, "  BEGIN_BANDGRID_3D_band_energies")?;
-        writeln!(f, "    {nsta}")?;
-        writeln!(f, "    {nx} {ny} {nz}")?;
-        writeln!(f, "    0.0 0.0 0.0")?; // origin = Γ point
-        writeln!(
-            f,
-            "    {:.10} {:.10} {:.10}",
-            b[[0, 0]],
-            b[[0, 1]],
-            b[[0, 2]]
-        )?;
-        writeln!(
-            f,
-            "    {:.10} {:.10} {:.10}",
-            b[[1, 0]],
-            b[[1, 1]],
-            b[[1, 2]]
-        )?;
-        writeln!(
-            f,
-            "    {:.10} {:.10} {:.10}",
-            b[[2, 0]],
-            b[[2, 1]],
-            b[[2, 2]]
-        )?;
+        writeln!(out, "BEGIN_BLOCK_BANDGRID_3D").ok();
+        writeln!(out, "  band_energies").ok();
+        writeln!(out, "  BEGIN_BANDGRID_3D_band_energies").ok();
+        writeln!(out, "    {nsta}").ok();
+        writeln!(out, "    {nx} {ny} {nz}").ok();
+        writeln!(out, "    0.0 0.0 0.0").ok(); // origin = Γ point
+        writeln!(out, "    {:.10} {:.10} {:.10}", b[[0, 0]], b[[0, 1]], b[[0, 2]]).ok();
+        writeln!(out, "    {:.10} {:.10} {:.10}", b[[1, 0]], b[[1, 1]], b[[1, 2]]).ok();
+        writeln!(out, "    {:.10} {:.10} {:.10}", b[[2, 0]], b[[2, 1]], b[[2, 2]]).ok();
 
         for ib in 0..nsta {
-            writeln!(f, "    BAND: {b0}", b0 = ib + 1)?;
+            writeln!(out, "    BAND: {}", ib + 1).ok();
             // gen_kmesh generates rows in ix-slowest, iz-fastest order,
             // which matches XCrySDen's BXSF convention for each band.
-            let mut line_buf = String::with_capacity(256);
             let mut row = 0;
             for _ix in 0..nx {
                 for _iy in 0..ny {
@@ -521,20 +505,20 @@ impl<const SPIN: bool, R: RMatrixData> BxsfExport for Model<SPIN, 3, R> {
                         let e = eval[[row, ib]];
                         row += 1;
                         if _iz % 10 == 0 && _iz > 0 {
-                            line_buf.push('\n');
+                            out.push('\n');
                         }
-                        use std::fmt::Write;
-                        write!(line_buf, " {e:.10E}").ok();
+                        write!(out, " {e:.10E}").ok();
                     }
-                    line_buf.push('\n');
+                    out.push('\n');
                 }
             }
-            writeln!(f, "{line_buf}")?;
+            out.push('\n');
         }
 
-        writeln!(f, "  END_BANDGRID_3D")?;
-        writeln!(f, "END_BLOCK_BANDGRID_3D")?;
+        writeln!(out, "  END_BANDGRID_3D").ok();
+        writeln!(out, "END_BLOCK_BANDGRID_3D").ok();
 
+        fs::write(&path, out.as_bytes())?;
         Ok(())
     }
 }
@@ -674,7 +658,7 @@ pub fn write_spin_frmsf<const SPIN: bool, R: RMatrixData>(
     } else {
         format!("{filename}.frmsf")
     };
-    let mut f = fs::File::create(&path)?;
+    let mut f = BufWriter::with_capacity(1 << 20, fs::File::create(&path)?);
 
     // Header
     writeln!(f, "{nx} {ny} {nz}")?;
@@ -697,6 +681,7 @@ pub fn write_spin_frmsf<const SPIN: bool, R: RMatrixData>(
         })
         .collect();
     f.write_all(format_frmsf_block(&color_flat).as_bytes())?;
+    f.flush()?;
 
     Ok(())
 }
@@ -709,7 +694,7 @@ pub fn write_spin_frmsf<const SPIN: bool, R: RMatrixData>(
 ///   contour, then renders it as a 2D PDF.
 /// * `dim = 3`: uses marching tetrahedra on a 3D k‑mesh to extract the
 ///   E(k) = E_F isosurface, then renders it as a 3D PDF.
-pub trait FermiSurface: solve {
+pub trait FermiSurface: Solve {
     /// Show the Fermi surface at energy `e_fermi`.
     ///
     /// # Arguments
@@ -778,7 +763,7 @@ pub trait FermiSurface: solve {
 }
 
 /// Trait for Fermi surface slices on arbitrary k‑planes (3D models).
-pub trait FermiSurfacePlane: solve {
+pub trait FermiSurfacePlane: Solve {
     /// Show the Fermi surface on a user‑specified k‑plane.
     ///
     /// The plane is defined by an origin and two spanning vectors in

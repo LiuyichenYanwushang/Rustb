@@ -1,4 +1,4 @@
-#![allow(warnings)]
+#![allow(non_snake_case)]
 
 //! # Rustb -- Tight-Binding Model Library
 //!
@@ -245,7 +245,7 @@ pub use crate::cut::*;
 pub use crate::error::{Result, TbError};
 pub use crate::fermi_surface::*;
 pub use crate::floquet::*;
-use crate::generics::usefloat;
+use crate::generics::UseFloat;
 pub use crate::geometry::*;
 #[cfg(feature = "cryspglib")]
 pub use crate::hamiltonian_symmetry::{
@@ -264,11 +264,10 @@ pub use crate::kpoints::*;
 pub use crate::magnetic_field::*;
 pub use crate::math::*;
 pub use crate::model::*;
-pub use crate::model_physics::*;
 pub use crate::output::*;
 pub use crate::quantum_geometry::*;
 pub use crate::response::*;
-pub use crate::solve_ham::*;
+pub use crate::solve_ham::Solve;
 pub use crate::surfgreen::*;
 pub use crate::thermodynamics::*;
 pub use crate::unfold::*;
@@ -314,15 +313,13 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 mod tests {
     use super::*;
     use crate::response::config::direction_matrix;
+    use crate::solve_ham::Solve;
     use gnuplot::{
-        AutoOption, AxesCommon, Color, Figure, Fix, Font, LineStyle, Major, PointSymbol, Rotate,
-        Solid, TextOffset,
+        AxesCommon, Color, Figure, Fix, Font, Major, PointSymbol, Rotate, TextOffset,
     };
-    use ndarray::concatenate;
-    use ndarray::linalg::kron;
+    
+    
     use ndarray::prelude::*;
-    use ndarray::*;
-    use ndarray_linalg::conjugate;
     use ndarray_linalg::*;
     use ndarray_linalg::{Eigh, UPLO};
     use num_complex::Complex;
@@ -331,7 +328,7 @@ mod tests {
     use std::fs::File;
     use std::fs::create_dir_all;
     use std::io::Write;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     fn fixed_direction<const DIM: usize>(direction: &Array1<f64>) -> [f64; DIM] {
         direction
@@ -700,7 +697,7 @@ mod tests {
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.set_hop(t, 0, 1, &R, None);
         }
@@ -771,17 +768,17 @@ mod tests {
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.add_hop(t, 0, 1, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.add_hop(t2 * li, 0, 0, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.add_hop(t2 * li, 1, 1, &R, None);
         }
@@ -790,7 +787,7 @@ mod tests {
         let dir_2 = array![0.0, 1.0];
         let mu = 0.0;
         let T = 0.0;
-        let og = 0.0;
+        let _og = 0.0;
         let spin = None;
         let eta = 1e-3;
         let band_berry = band_berry_curvature(&model, &k_vec, &dir_1, &dir_2, spin, eta);
@@ -862,17 +859,17 @@ mod tests {
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.add_hop(t, 0, 1, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.add_hop(t2 * li, 0, 0, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.add_hop(t2 * li, 1, 1, &R, None);
         }
@@ -887,7 +884,7 @@ mod tests {
         {
             println!("开始计算 gen_v 的耗时速度, 为了平均, 我们单线程求解gen_v");
             let start = Instant::now(); // 开始计时
-            let A: Vec<_> = kvec
+            let _A: Vec<_> = kvec
                 .outer_iter()
                 .into_par_iter()
                 .map(|x| {
@@ -915,17 +912,17 @@ mod tests {
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[-delta, delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.add_hop(t, 0, 1, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.add_hop(t2 * li, 0, 0, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.add_hop(t2 * li, 1, 1, &R, None);
         }
@@ -938,8 +935,8 @@ mod tests {
             [0.0, 0.0],
         ];
         let path = arr2(&path);
-        let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
-        let (eval, evec) = model.solve_all_parallel(&k_vec);
+        let (k_vec, _k_dist, _k_node) = model.k_path(&path, nk).unwrap();
+        let (_eval, _evec) = model.solve_all_parallel(&k_vec);
         let label = vec!["G", "K", "M", "K'", "G"];
         model.show_band(&path, &label, nk, "tests/Haldan").unwrap();
         // --- Compute Hall conductivity ---
@@ -1009,12 +1006,12 @@ mod tests {
         let axes = fg.axes2d();
         let y: Vec<f64> = (conductivity_mu * 2.0 * PI).to_vec();
         axes.lines(&x, &y, &[Color("black")]);
-        let mut show_ticks = Vec::<String>::new();
+        let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/Haldan");
         pdf_name.push_str("/hall_mu.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
 
         let mu = 0.0;
         let nk: usize = 31;
@@ -1047,21 +1044,21 @@ mod tests {
         let axes = fg.axes2d();
         let y: Vec<f64> = par_f.to_vec();
         axes.lines(&x, &y, &[Color("black")]);
-        let mut show_ticks = Vec::<String>::new();
+        let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/Haldan");
         pdf_name.push_str("/par_f.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
 
         //画一下omega_n 随能量的分布
         let kvec: Array2<f64> = gen_kmesh(&kmesh).unwrap();
-        let nk: usize = kvec.len_of(Axis(0));
+        let _nk: usize = kvec.len_of(Axis(0));
         let (omega, band) =
             model.berry_curvature_dipole_n(&kvec, &dir_1, &dir_2, &dir_3, og, spin, eta);
-        let omega = omega.into_raw_vec();
+        let omega = omega.into_raw_vec_and_offset().0;
         let omega = Array1::from(omega);
-        let band = band.into_raw_vec();
+        let band = band.into_raw_vec_and_offset().0;
         let band = Array1::from(band);
         let mut fg = Figure::new();
         let x: Vec<f64> = band.to_vec();
@@ -1072,16 +1069,16 @@ mod tests {
             y.iter(),
             &[Color("black"), PointSymbol((".").chars().next().unwrap())],
         );
-        let mut show_ticks = Vec::<String>::new();
+        let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/Haldan");
         pdf_name.push_str("/omega_energy.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
 
         //画一下表面态
         let nk = 101;
-        let green = surf_Green::from_Model(&model, 0, 1e-3, None).unwrap();
+        let green = SurfGreen::from_Model(&model, 0, 1e-3, None).unwrap();
         let E_min = -3.0;
         let E_max = 3.0;
         let E_n = 101;
@@ -1152,7 +1149,7 @@ mod tests {
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/Haldan/wcc.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
         //-----------用 berry_flux 算一下
         let C = model
             .berry_flux(
@@ -1306,8 +1303,8 @@ mod tests {
         let nk: usize = 101;
         let path = [[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.5], [0.0, 0.0]];
         let path = arr2(&path);
-        let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
-        let (eval, evec) = model.solve_all_parallel(&k_vec);
+        let (k_vec, _k_dist, _k_node) = model.k_path(&path, nk).unwrap();
+        let (_eval, _evec) = model.solve_all_parallel(&k_vec);
         let label = vec!["G", "K", "M", "G"];
         model
             .show_band(&path, &label, nk, "tests/graphene")
@@ -1327,14 +1324,14 @@ mod tests {
         let nk: usize = 11;
         let T: f64 = 0.0;
         let eta: f64 = 0.001;
-        let og: f64 = 0.0;
+        let _og: f64 = 0.0;
         let mu: f64 = 0.0;
         let dir_1 = arr1(&[1.0, 0.0]);
         let dir_2 = arr1(&[0.0, 1.0]);
         let spin = None;
         let kmesh = arr1(&[nk, nk]);
-        let (eval, evec) = model.solve_onek(&arr1(&[0.3, 0.5]));
-        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta);
+        let (_eval, _evec) = model.solve_onek(&arr1(&[0.3, 0.5]));
+        let _conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta);
         //println!("{}",conductivity/(2.0*PI));
         //开始计算边缘态, 首先是zigsag态
         let nk: usize = 501;
@@ -1345,11 +1342,11 @@ mod tests {
         //let path=[[0.0,0.0],[0.5,0.0],[1.0,0.0]];
         //let path=[[0.0,0.0],[0.5,0.0],[0.5,0.5],[0.0,0.5],[0.0,0.0]];
         let path = arr2(&path);
-        let (k_vec, k_dist, k_node) = super_model.k_path(&path, nk).unwrap();
-        let (eval, evec) = super_model.solve_all_parallel(&k_vec);
+        let (k_vec, _k_dist, _k_node) = super_model.k_path(&path, nk).unwrap();
+        let (_eval, _evec) = super_model.solve_all_parallel(&k_vec);
         //let label=vec!["G","X","M","Y","G"];
         let label = vec!["G", "M", "G"];
-        zig_model.show_band(&path, &label, nk, "tests/graphene_zig");
+        zig_model.show_band(&path, &label, nk, "tests/graphene_zig").unwrap();
 
         //开始计算石墨烯的态密度
         let nk: usize = 51;
@@ -1364,12 +1361,12 @@ mod tests {
         let axes = fg.axes2d();
         let y: Vec<f64> = dos.to_vec();
         axes.lines(&x, &y, &[Color("black")]);
-        let mut show_ticks = Vec::<String>::new();
+        let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/graphene");
         pdf_name.push_str("/dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
 
         //开始计算非线性霍尔电导
         let dir_1 = arr1(&[1.0, 0.0]);
@@ -1400,12 +1397,12 @@ mod tests {
         let axes = fg.axes2d();
         let y: Vec<f64> = sigma.to_vec();
         axes.lines(&x, &y, &[Color("black")]);
-        let mut show_ticks = Vec::<String>::new();
+        let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/graphene");
         pdf_name.push_str("/nonlinear_ex.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
     }
 
     #[test]
@@ -1413,7 +1410,7 @@ mod tests {
         let li: Complex<f64> = 1.0 * Complex::i();
         let t = -1.0;
         let delta = 0.0;
-        let alter = 0.0 + 0.0 * li;
+        let _alter = 0.0 + 0.0 * li;
         let soc = 0.06 * t;
         let rashba = 0.0 * t;
         let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
@@ -1434,23 +1431,23 @@ mod tests {
         let mut model = Model::<true, 2>::tb_model(lat, orb, Some(atoms)).unwrap();
         model.set_onsite(&arr1(&[delta, -delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.set_hop(t, 0, 1, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.set_hop(soc * li, 0, 0, &R, SpinDirection::Z);
         }
         let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.set_hop(soc * li, 1, 1, &R, SpinDirection::Z);
         }
         //加入rashba项
         let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             let r0 = R.map(|x| *x as f64).dot(&model.lat);
             model.add_hop(rashba * li * r0[[1]], 0, 0, &R, SpinDirection::X);
@@ -1458,7 +1455,7 @@ mod tests {
         }
 
         let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             let r0 = R.map(|x| *x as f64).dot(&model.lat);
             model.add_hop(-rashba * li * r0[[1]], 1, 1, &R, SpinDirection::X);
@@ -1473,10 +1470,10 @@ mod tests {
             [0.0, 0.0],
         ];
         let path = arr2(&path);
-        let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
-        let (eval, evec) = model.solve_all_parallel(&k_vec);
+        let (k_vec, _k_dist, _k_node) = model.k_path(&path, nk).unwrap();
+        let (_eval, _evec) = model.solve_all_parallel(&k_vec);
         let label = vec!["G", "K", "M", "K'", "G"];
-        model.show_band(&path, &label, nk, "tests/kane");
+        model.show_band(&path, &label, nk, "tests/kane").unwrap();
         //开始计算超胞
 
         let super_model = model.cut_piece(50, 0).unwrap();
@@ -1488,7 +1485,7 @@ mod tests {
             .unwrap();
         //开始计算表面态
         let nk = 101;
-        let green = surf_Green::from_Model(&model, 0, 1e-3, None).unwrap();
+        let green = SurfGreen::from_Model(&model, 0, 1e-3, None).unwrap();
         let E_min = -1.0;
         let E_max = 1.0;
         let E_n = 101;
@@ -1551,13 +1548,13 @@ mod tests {
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/kane/wcc.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
 
         // --- Compute Hall conductivity ---
         let nk: usize = 31;
         let T: f64 = 0.0;
         let eta: f64 = 0.001;
-        let og: f64 = 0.0;
+        let _og: f64 = 0.0;
         let mu: f64 = 0.0;
         //let dir_1=arr1(&[3.0_f64.sqrt()/2.0,-0.5]);
         let dir_1 = arr1(&[1.0, 0.0]);
@@ -1586,12 +1583,12 @@ mod tests {
         let axes = fg.axes2d();
         let y: Vec<f64> = dos.to_vec();
         axes.lines(&x, &y, &[Color("black")]);
-        let mut show_ticks = Vec::<String>::new();
+        let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/kane");
         pdf_name.push_str("/dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
         //绘制非线性霍尔电导的平面图
 
         //画一下贝利曲率的分布
@@ -1612,7 +1609,7 @@ mod tests {
             Some(SpinDirection::X),
             1e-3,
         );
-        let data = berry_curv.into_shape((nk, nk)).unwrap();
+        let data = berry_curv.to_shape((nk, nk)).unwrap();
         draw_heatmap(
             &(-data).map(|x| (x + 1.0).log(10.0)),
             "./tests/kane/berry_curvature_distribution.pdf",
@@ -1628,7 +1625,7 @@ mod tests {
         model.add_hop(B * tha.sin(), 1, 1, &array![0, 0], SpinDirection::Y);
         //考虑添加onsite 项破坏空间反演和mirror
 
-        let green = surf_Green::from_Model(&model, 0, 1e-3, None).unwrap();
+        let green = SurfGreen::from_Model(&model, 0, 1e-3, None).unwrap();
         let E_min = -1.0;
         let E_max = 1.0;
         let E_n = nk;
@@ -1700,7 +1697,7 @@ mod tests {
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/kane/magnetic/wcc.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
 
         //开始计算角态
         let model = model
@@ -1712,7 +1709,7 @@ mod tests {
         let new_model=model_1.cut_piece(num,1);
         */
         let new_model = model.cut_dot(num, 6, None).unwrap();
-        let mut s = 0;
+        let _s = 0;
         let start = Instant::now();
         let (band, evec) = new_model.solve_range_onek(&arr1(&[0.0, 0.0]), (-0.3, 0.3), 1e-5);
         let end = Instant::now(); // 结束计时
@@ -1721,11 +1718,11 @@ mod tests {
         let nresults = band.len();
         let show_evec = evec.to_owned().map(|x| x.norm_sqr());
         let mut size = Array2::<f64>::zeros((new_model.nsta(), new_model.natom()));
-        let norb = new_model.norb();
+        let _norb = new_model.norb();
         for i in 0..nresults {
             let mut s = 0;
             for j in 0..new_model.natom() {
-                for k in 0..new_model.atoms[j].norb() {
+                for _k in 0..new_model.atoms[j].norb() {
                     size[[i, j]] += show_evec[[i, s]] + show_evec[[i, s + new_model.norb()]];
                     s += 1;
                 }
@@ -1734,11 +1731,11 @@ mod tests {
 
         let show_str = new_model.atom_position().dot(&model.lat);
         let show_str = show_str.slice(s![.., 0..2]).to_owned();
-        let show_size = size.row(new_model.norb()).to_owned();
+        let _show_size = size.row(new_model.norb()).to_owned();
         create_dir_all("tests/kane/magnetic").expect("can't creat the file");
-        write_txt_1(band, "tests/kane/magnetic/band.txt");
-        write_txt(size, "tests/kane/magnetic/evec.txt");
-        write_txt(show_str, "tests/kane/magnetic/structure.txt");
+        write_txt_1(band, "tests/kane/magnetic/band.txt").expect("write_txt failed");
+        write_txt(size, "tests/kane/magnetic/evec.txt").expect("write_txt failed");
+        write_txt(show_str, "tests/kane/magnetic/structure.txt").expect("write_txt failed");
         //开始绘制角态
     }
 
@@ -1760,17 +1757,17 @@ mod tests {
         let mut model = Model::<false>::tb_model(lat, orb, None).unwrap();
         model.set_onsite(&arr1(&[delta, -delta]), None);
         let R0: Array2<isize> = arr2(&[[0, 0, 0], [-1, 0, 0], [0, -1, 0]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.set_hop(t1, 0, 1, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0, 1], [-1, 1, 1], [0, -1, 1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.set_hop(t2, 0, 0, &R, None);
         }
         let R0: Array2<isize> = arr2(&[[1, 0, -1], [-1, 1, -1], [0, -1, -1]]);
-        for (i, R) in R0.axis_iter(Axis(0)).enumerate() {
+        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
             let R = R.to_owned();
             model.set_hop(t2, 1, 1, &R, None);
         }
@@ -1792,7 +1789,7 @@ mod tests {
         ];
         let label = vec!["G", "K", "M", "G", "K", "H", "G", "A", "H", "L", "A"];
         let nk = 101;
-        model.show_band(&path, &label, nk, "tests/Enonlinear");
+        model.show_band(&path, &label, nk, "tests/Enonlinear").unwrap();
 
         //开始计算非线性霍尔电导
         let dir_1 = arr1(&[1.0, 0.0, 0.0]);
@@ -1830,12 +1827,12 @@ mod tests {
         axes.lines(&x, &y, &[Color("black")]);
         axes.set_y_range(Fix(-10.0), Fix(10.0));
         axes.set_x_range(Fix(E_min), Fix(E_max));
-        let mut show_ticks = Vec::<String>::new();
+        let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/Enonlinear");
         pdf_name.push_str("/nonlinear_ex.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
 
         let sigma = intrinsic_nonlinear_values(
             &model,
@@ -1856,12 +1853,12 @@ mod tests {
         axes.lines(&x, &y, &[Color("black")]);
         axes.set_y_range(Fix(-10.0), Fix(10.0));
         axes.set_x_range(Fix(E_min), Fix(E_max));
-        let mut show_ticks = Vec::<String>::new();
+        let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/Enonlinear");
         pdf_name.push_str("/nonlinear_in.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
 
         let (E0, dos) = model.dos(&kmesh, E_min, E_max, E_n, 1e-2).unwrap();
         //开始绘制dos
@@ -1870,18 +1867,18 @@ mod tests {
         let axes = fg.axes2d();
         let y: Vec<f64> = dos.to_vec();
         axes.lines(&x, &y, &[Color("black")]);
-        let mut show_ticks = Vec::<String>::new();
+        let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/Enonlinear");
         pdf_name.push_str("/dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
     }
     #[test]
     fn kagome() {
         let li: Complex<f64> = 1.0 * Complex::i();
         let t1 = 1.0 + 0.0 * li;
-        let t2 = 0.1 + 0.0 * li;
+        let _t2 = 0.1 + 0.0 * li;
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
@@ -1896,7 +1893,7 @@ mod tests {
         let path = [[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.], [0.0, 0.0]];
         let path = arr2(&path);
         let label = vec!["G", "K", "M", "G"];
-        model.show_band(&path, &label, nk, "tests/kagome/");
+        model.show_band(&path, &label, nk, "tests/kagome/").unwrap();
         //start to draw the band structure
         //Starting to calculate the edge state, first is the zigzag state
         let nk: usize = 101;
@@ -1905,12 +1902,12 @@ mod tests {
         let zig_model = super_model.cut_piece(30, 0).unwrap();
         let path = [[0.0, 0.0], [0.0, 0.5], [0.0, 1.0]];
         let path = arr2(&path);
-        let (k_vec, k_dist, k_node) = super_model.k_path(&path, nk).unwrap();
-        let (eval, evec) = super_model.solve_all_parallel(&k_vec);
+        let (k_vec, _k_dist, _k_node) = super_model.k_path(&path, nk).unwrap();
+        let (_eval, _evec) = super_model.solve_all_parallel(&k_vec);
         let label = vec!["G", "M", "G"];
-        zig_model.show_band(&path, &label, nk, "tests/kagome_zig/");
+        zig_model.show_band(&path, &label, nk, "tests/kagome_zig/").unwrap();
 
-        let green = surf_Green::from_Model(&super_model, 0, 1e-3, None).unwrap();
+        let green = SurfGreen::from_Model(&super_model, 0, 1e-3, None).unwrap();
         let E_min = -2.0;
         let E_max = 4.0;
         let E_n = nk;
@@ -1932,12 +1929,12 @@ mod tests {
         let axes = fg.axes2d();
         let y: Vec<f64> = dos.to_vec();
         axes.lines(&x, &y, &[Color("black")]);
-        let mut show_ticks = Vec::<String>::new();
+        let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/kagome/");
         pdf_name.push_str("dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
     }
 
     #[test]
@@ -1957,10 +1954,10 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
-        model.show_band(&path, &label, nk, "tests/SSH/");
-        let mut super_model = model.cut_piece(5, 0).unwrap();
+        model.show_band(&path, &label, nk, "tests/SSH/").unwrap();
+        let super_model = model.cut_piece(5, 0).unwrap();
 
-        let (band, evec) = super_model.solve_onek(&array![0.0]);
+        let (band, _evec) = super_model.solve_onek(&array![0.0]);
         println!("{}", band);
     }
     #[test]
@@ -2028,9 +2025,9 @@ mod tests {
         let mut pdf_name = String::new();
         pdf_name.push_str("tests/BBH/wcc.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show();
+        fg.show().expect("failed to draw gnuplot figure");
         //算一下边界态
-        let green = surf_Green::from_Model(&model, 0, 1e-3, None).unwrap();
+        let green = SurfGreen::from_Model(&model, 0, 1e-3, None).unwrap();
         let E_min = -2.0;
         let E_max = 2.0;
         let E_n = nk;
@@ -2043,7 +2040,7 @@ mod tests {
         let num = 10;
         let model_1 = model.cut_piece(num, 0).unwrap();
         let new_model = model_1.cut_piece(2 * num, 1).unwrap();
-        let mut s = 0;
+        let _s = 0;
         let start = Instant::now();
         let (band, evec) = new_model.solve_onek(&arr1(&[0.0, 0.0]));
         println!(
@@ -2054,20 +2051,20 @@ mod tests {
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("solve_band_all took {} seconds", duration.as_secs_f64()); // 输出执行时间
-        let nresults = band.len();
+        let _nresults = band.len();
         let show_evec = evec.to_owned().map(|x| x.norm_sqr());
-        let norb = new_model.norb();
+        let _norb = new_model.norb();
         let size = show_evec;
         let show_str = new_model.atom_position().dot(&model.lat);
         create_dir_all("tests/BBH/corner").expect("can't creat the file");
-        write_txt_1(band, "tests/BBH/corner/band.txt");
-        write_txt(size, "tests/BBH/corner/evec.txt");
-        write_txt(show_str, "tests/BBH/corner/structure.txt");
+        write_txt_1(band, "tests/BBH/corner/band.txt").expect("write_txt failed");
+        write_txt(size, "tests/BBH/corner/evec.txt").expect("write_txt failed");
+        write_txt(show_str, "tests/BBH/corner/structure.txt").expect("write_txt failed");
     }
 
     #[test]
     fn graphene_magnetic_field() {
-        use crate::{MagneticField, Model, SpinDirection};
+        use crate::{MagneticField, Model};
         use ndarray::{Axis, arr1, arr2};
         use num_complex::Complex;
         // 如果你在其他地方定义了画图函数，请确保 use 进来，例如：
@@ -2410,7 +2407,7 @@ mod tests {
     /// σ(up) = −σ(dn) must hold for the reference path.
     #[test]
     fn nlh_intrinsic_hwave_up_dn_odd() {
-        let li = Complex::new(0.0, 1.0);
+        let _li = Complex::new(0.0, 1.0);
         let lat = array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let orb = array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]];
         let t = 1.0;
@@ -2790,7 +2787,7 @@ mod tests {
         let model = build_nlh_2d(2.6, 1.0);
         let dx = arr1(&[1.0, 0.0]);
         let dy = arr1(&[0.0, 1.0]);
-        let eta = 0.03;
+        let _eta = 0.03;
         let mu = Array1::linspace(-4.0, 4.0, 41);
         let kmesh = arr1(&[21, 21]);
 
@@ -2887,7 +2884,7 @@ mod tests {
         model.add_hop(0.125 * lambda, 1, 0, &array![1, 1, 0], None);
 
         // R = (1,0,−1): (0.10λ − 0.075i) σ_y
-        let hop10m1 = Complex::new(0.10 * lambda, -0.075);
+        let _hop10m1 = Complex::new(0.10 * lambda, -0.075);
         // σ_y gives: H[0,1] = −i·hop, H[1,0] = i·hop
         // −i·hop = −i(0.10λ−0.075i) = −0.10iλ + 0.075i² = −0.075−0.10iλ
         // i·hop = i(0.10λ−0.075i) = 0.10iλ − 0.075i² = 0.075+0.10iλ
@@ -2953,7 +2950,7 @@ mod tests {
         let model_p = build_nlh_2d(2.6, 0.0); // λ=0 restores P-symmetry
         let dx = arr1(&[1.0, 0.0]);
         let dy = arr1(&[0.0, 1.0]);
-        let eta = 0.03;
+        let _eta = 0.03;
         let mu = Array1::linspace(-4.0, 4.0, 61);
         let kmesh = arr1(&[21, 21]);
         let ec = intrinsic_nonlinear_values(
@@ -2979,7 +2976,7 @@ mod tests {
         let model_m = build_nlh_2d(2.6, -1.0);
         let dx = arr1(&[1.0, 0.0]);
         let dy = arr1(&[0.0, 1.0]);
-        let eta = 0.03;
+        let _eta = 0.03;
         let mu = Array1::linspace(-4.0, 4.0, 61);
         let kmesh = arr1(&[21, 21]);
         let ec_p = intrinsic_nonlinear_values(
@@ -3019,7 +3016,7 @@ mod tests {
         let model = build_nlh_2d(2.6, 1.0);
         let dx = arr1(&[1.0, 0.0]);
         let dy = arr1(&[0.0, 1.0]);
-        let eta = 0.03;
+        let _eta = 0.03;
         let mu = Array1::linspace(-4.0, 4.0, 81);
         let nks = [15, 21, 31, 41, 51, 61];
         let ts = [0.0, 100.0, 300.0];
@@ -3068,7 +3065,7 @@ mod tests {
         let dx = arr1(&[1.0, 0.0, 0.0]);
         let dy = arr1(&[0.0, 1.0, 0.0]);
         let dz = arr1(&[0.0, 0.0, 1.0]);
-        let eta = 0.03;
+        let _eta = 0.03;
         let mu = Array1::linspace(-3.0, 3.0, 31);
         let kmesh = arr1(&[8, 8, 8]);
 
@@ -3112,7 +3109,7 @@ mod tests {
         let dx = arr1(&[1.0, 0.0, 0.0]);
         let dy = arr1(&[0.0, 1.0, 0.0]);
         let dz = arr1(&[0.0, 0.0, 1.0]);
-        let eta = 0.03;
+        let _eta = 0.03;
         let mu = Array1::linspace(-3.0, 3.0, 41);
         let nks = [6, 8, 10, 12, 14];
 
@@ -3309,7 +3306,7 @@ mod tests {
         let dx = arr1(&[1.0, 0.0, 0.0]);
         let dy = arr1(&[0.0, 1.0, 0.0]);
         let dz = arr1(&[0.0, 0.0, 1.0]);
-        let eta = 1e-3;
+        let _eta = 1e-3;
         let mu = Array1::linspace(-4.0, 4.0, 21);
         let nks = [12, 16, 20];
         println!(
@@ -3378,7 +3375,7 @@ mod tests {
         let dx = arr1(&[1.0, 0.0, 0.0]);
         let dy = arr1(&[0.0, 1.0, 0.0]);
         let dz = arr1(&[0.0, 0.0, 1.0]);
-        let eta = 1e-3;
+        let _eta = 1e-3;
         let mu = Array1::linspace(-4.0, 4.0, 21);
         // Use only EC — direct sum has degeneracy‑handling differences.
         let nks = [12, 16, 20];

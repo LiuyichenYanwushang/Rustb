@@ -14,25 +14,19 @@ use crate::kpath::*;
 use crate::kpoints::gen_kmesh;
 pub use crate::model_utils::{remove_col, remove_row};
 use gnuplot::Major;
-use gnuplot::{Auto, AutoOption::Fix, AxesCommon, Custom, Figure, Font, HOT, RAINBOW};
+use gnuplot::{Auto, AutoOption::Fix, AxesCommon, Custom, Figure, Font};
 use ndarray::concatenate;
-use ndarray::linalg::kron;
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::conjugate;
 use ndarray_linalg::*;
 use num_complex::Complex;
-use rayon::prelude::*;
 use std::f64::consts::PI;
 use std::fs::File;
-use std::io::Write;
-use std::ops::AddAssign;
-use std::ops::MulAssign;
-use std::time::Instant;
 
 /// Basic building block for surface Green's function calculations.
 #[derive(Clone, Debug)]
-pub struct surf_Green {
+pub struct SurfGreen {
     /// - The real space dimension of the model.
     pub dim_r: usize,
     /// - The number of orbitals in the model.
@@ -42,7 +36,7 @@ pub struct surf_Green {
     /// - The number of atoms in the model. The atom and atom_list at the back are used to store the positions of the atoms, and the number of orbitals corresponding to each atom.
     pub natom: usize,
     /// - Whether this surface Green's function was built from a spinful model.
-    ///   Derived from `Model<SPIN>` via [`from_Model`](surf_Green::from_Model).
+    ///   Derived from `Model<SPIN>` via [`from_Model`](SurfGreen::from_Model).
     pub spin: bool,
     /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
     pub lat: Array2<f64>,
@@ -62,7 +56,7 @@ pub struct surf_Green {
     pub ham_hopR: Array2<isize>,
 }
 
-impl Kpath for surf_Green {
+impl Kpath for SurfGreen {
     fn k_path(
         &self,
         path: &Array2<f64>,
@@ -117,11 +111,11 @@ impl Kpath for surf_Green {
     }
 }
 
-impl surf_Green {
-    /// Construct a `surf_Green` from a [`Model`].
+impl SurfGreen {
+    /// Construct a `SurfGreen` from a [`Model`].
     ///
     /// This method is generic over the const parameter `SPIN`, which
-    /// determines whether spin is enabled. The `surf_Green::spin` field is
+    /// determines whether spin is enabled. The `SurfGreen::spin` field is
     /// set from this const generic (`spin = SPIN`), and the internal
     /// Hamiltonian construction (`orb_phase` doubling, etc.) uses it at
     /// runtime.
@@ -136,7 +130,7 @@ impl surf_Green {
         dir: usize,
         eta: f64,
         Np: Option<usize>,
-    ) -> Result<surf_Green> {
+    ) -> Result<SurfGreen> {
         if dir >= model.dim_r() {
             return Err(TbError::InvalidDirection {
                 index: dir,
@@ -172,11 +166,11 @@ impl surf_Green {
         // No clone needed: push/push_row copy from the view directly
         for (ham, R) in use_ham.zip(use_hamR) {
             if R[[dir]] == 0 {
-                ham0.push(Axis(0), ham);
-                hamR0.push_row(R);
+                ham0.push(Axis(0), ham)?;
+                hamR0.push_row(R)?;
             } else if R[[dir]] > 0 {
-                hamR.push(Axis(0), ham);
-                hamRR.push_row(R);
+                hamR.push(Axis(0), ham)?;
+                hamRR.push_row(R)?;
             }
         }
         let new_lat = remove_row(model.lat.clone(), dir);
@@ -185,7 +179,7 @@ impl surf_Green {
         let new_atom = remove_col(model.atom_position(), dir);
         let new_hamR0 = remove_col(hamR0, dir);
         let new_hamRR = remove_col(hamRR, dir);
-        let green: surf_Green = surf_Green {
+        let green: SurfGreen = SurfGreen {
             dim_r: model.dim_r() - 1,
             norb: model.norb(),
             nsta: model.nsta(),
@@ -240,7 +234,7 @@ impl surf_Green {
             .for_each(|ham, &u| hamRk.scaled_add(u, &ham));
         // Gauge transform: H'[m,n] = conj(φ[m]) * H[m,n] * φ[n]
         // In-place O(nsta²) replaces two O(nsta³) matrix multiplies with diagonal U.
-        for mut ham in [&mut ham0k, &mut hamRk] {
+        for ham in [&mut ham0k, &mut hamRk] {
             for m in 0..self.nsta {
                 let mut row = ham.slice_mut(s![m, ..]);
                 let conj_pm = orb_phase[m].conj();
@@ -351,7 +345,7 @@ impl surf_Green {
         E_min: f64,
         E_max: f64,
         E_n: usize,
-        spin: usize,
+        _spin: usize,
     ) -> (Array2<f64>, Array2<f64>, Array2<f64>) {
         let Energy = Array1::<f64>::linspace(E_min, E_max, E_n);
         let nk = kvec.nrows();
@@ -371,7 +365,7 @@ impl surf_Green {
         (N_L, N_R, N_B)
     }
 
-    pub fn show_arc_state(&self, name: &str, kmesh: &Array1<usize>, energy: f64, spin: usize) {
+    pub fn show_arc_state(&self, name: &str, kmesh: &Array1<usize>, energy: f64, _spin: usize) {
         use std::fs::create_dir_all;
         use std::io::{BufWriter, Write};
         create_dir_all(name).expect("can't creat the file");
@@ -390,7 +384,7 @@ impl surf_Green {
             .and(N_L.view_mut())
             .and(N_B.view_mut())
             .and(kvec.outer_iter())
-            .par_for_each(|mut nr, mut nl, mut nb, k| {
+            .par_for_each(|nr, nl, nb, k| {
                 let (NR, NL, NB) = self.surf_green_one(&k, energy);
                 *nr = NR;
                 *nl = NL;
@@ -402,7 +396,7 @@ impl surf_Green {
         file_name.push_str(&name);
         file_name.push_str("/arc.dat");
         let mut file = File::create(file_name).expect("Uable to create arc.dat");
-        writeln!(file, r"# nk1, nk2, N_L, N_R, N_B");
+        writeln!(file, r"# nk1, nk2, N_L, N_R, N_B").expect("failed to write arc.dat header");
         let mut writer = BufWriter::new(file);
         let mut s = String::new();
         for i in 0..nk {
@@ -422,7 +416,7 @@ impl surf_Green {
                 s.push_str("   ");
             }
             s.push_str(&cc);
-            let cc: String = format!("{:.6}", N_R[[i]]);
+            let _cc: String = format!("{:.6}", N_R[[i]]);
             if N_R[[i]] >= 0.0 {
                 s.push_str("    ");
             } else {
@@ -458,7 +452,7 @@ impl surf_Green {
 
         //接下来我们绘制表面态
         let mut fg = Figure::new();
-        let mut heatmap_data = N_L;
+        let heatmap_data = N_L;
         let axes = fg.axes2d();
         //axes.set_palette(RAINBOW);
         axes.set_palette(Custom(&[
@@ -491,14 +485,14 @@ impl surf_Green {
             &[Font("Times New Roman", 24.0)],
         );
         let mut pdfname = String::new();
-        pdfname.push_str(&name.clone());
+        pdfname.push_str(&name);
         pdfname.push_str("/surf_state_l.pdf");
         fg.set_terminal("pdfcairo", &pdfname);
         fg.show().expect("Unable to draw heatmap");
         let _ = fg;
 
         let mut fg = Figure::new();
-        let mut heatmap_data = N_R;
+        let heatmap_data = N_R;
         let axes = fg.axes2d();
         //axes.set_palette(RAINBOW);
         axes.set_palette(Custom(&[
@@ -531,14 +525,14 @@ impl surf_Green {
             &[Font("Times New Roman", 24.0)],
         );
         let mut pdfname = String::new();
-        pdfname.push_str(&name.clone());
+        pdfname.push_str(&name);
         pdfname.push_str("/surf_state_r.pdf");
         fg.set_terminal("pdfcairo", &pdfname);
         fg.show().expect("Unable to draw heatmap");
         let _ = fg;
 
         let mut fg = Figure::new();
-        let mut heatmap_data = N_B;
+        let heatmap_data = N_B;
         let axes = fg.axes2d();
         //axes.set_palette(RAINBOW);
         axes.set_palette(Custom(&[
@@ -571,7 +565,7 @@ impl surf_Green {
             &[Font("Times New Roman", 24.0)],
         );
         let mut pdfname = String::new();
-        pdfname.push_str(&name.clone());
+        pdfname.push_str(&name);
         pdfname.push_str("/surf_state_b.pdf");
         fg.set_terminal("pdfcairo", &pdfname);
         fg.show().expect("Unable to draw heatmap");
@@ -617,9 +611,9 @@ impl surf_Green {
 
         //绘制 left_dos------------------------
         let mut left_name: String = String::new();
-        left_name.push_str(&name.clone());
+        left_name.push_str(&name);
         left_name.push_str("/dos.surf_l");
-        let mut file = File::create(left_name).expect("Unable to dos.surf_l.dat");
+        let file = File::create(left_name).expect("Unable to dos.surf_l.dat");
         let mut writer = BufWriter::new(file);
         let mut s = String::new();
         for i in 0..nk {
@@ -652,9 +646,9 @@ impl surf_Green {
 
         //绘制右表面态----------------------
         let mut left_name: String = String::new();
-        left_name.push_str(&name.clone());
+        left_name.push_str(&name);
         left_name.push_str("/dos.surf_r");
-        let mut file = File::create(left_name).expect("Unable to dos.surf_l.dat");
+        let file = File::create(left_name).expect("Unable to dos.surf_l.dat");
         let mut writer = BufWriter::new(file);
         let mut s = String::new();
         for i in 0..nk {
@@ -687,9 +681,9 @@ impl surf_Green {
 
         //绘制体态----------------------
         let mut left_name: String = String::new();
-        left_name.push_str(&name.clone());
+        left_name.push_str(&name);
         left_name.push_str("/dos.surf_bulk");
-        let mut file = File::create(left_name).expect("Unable to dos.surf_l.dat");
+        let file = File::create(left_name).expect("Unable to dos.surf_l.dat");
         let mut writer = BufWriter::new(file);
         let mut s = String::new();
         for i in 0..nk {
@@ -773,7 +767,7 @@ impl surf_Green {
             &[Font("Times New Roman", 24.0)],
         );
         let mut pdfname = String::new();
-        pdfname.push_str(&name.clone());
+        pdfname.push_str(&name);
         pdfname.push_str("/surf_state_l.pdf");
         fg.set_terminal("pdfcairo", &pdfname);
         fg.show().expect("Unable to draw heatmap");
@@ -832,7 +826,7 @@ impl surf_Green {
             &[Font("Times New Roman", 24.0)],
         );
         let mut pdfname = String::new();
-        pdfname.push_str(&name.clone());
+        pdfname.push_str(&name);
         pdfname.push_str("/surf_state_r.pdf");
         fg.set_terminal("pdfcairo", &pdfname);
         fg.show().expect("Unable to draw heatmap");
@@ -890,7 +884,7 @@ impl surf_Green {
             &[Font("Times New Roman", 24.0)],
         );
         let mut pdfname = String::new();
-        pdfname.push_str(&name.clone());
+        pdfname.push_str(&name);
         pdfname.push_str("/surf_state_b.pdf");
         fg.set_terminal("pdfcairo", &pdfname);
         fg.show().expect("Unable to draw heatmap");

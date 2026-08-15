@@ -31,7 +31,6 @@
 //! | `Model::hall_conductivity` | direct sum or energy cut | $\sigma_{\text{AHC}}(\mu)$ |
 
 use ndarray::prelude::*;
-use ndarray::*;
 use ndarray_linalg::*;
 use rayon::prelude::*;
 
@@ -45,7 +44,6 @@ use super::config::{Integration, Parameters, mesh_array, parameters_occupation, 
 use super::energy_cut::{integrate_fermi_cut_2d, integrate_fermi_cut_3d};
 use super::kernel::quadrature_occupied_geometry_simplex;
 use super::tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
-use super::traits::BerryCurvature;
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 
 /// Hall conductivity evaluated on the requested chemical-potential grid.

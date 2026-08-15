@@ -28,7 +28,6 @@
 //! | `intrinsic_nonlinear_hall` | direct sum or energy cut | $\sigma_{\rm int}$ |
 
 use ndarray::prelude::*;
-use ndarray::*;
 use ndarray_linalg::*;
 use num_complex::Complex;
 use rayon::prelude::*;
@@ -515,8 +514,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 G
             };
             let partial_s_1 = s_1.diag().map(|x| x.re);
-            let partial_s_2 = s_2.diag().map(|x| x.re);
-            let partial_s_3 = s_3.diag().map(|x| x.re);
+            let _partial_s_2 = s_2.diag().map(|x| x.re);
+            let _partial_s_3 = s_3.diag().map(|x| x.re);
             let partial_G: Array1<f64> = {
                 let mut A = Array1::<Complex<f64>>::zeros(self.nsta());
                 for i in 0..self.nsta() {
@@ -648,7 +647,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .axis_iter(Axis(0))
                 .into_par_iter()
                 .map(|x| {
-                    let (omega_one, band, partial_G) =
+                    let (omega_one, band, _partial_G) =
                         self.berry_connection_dipole_onek(&x.to_owned(), dir_a, dir_b, dir_c, spin);
                     (omega_one, band)
                 })

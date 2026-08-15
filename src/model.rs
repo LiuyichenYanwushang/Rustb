@@ -2,7 +2,7 @@
 
 pub use crate::model_utils::{find_R, remove_col, remove_row};
 
-use crate::atom_struct::{Atom, AtomId, AtomType, AtomWire, OrbProj, OrbitalId, atoms_from_wire};
+use crate::atom_struct::{Atom, AtomId, AtomWire, OrbProj, OrbitalId, atoms_from_wire};
 use crate::error::{Result, TbError};
 use ndarray::*;
 use ndarray_linalg::Inverse;
@@ -452,7 +452,11 @@ pub enum Gauge {
 }
 
 /// System dimensionality.
+///
+/// Variant names (`one`, `two`, `three`) are kept for backward compatibility
+/// instead of CamelCase renames.
 #[repr(u8)]
+#[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Dimension {
     one = 1,
@@ -470,8 +474,6 @@ pub enum SpinDirection {
 }
 
 // Include Model implementation from submodules
-pub use crate::model_build::*;
-pub use crate::model_physics::*;
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     #[inline(always)]
@@ -723,9 +725,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         let li = Complex::i() * 1.0;
         let mut L = Array3::<Complex<f64>>::zeros((self.dim_r(), self.norb(), self.norb()));
-        let mut Lx = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
-        let mut Ly = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
-        let mut Lz = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
+        let _Lx = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
+        let _Ly = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
+        let _Lz = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
         let mut Lz_orig = Array2::<Complex<f64>>::zeros((16, 16));
         Lz_orig
             .slice_mut(s![1..4, 1..4])
@@ -788,6 +790,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 #[cfg(test)]
 mod ownership_tests {
     use super::*;
+    use crate::AtomType;
     use ndarray::array;
 
     fn assert_model_round_trip<const SPIN: bool, R>()

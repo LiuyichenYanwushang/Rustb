@@ -206,7 +206,7 @@ fn main() {
     let mu: f64 = 0.0;
 
     let nk: usize = 1001;
-    let green = surf_Green::from_Model(&model, 0, 1e-3, None).unwrap();
+    let green = SurfGreen::from_Model(&model, 0, 1e-3, None).unwrap();
     let E_min = -1.0;
     let E_max = 1.0;
     let E_n = nk.clone();

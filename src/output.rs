@@ -13,24 +13,12 @@ use crate::Model;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kpath::*;
-use crate::kpoints::gen_kmesh;
-use crate::math::comm;
 use crate::model::find_R;
-use crate::solve_ham::solve;
-use ndarray::concatenate;
-use ndarray::linalg::kron;
+use crate::solve_ham::Solve;
 use ndarray::prelude::*;
 use ndarray::*;
-use ndarray_linalg::conjugate;
-use ndarray_linalg::*;
-use ndarray_linalg::{Eigh, UPLO};
-use num_complex::Complex;
-use rayon::prelude::*;
-use std::f64::consts::PI;
 use std::fs::File;
 use std::io::Write;
-use std::ops::AddAssign;
-use std::ops::MulAssign;
 
 pub trait OutPut {
     /// Writes the tight-binding model to `wannier90_hr.dat` format.
@@ -62,13 +50,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         let lines = n_R.div_euclid(15);
         let last_lines = n_R % 15;
         if lines != 0 {
-            for i in 0..lines {
+            for _i in 0..lines {
                 weight.push_str(
                     "    1    1    1    1    1    1    1    1    1    1    1    1    1    1    1\n",
                 );
             }
         }
-        for i in 0..last_lines {
+        for _i in 0..last_lines {
             weight.push_str("    1");
         }
         writeln!(file, "{}", weight)?;
@@ -280,7 +268,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         }
         writeln!(file, "{}", s)?;
         writeln!(file, "Direct")?;
-        let mut s = String::new();
+        let _s = String::new();
         for i in 0..atom_type.len() {
             for j in 0..new_atom_position[i].len() {
                 let s = match self.dim_r() {
@@ -432,7 +420,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         let atom_position_real = self.atom_position().dot(&self.lat);
         writeln!(file, "{}", number)?;
         writeln!(file, "Wannier centres, written by Rustb")?;
-        let mut s = match self.dim_r() {
+        let s = match self.dim_r() {
             3 => {
                 let mut s = String::new();
                 for i in 0..self.norb() {
@@ -557,7 +545,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         use gnuplot::AutoOption::*;
         use gnuplot::AxesCommon;
         use gnuplot::Tick::*;
-        use gnuplot::{Caption, Color, Figure, Font, LineStyle, Solid};
+        use gnuplot::{Color, Figure, Font, LineStyle, Solid};
         use std::fs::create_dir_all;
         use std::path::Path;
         if path.len_of(Axis(0)) != label.len() {
@@ -614,7 +602,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         writeln!(
             file,
             "import numpy as np\nimport matplotlib.pyplot as plt\ndata=np.loadtxt('BAND.dat')\nk_nodes=[]\nlabel=[]\nf=open('KLABELS')\nfor i in f.readlines():\n    k_nodes.append(float(i.split()[0]))\n    label.append(i.split()[1])\nfig,ax=plt.subplots()\nax.plot(data[:,0],data[:,1:],c='b')\nfor x in k_nodes:\n    ax.axvline(x,c='k')\nax.set_xticks(k_nodes)\nax.set_xticklabels(label)\nax.set_xlim([0,k_nodes[-1]])\nfig.savefig('band.pdf')"
-        );
+        )?;
         //开始绘制pdf图片
         let mut fg = Figure::new();
         let x: Vec<f64> = k_dist.to_vec();
@@ -624,7 +612,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
             axes.lines(&x, &y, &[Color("black"), LineStyle(Solid)]);
         }
         let axes = axes.set_x_range(Fix(0.0), Fix(k_node[[k_node.len() - 1]]));
-        let label = label.clone();
+        let label = label;
         let mut show_ticks = Vec::new();
         for i in 0..k_node.len() {
             let A = k_node[[i]];
@@ -637,7 +625,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
             &[Font("Times New Roman", 24.0)],
         );
 
-        let k_node = k_node.to_vec();
+        let _k_node = k_node.to_vec();
         let mut pdf_name = name.clone();
         pdf_name.push_str("/plot.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
@@ -648,7 +636,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
 
 pub fn draw_heatmap<A: Data<Elem = f64>>(data: &ArrayBase<A, Ix2>, name: &str) {
     //!Draw a heatmap from a 2D matrix, producing a pixel-based image.
-    use gnuplot::{AutoOption::Fix, AxesCommon, Figure, HOT, RAINBOW};
+    use gnuplot::{AutoOption::Fix, AxesCommon, Figure, RAINBOW};
     let mut fg = Figure::new();
     let (height, width): (usize, usize) = (data.shape()[0], data.shape()[1]);
     let mut heatmap_data = vec![];
@@ -666,7 +654,7 @@ pub fn draw_heatmap<A: Data<Elem = f64>>(data: &ArrayBase<A, Ix2>, name: &str) {
     let size = data.shape();
     let axes = axes.set_x_range(Fix(0.0), Fix((size[0] - 1) as f64));
     let axes = axes.set_y_range(Fix(0.0), Fix((size[1] - 1) as f64));
-    let axes = axes.set_aspect_ratio(Fix(1.0));
+    let _axes = axes.set_aspect_ratio(Fix(1.0));
     fg.set_terminal("pdfcairo", name);
     fg.show().expect("Unable to draw heatmap");
 }

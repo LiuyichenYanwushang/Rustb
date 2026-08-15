@@ -457,6 +457,7 @@ impl FloquetEffectiveOptions {
 
     /// Set the real-space hopping vectors used by the legacy path's
     /// inverse Fourier transform.  Rejected by the real-space path.
+    #[cfg(test)]
     pub(crate) fn with_target_hamR(mut self, target_hamR: Array2<isize>) -> Self {
         self.target_hamR = Some(target_hamR);
         self
@@ -883,6 +884,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// The returned model has the same number of states as the input model.
     /// It is an approximation to the off-resonant Floquet problem, not the full
     /// enlarged Sambe model returned by [`Floquet::floquet_model`].
+    #[cfg(test)]
     pub(crate) fn floquet_effective_model_legacy(
         &self,
         drive: &FloquetDrive,
@@ -1138,6 +1140,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(model)
     }
 
+    #[cfg(test)]
     fn floquet_effective_ham_onek_lattice<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
@@ -1475,6 +1478,7 @@ fn validate_floquet_drive<const DIM: usize>(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_effective_options<const DIM: usize>(
     k_mesh: &[usize; DIM],
     options: &FloquetEffectiveOptions,
@@ -1505,6 +1509,7 @@ fn validate_effective_options<const DIM: usize>(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_target_hamr<const DIM: usize>(target_ham_r: &Array2<isize>) -> Result<()> {
     if target_ham_r.ncols() != DIM {
         return Err(TbError::InvalidArrayShape {
@@ -2120,6 +2125,7 @@ fn bloch_phase<const DIM: usize, S: Data<Elem = f64>>(
     Complex::new(0.0, TAU * r_dot_k).exp()
 }
 
+#[cfg(test)]
 fn inverse_bloch_phase<const DIM: usize, S: Data<Elem = f64>>(
     r_vec: &ArrayView1<'_, isize>,
     kvec: &ArrayBase<S, Ix1>,
@@ -2127,6 +2133,7 @@ fn inverse_bloch_phase<const DIM: usize, S: Data<Elem = f64>>(
     bloch_phase::<DIM, S>(r_vec, kvec).conj()
 }
 
+#[cfg(test)]
 fn floquet_uniform_kmesh<const DIM: usize>(mesh: &[usize; DIM]) -> Vec<Array1<f64>> {
     let n_total = mesh.iter().product();
     let mut points = Vec::with_capacity(n_total);
@@ -2208,8 +2215,8 @@ mod tests {
     use crate::SpinDirection;
     use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
     use crate::model::NoRMatrix;
-    use crate::model_build::*;
-    use crate::solve_ham::solve;
+    
+    use crate::solve_ham::Solve;
     use ndarray::{arr1, array};
 
     #[test]
@@ -4229,7 +4236,7 @@ mod tests {
         let k = [0.21, 0.37];
         let model = two_band_qwz(tx, ty, tz, m, [[1.0, 0.0], [0.0, 1.0]]);
 
-        let commutator_norm = |kappa: f64, drive: FloquetDrive| -> f64 {
+        let commutator_norm = |_kappa: f64, drive: FloquetDrive| -> f64 {
             let h1 = code_heff(&model, &k, &drive, 2, 4);
             let h0 = code_heff_order0(&model, &k, &drive, 2);
             let d1 = decompose_two_band(&h1).1;

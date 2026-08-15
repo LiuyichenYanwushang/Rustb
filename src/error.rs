@@ -5,7 +5,7 @@
 
 use crate::atom_struct::AtomType;
 use crate::{OrbProj, SpinDirection};
-use ndarray::{Array1, Array2, ShapeError};
+use ndarray::{Array1, ShapeError};
 use num_complex::Complex;
 use thiserror::Error;
 
@@ -107,6 +107,9 @@ pub enum TbError {
         expected: Vec<usize>,
         found: Vec<usize>,
     },
+
+    #[error("ndarray shape mismatch: {0}")]
+    Shape(#[from] ShapeError),
 
     #[error("The path for the Wilson Loop is not closed. Remainder vector: {0:?}")]
     UnclosedWilsonLoop(Array1<f64>),

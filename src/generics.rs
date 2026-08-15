@@ -32,32 +32,32 @@ impl ToFloat for f64 {
     }
 }
 
-pub trait usefloat: Copy + Clone + Zero + std::fmt::Display + PartialOrd {
+pub trait UseFloat: Copy + Clone + Zero + std::fmt::Display + PartialOrd {
     fn from<T: ToFloat>(n: T) -> Self;
 }
-impl usefloat for f32 {
+impl UseFloat for f32 {
     fn from<T: ToFloat>(n: T) -> Self {
         n.to_float() as f32
     }
 }
 
-impl usefloat for f64 {
+impl UseFloat for f64 {
     fn from<T: ToFloat>(n: T) -> Self {
         n.to_float()
     }
 }
 
 //这里的trait是为了让set_hop 可以同时满足 f64 和 Complex64 的
-pub trait hop_use: Copy + Clone + Zero {
+pub trait HopUse: Copy + Clone + Zero {
     fn to_complex(&self) -> Complex64;
 }
-impl hop_use for f64 {
+impl HopUse for f64 {
     fn to_complex(&self) -> Complex64 {
         Complex64::new(*self, 0.0)
     }
 }
 
-impl hop_use for Complex64 {
+impl HopUse for Complex64 {
     fn to_complex(&self) -> Complex64 {
         *self
     }

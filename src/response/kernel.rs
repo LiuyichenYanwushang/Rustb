@@ -21,13 +21,12 @@
 //! evaluator, and accumulate with quadrature weights.
 
 use ndarray::prelude::*;
-use ndarray::*;
 use num_complex::Complex;
 
 use crate::thermodynamics::{Occupation, fermi_derivative_from_width, fermi_from_width};
 
 use super::quadrature::*;
-use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex};
+use super::types::TrackedSimplex;
 
 // ── Fermi functions ─────────────────────────────────────────────────────
 
@@ -37,6 +36,7 @@ pub(crate) fn fermi(e: f64, mu: f64, thermal_width: f64) -> f64 {
 }
 
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn fermi_deriv(e: f64, mu: f64, thermal_width: f64) -> f64 {
     if thermal_width == 0.0 {
         0.0
@@ -84,6 +84,7 @@ pub(crate) fn eval_berry_kernel(
 /// Interpolates $E_m(q)$ and $K_{nm}(q)$ at barycentric coords `lam`,
 /// then computes $\Omega_n = -2\,\mathrm{Im}\sum_{m\ne n} K_{nm}/(\Delta_{nm}^2+\eta^2)$.
 /// Avoids allocating the full $K$ matrix and computing $\Omega$ for other bands.
+#[allow(dead_code)]
 pub(crate) fn eval_berry_band_at_lam(
     n: usize,
     bands: &[Vec<f64>],
@@ -183,6 +184,7 @@ pub(crate) fn eval_berry_band_at_lam_buf(
 /// Evaluate $G_n = \Sigma_{m\ne n} K_{nm} / (\Delta_{nm}^2 + \eta^2)$
 /// for a single band at barycentrics, returning `(metric_n, berry_n)`.
 /// Interpolates only $E_m$ and the $n$-th row of $K$.
+#[allow(dead_code)]
 pub(crate) fn eval_berry_complex_at_lam(
     n: usize,
     bands: &[Vec<f64>],
@@ -279,6 +281,7 @@ pub(crate) fn eval_berry_complex_at_lam_buf(
 /// for a single band at barycentrics (no $\eta$ regularization — used for
 /// intrinsic NLH).
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn eval_intrinsic_G_at_lam(
     n: usize,
     bands: &[Vec<f64>],
@@ -323,6 +326,7 @@ pub(crate) fn eval_intrinsic_G_at_lam(
 
 /// Pre‑allocated buffer version of [`eval_intrinsic_G_at_lam`].
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn eval_intrinsic_G_at_lam_buf(
     n: usize,
     bands: &[&[f64]],
@@ -467,6 +471,7 @@ pub(crate) fn eval_optical_kernel(
 // ── Quadrature over single simplex ──────────────────────────────────────
 
 /// Quadrature over one simplex for the Berry + metric kernel.
+#[allow(dead_code)]
 pub(crate) fn quadrature_berry_simplex(sim: &TrackedSimplex, eta: f64) -> (f64, f64) {
     let d = sim.vertices.len() - 1;
     let nsta = sim.vertices[0].band.len();

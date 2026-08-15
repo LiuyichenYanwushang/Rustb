@@ -31,14 +31,13 @@
 
 use crate::Model;
 use crate::SpinDirection;
-use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
+use crate::atom_struct::{Atom, OrbProj, OrbitalId};
 use crate::error::{Result, TbError};
-use crate::generics::hop_use;
+use crate::generics::HopUse;
 use crate::model::RMatrixData;
 use crate::model_utils::find_R;
 use ndarray::prelude::*;
 use ndarray::*;
-use ndarray_linalg::Norm;
 use num_complex::Complex;
 use std::collections::{HashMap, VecDeque};
 
@@ -352,7 +351,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// model.set_hop(0.0_f64, 0, 0, &arr1(&[0isize]), None);
     /// ```
     #[allow(non_snake_case)]
-    pub fn set_hop<T: Data<Elem = isize>, U: hop_use>(
+    pub fn set_hop<T: Data<Elem = isize>, U: HopUse>(
         &mut self,
         tmp: U,
         ind_i: usize,
@@ -475,7 +474,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// model.add_hop(Complex::new(0.0, 0.1), 0, 0, &arr1(&[1isize]), None);
     /// ```
     #[allow(non_snake_case)]
-    pub fn add_hop<T: Data<Elem = isize>, U: hop_use>(
+    pub fn add_hop<T: Data<Elem = isize>, U: HopUse>(
         &mut self,
         tmp: U,
         ind_i: usize,
@@ -1354,7 +1353,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         &integer_u,
                     )?;
                     let copy = new_orb.nrows();
-                    new_orb.push_row(position.view());
+                    new_orb.push_row(position.view())?;
                     new_orb_projection.push(self.orb_projection[source]);
                     source_orbital.push(source);
                     primitive_label.push(label);
@@ -1385,7 +1384,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             &integer_u,
                         )?;
                         let copy = new_orb.nrows();
-                        new_orb.push_row(position.view());
+                        new_orb.push_row(position.view())?;
                         new_orb_projection.push(self.orb_projection[source]);
                         source_orbital.push(source);
                         primitive_label.push(label);
@@ -1505,15 +1504,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             None => {
                                 let block = new_ham_r.nrows();
                                 let row = Array1::from_vec(new_r.clone());
-                                new_ham_r.push_row(row.view());
+                                new_ham_r.push_row(row.view())?;
                                 new_ham.push(
                                     Axis(0),
                                     Array2::<Complex<f64>>::zeros((nsta, nsta)).view(),
-                                );
+                                )?;
                                 new_rmatrix.push(
                                     Axis(0),
                                     Array3::<Complex<f64>>::zeros((DIM, nsta, nsta)).view(),
-                                );
+                                )?;
                                 block_by_vector.insert(new_r, block);
                                 block
                             }
@@ -1899,6 +1898,9 @@ pub(crate) fn set_rmatrix_diagonal_with_displacement<const DIM: usize>(
 /// vector), so after folding the orbital remains attached to its atom; pure
 /// orbital-only models already store in-cell positions and this function is a
 /// no-op for them.
+// Kept as a documented reference implementation of covariant position folding;
+// current supercell construction uses the row-coset path instead.
+#[allow(dead_code)]
 fn fold_supercell_positions_covariantly<const DIM: usize>(
     orb: &mut Array2<f64>,
     ham: &mut Array3<Complex<f64>>,
@@ -1906,7 +1908,7 @@ fn fold_supercell_positions_covariantly<const DIM: usize>(
     rmatrix: &mut Array4<Complex<f64>>,
     spin: bool,
 ) {
-    let nsta = ham.dim().1;
+    let _nsta = ham.dim().1;
     let norb = orb.nrows();
     // Component-wise floor brings each coordinate into [0, 1).
     let mut fold = Array2::<isize>::zeros((norb, DIM));
@@ -1967,12 +1969,17 @@ fn relabel_hamiltonian_by_orbital_fold<const DIM: usize>(
                 let target = match find_R(ham_r, &new_r) {
                     Some(target) => target,
                     None => {
-                        ham_r.push_row(new_r.view());
-                        ham.push(Axis(0), Array2::<Complex<f64>>::zeros((nsta, nsta)).view());
+                        ham_r.push_row(new_r.view()).expect("ham_r row must match DIM");
+                        ham.push(
+                            Axis(0),
+                            Array2::<Complex<f64>>::zeros((nsta, nsta)).view(),
+                        )
+                        .expect("ham block shape must match (nsta, nsta)");
                         rmatrix.push(
                             Axis(0),
                             Array3::<Complex<f64>>::zeros((DIM, nsta, nsta)).view(),
-                        );
+                        )
+                        .expect("rmatrix block shape must match (DIM, nsta, nsta)");
                         ham_r.nrows() - 1
                     }
                 };
@@ -2060,7 +2067,7 @@ pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrix
 #[cfg(test)]
 mod fold_tests {
     use super::*;
-    use crate::solve_ham::solve;
+    use crate::solve_ham::Solve;
     use crate::{Atom, AtomType, Gauge, HasRMatrix, OrbitalId};
     use std::collections::HashSet;
 

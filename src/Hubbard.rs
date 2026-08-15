@@ -971,7 +971,7 @@ fn local_spin_moment_from_spectra(
 mod tests {
     use super::*;
     use crate::SpinDirection;
-    use crate::solve_ham::solve;
+    use crate::solve_ham::Solve;
     use ndarray::{Axis, array};
 
     fn atomic_model() -> Model<true, 1> {

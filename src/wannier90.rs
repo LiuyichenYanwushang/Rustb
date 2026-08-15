@@ -1,17 +1,19 @@
 #[cfg_attr(doc, katexit::katexit)]
 use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
 use crate::error::{Result, TbError};
-use crate::math::comm;
-use crate::{Gauge, HasRMatrix, Model, NoRMatrix, RMatrixData, SpinDirection, find_R};
+use crate::{HasRMatrix, Model, RMatrixData, find_R};
 use ndarray::prelude::*;
-use ndarray_linalg::conjugate;
 use ndarray_linalg::*;
-use num_complex::{Complex, Complex64};
+use num_complex::Complex;
 
 const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_67;
 
 fn win_data_line(line: &str) -> &str {
-    line.split('!').next().unwrap_or_default().trim()
+    // Wannier90 treats both `!` and `#` as inline comment markers.
+    // Strip whichever comes first so that commented-out directives
+    // (e.g. `#spinors = .true.`) are not mistaken for active ones.
+    let line = line.split('!').next().unwrap_or_default();
+    line.split('#').next().unwrap_or_default().trim()
 }
 
 fn length_unit_scale(token: &str) -> Option<f64> {
@@ -246,7 +248,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             ham[[0, i, i]] -= Complex::new(zero_energy, 0.0);
         }
         //开始读取 .win 文件
-        let mut reads: Vec<String> = Vec::new();
+        let _reads: Vec<String> = Vec::new();
         let mut win_path = file_path.clone();
         win_path.push_str(".win"); //文件的位置
         let path = Path::new(&win_path); //转化为路径格式
@@ -263,12 +265,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
         let mut read_iter = reads.iter();
         let mut lat = Array2::<f64>::zeros((3, 3)); //晶格轨道坐标初始化
         let mut spin: bool = false; //体系自旋初始化
-        let mut natom: usize = 0; //原子位置初始化
+        let _natom: usize = 0; //原子位置初始化
         let mut atom = Vec::new(); //原子位置坐标初始化
         let mut orb_proj = Vec::new();
         let mut proj_name = Vec::new();
         let mut proj_list: Vec<usize> = Vec::new();
-        let mut atom_list: Vec<usize> = Vec::new();
+        let _atom_list: Vec<usize> = Vec::new();
         let mut atom_name: Vec<&str> = Vec::new();
         let mut atom_pos = Array2::<f64>::zeros((0, 3));
         let mut atom_proj = Vec::new();
@@ -502,7 +504,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                             )? * cartesian_unit,
                         ];
                         // Only used when no _centres.xyz file is available.
-                        atom_pos.push_row(position.view());
+                        atom_pos.push_row(position.view())?;
                     }
                 } else if keyword.contains("begin atoms_frac") {
                     // Fractional positions; convert to Cartesian at parse
@@ -548,7 +550,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                             )?,
                         ];
                         let position = fractional.dot(&lat);
-                        atom_pos.push_row(position.view());
+                        atom_pos.push_row(position.view())?;
                     }
                 }
             }
@@ -561,7 +563,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             )));
         }
         //开始读取 seedname_centres.xyz 文件
-        let mut reads: Vec<String> = Vec::new();
+        let _reads: Vec<String> = Vec::new();
         let mut xyz_path = file_path.clone();
         xyz_path.push_str("_centres.xyz");
         let path = Path::new(&xyz_path);
@@ -653,6 +655,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
             }
             //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
 
+            let mut dropped: Vec<AtomType> = Vec::new();
             for (i, name) in new_atom_name.iter().enumerate() {
                 // Multiple projection lines of the same species belong to the
                 // SAME atom; merge them into one Atom.
@@ -665,14 +668,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                     }
                 }
                 if atom_orbitals.is_empty() {
-                    return Err(TbError::FileParse {
-                        file: xyz_path.clone(),
-                        message: format!(
-                            "species '{}' in _centres.xyz is not listed in the win \
-                             projections block",
+                    // 该物种在 projections 块中没有被拟合任何轨道, 默认直接丢弃该物种的所有原子,
+                    // 而不是报错 (例如只提供了 Cs 的坐标但没有在 Cs 上拟合 Wannier 轨道)。
+                    // 每个物种只警告一次, 避免同一物种的多个原子重复刷屏。
+                    if !dropped.contains(name) {
+                        eprintln!(
+                            "warning: dropping '{}' atoms from _centres.xyz (no orbitals in the projections block)",
                             name.to_str()
-                        ),
-                    });
+                        );
+                        dropped.push(*name);
+                    }
+                    continue;
                 }
                 let use_pos = new_atom_pos
                     .row(i)
@@ -708,6 +714,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
         } else {
             let mut orb = Array2::<f64>::zeros((0, 3));
             let atom_pos = atom_pos.dot(&lat.inv().map_err(TbError::Linalg)?);
+            let mut dropped: Vec<AtomType> = Vec::new();
             for (i, name) in atom_name.iter().enumerate() {
                 let name = AtomType::from_str(name).map_err(|_| TbError::FileParse {
                     file: win_path.clone(),
@@ -724,18 +731,20 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                         atom_orbitals.extend((first..first + proj_list[j]).map(OrbitalId::new));
                         orb_proj.extend(atom_proj[j].clone());
                         for _ in 0..proj_list[j] {
-                            orb.push_row(atom_pos.row(i).view());
+                            orb.push_row(atom_pos.row(i).view())?;
                         }
                     }
                 }
                 if atom_orbitals.is_empty() {
-                    return Err(TbError::FileParse {
-                        file: win_path.clone(),
-                        message: format!(
-                            "species '{name}' in begin atoms_frac is not listed in the \
-                             projections block"
-                        ),
-                    });
+                    // 该物种在 projections 块中没有被拟合任何轨道, 默认直接丢弃该物种的所有原子。
+                    // 每个物种只警告一次, 避免同一物种的多个原子重复刷屏。
+                    if !dropped.contains(&name) {
+                        eprintln!(
+                            "warning: dropping '{name}' atoms from begin atoms_frac/atoms_cart (no orbitals in the projections block)"
+                        );
+                        dropped.push(name);
+                    }
+                    continue;
                 }
                 atom.push(Atom::with_orbitals(
                     atom_pos.row(i).to_owned(),
@@ -896,9 +905,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
         ws_path.push_str("_wsvec.dat");
         let path = Path::new(&ws_path); //转化为路径格式
         let ws = File::open(path);
-        let mut have_ws = false;
         if let Ok(ws) = ws {
-            have_ws = true;
             let reader = BufReader::new(ws);
             let mut reads: Vec<String> = Vec::new();
             for line in reader.lines() {
@@ -915,7 +922,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                 let mut new_hamR = Array2::zeros((1, 3));
                 let mut new_ham = Array3::zeros((1, nsta, nsta));
                 let mut new_rmatrix = Array4::zeros((1, 3, nsta, nsta));
-                while (i < reads.len() - 1) {
+                while i < reads.len() - 1 {
                     i += 1;
                     let line = &reads[i];
                     let mut string = line.trim().split_whitespace();
@@ -978,7 +985,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                         - 1;
                     //接下来判断是否在我们的hamR 中
                     i += 1;
-                    let mut weight = reads[i]
+                    let weight = reads[i]
                         .trim()
                         .split_whitespace()
                         .next()
@@ -1001,7 +1008,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                     let hop_y = rmatrix[[index, 1, int_i, int_j]] / (weight as f64);
                     let hop_z = rmatrix[[index, 2, int_i, int_j]] / (weight as f64);
 
-                    for i0 in 0..weight {
+                    for _i0 in 0..weight {
                         i += 1;
                         let line = &reads[i];
                         let mut string = line.trim().split_whitespace();
@@ -1021,9 +1028,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                             use_rmatrix[[0, int_i, int_j]] += hop_x;
                             use_rmatrix[[1, int_i, int_j]] += hop_y;
                             use_rmatrix[[2, int_i, int_j]] += hop_z;
-                            new_hamR.push_row(new_R.view());
-                            new_ham.push(Axis(0), use_ham.view());
-                            new_rmatrix.push(Axis(0), use_rmatrix.view());
+                            new_hamR.push_row(new_R.view())?;
+                            new_ham.push(Axis(0), use_ham.view())?;
+                            new_rmatrix.push(Axis(0), use_rmatrix.view())?;
                         }
                     }
                 }
@@ -1034,7 +1041,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                 let mut i = 0;
                 let mut new_hamR = Array2::zeros((1, 3));
                 let mut new_ham = Array3::zeros((1, nsta, nsta));
-                while (i < reads.len() - 1) {
+                while i < reads.len() - 1 {
                     i += 1;
                     let line = &reads[i];
                     let mut string = line.trim().split_whitespace();
@@ -1097,7 +1104,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                         - 1;
                     //接下来判断是否在我们的hamR 中
                     i += 1;
-                    let mut weight = reads[i]
+                    let weight = reads[i]
                         .trim()
                         .split_whitespace()
                         .next()
@@ -1117,7 +1124,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                     })?;
                     let hop = ham[[index, int_i, int_j]] / (weight as f64);
 
-                    for i0 in 0..weight {
+                    for _i0 in 0..weight {
                         i += 1;
                         let line = &reads[i];
                         let mut string = line.trim().split_whitespace();
@@ -1130,8 +1137,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
                         } else {
                             let mut use_ham = Array2::zeros((nsta, nsta));
                             use_ham[[int_i, int_j]] = hop;
-                            new_hamR.push_row(new_R.view());
-                            new_ham.push(Axis(0), use_ham.view());
+                            new_hamR.push_row(new_R.view())?;
+                            new_ham.push(Axis(0), use_ham.view())?;
                         }
                     }
                 }
@@ -1235,20 +1242,88 @@ mod tests {
     }
 
     #[test]
-    fn from_hr_rejects_species_mismatch_with_clear_error() {
-        // Regression: an xyz species absent from the projections block used to
-        // be silently skipped, then validate() failed with the cryptic
-        // orbital_projection_count invariant. It must now produce a clear
-        // species-mismatch error at parse time.
-        let dir = "tests/tmp_w90_mismatch/";
+    fn from_hr_drops_xyz_atom_without_orbitals() {
+        // Regression: an xyz atom whose species has no projection (e.g. a Cs
+        // site that was never Wannierized) has no fitted orbitals, so it must
+        // be dropped while atoms with orbitals are kept.
+        let dir = "tests/tmp_w90_drop/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin projections\nC:s\nend projections\n";
+        let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
+        // One Wannier centre, one C atom with a fitted orbital, one Cs atom
+        // with no orbitals: the Cs atom must be dropped.
+        let xyz = "3\nWannier centres\nX 0.0 0.0 0.0\nC 0.1 0.0 0.0\nCs 0.2 0.0 0.0\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 1);
+        assert_eq!(model.natom(), 1, "Cs atom has no orbitals and must be dropped");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_drops_multiple_atoms_of_same_unprojected_species() {
+        // Two Cs atoms, both without orbitals: both must be dropped (the
+        // warning is emitted once per species, but that is stderr-only and
+        // not asserted here).
+        let dir = "tests/tmp_w90_drop_multi/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin projections\nC:s\nend projections\n";
+        let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
+        let xyz = "4\nWannier centres\nX 0.0 0.0 0.0\nC 0.1 0.0 0.0\nCs 0.2 0.0 0.0\nCs 0.3 0.0 0.0\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 1);
+        assert_eq!(model.natom(), 1, "both Cs atoms must be dropped");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_without_xyz_drops_atom_without_orbitals() {
+        // No _centres.xyz: the atoms_cart fallback must also drop a species
+        // with no projection instead of erroring.
+        let dir = "tests/tmp_w90_no_xyz_drop/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin atoms_cart\nC 0.0 0.0 0.0\nCs 0.1 0.0 0.0\nend atoms_cart\n\nbegin projections\nC:s\nend projections\n";
+        let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 1);
+        assert_eq!(model.natom(), 1, "Cs atom must be dropped");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_rejects_projection_species_missing_from_xyz() {
+        // Reverse direction: the projection block declares C:s, but no C atom
+        // appears in _centres.xyz (only Fe, which is dropped). The C orbital
+        // can never be assigned, so this must remain a hard error.
+        let dir = "tests/tmp_w90_proj_missing/";
         write_minimal_dataset(dir, "Fe");
         let err = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap_err();
-        let message = err.to_string();
-        assert!(
-            message.contains("not listed in the win projections block"),
-            "unexpected error: {message}"
-        );
+        assert!(matches!(err, TbError::FileParse { .. }));
+        assert!(err.to_string().contains("species mismatch"), "unexpected error: {err}");
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn win_data_line_strips_hash_and_bang_comments() {
+        assert_eq!(win_data_line("spinors = .true."), "spinors = .true.");
+        assert_eq!(win_data_line("# spinors = .true."), "");
+        assert_eq!(win_data_line("#spinors=true"), "");
+        assert_eq!(win_data_line("spinors = .true. ! enable spin"), "spinors = .true.");
+        assert_eq!(win_data_line("Fe 1.0 0.0 0.0 # position"), "Fe 1.0 0.0 0.0");
+        assert_eq!(win_data_line("  \t"), "");
     }
 
     #[test]

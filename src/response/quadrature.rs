@@ -1,7 +1,6 @@
 //! Symmetric simplex quadrature rules and barycentric interpolation.
 
 use ndarray::prelude::*;
-use ndarray::*;
 use num_complex::Complex;
 
 // ── Quadrature rules ────────────────────────────────────────────────────

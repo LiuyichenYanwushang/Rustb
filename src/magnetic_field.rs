@@ -121,7 +121,6 @@ use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::find_R;
 use ndarray::prelude::*;
-use ndarray::*;
 use num_complex::Complex;
 use std::f64::consts::TAU;
 

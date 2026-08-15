@@ -34,15 +34,14 @@
 //! window $w(x) = e^x/(1+e^x)^2$, avoiding per‑$T$ recomputation.
 
 use ndarray::prelude::*;
-use ndarray::*;
 use num_complex::Complex;
 use rayon::prelude::*;
 
 use super::kernel::{eval_berry_band_at_lam_buf, eval_berry_complex_at_lam_buf, eval_berry_kernel};
 use super::quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
 use super::tracking::{
-    build_tetrahedra_3d, build_tetrahedra_3d_diagavg, build_tetrahedra_3d_diagavg_ref,
-    build_tetrahedra_3d_ref, build_triangles_2d_diagavg, build_triangles_2d_diagavg_ref,
+    build_tetrahedra_3d_diagavg_ref,
+    build_tetrahedra_3d_ref, build_triangles_2d_diagavg_ref,
 };
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, TrackedSimplexRef, VertexKernel};
 
@@ -78,6 +77,7 @@ fn triangle_area(coords: &Array2<f64>) -> f64 {
     0.5 * ((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)).abs()
 }
 
+#[allow(dead_code)]
 fn unique_push(points: &mut Vec<([f64; 2], f64)>, point: [f64; 2], amp: f64) {
     for (p, _) in points.iter() {
         let dx = p[0] - point[0];
@@ -94,6 +94,8 @@ fn unique_push(points: &mut Vec<([f64; 2], f64)>, point: [f64; 2], amp: f64) {
 /// `energy_v[i]` and `amp_v[i]` are the vertex values of the linearly
 /// interpolated energy and response amplitude.  The return value is
 /// `int_T A(k) delta(E(k)-energy) d^2k` in the coordinate measure of `coords`.
+// Legacy reference implementation retained for cross-checking the buffered path.
+#[allow(dead_code)]
 pub(crate) fn triangle_line_cut(
     coords: &Array2<f64>,
     energy_v: [f64; 3],
@@ -305,6 +307,7 @@ fn kquad_line_cut_dipole(
 }
 
 /// K‑quadrature dipole accumulator (replaces the old linear‑Ω version).
+#[allow(dead_code)]
 fn accumulate_triangle_dipole_kquad(
     sim: &TrackedSimplex,
     eta: f64,
@@ -612,6 +615,7 @@ fn kquad_line_cut_intrinsic(
     0.5 * length * amp_sum / grad_norm
 }
 
+#[allow(dead_code)]
 fn accumulate_triangle_intrinsic_kquad(
     sim: &TrackedSimplex,
     mu: &Array1<f64>,
@@ -1189,6 +1193,7 @@ fn kquad_surface_cut_intrinsic(
     amp_sum / grad_norm
 }
 
+#[allow(dead_code)]
 fn accumulate_tetrahedron_intrinsic_kquad(
     sim: &TrackedSimplex,
     mu: &Array1<f64>,
@@ -1249,7 +1254,7 @@ fn accumulate_tetrahedron_intrinsic_kquad(
         v3.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
     ];
 
-    let n_mu = mu.len();
+    let _n_mu = mu.len();
     let mut e_buf = vec![0.0f64; nsta];
     let mut k_buf = vec![Complex::new(0.0, 0.0); nsta * 3];
     for n in 0..nsta {
@@ -1398,7 +1403,7 @@ fn accumulate_tetrahedron_intrinsic_kquad_ref(
         v3.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
     ];
 
-    let n_mu = mu.len();
+    let _n_mu = mu.len();
     let mut e_buf = vec![0.0f64; nsta];
     let mut k_buf = vec![Complex::new(0.0, 0.0); nsta * 3];
     for n in 0..nsta {
@@ -1824,6 +1829,7 @@ pub(crate) fn integrate_fermi_cut_2d(
 
 /// Diagnostic counters for hybrid energy‑cut.
 #[derive(Default, Clone)]
+#[cfg(test)]
 pub(crate) struct FermiCutCounts {
     pub empty: usize,
     pub full: usize,
@@ -1842,6 +1848,7 @@ static CNT_PARTIAL: AtomicUsize = AtomicUsize::new(0);
 
 /// Read and reset the internal hybrid energy‑cut counters (debug builds only).
 /// In release builds returns all zeros.
+#[cfg(test)]
 pub(crate) fn read_reset_fermi_cut_counts() -> FermiCutCounts {
     #[cfg(debug_assertions)]
     {
@@ -2073,7 +2080,7 @@ fn integrate_fermi_cut_3d_t0(
     let inv_ny = 1.0 / ny as f64;
     let inv_nz = 1.0 / nz as f64;
     let n_mu = mu.len();
-    let mu_slice = mu.as_slice().unwrap();
+    let _mu_slice = mu.as_slice().unwrap();
 
     let result = (0..nx * ny * nz)
         .into_par_iter()

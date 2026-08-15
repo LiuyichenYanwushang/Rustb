@@ -14,7 +14,7 @@
 //! ```
 
 use crate::error::{Result, TbError};
-use crate::generics::usefloat;
+use crate::generics::UseFloat;
 use ndarray::{Array1, Array2, Array3, Axis};
 
 /// Generate a uniform k-point mesh in the Brillouin zone.
@@ -48,17 +48,13 @@ fn validate_kmesh(k_mesh: &Array1<usize>) -> Result<()> {
 
 pub fn gen_kmesh<T>(k_mesh: &Array1<usize>) -> Result<Array2<T>>
 where
-    T: usefloat + std::ops::Div<Output = T>,
+    T: UseFloat + std::ops::Div<Output = T>,
 {
     validate_kmesh(k_mesh)?;
     let dim: usize = k_mesh.len();
-    let mut nk: usize = 1;
-    for i in 0..dim {
-        nk *= k_mesh[[i]];
-    }
     fn gen_kmesh_arr<T>(k_mesh: &Array1<usize>, r0: usize, mut usek: Array1<T>) -> Array2<T>
     where
-        T: usefloat + std::ops::Div<Output = T>,
+        T: UseFloat + std::ops::Div<Output = T>,
     {
         let dim: usize = k_mesh.len();
         let mut kvec = Array2::<T>::zeros((0, dim));
@@ -86,14 +82,14 @@ where
             return kvec;
         }
     }
-    let mut usek = Array1::<T>::zeros(dim);
+    let usek = Array1::<T>::zeros(dim);
     Ok(gen_kmesh_arr(&k_mesh, 0, usek))
 }
 #[allow(non_snake_case)]
 #[inline(always)]
 pub fn gen_krange<T>(k_mesh: &Array1<usize>) -> Result<Array3<T>>
 where
-    T: usefloat + std::ops::Div<Output = T>,
+    T: UseFloat + std::ops::Div<Output = T>,
 {
     validate_kmesh(k_mesh)?;
     let dim_r = k_mesh.len();

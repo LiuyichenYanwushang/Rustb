@@ -21,12 +21,10 @@ extern crate openblas_src as _src;
 #[cfg(any(feature = "netlib-system", feature = "netlib-static"))]
 extern crate netlib_src as _src;
 
-use lapack::{cheevx, zheev, zheevr, zheevr_2stage, zheevx};
+use lapack::{zheev, zheevr, zheevx};
 use ndarray::{Array1, Array2, ArrayBase, Data, Ix2};
-use ndarray_linalg::EigValsh;
 use ndarray_linalg::UPLO;
 use num_complex::Complex;
-use std::ffi::c_char;
 
 /// Safe wrapper around BLAS `zaxpy`: `y += alpha * x` for `Complex<f64>` slices.
 ///
@@ -418,7 +416,7 @@ where
     let n = x.shape()[0] as i32;
     let mut a: Vec<_> = x.iter().cloned().collect();
     let mut w = vec![0.0; n as usize];
-    let mut m = 0;
+    let _m = 0;
     let mut info = 0;
     // Workspace query
     let mut work = vec![Complex::new(0.0, 0.0); 1 as usize];

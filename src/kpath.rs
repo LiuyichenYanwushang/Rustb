@@ -2,11 +2,7 @@ use crate::Model;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use ndarray::prelude::*;
-use ndarray::*;
 use ndarray_linalg::Inverse;
-use num_complex::Complex;
-use rayon::prelude::*;
-use std::f64::consts::PI;
 
 pub trait Kpath {
     //! Generate high symmetry path from high symmetry points, plot band structure

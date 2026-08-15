@@ -1,4 +1,9 @@
-use std::f64::consts::PI;
+//! Physical constants.
+//!
+//! Names follow common physics notation (`hbar`, `mu_B`, ...) rather than
+//! Rust's UPPER_CASE convention, so `non_upper_case_globals` is allowed here.
+#![allow(non_upper_case_globals)]
+
 /// Elementary charge $e$, in Coulombs (C).
 pub const Element_charge: f64 = 1.602176487e-19;
 /// Reduced Planck constant $\hbar$, in $\text{J}\cdot\text{s}$.

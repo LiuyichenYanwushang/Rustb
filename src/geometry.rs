@@ -42,23 +42,14 @@
 //! ```
 
 use crate::RMatrixData;
-use crate::math::comm;
-use crate::solve_ham::solve;
-use crate::{Model, gen_kmesh};
-use ndarray::concatenate;
-use ndarray::linalg::kron;
+use crate::solve_ham::Solve;
+use crate::Model;
 use ndarray::prelude::*;
 use ndarray::*;
-use ndarray_linalg::conjugate;
 use ndarray_linalg::*;
-use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex;
 use rayon::prelude::*;
 use std::f64::consts::PI;
-use std::fs::File;
-use std::io::Write;
-use std::ops::AddAssign;
-use std::ops::MulAssign;
 
 /// Trait for computing Berry-phase, Berry curvature, and Wannier centre
 /// quantities via the Wilson loop method.
@@ -178,14 +169,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, D
         }
         let use_orb = if SPIN {
             let mut orb0 = self.orb.to_owned();
-            orb0.append(Axis(0), self.orb.view());
+            orb0.append(Axis(0), self.orb.view()).expect("appending spin-doubled orbitals must succeed");
             orb0
         } else {
             self.orb.to_owned()
         };
         let add_phase = diff.dot(&use_orb.t());
         let add_phase = add_phase.mapv(|x| Complex::new(0.0, -2.0 * x * PI).exp());
-        let (eval, mut evec) = self.solve_all(kvec);
+        let (_eval, mut evec) = self.solve_all(kvec);
         let first_evec: &ArrayRef<_, Dim<[_; 2]>> = &evec.slice(s![0, .., ..]);
         let add_phase = Array2::from_diag(&add_phase);
         let end_evec = first_evec.to_owned().dot(&add_phase);
@@ -208,7 +199,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, D
                 }
             });
         Zip::from(ovr.outer_iter_mut()).for_each(|mut O| {
-            let (U, S, V) = O.svd(true, true).unwrap();
+            let (U, _S, V) = O.svd(true, true).unwrap();
             let U = U.unwrap();
             let V = V.unwrap();
             O.assign(&U.dot(&V));
@@ -238,14 +229,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, D
         }
         let use_orb = if SPIN {
             let mut orb0 = self.orb.to_owned();
-            orb0.append(Axis(0), self.orb.view());
+            orb0.append(Axis(0), self.orb.view()).expect("appending spin-doubled orbitals must succeed");
             orb0
         } else {
             self.orb.to_owned()
         };
         let add_phase = diff.dot(&use_orb.t());
         let add_phase = add_phase.mapv(|x| Complex::new(0.0, -2.0 * x * PI).exp());
-        let (eval, mut evec) = self.solve_all(kvec);
+        let (_eval, mut evec) = self.solve_all(kvec);
         let first_evec: &ArrayRef<_, Dim<[_; 2]>> = &evec.slice(s![0, .., ..]);
         let add_phase = Array2::from_diag(&add_phase);
         let end_evec = first_evec.to_owned().dot(&add_phase);
@@ -347,7 +338,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, D
 
     fn berry_phase(&self, occ: &Vec<usize>, kvec: &Array3<f64>) -> Array2<f64> {
         let nk1 = kvec.shape()[0];
-        let nk2 = kvec.shape()[1];
+        let _nk2 = kvec.shape()[1];
         let nocc = occ.len();
         let mut wcc = Array2::zeros((nk1, nocc));
         Zip::from(wcc.outer_iter_mut())

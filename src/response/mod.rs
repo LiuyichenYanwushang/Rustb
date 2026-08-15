@@ -111,6 +111,8 @@ pub use traits::{BandBerryCurvature, BerryCurvature};
 
 // Internal numerical machinery shared with crate-level tests and
 // `quantum_geometry`; it is deliberately not part of the public API.
-pub(crate) use energy_cut::{FermiCutCounts, read_reset_fermi_cut_counts};
 pub(crate) use tracking::global_band_track;
 pub(crate) use types::VertexKernel;
+
+#[cfg(test)]
+pub(crate) use energy_cut::read_reset_fermi_cut_counts;

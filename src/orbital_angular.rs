@@ -1,22 +1,10 @@
 //! This module calculates the orbital Hall conductivity and the orbital angular moment
-/// The calculation using the orbial magnetism , refer to PHYSICAL REVIEW B 106, 104414 (2022).
-use crate::error::{Result, TbError};
-use crate::kpoints::{gen_kmesh, gen_krange};
-use crate::math::*;
 use crate::phy_const::mu_B;
-use crate::solve_ham::solve;
 use crate::velocity::*;
 use crate::{Gauge, Model, RMatrixData};
-use ndarray::linalg::kron;
 use ndarray::prelude::*;
-use ndarray::*;
-use ndarray_linalg::conjugate;
 use ndarray_linalg::*;
 use num_complex::Complex;
-use rayon::prelude::*;
-use std::f64::consts::PI;
-use std::ops::AddAssign;
-use std::ops::MulAssign;
 pub trait OrbitalAngular: Velocity {
     //! Computes the orbital angular momentum at a single k-point.
     //! The orbital angular momentum is defined as
@@ -29,7 +17,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OrbitalAngular for Mode
     fn orbital_angular_momentum_onek(&self, kvec: &Array1<f64>) -> Array3<Complex<f64>> {
         let li = Complex::<f64>::new(0.0, 1.0);
         let hamk = self.gen_ham(kvec, Gauge::Atom);
-        let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
+        let (_band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
             (eigvals, eigvecs)
         } else {
             todo!()

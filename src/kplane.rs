@@ -4,7 +4,6 @@
 //! a plane in reciprocal space, defined by an origin and two spanning vectors.
 
 use crate::error::{Result, TbError};
-use crate::generics::usefloat;
 use ndarray::{Array1, Array2};
 
 /// Generate k-points on a plane in reciprocal space.

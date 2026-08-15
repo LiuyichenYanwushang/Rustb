@@ -1,7 +1,6 @@
 //! Shared helper functions used across response modules.
 
 use ndarray::prelude::*;
-use ndarray::*;
 use num_complex::Complex;
 
 use crate::SpinDirection;

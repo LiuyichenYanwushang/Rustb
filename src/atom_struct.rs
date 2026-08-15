@@ -4,7 +4,12 @@ use num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 ///This is the orbital projection
+///
+/// Variant names follow the physical orbital labels (`s`, `px`, `d_{z^2}`,
+/// etc.) rather than Rust's CamelCase convention, so non_camel_case_types
+/// is allowed intentionally here.
 #[repr(u8)]
+#[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum OrbProj {
     /// $$\ket{s}=\ket{0,0}$$
@@ -83,7 +88,6 @@ pub enum OrbProj {
 
 impl OrbProj {
     pub fn from_str(s: &str) -> Result<Self> {
-        type Err = TbError;
         match s {
             "s" => Ok(OrbProj::s),
             "px" => Ok(OrbProj::px),

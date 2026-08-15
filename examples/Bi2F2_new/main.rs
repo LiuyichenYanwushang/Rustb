@@ -130,7 +130,7 @@ fn main() {
 
     /*
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model,0,1e-3,None);
+    let green=SurfGreen::from_Model(&model,0,1e-3,None);
     let E_min=-0.5;
     let E_max=0.5;
     let E_n=nk.clone();
@@ -165,7 +165,7 @@ fn main() {
     show_wilson_loop(&model_xy,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/xy/wcc.pdf");
 
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model_xy,0,1e-3,None);
+    let green=SurfGreen::from_Model(&model_xy,0,1e-3,None);
     let E_min=-0.5;
     let E_max=0.5;
     let E_n=nk.clone();
@@ -197,7 +197,7 @@ fn main() {
     show_wilson_loop(&model_xy,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/bar_xy/wcc.pdf");
 
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model_xy,0,1e-3,None);
+    let green=SurfGreen::from_Model(&model_xy,0,1e-3,None);
     let E_min=-0.5;
     let E_max=0.5;
     let E_n=nk.clone();
@@ -230,7 +230,7 @@ fn main() {
     show_wilson_loop(&model_z,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/z_new/wcc.pdf");
 
     let nk:usize=501;
-    let green=surf_Green::from_Model(&model_z,0,1e-3,None);
+    let green=SurfGreen::from_Model(&model_z,0,1e-3,None);
     let E_min=-0.5;
     let E_max=0.5;
     let E_n=nk.clone();

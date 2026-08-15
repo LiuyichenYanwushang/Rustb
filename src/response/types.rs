@@ -24,7 +24,6 @@
 //! than this are flagged as potentially unsafe for single‑band evaluation.
 
 use ndarray::prelude::*;
-use ndarray::*;
 use num_complex::Complex;
 
 /// Per‑k‑point gauge‑invariant primitives for energy‑cut integration.
@@ -59,6 +58,7 @@ pub(crate) struct TrackedSimplex {
     /// Physical volume of this simplex (fractional coordinates).
     pub volume: f64,
     /// Fractional coordinates of each vertex, shape `(d+1, dim)`.
+    #[allow(dead_code)]
     pub coords: Array2<f64>,
     /// Diagnostic counters for this simplex.
     pub diag: SimplexDiagnostics,
@@ -70,7 +70,9 @@ pub(crate) struct SimplexDiagnostics {
     /// Minimum band gap $\min_{n\neq m} |E_n - E_m|$ across all vertices.
     pub min_gap: f64,
     /// Minimum assignment overlap from band tracking (1.0 = perfect).
+    #[allow(dead_code)]
     pub min_assignment_overlap: f64,
+    #[allow(dead_code)]
     pub tracking_conflict: bool,
 }
 

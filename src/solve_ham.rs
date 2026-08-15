@@ -2,19 +2,16 @@
 use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
-use crate::error::{Result, TbError};
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::*;
-use num_complex::{Complex, Complex64};
-use rayon::prelude::*;
-use std::f64::consts::PI;
+use num_complex::Complex;
 /// Diagonalizes the tight-binding Hamiltonian $H(\mathbf{k})$ and returns eigenvalues and eigenvectors. For Hubbard-type models, a mean-field extension is planned.
 ///
 ///
 
-pub trait solve {
+pub trait Solve {
     /// Solve energy bands at a single k-point
     fn solve_band_onek<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> Array1<f64>;
     /// Solve energy bands at a single k-point with a range
@@ -49,7 +46,7 @@ pub trait solve {
         kvec: &ArrayBase<S, Ix2>,
     ) -> (Array2<f64>, Array3<Complex<f64>>);
 }
-impl<const SPIN: bool, const DIM: usize, R: RMatrixData> solve for Model<SPIN, DIM, R> {
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Solve for Model<SPIN, DIM, R> {
     #[allow(non_snake_case)]
     #[inline(always)]
     fn solve_band_onek<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> Array1<f64> {

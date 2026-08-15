@@ -185,14 +185,9 @@ use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
 use crate::comm;
-use crate::solve_ham::*;
 use ndarray::prelude::*;
 use ndarray::*;
-use ndarray_linalg::conjugate;
-use ndarray_linalg::*;
 use num_complex::Complex;
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 

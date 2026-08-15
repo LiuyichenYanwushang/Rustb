@@ -379,12 +379,12 @@ fn bench_surfgreen(c: &mut Criterion) {
 
     group.bench_function("from_Model", |b| {
         b.iter(|| {
-            let sg = surf_Green::from_Model(black_box(&m), 0, 0.01, None).unwrap();
+            let sg = SurfGreen::from_Model(black_box(&m), 0, 0.01, None).unwrap();
             black_box(sg)
         })
     });
 
-    let sg = surf_Green::from_Model(&m, 0, 0.01, None).unwrap();
+    let sg = SurfGreen::from_Model(&m, 0, 0.01, None).unwrap();
     let kvec_1d_sg = arr1(&[0.3]);
     group.bench_function("gen_ham_onek", |b| {
         b.iter(|| {
@@ -393,7 +393,7 @@ fn bench_surfgreen(c: &mut Criterion) {
         })
     });
 
-    let sg = surf_Green::from_Model(&m, 1, 0.01, None).unwrap();
+    let sg = SurfGreen::from_Model(&m, 1, 0.01, None).unwrap();
     let kvec_1d = arr1(&[0.3]);
     group.bench_function("surf_green_one", |b| {
         b.iter(|| {

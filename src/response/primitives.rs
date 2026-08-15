@@ -4,7 +4,6 @@
 //! gauge‑invariant product `K^{ab}_nm = v^a_nm · v^b_mn`.
 
 use ndarray::prelude::*;
-use ndarray::*;
 use ndarray_linalg::*;
 use num_complex::Complex;
 
@@ -13,7 +12,6 @@ use crate::Model;
 use crate::RMatrixData;
 use crate::SpinDirection;
 use crate::math::anti_comm;
-use crate::velocity::Velocity;
 
 use super::helpers::build_spin_matrix;
 use super::types::VertexKernel;

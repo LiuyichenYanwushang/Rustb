@@ -1,7 +1,6 @@
 //! Utility functions and macros for tight-binding model operations
 use ndarray::prelude::*;
 use ndarray::*;
-use num_complex::Complex;
 
 /// Find the index of lattice vector $\mathbf{R}$ in the `hamR` array.
 ///

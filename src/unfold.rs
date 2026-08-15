@@ -2,13 +2,11 @@ use crate::Model;
 use crate::OrbProj;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
-use crate::output::*;
-use crate::solve_ham::*;
+use crate::solve_ham::Solve;
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::*;
-use num_complex::{Complex, Complex64};
-use rayon::prelude::*;
+use num_complex::Complex;
 use std::f64::consts::PI;
 
 /// Fractional-coordinate tolerance used to identify equivalent orbital and
@@ -202,11 +200,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
         }
         let li: Complex<f64> = Complex::i();
         let E = Array1::<f64>::linspace(E_min, E_max, E_n);
-        let mut A0 = Array2::<f64>::zeros((E_n, nk));
         let inv_U = U.inv().map_err(TbError::Linalg)?;
         let unfold_lat = &inv_U.dot(&self.lat);
-        let V = self.lat.det().map_err(TbError::Linalg)?;
-        let unfold_V = unfold_lat.det().map_err(TbError::Linalg)?;
+        let _V = self.lat.det().map_err(TbError::Linalg)?;
+        let _unfold_V = unfold_lat.det().map_err(TbError::Linalg)?;
         let U_det = U.det().map_err(TbError::Linalg)?;
         if !U_det.is_finite() || U_det <= 1.0 {
             // NaN must not reach the rounding/modulo below: NaN passes the
@@ -223,7 +220,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
             return Err(TbError::InvalidAtomConfiguration);
         }
         //我们先根据path计算一下k点
-        let (kvec, kdist, knode) = {
+        let (kvec, _kdist, _knode) = {
             let n_node: usize = path.len_of(Axis(0));
             let k_metric = (&unfold_lat.dot(&unfold_lat.t()))
                 .inv()
@@ -314,7 +311,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                 match representative {
                     Some(representative) => match_orb_list[orbital] = representative,
                     None => {
-                        unit_orb.push_row(folded);
+                        unit_orb.push_row(folded)?;
                         unit_orb_projection.push(projection);
                         match_orb_list[orbital] = unit_orb.nrows() - 1;
                     }
@@ -368,12 +365,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                         match_orb_list[orbital] = unit_orbital;
                     }
                 } else {
-                    unit_atom.push_row(folded_atom);
+                    unit_atom.push_row(folded_atom)?;
                     unit_atom_types.push(self.atoms[atom_index].atom_type());
                     let mut representative_orbitals =
                         Vec::with_capacity(self.atoms[atom_index].norb());
                     for &orbital in self.atoms[atom_index].orbitals() {
-                        unit_orb.push_row(unfold_orb.row(orbital.index()));
+                        unit_orb.push_row(unfold_orb.row(orbital.index()))?;
                         unit_orb_projection.push(self.orb_projection[orbital.index()]);
                         let unit_orbital = unit_orb.nrows() - 1;
                         match_orb_list[orbital.index()] = unit_orbital;
@@ -413,7 +410,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                             .iter()
                             .enumerate()
                             .zip(w.iter().zip(vec.axis_iter(Axis(1))))
-                            .fold(A.clone(), |mut acc, ((io, orb_index), (w0, vec0))| {
+                            .fold(A.clone(), |acc, ((_io, orb_index), (w0, vec0))| {
                                 if *orb_index == i0 {
                                     acc + *w0 * &vec0
                                 } else {
@@ -443,7 +440,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                             .iter()
                             .enumerate()
                             .zip(w.iter().zip(vec.axis_iter(Axis(1))))
-                            .fold(A.clone(), |mut acc, ((io, orb_index), (w0, vec0))| {
+                            .fold(A.clone(), |acc, ((_io, orb_index), (w0, vec0))| {
                                 if *orb_index == i0 {
                                     acc + *w0 * &vec0
                                 } else {
@@ -455,7 +452,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                     }
                 });
         }
-        A0 = B.sum_axis(Axis(2));
+        let A0 = B.sum_axis(Axis(2));
         Ok(A0.reversed_axes())
     }
 }
@@ -463,18 +460,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OutPut;
     use crate::draw_heatmap;
     use crate::kpath::*;
-    use crate::{Atom, AtomType, OrbitalId, SpinDirection};
-    use gnuplot::{
-        AutoOption, AxesCommon, Color, Figure, Fix, Font, LineStyle, Major, PointSymbol, Rotate,
-        Solid, TextOffset,
-    };
-    use ndarray::prelude::*;
-    use ndarray::*;
+    use crate::{Atom, AtomType, OrbitalId};
+    
+    
+    
     use num_complex::Complex;
-    use std::f64::consts::PI;
-    use std::time::{Duration, Instant};
+    
+    use std::time::Instant;
 
     #[test]
     fn periodic_orbital_matcher_finds_a_complete_non_greedy_assignment() {
@@ -634,8 +629,8 @@ mod tests {
         use std::fs::create_dir_all;
         let li: Complex<f64> = 1.0 * Complex::i();
         let t1 = 1.0 + 0.0 * li;
-        let t2 = 0.1 + 0.0 * li;
-        let norb: usize = 2;
+        let _t2 = 0.1 + 0.0 * li;
+        let _norb: usize = 2;
         let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
         let orb = arr2(&[[0., 0.], [1.0 / 3.0, 0.0], [0.0, 1.0 / 3.0]]);
         let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
@@ -650,7 +645,7 @@ mod tests {
         let nk: usize = 301;
         let path = array![[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.], [0.0, 0.0]];
         let label = vec!["G", "K", "M", "G"];
-        let (kvec, kdist, knode) = model.k_path(&path, nk).unwrap();
+        let (_kvec, _kdist, _knode) = model.k_path(&path, nk).unwrap();
         let U = array![[2.0, 0.0], [0.0, 2.0]];
 
         let start = Instant::now(); // 开始计时

@@ -1,7 +1,6 @@
 //! Band tracking and simplex construction.
 
 use ndarray::prelude::*;
-use ndarray::*;
 use num_complex::Complex;
 
 use super::types::{SimplexDiagnostics, TrackedSimplex, VertexKernel};
@@ -170,7 +169,7 @@ pub(crate) fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) 
     if nk <= 1 {
         return;
     }
-    let dim = k_mesh.len();
+    let _dim = k_mesh.len();
     let mut visited = vec![false; nk];
     let mut queue = std::collections::VecDeque::new();
     visited[0] = true;
@@ -323,6 +322,7 @@ pub(crate) fn build_triangles_2d(
     out
 }
 
+#[allow(dead_code)]
 pub(crate) fn build_triangles_2d_diagavg(
     ix: usize,
     iy: usize,
@@ -477,6 +477,7 @@ pub(crate) fn build_tetrahedra_3d(
 
 /// Helper: build one set of 5 tetrahedra from the given decomposition table,
 /// scaling each tet volume by `scale`.
+#[allow(dead_code)]
 fn build_one_tet_decomp(
     tet_table: &[[usize; 4]; 5],
     c: &[usize; 8],
@@ -515,6 +516,7 @@ fn build_one_tet_decomp(
 }
 
 /// Diagonal‑averaged 3D tetrahedralization (10 tets per cell).
+#[allow(dead_code)]
 pub(crate) fn build_tetrahedra_3d_diagavg(
     ix: usize,
     iy: usize,
@@ -576,6 +578,7 @@ pub(crate) fn build_tetrahedra_3d_diagavg(
 use super::types::TrackedSimplexRef;
 
 /// 2D reference triangles (2 per cell, no clone, single diagonal).
+#[allow(dead_code)]
 pub(crate) fn build_triangles_2d_ref<'a>(
     ix: usize,
     iy: usize,

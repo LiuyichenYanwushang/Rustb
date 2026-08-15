@@ -21,14 +21,12 @@
 //! ```
 
 use crate::Model;
-use crate::NoRMatrix;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::find_R;
 use crate::model_build::normalized_to_atoms;
 use crate::{Atom, OrbitalId};
 use ndarray::prelude::*;
-use ndarray::*;
 use num_complex::Complex;
 use std::ops::AddAssign;
 
@@ -220,7 +218,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut new_atom = Vec::new();
         let new_norb = self.norb() * num;
         let new_nsta = self.nsta() * num;
-        let new_natom = self.natom() * num;
+        let _new_natom = self.natom() * num;
         let mut new_lat = self.lat.clone();
         new_lat
             .row_mut(dir)
@@ -255,15 +253,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, self.dim_r(), new_nsta, new_nsta));
         let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r()));
         {
-            let mut using_ham = self.ham.clone();
-            let mut using_hamR = self.hamR.clone();
+            let using_ham = self.ham.clone();
+            let using_hamR = self.hamR.clone();
             let using_rmatrix = if <R as RMatrixData>::HAS_RMATRIX {
                 self.rmatrix.as_array4().clone()
             } else {
                 Array4::zeros((using_ham.shape()[0], self.dim_r(), self.nsta(), self.nsta()))
             };
             for n in 0..num {
-                for (i0, (ind_R, (ham, rmatrix))) in using_hamR
+                for (_i0, (ind_R, (ham, rmatrix))) in using_hamR
                     .outer_iter()
                     .zip(using_ham.outer_iter().zip(using_rmatrix.outer_iter()))
                     .enumerate()
@@ -373,10 +371,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                     .add_assign(&use_rmatrix);
                             }
                         } else {
-                            new_ham.push(Axis(0), use_ham.view());
-                            new_hamR.push(Axis(0), ind_R.view());
+                            new_ham.push(Axis(0), use_ham.view())?;
+                            new_hamR.push_row(ind_R.view())?;
                             if <R as RMatrixData>::HAS_RMATRIX {
-                                new_rmatrix.push(Axis(0), use_rmatrix.view());
+                                new_rmatrix.push(Axis(0), use_rmatrix.view())?;
                             }
                         }
                     } else {
@@ -469,8 +467,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     new_orb.nrows()
                 };
                 let n_R = old_model.hamR.len_of(Axis(0));
-                let mut new_ham = Array3::<Complex<f64>>::zeros((n_R, new_nsta, new_nsta));
-                let mut new_hamR = Array2::<isize>::zeros((0, self.dim_r()));
+                let new_ham = Array3::<Complex<f64>>::zeros((n_R, new_nsta, new_nsta));
+                let new_hamR = Array2::<isize>::zeros((0, self.dim_r()));
 
                 let mut new_model = Self {
                     lat: old_model.lat.clone(),
@@ -487,7 +485,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 if SPIN {
                     let norb2 = old_model.norb();
                     for (r, R) in old_model.hamR.axis_iter(Axis(0)).enumerate() {
-                        new_model.hamR.push_row(R);
+                        new_model.hamR.push_row(R)?;
                         for (i, use_i) in use_orb_item.iter().enumerate() {
                             for (j, use_j) in use_orb_item.iter().enumerate() {
                                 new_model.ham[[r, i, j]] = old_model.ham[[r, *use_i, *use_j]];
@@ -502,7 +500,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     }
                 } else {
                     for (r, R) in old_model.hamR.axis_iter(Axis(0)).enumerate() {
-                        new_model.hamR.push_row(R);
+                        new_model.hamR.push_row(R)?;
                         for (i, use_i) in use_orb_item.iter().enumerate() {
                             for (j, use_j) in use_orb_item.iter().enumerate() {
                                 new_model.ham[[r, i, j]] = old_model.ham[[r, *use_i, *use_j]];
@@ -511,7 +509,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     }
                 }
                 if <R as RMatrixData>::HAS_RMATRIX {
-                    let nsta = new_model.nsta();
+                    let _nsta = new_model.nsta();
                     let mut new_rmatrix = Array4::<Complex<f64>>::zeros((
                         n_R,
                         self.dim_r(),
@@ -599,9 +597,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 let n_R = new_model.hamR.len_of(Axis(0));
                 let mut new_ham =
                     Array3::<Complex<f64>>::zeros((n_R, new_model.nsta(), new_model.nsta()));
-                let mut new_hamR = Array2::<isize>::zeros((1, self.dim_r()));
+                let new_hamR = Array2::<isize>::zeros((1, self.dim_r()));
                 let norb = new_model.norb();
-                let nsta = new_model.nsta();
+                let _nsta = new_model.nsta();
 
                 if SPIN {
                     let norb2 = old_model.norb();
@@ -679,7 +677,7 @@ mod ownership_tests {
     use super::*;
     use crate::AtomType;
     use crate::HasRMatrix;
-    use crate::solve_ham::solve;
+    
     use ndarray::array;
 
     #[test]

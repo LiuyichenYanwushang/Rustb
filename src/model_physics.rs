@@ -4,7 +4,7 @@ use crate::Model;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kpoints::gen_kmesh;
-use crate::solve_ham::solve;
+use crate::solve_ham::Solve;
 use ndarray::prelude::*;
 use ndarray::*;
 use num_complex::Complex;
@@ -206,11 +206,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let nk = kvec.len_of(Axis(0));
         let eigenvalues = self.solve_band_all_parallel(&kvec);
         let E = Array1::linspace(E_min, E_max, E_n);
-        let dim: usize = k_mesh.len();
-        let centre = eigenvalues.into_raw_vec().into_par_iter();
+        let _dim: usize = k_mesh.len();
+        let centre = eigenvalues.into_raw_vec_and_offset().0.into_par_iter();
         let sigma0 = 1.0 / sigma;
         let pi0 = 1.0 / (2.0 * PI).sqrt();
-        let dos = Array1::<f64>::zeros(E_n);
+        let _dos = Array1::<f64>::zeros(E_n);
         let dos = centre
             .fold(
                 || Array1::<f64>::zeros(E_n),

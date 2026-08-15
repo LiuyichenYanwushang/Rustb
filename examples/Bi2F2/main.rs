@@ -89,7 +89,7 @@ fn main() {
     show_wilson_loop(&model, &dir_1, &dir_2, &occ, n, n, "examples/Bi2F2/wcc.pdf");
 
     let nk: usize = 501;
-    let green = surf_Green::from_Model(&model, 0, 1e-3, None).unwrap();
+    let green = SurfGreen::from_Model(&model, 0, 1e-3, None).unwrap();
     let E_min = -1.0;
     let E_max = 1.0;
     let E_n = nk.clone();
@@ -135,7 +135,7 @@ fn main() {
     model_xy.show_band(&path, &label, nk, "examples/Bi2F2/xy/band");
 
     let nk: usize = 501;
-    let green = surf_Green::from_Model(&model_xy, 0, 1e-3, None).unwrap();
+    let green = SurfGreen::from_Model(&model_xy, 0, 1e-3, None).unwrap();
     let E_min = -1.0;
     let E_max = 1.0;
     let E_n = nk.clone();
@@ -190,7 +190,7 @@ fn main() {
     model_xy.show_band(&path, &label, nk, "examples/Bi2F2/bar_xy/band");
 
     let nk: usize = 501;
-    let green = surf_Green::from_Model(&model_xy, 0, 1e-3, None).unwrap();
+    let green = SurfGreen::from_Model(&model_xy, 0, 1e-3, None).unwrap();
     let E_min = -1.0;
     let E_max = 1.0;
     let E_n = nk.clone();
