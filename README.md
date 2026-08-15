@@ -13,22 +13,26 @@ The current API version is **0.7.0** and uses the const-generic model type
 
 ## Installation
 
-Choose a BLAS/LAPACK backend suitable for the target system:
+The default BLAS/LAPACK backend is `openblas-system`; it requires a system
+OpenBLAS (`libopenblas`). To use another backend, disable the default features
+and select exactly one of the mutually exclusive backend features:
 
 ```toml
 [dependencies]
-Rustb = { version = "0.7", features = ["intel-mkl-static"] }
+Rustb = { version = "0.7", default-features = false, features = ["intel-mkl-static"] }
 ndarray = "0.17"
 num-complex = "0.4"
 ```
 
 Available backends are `intel-mkl-static`, `intel-mkl-system`,
 `openblas-static`, `openblas-system`, `netlib-static`, and `netlib-system`.
-Add the optional `cryspglib` feature to enable crystallographic and magnetic
-symmetry analysis without a C dependency:
+Enabling more than one backend (including via `--all-features`) is not
+supported and is rejected at compile time. Add the optional `cryspglib`
+feature to enable crystallographic and magnetic symmetry analysis without a C
+dependency:
 
 ```toml
-Rustb = { version = "0.7", features = ["intel-mkl-system", "cryspglib"] }
+Rustb = { version = "0.7", default-features = false, features = ["intel-mkl-system", "cryspglib"] }
 ```
 
 The optional `mimalloc` and `jemalloc` allocator features are mutually
