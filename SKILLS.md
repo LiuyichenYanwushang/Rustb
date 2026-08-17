@@ -476,7 +476,11 @@ let effective =
 
 `floquet_effective_model` uses the real-space generalized-Bessel backend:
 no `k_mesh` and no `target_hamR` — the effective hopping support is
-determined automatically as the Minkowski sum of the input `hamR`.
+determined automatically as the Minkowski sum of the input `hamR`. It
+does not use the value of `trunc.n_time` for the computation (the field
+only needs to be positive): out-of-range links fall back to a per-link
+time-grid DFT sized from the link's own bandwidth and the requested
+harmonic range.
 
 For three-dimensional illumination, `IncidentBasis::from_direction` constructs
 two transverse polarization vectors from a propagation direction.

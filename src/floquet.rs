@@ -78,9 +78,14 @@
 //! e^{iq\Omega_0 t}
 //! \exp\left[-i\,\mathbf a(t)\cdot\mathbf d\right]. $$
 //!
-//! The implementation evaluates `C_q` by uniform time sampling over one period.
-//! This is deliberately more general than a Bessel-function formula: it handles
-//! arbitrary complex polarization and arbitrary commensurate harmonic mixing.
+//! Two backends evaluate `C_q`.  The Sambe and time-grid paths
+//! ([`Floquet::floquet_model`], `PeierlsFourierMethod::TimeGrid`) integrate
+//! the uniform time grid over one period — deliberately more general than a
+//! Bessel-function formula, handling arbitrary complex polarization and
+//! arbitrary commensurate harmonic mixing.  The van Vleck effective-model
+//! path (`Model::floquet_effective_model`, Bessel backend) uses the
+//! generalized Bessel expansion per link, falling back to a per-link
+//! time-grid DFT when a mode amplitude exceeds the Bessel range.
 //!
 //! The reciprocal-space Fourier block is
 //!
@@ -310,14 +315,28 @@ impl FloquetDrive {
 /// N_{\mathrm{Sambe}} = N_{\mathrm{state}}(2N+1).
 /// $$
 ///
-/// `n_time` controls the discrete Fourier transform used to evaluate Peierls
-/// coefficients `C_q(d)`.  Increase it when the drive amplitude or the maximum
-/// harmonic is large.
+/// `n_time` is the number of samples per drive period used by the Sambe and
+/// time-grid paths for the discrete Fourier transform of the Peierls
+/// coefficients `C_q(d)`.  Increase it when the drive amplitude or the
+/// maximum harmonic is large.
+///
+/// The van Vleck effective-model path (`Model::floquet_effective_model`,
+/// Bessel backend) does **not** use the value of `n_time` for the
+/// computation (it is only validated to be positive as a shared-type
+/// invariant): links outside the Bessel range fall back to a per-link
+/// time-grid DFT whose resolution is sized from the link's own spectral
+/// bandwidth and the requested harmonic range, clamped to `2^20` points
+/// with a warn-once message.
 #[derive(Clone, Copy, Debug)]
 pub struct FloquetTruncation {
     /// Photon cutoff `N`.
     pub n_max: isize,
     /// Number of time samples in one drive period.
+    ///
+    /// Used by the Sambe and time-grid paths; the van Vleck
+    /// effective-model path sizes its own per-link fallback grid and does
+    /// not use this field's value for the computation (it must still be
+    /// positive as a type invariant).
     pub n_time: usize,
 }
 
@@ -976,9 +995,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     }
 
     /// Real-space first-order van Vleck effective model via the
-    /// generalized Bessel backend — no `k_mesh` parameter, and `n_time`
-    /// only enters for links whose amplitude exceeds the Bessel range
-    /// (`R > 8`), which fall back to the time grid per link.
+    /// generalized Bessel backend — no `k_mesh` parameter, and the value
+    /// of `n_time` does not affect the computation (it is only validated
+    /// to be positive): links whose amplitude exceeds the Bessel range
+    /// (`R > 8`) fall back to a per-link time-grid DFT whose resolution is
+    /// sized from the link's own spectral bandwidth and the requested
+    /// harmonic range.
     ///
     /// This is the main entry point.  The crate-internal
     /// `floquet_effective_model_legacy` is the k-space reference
@@ -1237,15 +1259,22 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
 
-        // Phase 2: coefficients per distinct d (parallel).  The time grid is
-        // constructed eagerly as the Bessel fallback reference — its cost is
-        // negligible compared with the per-link coefficient work.
-        let time_grid = FloquetTimeGrid::new(drive, trunc, q_min, q_max, DIM);
+        // Phase 2: coefficients per distinct d (parallel).  The shared time
+        // grid is built only for the TimeGrid backend; the Bessel backend
+        // sizes its own per-link fallback grid from the link's bandwidth, so
+        // no eager grid is allocated on that path.
+        let time_grid = match method {
+            PeierlsFourierMethod::TimeGrid => {
+                Some(FloquetTimeGrid::new(drive, trunc, q_min, q_max, DIM))
+            }
+            PeierlsFourierMethod::Bessel { .. } => None,
+        };
         // Per-call warn-once flag: the parallel loop below may hit the
         // fallback branch for many links, but the user only needs one
         // message per cache build.
         let fallback_warned = AtomicBool::new(false);
         let fallback_clamped = AtomicBool::new(false);
+        let fallback_saturated = AtomicBool::new(false);
         let coeffs_per_d: Vec<Array1<Complex<f64>>> = unique_d
             .par_iter()
             .map(|d| match method {
@@ -1256,24 +1285,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             if !fallback_warned.swap(true, Ordering::Relaxed) {
                                 eprintln!(
                                     "Bessel backend unavailable for some links \
-                                     ({error}); falling back to the time grid"
+                                     ({error}); falling back to a per-link \
+                                     time-grid DFT"
                                 );
                             }
                             fallback_time_grid_coeffs(
                                 d,
                                 drive,
-                                trunc,
                                 q_min,
                                 q_max,
                                 DIM,
-                                &time_grid,
                                 &fallback_clamped,
+                                &fallback_saturated,
                             )
                         }
                     }
                 }
                 PeierlsFourierMethod::TimeGrid => {
-                    Array1::from(peierls_fourier_coeffs(d, q_min, q_max, drive, &time_grid))
+                    let time_grid = time_grid
+                        .as_ref()
+                        .expect("shared time grid is built for the TimeGrid backend");
+                    Array1::from(peierls_fourier_coeffs(d, q_min, q_max, drive, time_grid))
                 }
             })
             .collect();
@@ -1585,6 +1617,23 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
     puruspe::Jn(m as u32, r)
 }
 
+/// Two-sided Bessel tail `2·Σ_{m>M} |J_m(r)|`, accumulated until the terms
+/// decay below the noise floor (bounded at 200 orders).  Shared by the
+/// adaptive cutoff and the fallback saturation re-check so the two cannot
+/// desync.
+fn bessel_two_sided_tail(m: isize, r: f64) -> f64 {
+    let mut tail = 0.0;
+    let mut current = bessel_j(m + 1, r).abs();
+    for order in (m + 2)..(m + 201) {
+        tail += current;
+        if current < 1e-20 {
+            break;
+        }
+        current = bessel_j(order, r).abs();
+    }
+    2.0 * tail
+}
+
 /// Adaptive Bessel order cutoff for amplitude `r`: the smallest
 /// `M ≥ ⌈r⌉ + margin` such that the two-sided tail `2·Σ_{m>M} |J_m(r)|`
 /// stays at or below `error_share`.  Used by [`bessel_peierls_coeffs`]
@@ -1604,18 +1653,7 @@ fn bessel_adaptive_m_cap(r: f64, error_share: f64, margin: isize) -> isize {
     // +margin step overflow-free before the growth loop clamps at 4096.
     let mut m_cap = (r.ceil() as isize).saturating_add(margin).min(4096);
     while m_cap <= 4096 {
-        // Tail = Σ_{m>M} |J_m(r)|: seed with |J_{M+1}|, then accumulate the
-        // following orders until they decay below the noise floor.
-        let mut tail = 0.0;
-        let mut current = bessel_j(m_cap + 1, r).abs();
-        for m in (m_cap + 2)..(m_cap + 201) {
-            tail += current;
-            if current < 1e-20 {
-                break;
-            }
-            current = bessel_j(m, r).abs();
-        }
-        if 2.0 * tail <= error_share {
+        if bessel_two_sided_tail(m_cap, r) <= error_share {
             return m_cap;
         }
         m_cap += 1;
@@ -1876,31 +1914,43 @@ fn peierls_fourier_coeffs(
     coeffs
 }
 
-/// Time-grid fallback for links outside the Bessel backend's range.
-///
-/// The shared grid uses `trunc.n_time`, which is only adequate for small
-/// harmonics: a link's Peierls exponential has spectral content up to
-/// `Σ_α |l_α|·M_α(R_α)` (with `M_α` the adaptive tail cutoff), and a
-/// coarse grid aliases it silently — e.g. for a single `l = 100` mode at
-/// `R = 50`, `n_time = 512` puts `C_−8 ≈ −J_46(50) ≈ −0.17` where the
-/// true value is `0` (`C_0 = J_0(50) = 0.0558` survives there only by a
-/// divisibility coincidence).  When the shared grid cannot resolve
-/// the link, this evaluates the DFT directly at the Nyquist size
-/// `2·Σ_α |l_α|·M_α + 4`, clamped to `FALLBACK_GRID_MAX = 2^20` points
-/// (beyond that the drive is pathological; accuracy degrades and a
-/// warn-once message is printed).
-fn fallback_time_grid_coeffs(
-    d: &Array1<f64>,
+/// Maximum number of time points for a per-link fallback DFT.
+const FALLBACK_GRID_MAX: usize = 1 << 20;
+
+/// Grid-size decision for a fallback link (see [`fallback_time_grid_coeffs`]).
+struct FallbackGridSize {
+    /// Alias-free grid size to evaluate the DFT at.
+    n_req: usize,
+    /// Signal-bandwidth Nyquist term `2·Σ_α |l_α|·M_α + 4`.
+    required: usize,
+    /// Requested-range Nyquist term `2·max(|q_min|, |q_max|) + 1`.
+    request_range: usize,
+    /// The unclamped size exceeded [`FALLBACK_GRID_MAX`].
+    clamped: bool,
+    /// A mode's adaptive cutoff saturated at 4096 orders, so the
+    /// bandwidth estimate is only a lower bound.
+    saturated: bool,
+}
+
+/// Size the alias-free fallback grid: `max(2·Σ_α |l_α|·M_α + 4,
+/// 2·max(|q_min|, |q_max|) + 1)`, clamped to [`FALLBACK_GRID_MAX`].  The
+/// first term resolves the link's signal bandwidth, the second the
+/// requested harmonic range: an n-point DFT returns the aliased sum
+/// `Σ_m C_{q+mn}`, which equals the true `C_q` only for `|q| < n/2`, so
+/// every requested bin needs `n ≥ 2·max(|q_min|, |q_max|) + 1`.  Kept
+/// separate from the DFT so tests can pin the exact sizing, the clamp,
+/// and the saturation flag.
+fn fallback_grid_size(
     drive: &FloquetDrive,
-    trunc: &FloquetTruncation,
+    d: &Array1<f64>,
     q_min: isize,
     q_max: isize,
-    dim: usize,
-    time_grid: &FloquetTimeGrid,
-    clamped: &AtomicBool,
-) -> Array1<Complex<f64>> {
+) -> FallbackGridSize {
     // Nyquist bandwidth of the Peierls exponential on this link.
     let mut bandwidth = 0_usize;
+    // Set when a mode's adaptive cutoff saturates at 4096 orders, so the
+    // bandwidth estimate below is only a lower bound.
+    let mut saturated = false;
     for mode in &drive.modes {
         let z: Complex<f64> = mode
             .a_complex
@@ -1914,33 +1964,101 @@ fn fallback_time_grid_coeffs(
         }
         if !r.is_finite() {
             // Degenerate amplitude (NaN/inf): skip the sizing and let the
-            // shared grid's DFT propagate the NaN visibly instead of
-            // panicking inside the Bessel order search.
+            // fallback DFT propagate the NaN visibly instead of panicking
+            // inside the Bessel order search.
             continue;
         }
-        // Same adaptive tail cutoff the Bessel path would have used; the
-        // margin of 48 is a starting estimate that already meets the
-        // 1e-12 budget for R ≲ 65.
+        // Adaptive tail cutoff from the same family the Bessel path uses
+        // (there the 1e-12 budget is split over the modes; here the full
+        // budget is a conservative sizing estimate).  The margin of 48 is
+        // a starting estimate that already meets the 1e-12 budget for
+        // R ≲ 65.
         let m_cap = bessel_adaptive_m_cap(r, 1e-12, 48);
+        // bessel_adaptive_m_cap saturates at 4096 orders.  When the
+        // returned order does not actually meet the 1e-12 tail budget
+        // (extreme amplitudes), the bandwidth estimate is a lower bound
+        // and the sized grid would alias the missing high orders.  The
+        // tail re-check shares bessel_two_sided_tail with the cutoff
+        // itself; amplitudes beyond 2^19 cannot be resolved by any
+        // fallback grid and are treated as saturated unconditionally.
+        if m_cap >= 4096 && (r > 5.242_88e5 || bessel_two_sided_tail(m_cap, r) > 1e-12) {
+            saturated = true;
+        }
         let drift = (mode.harmonic.unsigned_abs() as usize).saturating_mul(m_cap as usize);
         bandwidth = bandwidth.saturating_add(drift);
     }
     let required = bandwidth.saturating_mul(2).saturating_add(4);
-    if required <= trunc.n_time {
-        // The shared grid already resolves the link.
-        return Array1::from(peierls_fourier_coeffs(d, q_min, q_max, drive, time_grid));
+    let q_max_abs = q_min.unsigned_abs().max(q_max.unsigned_abs());
+    let request_range = (2_usize).saturating_mul(q_max_abs).saturating_add(1);
+    let mut n_req = required.max(request_range);
+    let mut clamped = false;
+    if n_req > FALLBACK_GRID_MAX {
+        n_req = FALLBACK_GRID_MAX;
+        clamped = true;
     }
-    const FALLBACK_GRID_MAX: usize = 1 << 20;
-    let n_req = required.min(FALLBACK_GRID_MAX);
-    if required > FALLBACK_GRID_MAX && !clamped.swap(true, Ordering::Relaxed) {
+    if saturated {
+        // The bandwidth estimate is a lower bound: use the maximum grid
+        // so the fold only involves exponentially small tails.
+        n_req = FALLBACK_GRID_MAX;
+    }
+    FallbackGridSize {
+        n_req,
+        required,
+        request_range,
+        clamped,
+        saturated,
+    }
+}
+
+/// Time-grid fallback for links outside the Bessel backend's range.
+///
+/// The fallback sizes its own grid from the link's spectral bandwidth
+/// instead of relying on the caller's `n_time`: a link's Peierls
+/// exponential has spectral content up to `Σ_α |l_α|·M_α(R_α)` (with `M_α`
+/// the adaptive tail cutoff), and a coarse grid aliases it silently — e.g.
+/// for a single `l = 100` mode at `R = 50`, a 512-point grid puts
+/// `C_−8 ≈ −J_46(50) ≈ −0.17` where the true value is `0`
+/// (`C_0 = J_0(50) = 0.0558` survives there only by a divisibility
+/// coincidence).  The DFT is evaluated directly at the size chosen by
+/// [`fallback_grid_size`], clamped to [`FALLBACK_GRID_MAX`] = 2^20 points
+/// (beyond that the drive or truncation is pathological; accuracy degrades
+/// and a warn-once message is printed).  When the adaptive bandwidth
+/// estimate saturates at its 4096-order cap (mode amplitude ≈ 4000, the
+/// point where the two-sided tail beyond order 4096 still exceeds the
+/// 1e-12 budget) the estimate is only a lower bound: the grid then uses
+/// the maximum size and a warn-once message is printed, and alias-freedom
+/// is limited to resolvable bandwidths (≲ 2^19).
+fn fallback_time_grid_coeffs(
+    d: &Array1<f64>,
+    drive: &FloquetDrive,
+    q_min: isize,
+    q_max: isize,
+    dim: usize,
+    clamped: &AtomicBool,
+    saturated: &AtomicBool,
+) -> Array1<Complex<f64>> {
+    let size = fallback_grid_size(drive, d, q_min, q_max);
+    if size.clamped && !clamped.swap(true, Ordering::Relaxed) {
         eprintln!(
             "Floquet fallback grid clamped to {FALLBACK_GRID_MAX} time points \
-             (link requires {required}); coefficients on this link may be \
-             inaccurate"
+             (link requires {required}, requested harmonic range {request_range}); \
+             coefficients on this link may be inaccurate",
+            required = size.required,
+            request_range = size.request_range,
         );
     }
-    // Direct DFT at the fine resolution, avoiding the shared grid's
-    // q_count × n_time Fourier matrix.
+    if size.saturated && !saturated.swap(true, Ordering::Relaxed) {
+        // Warn once that alias-freedom is no longer guaranteed.
+        eprintln!(
+            "Floquet fallback bandwidth estimate saturated at 4096 Bessel \
+             orders; using the maximum {FALLBACK_GRID_MAX}-point grid — \
+             coefficients on this link may still be inaccurate for extreme \
+             amplitudes"
+        );
+    }
+    let n_req = size.n_req;
+    // Direct DFT at the fine resolution (no shared q_count × n_time
+    // Fourier matrix to reuse).
     let q_count = (q_max - q_min + 1) as usize;
     let inv_n = 1.0 / (n_req as f64);
     let mut coeffs = vec![Complex::new(0.0, 0.0); q_count];
@@ -2592,6 +2710,235 @@ mod tests {
             (c0 - Complex::new(-bessel_j(0, 50.0), 0.0)).norm() < 1e-10,
             "C_0 on the r = 50 link should be -J_0(50) (t = -1), got {c0}"
         );
+    }
+
+    #[test]
+    fn harmonic_cache_bessel_ignores_n_time() {
+        // The Bessel backend must produce bitwise-identical coefficients for
+        // wildly different n_time, even when a fallback link (R > 8) forces
+        // the per-link time-grid path.  Reintroducing any n_time dependence
+        // on this path (an eager shared grid, or a trunc.n_time short-circuit
+        // in the fallback) changes the fp results and fails this test.
+        //
+        // The requested harmonic range [-110, 110] (n_max = 55) exceeds the
+        // fallback link's bandwidth half-grid (required/2 = 59), so a
+        // bandwidth-only grid would alias bins near q = 110 — exactly the
+        // regime where the removed shared-grid branch used to hide the
+        // difference behind a large user-chosen n_time.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [10.0, 0.0]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (10, 1), R = 9 > 8
+
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        );
+        let coarse = model.floquet_harmonic_cache(
+            &drive,
+            &FloquetTruncation::new(55, 8),
+            -110,
+            110,
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+        );
+        let fine = model.floquet_harmonic_cache(
+            &drive,
+            &FloquetTruncation::new(55, 65536),
+            -110,
+            110,
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+        );
+        assert_eq!(
+            coarse.blocks.dim(),
+            fine.blocks.dim(),
+            "harmonic ranges must match"
+        );
+        for (a, b) in coarse.blocks.iter().zip(fine.blocks.iter()) {
+            assert_eq!(
+                a, b,
+                "Bessel cache must not depend on n_time (got {a} vs {b})"
+            );
+        }
+    }
+
+    #[test]
+    fn harmonic_cache_bessel_fallback_resolves_requested_range() {
+        // The per-link fallback DFT must also resolve the requested
+        // harmonic range, not just the signal bandwidth: an n-point DFT
+        // returns Σ_m C_{q+mn}, so bins with |q| >= n_req/2 fold genuine
+        // low-order coefficients in.  For the l = 1, R = 9 link below the
+        // bandwidth-only grid has n_req = 118 and corrupts bins
+        // q ∈ [103, 110] at the J_{118-q}(9) level (up to ~0.3); sizing the
+        // grid to the requested range [-110, 110] keeps every requested bin
+        // alias-free, and the true C_q for q > 57 is exponentially small.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [10.0, 0.0]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (10, 1), R = 9 > 8
+
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        );
+        let cache = model.floquet_harmonic_cache(
+            &drive,
+            &FloquetTruncation::new(55, 512),
+            -110,
+            110,
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+        );
+        let i_r_link = find_R(&model.hamR, &array![0, 1]).unwrap();
+        // q beyond the signal bandwidth (57 for R = 9, l = 1) must vanish:
+        // |C_60| ~ J_60(9) ~ 1e-45, and the grid (n_req = 221) folds only
+        // coefficients with |q ± n_req| >= 111 (min |110 − 221|), also
+        // exponentially small.
+        for q in 60..=110 {
+            let coeff = cache.blocks[[cache.q_index(q), i_r_link, 0, 1]];
+            assert!(
+                coeff.norm() < 1e-10,
+                "C_{q} on the fallback link must be ~0 (beyond the signal \
+                 bandwidth), got {coeff}"
+            );
+        }
+    }
+
+    #[test]
+    fn floquet_effective_model_ignores_n_time() {
+        // End-to-end: the public effective-model entry point must return
+        // bitwise-identical models for wildly different n_time, with a
+        // fallback link (R = 9 > 8) forcing the per-link time-grid path.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [10.0, 0.0]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None);
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        );
+        let coarse = model
+            .floquet_effective_model(&drive, &FloquetTruncation::new(55, 8), None)
+            .unwrap();
+        let fine = model
+            .floquet_effective_model(&drive, &FloquetTruncation::new(55, 65536), None)
+            .unwrap();
+        assert_eq!(
+            coarse.hamR, fine.hamR,
+            "effective-model support must not depend on n_time"
+        );
+        for (a, b) in coarse.ham.iter().zip(fine.ham.iter()) {
+            assert_eq!(
+                a, b,
+                "floquet_effective_model must ignore n_time (got {a} vs {b})"
+            );
+        }
+    }
+
+    #[test]
+    fn fallback_grid_size_clamps_and_saturates() {
+        // Pin the exact sizing decision (n_req, clamp flag, saturation
+        // flag) for the normal, clamp, saturation, and request-dominant
+        // regimes.  A broken clamp or saturation detector fails here with
+        // exact values instead of a finiteness smoke test.
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        );
+        let d = array![10.0, 1.0]; // R = 9 > 8: fallback link
+
+        // Normal: sized from the signal bandwidth (M(9) = 57).
+        let s = fallback_grid_size(&drive, &d, -3, 3);
+        assert_eq!(s.n_req, 118); // 2·57 + 4
+        assert!(!s.clamped && !s.saturated);
+
+        // Request-dominant: 2·max(|q_min|,|q_max|) + 1 exceeds the
+        // bandwidth term.
+        let s = fallback_grid_size(&drive, &d, -100, 100);
+        assert_eq!(s.n_req, 201);
+        assert!(!s.clamped && !s.saturated);
+
+        // Clamp: |l|·M beyond FALLBACK_GRID_MAX.
+        let big = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                10000,
+                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        );
+        let s = fallback_grid_size(&big, &d, -1, 1);
+        assert_eq!(s.n_req, 1 << 20);
+        assert!(s.clamped);
+        assert!(!s.saturated);
+
+        // Saturation: R = 4000 exceeds the 4096-order adaptive cutoff,
+        // so the bandwidth estimate is a lower bound.
+        let sat = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        );
+        let d_sat = array![4000.0, 1.0]; // R = 4000 > 8
+        let s = fallback_grid_size(&sat, &d_sat, -1, 1);
+        assert_eq!(s.n_req, 1 << 20);
+        assert!(!s.clamped);
+        assert!(s.saturated);
+    }
+
+    #[test]
+    fn harmonic_cache_bessel_fallback_saturation_matches_oracle() {
+        // R = 8900 saturates the 4096-order adaptive cutoff; the fallback
+        // must detect the truncated bandwidth estimate and use the maximum
+        // grid so its coefficients match a 65536-point oracle (which
+        // resolves the true band ≈ 9100).  A broken saturation detector
+        // leaves the bandwidth-only 8196-point grid, whose Nyquist
+        // (4098) aliases the true band and fails this test.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [8900.0, 0.0]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (8900, 1), R = 8900 > 8
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        );
+        let oracle = model.floquet_harmonic_cache(
+            &drive,
+            &FloquetTruncation::new(2, 65536),
+            -3,
+            3,
+            &PeierlsFourierMethod::TimeGrid,
+        );
+        let cache = model.floquet_harmonic_cache(
+            &drive,
+            &FloquetTruncation::new(2, 512),
+            -3,
+            3,
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+        );
+        for (a, b) in oracle.blocks.iter().zip(cache.blocks.iter()) {
+            assert!(
+                (a - b).norm() < 1e-9,
+                "saturated fallback {b} vs 65536-point oracle {a}"
+            );
+        }
     }
 
     /// Build the `q = ±1` harmonic blocks of a spinless model and return
