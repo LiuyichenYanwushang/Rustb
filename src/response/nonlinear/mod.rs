@@ -95,6 +95,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         spin: Option<SpinDirection>,
         eta: f64,
     ) -> Result<(Array1<f64>, Array1<f64>)> {
+        if k_vec.len() != self.dim_r() {
+            return Err(TbError::KVectorLengthMismatch {
+                expected: self.dim_r(),
+                actual: k_vec.len(),
+            });
+        }
         // Build direction matrix: [current_dir, dir_2, dir_3]
         let directions = {
             let mut d = Array2::<f64>::zeros((3, self.dim_r()));
@@ -198,6 +204,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 });
             }
         }
+        if k_vec.ncols() != self.dim_r() {
+            return Err(TbError::DimensionMismatch {
+                context: "k_vec".into(),
+                expected: self.dim_r(),
+                found: k_vec.ncols(),
+            });
+        }
         let nk = k_vec.len_of(Axis(0));
         let results: Vec<Result<_>> = k_vec
             .axis_iter(Axis(0))
@@ -231,6 +244,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Direct integration requires a finite thermal width because `-df/dE`
     /// is sampled on k-points. Energy-cut integration supports the exact
     /// zero-temperature limit.
+    ///
+    /// Direction rows are `(current, field_1, field_2)`. In the internal
+    /// kernel this maps to `Ω^{current, field_1} v^{field_2}`: `current` and
+    /// `field_1` are the two Berry-curvature indices and `field_2` is the
+    /// Fermi-surface velocity index. `FieldSymmetry::Symmetrized` averages
+    /// the two orderings of `field_1`/`field_2`.
     ///
     /// The two field indices are combined according to `params.field_symmetry`:
     /// [`FieldSymmetry::Symmetrized`] (the default) averages the two field
@@ -415,6 +434,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         dir_c: &Array1<f64>,
         spin: Option<SpinDirection>,
     ) -> Result<(Array1<f64>, Array1<f64>, Option<Array1<f64>>)> {
+        if k_vec.len() != self.dim_r() {
+            return Err(TbError::KVectorLengthMismatch {
+                expected: self.dim_r(),
+                actual: k_vec.len(),
+            });
+        }
         // Build direction matrix: [dir_a, dir_b, dir_c]
         let directions = {
             let mut d = Array2::<f64>::zeros((3, self.dim_r()));
@@ -578,6 +603,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     found: dir.len(),
                 });
             }
+        }
+        if k_vec.ncols() != self.dim_r() {
+            return Err(TbError::DimensionMismatch {
+                context: "k_vec".into(),
+                expected: self.dim_r(),
+                found: k_vec.ncols(),
+            });
         }
         let nk = k_vec.len_of(Axis(0));
 

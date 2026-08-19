@@ -170,7 +170,16 @@ fn neighbour_indices(i: usize, k_mesh: &[usize]) -> Vec<usize> {
     // energy-cut Hall tests.
     let dim = k_mesh.len();
     let mut out = Vec::new();
-    if dim == 2 {
+    if dim == 1 {
+        let nx = k_mesh[0];
+        let ix = i as isize;
+        for dx in [-1isize, 1] {
+            let jx = ix + dx;
+            if jx >= 0 && jx < nx as isize {
+                out.push(jx as usize);
+            }
+        }
+    } else if dim == 2 {
         let (nx, ny) = (k_mesh[0], k_mesh[1]);
         let ix = i / ny;
         let iy = i % ny;

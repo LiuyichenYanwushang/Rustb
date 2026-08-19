@@ -229,7 +229,7 @@ structure, `Parameters<DIM>`:
 | `mu` | Chemical potential(s) in eV (single value = 1-element array) | `berry_curvature_at` |
 | `eta` | Denominator broadening in eV | `intrinsic_nonlinear_hall` |
 | `kmesh` | Uniform k-mesh `[usize; DIM]` | per-k-point trait methods |
-| `omega` | Frequency(ies) in eV (optical scans; others use `omega[0]`) | hall, quantum geometry |
+| `omega` | Frequency(ies) in eV (optical scans; others use `omega[0]`) | hall, quantum geometry, extrinsic/intrinsic nonlinear Hall |
 | `spin` | `None` = charge current, `Some(dir)` = spin current | quantum geometry, optical, intrinsic |
 | `direction` | `Array2<f64>` with shape `(rank, DIM)` — rank 2 for Hall / geometry / optical, rank 3 `(current, field_1, field_2)` for nonlinear | — |
 | `integration` | `Integration::Direct` / `Simplex` / `EnergyCut` | per-k-point trait methods |
