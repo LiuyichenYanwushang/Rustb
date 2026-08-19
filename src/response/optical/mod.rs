@@ -132,7 +132,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         for (component, directions) in direction_pairs.iter().enumerate() {
             let direction_a = directions.row(0).to_owned();
             let direction_b = directions.row(1).to_owned();
-            let mut vertices: Vec<VertexKernel> = (0..k_points.nrows())
+            let vertices: Vec<Result<VertexKernel>> = (0..k_points.nrows())
                 .into_par_iter()
                 .map(|index| {
                     self.compute_velocity_kernel(
@@ -145,6 +145,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     )
                 })
                 .collect();
+            let mut vertices: Vec<VertexKernel> = vertices.into_iter().collect::<Result<_>>()?;
 
             match params.integration {
                 Integration::Direct => {

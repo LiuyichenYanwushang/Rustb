@@ -51,15 +51,18 @@ pub(crate) struct VertexKernel {
     pub evec: Array2<Complex<f64>>,
 }
 
-/// A simplex whose vertices have been band‑tracked (label‑aligned).
-pub(crate) struct TrackedSimplex {
-    /// `d + 1` vertices, already label‑aligned.
-    pub vertices: Vec<VertexKernel>,
+/// Zero‑clone simplex referencing `all_pts` vertex data by borrowed pointer.
+///
+/// `NV` = 3 for triangle, 4 for tetrahedron.
+/// `coords` uses `[f64; 3]` for each vertex (pad z=0 for 2D).
+/// No allocation on construction — just indices/coords/volume.
+pub(crate) struct TrackedSimplex<'a, const NV: usize> {
+    /// `NV` vertices, already label‑aligned by [`super::tracking::global_band_track`].
+    pub vertices: [&'a VertexKernel; NV],
+    /// Fractional coordinates of each vertex, padded to 3D.
+    pub coords: [[f64; 3]; NV],
     /// Physical volume of this simplex (fractional coordinates).
     pub volume: f64,
-    /// Fractional coordinates of each vertex, shape `(d+1, dim)`.
-    #[allow(dead_code)]
-    pub coords: Array2<f64>,
     /// Diagnostic counters for this simplex.
     pub diag: SimplexDiagnostics,
 }
@@ -74,18 +77,6 @@ pub(crate) struct SimplexDiagnostics {
     pub min_assignment_overlap: f64,
     #[allow(dead_code)]
     pub tracking_conflict: bool,
-}
-
-/// Zero‑clone simplex referencing `all_pts` vertex data by borrowed pointer.
-///
-/// `NV` = 3 for triangle, 4 for tetrahedron.
-/// `coords` uses `[f64; 3]` for each vertex (pad z=0 for 2D).
-/// No allocation on construction — just indices/coords/volume.
-pub(crate) struct TrackedSimplexRef<'a, const NV: usize> {
-    pub vertices: [&'a VertexKernel; NV],
-    pub coords: [[f64; 3]; NV],
-    pub volume: f64,
-    pub diag: SimplexDiagnostics,
 }
 
 pub(crate) const SIMPLEX_GAP_TOL: f64 = 1e-4;

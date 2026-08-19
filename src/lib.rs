@@ -1194,7 +1194,9 @@ mod tests {
         let omega_ref = band_berry_curvature(&model, &k, &dx, &dy, None, eta).berry_curvature;
         // Tetra primitives
         let dv = Array1::zeros(2);
-        let pt = model.compute_velocity_kernel(&k, &dx, &dy, Some(&dv), Gauge::Atom, None);
+        let pt = model
+            .compute_velocity_kernel(&k, &dx, &dy, Some(&dv), Gauge::Atom, None)
+            .unwrap();
 
         // Compute Omega from tetra primitives for each band n
         let nsta = model.nsta();
@@ -2530,7 +2532,9 @@ mod tests {
             let omega_n_old =
                 band_berry_curvature(&model, &kv, &dx, &dy, None, eta).berry_curvature;
             // Gauge-invariant K_nm must produce the same Ω_n.
-            let tk = model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None);
+            let tk = model
+                .compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None)
+                .unwrap();
             let nsta = model.nsta();
             let mut omega_n_new = Array1::<f64>::zeros(nsta);
             let eta2 = eta * eta;
@@ -2589,7 +2593,9 @@ mod tests {
             let all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
                 .map(|ik| {
                     let kv = kvec.row(ik).to_owned();
-                    let tk = model.compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None);
+                    let tk = model
+                .compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None)
+                .unwrap();
                     tk
                 })
                 .collect();

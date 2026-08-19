@@ -11,6 +11,7 @@ use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
 use crate::SpinDirection;
+use crate::error::Result;
 use crate::math::anti_comm;
 
 use super::helpers::build_spin_matrix;
@@ -37,7 +38,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         dir_c: Option<&Array1<f64>>,
         gauge: Gauge,
         spin: Option<SpinDirection>,
-    ) -> VertexKernel {
+    ) -> Result<VertexKernel> {
         let nsta = self.nsta();
 
         // Build direction matrix: [dir_a, dir_b, (opt) dir_c]
@@ -50,7 +51,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
 
         let (v_proj, hamk) = self.gen_v_projected(k_vec, gauge, &directions);
-        let (band, evec) = hamk.eigh(UPLO::Lower).unwrap();
+        let (band, evec) = hamk.eigh(UPLO::Lower)?;
         // Convention: U^T · v · U^*
         let ut = evec.t();
         let uc = evec.map(|x| x.conj());
@@ -98,7 +99,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             (None, None, None, None, None)
         };
 
-        VertexKernel {
+        Ok(VertexKernel {
             band,
             evec,
             k_ab,
@@ -107,6 +108,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             vdiag,
             vdiag_a,
             vdiag_b,
-        }
+        })
     }
 }

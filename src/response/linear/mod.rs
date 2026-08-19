@@ -226,7 +226,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             Integration::EnergyCut => {
                 let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
                 let kvec = crate::kpoints::gen_kmesh(&k_mesh)?;
-                let mut all_pts: Vec<VertexKernel> = (0..kvec.nrows())
+                let all_pts: Vec<Result<VertexKernel>> = (0..kvec.nrows())
                     .into_par_iter()
                     .map(|ik| {
                         self.compute_velocity_kernel(
@@ -239,6 +239,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
+                let mut all_pts: Vec<VertexKernel> = all_pts.into_iter().collect::<Result<_>>()?;
                 global_band_track(&mut all_pts, &params.kmesh);
                 let width = occupation.energy_width()?;
                 let sigma = match DIM {

@@ -470,55 +470,19 @@ pub(crate) fn eval_optical_kernel(
 
 // ── Quadrature over single simplex ──────────────────────────────────────
 
-/// Quadrature over one simplex for the Berry + metric kernel.
-#[allow(dead_code)]
-pub(crate) fn quadrature_berry_simplex(sim: &TrackedSimplex, eta: f64) -> (f64, f64) {
-    let d = sim.vertices.len() - 1;
-    let nsta = sim.vertices[0].band.len();
-    let nv = d + 1;
-    let bands: Vec<Vec<f64>> = (0..nv).map(|v| sim.vertices[v].band.to_vec()).collect();
-    let kmats: Vec<Array2<Complex<f64>>> = (0..nv).map(|v| sim.vertices[v].k_ab.clone()).collect();
-
-    let mut total_g = 0.0;
-    let mut total_o = 0.0;
-    if d == 2 {
-        for iq in 0..3 {
-            let lam = TRI_QUAD_PTS_3[iq].as_slice();
-            let w = TRI_QUAD_WTS_3[iq];
-            let band_q = bary_interp_band(&bands, lam, nsta);
-            let k_ab_q = bary_interp_matrix(&kmats, lam);
-            let (g_n, o_n) = eval_berry_kernel(&band_q, &k_ab_q, eta, nsta);
-            total_g += w * g_n.iter().copied().sum::<f64>();
-            total_o += w * o_n.iter().copied().sum::<f64>();
-        }
-    } else {
-        for iq in 0..4 {
-            let lam = TET_QUAD_PTS_4[iq].as_slice();
-            let w = TET_QUAD_WTS_4[iq];
-            let band_q = bary_interp_band(&bands, lam, nsta);
-            let k_ab_q = bary_interp_matrix(&kmats, lam);
-            let (g_n, o_n) = eval_berry_kernel(&band_q, &k_ab_q, eta, nsta);
-            total_g += w * g_n.iter().copied().sum::<f64>();
-            total_o += w * o_n.iter().copied().sum::<f64>();
-        }
-    }
-    (total_g * sim.volume, total_o * sim.volume)
-}
-
 /// Occupation-weighted Berry curvature and quantum metric on one simplex.
-pub(crate) fn quadrature_occupied_geometry_simplex(
-    sim: &TrackedSimplex,
+pub(crate) fn quadrature_occupied_geometry_simplex<const NV: usize>(
+    sim: &TrackedSimplex<'_, NV>,
     eta: f64,
     chemical_potentials: &Array1<f64>,
     occupation: Occupation,
 ) -> (Array1<f64>, Array1<f64>) {
-    let dimension = sim.vertices.len() - 1;
+    let dimension = NV - 1;
     let nsta = sim.vertices[0].band.len();
-    let vertex_count = dimension + 1;
-    let bands: Vec<Vec<f64>> = (0..vertex_count)
+    let bands: Vec<Vec<f64>> = (0..NV)
         .map(|vertex| sim.vertices[vertex].band.to_vec())
         .collect();
-    let kernels: Vec<Array2<Complex<f64>>> = (0..vertex_count)
+    let kernels: Vec<Array2<Complex<f64>>> = (0..NV)
         .map(|vertex| sim.vertices[vertex].k_ab.clone())
         .collect();
     let mut metric = Array1::<f64>::zeros(chemical_potentials.len());
@@ -549,18 +513,21 @@ pub(crate) fn quadrature_occupied_geometry_simplex(
     (metric * sim.volume, berry * sim.volume)
 }
 
-pub(crate) fn quadrature_optical_simplex(
-    sim: &TrackedSimplex,
+pub(crate) fn quadrature_optical_simplex<const NV: usize>(
+    sim: &TrackedSimplex<'_, NV>,
     omega: f64,
     eta: f64,
     mu: f64,
     thermal_width: f64,
 ) -> Complex<f64> {
-    let d = sim.vertices.len() - 1;
+    let d = NV - 1;
     let nsta = sim.vertices[0].band.len();
-    let nv = d + 1;
-    let bands: Vec<Vec<f64>> = (0..nv).map(|v| sim.vertices[v].band.to_vec()).collect();
-    let kmats: Vec<Array2<Complex<f64>>> = (0..nv).map(|v| sim.vertices[v].k_ab.clone()).collect();
+    let bands: Vec<Vec<f64>> = (0..NV)
+        .map(|v| sim.vertices[v].band.to_vec())
+        .collect();
+    let kmats: Vec<Array2<Complex<f64>>> = (0..NV)
+        .map(|v| sim.vertices[v].k_ab.clone())
+        .collect();
     let mut total = Complex::new(0.0, 0.0);
     if d == 2 {
         for iq in 0..3 {

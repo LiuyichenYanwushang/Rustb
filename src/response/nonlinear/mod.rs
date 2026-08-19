@@ -79,7 +79,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `current_dir` - First Berry-curvature index $\alpha$ of $\Omega_{n,\alpha\beta}$.
     /// * `dir_2` - Second Berry-curvature index $\beta$.
     /// * `dir_3` - Velocity / Fermi-surface index $\gamma$.
-    /// * `og` - Frequency $\omega$ (for the energy denominator).
     /// * `spin` - Spin operator index (0, 1, 2, 3).
     /// * `eta` - Broadening parameter $\eta$.
     ///
@@ -93,11 +92,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         dir_3: &Array1<f64>,
-        og: f64,
         spin: Option<SpinDirection>,
         eta: f64,
-    ) -> (Array1<f64>, Array1<f64>) {
-        let li: Complex<f64> = 1.0 * Complex::i();
+    ) -> Result<(Array1<f64>, Array1<f64>)> {
         // Build direction matrix: [current_dir, dir_2, dir_3]
         let directions = {
             let mut d = Array2::<f64>::zeros((3, self.dim_r()));
@@ -106,7 +103,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             d.row_mut(2).assign(dir_3);
             d
         };
-        let (v_proj, hamk) = self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
+        let (v_proj, hamk) = self.gen_v_projected(k_vec, Gauge::Atom, &directions);
         // v_proj[0] = Σ_d current_dir[d] * v_raw[d]  → J
         // v_proj[1] = Σ_d dir_2[d] * v_raw[d]        → v
         // v_proj[2] = Σ_d dir_3[d] * v_raw[d]        → v0
@@ -114,19 +111,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             let X = build_spin_matrix(self.norb(), spin);
             anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5
         } else {
-            if spin.is_some() {
-                println!("Warning, the model haven't got spin, so the spin input will be ignord");
+            if let Some(direction) = spin {
+                return Err(TbError::SpinNotAllowed(direction));
             }
             v_proj.slice(s![0, .., ..]).to_owned()
         };
         let v: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
         let v0: Array2<Complex<f64>> = v_proj.slice(s![2, .., ..]).to_owned();
 
-        let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
-            (eigvals, eigvecs)
-        } else {
-            todo!()
-        };
+        let (band, evec) = hamk.eigh(UPLO::Lower)?;
         let evec_conj = evec.t();
         let evec = evec.map(|x| x.conj());
 
@@ -141,7 +134,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         for i in 0..self.nsta() {
             for j in 0..self.nsta() {
                 if i != j {
-                    U0[[i, j]] = 1.0 / ((band[[i]] - band[[j]]).powi(2) - (og + li * eta).powi(2));
+                    U0[[i, j]] = 1.0 / ((band[[i]] - band[[j]]).powi(2) + eta * eta);
                 } else {
                     U0[[i, j]] = Complex::new(0.0, 0.0);
                 }
@@ -154,7 +147,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
 
         let omega_n: Array1<f64> = omega_n * partial_ve;
-        (omega_n, band)
+        Ok((omega_n, band))
     }
 
     /// Computes the Berry curvature dipole for each band at multiple k-points in parallel.
@@ -172,7 +165,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `k_vec` - Array of k-points, shape `(nk, dim_r)`.
     /// * `current_dir`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
     /// * `dir_3` - Direction vector for the energy derivative index $\gamma$.
-    /// * `og` - Frequency $\omega$.
     /// * `spin` - Spin operator index (0, 1, 2, 3).
     /// * `eta` - Broadening parameter.
     ///
@@ -181,61 +173,58 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// `(omega, band)` where `omega` has shape `(nk, nsta)` containing
     /// $\partial_\gamma\varepsilon_n \Omega_{n,\alpha\beta}$ for each k-point and band,
     /// and `band` has the band energies with the same shape.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any of `current_dir`, `dir_2`, or `dir_3` has length different from `self.dim_r()`.
     pub(crate) fn berry_curvature_dipole_n(
         &self,
         k_vec: &Array2<f64>,
         current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         dir_3: &Array1<f64>,
-        og: f64,
         spin: Option<SpinDirection>,
         eta: f64,
-    ) -> (Array2<f64>, Array2<f64>) {
-        if current_dir.len() != self.dim_r()
-            || dir_2.len() != self.dim_r()
-            || dir_3.len() != self.dim_r()
-        {
-            panic!(
-                "Wrong, the current_dir or dir_2 you input has wrong length, it must equal to dim_r={}, but you input {} and {}",
-                self.dim_r(),
-                current_dir.len(),
-                dir_2.len()
-            )
+    ) -> Result<(Array2<f64>, Array2<f64>)> {
+        for (name, dir) in [
+            ("current_dir", current_dir),
+            ("dir_2", dir_2),
+            ("dir_3", dir_3),
+        ] {
+            if dir.len() != self.dim_r() {
+                return Err(TbError::DimensionMismatch {
+                    context: name.into(),
+                    expected: self.dim_r(),
+                    found: dir.len(),
+                });
+            }
         }
         let nk = k_vec.len_of(Axis(0));
-        let (omega, band): (Vec<_>, Vec<_>) = k_vec
+        let results: Vec<Result<_>> = k_vec
             .axis_iter(Axis(0))
             .into_par_iter()
             .map(|x| {
-                let (omega_one, band) = self.berry_curvature_dipole_n_onek(
+                self.berry_curvature_dipole_n_onek(
                     &x.to_owned(),
-                    &current_dir,
-                    &dir_2,
-                    &dir_3,
-                    og,
+                    current_dir,
+                    dir_2,
+                    dir_3,
                     spin,
                     eta,
-                );
-                (omega_one, band)
+                )
             })
             .collect();
+        let results: Vec<_> = results.into_iter().collect::<Result<_>>()?;
+        let (omega, band): (Vec<_>, Vec<_>) = results.into_iter().unzip();
         let omega =
             Array2::<f64>::from_shape_vec((nk, self.nsta()), omega.into_iter().flatten().collect())
-                .unwrap();
+                .map_err(|e| TbError::Shape(e))?;
         let band =
             Array2::<f64>::from_shape_vec((nk, self.nsta()), band.into_iter().flatten().collect())
-                .unwrap();
-        (omega, band)
+                .map_err(|e| TbError::Shape(e))?;
+        Ok((omega, band))
     }
 
     /// Evaluate the Berry-curvature-dipole nonlinear Hall response.
     ///
-    /// Reads `kmesh`, `direction` (rank 3), `mu`, `T`, `eta`, `omega` (first
-    /// element or zero when empty) and `spin` from the parameter set.
+    /// Reads `kmesh`, `direction` (rank 3), `mu`, `T`, `eta` and `spin` from
+    /// the parameter set. This is a DC response: `omega` is ignored.
     /// Direct integration requires a finite thermal width because `-df/dE`
     /// is sampled on k-points. Energy-cut integration supports the exact
     /// zero-temperature limit.
@@ -260,28 +249,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 message: "extrinsic_nonlinear_hall supports Integration::Direct or EnergyCut, not Simplex".into(),
             });
         }
-        if params.omega.len() > 1 {
-            return Err(TbError::InvalidResponseParameter {
-                parameter: "omega",
-                message: "extrinsic_nonlinear_hall accepts at most one frequency".into(),
-            });
-        }
-        let frequency = params.omega.first().copied().unwrap_or(0.0);
-        if !frequency.is_finite() {
-            return Err(TbError::InvalidResponseParameter {
-                parameter: "omega",
-                message: "must be finite".into(),
-            });
-        }
         if params.integration == Integration::EnergyCut {
             validate_sorted(&params.mu, "mu")?;
-            if frequency != 0.0 {
-                return Err(TbError::InvalidResponseParameter {
-                    parameter: "omega",
-                    message: "energy-cut extrinsic response currently requires zero frequency"
-                        .into(),
-                });
-            }
             if DIM != 2 {
                 return Err(TbError::InvalidDimension {
                     dim: DIM,
@@ -328,7 +297,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
         let width = parameters_occupation(params).energy_width()?;
         let determinant = self.lat.det()?;
-        let frequency = params.omega.first().copied().unwrap_or(0.0);
         match params.integration {
             Integration::Direct => {
                 if width == 0.0 {
@@ -339,8 +307,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     });
                 }
                 let (kernel, energies) = self.berry_curvature_dipole_n(
-                    &k_points, current, field_1, field_2, frequency, spin, params.eta,
-                );
+                    &k_points, current, field_1, field_2, spin, params.eta,
+                )?;
                 let values: Vec<f64> = params
                     .mu
                     .par_iter()
@@ -360,7 +328,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
             Integration::EnergyCut => {
                 let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
-                let mut vertices: Vec<VertexKernel> = (0..k_points.nrows())
+                let vertices: Vec<Result<VertexKernel>> = (0..k_points.nrows())
                     .into_par_iter()
                     .map(|index| {
                         self.compute_velocity_kernel(
@@ -373,6 +341,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
+                let mut vertices: Vec<VertexKernel> =
+                    vertices.into_iter().collect::<Result<_>>()?;
                 global_band_track(&mut vertices, &params.kmesh);
                 let (conductivity, unsafe_simplex_count) = integrate_dipole_energy_cut_2d(
                     &vertices,
@@ -441,7 +411,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         dir_b: &Array1<f64>,
         dir_c: &Array1<f64>,
         spin: Option<SpinDirection>,
-    ) -> (Array1<f64>, Array1<f64>, Option<Array1<f64>>) {
+    ) -> Result<(Array1<f64>, Array1<f64>, Option<Array1<f64>>)> {
         // Build direction matrix: [dir_a, dir_b, dir_c]
         let directions = {
             let mut d = Array2::<f64>::zeros((3, self.dim_r()));
@@ -450,16 +420,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             d.row_mut(2).assign(dir_c);
             d
         };
-        let (v_proj, hamk) = self.gen_v_projected(&k_vec, Gauge::Atom, &directions);
+        let (v_proj, hamk) = self.gen_v_projected(k_vec, Gauge::Atom, &directions);
         // v_proj[0] = Σ_d dir_a[d] * v_raw[d]  →  v^a
         // v_proj[1] = Σ_d dir_b[d] * v_raw[d]  →  v^b
         // v_proj[2] = Σ_d dir_c[d] * v_raw[d]  →  v^c
 
-        let (band, evec) = if let Ok((eigvals, eigvecs)) = hamk.eigh(UPLO::Lower) {
-            (eigvals, eigvecs)
-        } else {
-            todo!()
-        };
+        let (band, evec) = hamk.eigh(UPLO::Lower)?;
         let ut = evec.t();
         let uc = evec.map(|x| x.conj());
         let to_band = |op: &Array2<Complex<f64>>| -> Array2<Complex<f64>> { ut.dot(&op.dot(&uc)) };
@@ -551,11 +517,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
                 2.0 * (A - B - C).map(|x| x.re)
             };
-            return (
-                (partial_s_1 * G_23 - partial_ve_2 * G_13_h),
+            return Ok((
+                partial_s_1 * G_23 - partial_ve_2 * G_13_h,
                 band,
                 Some(partial_G),
-            );
+            ));
         } else {
             // —— SM Eq. (43): charge intrinsic nonlinear Hall ——
             // σ^{ab;c}_{int} = -e³/ħ Σ_n ∫_k f_n
@@ -585,7 +551,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
             let omega =
                 &partial_ve_3 * &G_12 * 2.0 - (&partial_ve_1 * &G_23 + &partial_ve_2 * &G_13) * 0.5;
-            return (-omega, band, None);
+            return Ok((-omega, band, None));
         }
     }
 
@@ -600,70 +566,53 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         dir_b: &Array1<f64>,
         dir_c: &Array1<f64>,
         spin: Option<SpinDirection>,
-    ) -> (Array2<f64>, Array2<f64>, Option<Array2<f64>>) {
-        if dir_a.len() != self.dim_r() || dir_b.len() != self.dim_r() || dir_c.len() != self.dim_r()
-        {
-            panic!(
-                "Wrong, the dir_a or dir_b you input has wrong length, it must equal to dim_r={}, but you input {}, {} and {}",
-                self.dim_r(),
-                dir_a.len(),
-                dir_b.len(),
-                dir_c.len()
-            )
+    ) -> Result<(Array2<f64>, Array2<f64>, Option<Array2<f64>>)> {
+        for (name, dir) in [("dir_a", dir_a), ("dir_b", dir_b), ("dir_c", dir_c)] {
+            if dir.len() != self.dim_r() {
+                return Err(TbError::DimensionMismatch {
+                    context: name.into(),
+                    expected: self.dim_r(),
+                    found: dir.len(),
+                });
+            }
         }
         let nk = k_vec.len_of(Axis(0));
 
-        if SPIN && spin.is_some() {
-            let ((omega, band), partial_G): ((Vec<_>, Vec<_>), Vec<_>) = k_vec
-                .axis_iter(Axis(0))
-                .into_par_iter()
-                .map(|x| {
-                    let (omega_one, band, partial_G) =
-                        self.berry_connection_dipole_onek(&x.to_owned(), dir_a, dir_b, dir_c, spin);
-                    let partial_G = partial_G.expect("SPIN && spin.is_some() must return Some");
-                    ((omega_one, band), partial_G)
-                })
-                .collect();
+        let results: Vec<Result<_>> = k_vec
+            .axis_iter(Axis(0))
+            .into_par_iter()
+            .map(|x| self.berry_connection_dipole_onek(&x.to_owned(), dir_a, dir_b, dir_c, spin))
+            .collect();
+        let results: Vec<_> = results.into_iter().collect::<Result<_>>()?;
 
-            let omega = Array2::<f64>::from_shape_vec(
-                (nk, self.nsta()),
-                omega.into_iter().flatten().collect(),
-            )
-            .unwrap();
-            let band = Array2::<f64>::from_shape_vec(
-                (nk, self.nsta()),
-                band.into_iter().flatten().collect(),
-            )
-            .unwrap();
-            let partial_G = Array2::<f64>::from_shape_vec(
-                (nk, self.nsta()),
-                partial_G.into_iter().flatten().collect(),
-            )
-            .unwrap();
-
-            return (omega, band, Some(partial_G));
-        } else {
-            let (omega, band): (Vec<_>, Vec<_>) = k_vec
-                .axis_iter(Axis(0))
-                .into_par_iter()
-                .map(|x| {
-                    let (omega_one, band, _partial_G) =
-                        self.berry_connection_dipole_onek(&x.to_owned(), dir_a, dir_b, dir_c, spin);
-                    (omega_one, band)
-                })
-                .collect();
-            let omega = Array2::<f64>::from_shape_vec(
-                (nk, self.nsta()),
-                omega.into_iter().flatten().collect(),
-            )
-            .unwrap();
-            let band = Array2::<f64>::from_shape_vec(
-                (nk, self.nsta()),
-                band.into_iter().flatten().collect(),
-            )
-            .unwrap();
-            return (omega, band, None);
+        let mut omega_arrays = Vec::with_capacity(nk);
+        let mut band_arrays = Vec::with_capacity(nk);
+        let mut partial_g_arrays = Vec::with_capacity(nk);
+        let mut has_partial_g = false;
+        for (omega_one, band_one, partial_g) in results {
+            omega_arrays.push(omega_one);
+            band_arrays.push(band_one);
+            if let Some(partial_g) = partial_g {
+                has_partial_g = true;
+                partial_g_arrays.push(partial_g);
+            }
         }
+
+        let from_vecs = |vecs: Vec<Array1<f64>>| -> Result<Array2<f64>> {
+            Array2::from_shape_vec(
+                (nk, self.nsta()),
+                vecs.into_iter().flatten().collect(),
+            )
+            .map_err(TbError::from)
+        };
+        let omega = from_vecs(omega_arrays)?;
+        let band = from_vecs(band_arrays)?;
+        let partial_g = if has_partial_g {
+            Some(from_vecs(partial_g_arrays)?)
+        } else {
+            None
+        };
+        Ok((omega, band, partial_g))
     }
 
     /// Evaluate current-first intrinsic nonlinear Hall conductivity.
@@ -679,6 +628,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         params: &Parameters<DIM>,
     ) -> Result<NonlinearHallResult> {
         params.validate_rank3()?;
+        if params.spin.is_some() {
+            eprintln!(
+                "Warning: intrinsic_nonlinear_hall is charge-only; the requested spin direction is ignored."
+            );
+        }
         if params.integration == Integration::Simplex {
             return Err(TbError::InvalidResponseParameter {
                 parameter: "integration",
@@ -712,7 +666,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     });
                 }
                 let (kernel, energies, _) =
-                    self.berry_connection_dipole(&k_points, &field_1, &field_2, &current, None);
+                    self.berry_connection_dipole(&k_points, &field_1, &field_2, &current, None)?;
                 let values: Vec<f64> = params
                     .mu
                     .par_iter()
@@ -732,7 +686,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
             Integration::EnergyCut => {
                 let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
-                let mut vertices: Vec<VertexKernel> = (0..k_points.nrows())
+                let vertices: Vec<Result<VertexKernel>> = (0..k_points.nrows())
                     .into_par_iter()
                     .map(|index| {
                         self.compute_velocity_kernel(
@@ -745,6 +699,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
+                let mut vertices: Vec<VertexKernel> =
+                    vertices.into_iter().collect::<Result<_>>()?;
                 global_band_track(&mut vertices, &params.kmesh);
                 let values = match DIM {
                     2 => super::energy_cut::integrate_intrinsic_cut_2d(

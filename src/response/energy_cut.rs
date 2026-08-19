@@ -40,9 +40,9 @@ use rayon::prelude::*;
 use super::kernel::{eval_berry_band_at_lam_buf, eval_berry_complex_at_lam_buf, eval_berry_kernel};
 use super::quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
 use super::tracking::{
-    build_tetrahedra_3d_diagavg_ref, build_tetrahedra_3d_ref, build_triangles_2d_diagavg_ref,
+    build_tetrahedra_3d, build_tetrahedra_3d_diagavg, build_triangles_2d_diagavg,
 };
-use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, TrackedSimplexRef, VertexKernel};
+use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, VertexKernel};
 
 const ENERGY_CUT_EPS: f64 = 1e-12;
 const FERMI_X_CUT: f64 = 18.0;
@@ -305,105 +305,9 @@ fn kquad_line_cut_dipole(
     0.5 * length * amp_sum / grad_norm
 }
 
-/// K‑quadrature dipole accumulator (replaces the old linear‑Ω version).
-#[allow(dead_code)]
+/// K‑quadrature dipole accumulator (zero-clone, borrows simplex vertices).
 fn accumulate_triangle_dipole_kquad(
-    sim: &TrackedSimplex,
-    eta: f64,
-    mu: &Array1<f64>,
-    beta: f64,
-    acc: &mut Array1<f64>,
-) {
-    let area = triangle_area(&sim.coords);
-    if area < ENERGY_CUT_EPS {
-        return;
-    }
-    let volume_scale = sim.volume / area;
-    let nsta = sim.vertices[0].band.len();
-
-    // Borrow vertex data (no clone).
-    let v0 = &sim.vertices[0];
-    let v1 = &sim.vertices[1];
-    let v2 = &sim.vertices[2];
-    let bands: [&[f64]; 3] = [
-        v0.band.as_slice().unwrap(),
-        v1.band.as_slice().unwrap(),
-        v2.band.as_slice().unwrap(),
-    ];
-    let kmats: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
-    let vdiags: [&[f64]; 3] = [
-        v0.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
-        v1.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
-        v2.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
-    ];
-    let mut e_buf = vec![0.0f64; nsta];
-    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
-    for n in 0..nsta {
-        let e_v = [
-            sim.vertices[0].band[n],
-            sim.vertices[1].band[n],
-            sim.vertices[2].band[n],
-        ];
-        let vdiag_v = [vdiags[0][n], vdiags[1][n], vdiags[2][n]];
-
-        if beta == 0.0 {
-            for im in 0..mu.len() {
-                acc[im] += volume_scale
-                    * kquad_line_cut_dipole(
-                        &sim.coords,
-                        e_v,
-                        &bands,
-                        &kmats,
-                        vdiag_v,
-                        mu[im],
-                        eta,
-                        n,
-                        nsta,
-                        &mut e_buf,
-                        &mut k_buf,
-                    );
-            }
-        } else {
-            let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
-            for im in 0..mu.len() {
-                let mut sum = 0.0;
-                for iq in 0..FERMI_X_STEPS {
-                    let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
-                    let energy = mu[im] + x / beta;
-                    let rho = kquad_line_cut_dipole(
-                        &sim.coords,
-                        e_v,
-                        &bands,
-                        &kmats,
-                        vdiag_v,
-                        energy,
-                        eta,
-                        n,
-                        nsta,
-                        &mut e_buf,
-                        &mut k_buf,
-                    );
-                    sum += dx * fermi_window_x(x) * rho;
-                }
-                acc[im] += volume_scale * sum;
-            }
-        }
-    }
-}
-fn accumulate_triangle_dipole_kquad_ref(
-    sim: &TrackedSimplexRef<3>,
+    sim: &TrackedSimplex<'_, 3>,
     eta: f64,
     mu: &Array1<f64>,
     beta: f64,
@@ -523,12 +427,12 @@ pub(crate) fn integrate_dipole_energy_cut_2d(
             |(mut local_acc, mut local_us), idx| {
                 let iy = idx % ny;
                 let ix = idx / ny;
-                let sims = build_triangles_2d_diagavg_ref(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+                let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
                 for sim in &sims {
                     if sim.diag.min_gap < SIMPLEX_GAP_TOL {
                         local_us += 1;
                     }
-                    accumulate_triangle_dipole_kquad_ref(sim, eta, mu, beta, &mut local_acc);
+                    accumulate_triangle_dipole_kquad(sim, eta, mu, beta, &mut local_acc);
                 }
                 (local_acc, local_us)
             },
@@ -614,186 +518,9 @@ fn kquad_line_cut_intrinsic(
     0.5 * length * amp_sum / grad_norm
 }
 
-#[allow(dead_code)]
+/// K‑quadrature intrinsic accumulator (zero-clone, borrows simplex vertices).
 fn accumulate_triangle_intrinsic_kquad(
-    sim: &TrackedSimplex,
-    mu: &Array1<f64>,
-    beta: f64,
-    acc: &mut Array1<f64>,
-) {
-    let area = triangle_area(&sim.coords);
-    if area < ENERGY_CUT_EPS {
-        return;
-    }
-    let volume_scale = sim.volume / area;
-    let nsta = sim.vertices[0].band.len();
-
-    let v0 = &sim.vertices[0];
-    let v1 = &sim.vertices[1];
-    let v2 = &sim.vertices[2];
-    let bands: [&[f64]; 3] = [
-        v0.band.as_slice().unwrap(),
-        v1.band.as_slice().unwrap(),
-        v2.band.as_slice().unwrap(),
-    ];
-    let kmat_ab: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
-    let kmat_bc: [&Array2<Complex<f64>>; 3] = [
-        v0.k_bc.as_ref().expect("k_bc required"),
-        v1.k_bc.as_ref().expect("k_bc required"),
-        v2.k_bc.as_ref().expect("k_bc required"),
-    ];
-    let kmat_ac: [&Array2<Complex<f64>>; 3] = [
-        v0.k_ac.as_ref().expect("k_ac required"),
-        v1.k_ac.as_ref().expect("k_ac required"),
-        v2.k_ac.as_ref().expect("k_ac required"),
-    ];
-    let vdiag_c: [&[f64]; 3] = [
-        v0.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
-        v1.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
-        v2.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
-    ];
-    let vdiag_a: [&[f64]; 3] = [
-        v0.vdiag_a
-            .as_ref()
-            .expect("vdiag_a required")
-            .as_slice()
-            .unwrap(),
-        v1.vdiag_a
-            .as_ref()
-            .expect("vdiag_a required")
-            .as_slice()
-            .unwrap(),
-        v2.vdiag_a
-            .as_ref()
-            .expect("vdiag_a required")
-            .as_slice()
-            .unwrap(),
-    ];
-    let vdiag_b: [&[f64]; 3] = [
-        v0.vdiag_b
-            .as_ref()
-            .expect("vdiag_b required")
-            .as_slice()
-            .unwrap(),
-        v1.vdiag_b
-            .as_ref()
-            .expect("vdiag_b required")
-            .as_slice()
-            .unwrap(),
-        v2.vdiag_b
-            .as_ref()
-            .expect("vdiag_b required")
-            .as_slice()
-            .unwrap(),
-    ];
-
-    let mut e_buf = vec![0.0f64; nsta];
-    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta * 3];
-    for n in 0..nsta {
-        let e_v = [
-            sim.vertices[0].band[n],
-            sim.vertices[1].band[n],
-            sim.vertices[2].band[n],
-        ];
-        let vc_v = [vdiag_c[0][n], vdiag_c[1][n], vdiag_c[2][n]];
-        let va_v = [vdiag_a[0][n], vdiag_a[1][n], vdiag_a[2][n]];
-        let vb_v = [vdiag_b[0][n], vdiag_b[1][n], vdiag_b[2][n]];
-        let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-
-        // Precompute |∇E| once per band.
-        let c = &sim.coords;
-        let (x0, y0) = (c[[0, 0]], c[[0, 1]]);
-        let (x1, y1) = (c[[1, 0]], c[[1, 1]]);
-        let (x2, y2) = (c[[2, 0]], c[[2, 1]]);
-        let det_grad = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-        if det_grad.abs() < ENERGY_CUT_EPS {
-            continue;
-        }
-        let de1 = e_v[1] - e_v[0];
-        let de2 = e_v[2] - e_v[0];
-        let gx = (de1 * (y2 - y0) - de2 * (y1 - y0)) / det_grad;
-        let gy = ((x1 - x0) * de2 - (x2 - x0) * de1) / det_grad;
-        let grad_norm = (gx * gx + gy * gy).sqrt();
-
-        let mu_slice = mu.as_slice().unwrap();
-        let (i_start, i_end) = if beta == 0.0 {
-            let s = mu_slice.partition_point(|&x| x < e_min - ENERGY_CUT_EPS);
-            let e = mu_slice.partition_point(|&x| x <= e_max + ENERGY_CUT_EPS);
-            (s, e)
-        } else {
-            let window = FERMI_X_CUT / beta;
-            let s = mu_slice.partition_point(|&x| x < e_min - window - ENERGY_CUT_EPS);
-            let e = mu_slice.partition_point(|&x| x <= e_max + window + ENERGY_CUT_EPS);
-            (s, e)
-        };
-
-        if beta == 0.0 {
-            for im in i_start..i_end {
-                acc[im] += volume_scale
-                    * kquad_line_cut_intrinsic(
-                        &sim.coords,
-                        e_v,
-                        &bands,
-                        &kmat_ab,
-                        &kmat_bc,
-                        &kmat_ac,
-                        vc_v,
-                        va_v,
-                        vb_v,
-                        mu[im],
-                        n,
-                        nsta,
-                        &mut e_buf,
-                        &mut k_buf,
-                        grad_norm,
-                    );
-            }
-        } else {
-            let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
-            for im in i_start..i_end {
-                let mut sum = 0.0;
-                for iq in 0..FERMI_X_STEPS {
-                    let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
-                    let energy = mu[im] + x / beta;
-                    let rho = kquad_line_cut_intrinsic(
-                        &sim.coords,
-                        e_v,
-                        &bands,
-                        &kmat_ab,
-                        &kmat_bc,
-                        &kmat_ac,
-                        vc_v,
-                        va_v,
-                        vb_v,
-                        energy,
-                        n,
-                        nsta,
-                        &mut e_buf,
-                        &mut k_buf,
-                        grad_norm,
-                    );
-                    sum += dx * fermi_window_x(x) * rho;
-                }
-                acc[im] += volume_scale * sum;
-            }
-        }
-    }
-}
-fn accumulate_triangle_intrinsic_kquad_ref(
-    sim: &TrackedSimplexRef<'_, 3>,
+    sim: &TrackedSimplex<'_, 3>,
     mu: &Array1<f64>,
     beta: f64,
     acc: &mut Array1<f64>,
@@ -976,9 +703,9 @@ pub(crate) fn integrate_intrinsic_cut_2d(
             |mut local_acc, idx| {
                 let iy = idx % ny;
                 let ix = idx / ny;
-                let sims = build_triangles_2d_diagavg_ref(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+                let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
                 for sim in &sims {
-                    accumulate_triangle_intrinsic_kquad_ref(sim, mu, beta, &mut local_acc);
+                    accumulate_triangle_intrinsic_kquad(sim, mu, beta, &mut local_acc);
                 }
                 local_acc
             },
@@ -1192,156 +919,9 @@ fn kquad_surface_cut_intrinsic(
     amp_sum / grad_norm
 }
 
-#[allow(dead_code)]
+/// K‑quadrature intrinsic accumulator for tetrahedra (zero-clone).
 fn accumulate_tetrahedron_intrinsic_kquad(
-    sim: &TrackedSimplex,
-    mu: &Array1<f64>,
-    beta: f64,
-    acc: &mut Array1<f64>,
-) {
-    let _vol = tet_vol_from_pts(
-        [sim.coords[[0, 0]], sim.coords[[0, 1]], sim.coords[[0, 2]]],
-        [sim.coords[[1, 0]], sim.coords[[1, 1]], sim.coords[[1, 2]]],
-        [sim.coords[[2, 0]], sim.coords[[2, 1]], sim.coords[[2, 2]]],
-        [sim.coords[[3, 0]], sim.coords[[3, 1]], sim.coords[[3, 2]]],
-    );
-    if _vol < ENERGY_CUT_EPS {
-        return;
-    }
-    let volume_scale = sim.volume / _vol;
-    let nsta = sim.vertices[0].band.len();
-
-    let v0 = &sim.vertices[0];
-    let v1 = &sim.vertices[1];
-    let v2 = &sim.vertices[2];
-    let v3 = &sim.vertices[3];
-    let bands: [&[f64]; 4] = [
-        v0.band.as_slice().unwrap(),
-        v1.band.as_slice().unwrap(),
-        v2.band.as_slice().unwrap(),
-        v3.band.as_slice().unwrap(),
-    ];
-    let kmat_ab: [&Array2<Complex<f64>>; 4] = [&v0.k_ab, &v1.k_ab, &v2.k_ab, &v3.k_ab];
-    let kmat_bc: [&Array2<Complex<f64>>; 4] = [
-        v0.k_bc.as_ref().expect("k_bc"),
-        v1.k_bc.as_ref().expect("k_bc"),
-        v2.k_bc.as_ref().expect("k_bc"),
-        v3.k_bc.as_ref().expect("k_bc"),
-    ];
-    let kmat_ac: [&Array2<Complex<f64>>; 4] = [
-        v0.k_ac.as_ref().expect("k_ac"),
-        v1.k_ac.as_ref().expect("k_ac"),
-        v2.k_ac.as_ref().expect("k_ac"),
-        v3.k_ac.as_ref().expect("k_ac"),
-    ];
-    let vdiag_c: [&[f64]; 4] = [
-        v0.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
-        v1.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
-        v2.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
-        v3.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
-    ];
-    let vdiag_a: [&[f64]; 4] = [
-        v0.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
-        v1.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
-        v2.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
-        v3.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
-    ];
-    let vdiag_b: [&[f64]; 4] = [
-        v0.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
-        v1.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
-        v2.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
-        v3.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
-    ];
-
-    let _n_mu = mu.len();
-    let mut e_buf = vec![0.0f64; nsta];
-    let mut k_buf = vec![Complex::new(0.0, 0.0); nsta * 3];
-    for n in 0..nsta {
-        let e_v = [
-            sim.vertices[0].band[n],
-            sim.vertices[1].band[n],
-            sim.vertices[2].band[n],
-            sim.vertices[3].band[n],
-        ];
-        let vc_v = [vdiag_c[0][n], vdiag_c[1][n], vdiag_c[2][n], vdiag_c[3][n]];
-        let va_v = [vdiag_a[0][n], vdiag_a[1][n], vdiag_a[2][n], vdiag_a[3][n]];
-        let vb_v = [vdiag_b[0][n], vdiag_b[1][n], vdiag_b[2][n], vdiag_b[3][n]];
-        let e_min = e_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let e_max = e_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-
-        // Precompute |∇E| once per band (same for all μ).
-        let de = [e_v[1] - e_v[0], e_v[2] - e_v[0], e_v[3] - e_v[0]];
-        let (_, _, _, grad_norm) = energy_gradient_3d(&sim.coords, de);
-        if grad_norm < ENERGY_CUT_EPS {
-            continue;
-        }
-
-        let mu_slice = mu.as_slice().unwrap();
-        let (i_start, i_end) = if beta == 0.0 {
-            let s = mu_slice.partition_point(|&x| x < e_min - ENERGY_CUT_EPS);
-            let e = mu_slice.partition_point(|&x| x <= e_max + ENERGY_CUT_EPS);
-            (s, e)
-        } else {
-            let window = FERMI_X_CUT / beta;
-            let s = mu_slice.partition_point(|&x| x < e_min - window - ENERGY_CUT_EPS);
-            let e = mu_slice.partition_point(|&x| x <= e_max + window + ENERGY_CUT_EPS);
-            (s, e)
-        };
-
-        if beta == 0.0 {
-            for im in i_start..i_end {
-                acc[im] += volume_scale
-                    * kquad_surface_cut_intrinsic(
-                        &sim.coords,
-                        e_v,
-                        &bands,
-                        &kmat_ab,
-                        &kmat_bc,
-                        &kmat_ac,
-                        vc_v,
-                        va_v,
-                        vb_v,
-                        mu[im],
-                        n,
-                        nsta,
-                        grad_norm,
-                        &mut e_buf,
-                        &mut k_buf,
-                    );
-            }
-        } else {
-            let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
-            for im in i_start..i_end {
-                let mut sum = 0.0;
-                for iq in 0..FERMI_X_STEPS {
-                    let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
-                    let energy = mu[im] + x / beta;
-                    let rho = kquad_surface_cut_intrinsic(
-                        &sim.coords,
-                        e_v,
-                        &bands,
-                        &kmat_ab,
-                        &kmat_bc,
-                        &kmat_ac,
-                        vc_v,
-                        va_v,
-                        vb_v,
-                        energy,
-                        n,
-                        nsta,
-                        grad_norm,
-                        &mut e_buf,
-                        &mut k_buf,
-                    );
-                    sum += dx * fermi_window_x(x) * rho;
-                }
-                acc[im] += volume_scale * sum;
-            }
-        }
-    }
-}
-fn accumulate_tetrahedron_intrinsic_kquad_ref(
-    sim: &TrackedSimplexRef<'_, 4>,
+    sim: &TrackedSimplex<'_, 4>,
     mu: &Array1<f64>,
     beta: f64,
     acc: &mut Array1<f64>,
@@ -1496,11 +1076,11 @@ pub(crate) fn integrate_intrinsic_cut_3d(
                 let iz = idx % nz;
                 let iy = (idx / nz) % ny;
                 let ix = idx / (ny * nz);
-                let sims = build_tetrahedra_3d_diagavg_ref(
+                let sims = build_tetrahedra_3d_diagavg(
                     ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
                 );
                 for sim in &sims {
-                    accumulate_tetrahedron_intrinsic_kquad_ref(sim, mu, beta, &mut local_acc);
+                    accumulate_tetrahedron_intrinsic_kquad(sim, mu, beta, &mut local_acc);
                 }
                 local_acc
             },
@@ -1667,7 +1247,7 @@ fn integrate_fermi_cut_2d_t0(
             |mut local_acc, idx| {
                 let iy = idx % ny;
                 let ix = idx / ny;
-                let sims = build_triangles_2d_diagavg_ref(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
+                let sims = build_triangles_2d_diagavg(ix, iy, nx, ny, inv_nx, inv_ny, all_pts);
                 for sim in &sims {
                     let coords = fixed_coords_to_array2(&sim.coords);
                     let area = triangle_area(&coords);
@@ -2089,7 +1669,7 @@ fn integrate_fermi_cut_3d_t0(
                 let iz = idx % nz;
                 let iy = (idx / nz) % ny;
                 let ix = idx / (ny * nz);
-                let sims = build_tetrahedra_3d_ref(
+                let sims = build_tetrahedra_3d(
                     ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
                 );
                 for sim in &sims {

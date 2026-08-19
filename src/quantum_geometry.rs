@@ -241,7 +241,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
                 let direction_a = params.direction.row(0).to_owned();
                 let direction_b = params.direction.row(1).to_owned();
-                let mut vertices: Vec<VertexKernel> = (0..k_points.nrows())
+                let vertices: Vec<Result<VertexKernel>> = (0..k_points.nrows())
                     .into_par_iter()
                     .map(|index| {
                         self.compute_velocity_kernel(
@@ -254,6 +254,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
+                let mut vertices: Vec<VertexKernel> = vertices.into_iter().collect::<Result<_>>()?;
                 global_band_track(&mut vertices, &params.kmesh);
                 let (metric, berry, unsafe_simplex_count) = integrate_occupied_geometry(
                     &vertices, &k_mesh, params.eta, &params.mu, occupation,
