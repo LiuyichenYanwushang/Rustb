@@ -163,6 +163,11 @@ pub(crate) fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) 
 }
 
 fn neighbour_indices(i: usize, k_mesh: &[usize]) -> Vec<usize> {
+    // Intentionally non-periodic: `global_band_track` builds one connected
+    // spanning tree through the interior of the mesh. The simplex builders
+    // later wrap around cell boundaries, but direct wrap-around eigenvector
+    // overlap in the BFS was found to reduce tracking robustness in the
+    // energy-cut Hall tests.
     let dim = k_mesh.len();
     let mut out = Vec::new();
     if dim == 2 {
@@ -170,9 +175,11 @@ fn neighbour_indices(i: usize, k_mesh: &[usize]) -> Vec<usize> {
         let ix = i / ny;
         let iy = i % ny;
         for &(dx, dy) in &[(1isize, 0isize), (-1, 0), (0, 1), (0, -1)] {
-            let jx = (ix as isize + dx).rem_euclid(nx as isize) as usize;
-            let jy = (iy as isize + dy).rem_euclid(ny as isize) as usize;
-            out.push(jx * ny + jy);
+            let jx = ix as isize + dx;
+            let jy = iy as isize + dy;
+            if jx >= 0 && jx < nx as isize && jy >= 0 && jy < ny as isize {
+                out.push((jx as usize) * ny + (jy as usize));
+            }
         }
     } else {
         let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
@@ -188,10 +195,18 @@ fn neighbour_indices(i: usize, k_mesh: &[usize]) -> Vec<usize> {
             (0, 0, 1),
             (0, 0, -1),
         ] {
-            let jx = (ix as isize + dx).rem_euclid(nx as isize) as usize;
-            let jy = (iy as isize + dy).rem_euclid(ny as isize) as usize;
-            let jz = (iz as isize + dz).rem_euclid(nz as isize) as usize;
-            out.push(jx * ny * nz + jy * nz + jz);
+            let jx = ix as isize + dx;
+            let jy = iy as isize + dy;
+            let jz = iz as isize + dz;
+            if jx >= 0
+                && jx < nx as isize
+                && jy >= 0
+                && jy < ny as isize
+                && jz >= 0
+                && jz < nz as isize
+            {
+                out.push((jx as usize) * ny * nz + (jy as usize) * nz + (jz as usize));
+            }
         }
     }
     out

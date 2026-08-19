@@ -70,12 +70,10 @@ fn main() {
     let E_min = -1.0;
     let E_max = 1.0;
     let E_n = 2000;
-    let og = 0.0;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let mut extrinsic_params =
         Parameters::rank3([nk, nk], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], mu.clone());
     extrinsic_params.T = array![T];
-    extrinsic_params.omega = array![og];
     extrinsic_params.eta = 1e-5;
     extrinsic_params.field_symmetry = FieldSymmetry::Ordered;
     let sigma = model

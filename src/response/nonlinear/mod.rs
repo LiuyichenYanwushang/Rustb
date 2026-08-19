@@ -134,7 +134,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         for i in 0..self.nsta() {
             for j in 0..self.nsta() {
                 if i != j {
-                    U0[[i, j]] = 1.0 / ((band[[i]] - band[[j]]).powi(2) + eta * eta);
+                    U0[[i, j]] = Complex::new(
+                        1.0 / ((band[[i]] - band[[j]]).powi(2) + eta * eta),
+                        0.0,
+                    );
                 } else {
                     U0[[i, j]] = Complex::new(0.0, 0.0);
                 }

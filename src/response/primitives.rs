@@ -11,7 +11,7 @@ use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
 use crate::SpinDirection;
-use crate::error::Result;
+use crate::error::{Result, TbError};
 use crate::math::anti_comm;
 
 use super::helpers::build_spin_matrix;
@@ -40,6 +40,31 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         spin: Option<SpinDirection>,
     ) -> Result<VertexKernel> {
         let nsta = self.nsta();
+
+        if k_vec.len() != DIM {
+            return Err(TbError::KVectorLengthMismatch {
+                expected: DIM,
+                actual: k_vec.len(),
+            });
+        }
+        for (name, dir) in [("dir_a", dir_a), ("dir_b", dir_b)] {
+            if dir.len() != DIM {
+                return Err(TbError::DimensionMismatch {
+                    context: name.into(),
+                    expected: DIM,
+                    found: dir.len(),
+                });
+            }
+        }
+        if let Some(dir_c) = dir_c {
+            if dir_c.len() != DIM {
+                return Err(TbError::DimensionMismatch {
+                    context: "dir_c".into(),
+                    expected: DIM,
+                    found: dir_c.len(),
+                });
+            }
+        }
 
         // Build direction matrix: [dir_a, dir_b, (opt) dir_c]
         let n_dir = if dir_c.is_some() { 3 } else { 2 };

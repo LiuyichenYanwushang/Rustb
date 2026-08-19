@@ -940,7 +940,6 @@ mod tests {
         let nk: usize = 31;
         let T: f64 = 0.0;
         let eta: f64 = 0.001;
-        let og: f64 = 0.0;
         let mu: f64 = 0.0;
         let dir_1 = arr1(&[1.0, 0.0]);
         let dir_2 = arr1(&[0.0, 1.0]);
@@ -1051,8 +1050,9 @@ mod tests {
         //画一下omega_n 随能量的分布
         let kvec: Array2<f64> = gen_kmesh(&kmesh).unwrap();
         let _nk: usize = kvec.len_of(Axis(0));
-        let (omega, band) =
-            model.berry_curvature_dipole_n(&kvec, &dir_1, &dir_2, &dir_3, og, spin, eta);
+        let (omega, band) = model
+            .berry_curvature_dipole_n(&kvec, &dir_1, &dir_2, &dir_3, spin, eta)
+            .unwrap();
         let omega = omega.into_raw_vec_and_offset().0;
         let omega = Array1::from(omega);
         let band = band.into_raw_vec_and_offset().0;
@@ -2333,8 +2333,9 @@ mod tests {
             .conductivity;
 
         let k_points = gen_kmesh(&k_mesh).unwrap();
-        let (kernel, energies, _) =
-            model.berry_connection_dipole(&k_points, &field_1, &field_2, &current, None);
+        let (kernel, energies, _) = model
+            .berry_connection_dipole(&k_points, &field_1, &field_2, &current, None)
+            .unwrap();
         let occupation = Occupation::FermiDirac {
             temperature_kelvin: 100.0,
         };

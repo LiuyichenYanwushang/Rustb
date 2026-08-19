@@ -333,8 +333,8 @@ let extrinsic_result = model.extrinsic_nonlinear_hall(&extrinsic)?;
 `FieldSymmetry::Symmetrized` (the default) averages the two external-field
 permutations; `FieldSymmetry::Ordered` returns one raw ordered kernel. Direct
 integration requires a finite temperature. Energy-cut integration accepts
-`T[0] == 0.0` (exact zero-temperature limit) and requires a single DC
-frequency.
+`T[0] == 0.0` (exact zero-temperature limit). The extrinsic response is DC
+only: `omega` is ignored.
 
 ### Quantum geometry
 
