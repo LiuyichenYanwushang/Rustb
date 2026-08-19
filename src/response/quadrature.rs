@@ -46,8 +46,9 @@ pub(crate) const TET_QUAD_WTS_4: [f64; 4] = [0.25, 0.25, 0.25, 0.25];
 
 // ── Barycentric interpolation ───────────────────────────────────────────
 
-/// Interpolate band energies at barycentric coords `lam`.
-pub(crate) fn bary_interp_band(bands: &[Vec<f64>], lam: &[f64], nsta: usize) -> Vec<f64> {
+/// Interpolate band energies at barycentric coords `lam` from borrowed
+/// vertex band slices (no per-vertex clone).
+pub(crate) fn bary_interp_band_refs(bands: &[&[f64]], lam: &[f64], nsta: usize) -> Vec<f64> {
     let mut out = vec![0.0; nsta];
     for v in 0..bands.len() {
         let lv = lam[v];
@@ -62,9 +63,9 @@ pub(crate) fn bary_interp_band(bands: &[Vec<f64>], lam: &[f64], nsta: usize) -> 
 }
 
 /// Interpolate a matrix field `mats[d+1]` each `(nsta, nsta)` at
-/// barycentric coords `lam`.
-pub(crate) fn bary_interp_matrix(
-    mats: &[Array2<Complex<f64>>],
+/// barycentric coords `lam` from borrowed vertex matrices (no per-vertex clone).
+pub(crate) fn bary_interp_matrix_refs(
+    mats: &[&Array2<Complex<f64>>],
     lam: &[f64],
 ) -> Array2<Complex<f64>> {
     let n = mats[0].nrows();

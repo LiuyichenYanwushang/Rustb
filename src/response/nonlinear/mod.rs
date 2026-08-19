@@ -79,7 +79,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `current_dir` - First Berry-curvature index $\alpha$ of $\Omega_{n,\alpha\beta}$.
     /// * `dir_2` - Second Berry-curvature index $\beta$.
     /// * `dir_3` - Velocity / Fermi-surface index $\gamma$.
-    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    /// * `spin` - `Option<SpinDirection>`; `None` = charge current.
     /// * `eta` - Broadening parameter $\eta$.
     ///
     /// # Returns
@@ -174,7 +174,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `k_vec` - Array of k-points, shape `(nk, dim_r)`.
     /// * `current_dir`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
     /// * `dir_3` - Direction vector for the energy derivative index $\gamma$.
-    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    /// * `spin` - `Option<SpinDirection>`; `None` = charge current.
     /// * `eta` - Broadening parameter.
     ///
     /// # Returns
@@ -395,7 +395,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// G^{ij}_n = Re sum_{m != n} v^i_nm v^j_mn / (E_n - E_m)^3
     /// ```
     ///
-    /// For spinful models (when `spin != 0`), this additionally computes
+    /// For spinful models (when `spin.is_some()`), this additionally computes
     /// $\partial_{h_i} G_{jk}$, the derivative with respect to the spin field.
     ///
     /// # Arguments
@@ -404,7 +404,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `current_dir` - Direction vector for the first field index `a`.
     /// * `dir_2` - Direction vector for the second field index `b`.
     /// * `dir_3` - Direction vector for the current/output index `c`.
-    /// * `spin` - Spin operator index (0, 1, 2, 3).
+    /// * `spin` - `Option<SpinDirection>`; `None` = charge current.
     ///
     /// # Returns
     ///

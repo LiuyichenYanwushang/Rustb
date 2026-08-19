@@ -479,18 +479,18 @@ pub(crate) fn quadrature_occupied_geometry_simplex<const NV: usize>(
 ) -> (Array1<f64>, Array1<f64>) {
     let dimension = NV - 1;
     let nsta = sim.vertices[0].band.len();
-    let bands: Vec<Vec<f64>> = (0..NV)
-        .map(|vertex| sim.vertices[vertex].band.to_vec())
+    let bands: Vec<&[f64]> = (0..NV)
+        .map(|vertex| sim.vertices[vertex].band.as_slice().unwrap())
         .collect();
-    let kernels: Vec<Array2<Complex<f64>>> = (0..NV)
-        .map(|vertex| sim.vertices[vertex].k_ab.clone())
+    let kernels: Vec<&Array2<Complex<f64>>> = (0..NV)
+        .map(|vertex| &sim.vertices[vertex].k_ab)
         .collect();
     let mut metric = Array1::<f64>::zeros(chemical_potentials.len());
     let mut berry = Array1::<f64>::zeros(chemical_potentials.len());
 
     let mut accumulate = |lambda: &[f64], weight: f64| {
-        let energies = bary_interp_band(&bands, lambda, nsta);
-        let kernel = bary_interp_matrix(&kernels, lambda);
+        let energies = bary_interp_band_refs(&bands, lambda, nsta);
+        let kernel = bary_interp_matrix_refs(&kernels, lambda);
         let (metric_n, berry_n) = eval_berry_kernel(&energies, &kernel, eta, nsta);
         for (index, &mu) in chemical_potentials.iter().enumerate() {
             for band in 0..nsta {
@@ -522,27 +522,27 @@ pub(crate) fn quadrature_optical_simplex<const NV: usize>(
 ) -> Complex<f64> {
     let d = NV - 1;
     let nsta = sim.vertices[0].band.len();
-    let bands: Vec<Vec<f64>> = (0..NV)
-        .map(|v| sim.vertices[v].band.to_vec())
+    let bands: Vec<&[f64]> = (0..NV)
+        .map(|v| sim.vertices[v].band.as_slice().unwrap())
         .collect();
-    let kmats: Vec<Array2<Complex<f64>>> = (0..NV)
-        .map(|v| sim.vertices[v].k_ab.clone())
+    let kmats: Vec<&Array2<Complex<f64>>> = (0..NV)
+        .map(|v| &sim.vertices[v].k_ab)
         .collect();
     let mut total = Complex::new(0.0, 0.0);
     if d == 2 {
         for iq in 0..3 {
             let lam = TRI_QUAD_PTS_3[iq].as_slice();
             let w = TRI_QUAD_WTS_3[iq];
-            let band_q = bary_interp_band(&bands, lam, nsta);
-            let k_ab_q = bary_interp_matrix(&kmats, lam);
+            let band_q = bary_interp_band_refs(&bands, lam, nsta);
+            let k_ab_q = bary_interp_matrix_refs(&kmats, lam);
             total += w * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, thermal_width, nsta);
         }
     } else {
         for iq in 0..4 {
             let lam = TET_QUAD_PTS_4[iq].as_slice();
             let w = TET_QUAD_WTS_4[iq];
-            let band_q = bary_interp_band(&bands, lam, nsta);
-            let k_ab_q = bary_interp_matrix(&kmats, lam);
+            let band_q = bary_interp_band_refs(&bands, lam, nsta);
+            let k_ab_q = bary_interp_matrix_refs(&kmats, lam);
             total += w * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, thermal_width, nsta);
         }
     }

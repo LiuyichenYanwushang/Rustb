@@ -141,7 +141,7 @@ pub(crate) fn integrate_occupied_geometry(
                 }
             }
         }
-        _ => panic!("linear::integrate: only dim=2,3 supported, got dim={dim}"),
+        _ => unreachable!("linear::integrate: only dim=2,3 supported, got dim={dim}"),
     }
 
     (total_g, total_o, unsafe_count)

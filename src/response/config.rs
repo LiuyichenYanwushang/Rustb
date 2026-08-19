@@ -51,9 +51,8 @@ pub struct Parameters<const DIM: usize> {
     pub eta: f64,
     /// Number of uniform samples along each reciprocal-lattice direction.
     pub kmesh: [usize; DIM],
-    /// Photon / perturbation frequency(ies) in eV. Methods that expect a
-    /// single frequency use `omega[0]`; the optical conductivity scans all
-    /// frequencies.
+    /// Photon / perturbation frequency(ies) in eV. Only `optical_conductivity`
+    /// scans all supplied frequencies; DC response methods ignore this field.
     pub omega: Array1<f64>,
     /// Spin-current polarization. `None` selects the charge current.
     pub spin: Option<SpinDirection>,

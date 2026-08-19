@@ -573,8 +573,10 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
 1. `eval_*_at_lam` functions allocate `Vec<f64>` and `Vec<Complex<f64>>` per call.
    Pre-allocating thread-local buffers (or stack arrays for nsta ≤ 32) would
    eliminate allocation overhead entirely.
-2. `accumulate_tetrahedron_*_kquad` clones 6 `nsta×nsta` matrices per tetrahedron.
-   Could borrow from TrackedSimplex vertices or use `Arc`-shared data.
+2. The zero-clone `TrackedSimplex` refactor already removed the old
+   `accumulate_tetrahedron_*_kquad` matrix clones; remaining cost is the
+   per-call scratch `Vec` allocation in `eval_*_at_lam` and the
+   materialized interpolated matrices in the simplex quadrature helpers.
 3. Nonlinear 3D lacks a sorted-μ sweep — loops over all μ per (tet, band).
    Same binary-search + range-add optimization as AHC 3D applies.
 4. `energy_gradient_3d` recomputes the same gradient for every band at every μ

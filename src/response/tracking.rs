@@ -385,7 +385,6 @@ pub(crate) fn build_tetrahedra_3d<'a>(
         frac(ix + 1, iy + 1, iz + 1),
     ];
     let cube_vol = inv_nx * inv_ny * inv_nz;
-    let tet_vol_factor = [1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0];
 
     let min_gap_of = |vs: &[&VertexKernel]| -> f64 {
         vs.iter().fold(f64::INFINITY, |mg, v| {
@@ -402,7 +401,7 @@ pub(crate) fn build_tetrahedra_3d<'a>(
         TrackedSimplex {
             vertices: [&all_pts[g0], &all_pts[g1], &all_pts[g2], &all_pts[g3]],
             coords: [corners[lv0], corners[lv1], corners[lv2], corners[lv3]],
-            volume: cube_vol * tet_vol_factor[i],
+            volume: cube_vol * TET_VOL_FACTOR[i],
             diag: SimplexDiagnostics {
                 min_gap: min_gap_of(&[&all_pts[g0], &all_pts[g1], &all_pts[g2], &all_pts[g3]]),
                 min_assignment_overlap: 1.0,
