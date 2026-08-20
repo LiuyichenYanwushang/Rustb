@@ -8,18 +8,19 @@ and Floquet calculations.
 
 [![Crates.io](https://img.shields.io/crates/v/Rustb.svg)](https://crates.io/crates/Rustb)
 
-The current API version is **0.7.1** and uses the const-generic model type
+The current API version is **0.7.2** and uses the const-generic model type
 `Model<SPIN, DIM, R>`.
 
 ## Installation
 
-The default BLAS/LAPACK backend is `openblas-system`; it requires a system
-OpenBLAS (`libopenblas`). To use another backend, disable the default features
-and select exactly one of the mutually exclusive backend features:
+Rustb has no default BLAS/LAPACK backend. Callers must enable exactly one of
+the mutually exclusive backend features. This changed in 0.7.2: versions up to
+0.7.1 defaulted to `openblas-system`, so upgrading callers must add a backend
+feature explicitly. For system OpenBLAS, use:
 
 ```toml
 [dependencies]
-Rustb = { version = "0.7", default-features = false, features = ["intel-mkl-static"] }
+Rustb = { version = "0.7", features = ["openblas-system"] }
 ndarray = "0.17"
 num-complex = "0.4"
 ```
@@ -32,7 +33,7 @@ feature to enable crystallographic and magnetic symmetry analysis without a C
 dependency:
 
 ```toml
-Rustb = { version = "0.7", default-features = false, features = ["intel-mkl-system", "cryspglib"] }
+Rustb = { version = "0.7", features = ["intel-mkl-system", "cryspglib"] }
 ```
 
 The optional `mimalloc` and `jemalloc` allocator features are mutually
@@ -395,10 +396,10 @@ The generated rustdoc contains the detailed mathematical conventions.
 
 ```bash
 cargo fmt --check
-cargo check --all-targets
-cargo test --release --features intel-mkl-system
-cargo clippy --all-targets --features intel-mkl-system
-cargo doc --no-deps --features intel-mkl-system
+cargo check --all-targets --features openblas-system
+cargo test --release --features openblas-system
+cargo clippy --all-targets --features openblas-system
+cargo doc --no-deps --features openblas-system
 ```
 
 Numerical tests should be run in release mode. Some integration-style tests

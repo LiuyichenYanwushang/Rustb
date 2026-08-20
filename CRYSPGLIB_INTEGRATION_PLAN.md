@@ -543,8 +543,9 @@ Use one BLAS backend at a time and run numerical tests in release mode:
 
 ```bash
 cargo fmt --all -- --check
-cargo check -p Rustb --no-default-features
-cargo check -p Rustb --no-default-features --features cryspglib
+# Feature-off Rustb no longer compiles: no default BLAS backend is selected (intentional E0080).
+cargo check -p Rustb --features openblas-system
+cargo check -p Rustb --features openblas-system,cryspglib
 cargo check -p Rustb --features intel-mkl-system,cryspglib
 cargo test -p Rustb --release --features intel-mkl-system,cryspglib --lib
 cargo clippy -p Rustb --release --all-targets --features intel-mkl-system,cryspglib -- -D warnings

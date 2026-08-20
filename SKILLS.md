@@ -675,6 +675,9 @@ zeros; `rmatrix` is not incorrectly treated as a scalar Hamiltonian.
 
 ### BLAS/LAPACK backends
 
+No backend is enabled by default; every build, test, and doc command must
+select exactly one backend feature.
+
 | Feature | Backend |
 |---|---|
 | `intel-mkl-static` | Statically linked Intel MKL |
@@ -696,7 +699,7 @@ cargo build --release --features intel-mkl-system,mimalloc
 
 ```bash
 cargo fmt --check
-cargo check --all-targets
+cargo check --all-targets --features openblas-system
 cargo test --release --features intel-mkl-system
 cargo clippy --all-targets --features intel-mkl-system
 cargo doc --no-deps --features intel-mkl-system

@@ -6,13 +6,18 @@ Rustb is a Rust 2024 library crate for tight-binding physics calculations. Core 
 
 ## Build, Test, and Development Commands
 
-- `cargo build`: compile the crate with default features.
+- `cargo build --features openblas-system`: compile the crate with an explicit BLAS/LAPACK backend.
 - `cargo build --features intel-mkl-static` or `cargo build --features openblas-static`: build with a specific BLAS/LAPACK backend.
-- `cargo test`: run unit and integration-style tests. Some tests emit plot/data files through gnuplot.
-- `cargo test <name>`: run a focused test, for example `cargo test gen_kmesh`.
-- `cargo runexample graphene`: use the local Cargo alias for `cargo run --features intel-mkl-system --example graphene`.
-- `cargo bench`: run Criterion benchmarks in `benches/`.
-- `cargo mydoc`: build and open crate docs without dependencies.
+- `cargo test --features openblas-system`: run unit and integration-style tests. Some tests emit plot/data files through gnuplot.
+- `cargo test <name> --features openblas-system`: run a focused test, for example `cargo test gen_kmesh --features openblas-system`.
+- `cargo runexample graphene`: use the local Cargo alias for `cargo run --features intel-mkl-system --example graphene` (alias hardcodes `intel-mkl-system`).
+- `cargo bench --features openblas-system`: run Criterion benchmarks in `benches/`.
+- `cargo mydoc`: build and open crate docs without dependencies (alias hardcodes `--features openblas-system`).
+
+The `mydoc`, `testall`, and `runexample` aliases hardcode one backend. Cargo
+merges extra `--features` instead of replacing alias-injected ones, so use the
+underlying `cargo doc`/`cargo test`/`cargo run` command directly when a
+different backend is needed.
 
 ## Coding Style & Naming Conventions
 
@@ -20,7 +25,7 @@ Use `cargo fmt` before committing and keep code idiomatic Rust with four-space i
 
 ## Testing Guidelines
 
-Place focused unit tests near the implementation in `#[cfg(test)] mod tests`, using names like `test_gen_kmesh` or `test_build_model_with_f_orbital`. Use `cargo test -- --nocapture` when inspecting numerical or plotting output. If a change affects BLAS/LAPACK behavior, also run `cargo testall` when an Intel MKL system backend is available.
+Place focused unit tests near the implementation in `#[cfg(test)] mod tests`, using names like `test_gen_kmesh` or `test_build_model_with_f_orbital`. Use `cargo test --features openblas-system -- --nocapture` when inspecting numerical or plotting output. If a change affects BLAS/LAPACK behavior, also run `cargo testall` (alias passes `intel-mkl-system`) when an Intel MKL system backend is available.
 
 ## Commit & Pull Request Guidelines
 

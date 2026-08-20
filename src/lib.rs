@@ -293,7 +293,7 @@ const _: () = {
     );
     assert!(
         backends >= 1,
-        "Rustb: no BLAS/LAPACK backend selected. Enable one backend feature (e.g. the default openblas-system, or use --features intel-mkl-system)"
+        "Rustb: no BLAS/LAPACK backend selected. Enable one backend feature (e.g. --features openblas-system or --features intel-mkl-system)"
     );
 };
 
@@ -2595,8 +2595,8 @@ mod tests {
                 .map(|ik| {
                     let kv = kvec.row(ik).to_owned();
                     let tk = model
-                .compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None)
-                .unwrap();
+                        .compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None)
+                        .unwrap();
                     tk
                 })
                 .collect();

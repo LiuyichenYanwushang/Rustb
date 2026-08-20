@@ -21,7 +21,7 @@ Rustb is a Rust library for tight-binding model calculations in condensed matter
 - **Repo**: https://github.com/LiuyichenYanwushang/Rustb
 - **Error handling**: Uses `thiserror` for `TbError` enum.
 - **Docs**: `katexit` renders LaTeX in rustdoc; `docs-header.html` for custom CSS.
-- **Version**: 0.7.1.
+- **Version**: 0.7.2.
 - **SKILLS.md**: Practical usage guide with code examples for the entire crate. When adding or changing any public API, update that file as well.
 
 > **Note**: README.md and SKILLS.md both use the current const-generic API.
@@ -129,18 +129,18 @@ model hierarchies with duplicated band, geometry, or response methods.
 
 ### Building
 ```bash
-cargo build
+cargo build --features openblas-system
 cargo build --features intel-mkl-static   # Intel MKL
 cargo build --features openblas-static    # OpenBLAS
-cargo build --release
+cargo build --release --features openblas-system
 ```
 
 ### Testing
 ```bash
-cargo test --release                                 # always use --release for numerics
-cargo test --release --features intel-mkl-system     # with MKL
-cargo test --release graphene                        # single test
-cargo test --release -- --nocapture 2>&1 | head -100
+cargo test --release --features openblas-system                # always use --release for numerics
+cargo test --release --features intel-mkl-system              # with MKL
+cargo test --release --features openblas-system graphene       # single test
+cargo test --release --features openblas-system -- --nocapture 2>&1 | head -100
 ```
 
 Simplex-quadrature tests involve heavy floating-point loops (band tracking,
@@ -152,18 +152,26 @@ Tests generate PDF plots via gnuplot (`pdfcairo` terminal).
 ### Development
 ```bash
 cargo fmt
-cargo clippy
+cargo clippy --features openblas-system
 cargo bench --features intel-mkl-system             # criterion benchmarks
-cargo mydoc                                          # cargo doc --open --no-deps
+cargo mydoc                                          # cargo doc --open --no-deps --features openblas-system
 cargo testall                                        # cargo test --features intel-mkl-system
 cargo runexample <name>                              # cargo run --features intel-mkl-system --example <name>
 ```
 
 Custom aliases (`mydoc`, `testall`, `runexample`) are defined in `.cargo/config.toml`.
-Note that `testall` and `runexample` hardcode `intel-mkl-system` — adjust the alias
-or use explicit `--features` if you need a different BLAS backend.
+`mydoc` hardcodes `openblas-system`; `testall` and `runexample` hardcode
+`intel-mkl-system`. Cargo merges extra `--features` instead of replacing
+alias-injected ones, so do not combine an alias with another backend feature.
+To use a different backend, invoke `cargo doc`/`cargo test`/`cargo run`
+directly with `--features <backend>` (or edit the alias).
 
 ## BLAS/LAPACK Backend
+
+Rustb has no default BLAS/LAPACK backend; every build, test, and doc command
+must select exactly one backend feature. Version 0.7.2 removed the previous
+`openblas-system` default, so code upgrading from 0.7.1 must add a backend
+feature explicitly.
 
 | Feature | Backend |
 |---------|---------|
@@ -172,6 +180,7 @@ or use explicit `--features` if you need a different BLAS backend.
 | `netlib-static` | Reference netlib |
 | `intel-mkl-system` | System-installed MKL |
 | `openblas-system` | System-installed OpenBLAS |
+| `netlib-system` | System Netlib |
 
 ---
 
@@ -654,8 +663,9 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   the orbital-cell-gauge and tolerance fixes. Rustb release library tests pass
   122/122; the focused Hamiltonian suite passes 28/28. cryspglib passes 210
   unit tests plus every integration
-  suite and 26 doctests. Strict release clippy passes for both crates,
-  feature-off Rustb compiles, and Rustb doctests pass 22/22 (2 ignored).
+  suite and 26 doctests. Strict release clippy passes for both crates with a
+  backend selected, feature-off Rustb intentionally fails (no BLAS/LAPACK
+  backend selected), and Rustb doctests pass 22/22 (2 ignored).
 - **Still deferred**: automatic shell/channel/local-frame representations for
   non-s orbitals, gauge-covariant Peierls transformations, numerical band
   irrep/corep assignment, and wiring weighted meshes into response solvers

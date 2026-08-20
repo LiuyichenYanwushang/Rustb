@@ -1669,9 +1669,8 @@ fn integrate_fermi_cut_3d_t0(
                 let iz = idx % nz;
                 let iy = (idx / nz) % ny;
                 let ix = idx / (ny * nz);
-                let sims = build_tetrahedra_3d(
-                    ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
-                );
+                let sims =
+                    build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts);
                 for sim in &sims {
                     let coords = fixed_coords_to_array2(&sim.coords);
                     let vol = tet_vol_from_pts(

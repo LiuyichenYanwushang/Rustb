@@ -254,7 +254,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
-                let mut vertices: Vec<VertexKernel> = vertices.into_iter().collect::<Result<_>>()?;
+                let mut vertices: Vec<VertexKernel> =
+                    vertices.into_iter().collect::<Result<_>>()?;
                 global_band_track(&mut vertices, &params.kmesh);
                 let (metric, berry, unsafe_simplex_count) = integrate_occupied_geometry(
                     &vertices, &k_mesh, params.eta, &params.mu, occupation,

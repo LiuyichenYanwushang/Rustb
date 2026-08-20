@@ -2,6 +2,6 @@
 rustdocflags = [ "--html-in-header", "./docs-header.html" ]
 
 [alias]
-mydoc=["doc","--open","--no-deps"]
+mydoc=["doc","--open","--no-deps","--features","openblas-system"]
 testall=["test","--features", "intel-mkl-system"]
 runexample=["run","--features", "intel-mkl-system","--example"]

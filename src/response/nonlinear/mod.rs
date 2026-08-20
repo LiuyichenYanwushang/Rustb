@@ -140,10 +140,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         for i in 0..self.nsta() {
             for j in 0..self.nsta() {
                 if i != j {
-                    U0[[i, j]] = Complex::new(
-                        1.0 / ((band[[i]] - band[[j]]).powi(2) + eta * eta),
-                        0.0,
-                    );
+                    U0[[i, j]] =
+                        Complex::new(1.0 / ((band[[i]] - band[[j]]).powi(2) + eta * eta), 0.0);
                 } else {
                     U0[[i, j]] = Complex::new(0.0, 0.0);
                 }
@@ -634,11 +632,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
 
         let from_vecs = |vecs: Vec<Array1<f64>>| -> Result<Array2<f64>> {
-            Array2::from_shape_vec(
-                (nk, self.nsta()),
-                vecs.into_iter().flatten().collect(),
-            )
-            .map_err(TbError::from)
+            Array2::from_shape_vec((nk, self.nsta()), vecs.into_iter().flatten().collect())
+                .map_err(TbError::from)
         };
         let omega = from_vecs(omega_arrays)?;
         let band = from_vecs(band_arrays)?;

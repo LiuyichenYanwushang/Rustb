@@ -482,9 +482,8 @@ pub(crate) fn quadrature_occupied_geometry_simplex<const NV: usize>(
     let bands: Vec<&[f64]> = (0..NV)
         .map(|vertex| sim.vertices[vertex].band.as_slice().unwrap())
         .collect();
-    let kernels: Vec<&Array2<Complex<f64>>> = (0..NV)
-        .map(|vertex| &sim.vertices[vertex].k_ab)
-        .collect();
+    let kernels: Vec<&Array2<Complex<f64>>> =
+        (0..NV).map(|vertex| &sim.vertices[vertex].k_ab).collect();
     let mut metric = Array1::<f64>::zeros(chemical_potentials.len());
     let mut berry = Array1::<f64>::zeros(chemical_potentials.len());
 
@@ -525,9 +524,7 @@ pub(crate) fn quadrature_optical_simplex<const NV: usize>(
     let bands: Vec<&[f64]> = (0..NV)
         .map(|v| sim.vertices[v].band.as_slice().unwrap())
         .collect();
-    let kmats: Vec<&Array2<Complex<f64>>> = (0..NV)
-        .map(|v| &sim.vertices[v].k_ab)
-        .collect();
+    let kmats: Vec<&Array2<Complex<f64>>> = (0..NV).map(|v| &sim.vertices[v].k_ab).collect();
     let mut total = Complex::new(0.0, 0.0);
     if d == 2 {
         for iq in 0..3 {
