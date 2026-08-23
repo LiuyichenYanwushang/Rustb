@@ -4,7 +4,7 @@
 直接在实空间用广义 Bessel 展开构造一阶 van Vleck 有效模型。消除 `k_mesh` 与 `n_time`
 两个人为参数，主路径变为精确的实空间卷积。
 
-状态：一阶（order 0/1）实空间 Bessel 后端已实现并通过 benchmark（Step 1–6、§9 石墨烯 A–D，以及一般两带解析基准 Level I/II 与异频驱动 κ³ 标度）。**二阶 van Vleck（order=2，§9.5）暂不实现**。时间网格路径保留为 reference backend。
+状态：实空间 Bessel 后端已实现到二阶 van Vleck（order 0/1/2）：order 2 包含完整的两族嵌套交换子、不同 support 的实空间卷积，并已由 legacy k-space 路径和完整 Sambe 高频标度交叉验证。时间网格路径保留为 reference backend。
 
 ---
 
@@ -362,28 +362,28 @@ N 即 q_max 截断；断言 d_z(k) 的 k 依赖与系数随 q_max 增大收敛�
 不贡献是强结构性检查）。钉住：commutator 顺序、nħω 分母、H_{−n}=H_n† 配对、
 多光子 Bessel 内容。
 
-### 9.5 二阶 van Vleck（**暂不实现**）
+### 9.5 二阶 van Vleck（已实现）
 
-> **状态：暂不实现。** 代码目前只支持 order 0/1；`floquet_effective_model` 与
-> legacy 路径对 `order > 1` 显式返回错误。以下内容仅作未来参考，保留在计划中。
-
-文献二阶（arXiv:1511.00755 约定）：
+`floquet_effective_model` 与 legacy 路径均支持 `order = 2`。采用本模块
+`H(t)=Σ_m H_m exp(-imΩt)` 及 Sambe block 约定，二阶为（参见
+arXiv:1502.06477v4, Eq. 89，并按本模块 Fourier 标签约定书写）：
 
 ```
-H_eff^(2) = Σ_{m≠0} [[H_{−m},H_0],H_m]/(2m²W²)
-          + Σ_{m≠0,n≠0,n≠m} [[H_{−m},H_{m−n}],H_n]/(3mnW²),   W = ħω
+H_eff^(2) = Σ_{m≠0} [H_{−m},[H_0,H_m]]/(2m²W²)
+          + Σ_{m≠0,m'≠0,m'≠m} [H_{−m'},[H_{m'−m},H_m]]/(3mm'W²),   W = ħω
 ```
 
-实空间实现：`real_space_commutator` 推广为**两个不同支持集**（a_blocks 在
-hamR_A、b_blocks 在 hamR_B，输出支持 = Minkowski 和 hamR_A ⊕ hamR_B），
-嵌套两次即得双对易子。order=2 加入 `floquet_effective_model` 与 legacy 路径。
+实空间实现：`real_space_commutator_with_supports` 接受**两个不同支持集**
+（a_blocks 在 hamR_A、b_blocks 在 hamR_B，输出支持为
+hamR_A ⊕ hamR_B），嵌套两次得到三重 support。中间结果不提前 Hermitian 化，
+完整有符号谐波和累加完成后才统一强制 `T(R)=T(-R)†`。
 
-基准：§15–16 的 `J_eff^(2)`、`L_eff`、`M_eff` 解析级数（Bessel 三元积）+ Dirac
-语言检查 `v_F^eff = v_F(1 − g²/(ħω)²)`（1/ω² 只重整化动能、不产生质量——
-Pauli 代数 σ_x,y → σ_z → σ_x,y 的结构性断言）。
+基准：不同 support 的实空间交换子逐点匹配独立 k-space oracle；完整 order-2
+实空间模型匹配 legacy k-space 路径；相对完整 Sambe 谱，残差由 order-1 的
+`O(Ω^-2)` 改善为 order-2 的 `O(Ω^-3)`。
 
 ### 9.6 实施顺序（延续每步可提交 + review）
 
 - G1：graphene 模型构造 + Benchmark A、B
 - G2：Benchmark C、D
-- G3（**暂不实现**）：order=2（support 泛化 + 双对易子 + legacy 同步）+ §15–16 基准
+- G3（已实现）：order=2（support 泛化 + 双对易子 + legacy 同步）及 Sambe 高频标度基准

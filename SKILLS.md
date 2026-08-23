@@ -467,6 +467,14 @@ let quasienergy =
 
 let effective =
     model.floquet_effective_model(&drive, &truncation, None)?;
+
+// Retain the complete van Vleck correction through O(omega^-2).
+let second_order_options = FloquetEffectiveOptions::new().with_order(2);
+let effective_second_order = model.floquet_effective_model(
+    &drive,
+    &truncation,
+    Some(&second_order_options),
+)?;
 ```
 
 | API | Basis size | Intended regime |
@@ -476,7 +484,8 @@ let effective =
 
 `floquet_effective_model` uses the real-space generalized-Bessel backend:
 no `k_mesh` and no `target_hamR` — the effective hopping support is
-determined automatically as the Minkowski sum of the input `hamR`. It
+determined automatically: up to the double Minkowski sum for the default
+`order = 1`, and up to the triple Minkowski sum for `order = 2`. It
 does not use the value of `trunc.n_time` for the computation (the field
 only needs to be positive): out-of-range links fall back to a per-link
 time-grid DFT sized from the link's own bandwidth and the requested

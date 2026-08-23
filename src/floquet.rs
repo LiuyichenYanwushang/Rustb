@@ -436,14 +436,19 @@ impl IncidentBasis {
 /// `target_hamR`.
 #[derive(Clone, Debug)]
 pub struct FloquetEffectiveOptions {
-    /// van Vleck order.  Currently supported: `0` and `1`.
+    /// van Vleck order.  Supported: `0`, `1`, and `2`, retaining terms
+    /// through `O(omega^0)`, `O(omega^-1)`, and `O(omega^-2)`, respectively.
     pub order: usize,
-    /// Harmonic cutoff for commutator terms.  Defaults to `2 * trunc.n_max`.
+    /// Signed-harmonic cutoff for commutator sums.  Defaults to
+    /// `2 * trunc.n_max`.  At order 2 the mixed component `H_(m'-m)` is
+    /// evaluated up to `|m'-m| = 2 * q_max` automatically.
     pub q_max: Option<isize>,
     /// Optional target real-space hopping vectors for the legacy path's
     /// inverse Fourier transform.  Rejected by the real-space path.
     pub(crate) target_hamR: Option<Array2<isize>>,
 }
+
+type RealSpaceBlocks = (Vec<Array2<Complex<f64>>>, Array2<isize>);
 
 impl Default for FloquetEffectiveOptions {
     fn default() -> Self {
@@ -462,13 +467,13 @@ impl FloquetEffectiveOptions {
         Self::default()
     }
 
-    /// Set the van Vleck order.  Currently `0` and `1` are supported.
+    /// Set the van Vleck order.  `0`, `1`, and `2` are supported.
     pub fn with_order(mut self, order: usize) -> Self {
         self.order = order;
         self
     }
 
-    /// Set the harmonic cutoff used in first-order commutator terms.
+    /// Set the signed-harmonic cutoff used in the van Vleck sums.
     pub fn with_q_max(mut self, q_max: isize) -> Self {
         self.q_max = Some(q_max);
         self
@@ -878,20 +883,29 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// H(t)=\sum_q H^{(q)}e^{-iq\Omega t},
     /// $$
     ///
-    /// the implemented van Vleck expansion is
+    /// the implemented van Vleck expansion through second order is
     ///
     /// $$ H_{\mathrm{eff}}(\mathbf k) =
     /// H^{(0)}(\mathbf k)
     /// +
     /// \sum_{q=1}^{q_{\max}}
     /// \frac{[H^{(q)}(\mathbf k),H^{(-q)}(\mathbf k)]}{q\Omega}
-    /// +
-    /// O(\Omega^{-2}). $$
+    /// +H_{\mathrm{eff}}^{(2)}(\mathbf k)
+    /// +O(\Omega^{-3}), $$
     ///
-    /// `order = 0` keeps only `H^(0)`.  `order = 1` adds the commutator term.
-    /// Higher orders are not implemented yet.  Pass `None` for `options` to use
-    /// first order, `q_max = 2 * trunc.n_max`, and the input model's original
-    /// `hamR`.
+    /// where, writing `W = omega0_ev`,
+    ///
+    /// ```math
+    /// H_{\rm eff}^{(2)}=
+    /// \sum_{m\ne0}\frac{[H_{-m},[H_0,H_m]]}{2m^2W^2}
+    /// +\sum_{\substack{m\ne0,m'\ne0\\m'\ne m}}
+    /// \frac{[H_{-m'},[H_{m'-m},H_m]]}{3mm'W^2}.
+    /// ```
+    ///
+    /// `order = 0` keeps only `H^(0)`, `order = 1` adds the `1/W`
+    /// commutator, and `order = 2` also adds both nested-commutator families
+    /// above.  Pass `None` for `options` to use first order,
+    /// `q_max = 2 * trunc.n_max`, and the input model's original `hamR`.
     ///
     /// The inverse Fourier transform is controlled by `k_mesh`:
     ///
@@ -930,18 +944,23 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .unwrap_or_else(|| self.hamR.clone());
         validate_target_hamr::<DIM>(&target_ham_r)?;
 
-        let q_max = options.q_max.unwrap_or(2 * trunc.n_max);
-        if q_max < 0 {
-            return Err(TbError::Other(format!(
-                "FloquetEffectiveOptions.q_max must be non-negative, got {q_max}"
-            )));
-        }
+        let q_max = effective_q_max(options, trunc)?;
 
+        let cache_max = if options.order >= 2 {
+            q_max.checked_mul(2).ok_or_else(|| {
+                TbError::Other(
+                    "FloquetEffectiveOptions.q_max is too large for the order-2 harmonic range"
+                        .to_string(),
+                )
+            })?
+        } else {
+            q_max
+        };
         let harmonic_cache = self.floquet_harmonic_cache(
             drive,
             trunc,
-            -q_max,
-            q_max,
+            -cache_max,
+            cache_max,
             &PeierlsFourierMethod::TimeGrid,
         );
         let kpoints = floquet_uniform_kmesh(&k_mesh);
@@ -994,7 +1013,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(model)
     }
 
-    /// Real-space first-order van Vleck effective model via the
+    /// Real-space van Vleck effective model through `O(omega^-2)` via the
     /// generalized Bessel backend — no `k_mesh` parameter, and the value
     /// of `n_time` does not affect the computation (it is only validated
     /// to be positive): links whose amplitude exceeds the Bessel range
@@ -1014,21 +1033,38 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// =
     /// T_0(R)
     /// +
-    /// \sum_{q=1}^{q_{\max}} \frac{\mathrm{comm}_q(R)}{q\,\hbar\Omega_0},
+    /// \sum_{q=1}^{q_{\max}} \frac{[T_q,T_{-q}](R)}{q\,W}
+    /// +T_{\mathrm{eff}}^{(2)}(R),\qquad W=\hbar\Omega_0,
     /// ```
     ///
     /// where `T_0(R) = t(R)·C_0(d)` are the Peierls-dressed static blocks
-    /// and `comm_q(R)` are the two-convolution commutator blocks of
-    /// [`real_space_commutator`] for the harmonic pair `(T_q, T_{−q})`.
-    /// The support is determined automatically as the union of the input
-    /// `hamR` and the Minkowski sums `{R1 + R2 : R1, R2 ∈ hamR}` — no
-    /// `target_hamR` parameter is needed, and the output is guaranteed
-    /// Hermitian (`T(R) = T(−R)†` enforced exactly).
+    /// and `comm_q(R)` are the two-convolution commutator blocks of the
+    /// internal real-space commutator for the harmonic pair `(T_q, T_{−q})`.
+    /// The second-order term is
     ///
-    /// `options.order = 0` keeps only `T_0`; `order = 1` adds the
-    /// commutator terms up to `q_max` (default `2 * trunc.n_max`).
-    /// [`FloquetEffectiveOptions::target_hamR`] is rejected: the
-    /// real-space path determines its own support.  Blocks with
+    /// ```math
+    /// T_{\rm eff}^{(2)}=
+    /// \sum_{m\ne0}\frac{[T_{-m},[T_0,T_m]]}{2m^2W^2}
+    /// +\sum_{\substack{m\ne0,m'\ne0\\m'\ne m}}
+    /// \frac{[T_{-m'},[T_{m'-m},T_m]]}{3mm'W^2}.
+    /// ```
+    ///
+    /// Inner commutators use an internal generalized-support convolution
+    /// because their support is already a double Minkowski sum and they are
+    /// not individually Hermitian.  Hermiticity is enforced only after the
+    /// full signed sum is accumulated.
+    ///
+    /// `options.order = 0` keeps only `T_0`; `order = 1` adds the `1/W`
+    /// commutator terms; `order = 2` adds both `1/W^2` families.  The signed
+    /// indices `m,m'` are truncated at `q_max` (default `2 * trunc.n_max`),
+    /// while `T_(m'-m)` is evaluated automatically through `2*q_max`.
+    /// The real-space support is determined automatically: primitive at
+    /// order 0, the union through the double Minkowski sum at order 1, and
+    /// through the triple Minkowski sum at order 2.  No `target_hamR`
+    /// parameter is needed, and the output is guaranteed Hermitian
+    /// (`T(R) = T(−R)†` enforced exactly).
+    /// The crate-internal `target_hamR` option is rejected: the real-space
+    /// path determines its own support.  Blocks with
     /// vanishing coefficients (e.g. harmonics outside the drive's
     /// selection-rule reach) are retained as exact zeros — the support
     /// depends only on the input `hamR`, not on the drive content.
@@ -1039,10 +1075,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// the full enlarged Sambe model returned by [`Floquet::floquet_model`].
     ///
     /// # Errors
-    /// Returns an error for an invalid drive or truncation
-    /// ([`validate_floquet_drive`]), `order > 1`, a negative `q_max`, a
-    /// supplied `target_hamR`, or a support that is not closed under
-    /// `R -> −R`.
+    /// Returns an error for an invalid drive or truncation, `order > 2`, a
+    /// negative `q_max`, a supplied `target_hamR`, or a support that is not
+    /// closed under `R -> −R`.
     pub fn floquet_effective_model(
         &self,
         drive: &FloquetDrive,
@@ -1059,9 +1094,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
 
         validate_floquet_drive::<DIM>(drive, trunc)?;
-        if options.order > 1 {
+        if options.order > 2 {
             return Err(TbError::Other(format!(
-                "FloquetEffectiveOptions.order must be 0 or 1, got {}",
+                "FloquetEffectiveOptions.order must be 0, 1, or 2, got {}",
                 options.order
             )));
         }
@@ -1073,21 +1108,42 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 target.nrows()
             )));
         }
-        let q_max = options.q_max.unwrap_or(2 * trunc.n_max);
-        if q_max < 0 {
-            return Err(TbError::Other(format!(
-                "FloquetEffectiveOptions.q_max must be non-negative, got {q_max}"
-            )));
-        }
+        let q_max = effective_q_max(options, trunc)?;
 
         let nsta = self.nsta();
+        let cache_max = if options.order >= 2 {
+            q_max.checked_mul(2).ok_or_else(|| {
+                TbError::Other(
+                    "FloquetEffectiveOptions.q_max is too large for the order-2 harmonic range"
+                        .to_string(),
+                )
+            })?
+        } else {
+            q_max
+        };
         let harmonic_cache = self.floquet_harmonic_cache(
             drive,
             trunc,
-            -q_max,
-            q_max,
+            -cache_max,
+            cache_max,
             &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
         );
+        let harmonic_blocks: Vec<Vec<Array2<Complex<f64>>>> = (-cache_max..=cache_max)
+            .map(|harmonic| {
+                let harmonic_index = harmonic_cache.q_index(harmonic);
+                (0..self.hamR.nrows())
+                    .map(|i_r| {
+                        harmonic_cache
+                            .blocks
+                            .slice(s![harmonic_index, i_r, .., ..])
+                            .to_owned()
+                    })
+                    .collect()
+            })
+            .collect();
+        let blocks_for = |harmonic: isize| -> &[Array2<Complex<f64>>] {
+            &harmonic_blocks[(harmonic + cache_max) as usize]
+        };
 
         // Zeroth order: the Peierls-dressed static blocks on the input
         // support.  The BTreeMap merges the per-q contributions onto the
@@ -1104,35 +1160,62 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         // First order: sum over q of comm_q/(q·ħΩ₀); omega0_ev carries
         // the ħΩ₀ energy (same convention as the legacy k-space path).
-        if options.order == 1 {
+        let inverse_omega = drive.omega0_ev.recip();
+        if options.order >= 1 {
             for q in 1..=q_max {
-                let q_idx = harmonic_cache.q_index(q);
-                let m_idx = harmonic_cache.q_index(-q);
-                let a_blocks: Vec<Array2<Complex<f64>>> = (0..self.hamR.nrows())
-                    .map(|i_r| {
-                        harmonic_cache
-                            .blocks
-                            .slice(s![q_idx, i_r, .., ..])
-                            .to_owned()
-                    })
-                    .collect();
-                let b_blocks: Vec<Array2<Complex<f64>>> = (0..self.hamR.nrows())
-                    .map(|i_r| {
-                        harmonic_cache
-                            .blocks
-                            .slice(s![m_idx, i_r, .., ..])
-                            .to_owned()
-                    })
-                    .collect();
                 let (comm_blocks, comm_r) =
-                    real_space_commutator(&a_blocks, &b_blocks, &self.hamR)?;
-                let scale = 1.0 / ((q as f64) * drive.omega0_ev);
-                for (i_r, row) in comm_r.outer_iter().enumerate() {
-                    let contribution = comm_blocks[i_r].mapv(|x| x * scale);
-                    blocks
-                        .entry(row.to_vec())
-                        .and_modify(|block| *block += &contribution)
-                        .or_insert(contribution);
+                    real_space_commutator(blocks_for(q), blocks_for(-q), &self.hamR)?;
+                let scale = inverse_omega / (q as f64);
+                accumulate_scaled_real_space_blocks(&mut blocks, &comm_blocks, &comm_r, scale);
+            }
+        }
+
+        // Second order in 1/(ħΩ₀): the two van Vleck nested-commutator
+        // families.  Both signed harmonic sums are required; individual
+        // summands are not Hermitian and therefore must not be symmetrized
+        // before the complete sum is assembled.
+        if options.order >= 2 {
+            let inverse_omega_squared = inverse_omega * inverse_omega;
+            let signed_harmonics = (-q_max..=q_max)
+                .filter(|harmonic| *harmonic != 0)
+                .collect::<Vec<_>>();
+
+            for &m in &signed_harmonics {
+                let (inner, inner_r) = real_space_commutator_with_supports(
+                    blocks_for(0),
+                    &self.hamR,
+                    blocks_for(m),
+                    &self.hamR,
+                );
+                let (outer, outer_r) = real_space_commutator_with_supports(
+                    blocks_for(-m),
+                    &self.hamR,
+                    &inner,
+                    &inner_r,
+                );
+                let scale = inverse_omega_squared / (2.0 * (m as f64).powi(2));
+                accumulate_scaled_real_space_blocks(&mut blocks, &outer, &outer_r, scale);
+            }
+
+            for &m in &signed_harmonics {
+                for &m_prime in &signed_harmonics {
+                    if m_prime == m {
+                        continue;
+                    }
+                    let (inner, inner_r) = real_space_commutator_with_supports(
+                        blocks_for(m_prime - m),
+                        &self.hamR,
+                        blocks_for(m),
+                        &self.hamR,
+                    );
+                    let (outer, outer_r) = real_space_commutator_with_supports(
+                        blocks_for(-m_prime),
+                        &self.hamR,
+                        &inner,
+                        &inner_r,
+                    );
+                    let scale = inverse_omega_squared / (3.0 * (m as f64) * (m_prime as f64));
+                    accumulate_scaled_real_space_blocks(&mut blocks, &outer, &outer_r, scale);
                 }
             }
         }
@@ -1171,21 +1254,59 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         q_max: isize,
         harmonic_cache: &FloquetHarmonicCache,
     ) -> Array2<Complex<f64>> {
-        let mut h_eff = self.floquet_cached_harmonic_onek(kvec, 0, Gauge::Lattice, harmonic_cache);
+        let cache_max = if order >= 2 {
+            q_max
+                .checked_mul(2)
+                .expect("order-2 harmonic range was validated by the caller")
+        } else {
+            q_max
+        };
+        let harmonics: Vec<Array2<Complex<f64>>> = (-cache_max..=cache_max)
+            .map(|harmonic| {
+                self.floquet_cached_harmonic_onek(kvec, harmonic, Gauge::Lattice, harmonic_cache)
+            })
+            .collect();
+        let harmonic =
+            |index: isize| -> &Array2<Complex<f64>> { &harmonics[(index + cache_max) as usize] };
+        let mut h_eff = harmonic(0).clone();
 
-        match order {
-            0 => {}
-            1 => {
-                for q in 1..=q_max {
-                    let h_pos =
-                        self.floquet_cached_harmonic_onek(kvec, q, Gauge::Lattice, harmonic_cache);
-                    let h_neg =
-                        self.floquet_cached_harmonic_onek(kvec, -q, Gauge::Lattice, harmonic_cache);
-                    let comm = h_pos.dot(&h_neg) - h_neg.dot(&h_pos);
-                    h_eff = h_eff + comm.mapv(|x| x / ((q as f64) * drive.omega0_ev));
+        let inverse_omega = drive.omega0_ev.recip();
+        if order >= 1 {
+            for q in 1..=q_max {
+                let comm = matrix_commutator(harmonic(q), harmonic(-q));
+                h_eff.scaled_add(Complex::new(inverse_omega / (q as f64), 0.0), &comm);
+            }
+        }
+
+        if order >= 2 {
+            let inverse_omega_squared = inverse_omega * inverse_omega;
+            let signed_harmonics = (-q_max..=q_max)
+                .filter(|index| *index != 0)
+                .collect::<Vec<_>>();
+            for &m in &signed_harmonics {
+                let inner = matrix_commutator(harmonic(0), harmonic(m));
+                let outer = matrix_commutator(harmonic(-m), &inner);
+                h_eff.scaled_add(
+                    Complex::new(inverse_omega_squared / (2.0 * (m as f64).powi(2)), 0.0),
+                    &outer,
+                );
+            }
+            for &m in &signed_harmonics {
+                for &m_prime in &signed_harmonics {
+                    if m_prime == m {
+                        continue;
+                    }
+                    let inner = matrix_commutator(harmonic(m_prime - m), harmonic(m));
+                    let outer = matrix_commutator(harmonic(-m_prime), &inner);
+                    h_eff.scaled_add(
+                        Complex::new(
+                            inverse_omega_squared / (3.0 * (m as f64) * (m_prime as f64)),
+                            0.0,
+                        ),
+                        &outer,
+                    );
                 }
             }
-            _ => unreachable!("effective order is validated before evaluation"),
         }
 
         h_eff
@@ -1510,14 +1631,32 @@ fn validate_floquet_drive<const DIM: usize>(
     Ok(())
 }
 
+fn effective_q_max(options: &FloquetEffectiveOptions, trunc: &FloquetTruncation) -> Result<isize> {
+    let q_max = match options.q_max {
+        Some(q_max) => q_max,
+        None => trunc.n_max.checked_mul(2).ok_or_else(|| {
+            TbError::Other(
+                "FloquetTruncation.n_max is too large for the default effective harmonic cutoff"
+                    .to_string(),
+            )
+        })?,
+    };
+    if q_max < 0 {
+        return Err(TbError::Other(format!(
+            "FloquetEffectiveOptions.q_max must be non-negative, got {q_max}"
+        )));
+    }
+    Ok(q_max)
+}
+
 #[cfg(test)]
 fn validate_effective_options<const DIM: usize>(
     k_mesh: &[usize; DIM],
     options: &FloquetEffectiveOptions,
 ) -> Result<()> {
-    if options.order > 1 {
+    if options.order > 2 {
         return Err(TbError::Other(format!(
-            "Floquet effective order {} is not implemented; supported orders are 0 and 1",
+            "Floquet effective order {} is not implemented; supported orders are 0, 1, and 2",
             options.order
         )));
     }
@@ -2128,6 +2267,28 @@ fn zgemm_row_accumulate(
     }
 }
 
+#[cfg(test)]
+#[inline]
+fn matrix_commutator(a: &Array2<Complex<f64>>, b: &Array2<Complex<f64>>) -> Array2<Complex<f64>> {
+    a.dot(b) - b.dot(a)
+}
+
+fn accumulate_scaled_real_space_blocks(
+    target: &mut std::collections::BTreeMap<Vec<isize>, Array2<Complex<f64>>>,
+    source_blocks: &[Array2<Complex<f64>>],
+    source_r: &Array2<isize>,
+    scale: f64,
+) {
+    debug_assert_eq!(source_blocks.len(), source_r.nrows());
+    let scale = Complex::new(scale, 0.0);
+    for (i_r, row) in source_r.outer_iter().enumerate() {
+        target
+            .entry(row.to_vec())
+            .and_modify(|block| block.scaled_add(scale, &source_blocks[i_r]))
+            .or_insert_with(|| source_blocks[i_r].mapv(|value| scale * value));
+    }
+}
+
 /// Real-space commutator blocks `comm_q(R) = (AB)(R) − (BA)(R)` for the
 /// harmonic pair `A_R = T_q(R)` and `B_R = T_{−q}(R)` (see
 /// `FLOQUET_REAL_SPACE_PLAN.md` §3):
@@ -2158,66 +2319,10 @@ fn real_space_commutator(
     a_blocks: &[Array2<Complex<f64>>],
     b_blocks: &[Array2<Complex<f64>>],
     ham_r: &Array2<isize>,
-) -> Result<(Vec<Array2<Complex<f64>>>, Array2<isize>)> {
-    let n_r = ham_r.nrows();
-    debug_assert_eq!(a_blocks.len(), n_r, "a_blocks must match hamR row count");
-    debug_assert_eq!(b_blocks.len(), n_r, "b_blocks must match hamR row count");
+) -> Result<RealSpaceBlocks> {
+    let (blocks, support_rows) =
+        real_space_commutator_with_supports(a_blocks, ham_r, b_blocks, ham_r);
     let nsta = a_blocks.first().map_or(0, |block| block.nrows());
-    for block in a_blocks.iter().chain(b_blocks) {
-        debug_assert_eq!(
-            (block.nrows(), block.ncols()),
-            (nsta, nsta),
-            "all blocks must be square nsta x nsta"
-        );
-    }
-
-    // Output support: the Minkowski sum, deduplicated and deterministically
-    // ordered (BTreeSet iterates lexicographically).
-    let mut support = std::collections::BTreeSet::<Vec<isize>>::new();
-    for r1 in ham_r.outer_iter() {
-        for r2 in ham_r.outer_iter() {
-            support.insert(r1.iter().zip(r2.iter()).map(|(a, b)| a + b).collect());
-        }
-    }
-    let mut support_rows = Array2::<isize>::zeros((support.len(), ham_r.ncols()));
-    for (i, r) in support.iter().enumerate() {
-        for (a, v) in r.iter().enumerate() {
-            support_rows[[i, a]] = *v;
-        }
-    }
-
-    // Block lookup by R vector.
-    let mut index = std::collections::HashMap::<Vec<isize>, usize>::with_capacity(n_r);
-    for (i_r, row) in ham_r.outer_iter().enumerate() {
-        index.insert(row.to_vec(), i_r);
-    }
-
-    let one = Complex::new(1.0, 0.0);
-    let minus_one = Complex::new(-1.0, 0.0);
-    // Each output R is independent (it only reads the shared `a_blocks` /
-    // `b_blocks` and the lookup `index`), so the per-R double convolution is
-    // embarrassingly parallel.  `support` is a BTreeSet; converting it to a Vec
-    // first keeps the lexicographic order, and Rayon's `collect` preserves it.
-    let support_ordered: Vec<Vec<isize>> = support.into_iter().collect();
-    let blocks: Vec<Array2<Complex<f64>>> = support_ordered
-        .par_iter()
-        .map(|r| {
-            let mut comm = Array2::<Complex<f64>>::zeros((nsta, nsta));
-            for (i_r2, r2_row) in ham_r.outer_iter().enumerate() {
-                // Both convolutions pair R' with R − R'; a missing R − R' just
-                // means a zero block, i.e. no term.
-                let r1: Vec<isize> = r.iter().zip(r2_row.iter()).map(|(a, b)| a - b).collect();
-                let Some(&i_r1) = index.get(&r1) else {
-                    continue;
-                };
-                // comm += A_{R-R'} · B_{R'} — the (AB) term.
-                zgemm_row_accumulate(one, &a_blocks[i_r1], &b_blocks[i_r2], &mut comm);
-                // comm -= B_{R-R'} · A_{R'} — the (BA) term.
-                zgemm_row_accumulate(minus_one, &b_blocks[i_r1], &a_blocks[i_r2], &mut comm);
-            }
-            comm
-        })
-        .collect();
 
     // Enforce comm(R) = comm(−R)† exactly (fp symmetrization).
     let mut stacked = Array3::<Complex<f64>>::zeros((blocks.len(), nsta, nsta));
@@ -2230,6 +2335,96 @@ fn real_space_commutator(
         .collect();
 
     Ok((blocks, support_rows))
+}
+
+/// Real-space commutator for operands with independent hopping supports.
+///
+/// Unlike [`real_space_commutator`], this low-level helper does not impose a
+/// Hermiticity relation on the result: an intermediate nested commutator such
+/// as `[H_0,H_m]` is not Hermitian by itself.  The caller must only
+/// symmetrize the final effective Hamiltonian after the complete signed
+/// harmonic sum has been accumulated.
+fn real_space_commutator_with_supports(
+    a_blocks: &[Array2<Complex<f64>>],
+    a_r: &Array2<isize>,
+    b_blocks: &[Array2<Complex<f64>>],
+    b_r: &Array2<isize>,
+) -> RealSpaceBlocks {
+    debug_assert_eq!(a_blocks.len(), a_r.nrows(), "a_blocks must match a_r");
+    debug_assert_eq!(b_blocks.len(), b_r.nrows(), "b_blocks must match b_r");
+    debug_assert_eq!(a_r.ncols(), b_r.ncols(), "support dimensions must match");
+    let nsta = a_blocks
+        .first()
+        .or_else(|| b_blocks.first())
+        .map_or(0, |block| block.nrows());
+    for block in a_blocks.iter().chain(b_blocks) {
+        debug_assert_eq!(
+            (block.nrows(), block.ncols()),
+            (nsta, nsta),
+            "all blocks must be square nsta x nsta"
+        );
+    }
+
+    let mut support = std::collections::BTreeSet::<Vec<isize>>::new();
+    for r_a in a_r.outer_iter() {
+        for r_b in b_r.outer_iter() {
+            support.insert(r_a.iter().zip(r_b.iter()).map(|(a, b)| a + b).collect());
+        }
+    }
+    let support_ordered: Vec<Vec<isize>> = support.into_iter().collect();
+    let mut support_rows = Array2::<isize>::zeros((support_ordered.len(), a_r.ncols()));
+    for (i, r) in support_ordered.iter().enumerate() {
+        for (axis, value) in r.iter().enumerate() {
+            support_rows[[i, axis]] = *value;
+        }
+    }
+
+    let a_index: std::collections::HashMap<Vec<isize>, usize> = a_r
+        .outer_iter()
+        .enumerate()
+        .map(|(index, row)| (row.to_vec(), index))
+        .collect();
+    let b_index: std::collections::HashMap<Vec<isize>, usize> = b_r
+        .outer_iter()
+        .enumerate()
+        .map(|(index, row)| (row.to_vec(), index))
+        .collect();
+    let one = Complex::new(1.0, 0.0);
+    let minus_one = Complex::new(-1.0, 0.0);
+
+    let blocks = support_ordered
+        .par_iter()
+        .map(|r| {
+            let mut comm = Array2::<Complex<f64>>::zeros((nsta, nsta));
+
+            // (AB)(R) = Σ_Rb A(R-Rb) B(Rb).
+            for (i_b, r_b) in b_r.outer_iter().enumerate() {
+                let r_a: Vec<isize> = r
+                    .iter()
+                    .zip(r_b.iter())
+                    .map(|(total, right)| total - right)
+                    .collect();
+                if let Some(&i_a) = a_index.get(&r_a) {
+                    zgemm_row_accumulate(one, &a_blocks[i_a], &b_blocks[i_b], &mut comm);
+                }
+            }
+
+            // (BA)(R) = Σ_Ra B(R-Ra) A(Ra).
+            for (i_a, r_a) in a_r.outer_iter().enumerate() {
+                let r_b: Vec<isize> = r
+                    .iter()
+                    .zip(r_a.iter())
+                    .map(|(total, right)| total - right)
+                    .collect();
+                if let Some(&i_b) = b_index.get(&r_b) {
+                    zgemm_row_accumulate(minus_one, &b_blocks[i_b], &a_blocks[i_a], &mut comm);
+                }
+            }
+            comm
+        })
+        .collect();
+
+    (blocks, support_rows)
 }
 
 fn bloch_phase<const DIM: usize, S: Data<Elem = f64>>(
@@ -3037,6 +3232,68 @@ mod tests {
     }
 
     #[test]
+    fn real_space_commutator_with_different_supports_matches_k_space() {
+        // Nested van Vleck terms feed a pair-support inner commutator into a
+        // primitive-support outer commutator.  This oracle uses deliberately
+        // different, non-Hermitian supports so an implementation that reuses
+        // one lookup table for both operands or prematurely symmetrizes the
+        // inner result fails visibly.
+        let a_r = array![[-1_isize], [2]];
+        let b_r = array![[-2_isize], [0], [1]];
+        let a_blocks = vec![
+            array![
+                [Complex::new(0.2, 0.1), Complex::new(-0.3, 0.4)],
+                [Complex::new(0.7, -0.2), Complex::new(-0.1, 0.5)]
+            ],
+            array![
+                [Complex::new(-0.4, 0.3), Complex::new(0.6, 0.2)],
+                [Complex::new(-0.2, -0.8), Complex::new(0.9, -0.1)]
+            ],
+        ];
+        let b_blocks = vec![
+            array![
+                [Complex::new(0.5, -0.2), Complex::new(0.1, 0.7)],
+                [Complex::new(-0.6, 0.3), Complex::new(0.2, 0.4)]
+            ],
+            array![
+                [Complex::new(-0.1, 0.6), Complex::new(0.8, -0.5)],
+                [Complex::new(0.3, 0.2), Complex::new(-0.7, 0.1)]
+            ],
+            array![
+                [Complex::new(0.4, 0.4), Complex::new(-0.2, 0.3)],
+                [Complex::new(0.5, -0.6), Complex::new(0.1, -0.2)]
+            ],
+        ];
+        let (comm_blocks, comm_r) =
+            real_space_commutator_with_supports(&a_blocks, &a_r, &b_blocks, &b_r);
+
+        for k in [0.0, 0.137, 0.5, 0.819] {
+            let mut a_k = Array2::<Complex<f64>>::zeros((2, 2));
+            let mut b_k = Array2::<Complex<f64>>::zeros((2, 2));
+            let mut comm_k = Array2::<Complex<f64>>::zeros((2, 2));
+            for (index, r) in a_r.outer_iter().enumerate() {
+                let phase = Complex::new(0.0, TAU * k * r[0] as f64).exp();
+                a_k.scaled_add(phase, &a_blocks[index]);
+            }
+            for (index, r) in b_r.outer_iter().enumerate() {
+                let phase = Complex::new(0.0, TAU * k * r[0] as f64).exp();
+                b_k.scaled_add(phase, &b_blocks[index]);
+            }
+            for (index, r) in comm_r.outer_iter().enumerate() {
+                let phase = Complex::new(0.0, TAU * k * r[0] as f64).exp();
+                comm_k.scaled_add(phase, &comm_blocks[index]);
+            }
+            let oracle = a_k.dot(&b_k) - b_k.dot(&a_k);
+            for (actual, expected) in comm_k.iter().zip(oracle.iter()) {
+                assert!(
+                    (actual - expected).norm() < 2e-13,
+                    "k={k}: real-space {actual} vs k-space {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn real_space_commutator_vanishes_for_linear_polarization() {
         // For a single linear mode in 1D the first-order van Vleck
         // commutator vanishes exactly (H^(1)(k) is a scalar multiple of
@@ -3178,6 +3435,171 @@ mod tests {
     }
 
     #[test]
+    fn floquet_effective_model_order_two_matches_legacy_and_has_triple_support() {
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.35, 0.2]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.set_hop(-0.3, 0, 1, &array![0, 1], None);
+        model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![1, 1], None);
+        let drive = FloquetDrive::with_modes(
+            1.7,
+            vec![
+                LightMode::new(1, array![Complex::new(0.28, 0.03), Complex::new(0.0, 0.24)]),
+                LightMode::new(
+                    2,
+                    array![Complex::new(0.06, -0.04), Complex::new(0.02, 0.01)],
+                ),
+            ],
+        );
+        let trunc = FloquetTruncation::new(2, 4096);
+        let options = FloquetEffectiveOptions::new().with_order(2).with_q_max(2);
+        let real_space = model
+            .floquet_effective_model(&drive, &trunc, Some(&options))
+            .unwrap();
+
+        // Through 1/ω² the deterministic support is the union of the
+        // primitive, double-, and triple-Minkowski supports.
+        let mut expected_support = std::collections::BTreeSet::<Vec<isize>>::new();
+        for r1 in model.hamR.outer_iter() {
+            expected_support.insert(r1.to_vec());
+            for r2 in model.hamR.outer_iter() {
+                expected_support.insert(r1.iter().zip(r2.iter()).map(|(a, b)| a + b).collect());
+                for r3 in model.hamR.outer_iter() {
+                    expected_support.insert(
+                        r1.iter()
+                            .zip(r2.iter())
+                            .zip(r3.iter())
+                            .map(|((a, b), c)| a + b + c)
+                            .collect(),
+                    );
+                }
+            }
+        }
+        let actual_support: Vec<Vec<isize>> = real_space
+            .hamR
+            .outer_iter()
+            .map(|row| row.to_vec())
+            .collect();
+        assert_eq!(actual_support, Vec::from_iter(expected_support));
+
+        let legacy = model
+            .floquet_effective_model_legacy(
+                &drive,
+                &trunc,
+                [32, 32],
+                Some(&options.clone().with_target_hamR(real_space.hamR.clone())),
+            )
+            .unwrap();
+        for k in [[0.07, 0.19], [0.31, 0.43], [0.73, 0.61]] {
+            let kvec = array![k[0], k[1]];
+            let from_real_space = real_space.gen_ham(&kvec, Gauge::Lattice);
+            let from_legacy = legacy.gen_ham(&kvec, Gauge::Lattice);
+            for (actual, expected) in from_real_space.iter().zip(from_legacy.iter()) {
+                assert!(
+                    (actual - expected).norm() < 2e-9,
+                    "k={k:?}: real-space {actual} vs legacy {expected}"
+                );
+            }
+        }
+
+        // The final signed sum, unlike its individual nested terms, is
+        // Hermitian in real space.
+        for i_r in 0..real_space.hamR.nrows() {
+            let opposite = find_R(
+                &real_space.hamR,
+                &real_space.hamR.row(i_r).mapv(|value| -value),
+            )
+            .unwrap();
+            let expected =
+                hermitian_conjugate(&real_space.ham.index_axis(Axis(0), opposite).to_owned());
+            for (actual, expected) in real_space
+                .ham
+                .index_axis(Axis(0), i_r)
+                .iter()
+                .zip(expected.iter())
+            {
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn floquet_effective_order_two_improves_high_frequency_scaling() {
+        // Independent oracle: diagonalize the enlarged Sambe Hamiltonian and
+        // compare its central-sector quasienergies with the same-size van
+        // Vleck models.  With fixed Fourier blocks, an order-1 truncation has
+        // O(Ω^-2) spectral error while order 2 has O(Ω^-3) error.
+        let model = two_band_qwz(0.9, 0.7, 0.35, 0.4, [[1.0, 0.0], [0.0, 1.0]]);
+        let kvec = array![0.173, 0.287];
+        let mode = LightMode::new(
+            1,
+            array![Complex::new(0.23, 0.04), Complex::new(-0.02, 0.19)],
+        );
+        let trunc = FloquetTruncation::new(8, 4096);
+        let base_options = FloquetEffectiveOptions::new().with_q_max(8);
+        let mut first_order_errors = Vec::new();
+        let mut second_order_errors = Vec::new();
+
+        for omega in [20.0, 40.0, 80.0] {
+            let drive = FloquetDrive::with_modes(omega, vec![mode.clone()]);
+            let sambe = model
+                .floquet_ham_onek(&kvec, &drive, &trunc, Gauge::Lattice)
+                .unwrap();
+            let exact_all = eigvalsh_v(&sambe, UPLO::Lower);
+            let exact: Vec<f64> = exact_all
+                .iter()
+                .copied()
+                .filter(|energy| energy.abs() < 0.5 * omega)
+                .collect();
+            assert_eq!(
+                exact.len(),
+                model.nsta(),
+                "expected one central quasienergy per static state at Ω={omega}"
+            );
+
+            let first = model
+                .floquet_effective_model(&drive, &trunc, Some(&base_options.clone().with_order(1)))
+                .unwrap()
+                .solve_band_onek(&kvec);
+            let second = model
+                .floquet_effective_model(&drive, &trunc, Some(&base_options.clone().with_order(2)))
+                .unwrap()
+                .solve_band_onek(&kvec);
+            let first_error = first
+                .iter()
+                .zip(exact.iter())
+                .map(|(approx, exact)| (approx - exact).abs())
+                .fold(0.0_f64, f64::max);
+            let second_error = second
+                .iter()
+                .zip(exact.iter())
+                .map(|(approx, exact)| (approx - exact).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                second_error < first_error,
+                "order 2 must improve the central quasienergies at Ω={omega}: \
+                 order-1 error={first_error:e}, order-2 error={second_error:e}"
+            );
+            first_order_errors.push(first_error);
+            second_order_errors.push(second_error);
+        }
+
+        for pair in first_order_errors.windows(2) {
+            assert!(
+                pair[0] / pair[1] > 3.5,
+                "order-1 error should scale as Ω^-2, got {pair:?}"
+            );
+        }
+        for pair in second_order_errors.windows(2) {
+            assert!(
+                pair[0] / pair[1] > 6.5,
+                "order-2 error should scale as Ω^-3, got {pair:?}"
+            );
+        }
+    }
+
+    #[test]
     fn floquet_effective_model_bessel_order_zero() {
         // order = 0 keeps only the Peierls-dressed static model T_0(R);
         // the support must stay the original hamR and the bands must
@@ -3271,13 +3693,22 @@ mod tests {
             FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
         let trunc = FloquetTruncation::new(1, 512);
 
-        // order > 1 is not implemented.
+        // order 2 is supported; higher orders are rejected.
         assert!(
             model
                 .floquet_effective_model(
                     &drive,
                     &trunc,
                     Some(&FloquetEffectiveOptions::new().with_order(2))
+                )
+                .is_ok()
+        );
+        assert!(
+            model
+                .floquet_effective_model(
+                    &drive,
+                    &trunc,
+                    Some(&FloquetEffectiveOptions::new().with_order(3))
                 )
                 .is_err()
         );

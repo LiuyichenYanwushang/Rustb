@@ -480,7 +480,7 @@ Quasienergies can be folded to `[−Ω₀/2, Ω₀/2)` via `fold_quasienergy`.
 
 ### Real-space Bessel backend (main path of `floquet_effective_model`)
 
-First-order van Vleck entirely in real space — no `k_mesh`, no `n_time`
+van Vleck through `O(Ω₀⁻²)` entirely in real space — no `k_mesh`, no `n_time`
 (only `R > 8` fallback links touch the time grid):
 
 ```math
@@ -492,9 +492,15 @@ comm_q(R) = (AB)(R) − (BA)(R),
 with `A_R = T_q(R)`, `B_R = T_{−q}(R)` and BOTH discrete convolutions
 `(AB)(R) = Σ A_{R−R'}B_{R'}` and `(BA)(R) = Σ B_{R−R'}A_{R'}` (the "P − P†"
 single-convolution simplification is wrong for non-commuting blocks).
-The output support is the Minkowski sum `{R1+R2 : R1,R2 ∈ hamR}` in
-lexicographic order — `target_hamR` is rejected. Hermiticity
-`T(R) = T(−R)†` is enforced exactly.
+For `order = 2`, the implementation additionally evaluates
+`Σ_{m≠0}[H_{−m},[H_0,H_m]]/(2m²Ω₀²)` and
+`Σ_{m,m'≠0;m'≠m}[H_{−m'},[H_{m'−m},H_m]]/(3mm'Ω₀²)`.
+The two operands of an inner/outer commutator may have different supports;
+`real_space_commutator_with_supports` returns their Minkowski sum without
+premature Hermitian symmetrization. The output support is the union through
+the double Minkowski sum at order 1 and through the triple sum at order 2,
+in lexicographic order — `target_hamR` is rejected. Hermiticity
+`T(R) = T(−R)†` is enforced exactly on the final signed sum.
 
 **Commutator-order convention (verified against the literature):** the code
 uses `[H^(q), H^(−q)]/(qħΩ)`, opposite to the literature's
@@ -531,8 +537,9 @@ closed form gives `C_n(e_l) = J_n(α)e^{i2πnl/3}`.
   `K_eff = −(2J²/ħω) Σ J_n²(α)/n·sin(2πn/3)`; `n = 3m` terms vanish exactly;
   a sign-flipped implementation fails the test.
 
-Second-order van Vleck (`order = 2`, plan §9.5) is deferred — do not enable
-`with_order(2)` until implemented.
+Second-order van Vleck is enabled by `FloquetEffectiveOptions::with_order(2)`
+and cross-validated against both the legacy k-space path and the full Sambe
+quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 
 ### Key API types
 
