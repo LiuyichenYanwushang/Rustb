@@ -238,17 +238,23 @@ use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIter
 use std::f64::consts::TAU;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-const MAX_GRADED_CHANNELS_PER_LINK: usize = 65_536;
-const MAX_GRADED_LINK_CHANNEL_BYTES: usize = 16 * 1024 * 1024;
-const MAX_GRADED_CACHE_CHANNELS: usize = 1_000_000;
-const MAX_GRADED_CACHE_BYTES: usize = 512 * 1024 * 1024;
-const MAX_GRADED_VAN_VLECK_TERMS: usize = 100_000;
-const MAX_GRADED_VAN_VLECK_PAIR_SCANS: usize = 2_000_000;
-const MAX_GRADED_PRODUCT_SUPPORT_PAIRS: usize = 2_000_000;
-const MAX_GRADED_MATRIX_WORK_UNITS: usize = 100_000_000;
-const MAX_GRADED_OPERATOR_GRADES: usize = 65_536;
-const MAX_GRADED_OPERATOR_BLOCKS: usize = 500_000;
-const MAX_GRADED_OPERATOR_BYTES: usize = 512 * 1024 * 1024;
+const GRADED_RESOURCE_SCALE: usize = 64;
+const MAX_GRADED_CHANNELS_PER_LINK: usize = 65_536_usize.saturating_mul(GRADED_RESOURCE_SCALE);
+const MAX_GRADED_LINK_CHANNEL_BYTES: usize =
+    (16 * 1024 * 1024_usize).saturating_mul(GRADED_RESOURCE_SCALE);
+const MAX_GRADED_CACHE_CHANNELS: usize = 1_000_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
+const MAX_GRADED_CACHE_BYTES: usize =
+    (512 * 1024 * 1024_usize).saturating_mul(GRADED_RESOURCE_SCALE);
+const MAX_GRADED_VAN_VLECK_TERMS: usize = 100_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
+const MAX_GRADED_VAN_VLECK_PAIR_SCANS: usize =
+    2_000_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
+const MAX_GRADED_PRODUCT_SUPPORT_PAIRS: usize =
+    2_000_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
+const MAX_GRADED_MATRIX_WORK_UNITS: usize = 100_000_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
+const MAX_GRADED_OPERATOR_GRADES: usize = 65_536_usize.saturating_mul(GRADED_RESOURCE_SCALE);
+const MAX_GRADED_OPERATOR_BLOCKS: usize = 500_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
+const MAX_GRADED_OPERATOR_BYTES: usize =
+    (512 * 1024 * 1024_usize).saturating_mul(GRADED_RESOURCE_SCALE);
 const MAX_UNIFORM_ORDER_ONE_HARMONIC: isize = 16_384;
 const MAX_UNIFORM_ORDER_TWO_HARMONIC: isize = 128;
 const MAX_EXACT_F64_INTEGER: u128 = 1_u128 << 53;
@@ -1427,13 +1433,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// requested van Vleck order.
     ///
     /// The finite-q backend uses sparse temporal support and checked resource
-    /// budgets: at most 65,536 channels and 16 MiB of channel metadata per
-    /// bond, 1,000,000 cached bond channels, 512 MiB of conservatively
-    /// estimated cache storage, 2,000,000 candidate harmonic-pair scans,
-    /// 100,000 nonzero order-2 nested commutators, 2,000,000 real-space
-    /// support-pair products, 100,000,000 state-cubic matrix-work units, and
-    /// 500,000 output hopping blocks.  It returns an error before exceeding
-    /// these limits.
+    /// budgets on 64-bit targets: at most 4,194,304 channels and 1 GiB of
+    /// channel metadata per bond, 64,000,000 cached bond channels, 32 GiB of
+    /// conservatively estimated cache storage, 128,000,000 candidate
+    /// harmonic-pair scans, 6,400,000 nonzero order-2 nested commutators,
+    /// 128,000,000 real-space support-pair products, 6,400,000,000 state-cubic
+    /// matrix-work units, 4,194,304 output momentum grades, 32,000,000 output
+    /// hopping blocks, and 32 GiB of dense graded-operator storage.  A 32-bit
+    /// target saturates limits that exceed `usize::MAX`.  The method returns an
+    /// error before exceeding these limits.
     ///
     /// Parallel map reductions may change floating-point summation order, so
     /// different Rayon thread counts can differ at roundoff level; the physical
@@ -3149,26 +3157,11 @@ fn bessel_peierls_channels(
                 let previous_len = next.len();
                 *next.entry(channel).or_insert(Complex::new(0.0, 0.0)) += *coefficient * weight;
                 let inserted = next.len() != previous_len;
-                if inserted && next.len() > MAX_GRADED_CHANNELS_PER_LINK {
-                    return Err(TbError::Other(format!(
-                        "finite-q Peierls expansion exceeds the per-link channel safety limit \
-                         {MAX_GRADED_CHANNELS_PER_LINK}; reduce the number of independent modes \
-                         or their amplitudes"
-                    )));
-                }
                 if inserted {
-                    let estimated_bytes = estimated_graded_channel_bytes(
+                    validate_graded_link_channel_budget(
                         next.len(),
                         drive.wavevector_basis_reduced.nrows(),
                     )?;
-                    if estimated_bytes > MAX_GRADED_LINK_CHANNEL_BYTES {
-                        return Err(TbError::Other(format!(
-                            "finite-q Peierls expansion requires about {estimated_bytes} bytes \
-                             for one link's momentum channels, exceeding the safety limit \
-                             {MAX_GRADED_LINK_CHANNEL_BYTES}; reduce the number or dimension of \
-                             the momentum labels"
-                        )));
-                    }
                 }
             }
         }
@@ -3195,6 +3188,25 @@ fn estimated_graded_channel_bytes(count: usize, grade_dimension: usize) -> Resul
     count
         .checked_mul(bytes_per_channel)
         .ok_or_else(|| TbError::Other("graded-channel byte estimate overflow".to_string()))
+}
+
+fn validate_graded_link_channel_budget(count: usize, grade_dimension: usize) -> Result<()> {
+    if count > MAX_GRADED_CHANNELS_PER_LINK {
+        return Err(TbError::Other(format!(
+            "finite-q Peierls expansion exceeds the per-link channel safety limit \
+             {MAX_GRADED_CHANNELS_PER_LINK}; reduce the number of independent modes or their \
+             amplitudes"
+        )));
+    }
+    let estimated_bytes = estimated_graded_channel_bytes(count, grade_dimension)?;
+    if estimated_bytes > MAX_GRADED_LINK_CHANNEL_BYTES {
+        return Err(TbError::Other(format!(
+            "finite-q Peierls expansion requires about {estimated_bytes} bytes for one link's \
+             momentum channels, exceeding the safety limit {MAX_GRADED_LINK_CHANNEL_BYTES}; \
+             reduce the number or dimension of the momentum labels"
+        )));
+    }
+    Ok(())
 }
 
 fn estimated_graded_cache_bytes(
@@ -7109,22 +7121,30 @@ mod tests {
     #[test]
     fn finite_q_preflights_pair_scans_and_cache_bytes() {
         assert!(validate_finite_q_pair_scan_count(128).is_ok());
-        let error = validate_finite_q_pair_scan_count(1_500).unwrap_err();
+        let error = validate_finite_q_pair_scan_count(12_000).unwrap_err();
         assert!(error.to_string().contains("harmonic pairs"));
 
-        let estimated = estimated_graded_cache_bytes(50_625, 50_625, 4, 100).unwrap();
-        assert!(estimated > MAX_GRADED_CACHE_BYTES);
+        let estimated = estimated_graded_cache_bytes(250_000, 250_000, 4, 100);
+        if usize::BITS >= 64 {
+            assert!(estimated.unwrap() > MAX_GRADED_CACHE_BYTES);
+        } else {
+            assert!(estimated.is_err());
+        }
 
         // Many orbital-pair geometries can coalesce into a small set of dense
         // (harmonic, grade, R) blocks; do not charge nsta^2 once per geometry.
         let coalesced = estimated_graded_cache_bytes(50_625, 32, 4, 100).unwrap();
         assert!(coalesced < MAX_GRADED_CACHE_BYTES);
+
+        let error =
+            validate_graded_link_channel_budget(MAX_GRADED_CHANNELS_PER_LINK + 1, 1).unwrap_err();
+        assert!(error.to_string().contains("channel safety limit"));
     }
 
     #[test]
     fn finite_q_graded_product_work_is_bounded_before_multiplication() {
         let mut operator = GradedOperator::new();
-        for grade_index in 0..1_500_isize {
+        for grade_index in 0..12_000_isize {
             operator
                 .entry(MomentumGrade::new([grade_index]))
                 .or_default()
@@ -7170,26 +7190,6 @@ mod tests {
                 .iter()
                 .all(|value| value.re.is_finite() && value.im.is_finite())
         }));
-    }
-
-    #[test]
-    fn finite_q_channel_explosion_returns_a_budget_error() {
-        let geometry = LinkGeometry {
-            d_fractional: array![1.0],
-            d_cartesian: array![1.0],
-            midpoint_fractional: array![0.5],
-        };
-        let basis = Array2::<f64>::zeros((5, 1));
-        let modes = (0..5)
-            .map(|index| {
-                let mut label = vec![0_isize; 5];
-                label[index] = 1;
-                LightMode::new(1, array![Complex::new(0.2, 0.0)], label)
-            })
-            .collect();
-        let drive = FloquetDrive::new(3.0, basis, modes);
-        let error = bessel_peierls_channels(&geometry, &drive, -1000, 1000, 6).unwrap_err();
-        assert!(format!("{error}").contains("channel safety limit"));
     }
 
     #[test]
