@@ -476,6 +476,14 @@ let effective_second_order = model.floquet_effective_model(
     &truncation,
     Some(&second_order_options),
 )?;
+
+// For several independent finite-q beams, retain zero- and single-photon
+// Peierls paths. This preserves the leading O(A^2 / omega) first-order term.
+let weak_field_options = FloquetEffectiveOptions::new()
+    .with_order(1)
+    .with_harmonic_max(1)
+    .with_max_total_photon_order(1)
+    .with_uniform_only();
 ```
 
 | API | Basis size | Intended regime |
@@ -508,6 +516,16 @@ time-grid DFT sized from the link's own bandwidth and the requested
 harmonic range.  Finite-q links use the exact straight-bond `sinc` integral and
 return an error rather than falling back when the per-mode link amplitude is
 outside the graded Bessel range.
+With several independent finite-q modes, the exact Bessel channel count can
+grow combinatorially even for a small temporal harmonic range. Use
+`with_max_total_photon_order(n)` to keep only paths satisfying
+`sum_alpha |m_alpha| <= n`; `n = 1` keeps the single-photon vertices needed for
+the leading `O(A^2 / omega)` correction. This retains full `J_0` and `J_1`
+values, so it is not a strict Taylor expansion in the field amplitude. The
+default remains the all-order expansion.
+When only `uniform_model` will be used, add `with_uniform_only()` so final
+nonzero-grade products are not constructed. Intermediate nonzero grades remain
+available internally and still contribute to the retained zero grade.
 
 For three-dimensional illumination, `IncidentBasis::from_direction` constructs
 two transverse polarization vectors from a propagation direction.

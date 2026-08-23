@@ -250,7 +250,11 @@ const MAX_GRADED_VAN_VLECK_PAIR_SCANS: usize =
     2_000_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
 const MAX_GRADED_PRODUCT_SUPPORT_PAIRS: usize =
     2_000_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
-const MAX_GRADED_MATRIX_WORK_UNITS: usize = 100_000_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
+// Dense real-space convolutions can legitimately be much more compute-heavy
+// than their memory footprint.  Keep this budget separate from the 64x memory
+// scale: 1.024 trillion units admits a 50-band, ~600-translation, eight-beam
+// uniform-grade A2g calculation while still rejecting unbounded work estimates.
+const MAX_GRADED_MATRIX_WORK_UNITS: usize = 100_000_000_usize.saturating_mul(10_240);
 const MAX_GRADED_OPERATOR_GRADES: usize = 65_536_usize.saturating_mul(GRADED_RESOURCE_SCALE);
 const MAX_GRADED_OPERATOR_BLOCKS: usize = 500_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
 const MAX_GRADED_OPERATOR_BYTES: usize =
@@ -342,6 +346,101 @@ pub struct FloquetDrive {
 }
 
 impl FloquetDrive {
+    /// Build eight body-diagonal circular modes that transform as an A₂g light
+    /// envelope on a cubic-like set of momentum basis vectors.
+    ///
+    /// `momentum_basis_cartesian` should contain three reciprocal-basis rows,
+    /// for example
+    ///
+    /// ```text
+    /// qx, qy, qz  (cartesian)
+    /// ```
+    ///
+    /// and each output mode carries integer momentum labels
+    /// `(±1, ±1, ±1)`.
+    ///
+    /// The circular polarization in each direction is
+    ///
+    /// ```text
+    /// (e1 + i eta e2)/sqrt(2)
+    /// ```
+    ///
+    /// with `eta = a2g_domain * sgn(qx qy qz)`, where `a2g_domain` is `+1` or
+    /// `-1`.
+    pub fn tetrahedral_a2g_modes(
+        harmonic: isize,
+        momentum_basis_cartesian: &Array2<f64>,
+        a_complex_scale: f64,
+        a2g_domain: f64,
+    ) -> Result<Vec<LightMode>> {
+        if harmonic <= 0 {
+            return Err(TbError::Other(
+                "A2g mode construction expects positive harmonic (q->-q is conjugate)".to_string(),
+            ));
+        }
+        if momentum_basis_cartesian.nrows() != 3 || momentum_basis_cartesian.ncols() != 3 {
+            return Err(TbError::Other(format!(
+                "A2g tetrahedral mode basis must be 3x3, got {:?}x{:?}",
+                momentum_basis_cartesian.nrows(),
+                momentum_basis_cartesian.ncols()
+            )));
+        }
+        if !a2g_domain.is_finite() || (a2g_domain != 1.0 && a2g_domain != -1.0) {
+            return Err(TbError::Other(
+                "A2g domain parameter should be either +1 or -1".to_string(),
+            ));
+        }
+        if a_complex_scale.is_nan() || a_complex_scale.is_infinite() {
+            return Err(TbError::Other(
+                "A2g amplitude scale must be a finite number".to_string(),
+            ));
+        }
+
+        let mut modes = Vec::with_capacity(8);
+        let inv_sqrt2 = 1.0 / 2.0_f64.sqrt();
+        let sign_triplets = [
+            [1_isize, 1_isize, 1_isize],
+            [1_isize, 1_isize, -1_isize],
+            [1_isize, -1_isize, 1_isize],
+            [1_isize, -1_isize, -1_isize],
+            [-1_isize, 1_isize, 1_isize],
+            [-1_isize, 1_isize, -1_isize],
+            [-1_isize, -1_isize, 1_isize],
+            [-1_isize, -1_isize, -1_isize],
+        ];
+        for label in sign_triplets {
+            let direction = momentum_basis_cartesian
+                .rows()
+                .into_iter()
+                .zip(label.iter().copied())
+                .fold(Array1::<f64>::zeros(3), |mut acc, (axis, sign)| {
+                    acc[0] += axis[0] * (sign as f64);
+                    acc[1] += axis[1] * (sign as f64);
+                    acc[2] += axis[2] * (sign as f64);
+                    acc
+                });
+            let norm = direction
+                .iter()
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt();
+            if norm <= 0.0 {
+                return Err(TbError::Other(
+                    "A2g mode direction has zero norm after basis projection".to_string(),
+                ));
+            }
+            let incident = IncidentBasis::from_direction(&direction)?;
+            let helicity = a2g_domain * label.iter().product::<isize>() as f64;
+            let circular = incident.polarization([
+                Complex::new(inv_sqrt2, 0.0),
+                Complex::new(0.0, helicity * inv_sqrt2),
+            ]);
+            let a_complex = circular.mapv(|z| a_complex_scale * z);
+            modes.push(LightMode::new(harmonic, a_complex, label));
+        }
+        Ok(modes)
+    }
+
     /// Construct a plane-wave drive from a reduced wavevector basis and modes.
     pub fn new(
         omega0_ev: f64,
@@ -504,6 +603,10 @@ impl IncidentBasis {
 /// reference path.
 ///
 /// `order` and `harmonic_max` control the high-frequency expansion on both paths.
+/// `max_total_photon_order` optionally limits the finite-q graded Peierls
+/// expansion before the van Vleck products are formed.
+/// `retain_nonuniform_grades = false` requests only the exact zero-grade
+/// output while preserving all intermediate grades needed to construct it.
 /// `target_hamR` (crate-internal) applies only to the legacy path, whose
 /// inverse Fourier transform
 ///
@@ -530,6 +633,26 @@ pub struct FloquetEffectiveOptions {
     /// `2 * trunc.n_max`.  At order 2 the mixed component `H_(m'-m)` is
     /// evaluated up to `|m'-m| = 2 * harmonic_max` automatically.
     pub harmonic_max: Option<isize>,
+    /// Optional finite-q cutoff on the total absolute Bessel order
+    /// `sum_alpha |m_alpha|` of a photon path.
+    ///
+    /// `None` (the default) keeps the adaptively converged all-order Peierls
+    /// expansion. `Some(n)` retains only paths with total order at most `n`.
+    /// In particular, `Some(1)` keeps the zero-photon channel and the
+    /// single-photon vertices needed for the leading `O(A^2 / omega)` van
+    /// Vleck correction, while avoiding multi-mode combinatorial growth.
+    /// The retained `J_0` and `J_1` factors are not Taylor-expanded, so this is
+    /// a photon-path cutoff rather than a strict polynomial truncation in the
+    /// field amplitude. The uniform-q fast path ignores this finite-q-only
+    /// option.
+    pub max_total_photon_order: Option<usize>,
+    /// Whether finite-q output grades other than exact zero are constructed.
+    ///
+    /// Defaults to `true`. Set this to `false` with [`Self::with_uniform_only`]
+    /// when only the primitive-periodic effective Hamiltonian is needed. The
+    /// cache still retains the nonzero intermediate grades required by virtual
+    /// photon processes, but van Vleck products skip final nonzero grades.
+    pub retain_nonuniform_grades: bool,
     /// Optional target real-space hopping vectors for the legacy path's
     /// inverse Fourier transform.  Rejected by the real-space path.
     pub(crate) target_hamR: Option<Array2<isize>>,
@@ -674,20 +797,53 @@ impl GradedWorkBudget {
             })
     }
 
-    fn charge_product(&self, left: &GradedOperator, right: &GradedOperator) -> Result<()> {
-        let left_support = left.values().try_fold(0_usize, |total, blocks| {
-            total
-                .checked_add(blocks.len())
-                .ok_or_else(|| TbError::Other("finite-q left support count overflow".to_string()))
-        })?;
-        let right_support = right.values().try_fold(0_usize, |total, blocks| {
-            total
-                .checked_add(blocks.len())
-                .ok_or_else(|| TbError::Other("finite-q right support count overflow".to_string()))
-        })?;
-        let support_pairs = left_support.checked_mul(right_support).ok_or_else(|| {
-            TbError::Other("finite-q graded-product support-pair count overflow".to_string())
-        })?;
+    fn charge_product(
+        &self,
+        left: &GradedOperator,
+        right: &GradedOperator,
+        output_grade_filter: Option<&MomentumGrade>,
+    ) -> Result<()> {
+        let support_pairs = if let Some(filter) = output_grade_filter {
+            let mut selected_pairs = 0_usize;
+            for (left_grade, left_blocks) in left {
+                let required_right = filter.add(&left_grade.negated()?)?;
+                let Some(right_blocks) = right.get(&required_right) else {
+                    continue;
+                };
+                selected_pairs = selected_pairs
+                    .checked_add(
+                        left_blocks
+                            .len()
+                            .checked_mul(right_blocks.len())
+                            .ok_or_else(|| {
+                                TbError::Other(
+                                    "finite-q graded-product support-pair count overflow"
+                                        .to_string(),
+                                )
+                            })?,
+                    )
+                    .ok_or_else(|| {
+                        TbError::Other(
+                            "finite-q graded-product support-pair count overflow".to_string(),
+                        )
+                    })?;
+            }
+            selected_pairs
+        } else {
+            let left_support = left.values().try_fold(0_usize, |total, blocks| {
+                total.checked_add(blocks.len()).ok_or_else(|| {
+                    TbError::Other("finite-q left support count overflow".to_string())
+                })
+            })?;
+            let right_support = right.values().try_fold(0_usize, |total, blocks| {
+                total.checked_add(blocks.len()).ok_or_else(|| {
+                    TbError::Other("finite-q right support count overflow".to_string())
+                })
+            })?;
+            left_support.checked_mul(right_support).ok_or_else(|| {
+                TbError::Other("finite-q graded-product support-pair count overflow".to_string())
+            })?
+        };
 
         let nsta = left
             .values()
@@ -761,6 +917,7 @@ pub struct FloquetEffectiveResult<const SPIN: bool, const DIM: usize> {
     /// Exact zero-grade component as a normal primitive-cell model.
     pub uniform_model: Model<SPIN, DIM, NoRMatrix>,
     /// All nonzero exact momentum grades and their primitive real-space blocks.
+    /// Empty when [`FloquetEffectiveOptions::with_uniform_only`] was requested.
     pub nonuniform: GradedRealSpaceHamiltonian,
     /// Reduced wavevector basis used to convert each integer grade into `Q_g`.
     pub wavevector_basis_reduced: Array2<f64>,
@@ -806,6 +963,8 @@ impl Default for FloquetEffectiveOptions {
         Self {
             order: 1,
             harmonic_max: None,
+            max_total_photon_order: None,
+            retain_nonuniform_grades: true,
             target_hamR: None,
         }
     }
@@ -827,6 +986,27 @@ impl FloquetEffectiveOptions {
     /// Set the signed-harmonic cutoff used in the van Vleck sums.
     pub fn with_harmonic_max(mut self, harmonic_max: isize) -> Self {
         self.harmonic_max = Some(harmonic_max);
+        self
+    }
+
+    /// Limit the finite-q Peierls expansion to photon paths satisfying
+    /// `sum_alpha |m_alpha| <= max_order`.
+    ///
+    /// This does not change the van Vleck order set by [`Self::with_order`]
+    /// or the temporal harmonic range set by [`Self::with_harmonic_max`].
+    pub fn with_max_total_photon_order(mut self, max_order: usize) -> Self {
+        self.max_total_photon_order = Some(max_order);
+        self
+    }
+
+    /// Compute only the exact zero-momentum-grade effective Hamiltonian.
+    ///
+    /// This is useful when the caller will immediately select
+    /// [`FloquetEffectiveResult::uniform_model`]. It does not discard the
+    /// nonzero intermediate grades that contribute to the zero-grade virtual
+    /// processes.
+    pub fn with_uniform_only(mut self) -> Self {
+        self.retain_nonuniform_grades = false;
         self
     }
 
@@ -882,6 +1062,12 @@ struct ChannelKey {
     grade: MomentumGrade,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PhotonOrderedChannelKey {
+    channel: ChannelKey,
+    total_photon_order: usize,
+}
+
 /// Finite-wavevector Fourier cache indexed by temporal harmonic and exact
 /// photon-momentum grade.
 struct GradedFloquetHarmonicCache {
@@ -899,6 +1085,18 @@ impl GradedFloquetHarmonicCache {
             self.harmonic_max
         );
         self.harmonics.get(&harmonic)
+    }
+
+    fn dense_bytes(&self) -> Result<usize> {
+        self.harmonics
+            .values()
+            .try_fold(0_usize, |total, operator| {
+                total
+                    .checked_add(graded_operator_dense_bytes(operator)?)
+                    .ok_or_else(|| {
+                        TbError::Other("finite-q cache byte estimate overflow".to_string())
+                    })
+            })
     }
 }
 
@@ -1437,7 +1635,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// channel metadata per bond, 64,000,000 cached bond channels, 32 GiB of
     /// conservatively estimated cache storage, 128,000,000 candidate
     /// harmonic-pair scans, 6,400,000 nonzero order-2 nested commutators,
-    /// 128,000,000 real-space support-pair products, 6,400,000,000 state-cubic
+    /// 128,000,000 real-space support-pair products, 1,024,000,000,000 state-cubic
     /// matrix-work units, 4,194,304 output momentum grades, 32,000,000 output
     /// hopping blocks, and 32 GiB of dense graded-operator storage.  A 32-bit
     /// target saturates limits that exceed `usize::MAX`.  The method returns an
@@ -1485,10 +1683,47 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         } else {
             0
         };
-        let cache = self.floquet_graded_harmonic_cache(drive, -cache_max, cache_max, 6)?;
+        let cache = self.floquet_graded_harmonic_cache(
+            drive,
+            -cache_max,
+            cache_max,
+            6,
+            options.max_total_photon_order,
+        )?;
+        let model_resident_bytes = model_dense_bytes(self)?;
+        let cache_resident_bytes =
+            checked_resident_sum([model_resident_bytes, cache.dense_bytes()?])?;
         let empty = GradedOperator::new();
         let harmonic = |index: isize| cache.harmonic(index).unwrap_or(&empty);
-        let mut effective = harmonic(0).clone();
+        let zero_grade = MomentumGrade::zero(drive.wavevector_basis_reduced.nrows());
+        let output_grade_filter = (!options.retain_nonuniform_grades).then_some(&zero_grade);
+        let mut effective = if options.retain_nonuniform_grades {
+            let harmonic_zero = harmonic(0);
+            let harmonic_zero_bytes = graded_operator_dense_bytes(harmonic_zero)?;
+            let harmonic_zero_clone_peak =
+                checked_resident_sum([cache_resident_bytes, harmonic_zero_bytes])?;
+            if harmonic_zero_clone_peak > MAX_GRADED_OPERATOR_BYTES {
+                return Err(TbError::Other(format!(
+                    "finite-q harmonic-0 clone may require about {harmonic_zero_clone_peak} bytes, \
+                     exceeding the safety limit {MAX_GRADED_OPERATOR_BYTES} before any products"
+                )));
+            }
+            harmonic_zero.clone()
+        } else {
+            let mut uniform = GradedOperator::new();
+            if let Some(blocks) = harmonic(0).get(&zero_grade) {
+                uniform.insert(zero_grade.clone(), blocks.clone());
+            }
+            let uniform_bytes = graded_operator_dense_bytes(&uniform)?;
+            let uniform_clone_peak = checked_resident_sum([cache_resident_bytes, uniform_bytes])?;
+            if uniform_clone_peak > MAX_GRADED_OPERATOR_BYTES {
+                return Err(TbError::Other(format!(
+                    "finite-q uniform-clone path may require about {uniform_clone_peak} bytes, \
+                     exceeding the safety limit {MAX_GRADED_OPERATOR_BYTES} before any products"
+                )));
+            }
+            uniform
+        };
         validate_graded_operator_size(&effective)?;
         let work_budget = GradedWorkBudget::default();
         let inverse_omega = drive.omega0_ev.recip();
@@ -1503,11 +1738,26 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 })
                 .collect::<Vec<_>>();
             for index in positive_harmonics {
+                let left = harmonic(index);
+                let right = harmonic(-index);
+                let persistent_bytes = checked_resident_sum([
+                    cache_resident_bytes,
+                    graded_operator_dense_bytes(&effective)?,
+                ])?;
+                let external_resident_bytes =
+                    resident_excluding_cache_operands(persistent_bytes, &[left, right])?;
                 let commutator = graded_commutator(
-                    harmonic(index),
-                    harmonic(-index),
+                    left,
+                    right,
                     &drive.wavevector_basis_reduced,
                     &work_budget,
+                    output_grade_filter,
+                    external_resident_bytes,
+                )?;
+                preflight_accumulate_scaled_graded_operator(
+                    &effective,
+                    &commutator,
+                    cache_resident_bytes,
                 )?;
                 accumulate_scaled_graded_operator(
                     &mut effective,
@@ -1536,12 +1786,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
                 let mut mixed_terms = Vec::new();
                 for &m_prime in &signed_harmonics {
-                    if m_prime == m {
+                    let Some(difference) = nontrivial_mixed_harmonic_difference(m, m_prime)? else {
                         continue;
-                    }
-                    let difference = m_prime.checked_sub(m).ok_or_else(|| {
-                        TbError::Other("finite-q harmonic difference overflow".to_string())
-                    })?;
+                    };
                     if cache.harmonics.contains_key(&difference)
                         && cache.harmonics.contains_key(&-m_prime)
                     {
@@ -1560,22 +1807,47 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
                 mixed_terms_by_harmonic.push(mixed_terms);
             }
+            let order_two_persistent_bytes = checked_resident_sum([
+                cache_resident_bytes,
+                graded_operator_dense_bytes(&effective)?,
+            ])?;
             let accumulate_fixed_harmonic = |partial: &mut GradedOperator,
                                              m: isize,
                                              mixed_terms: &[(isize, isize)]|
              -> Result<()> {
                 if cache.harmonics.contains_key(&-m) {
+                    let h_zero = harmonic(0);
+                    let h_m = harmonic(m);
+                    let persistent_bytes = checked_resident_sum([
+                        order_two_persistent_bytes,
+                        graded_operator_dense_bytes(partial)?,
+                    ])?;
+                    let inner_external =
+                        resident_excluding_cache_operands(persistent_bytes, &[h_zero, h_m])?;
                     let inner = graded_commutator(
-                        harmonic(0),
-                        harmonic(m),
+                        h_zero,
+                        h_m,
                         &drive.wavevector_basis_reduced,
                         &work_budget,
+                        None,
+                        inner_external,
                     )?;
+                    let h_minus_m = harmonic(-m);
+                    let outer_external =
+                        resident_excluding_cache_operands(persistent_bytes, &[h_minus_m])?;
                     let outer = graded_commutator(
-                        harmonic(-m),
+                        h_minus_m,
                         &inner,
                         &drive.wavevector_basis_reduced,
                         &work_budget,
+                        output_grade_filter,
+                        outer_external,
+                    )?;
+                    drop(inner);
+                    preflight_accumulate_scaled_graded_operator(
+                        partial,
+                        &outer,
+                        order_two_persistent_bytes,
                     )?;
                     accumulate_scaled_graded_operator(
                         partial,
@@ -1585,17 +1857,38 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
 
                 for &(m_prime, difference) in mixed_terms {
+                    let h_difference = harmonic(difference);
+                    let h_m = harmonic(m);
+                    let persistent_bytes = checked_resident_sum([
+                        order_two_persistent_bytes,
+                        graded_operator_dense_bytes(partial)?,
+                    ])?;
+                    let inner_external =
+                        resident_excluding_cache_operands(persistent_bytes, &[h_difference, h_m])?;
                     let inner = graded_commutator(
-                        harmonic(difference),
-                        harmonic(m),
+                        h_difference,
+                        h_m,
                         &drive.wavevector_basis_reduced,
                         &work_budget,
+                        None,
+                        inner_external,
                     )?;
+                    let h_minus_m_prime = harmonic(-m_prime);
+                    let outer_external =
+                        resident_excluding_cache_operands(persistent_bytes, &[h_minus_m_prime])?;
                     let outer = graded_commutator(
-                        harmonic(-m_prime),
+                        h_minus_m_prime,
                         &inner,
                         &drive.wavevector_basis_reduced,
                         &work_budget,
+                        output_grade_filter,
+                        outer_external,
+                    )?;
+                    drop(inner);
+                    preflight_accumulate_scaled_graded_operator(
+                        partial,
+                        &outer,
+                        order_two_persistent_bytes,
                     )?;
                     accumulate_scaled_graded_operator(
                         partial,
@@ -1606,42 +1899,51 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 Ok(())
             };
 
-            let order_two = if signed_harmonics.len() > 1 && rayon::current_num_threads() > 1 {
-                let min_harmonics_per_job = signed_harmonics
-                    .len()
-                    .div_ceil(rayon::current_num_threads());
-                signed_harmonics
-                    .par_iter()
-                    .zip(mixed_terms_by_harmonic.par_iter())
-                    .with_min_len(min_harmonics_per_job)
-                    .try_fold(
-                        GradedOperator::new,
-                        |mut partial, (&m, mixed_terms)| -> Result<GradedOperator> {
-                            accumulate_fixed_harmonic(&mut partial, m, mixed_terms)?;
-                            Ok(partial)
-                        },
-                    )
-                    .try_reduce(GradedOperator::new, merge_graded_operators)?
-            } else {
-                let mut partial = GradedOperator::new();
-                for (&m, mixed_terms) in signed_harmonics.iter().zip(mixed_terms_by_harmonic.iter())
-                {
-                    accumulate_fixed_harmonic(&mut partial, m, mixed_terms)?;
-                }
-                partial
-            };
+            // The matrix products themselves remain parallel. Keep the outer
+            // order-2 harmonic accumulation serial so all task-local retained
+            // maps are visible to the 32-GiB peak-memory accounting.
+            let mut order_two = GradedOperator::new();
+            for (&m, mixed_terms) in signed_harmonics.iter().zip(mixed_terms_by_harmonic.iter()) {
+                accumulate_fixed_harmonic(&mut order_two, m, mixed_terms)?;
+            }
+            let merge_peak_bytes = checked_resident_sum([
+                cache_resident_bytes,
+                graded_operator_dense_bytes(&effective)?,
+                graded_operator_dense_bytes(&order_two)?,
+            ])?;
+            if merge_peak_bytes > MAX_GRADED_OPERATOR_BYTES {
+                return Err(TbError::Other(format!(
+                    "finite-q order-2 accumulation may require about {merge_peak_bytes} \
+                     dense-matrix bytes, exceeding the safety limit \
+                     {MAX_GRADED_OPERATOR_BYTES} before merge"
+                )));
+            }
             effective = merge_graded_operators(effective, order_two)?;
         }
 
-        enforce_graded_hermiticity(&mut effective, &drive.wavevector_basis_reduced)?;
-        let zero_grade = MomentumGrade::zero(drive.wavevector_basis_reduced.nrows());
+        drop(cache);
+        enforce_graded_hermiticity(
+            &mut effective,
+            &drive.wavevector_basis_reduced,
+            model_resident_bytes,
+        )?;
         let zero_blocks = effective.remove(&zero_grade).ok_or_else(|| {
             TbError::Other(
                 "finite-q effective Hamiltonian lost its zero momentum grade".to_string(),
             )
         })?;
+        let map_bytes_before_uniform = checked_resident_sum([
+            model_resident_bytes,
+            real_space_block_map_dense_bytes(&zero_blocks)?,
+            graded_operator_dense_bytes(&effective)?,
+        ])?;
         let (uniform_ham, uniform_ham_r) =
-            graded_component_arrays::<DIM>(&zero_blocks, self.nsta())?;
+            graded_component_arrays::<DIM>(&zero_blocks, self.nsta(), map_bytes_before_uniform)?;
+        drop(zero_blocks);
+        let mut built_output_bytes = uniform_ham
+            .len()
+            .checked_mul(std::mem::size_of::<Complex<f64>>())
+            .ok_or_else(|| TbError::Other("uniform output byte estimate overflow".to_string()))?;
         let mut uniform_model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
             self.lat.clone(),
             self.orb.clone(),
@@ -1652,8 +1954,29 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         uniform_model.orb_projection = self.orb_projection.clone();
 
         let mut nonuniform = GradedRealSpaceHamiltonian::new();
-        for (grade, blocks) in effective {
-            let (ham, ham_r) = graded_component_arrays::<DIM>(&blocks, self.nsta())?;
+        while let Some(grade) = effective.keys().next().cloned() {
+            let blocks = effective
+                .remove(&grade)
+                .expect("grade selected from the effective operator exists");
+            let resident_bytes = checked_resident_sum([
+                model_resident_bytes,
+                built_output_bytes,
+                graded_operator_dense_bytes(&effective)?,
+                real_space_block_map_dense_bytes(&blocks)?,
+            ])?;
+            let (ham, ham_r) =
+                graded_component_arrays::<DIM>(&blocks, self.nsta(), resident_bytes)?;
+            built_output_bytes = built_output_bytes
+                .checked_add(
+                    ham.len()
+                        .checked_mul(std::mem::size_of::<Complex<f64>>())
+                        .ok_or_else(|| {
+                            TbError::Other("graded output byte estimate overflow".to_string())
+                        })?,
+                )
+                .ok_or_else(|| {
+                    TbError::Other("graded output byte estimate overflow".to_string())
+                })?;
             nonuniform.insert(grade, FloquetGradedComponent { ham, ham_r });
         }
         Ok(FloquetEffectiveResult {
@@ -2148,6 +2471,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         harmonic_min: isize,
         harmonic_max: isize,
         cutoff_margin: isize,
+        max_total_photon_order: Option<usize>,
     ) -> Result<GradedFloquetHarmonicCache> {
         if harmonic_min > harmonic_max {
             return Err(TbError::Other(format!(
@@ -2157,6 +2481,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let nsta = self.nsta();
         let norb = self.norb();
         let n_r = self.hamR.nrows();
+        let model_dense_bytes = model_dense_bytes(self)?;
 
         let mut entries = Vec::new();
         let mut geometry_keys = std::collections::BTreeSet::new();
@@ -2188,6 +2513,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     harmonic_min,
                     harmonic_max,
                     cutoff_margin,
+                    max_total_photon_order,
                 )?;
                 let channel_count = channels.len();
                 if total_channel_count
@@ -2201,7 +2527,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     return Err(TbError::Other(format!(
                         "finite-q harmonic cache exceeds the global channel safety limit \
                          {MAX_GRADED_CACHE_CHANNELS}; reduce the hopping support, number of \
-                        independent modes, amplitudes, or harmonic_max"
+                         independent modes, amplitudes, harmonic_max, or set \
+                         max_total_photon_order"
                     )));
                 }
                 let estimated_bytes =
@@ -2217,7 +2544,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     return Err(TbError::Other(format!(
                         "finite-q harmonic cache channel metadata exceeds the memory safety \
                          limit {MAX_GRADED_CACHE_BYTES} bytes; reduce the hopping support, \
-                         momentum channels, amplitudes, or harmonic_max"
+                         momentum channels, amplitudes, harmonic_max, or set \
+                         max_total_photon_order"
                     )));
                 }
                 Ok(((i_r, i_orb, j_orb), channels))
@@ -2249,13 +2577,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             grade_dimension,
             nsta,
         )?;
-        if estimated_cache_bytes > MAX_GRADED_CACHE_BYTES {
+        let estimated_total_cache_bytes =
+            checked_resident_sum([model_dense_bytes, estimated_cache_bytes])?;
+        if estimated_total_cache_bytes > MAX_GRADED_CACHE_BYTES {
             return Err(TbError::Other(format!(
-                "finite-q harmonic cache requires about {estimated_cache_bytes} bytes for \
+                "finite-q harmonic cache requires about {estimated_total_cache_bytes} bytes for \
                  channel metadata and at most {estimated_block_count} dense blocks, exceeding \
                  the safety limit \
                  {MAX_GRADED_CACHE_BYTES}; reduce nsta, hopping support, momentum channels, \
-                 amplitudes, or harmonic_max"
+                 amplitudes, harmonic_max, or max_total_photon_order"
             )));
         }
         drop(unique_block_keys);
@@ -3021,6 +3351,7 @@ fn bessel_peierls_channels(
     harmonic_min: isize,
     harmonic_max: isize,
     cutoff_margin: isize,
+    max_total_photon_order: Option<usize>,
 ) -> Result<std::collections::BTreeMap<ChannelKey, Complex<f64>>> {
     if harmonic_min > harmonic_max {
         return Err(TbError::Other(format!(
@@ -3070,11 +3401,14 @@ fn bessel_peierls_channels(
                  a graded time/space Fourier fallback is not implemented"
             )));
         }
-        let m_cap = bessel_adaptive_m_cap(r, error_share, cutoff_margin);
+        let mut m_cap = bessel_adaptive_m_cap(r, error_share, cutoff_margin);
         if m_cap > 64 {
             return Err(TbError::Other(format!(
                 "finite-q Bessel cutoff {m_cap} exceeds the 64-order safety limit"
             )));
+        }
+        if let Some(max_order) = max_total_photon_order {
+            m_cap = m_cap.min(isize::try_from(max_order).unwrap_or(isize::MAX));
         }
         modes.push(ModeData {
             r,
@@ -3101,9 +3435,12 @@ fn bessel_peierls_channels(
     let zero_grade = MomentumGrade::zero(drive.wavevector_basis_reduced.nrows());
     let mut sequence = std::collections::BTreeMap::new();
     sequence.insert(
-        ChannelKey {
-            harmonic: 0,
-            grade: zero_grade,
+        PhotonOrderedChannelKey {
+            channel: ChannelKey {
+                harmonic: 0,
+                grade: zero_grade,
+            },
+            total_photon_order: 0,
         },
         Complex::new(1.0, 0.0),
     );
@@ -3135,30 +3472,57 @@ fn bessel_peierls_channels(
         }
 
         let mut next = std::collections::BTreeMap::new();
-        for (key, coefficient) in &sequence {
+        for (state, coefficient) in &sequence {
             for &(m, weight) in &weights {
                 if weight.re == 0.0 && weight.im == 0.0 {
                     continue;
                 }
+                let total_photon_order = if let Some(max_order) = max_total_photon_order {
+                    let next_order = state
+                        .total_photon_order
+                        .checked_add(m.unsigned_abs())
+                        .ok_or_else(|| {
+                            TbError::Other("finite-q total photon order overflow".to_string())
+                        })?;
+                    if next_order > max_order {
+                        continue;
+                    }
+                    next_order
+                } else {
+                    // Preserve the all-order backend's historical folding:
+                    // without a cutoff, paths that reach the same exact
+                    // (harmonic, grade) channel interfere after every mode.
+                    0
+                };
                 let time_shift = mode.harmonic.checked_mul(m).ok_or_else(|| {
                     TbError::Other("finite-q harmonic multiplication overflow".to_string())
                 })?;
-                let harmonic = key.harmonic.checked_sub(time_shift).ok_or_else(|| {
-                    TbError::Other("finite-q harmonic addition overflow".to_string())
-                })?;
+                let harmonic = state
+                    .channel
+                    .harmonic
+                    .checked_sub(time_shift)
+                    .ok_or_else(|| {
+                        TbError::Other("finite-q harmonic addition overflow".to_string())
+                    })?;
                 if harmonic < keep_min || harmonic > keep_max {
                     continue;
                 }
                 let grade_scale = m.checked_neg().ok_or_else(|| {
                     TbError::Other("finite-q momentum-grade scale overflow".to_string())
                 })?;
-                let grade = key.grade.add_scaled(mode.label.as_slice(), grade_scale)?;
-                let channel = ChannelKey { harmonic, grade };
+                let grade = state
+                    .channel
+                    .grade
+                    .add_scaled(mode.label.as_slice(), grade_scale)?;
+                let channel = PhotonOrderedChannelKey {
+                    channel: ChannelKey { harmonic, grade },
+                    total_photon_order,
+                };
                 let previous_len = next.len();
                 *next.entry(channel).or_insert(Complex::new(0.0, 0.0)) += *coefficient * weight;
                 let inserted = next.len() != previous_len;
                 if inserted {
-                    validate_graded_link_channel_budget(
+                    validate_photon_ordered_link_channel_budget(
                         next.len(),
                         drive.wavevector_basis_reduced.nrows(),
                     )?;
@@ -3169,8 +3533,17 @@ fn bessel_peierls_channels(
         sequence = next;
     }
 
-    sequence.retain(|key, _| key.harmonic >= harmonic_min && key.harmonic <= harmonic_max);
-    Ok(sequence)
+    let mut collapsed = std::collections::BTreeMap::<ChannelKey, Complex<f64>>::new();
+    for (state, coefficient) in sequence {
+        if state.channel.harmonic < harmonic_min || state.channel.harmonic > harmonic_max {
+            continue;
+        }
+        *collapsed
+            .entry(state.channel)
+            .or_insert(Complex::new(0.0, 0.0)) += coefficient;
+    }
+    collapsed.retain(|_, coefficient| coefficient.re != 0.0 || coefficient.im != 0.0);
+    Ok(collapsed)
 }
 
 fn estimated_graded_channel_bytes(count: usize, grade_dimension: usize) -> Result<usize> {
@@ -3190,6 +3563,40 @@ fn estimated_graded_channel_bytes(count: usize, grade_dimension: usize) -> Resul
         .ok_or_else(|| TbError::Other("graded-channel byte estimate overflow".to_string()))
 }
 
+fn estimated_photon_ordered_channel_bytes(count: usize, grade_dimension: usize) -> Result<usize> {
+    estimated_graded_channel_bytes(count, grade_dimension)?
+        .checked_add(
+            count
+                .checked_mul(std::mem::size_of::<usize>())
+                .ok_or_else(|| {
+                    TbError::Other("photon-order channel byte estimate overflow".to_string())
+                })?,
+        )
+        .ok_or_else(|| TbError::Other("photon-order channel byte estimate overflow".to_string()))
+}
+
+fn validate_photon_ordered_link_channel_budget(count: usize, grade_dimension: usize) -> Result<()> {
+    if count > MAX_GRADED_CHANNELS_PER_LINK {
+        return Err(TbError::Other(format!(
+            "finite-q Bessel convolution generated more than \
+             {MAX_GRADED_CHANNELS_PER_LINK} photon-order-resolved channels for one link; \
+             reduce the number of independent modes, amplitudes, harmonic_max, or \
+             max_total_photon_order"
+        )));
+    }
+    let estimated_bytes = estimated_photon_ordered_channel_bytes(count, grade_dimension)?;
+    if estimated_bytes > MAX_GRADED_LINK_CHANNEL_BYTES {
+        return Err(TbError::Other(format!(
+            "finite-q Bessel convolution needs about {estimated_bytes} bytes for one link's \
+             photon-order-resolved channels, exceeding the safety limit \
+             {MAX_GRADED_LINK_CHANNEL_BYTES}; reduce the number of independent modes, \
+             amplitudes, harmonic_max, or max_total_photon_order"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn validate_graded_link_channel_budget(count: usize, grade_dimension: usize) -> Result<()> {
     if count > MAX_GRADED_CHANNELS_PER_LINK {
         return Err(TbError::Other(format!(
@@ -3238,6 +3645,18 @@ fn validate_finite_q_pair_scan_count(harmonic_count: usize) -> Result<usize> {
         )));
     }
     Ok(candidate_pair_scans)
+}
+
+fn nontrivial_mixed_harmonic_difference(m: isize, m_prime: isize) -> Result<Option<isize>> {
+    if m_prime == m {
+        return Ok(None);
+    }
+    let difference = m_prime
+        .checked_sub(m)
+        .ok_or_else(|| TbError::Other("finite-q harmonic difference overflow".to_string()))?;
+    // m' = 2m makes H_(m'-m) = H_m, hence the inner commutator
+    // [H_(m'-m), H_m] vanishes identically.
+    Ok((difference != m).then_some(difference))
 }
 
 /// Peierls Fourier coefficients `C_q(d)` via the generalized Bessel
@@ -3874,6 +4293,200 @@ fn validate_graded_operator_size(operator: &GradedOperator) -> Result<()> {
     Ok(())
 }
 
+fn graded_operator_dense_bytes(operator: &GradedOperator) -> Result<usize> {
+    let block_count = operator.values().try_fold(0_usize, |total, blocks| {
+        total.checked_add(blocks.len()).ok_or_else(|| {
+            TbError::Other("finite-q graded-operator block count overflow".to_string())
+        })
+    })?;
+    let block_len = operator
+        .values()
+        .flat_map(|blocks| blocks.values())
+        .next()
+        .map_or(0, ArrayBase::len);
+    block_count
+        .checked_mul(block_len)
+        .and_then(|value| value.checked_mul(std::mem::size_of::<Complex<f64>>()))
+        .ok_or_else(|| {
+            TbError::Other("finite-q graded-operator byte estimate overflow".to_string())
+        })
+}
+
+fn real_space_block_map_dense_bytes(blocks: &RealSpaceBlockMap) -> Result<usize> {
+    blocks.values().try_fold(0_usize, |total, block| {
+        let bytes = block
+            .len()
+            .checked_mul(std::mem::size_of::<Complex<f64>>())
+            .ok_or_else(|| {
+                TbError::Other("finite-q dense-block byte estimate overflow".to_string())
+            })?;
+        total
+            .checked_add(bytes)
+            .ok_or_else(|| TbError::Other("finite-q block-map byte estimate overflow".to_string()))
+    })
+}
+
+fn model_dense_bytes<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+    model: &Model<SPIN, DIM, R>,
+) -> Result<usize> {
+    let ham_bytes = model
+        .ham
+        .len()
+        .checked_mul(std::mem::size_of::<Complex<f64>>())
+        .ok_or_else(|| TbError::Other("model ham byte estimate overflow".to_string()))?;
+    let rmatrix_bytes = if R::HAS_RMATRIX {
+        model
+            .rmatrix
+            .as_array4()
+            .len()
+            .checked_mul(std::mem::size_of::<Complex<f64>>())
+            .ok_or_else(|| TbError::Other("model rmatrix byte estimate overflow".to_string()))?
+    } else {
+        0
+    };
+    checked_resident_sum([ham_bytes, rmatrix_bytes])
+}
+
+fn checked_resident_sum(values: impl IntoIterator<Item = usize>) -> Result<usize> {
+    values.into_iter().try_fold(0_usize, |total, value| {
+        total
+            .checked_add(value)
+            .ok_or_else(|| TbError::Other("finite-q resident-byte estimate overflow".to_string()))
+    })
+}
+
+fn resident_excluding_cache_operands(
+    persistent_bytes: usize,
+    cache_operands: &[&GradedOperator],
+) -> Result<usize> {
+    cache_operands
+        .iter()
+        .try_fold(persistent_bytes, |resident, operand| {
+            resident
+                .checked_sub(graded_operator_dense_bytes(operand)?)
+                .ok_or_else(|| {
+                    TbError::Other(
+                        "finite-q resident-byte accounting excluded more cache storage than is live"
+                            .to_string(),
+                    )
+                })
+        })
+}
+
+fn preflight_accumulate_scaled_graded_operator(
+    target: &GradedOperator,
+    source: &GradedOperator,
+    external_resident_bytes: usize,
+) -> Result<()> {
+    let target_bytes = graded_operator_dense_bytes(target)?;
+    let source_bytes = graded_operator_dense_bytes(source)?;
+    let sample_block_bytes = target
+        .values()
+        .flat_map(|blocks| blocks.values())
+        .next()
+        .or_else(|| source.values().flat_map(|blocks| blocks.values()).next())
+        .map_or(0_usize, |block| {
+            block
+                .len()
+                .saturating_mul(std::mem::size_of::<Complex<f64>>())
+        });
+    let missing_blocks = source.iter().try_fold(0_usize, |total, (grade, blocks)| {
+        let target_blocks = target.get(grade);
+        let missing = blocks
+            .keys()
+            .filter(|translation| {
+                target_blocks.is_none_or(|known| !known.contains_key(*translation))
+            })
+            .count();
+        total
+            .checked_add(missing)
+            .ok_or_else(|| TbError::Other("finite-q accumulation block-count overflow".to_string()))
+    })?;
+    let final_target_bytes = missing_blocks
+        .checked_mul(sample_block_bytes)
+        .and_then(|added| target_bytes.checked_add(added))
+        .ok_or_else(|| {
+            TbError::Other("finite-q accumulation byte estimate overflow".to_string())
+        })?;
+    let peak_bytes =
+        checked_resident_sum([external_resident_bytes, source_bytes, final_target_bytes])?;
+    if peak_bytes > MAX_GRADED_OPERATOR_BYTES {
+        return Err(TbError::Other(format!(
+            "finite-q graded accumulation may require about {peak_bytes} dense-matrix bytes, \
+             exceeding the safety limit {MAX_GRADED_OPERATOR_BYTES} before allocation"
+        )));
+    }
+    Ok(())
+}
+
+fn preflight_twisted_product_storage(
+    left: &RealSpaceBlockMap,
+    right: &RealSpaceBlockMap,
+    nsta: usize,
+    pair_count: usize,
+    resident_dense_bytes: usize,
+) -> Result<()> {
+    let mut output_support = std::collections::BTreeSet::new();
+    for r_left in left.keys() {
+        for r_right in right.keys() {
+            if r_left.len() != r_right.len() {
+                return Err(TbError::Other(
+                    "twisted-product support dimensions do not match".to_string(),
+                ));
+            }
+            let mut translation = Vec::with_capacity(r_left.len());
+            for (axis, (&left_value, &right_value)) in r_left.iter().zip(r_right.iter()).enumerate()
+            {
+                translation.push(left_value.checked_add(right_value).ok_or_else(|| {
+                    TbError::Other(format!(
+                        "twisted-product translation overflow on axis {axis}: \
+                         {left_value} + {right_value}"
+                    ))
+                })?);
+            }
+            output_support.insert(translation);
+            if output_support.len() > MAX_GRADED_OPERATOR_BLOCKS {
+                return Err(TbError::Other(format!(
+                    "finite-q real-space product would exceed the per-component block safety \
+                     limit {MAX_GRADED_OPERATOR_BLOCKS} before dense allocation"
+                )));
+            }
+        }
+    }
+
+    let block_bytes = nsta
+        .checked_mul(nsta)
+        .and_then(|value| value.checked_mul(std::mem::size_of::<Complex<f64>>()))
+        .ok_or_else(|| TbError::Other("finite-q dense-block byte estimate overflow".to_string()))?;
+    let output_bytes = output_support
+        .len()
+        .checked_mul(block_bytes)
+        .ok_or_else(|| TbError::Other("finite-q product byte estimate overflow".to_string()))?;
+    let parallel_copies = if pair_count >= 128 && rayon::current_num_threads() > 1 {
+        // `with_min_len(ceil(pair_count / threads))` creates at most one
+        // leaf map per Rayon worker. Reduction merges blocks into one of the
+        // existing maps, so it does not add another full dense copy.
+        rayon::current_num_threads()
+    } else {
+        1
+    };
+    let peak_bytes = output_bytes
+        .checked_mul(parallel_copies)
+        .and_then(|value| value.checked_add(resident_dense_bytes))
+        .ok_or_else(|| {
+            TbError::Other("finite-q product peak-byte estimate overflow".to_string())
+        })?;
+    if peak_bytes > MAX_GRADED_OPERATOR_BYTES {
+        return Err(TbError::Other(format!(
+            "finite-q real-space product may require about {peak_bytes} dense-matrix bytes \
+             including resident operands and Rayon partial maps, exceeding the safety limit \
+             {MAX_GRADED_OPERATOR_BYTES}; reduce the hopping support, state count, Rayon thread \
+             count, momentum channels, or request uniform-only output"
+        )));
+    }
+    Ok(())
+}
+
 fn merge_graded_operators(
     mut left: GradedOperator,
     mut right: GradedOperator,
@@ -3893,11 +4506,30 @@ fn merge_graded_operators(
 fn graded_component_arrays<const DIM: usize>(
     blocks: &RealSpaceBlockMap,
     nsta: usize,
+    resident_dense_bytes: usize,
 ) -> Result<(Array3<Complex<f64>>, Array2<isize>)> {
     if blocks.is_empty() {
         return Err(TbError::Other(
             "a graded real-space component has empty hopping support".to_string(),
         ));
+    }
+    let output_bytes = blocks
+        .len()
+        .checked_mul(nsta)
+        .and_then(|value| value.checked_mul(nsta))
+        .and_then(|value| value.checked_mul(std::mem::size_of::<Complex<f64>>()))
+        .ok_or_else(|| TbError::Other("graded component byte estimate overflow".to_string()))?;
+    let peak_bytes = resident_dense_bytes
+        .checked_add(output_bytes)
+        .ok_or_else(|| {
+            TbError::Other("graded component peak-byte estimate overflow".to_string())
+        })?;
+    if peak_bytes > MAX_GRADED_OPERATOR_BYTES {
+        return Err(TbError::Other(format!(
+            "converting a finite-q graded component may require about {peak_bytes} \
+             dense-matrix bytes, exceeding the safety limit {MAX_GRADED_OPERATOR_BYTES} \
+             before allocation"
+        )));
     }
     let mut ham = Array3::<Complex<f64>>::zeros((blocks.len(), nsta, nsta));
     let mut ham_r = Array2::<isize>::zeros((blocks.len(), DIM));
@@ -3943,6 +4575,7 @@ fn twisted_real_space_product(
     right: &RealSpaceBlockMap,
     right_grade: &MomentumGrade,
     wavevector_basis_reduced: &Array2<f64>,
+    resident_dense_bytes: usize,
 ) -> Result<RealSpaceBlockMap> {
     if left.is_empty() || right.is_empty() {
         return Ok(RealSpaceBlockMap::new());
@@ -3967,6 +4600,7 @@ fn twisted_real_space_product(
         .len()
         .checked_mul(n_right)
         .ok_or_else(|| TbError::Other("twisted-product pair count overflow".to_string()))?;
+    preflight_twisted_product_storage(left, right, nsta, pair_count, resident_dense_bytes)?;
     let accumulate_pair = |partial: &mut RealSpaceBlockMap, pair_index: usize| -> Result<()> {
         let (r_left, left_block) = left_entries[pair_index / n_right];
         let (r_right, right_block) = right_entries[pair_index % n_right];
@@ -4037,38 +4671,66 @@ fn graded_product(
     right: &GradedOperator,
     wavevector_basis_reduced: &Array2<f64>,
     work_budget: &GradedWorkBudget,
+    output_grade_filter: Option<&MomentumGrade>,
+    external_resident_bytes: usize,
 ) -> Result<GradedOperator> {
-    work_budget.charge_product(left, right)?;
+    work_budget.charge_product(left, right, output_grade_filter)?;
+    let input_resident_bytes = graded_operator_dense_bytes(left)?
+        .checked_add(graded_operator_dense_bytes(right)?)
+        .and_then(|value| value.checked_add(external_resident_bytes))
+        .ok_or_else(|| TbError::Other("finite-q resident-byte estimate overflow".to_string()))?;
     let mut product = GradedOperator::new();
     let mut output_blocks = 0_usize;
-    for (left_grade, left_blocks) in left {
-        for (right_grade, right_blocks) in right {
-            let output_grade = left_grade.add(right_grade)?;
-            let blocks = twisted_real_space_product(
-                left_blocks,
-                right_blocks,
-                right_grade,
-                wavevector_basis_reduced,
-            )?;
-            let target = product.entry(output_grade).or_default();
-            let previous_len = target.len();
-            let previous = std::mem::take(target);
-            *target = merge_real_space_block_maps(previous, blocks);
-            output_blocks = output_blocks
-                .checked_add(target.len() - previous_len)
-                .ok_or_else(|| {
-                    TbError::Other("finite-q product output block count overflow".to_string())
-                })?;
-            if product.len() > MAX_GRADED_OPERATOR_GRADES
-                || output_blocks > MAX_GRADED_OPERATOR_BLOCKS
-            {
-                return Err(TbError::Other(format!(
-                    "finite-q graded product exceeds its output safety limits ({} grades, \
-                     {output_blocks} blocks; limits are {} and {})",
-                    product.len(),
-                    MAX_GRADED_OPERATOR_GRADES,
-                    MAX_GRADED_OPERATOR_BLOCKS
-                )));
+    let mut accumulate_grade_pair = |left_grade: &MomentumGrade,
+                                     left_blocks: &RealSpaceBlockMap,
+                                     right_grade: &MomentumGrade,
+                                     right_blocks: &RealSpaceBlockMap|
+     -> Result<()> {
+        let output_grade = left_grade.add(right_grade)?;
+        let resident_dense_bytes = input_resident_bytes
+            .checked_add(graded_operator_dense_bytes(&product)?)
+            .ok_or_else(|| {
+                TbError::Other("finite-q resident-byte estimate overflow".to_string())
+            })?;
+        let blocks = twisted_real_space_product(
+            left_blocks,
+            right_blocks,
+            right_grade,
+            wavevector_basis_reduced,
+            resident_dense_bytes,
+        )?;
+        let target = product.entry(output_grade).or_default();
+        let previous_len = target.len();
+        let previous = std::mem::take(target);
+        *target = merge_real_space_block_maps(previous, blocks);
+        output_blocks = output_blocks
+            .checked_add(target.len() - previous_len)
+            .ok_or_else(|| {
+                TbError::Other("finite-q product output block count overflow".to_string())
+            })?;
+        if product.len() > MAX_GRADED_OPERATOR_GRADES || output_blocks > MAX_GRADED_OPERATOR_BLOCKS
+        {
+            return Err(TbError::Other(format!(
+                "finite-q graded product exceeds its output safety limits ({} grades, \
+                 {output_blocks} blocks; limits are {} and {})",
+                product.len(),
+                MAX_GRADED_OPERATOR_GRADES,
+                MAX_GRADED_OPERATOR_BLOCKS
+            )));
+        }
+        Ok(())
+    };
+    if let Some(filter) = output_grade_filter {
+        for (left_grade, left_blocks) in left {
+            let required_right = filter.add(&left_grade.negated()?)?;
+            if let Some((right_grade, right_blocks)) = right.get_key_value(&required_right) {
+                accumulate_grade_pair(left_grade, left_blocks, right_grade, right_blocks)?;
+            }
+        }
+    } else {
+        for (left_grade, left_blocks) in left {
+            for (right_grade, right_blocks) in right {
+                accumulate_grade_pair(left_grade, left_blocks, right_grade, right_blocks)?;
             }
         }
     }
@@ -4080,9 +4742,31 @@ fn graded_commutator(
     right: &GradedOperator,
     wavevector_basis_reduced: &Array2<f64>,
     work_budget: &GradedWorkBudget,
+    output_grade_filter: Option<&MomentumGrade>,
+    external_resident_bytes: usize,
 ) -> Result<GradedOperator> {
-    let mut commutator = graded_product(left, right, wavevector_basis_reduced, work_budget)?;
-    let reverse = graded_product(right, left, wavevector_basis_reduced, work_budget)?;
+    let mut commutator = graded_product(
+        left,
+        right,
+        wavevector_basis_reduced,
+        work_budget,
+        output_grade_filter,
+        external_resident_bytes,
+    )?;
+    validate_graded_operator_size(&commutator)?;
+    let forward_bytes = graded_operator_dense_bytes(&commutator)?;
+    let reverse = graded_product(
+        right,
+        left,
+        wavevector_basis_reduced,
+        work_budget,
+        output_grade_filter,
+        external_resident_bytes
+            .checked_add(forward_bytes)
+            .ok_or_else(|| {
+                TbError::Other("finite-q resident-byte estimate overflow".to_string())
+            })?,
+    )?;
     accumulate_scaled_graded_operator(&mut commutator, &reverse, -1.0)?;
     Ok(commutator)
 }
@@ -4091,6 +4775,7 @@ fn graded_commutator(
 fn enforce_graded_hermiticity(
     operator: &mut GradedOperator,
     wavevector_basis_reduced: &Array2<f64>,
+    external_resident_bytes: usize,
 ) -> Result<()> {
     let Some(sample_block) = operator.values().flat_map(|blocks| blocks.values()).next() else {
         return Ok(());
@@ -4145,13 +4830,28 @@ fn enforce_graded_hermiticity(
         .checked_mul(block_len)
         .and_then(|value| value.checked_mul(std::mem::size_of::<Complex<f64>>()))
         .ok_or_else(|| TbError::Other("graded Hermiticity byte estimate overflow".to_string()))?;
+    // The pair-averaging loop temporarily owns the two cloned input blocks
+    // plus conjugate/average scratch arrays. Account conservatively for six
+    // extra dense blocks while the closed operator remains resident.
+    let hermiticity_scratch_bytes = block_len
+        .checked_mul(std::mem::size_of::<Complex<f64>>())
+        .and_then(|value| value.checked_mul(6))
+        .ok_or_else(|| {
+            TbError::Other("graded Hermiticity scratch estimate overflow".to_string())
+        })?;
+    let hermiticity_peak_bytes = checked_resident_sum([
+        external_resident_bytes,
+        final_matrix_bytes,
+        hermiticity_scratch_bytes,
+    ])?;
     if final_grade_count > MAX_GRADED_OPERATOR_GRADES
         || final_block_count > MAX_GRADED_OPERATOR_BLOCKS
-        || final_matrix_bytes > MAX_GRADED_OPERATOR_BYTES
+        || hermiticity_peak_bytes > MAX_GRADED_OPERATOR_BYTES
     {
         return Err(TbError::Other(format!(
             "graded Hermiticity closure would require {final_grade_count} grades, \
-             {final_block_count} blocks, and at least {final_matrix_bytes} matrix bytes; limits \
+             {final_block_count} blocks, {final_matrix_bytes} resident matrix bytes, and about \
+             {hermiticity_peak_bytes} bytes including averaging scratch; limits \
              are {MAX_GRADED_OPERATOR_GRADES}, {MAX_GRADED_OPERATOR_BLOCKS}, and \
              {MAX_GRADED_OPERATOR_BYTES}"
         )));
@@ -6707,7 +7407,7 @@ mod tests {
             array![[0.25]],
             vec![LightMode::new(1, array![Complex::new(0.4, 0.1)], [1])],
         );
-        let channels = bessel_peierls_channels(&geometry, &drive, -5, 5, 6).unwrap();
+        let channels = bessel_peierls_channels(&geometry, &drive, -5, 5, 6, None).unwrap();
         assert!(!channels.is_empty());
         for channel in channels.keys() {
             assert_eq!(channel.grade.as_slice(), &[channel.harmonic]);
@@ -6723,6 +7423,217 @@ mod tests {
     }
 
     #[test]
+    fn finite_q_total_photon_order_one_keeps_only_single_photon_vertices() {
+        let geometry = LinkGeometry {
+            d_fractional: array![0.7, -0.3, 0.5],
+            d_cartesian: array![0.7, -0.3, 0.5],
+            midpoint_fractional: array![0.35, -0.15, 0.25],
+        };
+        let basis = array![
+            [0.021, 0.0, 0.0],
+            [0.0, 0.019, 0.0],
+            [0.0, 0.0, 0.017],
+            [0.013, -0.011, 0.009],
+        ];
+        let modes = (0..4)
+            .map(|index| {
+                let mut label = vec![0_isize; 4];
+                label[index] = 1;
+                LightMode::new(
+                    1,
+                    array![
+                        Complex::new(0.11 + 0.01 * index as f64, 0.02),
+                        Complex::new(-0.03, 0.09 + 0.01 * index as f64),
+                        Complex::new(0.04, -0.02),
+                    ],
+                    label,
+                )
+            })
+            .collect();
+        let drive = FloquetDrive::new(5.0, basis, modes);
+
+        let single_photon = bessel_peierls_channels(&geometry, &drive, -1, 1, 6, Some(1)).unwrap();
+        assert_eq!(single_photon.len(), 9);
+        assert!(single_photon.contains_key(&ChannelKey {
+            harmonic: 0,
+            grade: MomentumGrade::zero(4),
+        }));
+        for index in 0..4 {
+            for sign in [-1_isize, 1] {
+                let mut grade = vec![0_isize; 4];
+                grade[index] = sign;
+                assert!(single_photon.contains_key(&ChannelKey {
+                    harmonic: sign,
+                    grade: MomentumGrade::new(grade),
+                }));
+            }
+        }
+        assert!(!single_photon.contains_key(&ChannelKey {
+            harmonic: 0,
+            grade: MomentumGrade::new([1, -1, 0, 0]),
+        }));
+
+        let zero_photon = bessel_peierls_channels(&geometry, &drive, -1, 1, 6, Some(0)).unwrap();
+        assert_eq!(zero_photon.len(), 1);
+        assert!(zero_photon.contains_key(&ChannelKey {
+            harmonic: 0,
+            grade: MomentumGrade::zero(4),
+        }));
+
+        let all_orders = bessel_peierls_channels(&geometry, &drive, -1, 1, 6, None).unwrap();
+        assert!(all_orders.len() > single_photon.len());
+        assert!(all_orders.contains_key(&ChannelKey {
+            harmonic: 0,
+            grade: MomentumGrade::new([1, -1, 0, 0]),
+        }));
+    }
+
+    #[test]
+    fn tetrahedral_a2g_modes_builds_eight_body_diagonal_modes_with_expected_signs() {
+        let basis = array![[0.05, 0.0, 0.0], [0.0, 0.03, 0.0], [0.0, 0.0, 0.08],];
+        let modes = FloquetDrive::tetrahedral_a2g_modes(1, &basis, 0.123, 1.0).unwrap();
+
+        assert_eq!(modes.len(), 8);
+        let mut seen = std::collections::HashSet::new();
+        for mode in modes {
+            let label = mode.momentum_label.clone();
+            assert_eq!(label.len(), 3);
+            for value in label.iter() {
+                assert_eq!(value.abs(), 1_isize);
+            }
+            assert!(seen.insert(label.clone()));
+            let sign = (label.iter().product::<isize>() as f64) * mode.harmonic as f64;
+            let direction = basis.rows().into_iter().zip(label.iter()).fold(
+                Array1::<f64>::zeros(3),
+                |mut direction, (axis, factor)| {
+                    direction += &(axis.to_owned() * (*factor as f64));
+                    direction
+                },
+            );
+            let incident = IncidentBasis::from_direction(&direction).unwrap();
+            let eta = if sign > 0.0 { 1.0 } else { -1.0 };
+            let c1_expected = Complex::new(0.123 / (2.0_f64).sqrt(), 0.0);
+            let c2_expected = Complex::new(0.0, eta * 0.123 / (2.0_f64).sqrt());
+            let expected = incident.polarization([c1_expected, c2_expected]);
+            let diff_norm = (0..3)
+                .map(|index| (mode.a_complex[index] - expected[index]).norm_sqr())
+                .sum::<f64>()
+                .sqrt();
+            assert!(
+                diff_norm < 1.0e-14,
+                "unexpected polarization reconstruction for {label:?}"
+            );
+            assert_eq!(mode.harmonic, 1);
+        }
+        assert_eq!(seen.len(), 8);
+    }
+
+    #[test]
+    fn tetrahedral_a2g_domains_are_exact_helicity_partners() {
+        let basis = array![[0.05, 0.0, 0.0], [0.0, 0.03, 0.0], [0.0, 0.0, 0.08],];
+        let positive = FloquetDrive::tetrahedral_a2g_modes(1, &basis, 0.07, 1.0).unwrap();
+        let negative = FloquetDrive::tetrahedral_a2g_modes(1, &basis, 0.07, -1.0).unwrap();
+
+        assert_eq!(positive.len(), negative.len());
+        for (mode_plus, mode_minus) in positive.iter().zip(negative.iter()) {
+            assert_eq!(mode_plus.momentum_label, mode_minus.momentum_label);
+            for index in 0..3 {
+                assert!(
+                    (mode_plus.a_complex[index].re - mode_minus.a_complex[index].re).abs()
+                        < 1.0e-14
+                );
+                assert!(
+                    (mode_plus.a_complex[index].im + mode_minus.a_complex[index].im).abs()
+                        < 1.0e-14
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finite_q_single_photon_coefficient_keeps_other_modes_j_zero_factors() {
+        let geometry = LinkGeometry {
+            d_fractional: array![0.6],
+            d_cartesian: array![0.6],
+            midpoint_fractional: array![0.2],
+        };
+        let drive = FloquetDrive::new(
+            5.0,
+            array![[0.07], [0.11]],
+            vec![
+                LightMode::new(1, array![Complex::new(0.31, -0.08)], [1, 0]),
+                LightMode::new(1, array![Complex::new(-0.17, 0.04)], [0, 1]),
+            ],
+        );
+        let channels = bessel_peierls_channels(&geometry, &drive, -1, 1, 6, Some(1)).unwrap();
+        let z0 = plane_wave_link_projection(&geometry, &drive, &drive.modes[0]).unwrap();
+        let z1 = plane_wave_link_projection(&geometry, &drive, &drive.modes[1]).unwrap();
+        let expected = Complex::new(0.0, -1.0)
+            * bessel_j(1, z0.norm())
+            * Complex::from_polar(1.0, z0.arg())
+            * bessel_j(0, z1.norm());
+        let actual = channels[&ChannelKey {
+            harmonic: 1,
+            grade: MomentumGrade::new([1, 0]),
+        }];
+        assert!(
+            (actual - expected).norm() < 1.0e-14,
+            "single-photon coefficient {actual:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn finite_q_default_all_order_channels_match_direct_time_fourier_coefficient() {
+        // These two modes are linearly dependent in both time and momentum:
+        // (l, g) = (1, 1) and (2, 2).  Multiple Bessel paths therefore
+        // interfere in the same exact channel.  The default None cutoff must
+        // fold those paths after every mode, as the pre-cutoff implementation
+        // did, instead of retaining a redundant photon-order key.
+        let geometry = LinkGeometry {
+            d_fractional: array![0.8],
+            d_cartesian: array![0.8],
+            midpoint_fractional: array![0.3],
+        };
+        let drive = FloquetDrive::new(
+            4.0,
+            array![[0.09]],
+            vec![
+                LightMode::new(1, array![Complex::new(0.28, -0.06)], [1]),
+                LightMode::new(2, array![Complex::new(-0.19, 0.03)], [2]),
+            ],
+        );
+        let channels = bessel_peierls_channels(&geometry, &drive, -4, 4, 6, None).unwrap();
+        let target = ChannelKey {
+            harmonic: 2,
+            grade: MomentumGrade::new([2]),
+        };
+        let actual = channels[&target];
+        let projections = drive
+            .modes
+            .iter()
+            .map(|mode| plane_wave_link_projection(&geometry, &drive, mode).unwrap())
+            .collect::<Vec<_>>();
+        let n_time = 1 << 17;
+        let mut expected = Complex::new(0.0, 0.0);
+        for sample in 0..n_time {
+            let theta = TAU * sample as f64 / n_time as f64;
+            let link_phase = drive
+                .modes
+                .iter()
+                .zip(projections.iter())
+                .map(|(mode, z)| (*z * Complex::new(0.0, -(mode.harmonic as f64) * theta).exp()).re)
+                .sum::<f64>();
+            let peierls = Complex::new(0.0, -link_phase).exp();
+            expected +=
+                Complex::new(0.0, target.harmonic as f64 * theta).exp() * peierls / n_time as f64;
+        }
+        assert!(
+            (actual - expected).norm() < 2.0e-12,
+            "all-order folded coefficient {actual:?}, direct DFT {expected:?}"
+        );
+    }
+
+    #[test]
     fn twisted_product_matches_explicit_four_cell_ring() {
         let basis = array![[0.25]];
         let grade = MomentumGrade::new([1]);
@@ -6730,7 +7641,7 @@ mod tests {
         let mut right = RealSpaceBlockMap::new();
         left.insert(vec![1], array![[Complex::new(2.0, -0.5)]]);
         right.insert(vec![-1], array![[Complex::new(-0.3, 1.2)]]);
-        let product = twisted_real_space_product(&left, &right, &grade, &basis).unwrap();
+        let product = twisted_real_space_product(&left, &right, &grade, &basis, 0).unwrap();
 
         let build_ring = |blocks: &RealSpaceBlockMap, operator_grade: &MomentumGrade| {
             let mut matrix = Array2::<Complex<f64>>::zeros((4, 4));
@@ -6773,7 +7684,7 @@ mod tests {
             .entry(partner_grade.clone())
             .or_default()
             .insert(partner_translation.clone(), partner);
-        enforce_graded_hermiticity(&mut operator, &basis).unwrap();
+        enforce_graded_hermiticity(&mut operator, &basis, 0).unwrap();
         let actual = &operator[&partner_grade][&partner_translation];
         let expected = hermitian_conjugate(&operator[&grade][&translation]) * phase;
         assert_eq!(actual, &expected);
@@ -6917,6 +7828,36 @@ mod tests {
     }
 
     #[test]
+    fn finite_q_uniform_only_matches_zero_grade_of_complete_result() {
+        let model = chain_model();
+        let drive = FloquetDrive::new(
+            7.0,
+            array![[0.25], [0.125]],
+            vec![
+                LightMode::new(1, array![Complex::new(0.31, -0.08)], [1, 0]),
+                LightMode::new(2, array![Complex::new(0.17, 0.04)], [0, 1]),
+            ],
+        );
+        let trunc = FloquetTruncation::new(1, 16);
+        let complete_options = FloquetEffectiveOptions::new()
+            .with_order(2)
+            .with_harmonic_max(2)
+            .with_max_total_photon_order(2);
+        let uniform_options = complete_options.clone().with_uniform_only();
+        let complete = model
+            .floquet_effective_model(&drive, &trunc, Some(&complete_options))
+            .unwrap();
+        let uniform = model
+            .floquet_effective_model(&drive, &trunc, Some(&uniform_options))
+            .unwrap();
+
+        assert!(!complete.nonuniform.is_empty());
+        assert!(uniform.nonuniform.is_empty());
+        assert_eq!(uniform.uniform_model.hamR, complete.uniform_model.hamR);
+        assert_eq!(uniform.uniform_model.ham, complete.uniform_model.ham);
+    }
+
+    #[test]
     fn finite_q_independent_mode_labels_remain_distinct() {
         let lat = Array2::<f64>::eye(3);
         let orb = array![[0.0, 0.0, 0.0]];
@@ -6942,7 +7883,7 @@ mod tests {
         let drive = FloquetDrive::new(5.0, basis, modes);
         validate_floquet_drive::<3>(&drive, &FloquetTruncation::new(1, 8)).unwrap();
         let cache = model
-            .floquet_graded_harmonic_cache(&drive, -1, 1, 6)
+            .floquet_graded_harmonic_cache(&drive, -1, 1, 6, None)
             .unwrap();
         let harmonic_one = cache.harmonic(1).unwrap();
         for index in 0..4 {
@@ -7124,6 +8065,14 @@ mod tests {
         let error = validate_finite_q_pair_scan_count(12_000).unwrap_err();
         assert!(error.to_string().contains("harmonic pairs"));
 
+        assert_eq!(nontrivial_mixed_harmonic_difference(1, 1).unwrap(), None);
+        assert_eq!(nontrivial_mixed_harmonic_difference(1, 2).unwrap(), None);
+        assert_eq!(
+            nontrivial_mixed_harmonic_difference(1, -1).unwrap(),
+            Some(-2)
+        );
+        assert!(nontrivial_mixed_harmonic_difference(isize::MIN, 1).is_err());
+
         let estimated = estimated_graded_cache_bytes(250_000, 250_000, 4, 100);
         if usize::BITS >= 64 {
             assert!(estimated.unwrap() > MAX_GRADED_CACHE_BYTES);
@@ -7142,6 +8091,41 @@ mod tests {
     }
 
     #[test]
+    fn finite_q_product_preflights_parallel_dense_storage_before_allocation() {
+        let mut left = RealSpaceBlockMap::new();
+        let mut right = RealSpaceBlockMap::new();
+        for translation in 0..128_isize {
+            left.insert(vec![translation], array![[Complex::new(1.0, 0.0)]]);
+        }
+        right.insert(vec![0], array![[Complex::new(1.0, 0.0)]]);
+
+        // In a two-thread pool, 128 output blocks of 2,000 x 2,000 complex
+        // values need about 16.4 GB across the two leaf maps. Together with
+        // 20 GiB of already resident cache/operators this must be rejected.
+        // The maps themselves remain 1 x 1, so the test never allocates the
+        // estimated dense output.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let error = pool
+            .install(|| {
+                preflight_twisted_product_storage(
+                    &left,
+                    &right,
+                    2_000,
+                    128,
+                    20 * 1024 * 1024 * 1024,
+                )
+            })
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("dense-matrix bytes"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn finite_q_graded_product_work_is_bounded_before_multiplication() {
         let mut operator = GradedOperator::new();
         for grade_index in 0..12_000_isize {
@@ -7155,12 +8139,27 @@ mod tests {
             &operator,
             &array![[0.25]],
             &GradedWorkBudget::default(),
+            None,
+            0,
         )
         .unwrap_err();
         assert!(
             error.to_string().contains("support-pair work"),
             "unexpected error: {error}"
         );
+
+        let zero_grade = MomentumGrade::zero(1);
+        let filtered = graded_product(
+            &operator,
+            &operator,
+            &array![[0.25]],
+            &GradedWorkBudget::default(),
+            Some(&zero_grade),
+            0,
+        )
+        .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains_key(&zero_grade));
     }
 
     #[test]

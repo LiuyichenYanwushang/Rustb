@@ -45,6 +45,9 @@ drives with `FloquetDrive::uniform(omega0_ev, modes)` or
 formerly named `q_max` is now `harmonic_max`. `floquet_effective_model` returns
 `FloquetEffectiveResult`; use `.uniform_model` or `.into_uniform_model()` only
 when intentionally retaining the zero momentum grade.
+For many independent finite-q modes,
+`with_max_total_photon_order(n)` bounds each Peierls path by
+`sum_alpha |m_alpha| <= n`; the default `None` remains the all-order result.
 
 ### Hubbard unrestricted Hartree-Fock
 
@@ -547,6 +550,17 @@ keys), `real_space_commutator` (two zgemm convolutions via the
 `floquet_effective_model_legacy` (crate-internal k-space reference,
 `pub(crate)` with `FloquetEffectiveOptions::target_hamR`/`with_target_hamR`).
 
+For a finite-q drive with several independent momentum labels, the number of
+exact Bessel channels can grow combinatorially even when `harmonic_max` is
+small. `FloquetEffectiveOptions::with_max_total_photon_order(n)` restricts the
+graded cache to paths satisfying `sum_alpha |m_alpha| <= n`. `n = 1` retains
+the single-photon vertices and hence the leading `O(A^2 / omega)` first-order
+van Vleck correction. It still uses full `J_0`/`J_1` values and is therefore a
+photon-path cutoff, not a strict field-amplitude Taylor expansion. The uniform
+fast path ignores this finite-q-only option. If only the primitive-periodic
+zero grade is needed, `with_uniform_only()` skips final nonzero-grade products
+without removing the intermediate virtual channels that feed the zero grade.
+
 ### Graphene circular-light benchmarks (tests in `src/floquet.rs`)
 
 `floquet::tests::graphene_*` pins the implementation against the analytic
@@ -579,7 +593,7 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 | `FloquetDrive` | `omega0_ev`, reduced wavevector basis, and modes; `uniform(...)` / `empty(...)` for q=0 |
 | `FloquetTruncation` | Photon cutoff `n_max` and time-grid `n_time`; `n_sector()` = `2n_max+1` |
 | `IncidentBasis` | Transverse polarization basis from incident direction |
-| `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_harmonic_max(n)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
+| `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_harmonic_max(n)`, finite-q `with_max_total_photon_order(n)` / `with_uniform_only()` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
 | `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
 | `Model::floquet_effective_model` | Returns zero-grade `uniform_model` plus all nonzero graded real-space components |
 

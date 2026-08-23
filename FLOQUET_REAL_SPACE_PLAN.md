@@ -232,7 +232,7 @@ pub fn floquet_effective_model(
     &self,
     drive: &FloquetDrive,
     trunc: &FloquetTruncation,
-    options: Option<&FloquetEffectiveOptions>,   // order、harmonic_max
+    options: Option<&FloquetEffectiveOptions>,   // order、harmonic_max、可选总光子阶截断
 ) -> Result<FloquetEffectiveResult<SPIN, DIM>>
 ```
 
@@ -245,6 +245,10 @@ pub fn floquet_effective_model(
    `nonuniform`，不会静默丢失或制造 Sambe 光子副本。
 5. 当前尚无把 `nonuniform` 自动装配为可直接算带的超胞 `Model` 的公开接口；
    `make_supercell` 本身不会消费 graded components。
+6. 多个独立 finite-q 模式可用 `with_max_total_photon_order(n)` 限制
+   `sum_alpha |m_alpha| <= n`；默认 `None` 保留全阶 Bessel 展开。
+7. 仅需要原胞周期部分时可加 `with_uniform_only()`；它只过滤最终输出 grade，
+   不会删除产生零 grade 虚过程所需的中间非零 grade。
 
 ### 4.6 旧路径保留（已实现）
 
