@@ -480,11 +480,11 @@ Quasienergies can be folded to `[−Ω₀/2, Ω₀/2)` via `fold_quasienergy`.
 
 ### Real-space Bessel backend (main path of `floquet_effective_model`)
 
-van Vleck through `O(Ω₀⁻²)` entirely in real space — no `k_mesh`, no `n_time`
+van Vleck through `O(W⁻²)`, with `W = omega0_ev = ħΩ₀`, entirely in real space — no `k_mesh`, no `n_time`
 (only `R > 8` fallback links touch the time grid):
 
 ```math
-T_eff(R) = T_0(R) + Σ_{q=1}^{q_max} comm_q(R) / (q ħΩ₀),
+T_eff(R) = T_0(R) + Σ_{q=1}^{q_max} comm_q(R) / (q W),
 \qquad
 comm_q(R) = (AB)(R) − (BA)(R),
 ```
@@ -493,8 +493,8 @@ with `A_R = T_q(R)`, `B_R = T_{−q}(R)` and BOTH discrete convolutions
 `(AB)(R) = Σ A_{R−R'}B_{R'}` and `(BA)(R) = Σ B_{R−R'}A_{R'}` (the "P − P†"
 single-convolution simplification is wrong for non-commuting blocks).
 For `order = 2`, the implementation additionally evaluates
-`Σ_{m≠0}[H_{−m},[H_0,H_m]]/(2m²Ω₀²)` and
-`Σ_{m,m'≠0;m'≠m}[H_{−m'},[H_{m'−m},H_m]]/(3mm'Ω₀²)`.
+`Σ_{m≠0}[H_{−m},[H_0,H_m]]/(2m²W²)` and
+`Σ_{m,m'≠0;m'≠m}[H_{−m'},[H_{m'−m},H_m]]/(3mm'W²)`.
 The two operands of an inner/outer commutator may have different supports;
 `real_space_commutator_with_supports` returns their Minkowski sum without
 premature Hermitian symmetrization. The output support is the union through

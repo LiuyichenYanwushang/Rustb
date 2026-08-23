@@ -1,7 +1,7 @@
 # Floquet Real-Space Bessel Backend — 设计计划书
 
 目标：让 `floquet_effective_model` 对**任意偏振（线/圆/椭圆）、任意多束、任意公度谐波**的驱动，
-直接在实空间用广义 Bessel 展开构造一阶 van Vleck 有效模型。消除 `k_mesh` 与 `n_time`
+直接在实空间用广义 Bessel 展开构造到二阶 van Vleck 有效模型。消除 `k_mesh` 与 `n_time`
 两个人为参数，主路径变为精确的实空间卷积。
 
 状态：实空间 Bessel 后端已实现到二阶 van Vleck（order 0/1/2）：order 2 包含完整的两族嵌套交换子、不同 support 的实空间卷积，并已由 legacy k-space 路径和完整 Sambe 高频标度交叉验证。时间网格路径保留为 reference backend。
