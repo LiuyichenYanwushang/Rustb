@@ -224,24 +224,27 @@ fn real_space_commutator(
 5. support 不闭合于 `R → −R` 时返回 `MissingHermitianConjugateHopping`
    （仅手改 hamR 破坏 Model 不变式时发生）
 
-### 4.5 顶层入口（已实现，Step 6 起为 `floquet_effective_model`）
+### 4.5 顶层入口（当前 finite-q API）
 
 ```rust
-/// 实空间 Bessel 有效模型（最终主路径，Step 6 起占用此名字）
+/// 实空间 Bessel 有效 Hamiltonian；保留精确光子动量 grade
 pub fn floquet_effective_model(
     &self,
     drive: &FloquetDrive,
     trunc: &FloquetTruncation,
-    options: Option<&FloquetEffectiveOptions>,   // order=1、q_max；target_hamR 报错
-) -> Result<Model<SPIN, DIM, NoRMatrix>>
+    options: Option<&FloquetEffectiveOptions>,   // order、harmonic_max
+) -> Result<FloquetEffectiveResult<SPIN, DIM>>
 ```
 
 内部：
-1. `cache = floquet_harmonic_cache(drive, trunc, −q_max, q_max, Bessel)`（含 d 去重）
-2. `T_0(R)` = cache 的 q=0 块（静态模型重建）
-3. 对 `q = 1..q_max`：`comm_q = real_space_commutator(cache.blocks[q], hamR)`，
-   `T_eff(R) += comm_q(R)/(q·ħΩ₀)`（按 R 合并块、去重）
-4. Hermiticity 安全检查 + `Model` 组装（orb/atoms 照抄静态模型）
+1. q=0 驱动继续走原来的 uniform Bessel 快路径。
+2. finite-q 驱动构造按 `(temporal harmonic, MomentumGrade)` 索引的稀疏缓存，
+   每条 bond 使用精确直线积分的 sinc 与中点相位。
+3. `order=1/2` 的交换子和嵌套交换子使用 twisted real-space convolution。
+4. 精确零 grade 组装为与原胞相同 `nsta` 的 `uniform_model`；其余 grade 保存在
+   `nonuniform`，不会静默丢失或制造 Sambe 光子副本。
+5. 当前尚无把 `nonuniform` 自动装配为可直接算带的超胞 `Model` 的公开接口；
+   `make_supercell` 本身不会消费 graded components。
 
 ### 4.6 旧路径保留（已实现）
 
@@ -252,9 +255,9 @@ pub(crate) fn floquet_effective_model_legacy(
 ) -> Result<Model<SPIN, DIM, NoRMatrix>>
 ```
 
-最终公开 API（已落地）：`floquet_effective_model(drive, trunc, options)` 指向 Bessel 实空间
-路径，`k_mesh` 参数删除（0.7 预发布允许 breaking）；`target_hamR` 在新路径上显式报错
-（支持集自动确定）。SKILLS.md 已同步更新。
+最终公开 API（0.7.3）：`floquet_effective_model(drive, trunc, options)` 指向 Bessel
+实空间路径并返回 `FloquetEffectiveResult`；`k_mesh` 参数删除，旧 `q_max` 选项改名为
+`harmonic_max`，`target_hamR` 在新路径上显式报错（支持集自动确定）。SKILLS.md 已同步更新。
 
 ---
 

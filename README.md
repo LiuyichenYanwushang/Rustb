@@ -8,7 +8,7 @@ and Floquet calculations.
 
 [![Crates.io](https://img.shields.io/crates/v/Rustb.svg)](https://crates.io/crates/Rustb)
 
-The current API version is **0.7.2** and uses the const-generic model type
+The current API version is **0.7.3** and uses the const-generic model type
 `Model<SPIN, DIM, R>`.
 
 ## Installation
@@ -386,8 +386,9 @@ zero-temperature metallic calculations.
 - Boundaries and fields: surface Green functions and uniform magnetic fields
   through the Peierls substitution.
 - Interfaces: Wannier90 import, BXSF/FRMSF export, and band unfolding.
-- Driven systems: Floquet-Sambe Hamiltonians and same-size van Vleck effective
-  models.
+- Driven systems: uniform-field Floquet-Sambe Hamiltonians and momentum-graded
+  finite-q van Vleck effective results; the zero-grade model remains the input
+  primitive-cell size.
 
 See [SKILLS.md](SKILLS.md) for current signatures and practical examples.
 The generated rustdoc contains the detailed mathematical conventions.

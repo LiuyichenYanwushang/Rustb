@@ -446,9 +446,9 @@ The k-vector passed to the surface object has length `DIM - 1`.
 lattice-length units.
 
 ```rust
-let drive = FloquetDrive::with_modes(
+let drive = FloquetDrive::uniform(
     0.8,
-    vec![LightMode::new(
+    vec![LightMode::uniform(
         1,
         arr1(&[
             Complex::new(0.12, 0.0),
@@ -467,6 +467,7 @@ let quasienergy =
 
 let effective =
     model.floquet_effective_model(&drive, &truncation, None)?;
+let effective_model = &effective.uniform_model;
 
 // Retain the complete van Vleck correction through O(omega^-2).
 let second_order_options = FloquetEffectiveOptions::new().with_order(2);
@@ -480,7 +481,22 @@ let effective_second_order = model.floquet_effective_model(
 | API | Basis size | Intended regime |
 |---|---:|---|
 | `floquet_model` / `floquet_ham_onek` | `nsta * (2*n_max + 1)` | Full truncated Sambe problem |
-| `floquet_effective_model` | `nsta` | Off-resonant, high-frequency expansion |
+| `floquet_effective_model` | no photon-sector enlargement | Off-resonant, high-frequency expansion |
+
+For a finite-q drive, construct each mode with
+`LightMode::new(harmonic, a_complex, momentum_label)` and construct the drive
+with `FloquetDrive::new(omega0_ev, wavevector_basis_reduced, modes)`.  The
+`harmonic` must be a strictly positive integer; the real part of the field
+supplies the negative-frequency conjugate.  The
+physical reduced wavevector is the integer `momentum_label` times the rows of
+`wavevector_basis_reduced`.  The returned `uniform_model` is the exact zero
+momentum grade and has the same `nsta` as the input.  Nonzero grades are kept in
+`nonuniform`; full finite-q Sambe methods return an error instead of ignoring q.
+There is not yet a crate-provided assembler that turns `nonuniform` into a
+commensurate supercell `Model`, and `make_supercell` alone does not consume the
+graded components. Thus ordinary bands of the complete finite-q result require
+caller-side assembly; `.into_uniform_model()` deliberately discards all
+nonzero grades.
 
 `floquet_effective_model` uses the real-space generalized-Bessel backend:
 no `k_mesh` and no `target_hamR` — the effective hopping support is
@@ -489,7 +505,9 @@ determined automatically: up to the double Minkowski sum for the default
 does not use the value of `trunc.n_time` for the computation (the field
 only needs to be positive): out-of-range links fall back to a per-link
 time-grid DFT sized from the link's own bandwidth and the requested
-harmonic range.
+harmonic range.  Finite-q links use the exact straight-bond `sinc` integral and
+return an error rather than falling back when the per-mode link amplitude is
+outside the graded Bessel range.
 
 For three-dimensional illumination, `IncidentBasis::from_direction` constructs
 two transverse polarization vectors from a propagation direction.

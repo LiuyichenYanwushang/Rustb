@@ -21,7 +21,7 @@ Rustb is a Rust library for tight-binding model calculations in condensed matter
 - **Repo**: https://github.com/LiuyichenYanwushang/Rustb
 - **Error handling**: Uses `thiserror` for `TbError` enum.
 - **Docs**: `katexit` renders LaTeX in rustdoc; `docs-header.html` for custom CSS.
-- **Version**: 0.7.2.
+- **Version**: 0.7.3.
 - **SKILLS.md**: Practical usage guide with code examples for the entire crate. When adding or changing any public API, update that file as well.
 
 > **Note**: README.md and SKILLS.md both use the current const-generic API.
@@ -34,6 +34,17 @@ physics workflows end in an ordinary
 `Model<SPIN, DIM, R>` whenever that is physically meaningful. Solver-specific
 wrappers hold input data and iteration policy; they do not create parallel
 model hierarchies with duplicated band, geometry, or response methods.
+
+### 0.7.3 finite-q Floquet migration
+
+This release intentionally changes the Floquet construction API. Use
+`LightMode::uniform(l, a)` for a uniform component or
+`LightMode::new(l, a, momentum_label)` for a propagating component. Construct
+drives with `FloquetDrive::uniform(omega0_ev, modes)` or
+`FloquetDrive::new(omega0_ev, wavevector_basis_reduced, modes)`. The option
+formerly named `q_max` is now `harmonic_max`. `floquet_effective_model` returns
+`FloquetEffectiveResult`; use `.uniform_model` or `.into_uniform_model()` only
+when intentionally retaining the zero momentum grade.
 
 ### Hubbard unrestricted Hartree-Fock
 
@@ -448,15 +459,21 @@ units matching `lat` (typically 1/Å). Complex Fourier components stored as
 `a_complex`, real drive:
 
 ```math
-a(t) = Re Σ_α a_α e^{−i l_α Ω₀ t}
+a(r,t) = Re Σ_α a_α exp(i q_α·r) exp(−i l_α Ω₀ t)
 ```
 
-`l_α` is an integer harmonic. Supports arbitrary linear, circular, elliptical,
-and mixed-frequency commensurate polarization.
+`l_α` is a strictly positive integer harmonic; taking the real part supplies
+the conjugate `(-l_α,-q_α)` component. Supports arbitrary linear, circular,
+elliptical, and mixed-frequency commensurate polarization.
 
 ### Peierls time dependence
 
-Each hopping dressed by `exp[−i a(t)·d_{ijR}]`. Fourier coefficient:
+Each hopping is dressed by the exact straight-link integral
+`exp[−i ∫ a(r,t)·dr]`.  For one mode the complex link amplitude is
+`(a·d) sinc(q·d/2) exp(i q·r_mid)`.
+The API stores wavevectors in reduced coordinates, with the single conversion
+`q·r = 2π q_red·r_frac`.
+For a uniform drive its Fourier coefficient is:
 
 ```math
 C_q(d) = (1/T) ∫_0^T dt e^{iqΩ₀t} exp[−i a(t)·d]
@@ -464,7 +481,9 @@ C_q(d) = (1/T) ∫_0^T dt e^{iqΩ₀t} exp[−i a(t)·d]
 
 Main path: the generalized Bessel backend (exact, no `n_time`); the uniform
 time-grid DFT is retained per link as the fallback for `R_α = |a_α·d| > 8` and
-as the crate-internal cross-validation reference.
+as the crate-internal cross-validation reference.  Finite-q does not fall back:
+link-mode amplitudes above 8 return an explicit error because a joint
+time/space Fourier fallback is not implemented.
 
 ### Sambe Hamiltonian
 
@@ -484,12 +503,23 @@ van Vleck through `O(W⁻²)`, with `W = omega0_ev = ħΩ₀`, entirely in real 
 (only `R > 8` fallback links touch the time grid):
 
 ```math
-T_eff(R) = T_0(R) + Σ_{q=1}^{q_max} comm_q(R) / (q W),
+T_eff(R) = T_0(R) + Σ_{n=1}^{n_max} comm_n(R) / (n W),
 \qquad
 comm_q(R) = (AB)(R) − (BA)(R),
 ```
 
-with `A_R = T_q(R)`, `B_R = T_{−q}(R)` and BOTH discrete convolutions
+For a finite-q drive, every harmonic is additionally indexed by an exact
+integer `MomentumGrade`. Products use the twisted convolution
+`(A_g B_h)(R)=Σ_{Ra+Rb=R} exp(i Q_h·R_a) A_g(Ra)B_h(Rb)`; ordinary
+convolution is valid only for zero grade. The final relation
+`T_{−g}(−R)=exp(iQ_g·R)T_g(R)†` is enforced exactly.
+The crate does not yet assemble these graded components into a commensurate
+supercell `Model`: `make_supercell` by itself does not consume `nonuniform`, so
+ordinary bands of the complete finite-q result require a caller-supplied
+assembler. `uniform_model` alone is directly usable as a primitive-cell band
+model but discards every nonzero momentum grade.
+
+For a uniform drive, with `A_R = T_n(R)`, `B_R = T_{−n}(R)`, BOTH discrete convolutions
 `(AB)(R) = Σ A_{R−R'}B_{R'}` and `(BA)(R) = Σ B_{R−R'}A_{R'}` (the "P − P†"
 single-convolution simplification is wrong for non-commuting blocks).
 For `order = 2`, the implementation additionally evaluates
@@ -545,28 +575,28 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 
 | Type | Purpose |
 |------|---------|
-| `LightMode` | One harmonic component: `LightMode::new(harmonic, a_complex)` |
-| `FloquetDrive` | `omega0_ev` + `Vec<LightMode>`; builder: `new()`, `with_modes()`, `add_mode()` |
+| `LightMode` | Plane-wave component: `new(harmonic, a_complex, momentum_label)`; `uniform(...)` for q=0 |
+| `FloquetDrive` | `omega0_ev`, reduced wavevector basis, and modes; `uniform(...)` / `empty(...)` for q=0 |
 | `FloquetTruncation` | Photon cutoff `n_max` and time-grid `n_time`; `n_sector()` = `2n_max+1` |
 | `IncidentBasis` | Transverse polarization basis from incident direction |
-| `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_q_max(q)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
+| `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_harmonic_max(n)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
 | `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
-| `Model::floquet_effective_model` | Inherent method returning same-size effective Model |
+| `Model::floquet_effective_model` | Returns zero-grade `uniform_model` plus all nonzero graded real-space components |
 
 ### Two Floquet paths
 
 | Path | Returns | Basis size | When |
 |------|---------|------------|------|
 | `floquet_model` | Enlarged `Model` | `nsta·(2N+1)` | Exact, any Ω |
-| `floquet_effective_model` | Same-size `Model` | `nsta` | Ω ≫ bandwidth; real-space Bessel backend, no `k_mesh` |
+| `floquet_effective_model` | `FloquetEffectiveResult` | zero grade has `nsta`; no photon replicas | Ω ≫ bandwidth; uniform or finite q |
 | `floquet_effective_model_legacy` | Same-size `Model` | `nsta` | `pub(crate)` k-space reference: cross-validation, custom `target_hamR` |
 
 `floquet_model` encodes photon sectors as additional orbitals. Spinless basis
 order: `(photon sector, orbital)`. Spinful: `(spin, photon sector, orbital)`.
 It replicates the input atom metadata and orbital projections in the same
 sector-major order. `floquet_effective_model` preserves the input metadata
-unchanged and determines its own real-space support (Minkowski sum of the
-input `hamR`); a custom `target_hamR` (legacy path only) must contain unique
+unchanged in `uniform_model` and determines its own real-space support
+(Minkowski sum of the input `hamR`); a custom `target_hamR` (legacy path only) must contain unique
 vectors and be closed under `R -> -R`.
 
 ---

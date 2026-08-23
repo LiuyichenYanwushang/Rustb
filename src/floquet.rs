@@ -1,19 +1,19 @@
 //! Real-space Peierls-Floquet utilities.
 //!
 //! The implementation works directly with the real-space hopping blocks stored
-//! in [`Model::ham`] and [`Model::hamR`].  A spatially uniform light field is
-//! introduced through a Peierls phase on every hopping link, then Fourier
-//! transformed into a commensurate Sambe Hamiltonian.
+//! in [`Model::ham`] and [`Model::hamR`].  Uniform fields can be assembled into
+//! a conventional Sambe Hamiltonian.  The high-frequency effective path also
+//! supports propagating plane waves and retains every exact photon-momentum
+//! channel as a graded real-space operator.
 //!
 //! # Physical scope
 //!
-//! This module implements the **long-wavelength Peierls coupling** of a
-//! periodic tight-binding model to a classical, spatially uniform light field.
-//! It is appropriate when the optical wavelength is much larger than the unit
-//! cell and the dominant coupling is through hopping phases.  In this first
-//! implementation the light field must be commensurate with one base frequency
-//! `omega0_ev`; arbitrary mixtures of integer harmonics of that base frequency
-//! are supported.
+//! This module implements Peierls coupling of a periodic tight-binding model to
+//! classical plane waves.  All temporal frequencies must be positive integer
+//! harmonics of one base frequency `omega0_ev`.  Spatial wavevectors need not
+//! be small: the straight-link integral, including its `sinc` form factor, is
+//! evaluated exactly.  Full finite-q Sambe diagonalization is deliberately
+//! rejected; [`Model::floquet_effective_model`] is the finite-q entry point.
 //!
 //! The current implementation does **not** add the length-gauge dipole term
 //! `-e E(t) r` from Wannier90 `rmatrix` data.  That should be added later as a
@@ -41,35 +41,36 @@
 //!
 //! The drive is represented by
 //!
-//! $$
-//! \mathbf a(t) = \frac{e}{\hbar}\mathbf A(t),
-//! $$
+//! $$ \mathbf a(\mathbf r,t) = \frac{e}{\hbar}\mathbf A(\mathbf r,t). $$
 //!
 //! so `LightMode::a_complex` has units of inverse length, matching the length
-//! unit of `lat`.  For one mode with harmonic `l`, the stored complex amplitude
-//! means
+//! unit of `lat`.  For one mode with harmonic `l` and wavevector `q`,
+//! the stored complex amplitude means
 //!
-//! $$ \mathbf a_l(t) =
+//! $$ \mathbf a_l(\mathbf r,t) =
 //! \operatorname{Re}\left[
-//! \mathbf a_l e^{-i l\Omega_0 t}
+//! \mathbf a_l e^{i\mathbf q_l\cdot\mathbf r}
+//! e^{-i l\Omega_0 t}
 //! \right]. $$
 //!
 //! Multiple [`LightMode`] values are added before exponentiating:
 //!
-//! $$ \mathbf a(t) =
+//! $$ \mathbf a(\mathbf r,t) =
 //! \operatorname{Re}\sum_\alpha
-//! \mathbf a_\alpha e^{-i l_\alpha\Omega_0 t}. $$
+//! \mathbf a_\alpha
+//! e^{i\mathbf q_\alpha\cdot\mathbf r}
+//! e^{-i l_\alpha\Omega_0 t}. $$
 //!
 //! This representation covers linear, circular, elliptical, and mixed-harmonic
 //! polarization without hard-coded special cases.
 //!
 //! # Peierls phase and Fourier blocks
 //!
-//! Every hopping is dressed as
+//! Every hopping is dressed by the straight-link integral
 //!
 //! $$ t_{ij}(\mathbf R,t) =
 //! t_{ij}(\mathbf R)
-//! \exp\left[-i\,\mathbf a(t)\cdot\mathbf d_{ij\mathbf R}\right]. $$
+//! \exp\left[-i\int_i^j\mathbf a(\mathbf r,t)\cdot d\mathbf r\right]. $$
 //!
 //! The Fourier coefficient of the Peierls phase is
 //!
@@ -78,14 +79,15 @@
 //! e^{iq\Omega_0 t}
 //! \exp\left[-i\,\mathbf a(t)\cdot\mathbf d\right]. $$
 //!
-//! Two backends evaluate `C_q`.  The Sambe and time-grid paths
+//! Two backends evaluate uniform-drive `C_q`.  The Sambe and time-grid paths
 //! ([`Floquet::floquet_model`], `PeierlsFourierMethod::TimeGrid`) integrate
-//! the uniform time grid over one period — deliberately more general than a
+//! a time grid over one period — deliberately more general than a
 //! Bessel-function formula, handling arbitrary complex polarization and
 //! arbitrary commensurate harmonic mixing.  The van Vleck effective-model
-//! path (`Model::floquet_effective_model`, Bessel backend) uses the
-//! generalized Bessel expansion per link, falling back to a per-link
-//! time-grid DFT when a mode amplitude exceeds the Bessel range.
+//! path uses a generalized Bessel expansion per link.  Its uniform fast path
+//! falls back to a per-link time-grid DFT beyond the Bessel range; finite-q
+//! inputs instead return an explicit error because a joint time/space Fourier
+//! fallback is not implemented.
 //!
 //! The reciprocal-space Fourier block is
 //!
@@ -123,8 +125,9 @@
 //! # Van Vleck effective model (high-frequency expansion)
 //!
 //! When `Omega_0` is large compared to the bandwidth, the photon-dressed bands
-//! are well separated and the physics can be captured by a **same-size** static
-//! model obtained through the van Vleck expansion:
+//! are well separated and the physics can be captured without adding photon
+//! sectors through the van Vleck expansion.  For finite q the result is a sum
+//! of real-space operators carrying exact momentum grades:
 //!
 //! Writing $W=\hbar\Omega_0=$ `FloquetDrive::omega0_ev`, the expansion is
 //!
@@ -149,8 +152,9 @@
 //!
 //! Use [`Model::floquet_effective_model`] for this path.  It builds the
 //! effective hopping blocks entirely in real space (generalized Bessel
-//! backend — no k-mesh), returning a [`Model`]`<SPIN, DIM, NoRMatrix>` with
-//! the same number of bands as the input model.  The k-space reference
+//! backend — no k-mesh), returning a [`FloquetEffectiveResult`].  Its
+//! `uniform_model` has the same number of bands as the input model; nonzero
+//! momentum grades are retained in `nonuniform`.  The k-space reference
 //! implementation (uniform k-mesh + inverse Fourier transform) is kept as
 //! a crate-internal `floquet_effective_model_legacy` for cross-validation.
 //!
@@ -162,13 +166,13 @@
 //!
 //! | Type / method | Meaning |
 //! |---------------|---------|
-//! | [`LightMode`] | One harmonic component `(harmonic, a_complex)` |
-//! | [`FloquetDrive`] | Base photon energy plus all light modes |
+//! | [`LightMode`] | One component `(harmonic, a_complex, momentum_label)` |
+//! | [`FloquetDrive`] | Base photon energy, wavevector basis, and light modes |
 //! | [`FloquetTruncation`] | Photon cutoff and time-Fourier grid |
 //! | [`IncidentBasis`] | 3D transverse basis from an incident direction |
-//! | [`FloquetEffectiveOptions`] | Optional order, q cutoff, and real-space truncation |
+//! | [`FloquetEffectiveOptions`] | Optional order and temporal-harmonic cutoff |
 //! | [`Floquet::floquet_model`] | Build an enlarged static Sambe tight-binding model |
-//! | [`Model::floquet_effective_model`] | Build a same-size high-frequency effective model |
+//! | [`Model::floquet_effective_model`] | Build a momentum-graded high-frequency result |
 //! | [`Floquet::floquet_ham_onek`] | Build the Sambe Hamiltonian at one `k` |
 //! | [`Floquet::floquet_band_onek`] | Diagonalize the Sambe Hamiltonian |
 //! | [`Floquet::floquet_quasienergy_onek`] | Diagonalize and fold quasienergies |
@@ -202,9 +206,9 @@
 //!         Complex::new(0.0, 1.0 / 2.0_f64.sqrt()),
 //!     ]);
 //!
-//!     let drive = FloquetDrive::with_modes(
+//!     let drive = FloquetDrive::uniform(
 //!         0.8,
-//!         vec![LightMode::new(1, circular.mapv(|z| 0.15 * z))],
+//!         vec![LightMode::uniform(1, circular.mapv(|z| 0.15 * z))],
 //!     );
 //!     let trunc = FloquetTruncation::new(1, 128);
 //!     let k = arr1(&[0.25, 0.0, 0.0]);
@@ -232,78 +236,148 @@ use ndarray_linalg::UPLO;
 use num_complex::Complex;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use std::f64::consts::TAU;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// One commensurate Fourier component of the vector potential.
-///
-/// `a_complex` stores the complex amplitude of
-/// `a(t) = Re[a_complex * exp(-i * harmonic * omega0 * t)]`, where
-/// `a = e A / hbar` has units of inverse length matching `Model::lat`.
+const MAX_GRADED_CHANNELS_PER_LINK: usize = 65_536;
+const MAX_GRADED_LINK_CHANNEL_BYTES: usize = 16 * 1024 * 1024;
+const MAX_GRADED_CACHE_CHANNELS: usize = 1_000_000;
+const MAX_GRADED_CACHE_BYTES: usize = 512 * 1024 * 1024;
+const MAX_GRADED_VAN_VLECK_TERMS: usize = 100_000;
+const MAX_GRADED_VAN_VLECK_PAIR_SCANS: usize = 2_000_000;
+const MAX_GRADED_PRODUCT_SUPPORT_PAIRS: usize = 2_000_000;
+const MAX_GRADED_MATRIX_WORK_UNITS: usize = 100_000_000;
+const MAX_GRADED_OPERATOR_GRADES: usize = 65_536;
+const MAX_GRADED_OPERATOR_BLOCKS: usize = 500_000;
+const MAX_GRADED_OPERATOR_BYTES: usize = 512 * 1024 * 1024;
+const MAX_UNIFORM_ORDER_ONE_HARMONIC: isize = 16_384;
+const MAX_UNIFORM_ORDER_TWO_HARMONIC: isize = 128;
+const MAX_EXACT_F64_INTEGER: u128 = 1_u128 << 53;
+
+/// One propagating Fourier component of the vector potential.
 ///
 /// In formulas,
 ///
-/// $$ \mathbf a_l(t) =
+/// $$ \mathbf a_l(\mathbf r,t) =
 /// \operatorname{Re}\left[
-/// \mathbf a_l e^{-il\Omega_0 t}
+/// \mathbf a_l
+/// e^{i\mathbf q_l\cdot\mathbf r}
+/// e^{-il\Omega_0 t}
 /// \right]. $$
 ///
-/// `harmonic = l` may be any integer.  Use `l = 1` for the fundamental,
-/// `l = 2` for the second harmonic, etc.
+/// Here `a_complex = e A / hbar` has inverse-length units matching
+/// [`Model::lat`], and
+/// `q_l^red = momentum_label * FloquetDrive::wavevector_basis_reduced`.
+/// The coordinate conversion used by the API is
+/// `q_l * r = 2 pi q_l^red * r_frac`.
+/// The real part already supplies the conjugate `(-l,-q)` component, so this
+/// first finite-wavevector implementation requires `harmonic > 0` during
+/// drive validation.
 #[derive(Clone, Debug)]
 pub struct LightMode {
-    /// Integer harmonic `l` measured in units of `FloquetDrive::omega0_ev`.
+    /// Positive integer harmonic `l` measured in units of
+    /// [`FloquetDrive::omega0_ev`].
     pub harmonic: isize,
     /// Complex amplitude `a_l = e A_l / hbar` in inverse-length units.
     pub a_complex: Array1<Complex<f64>>,
+    /// Exact integer coordinates in the drive's wavevector basis.  An empty
+    /// label denotes the zero grade, including inside a finite-q drive.
+    pub momentum_label: Box<[isize]>,
 }
 
 impl LightMode {
-    pub fn new(harmonic: isize, a_complex: Array1<Complex<f64>>) -> Self {
+    /// Construct a propagating mode with an exact integer momentum label.
+    pub fn new(
+        harmonic: isize,
+        a_complex: Array1<Complex<f64>>,
+        momentum_label: impl Into<Vec<isize>>,
+    ) -> Self {
         Self {
             harmonic,
             a_complex,
+            momentum_label: momentum_label.into().into_boxed_slice(),
+        }
+    }
+
+    /// Construct a spatially uniform (`q = 0`) mode.
+    pub fn uniform(harmonic: isize, a_complex: Array1<Complex<f64>>) -> Self {
+        Self {
+            harmonic,
+            a_complex,
+            momentum_label: Vec::new().into_boxed_slice(),
         }
     }
 }
 
-/// Commensurate light drive with base photon energy `omega0_ev`.
+/// Commensurate-in-time plane-wave drive with base photon energy `omega0_ev`.
 ///
 /// The full field is the sum of all modes:
 ///
-/// $$ \mathbf a(t) =
+/// $$ \mathbf a(\mathbf r,t) =
 /// \operatorname{Re}\sum_\alpha
-/// \mathbf a_\alpha e^{-il_\alpha\Omega_0 t}. $$
+/// \mathbf a_\alpha
+/// e^{i\mathbf q_\alpha\cdot\mathbf r}
+/// e^{-il_\alpha\Omega_0 t}. $$
 ///
-/// `omega0_ev` is the photon energy `Omega_0` in eV.  All `LightMode::harmonic`
-/// values are integer multiples of this base frequency.
+/// Each row of `wavevector_basis_reduced` is one reduced reciprocal-space
+/// vector.  A mode's exact integer label forms its physical reduced
+/// wavevector by a row-vector linear combination of this basis.
 #[derive(Clone, Debug)]
 pub struct FloquetDrive {
     /// Base photon energy `Omega_0` in eV.
     pub omega0_ev: f64,
+    /// Wavevector basis in reduced reciprocal coordinates, with shape
+    /// `(n_momentum_basis, spatial_dimension)`.  [`FloquetDrive::uniform`]
+    /// stores a `0 x 0` dimension-agnostic sentinel; validation against a
+    /// `Model<_, DIM, _>` accepts that sentinel and normalizes returned
+    /// effective results to shape `(0, DIM)`.
+    pub wavevector_basis_reduced: Array2<f64>,
     /// Harmonic components of the drive.
     pub modes: Vec<LightMode>,
 }
 
 impl FloquetDrive {
-    /// Construct a drive with no light modes.
-    ///
-    /// This is useful for checking static photon replicas:
-    /// `E_n(k) + m omega0_ev`.
-    pub fn new(omega0_ev: f64) -> Self {
+    /// Construct a plane-wave drive from a reduced wavevector basis and modes.
+    pub fn new(
+        omega0_ev: f64,
+        wavevector_basis_reduced: Array2<f64>,
+        modes: Vec<LightMode>,
+    ) -> Self {
         Self {
             omega0_ev,
-            modes: Vec::new(),
+            wavevector_basis_reduced,
+            modes,
         }
     }
 
-    /// Construct a drive from an explicit mode list.
-    pub fn with_modes(omega0_ev: f64, modes: Vec<LightMode>) -> Self {
-        Self { omega0_ev, modes }
+    /// Construct a spatially uniform drive.  Every supplied mode must have an
+    /// empty momentum label (normally built with [`LightMode::uniform`]).
+    pub fn uniform(omega0_ev: f64, modes: Vec<LightMode>) -> Self {
+        Self {
+            omega0_ev,
+            wavevector_basis_reduced: Array2::zeros((0, 0)),
+            modes,
+        }
+    }
+
+    /// Construct a spatially uniform drive with no light modes.
+    pub fn empty(omega0_ev: f64) -> Self {
+        Self::uniform(omega0_ev, Vec::new())
     }
 
     /// Append one harmonic component to the drive.
     pub fn add_mode(&mut self, mode: LightMode) {
         self.modes.push(mode);
+    }
+
+    /// Whether any mode carries a nonzero exact momentum grade.
+    pub fn has_nonzero_wavevector(&self) -> bool {
+        self.modes.iter().any(|mode| {
+            mode.momentum_label.iter().any(|value| *value != 0)
+                && mode
+                    .a_complex
+                    .iter()
+                    .any(|amplitude| amplitude.re != 0.0 || amplitude.im != 0.0)
+        })
     }
 }
 
@@ -329,10 +403,11 @@ impl FloquetDrive {
 /// The van Vleck effective-model path (`Model::floquet_effective_model`,
 /// Bessel backend) does **not** use the value of `n_time` for the
 /// computation (it is only validated to be positive as a shared-type
-/// invariant): links outside the Bessel range fall back to a per-link
-/// time-grid DFT whose resolution is sized from the link's own spectral
-/// bandwidth and the requested harmonic range, clamped to `2^20` points
-/// with a warn-once message.
+/// invariant).  For uniform drives, links outside the Bessel range fall back
+/// to a per-link time-grid DFT whose resolution is sized from the link's own
+/// spectral bandwidth and requested harmonic range, clamped to `2^20` points.
+/// Finite-wavevector calculations instead return an explicit error because a
+/// joint time/space Fourier fallback is not implemented.
 #[derive(Clone, Copy, Debug)]
 pub struct FloquetTruncation {
     /// Photon cutoff `N`.
@@ -417,12 +492,12 @@ impl IncidentBasis {
     }
 }
 
-/// Optional controls for building a same-size high-frequency Floquet
-/// effective model, shared by [`Model::floquet_effective_model`]
+/// Optional controls for building a high-frequency Floquet effective
+/// Hamiltonian, shared by [`Model::floquet_effective_model`]
 /// (real-space Bessel backend) and the crate-internal legacy k-space
 /// reference path.
 ///
-/// `order` and `q_max` control the high-frequency expansion on both paths.
+/// `order` and `harmonic_max` control the high-frequency expansion on both paths.
 /// `target_hamR` (crate-internal) applies only to the legacy path, whose
 /// inverse Fourier transform
 ///
@@ -445,10 +520,10 @@ pub struct FloquetEffectiveOptions {
     /// van Vleck order.  Supported: `0`, `1`, and `2`, retaining terms
     /// through `O(omega^0)`, `O(omega^-1)`, and `O(omega^-2)`, respectively.
     pub order: usize,
-    /// Signed-harmonic cutoff for commutator sums.  Defaults to
+    /// Positive harmonic cutoff for the signed commutator sums.  Defaults to
     /// `2 * trunc.n_max`.  At order 2 the mixed component `H_(m'-m)` is
-    /// evaluated up to `|m'-m| = 2 * q_max` automatically.
-    pub q_max: Option<isize>,
+    /// evaluated up to `|m'-m| = 2 * harmonic_max` automatically.
+    pub harmonic_max: Option<isize>,
     /// Optional target real-space hopping vectors for the legacy path's
     /// inverse Fourier transform.  Rejected by the real-space path.
     pub(crate) target_hamR: Option<Array2<isize>>,
@@ -456,6 +531,241 @@ pub struct FloquetEffectiveOptions {
 
 type RealSpaceBlocks = (Vec<Array2<Complex<f64>>>, Array2<isize>);
 type RealSpaceBlockMap = std::collections::BTreeMap<Vec<isize>, Array2<Complex<f64>>>;
+type GradedOperator = std::collections::BTreeMap<MomentumGrade, RealSpaceBlockMap>;
+
+/// Exact integer coordinates of a photon momentum in a drive-defined basis.
+///
+/// Keeping this label integral makes momentum conservation exact even when
+/// the corresponding physical wavevectors are very small floating-point
+/// numbers.  Components whose magnitude exceeds `2^53` are retained by this
+/// value type but rejected when a physical wavevector or phase is evaluated,
+/// because they cannot be mapped to `f64` without losing integer bits.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MomentumGrade(Box<[isize]>);
+
+impl MomentumGrade {
+    /// Construct a momentum grade from integer basis coordinates.
+    pub fn new(values: impl Into<Vec<isize>>) -> Self {
+        Self(values.into().into_boxed_slice())
+    }
+
+    /// The zero grade in a basis of the requested dimension.
+    pub fn zero(dimension: usize) -> Self {
+        Self(vec![0_isize; dimension].into_boxed_slice())
+    }
+
+    /// Borrow the integer basis coordinates.
+    pub fn as_slice(&self) -> &[isize] {
+        &self.0
+    }
+
+    /// Whether all momentum-basis coordinates vanish.
+    pub fn is_zero(&self) -> bool {
+        self.0.iter().all(|value| *value == 0)
+    }
+
+    fn validate_numerical_range(&self) -> Result<()> {
+        if let Some((axis, value)) = self
+            .0
+            .iter()
+            .enumerate()
+            .find(|(_, value)| value.unsigned_abs() as u128 > MAX_EXACT_F64_INTEGER)
+        {
+            return Err(TbError::Other(format!(
+                "momentum-grade component {value} on basis axis {axis} exceeds the exact f64 \
+                 integer range +/-2^53"
+            )));
+        }
+        Ok(())
+    }
+
+    fn negated(&self) -> Result<Self> {
+        let values = self
+            .0
+            .iter()
+            .map(|value| {
+                value
+                    .checked_neg()
+                    .ok_or_else(|| TbError::Other("momentum-grade negation overflow".to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let result = Self(values.into_boxed_slice());
+        result.validate_numerical_range()?;
+        Ok(result)
+    }
+
+    fn add(&self, rhs: &Self) -> Result<Self> {
+        if self.0.len() != rhs.0.len() {
+            return Err(TbError::Other(
+                "momentum-grade dimensions do not match".to_string(),
+            ));
+        }
+        let values = self
+            .0
+            .iter()
+            .zip(rhs.0.iter())
+            .map(|(left, right)| {
+                left.checked_add(*right)
+                    .ok_or_else(|| TbError::Other("momentum-grade addition overflow".to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let result = Self(values.into_boxed_slice());
+        result.validate_numerical_range()?;
+        Ok(result)
+    }
+
+    fn add_scaled(&self, label: &[isize], scale: isize) -> Result<Self> {
+        if self.0.len() != label.len() {
+            return Err(TbError::Other(
+                "momentum-label dimension mismatch".to_string(),
+            ));
+        }
+        let values = self
+            .0
+            .iter()
+            .zip(label.iter())
+            .map(|(current, component)| {
+                let delta = component.checked_mul(scale).ok_or_else(|| {
+                    TbError::Other("momentum-grade multiplication overflow".to_string())
+                })?;
+                current
+                    .checked_add(delta)
+                    .ok_or_else(|| TbError::Other("momentum-grade addition overflow".to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let result = Self(values.into_boxed_slice());
+        result.validate_numerical_range()?;
+        Ok(result)
+    }
+}
+
+#[derive(Debug, Default)]
+struct GradedWorkBudget {
+    support_pairs: AtomicUsize,
+    matrix_work_units: AtomicUsize,
+}
+
+impl GradedWorkBudget {
+    fn charge_counter(
+        counter: &AtomicUsize,
+        amount: usize,
+        limit: usize,
+        description: &str,
+    ) -> Result<()> {
+        counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current
+                    .checked_add(amount)
+                    .filter(|updated| *updated <= limit)
+            })
+            .map(|_| ())
+            .map_err(|current| {
+                TbError::Other(format!(
+                    "finite-q graded expansion would exceed the {description} safety limit \
+                     {limit} (already charged {current}, next charge {amount}); reduce the \
+                     field amplitudes, harmonic_max, or momentum channels"
+                ))
+            })
+    }
+
+    fn charge_product(&self, left: &GradedOperator, right: &GradedOperator) -> Result<()> {
+        let left_support = left.values().try_fold(0_usize, |total, blocks| {
+            total
+                .checked_add(blocks.len())
+                .ok_or_else(|| TbError::Other("finite-q left support count overflow".to_string()))
+        })?;
+        let right_support = right.values().try_fold(0_usize, |total, blocks| {
+            total
+                .checked_add(blocks.len())
+                .ok_or_else(|| TbError::Other("finite-q right support count overflow".to_string()))
+        })?;
+        let support_pairs = left_support.checked_mul(right_support).ok_or_else(|| {
+            TbError::Other("finite-q graded-product support-pair count overflow".to_string())
+        })?;
+
+        let nsta = left
+            .values()
+            .flat_map(|blocks| blocks.values())
+            .next()
+            .or_else(|| right.values().flat_map(|blocks| blocks.values()).next())
+            .map_or(0, ArrayBase::nrows);
+        let matrix_scale = nsta
+            .checked_mul(nsta)
+            .and_then(|value| value.checked_mul(nsta))
+            .ok_or_else(|| TbError::Other("finite-q matrix work estimate overflow".to_string()))?;
+        let matrix_work_units = support_pairs
+            .checked_mul(matrix_scale)
+            .ok_or_else(|| TbError::Other("finite-q matrix work estimate overflow".to_string()))?;
+
+        Self::charge_counter(
+            &self.support_pairs,
+            support_pairs,
+            MAX_GRADED_PRODUCT_SUPPORT_PAIRS,
+            "real-space support-pair work",
+        )?;
+        Self::charge_counter(
+            &self.matrix_work_units,
+            matrix_work_units,
+            MAX_GRADED_MATRIX_WORK_UNITS,
+            "matrix-multiplication work",
+        )
+    }
+}
+
+/// Real-space hopping blocks belonging to one exact momentum grade.
+#[derive(Clone, Debug)]
+pub struct FloquetGradedComponent {
+    /// Hopping matrices with shape `(n_R, nsta, nsta)`.
+    pub ham: Array3<Complex<f64>>,
+    /// Integer primitive-cell translations with shape `(n_R, DIM)`.
+    pub ham_r: Array2<isize>,
+}
+
+/// Nonuniform components of a finite-wavevector effective Hamiltonian.
+pub type GradedRealSpaceHamiltonian =
+    std::collections::BTreeMap<MomentumGrade, FloquetGradedComponent>;
+
+/// Static high-frequency result for a plane-wave drive.
+///
+/// `uniform_model` is the exact zero-momentum-grade component and therefore
+/// has the same state count as the input primitive-cell model.  Every nonzero
+/// spatial Fourier component is retained separately in `nonuniform`.  A grade
+/// `g` follows the matrix-element convention
+///
+/// ```math
+/// \langle i,L|H_g|j,L+R\rangle =
+/// e^{i\mathbf Q_g\cdot\mathbf R_L} T_g(R).
+/// ```
+///
+/// For a commensurate spatial supercell `U` (the same row-lattice convention
+/// as [`Model::make_supercell`]), every retained grade is periodic when
+/// `U * Q_g^red` is integral.  This result deliberately leaves that optional
+/// spatial enlargement to the caller; it never enlarges the photon basis.
+/// The crate does not yet provide an assembler from these graded components to
+/// a supercell [`Model`], and [`Model::make_supercell`] alone does not consume
+/// them.  Ordinary bands of the complete finite-q result therefore require
+/// caller-side assembly.
+/// Grades are exact algebraic labels, not canonicalized modulo reciprocal
+/// lattice vectors or linear dependencies in the supplied basis.  This is
+/// intentional: even a reciprocal-lattice plane wave has nontrivial intra-cell
+/// midpoint and `sinc` structure.  `into_uniform_model` explicitly discards
+/// every nonzero label.
+#[derive(Clone, Debug)]
+pub struct FloquetEffectiveResult<const SPIN: bool, const DIM: usize> {
+    /// Exact zero-grade component as a normal primitive-cell model.
+    pub uniform_model: Model<SPIN, DIM, NoRMatrix>,
+    /// All nonzero exact momentum grades and their primitive real-space blocks.
+    pub nonuniform: GradedRealSpaceHamiltonian,
+    /// Reduced wavevector basis used to convert each integer grade into `Q_g`.
+    pub wavevector_basis_reduced: Array2<f64>,
+}
+
+impl<const SPIN: bool, const DIM: usize> FloquetEffectiveResult<SPIN, DIM> {
+    /// Consume the result and return only its spatially uniform component.
+    pub fn into_uniform_model(self) -> Model<SPIN, DIM, NoRMatrix> {
+        self.uniform_model
+    }
+}
 
 trait RealSpaceBlockSource: Sync {
     fn nblocks(&self) -> usize;
@@ -489,14 +799,14 @@ impl Default for FloquetEffectiveOptions {
     fn default() -> Self {
         Self {
             order: 1,
-            q_max: None,
+            harmonic_max: None,
             target_hamR: None,
         }
     }
 }
 
 impl FloquetEffectiveOptions {
-    /// Construct first-order options using `q_max = 2 * trunc.n_max` and the
+    /// Construct first-order options using `harmonic_max = 2 * trunc.n_max` and the
     /// original model's `hamR`.
     pub fn new() -> Self {
         Self::default()
@@ -509,8 +819,8 @@ impl FloquetEffectiveOptions {
     }
 
     /// Set the signed-harmonic cutoff used in the van Vleck sums.
-    pub fn with_q_max(mut self, q_max: isize) -> Self {
-        self.q_max = Some(q_max);
+    pub fn with_harmonic_max(mut self, harmonic_max: isize) -> Self {
+        self.harmonic_max = Some(harmonic_max);
         self
     }
 
@@ -527,8 +837,8 @@ impl FloquetEffectiveOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PeierlsFourierMethod {
     /// Numerical DFT on a uniform time grid (`FloquetTruncation::n_time`
-    /// samples).  The reference implementation: handles arbitrary drives,
-    /// including non-commensurate content and large amplitudes.
+    /// samples).  The reference implementation: handles mixed commensurate
+    /// harmonics and large amplitudes.
     TimeGrid,
     /// Generalized Bessel expansion via sequential one-mode convolutions.
     /// Exact and independent of `n_time`, but restricted to per-mode
@@ -551,6 +861,39 @@ struct FloquetHarmonicCache {
     q_min: isize,
     q_max: isize,
     blocks: Array4<Complex<f64>>,
+}
+
+#[derive(Clone, Debug)]
+struct LinkGeometry {
+    d_fractional: Array1<f64>,
+    d_cartesian: Array1<f64>,
+    midpoint_fractional: Array1<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ChannelKey {
+    harmonic: isize,
+    grade: MomentumGrade,
+}
+
+/// Finite-wavevector Fourier cache indexed by temporal harmonic and exact
+/// photon-momentum grade.
+struct GradedFloquetHarmonicCache {
+    harmonic_min: isize,
+    harmonic_max: isize,
+    harmonics: std::collections::BTreeMap<isize, GradedOperator>,
+}
+
+impl GradedFloquetHarmonicCache {
+    fn harmonic(&self, harmonic: isize) -> Option<&GradedOperator> {
+        debug_assert!(
+            harmonic >= self.harmonic_min && harmonic <= self.harmonic_max,
+            "Floquet harmonic {harmonic} is outside cached range [{}, {}]",
+            self.harmonic_min,
+            self.harmonic_max
+        );
+        self.harmonics.get(&harmonic)
+    }
 }
 
 impl FloquetHarmonicCache {
@@ -726,6 +1069,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         trunc: &FloquetTruncation,
     ) -> Result<Self::FloquetModel> {
         validate_floquet_drive::<DIM>(drive, trunc)?;
+        validate_uniform_floquet_drive(drive)?;
 
         let nsta = self.nsta();
         let norb = self.norb();
@@ -975,6 +1319,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
 
         validate_floquet_drive::<DIM>(drive, trunc)?;
+        validate_uniform_floquet_drive(drive)?;
         validate_effective_options::<DIM>(&k_mesh, options)?;
 
         let nsta = self.nsta();
@@ -984,23 +1329,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .unwrap_or_else(|| self.hamR.clone());
         validate_target_hamr::<DIM>(&target_ham_r)?;
 
-        let q_max = effective_q_max(options, trunc)?;
-        let has_time_dependence = drive_has_time_dependent_field::<DIM>(drive);
-        let static_drive;
-        let cache_drive = if has_time_dependence {
-            drive
-        } else {
-            static_drive = static_component_drive::<DIM>(drive);
-            &static_drive
-        };
+        let q_max = effective_harmonic_max(options, trunc)?;
+        let has_time_dependence = drive_has_time_dependent_field(drive);
         let cache_max = if has_time_dependence {
             effective_cache_max(options.order, q_max)?
         } else {
             0
         };
         validate_effective_cache_layout(cache_max, self.hamR.nrows(), nsta)?;
+        validate_uniform_effective_work_budget(options.order, q_max, has_time_dependence)?;
         let harmonic_cache = self.floquet_harmonic_cache(
-            cache_drive,
+            drive,
             trunc,
             -cache_max,
             cache_max,
@@ -1057,6 +1396,265 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(model)
     }
 
+    /// Build the real-space van Vleck effective Hamiltonian through
+    /// `O(omega^-2)` for uniform or finite-wavevector plane waves.
+    ///
+    /// The zero momentum grade is returned as `uniform_model`, a normal
+    /// primitive-cell model with exactly the same state count as `self`.
+    /// Every nonzero momentum grade is retained in `nonuniform` as a separate
+    /// real-space hopping component.  Thus finite `q` does not create Sambe
+    /// photon replicas or silently force a spatial supercell.  A caller that
+    /// wants ordinary bands may subsequently choose a commensurate supercell
+    /// and assemble the graded components there.
+    ///
+    /// The straight-bond Peierls integral is evaluated exactly for every
+    /// plane-wave mode:
+    ///
+    /// ```math
+    /// z_{ijR}= (\mathbf a\cdot\mathbf d)\,
+    /// \operatorname{sinc}(\mathbf q\cdot\mathbf d/2)
+    /// e^{i\mathbf q\cdot\mathbf r_{mid}}.
+    /// ```
+    ///
+    /// Products of finite-momentum real-space operators use the twisted
+    /// convolution
+    ///
+    /// ```math
+    /// (A_gB_h)(R)=\sum_{R_a+R_b=R}
+    /// e^{i\mathbf Q_h\cdot\mathbf R_a}A_g(R_a)B_h(R_b),
+    /// ```
+    /// so mixed colors and propagation directions remain coherent at every
+    /// requested van Vleck order.
+    ///
+    /// The finite-q backend uses sparse temporal support and checked resource
+    /// budgets: at most 65,536 channels and 16 MiB of channel metadata per
+    /// bond, 1,000,000 cached bond channels, 512 MiB of conservatively
+    /// estimated cache storage, 2,000,000 candidate harmonic-pair scans,
+    /// 100,000 nonzero order-2 nested commutators, 2,000,000 real-space
+    /// support-pair products, 100,000,000 state-cubic matrix-work units, and
+    /// 500,000 output hopping blocks.  It returns an error before exceeding
+    /// these limits.
+    ///
+    /// Parallel map reductions may change floating-point summation order, so
+    /// different Rayon thread counts can differ at roundoff level; the physical
+    /// channel/support ordering and enforced Hermiticity remain deterministic.
+    pub fn floquet_effective_model(
+        &self,
+        drive: &FloquetDrive,
+        trunc: &FloquetTruncation,
+        options: Option<&FloquetEffectiveOptions>,
+    ) -> Result<FloquetEffectiveResult<SPIN, DIM>> {
+        let default_options;
+        let options = match options {
+            Some(options) => options,
+            None => {
+                default_options = FloquetEffectiveOptions::default();
+                &default_options
+            }
+        };
+        validate_floquet_drive::<DIM>(drive, trunc)?;
+        validate_effective_real_space_options(options)?;
+
+        if !drive.has_nonzero_wavevector() {
+            let uniform_model =
+                self.floquet_effective_uniform_model(drive, trunc, Some(options))?;
+            let wavevector_basis_reduced = if drive.wavevector_basis_reduced.nrows() == 0 {
+                Array2::zeros((0, DIM))
+            } else {
+                drive.wavevector_basis_reduced.clone()
+            };
+            return Ok(FloquetEffectiveResult {
+                uniform_model,
+                nonuniform: GradedRealSpaceHamiltonian::new(),
+                wavevector_basis_reduced,
+            });
+        }
+
+        let harmonic_max = effective_harmonic_max(options, trunc)?;
+        let has_time_dependence = drive_has_time_dependent_field(drive);
+        let cache_max = if has_time_dependence {
+            effective_cache_max(options.order, harmonic_max)?
+        } else {
+            0
+        };
+        let cache = self.floquet_graded_harmonic_cache(drive, -cache_max, cache_max, 6)?;
+        let empty = GradedOperator::new();
+        let harmonic = |index: isize| cache.harmonic(index).unwrap_or(&empty);
+        let mut effective = harmonic(0).clone();
+        validate_graded_operator_size(&effective)?;
+        let work_budget = GradedWorkBudget::default();
+        let inverse_omega = drive.omega0_ev.recip();
+
+        if options.order >= 1 && has_time_dependence {
+            let positive_harmonics = cache
+                .harmonics
+                .keys()
+                .copied()
+                .filter(|index| {
+                    *index > 0 && *index <= harmonic_max && cache.harmonics.contains_key(&-*index)
+                })
+                .collect::<Vec<_>>();
+            for index in positive_harmonics {
+                let commutator = graded_commutator(
+                    harmonic(index),
+                    harmonic(-index),
+                    &drive.wavevector_basis_reduced,
+                    &work_budget,
+                )?;
+                accumulate_scaled_graded_operator(
+                    &mut effective,
+                    &commutator,
+                    inverse_omega / index as f64,
+                )?;
+            }
+        }
+
+        if options.order >= 2 && has_time_dependence {
+            let inverse_omega_squared = inverse_omega * inverse_omega;
+            let signed_harmonics = cache
+                .harmonics
+                .keys()
+                .copied()
+                .filter(|index| *index != 0 && *index >= -harmonic_max && *index <= harmonic_max)
+                .collect::<Vec<_>>();
+            validate_finite_q_pair_scan_count(signed_harmonics.len())?;
+            let mut van_vleck_terms = 0_usize;
+            let mut mixed_terms_by_harmonic = Vec::with_capacity(signed_harmonics.len());
+            for &m in &signed_harmonics {
+                if cache.harmonics.contains_key(&-m) {
+                    van_vleck_terms = van_vleck_terms.checked_add(1).ok_or_else(|| {
+                        TbError::Other("finite-q van Vleck work count overflow".to_string())
+                    })?;
+                }
+                let mut mixed_terms = Vec::new();
+                for &m_prime in &signed_harmonics {
+                    if m_prime == m {
+                        continue;
+                    }
+                    let difference = m_prime.checked_sub(m).ok_or_else(|| {
+                        TbError::Other("finite-q harmonic difference overflow".to_string())
+                    })?;
+                    if cache.harmonics.contains_key(&difference)
+                        && cache.harmonics.contains_key(&-m_prime)
+                    {
+                        van_vleck_terms = van_vleck_terms.checked_add(1).ok_or_else(|| {
+                            TbError::Other("finite-q van Vleck work count overflow".to_string())
+                        })?;
+                        if van_vleck_terms > MAX_GRADED_VAN_VLECK_TERMS {
+                            return Err(TbError::Other(format!(
+                                "finite-q order-2 expansion requires more than \
+                                 {MAX_GRADED_VAN_VLECK_TERMS} nested commutators; lower \
+                                 harmonic_max"
+                            )));
+                        }
+                        mixed_terms.push((m_prime, difference));
+                    }
+                }
+                mixed_terms_by_harmonic.push(mixed_terms);
+            }
+            let accumulate_fixed_harmonic = |partial: &mut GradedOperator,
+                                             m: isize,
+                                             mixed_terms: &[(isize, isize)]|
+             -> Result<()> {
+                if cache.harmonics.contains_key(&-m) {
+                    let inner = graded_commutator(
+                        harmonic(0),
+                        harmonic(m),
+                        &drive.wavevector_basis_reduced,
+                        &work_budget,
+                    )?;
+                    let outer = graded_commutator(
+                        harmonic(-m),
+                        &inner,
+                        &drive.wavevector_basis_reduced,
+                        &work_budget,
+                    )?;
+                    accumulate_scaled_graded_operator(
+                        partial,
+                        &outer,
+                        inverse_omega_squared / (2.0 * (m as f64).powi(2)),
+                    )?;
+                }
+
+                for &(m_prime, difference) in mixed_terms {
+                    let inner = graded_commutator(
+                        harmonic(difference),
+                        harmonic(m),
+                        &drive.wavevector_basis_reduced,
+                        &work_budget,
+                    )?;
+                    let outer = graded_commutator(
+                        harmonic(-m_prime),
+                        &inner,
+                        &drive.wavevector_basis_reduced,
+                        &work_budget,
+                    )?;
+                    accumulate_scaled_graded_operator(
+                        partial,
+                        &outer,
+                        inverse_omega_squared / (3.0 * (m as f64) * (m_prime as f64)),
+                    )?;
+                }
+                Ok(())
+            };
+
+            let order_two = if signed_harmonics.len() > 1 && rayon::current_num_threads() > 1 {
+                let min_harmonics_per_job = signed_harmonics
+                    .len()
+                    .div_ceil(rayon::current_num_threads());
+                signed_harmonics
+                    .par_iter()
+                    .zip(mixed_terms_by_harmonic.par_iter())
+                    .with_min_len(min_harmonics_per_job)
+                    .try_fold(
+                        GradedOperator::new,
+                        |mut partial, (&m, mixed_terms)| -> Result<GradedOperator> {
+                            accumulate_fixed_harmonic(&mut partial, m, mixed_terms)?;
+                            Ok(partial)
+                        },
+                    )
+                    .try_reduce(GradedOperator::new, merge_graded_operators)?
+            } else {
+                let mut partial = GradedOperator::new();
+                for (&m, mixed_terms) in signed_harmonics.iter().zip(mixed_terms_by_harmonic.iter())
+                {
+                    accumulate_fixed_harmonic(&mut partial, m, mixed_terms)?;
+                }
+                partial
+            };
+            effective = merge_graded_operators(effective, order_two)?;
+        }
+
+        enforce_graded_hermiticity(&mut effective, &drive.wavevector_basis_reduced)?;
+        let zero_grade = MomentumGrade::zero(drive.wavevector_basis_reduced.nrows());
+        let zero_blocks = effective.remove(&zero_grade).ok_or_else(|| {
+            TbError::Other(
+                "finite-q effective Hamiltonian lost its zero momentum grade".to_string(),
+            )
+        })?;
+        let (uniform_ham, uniform_ham_r) =
+            graded_component_arrays::<DIM>(&zero_blocks, self.nsta())?;
+        let mut uniform_model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
+            self.lat.clone(),
+            self.orb.clone(),
+            Some(self.atoms.clone()),
+        )?;
+        uniform_model.ham = uniform_ham;
+        uniform_model.hamR = uniform_ham_r;
+        uniform_model.orb_projection = self.orb_projection.clone();
+
+        let mut nonuniform = GradedRealSpaceHamiltonian::new();
+        for (grade, blocks) in effective {
+            let (ham, ham_r) = graded_component_arrays::<DIM>(&blocks, self.nsta())?;
+            nonuniform.insert(grade, FloquetGradedComponent { ham, ham_r });
+        }
+        Ok(FloquetEffectiveResult {
+            uniform_model,
+            nonuniform,
+            wavevector_basis_reduced: drive.wavevector_basis_reduced.clone(),
+        })
+    }
+
     /// Real-space van Vleck effective model through `O(omega^-2)` via the
     /// generalized Bessel backend — no `k_mesh` parameter, and the value
     /// of `n_time` does not affect the computation (it is only validated
@@ -1065,7 +1663,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// sized from the link's own spectral bandwidth and the requested
     /// harmonic range.
     ///
-    /// This is the main entry point.  The crate-internal
+    /// This is the uniform-drive implementation used by the public entry
+    /// point.  The crate-internal
     /// `floquet_effective_model_legacy` is the k-space reference
     /// implementation, kept for cross-validation tests.
     ///
@@ -1132,7 +1731,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// negative or unrepresentable harmonic range, a non-finite frequency
     /// scaling factor, a supplied `target_hamR`, a real-space support sum that
     /// overflows `isize`, or a support that is not closed under `R -> −R`.
-    pub fn floquet_effective_model(
+    fn floquet_effective_uniform_model(
         &self,
         drive: &FloquetDrive,
         trunc: &FloquetTruncation,
@@ -1148,6 +1747,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
 
         validate_floquet_drive::<DIM>(drive, trunc)?;
+        validate_uniform_floquet_drive(drive)?;
         if options.order > 2 {
             return Err(TbError::Other(format!(
                 "FloquetEffectiveOptions.order must be 0, 1, or 2, got {}",
@@ -1162,25 +1762,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 target.nrows()
             )));
         }
-        let q_max = effective_q_max(options, trunc)?;
+        let q_max = effective_harmonic_max(options, trunc)?;
 
         let nsta = self.nsta();
-        let has_time_dependence = drive_has_time_dependent_field::<DIM>(drive);
-        let static_drive;
-        let cache_drive = if has_time_dependence {
-            drive
-        } else {
-            static_drive = static_component_drive::<DIM>(drive);
-            &static_drive
-        };
+        let has_time_dependence = drive_has_time_dependent_field(drive);
         let cache_max = if has_time_dependence {
             effective_cache_max(options.order, q_max)?
         } else {
             0
         };
         validate_effective_cache_layout(cache_max, self.hamR.nrows(), nsta)?;
+        validate_uniform_effective_work_budget(options.order, q_max, has_time_dependence)?;
         let harmonic_cache = self.floquet_harmonic_cache(
-            cache_drive,
+            drive,
             trunc,
             -cache_max,
             cache_max,
@@ -1540,6 +2134,162 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
     }
 
+    fn floquet_graded_harmonic_cache(
+        &self,
+        drive: &FloquetDrive,
+        harmonic_min: isize,
+        harmonic_max: isize,
+        cutoff_margin: isize,
+    ) -> Result<GradedFloquetHarmonicCache> {
+        if harmonic_min > harmonic_max {
+            return Err(TbError::Other(format!(
+                "empty graded harmonic range [{harmonic_min}, {harmonic_max}]"
+            )));
+        }
+        let nsta = self.nsta();
+        let norb = self.norb();
+        let n_r = self.hamR.nrows();
+
+        let mut entries = Vec::new();
+        let mut geometry_keys = std::collections::BTreeSet::new();
+        for i_r in 0..n_r {
+            for i in 0..nsta {
+                for j in 0..nsta {
+                    let hopping = self.ham[[i_r, i, j]];
+                    if hopping.re == 0.0 && hopping.im == 0.0 {
+                        continue;
+                    }
+                    let key = (i_r, i % norb, j % norb);
+                    geometry_keys.insert(key);
+                    entries.push((i_r, i, j, key));
+                }
+            }
+        }
+
+        let geometry_keys = geometry_keys.into_iter().collect::<Vec<_>>();
+        let total_channel_count = AtomicUsize::new(0);
+        let total_channel_bytes = AtomicUsize::new(0);
+        let grade_dimension = drive.wavevector_basis_reduced.nrows();
+        let channel_rows = geometry_keys
+            .par_iter()
+            .map(|&(i_r, i_orb, j_orb)| {
+                let geometry = self.link_geometry(i_orb, j_orb, &self.hamR.row(i_r));
+                let channels = bessel_peierls_channels(
+                    &geometry,
+                    drive,
+                    harmonic_min,
+                    harmonic_max,
+                    cutoff_margin,
+                )?;
+                let channel_count = channels.len();
+                if total_channel_count
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                        current
+                            .checked_add(channel_count)
+                            .filter(|next| *next <= MAX_GRADED_CACHE_CHANNELS)
+                    })
+                    .is_err()
+                {
+                    return Err(TbError::Other(format!(
+                        "finite-q harmonic cache exceeds the global channel safety limit \
+                         {MAX_GRADED_CACHE_CHANNELS}; reduce the hopping support, number of \
+                        independent modes, amplitudes, or harmonic_max"
+                    )));
+                }
+                let estimated_bytes =
+                    estimated_graded_channel_bytes(channel_count, grade_dimension)?;
+                if total_channel_bytes
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                        current
+                            .checked_add(estimated_bytes)
+                            .filter(|next| *next <= MAX_GRADED_CACHE_BYTES)
+                    })
+                    .is_err()
+                {
+                    return Err(TbError::Other(format!(
+                        "finite-q harmonic cache channel metadata exceeds the memory safety \
+                         limit {MAX_GRADED_CACHE_BYTES} bytes; reduce the hopping support, \
+                         momentum channels, amplitudes, or harmonic_max"
+                    )));
+                }
+                Ok(((i_r, i_orb, j_orb), channels))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let channels_by_geometry = channel_rows
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        // Dense matrices are shared by all orbital pairs with the same
+        // (temporal harmonic, momentum grade, translation).  Count those
+        // unique block keys before allocating any nsta-by-nsta array rather
+        // than multiplying every geometry channel by nsta^2.
+        let mut unique_block_keys = std::collections::BTreeSet::new();
+        for ((i_r, _, _), channels) in &channels_by_geometry {
+            for channel in channels.keys() {
+                unique_block_keys.insert((*i_r, channel));
+            }
+        }
+        // The zero harmonic later guarantees one zero-grade block for every
+        // primitive translation.  Charge all n_r of them conservatively; some
+        // may already be present in unique_block_keys.
+        let estimated_block_count = unique_block_keys.len().checked_add(n_r).ok_or_else(|| {
+            TbError::Other("finite-q cache block-count estimate overflow".to_string())
+        })?;
+        let estimated_cache_bytes = estimated_graded_cache_bytes(
+            total_channel_count.load(Ordering::Relaxed),
+            estimated_block_count,
+            grade_dimension,
+            nsta,
+        )?;
+        if estimated_cache_bytes > MAX_GRADED_CACHE_BYTES {
+            return Err(TbError::Other(format!(
+                "finite-q harmonic cache requires about {estimated_cache_bytes} bytes for \
+                 channel metadata and at most {estimated_block_count} dense blocks, exceeding \
+                 the safety limit \
+                 {MAX_GRADED_CACHE_BYTES}; reduce nsta, hopping support, momentum channels, \
+                 amplitudes, or harmonic_max"
+            )));
+        }
+        drop(unique_block_keys);
+
+        let mut harmonics = std::collections::BTreeMap::<isize, GradedOperator>::new();
+        for (i_r, i, j, geometry_key) in entries {
+            let hopping = self.ham[[i_r, i, j]];
+            for (channel, coefficient) in &channels_by_geometry[&geometry_key] {
+                if coefficient.re == 0.0 && coefficient.im == 0.0 {
+                    continue;
+                }
+                let block = harmonics
+                    .entry(channel.harmonic)
+                    .or_default()
+                    .entry(channel.grade.clone())
+                    .or_default()
+                    .entry(self.hamR.row(i_r).to_vec())
+                    .or_insert_with(|| Array2::<Complex<f64>>::zeros((nsta, nsta)));
+                block[[i, j]] = hopping * coefficient;
+            }
+        }
+
+        // Keep the primitive support available even when a zero-grade Bessel
+        // coefficient vanishes exactly (or the input model is the zero
+        // operator).  This makes the zero-grade output a valid same-size
+        // `Model` without manufacturing any nonzero hopping.
+        let zero_grade = MomentumGrade::zero(drive.wavevector_basis_reduced.nrows());
+        let zero_harmonic = harmonics.entry(0).or_default();
+        let zero_blocks = zero_harmonic.entry(zero_grade).or_default();
+        for row in self.hamR.outer_iter() {
+            zero_blocks
+                .entry(row.to_vec())
+                .or_insert_with(|| Array2::zeros((nsta, nsta)));
+        }
+
+        Ok(GradedFloquetHarmonicCache {
+            harmonic_min,
+            harmonic_max,
+            harmonics,
+        })
+    }
+
     /// Build the `q`-th Fourier block `H^(q)(k)` from the precomputed cache.
     ///
     /// For each R-vector, multiplies the cached block `t * C_q(d)` by the Bloch
@@ -1577,11 +2327,29 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         j_orb: usize,
         r_vec: &ArrayView1<'_, isize>,
     ) -> Array1<f64> {
-        let mut frac = Array1::<f64>::zeros(DIM);
-        for a in 0..DIM {
-            frac[a] = r_vec[a] as f64 + self.orb[[j_orb, a]] - self.orb[[i_orb, a]];
+        self.link_geometry(i_orb, j_orb, r_vec).d_cartesian
+    }
+
+    fn link_geometry(
+        &self,
+        i_orb: usize,
+        j_orb: usize,
+        r_vec: &ArrayView1<'_, isize>,
+    ) -> LinkGeometry {
+        let mut d_fractional = Array1::<f64>::zeros(DIM);
+        let mut midpoint_fractional = Array1::<f64>::zeros(DIM);
+        for axis in 0..DIM {
+            let left = self.orb[[i_orb, axis]];
+            let right = r_vec[axis] as f64 + self.orb[[j_orb, axis]];
+            d_fractional[axis] = right - left;
+            midpoint_fractional[axis] = 0.5 * (left + right);
         }
-        frac.dot(&self.lat)
+        let d_cartesian = d_fractional.dot(&self.lat);
+        LinkGeometry {
+            d_fractional,
+            d_cartesian,
+            midpoint_fractional,
+        }
     }
 
     fn apply_atom_gauge<S: Data<Elem = f64>>(
@@ -1678,7 +2446,8 @@ fn validate_floquet_input<
             found: vec![model.lat.nrows(), model.lat.ncols()],
         });
     }
-    validate_floquet_drive::<DIM>(drive, trunc)
+    validate_floquet_drive::<DIM>(drive, trunc)?;
+    validate_uniform_floquet_drive(drive)
 }
 
 fn validate_floquet_drive<const DIM: usize>(
@@ -1702,7 +2471,33 @@ fn validate_floquet_drive<const DIM: usize>(
             "FloquetTruncation.n_time must be positive".to_string(),
         ));
     }
+    let is_uniform_sentinel =
+        drive.wavevector_basis_reduced.nrows() == 0 && drive.wavevector_basis_reduced.ncols() == 0;
+    if !is_uniform_sentinel && drive.wavevector_basis_reduced.ncols() != DIM {
+        return Err(TbError::InvalidArrayShape {
+            expected: vec![drive.wavevector_basis_reduced.nrows(), DIM],
+            found: vec![
+                drive.wavevector_basis_reduced.nrows(),
+                drive.wavevector_basis_reduced.ncols(),
+            ],
+        });
+    }
+    if drive
+        .wavevector_basis_reduced
+        .iter()
+        .any(|value| !value.is_finite())
+    {
+        return Err(TbError::Other(
+            "FloquetDrive.wavevector_basis_reduced contains non-finite values".to_string(),
+        ));
+    }
     for (im, mode) in drive.modes.iter().enumerate() {
+        if mode.harmonic <= 0 {
+            return Err(TbError::Other(format!(
+                "FloquetDrive.modes[{im}].harmonic must be positive, got {}",
+                mode.harmonic
+            )));
+        }
         if mode.a_complex.len() != DIM {
             return Err(TbError::DimensionMismatch {
                 context: format!("FloquetDrive.modes[{im}].a_complex"),
@@ -1719,13 +2514,53 @@ fn validate_floquet_drive<const DIM: usize>(
                 "FloquetDrive.modes[{im}].a_complex contains non-finite values"
             )));
         }
+        let grade_dimension = drive.wavevector_basis_reduced.nrows();
+        if !mode.momentum_label.is_empty() && mode.momentum_label.len() != grade_dimension {
+            return Err(TbError::DimensionMismatch {
+                context: format!("FloquetDrive.modes[{im}].momentum_label"),
+                expected: grade_dimension,
+                found: mode.momentum_label.len(),
+            });
+        }
     }
     Ok(())
 }
 
-fn effective_q_max(options: &FloquetEffectiveOptions, trunc: &FloquetTruncation) -> Result<isize> {
-    let q_max = match options.q_max {
-        Some(q_max) => q_max,
+fn validate_uniform_floquet_drive(drive: &FloquetDrive) -> Result<()> {
+    if drive.has_nonzero_wavevector() {
+        return Err(TbError::Other(
+            "full finite-q Floquet-Sambe construction is not implemented; use \
+             Model::floquet_effective_model"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_effective_real_space_options(options: &FloquetEffectiveOptions) -> Result<()> {
+    if options.order > 2 {
+        return Err(TbError::Other(format!(
+            "FloquetEffectiveOptions.order must be 0, 1, or 2, got {}",
+            options.order
+        )));
+    }
+    if let Some(target) = &options.target_hamR {
+        return Err(TbError::Other(format!(
+            "FloquetEffectiveOptions.target_hamR is not supported by the \
+             real-space path: the effective support is determined \
+             automatically (got {} target vectors)",
+            target.nrows()
+        )));
+    }
+    Ok(())
+}
+
+fn effective_harmonic_max(
+    options: &FloquetEffectiveOptions,
+    trunc: &FloquetTruncation,
+) -> Result<isize> {
+    let harmonic_max = match options.harmonic_max {
+        Some(harmonic_max) => harmonic_max,
         None => trunc.n_max.checked_mul(2).ok_or_else(|| {
             TbError::Other(
                 "FloquetTruncation.n_max is too large for the default effective harmonic cutoff"
@@ -1733,26 +2568,48 @@ fn effective_q_max(options: &FloquetEffectiveOptions, trunc: &FloquetTruncation)
             )
         })?,
     };
-    if q_max < 0 {
+    if harmonic_max < 0 {
         return Err(TbError::Other(format!(
-            "FloquetEffectiveOptions.q_max must be non-negative, got {q_max}"
+            "FloquetEffectiveOptions.harmonic_max must be non-negative, got {harmonic_max}"
         )));
     }
-    Ok(q_max)
+    Ok(harmonic_max)
 }
 
-fn effective_cache_max(order: usize, q_max: isize) -> Result<isize> {
+fn effective_cache_max(order: usize, harmonic_max: isize) -> Result<isize> {
     match order {
         0 => Ok(0),
-        1 => Ok(q_max),
-        2 => q_max.checked_mul(2).ok_or_else(|| {
+        1 => Ok(harmonic_max),
+        2 => harmonic_max.checked_mul(2).ok_or_else(|| {
             TbError::Other(
-                "FloquetEffectiveOptions.q_max is too large for the order-2 harmonic range"
+                "FloquetEffectiveOptions.harmonic_max is too large for the order-2 harmonic range"
                     .to_string(),
             )
         }),
         _ => unreachable!("the effective order must be validated first"),
     }
+}
+
+fn validate_uniform_effective_work_budget(
+    order: usize,
+    harmonic_max: isize,
+    has_time_dependence: bool,
+) -> Result<()> {
+    if !has_time_dependence || order == 0 {
+        return Ok(());
+    }
+    let limit = if order == 1 {
+        MAX_UNIFORM_ORDER_ONE_HARMONIC
+    } else {
+        MAX_UNIFORM_ORDER_TWO_HARMONIC
+    };
+    if harmonic_max > limit {
+        return Err(TbError::Other(format!(
+            "uniform order-{order} Floquet expansion harmonic_max={harmonic_max} exceeds the \
+             work safety limit {limit}; lower harmonic_max"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_effective_cache_layout(cache_max: isize, n_r: usize, nsta: usize) -> Result<()> {
@@ -1787,49 +2644,12 @@ fn validate_effective_cache_layout(cache_max: isize, n_r: usize, nsta: usize) ->
     Ok(())
 }
 
-fn drive_has_time_dependent_field<const DIM: usize>(drive: &FloquetDrive) -> bool {
-    let mut amplitudes = std::collections::BTreeMap::<usize, [Complex<f64>; DIM]>::new();
-    for mode in &drive.modes {
-        if mode.harmonic == 0 {
-            continue;
-        }
-        let harmonic = mode.harmonic.unsigned_abs();
-        let entry = amplitudes
-            .entry(harmonic)
-            .or_insert([Complex::new(0.0, 0.0); DIM]);
-        for (component, amplitude) in entry.iter_mut().zip(mode.a_complex.iter()) {
-            *component += if mode.harmonic > 0 {
-                *amplitude
-            } else {
-                amplitude.conj()
-            };
-        }
-    }
-    amplitudes.values().any(|amplitude| {
-        amplitude
+fn drive_has_time_dependent_field(drive: &FloquetDrive) -> bool {
+    drive.modes.iter().any(|mode| {
+        mode.a_complex
             .iter()
             .any(|value| value.re != 0.0 || value.im != 0.0)
     })
-}
-
-fn static_component_drive<const DIM: usize>(drive: &FloquetDrive) -> FloquetDrive {
-    let mut amplitude = Array1::<Complex<f64>>::zeros(DIM);
-    for mode in &drive.modes {
-        if mode.harmonic == 0 {
-            for (total, value) in amplitude.iter_mut().zip(mode.a_complex.iter()) {
-                total.re += value.re;
-            }
-        }
-    }
-    let modes = if amplitude
-        .iter()
-        .any(|value| value.re != 0.0 || value.im != 0.0)
-    {
-        vec![LightMode::new(0, amplitude)]
-    } else {
-        Vec::new()
-    };
-    FloquetDrive::with_modes(drive.omega0_ev, modes)
 }
 
 #[cfg(test)]
@@ -1850,10 +2670,10 @@ fn validate_effective_options<const DIM: usize>(
             )));
         }
     }
-    if let Some(q_max) = options.q_max {
-        if q_max < 0 {
+    if let Some(harmonic_max) = options.harmonic_max {
+        if harmonic_max < 0 {
             return Err(TbError::Other(format!(
-                "FloquetEffectiveOptions.q_max must be non-negative, got {q_max}"
+                "FloquetEffectiveOptions.harmonic_max must be non-negative, got {harmonic_max}"
             )));
         }
     }
@@ -1981,6 +2801,431 @@ fn bessel_adaptive_m_cap(r: f64, error_share: f64, margin: isize) -> isize {
         m_cap += 1;
     }
     m_cap.min(4096)
+}
+
+#[inline]
+fn stable_sinc(x: f64) -> f64 {
+    if x.abs() < 1.0e-7 {
+        let x2 = x * x;
+        1.0 - x2 / 6.0 + x2 * x2 / 120.0
+    } else {
+        x.sin() / x
+    }
+}
+
+fn mode_grade(drive: &FloquetDrive, mode: &LightMode) -> Result<MomentumGrade> {
+    let dimension = drive.wavevector_basis_reduced.nrows();
+    if mode.momentum_label.is_empty() {
+        return Ok(MomentumGrade::zero(dimension));
+    }
+    if mode.momentum_label.len() != dimension {
+        return Err(TbError::DimensionMismatch {
+            context: "LightMode.momentum_label".to_string(),
+            expected: dimension,
+            found: mode.momentum_label.len(),
+        });
+    }
+    let grade = MomentumGrade::new(mode.momentum_label.to_vec());
+    grade.validate_numerical_range()?;
+    Ok(grade)
+}
+
+fn checked_real_dot(
+    left: ArrayView1<'_, f64>,
+    right: ArrayView1<'_, f64>,
+    context: &str,
+) -> Result<f64> {
+    if left.len() != right.len() {
+        return Err(TbError::DimensionMismatch {
+            context: context.to_string(),
+            expected: left.len(),
+            found: right.len(),
+        });
+    }
+    let mut dot = 0.0_f64;
+    for (axis, (&left_value, &right_value)) in left.iter().zip(right.iter()).enumerate() {
+        let contribution = left_value * right_value;
+        if !contribution.is_finite() {
+            return Err(TbError::Other(format!(
+                "{context} has a non-finite product on axis {axis}"
+            )));
+        }
+        dot += contribution;
+        if !dot.is_finite() {
+            return Err(TbError::Other(format!(
+                "{context} has a non-finite accumulated dot product"
+            )));
+        }
+    }
+    Ok(dot)
+}
+
+fn multiply_f64_by_isize_mod(
+    value: f64,
+    integer: isize,
+    modulus: f64,
+    context: &str,
+) -> Result<f64> {
+    if !value.is_finite() || !modulus.is_finite() || modulus <= 0.0 {
+        return Err(TbError::Other(format!(
+            "{context} contains a non-finite value or invalid modulus"
+        )));
+    }
+    let mut multiplier = integer.unsigned_abs();
+    let mut addend = value.rem_euclid(modulus);
+    let mut product = 0.0_f64;
+    while multiplier != 0 {
+        if multiplier & 1 == 1 {
+            product = (product + addend).rem_euclid(modulus);
+        }
+        addend = (2.0 * addend).rem_euclid(modulus);
+        multiplier >>= 1;
+    }
+    if integer < 0 {
+        product = (-product).rem_euclid(modulus);
+    }
+    Ok(product)
+}
+
+fn plane_wave_link_projection(
+    geometry: &LinkGeometry,
+    drive: &FloquetDrive,
+    mode: &LightMode,
+) -> Result<Complex<f64>> {
+    let grade = mode_grade(drive, mode)?;
+    let mut q_dot_d_reduced = 0.0_f64;
+    let mut q_dot_d_mod_two = 0.0_f64;
+    let mut q_dot_midpoint_mod_one = 0.0_f64;
+    for (basis_index, coefficient) in grade.0.iter().enumerate() {
+        let basis = drive.wavevector_basis_reduced.row(basis_index);
+        let basis_dot_d =
+            checked_real_dot(basis, geometry.d_fractional.view(), "finite-q bond phase")?;
+        let full_contribution = *coefficient as f64 * basis_dot_d;
+        q_dot_d_reduced += full_contribution;
+        if !full_contribution.is_finite() || !q_dot_d_reduced.is_finite() {
+            return Err(TbError::Other(
+                "finite-q Peierls bond phase is non-finite".to_string(),
+            ));
+        }
+        q_dot_d_mod_two = (q_dot_d_mod_two
+            + multiply_f64_by_isize_mod(basis_dot_d, *coefficient, 2.0, "finite-q bond phase")?)
+        .rem_euclid(2.0);
+
+        let basis_dot_midpoint = checked_real_dot(
+            basis,
+            geometry.midpoint_fractional.view(),
+            "finite-q midpoint phase",
+        )?;
+        q_dot_midpoint_mod_one = (q_dot_midpoint_mod_one
+            + multiply_f64_by_isize_mod(
+                basis_dot_midpoint,
+                *coefficient,
+                1.0,
+                "finite-q midpoint phase",
+            )?)
+        .rem_euclid(1.0);
+    }
+    if !q_dot_d_reduced.is_finite() || !q_dot_midpoint_mod_one.is_finite() {
+        return Err(TbError::Other(
+            "finite-q Peierls phase is non-finite".to_string(),
+        ));
+    }
+    let a_dot_d = mode
+        .a_complex
+        .iter()
+        .zip(geometry.d_cartesian.iter())
+        .map(|(amplitude, displacement)| *amplitude * *displacement)
+        .sum::<Complex<f64>>();
+    let sinc_argument = std::f64::consts::PI * q_dot_d_reduced;
+    let sinc = if sinc_argument.abs() < 1.0e-4 {
+        stable_sinc(sinc_argument)
+    } else {
+        (std::f64::consts::PI * q_dot_d_mod_two).sin() / sinc_argument
+    };
+    let projection = a_dot_d * sinc * Complex::new(0.0, TAU * q_dot_midpoint_mod_one).exp();
+    if !projection.re.is_finite() || !projection.im.is_finite() {
+        return Err(TbError::Other(
+            "finite-q Peierls link projection is non-finite".to_string(),
+        ));
+    }
+    Ok(projection)
+}
+
+fn grade_translation_phase(
+    grade: &MomentumGrade,
+    wavevector_basis_reduced: &Array2<f64>,
+    cell: &[isize],
+) -> Result<Complex<f64>> {
+    grade.validate_numerical_range()?;
+    if grade.0.len() != wavevector_basis_reduced.nrows() {
+        return Err(TbError::DimensionMismatch {
+            context: "momentum grade versus wavevector basis".to_string(),
+            expected: wavevector_basis_reduced.nrows(),
+            found: grade.0.len(),
+        });
+    }
+    if wavevector_basis_reduced.ncols() != cell.len() {
+        return Err(TbError::DimensionMismatch {
+            context: "momentum grade translation phase".to_string(),
+            expected: wavevector_basis_reduced.ncols(),
+            found: cell.len(),
+        });
+    }
+
+    let mut phase = 0.0_f64;
+    for (basis_index, coefficient) in grade.0.iter().enumerate() {
+        for (axis, translation) in cell.iter().enumerate() {
+            // Both the grade and the cell translation are integral.  Apply
+            // them successively modulo one so neither integer is converted to
+            // f64 before its low bits have contributed to the phase.
+            let graded_basis = multiply_f64_by_isize_mod(
+                wavevector_basis_reduced[[basis_index, axis]],
+                *coefficient,
+                1.0,
+                "momentum-grade translation phase",
+            )?;
+            let contribution = multiply_f64_by_isize_mod(
+                graded_basis,
+                *translation,
+                1.0,
+                "momentum-grade translation phase",
+            )?;
+            phase = (phase + contribution).rem_euclid(1.0);
+        }
+    }
+    if !phase.is_finite() {
+        return Err(TbError::Other(
+            "momentum-grade translation phase is non-finite".to_string(),
+        ));
+    }
+    Ok(Complex::new(0.0, TAU * phase).exp())
+}
+
+/// Graded Peierls coefficients for one bond.
+///
+/// With `P(t) = exp[-i Re(z_alpha exp(-i l_alpha theta))]`, a Bessel order
+/// `m_alpha` contributes temporal harmonic `-l_alpha*m_alpha` and exact
+/// momentum grade `-m_alpha*p_alpha`.  The midpoint phase inside `z_alpha`
+/// consequently becomes the spatial Fourier factor of that grade.
+fn bessel_peierls_channels(
+    geometry: &LinkGeometry,
+    drive: &FloquetDrive,
+    harmonic_min: isize,
+    harmonic_max: isize,
+    cutoff_margin: isize,
+) -> Result<std::collections::BTreeMap<ChannelKey, Complex<f64>>> {
+    if harmonic_min > harmonic_max {
+        return Err(TbError::Other(format!(
+            "bessel_peierls_channels: empty harmonic range [{harmonic_min}, {harmonic_max}]"
+        )));
+    }
+    if !(0..=48).contains(&cutoff_margin) {
+        return Err(TbError::Other(format!(
+            "bessel_peierls_channels: cutoff_margin = {cutoff_margin} outside [0, 48]"
+        )));
+    }
+
+    struct ModeData {
+        r: f64,
+        delta: f64,
+        harmonic: isize,
+        label: MomentumGrade,
+        m_cap: isize,
+    }
+
+    // Modes with the same temporal harmonic and exact momentum grade enter
+    // the exponent linearly.  Coalescing their link projections is exact and
+    // avoids a spurious combinatorial expansion for equivalent components.
+    let mut grouped_modes =
+        std::collections::BTreeMap::<(isize, MomentumGrade), Complex<f64>>::new();
+    for mode in &drive.modes {
+        let z = plane_wave_link_projection(geometry, drive, mode)?;
+        let combined = grouped_modes
+            .entry((mode.harmonic, mode_grade(drive, mode)?))
+            .or_insert(Complex::new(0.0, 0.0));
+        *combined += z;
+        if !combined.re.is_finite() || !combined.im.is_finite() {
+            return Err(TbError::Other(
+                "coalesced finite-q link amplitude is non-finite".to_string(),
+            ));
+        }
+    }
+    grouped_modes.retain(|_, z| z.re != 0.0 || z.im != 0.0);
+
+    let mut modes = Vec::with_capacity(grouped_modes.len());
+    let error_share = 1.0e-12 / grouped_modes.len().max(1) as f64;
+    for ((harmonic, label), z) in grouped_modes {
+        let r = z.norm();
+        if r > 8.0 {
+            return Err(TbError::Other(format!(
+                "finite-q Bessel backend: link-mode amplitude {r:.3} exceeds 8; \
+                 a graded time/space Fourier fallback is not implemented"
+            )));
+        }
+        let m_cap = bessel_adaptive_m_cap(r, error_share, cutoff_margin);
+        if m_cap > 64 {
+            return Err(TbError::Other(format!(
+                "finite-q Bessel cutoff {m_cap} exceeds the 64-order safety limit"
+            )));
+        }
+        modes.push(ModeData {
+            r,
+            delta: z.arg(),
+            harmonic,
+            label,
+            m_cap,
+        });
+    }
+
+    let mut remaining_drift = vec![0_isize; modes.len() + 1];
+    for index in (0..modes.len()).rev() {
+        let drift = modes[index]
+            .harmonic
+            .checked_mul(modes[index].m_cap)
+            .ok_or_else(|| {
+                TbError::Other("finite-q harmonic drift multiplication overflow".to_string())
+            })?;
+        remaining_drift[index] = remaining_drift[index + 1]
+            .checked_add(drift)
+            .ok_or_else(|| TbError::Other("finite-q harmonic drift overflow".to_string()))?;
+    }
+
+    let zero_grade = MomentumGrade::zero(drive.wavevector_basis_reduced.nrows());
+    let mut sequence = std::collections::BTreeMap::new();
+    sequence.insert(
+        ChannelKey {
+            harmonic: 0,
+            grade: zero_grade,
+        },
+        Complex::new(1.0, 0.0),
+    );
+
+    for (mode_index, mode) in modes.iter().enumerate() {
+        let future_drift = remaining_drift[mode_index + 1];
+        let keep_min = harmonic_min.checked_sub(future_drift).ok_or_else(|| {
+            TbError::Other("finite-q harmonic pruning window underflow".to_string())
+        })?;
+        let keep_max = harmonic_max.checked_add(future_drift).ok_or_else(|| {
+            TbError::Other("finite-q harmonic pruning window overflow".to_string())
+        })?;
+        let mut weights = Vec::with_capacity((2 * mode.m_cap + 1) as usize);
+        let mut minus_i_power = Complex::new(1.0, 0.0);
+        for m in 0..=mode.m_cap {
+            let positive = minus_i_power
+                * bessel_j(m, mode.r)
+                * Complex::from_polar(1.0, -(m as f64) * mode.delta);
+            if m == 0 {
+                weights.push((0_isize, positive));
+            } else {
+                let negative = minus_i_power
+                    * bessel_j(m, mode.r)
+                    * Complex::from_polar(1.0, (m as f64) * mode.delta);
+                weights.push((-m, negative));
+                weights.push((m, positive));
+            }
+            minus_i_power *= Complex::new(0.0, -1.0);
+        }
+
+        let mut next = std::collections::BTreeMap::new();
+        for (key, coefficient) in &sequence {
+            for &(m, weight) in &weights {
+                if weight.re == 0.0 && weight.im == 0.0 {
+                    continue;
+                }
+                let time_shift = mode.harmonic.checked_mul(m).ok_or_else(|| {
+                    TbError::Other("finite-q harmonic multiplication overflow".to_string())
+                })?;
+                let harmonic = key.harmonic.checked_sub(time_shift).ok_or_else(|| {
+                    TbError::Other("finite-q harmonic addition overflow".to_string())
+                })?;
+                if harmonic < keep_min || harmonic > keep_max {
+                    continue;
+                }
+                let grade_scale = m.checked_neg().ok_or_else(|| {
+                    TbError::Other("finite-q momentum-grade scale overflow".to_string())
+                })?;
+                let grade = key.grade.add_scaled(mode.label.as_slice(), grade_scale)?;
+                let channel = ChannelKey { harmonic, grade };
+                let previous_len = next.len();
+                *next.entry(channel).or_insert(Complex::new(0.0, 0.0)) += *coefficient * weight;
+                let inserted = next.len() != previous_len;
+                if inserted && next.len() > MAX_GRADED_CHANNELS_PER_LINK {
+                    return Err(TbError::Other(format!(
+                        "finite-q Peierls expansion exceeds the per-link channel safety limit \
+                         {MAX_GRADED_CHANNELS_PER_LINK}; reduce the number of independent modes \
+                         or their amplitudes"
+                    )));
+                }
+                if inserted {
+                    let estimated_bytes = estimated_graded_channel_bytes(
+                        next.len(),
+                        drive.wavevector_basis_reduced.nrows(),
+                    )?;
+                    if estimated_bytes > MAX_GRADED_LINK_CHANNEL_BYTES {
+                        return Err(TbError::Other(format!(
+                            "finite-q Peierls expansion requires about {estimated_bytes} bytes \
+                             for one link's momentum channels, exceeding the safety limit \
+                             {MAX_GRADED_LINK_CHANNEL_BYTES}; reduce the number or dimension of \
+                             the momentum labels"
+                        )));
+                    }
+                }
+            }
+        }
+        next.retain(|_, coefficient| coefficient.re != 0.0 || coefficient.im != 0.0);
+        sequence = next;
+    }
+
+    sequence.retain(|key, _| key.harmonic >= harmonic_min && key.harmonic <= harmonic_max);
+    Ok(sequence)
+}
+
+fn estimated_graded_channel_bytes(count: usize, grade_dimension: usize) -> Result<usize> {
+    let grade_bytes = grade_dimension
+        .checked_mul(std::mem::size_of::<isize>())
+        .ok_or_else(|| TbError::Other("momentum-grade byte estimate overflow".to_string()))?;
+    // Include the key/value payload and a conservative allowance for BTreeMap
+    // links and allocator metadata.  The separately allocated grade slice is
+    // accounted for explicitly above.
+    let bytes_per_channel = std::mem::size_of::<ChannelKey>()
+        .checked_add(std::mem::size_of::<Complex<f64>>())
+        .and_then(|value| value.checked_add(4 * std::mem::size_of::<usize>()))
+        .and_then(|value| value.checked_add(grade_bytes))
+        .ok_or_else(|| TbError::Other("graded-channel byte estimate overflow".to_string()))?;
+    count
+        .checked_mul(bytes_per_channel)
+        .ok_or_else(|| TbError::Other("graded-channel byte estimate overflow".to_string()))
+}
+
+fn estimated_graded_cache_bytes(
+    channel_count: usize,
+    block_count: usize,
+    grade_dimension: usize,
+    nsta: usize,
+) -> Result<usize> {
+    let channel_bytes = estimated_graded_channel_bytes(channel_count, grade_dimension)?;
+    let matrix_bytes_per_block = nsta
+        .checked_mul(nsta)
+        .and_then(|value| value.checked_mul(std::mem::size_of::<Complex<f64>>()))
+        .ok_or_else(|| TbError::Other("finite-q cache matrix-byte overflow".to_string()))?;
+    block_count
+        .checked_mul(matrix_bytes_per_block)
+        .and_then(|matrix_bytes| matrix_bytes.checked_add(channel_bytes))
+        .ok_or_else(|| TbError::Other("finite-q cache byte estimate overflow".to_string()))
+}
+
+fn validate_finite_q_pair_scan_count(harmonic_count: usize) -> Result<usize> {
+    let candidate_pair_scans = harmonic_count
+        .checked_mul(harmonic_count.saturating_sub(1))
+        .ok_or_else(|| TbError::Other("finite-q harmonic-pair scan count overflow".to_string()))?;
+    if candidate_pair_scans > MAX_GRADED_VAN_VLECK_PAIR_SCANS {
+        return Err(TbError::Other(format!(
+            "finite-q order-2 expansion would scan {candidate_pair_scans} harmonic pairs, \
+             exceeding the safety limit {MAX_GRADED_VAN_VLECK_PAIR_SCANS}; lower harmonic_max \
+             or reduce the number of temporal channels"
+        )));
+    }
+    Ok(candidate_pair_scans)
 }
 
 /// Peierls Fourier coefficients `C_q(d)` via the generalized Bessel
@@ -2535,6 +3780,420 @@ fn merge_real_space_block_maps(
     left
 }
 
+fn accumulate_scaled_block_map(
+    target: &mut RealSpaceBlockMap,
+    source: &RealSpaceBlockMap,
+    scale: f64,
+) -> Result<()> {
+    if source.is_empty() {
+        return Ok(());
+    }
+    let source_is_zero = source
+        .values()
+        .all(|block| block.iter().all(|value| value.re == 0.0 && value.im == 0.0));
+    if source_is_zero {
+        for (translation, block) in source {
+            target
+                .entry(translation.clone())
+                .or_insert_with(|| Array2::zeros(block.raw_dim()));
+        }
+        return Ok(());
+    }
+    if !scale.is_finite() {
+        return Err(TbError::Other(
+            "a van Vleck frequency scaling factor is non-finite; increase omega0_ev or lower the requested order"
+                .to_string(),
+        ));
+    }
+    let scale = Complex::new(scale, 0.0);
+    for (translation, block) in source {
+        target
+            .entry(translation.clone())
+            .and_modify(|target_block| target_block.scaled_add(scale, block))
+            .or_insert_with(|| block.mapv(|value| scale * value));
+    }
+    Ok(())
+}
+
+fn accumulate_scaled_graded_operator(
+    target: &mut GradedOperator,
+    source: &GradedOperator,
+    scale: f64,
+) -> Result<()> {
+    for (grade, blocks) in source {
+        accumulate_scaled_block_map(target.entry(grade.clone()).or_default(), blocks, scale)?;
+    }
+    validate_graded_operator_size(target)
+}
+
+fn validate_graded_operator_size(operator: &GradedOperator) -> Result<()> {
+    if operator.len() > MAX_GRADED_OPERATOR_GRADES {
+        return Err(TbError::Other(format!(
+            "finite-q graded operator has {} momentum grades, exceeding the safety limit {}",
+            operator.len(),
+            MAX_GRADED_OPERATOR_GRADES
+        )));
+    }
+    let block_count = operator.values().try_fold(0_usize, |total, blocks| {
+        total.checked_add(blocks.len()).ok_or_else(|| {
+            TbError::Other("finite-q graded-operator block count overflow".to_string())
+        })
+    })?;
+    if block_count > MAX_GRADED_OPERATOR_BLOCKS {
+        return Err(TbError::Other(format!(
+            "finite-q graded operator has {block_count} real-space blocks, exceeding the safety \
+             limit {MAX_GRADED_OPERATOR_BLOCKS}"
+        )));
+    }
+    if let Some(sample_block) = operator.values().flat_map(|blocks| blocks.values()).next() {
+        let matrix_bytes = block_count
+            .checked_mul(sample_block.len())
+            .and_then(|value| value.checked_mul(std::mem::size_of::<Complex<f64>>()))
+            .ok_or_else(|| {
+                TbError::Other("finite-q graded-operator byte estimate overflow".to_string())
+            })?;
+        if matrix_bytes > MAX_GRADED_OPERATOR_BYTES {
+            return Err(TbError::Other(format!(
+                "finite-q graded operator requires at least {matrix_bytes} dense-matrix bytes, \
+                 exceeding the safety limit {MAX_GRADED_OPERATOR_BYTES}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn merge_graded_operators(
+    mut left: GradedOperator,
+    mut right: GradedOperator,
+) -> Result<GradedOperator> {
+    if left.len() < right.len() {
+        std::mem::swap(&mut left, &mut right);
+    }
+    for (grade, blocks) in right {
+        let target = left.entry(grade).or_default();
+        let previous = std::mem::take(target);
+        *target = merge_real_space_block_maps(previous, blocks);
+    }
+    validate_graded_operator_size(&left)?;
+    Ok(left)
+}
+
+fn graded_component_arrays<const DIM: usize>(
+    blocks: &RealSpaceBlockMap,
+    nsta: usize,
+) -> Result<(Array3<Complex<f64>>, Array2<isize>)> {
+    if blocks.is_empty() {
+        return Err(TbError::Other(
+            "a graded real-space component has empty hopping support".to_string(),
+        ));
+    }
+    let mut ham = Array3::<Complex<f64>>::zeros((blocks.len(), nsta, nsta));
+    let mut ham_r = Array2::<isize>::zeros((blocks.len(), DIM));
+    for (index, (translation, block)) in blocks.iter().enumerate() {
+        if translation.len() != DIM {
+            return Err(TbError::InvalidArrayShape {
+                expected: vec![DIM],
+                found: vec![translation.len()],
+            });
+        }
+        if block.dim() != (nsta, nsta) {
+            return Err(TbError::InvalidArrayShape {
+                expected: vec![nsta, nsta],
+                found: vec![block.nrows(), block.ncols()],
+            });
+        }
+        if block
+            .iter()
+            .any(|value| !value.re.is_finite() || !value.im.is_finite())
+        {
+            return Err(TbError::Other(format!(
+                "graded effective hopping at R={translation:?} contains a non-finite value"
+            )));
+        }
+        for (axis, value) in translation.iter().enumerate() {
+            ham_r[[index, axis]] = *value;
+        }
+        ham.index_axis_mut(Axis(0), index).assign(block);
+    }
+    Ok((ham, ham_r))
+}
+
+/// Product of two fixed-grade real-space operators.
+///
+/// If the right operand has grade `h`, translation covariance gives
+///
+/// ```math
+/// (A_g B_h)(R)=\sum_{R_a+R_b=R}
+/// e^{i\mathbf Q_h\cdot\mathbf R_a} A_g(R_a)B_h(R_b).
+/// ```
+fn twisted_real_space_product(
+    left: &RealSpaceBlockMap,
+    right: &RealSpaceBlockMap,
+    right_grade: &MomentumGrade,
+    wavevector_basis_reduced: &Array2<f64>,
+) -> Result<RealSpaceBlockMap> {
+    if left.is_empty() || right.is_empty() {
+        return Ok(RealSpaceBlockMap::new());
+    }
+    let left_entries = left.iter().collect::<Vec<_>>();
+    let right_entries = right.iter().collect::<Vec<_>>();
+    let nsta = left_entries[0].1.nrows();
+    debug_assert_eq!(left_entries[0].1.ncols(), nsta);
+    debug_assert!(
+        left_entries
+            .iter()
+            .all(|(_, block)| block.dim() == (nsta, nsta))
+    );
+    debug_assert!(
+        right_entries
+            .iter()
+            .all(|(_, block)| block.dim() == (nsta, nsta))
+    );
+
+    let n_right = right_entries.len();
+    let pair_count = left_entries
+        .len()
+        .checked_mul(n_right)
+        .ok_or_else(|| TbError::Other("twisted-product pair count overflow".to_string()))?;
+    let accumulate_pair = |partial: &mut RealSpaceBlockMap, pair_index: usize| -> Result<()> {
+        let (r_left, left_block) = left_entries[pair_index / n_right];
+        let (r_right, right_block) = right_entries[pair_index % n_right];
+        if r_left.len() != r_right.len() {
+            return Err(TbError::Other(
+                "twisted-product support dimensions do not match".to_string(),
+            ));
+        }
+        let mut translation = Vec::with_capacity(r_left.len());
+        for (axis, (&left_value, &right_value)) in r_left.iter().zip(r_right.iter()).enumerate() {
+            translation.push(left_value.checked_add(right_value).ok_or_else(|| {
+                TbError::Other(format!(
+                    "twisted-product translation overflow on axis {axis}: \
+                         {left_value} + {right_value}"
+                ))
+            })?);
+        }
+        let phase =
+            grade_translation_phase(right_grade, wavevector_basis_reduced, r_left.as_slice())?;
+        let is_new_translation = !partial.contains_key(&translation);
+        if is_new_translation && partial.len() >= MAX_GRADED_OPERATOR_BLOCKS {
+            return Err(TbError::Other(format!(
+                "finite-q real-space product exceeds the per-component block safety limit \
+                 {MAX_GRADED_OPERATOR_BLOCKS}"
+            )));
+        }
+        let block = partial
+            .entry(translation)
+            .or_insert_with(|| Array2::zeros((nsta, nsta)));
+        zgemm_row_accumulate(phase, left_block, right_block, block);
+        Ok(())
+    };
+
+    const PARALLEL_PAIR_THRESHOLD: usize = 128;
+    if pair_count >= PARALLEL_PAIR_THRESHOLD && rayon::current_num_threads() > 1 {
+        let min_pairs_per_job = pair_count.div_ceil(rayon::current_num_threads());
+        (0..pair_count)
+            .into_par_iter()
+            .with_min_len(min_pairs_per_job)
+            .try_fold(
+                RealSpaceBlockMap::new,
+                |mut partial, pair_index| -> Result<RealSpaceBlockMap> {
+                    accumulate_pair(&mut partial, pair_index)?;
+                    Ok(partial)
+                },
+            )
+            .try_reduce(RealSpaceBlockMap::new, |left, right| {
+                let merged = merge_real_space_block_maps(left, right);
+                if merged.len() > MAX_GRADED_OPERATOR_BLOCKS {
+                    return Err(TbError::Other(format!(
+                        "finite-q real-space product exceeds the per-component block safety limit \
+                         {MAX_GRADED_OPERATOR_BLOCKS}"
+                    )));
+                }
+                Ok(merged)
+            })
+    } else {
+        let mut product = RealSpaceBlockMap::new();
+        for pair_index in 0..pair_count {
+            accumulate_pair(&mut product, pair_index)?;
+        }
+        Ok(product)
+    }
+}
+
+fn graded_product(
+    left: &GradedOperator,
+    right: &GradedOperator,
+    wavevector_basis_reduced: &Array2<f64>,
+    work_budget: &GradedWorkBudget,
+) -> Result<GradedOperator> {
+    work_budget.charge_product(left, right)?;
+    let mut product = GradedOperator::new();
+    let mut output_blocks = 0_usize;
+    for (left_grade, left_blocks) in left {
+        for (right_grade, right_blocks) in right {
+            let output_grade = left_grade.add(right_grade)?;
+            let blocks = twisted_real_space_product(
+                left_blocks,
+                right_blocks,
+                right_grade,
+                wavevector_basis_reduced,
+            )?;
+            let target = product.entry(output_grade).or_default();
+            let previous_len = target.len();
+            let previous = std::mem::take(target);
+            *target = merge_real_space_block_maps(previous, blocks);
+            output_blocks = output_blocks
+                .checked_add(target.len() - previous_len)
+                .ok_or_else(|| {
+                    TbError::Other("finite-q product output block count overflow".to_string())
+                })?;
+            if product.len() > MAX_GRADED_OPERATOR_GRADES
+                || output_blocks > MAX_GRADED_OPERATOR_BLOCKS
+            {
+                return Err(TbError::Other(format!(
+                    "finite-q graded product exceeds its output safety limits ({} grades, \
+                     {output_blocks} blocks; limits are {} and {})",
+                    product.len(),
+                    MAX_GRADED_OPERATOR_GRADES,
+                    MAX_GRADED_OPERATOR_BLOCKS
+                )));
+            }
+        }
+    }
+    Ok(product)
+}
+
+fn graded_commutator(
+    left: &GradedOperator,
+    right: &GradedOperator,
+    wavevector_basis_reduced: &Array2<f64>,
+    work_budget: &GradedWorkBudget,
+) -> Result<GradedOperator> {
+    let mut commutator = graded_product(left, right, wavevector_basis_reduced, work_budget)?;
+    let reverse = graded_product(right, left, wavevector_basis_reduced, work_budget)?;
+    accumulate_scaled_graded_operator(&mut commutator, &reverse, -1.0)?;
+    Ok(commutator)
+}
+
+/// Enforce `T_{-g}(-R) = exp(i 2pi Q_g.R) T_g(R)^dagger` exactly.
+fn enforce_graded_hermiticity(
+    operator: &mut GradedOperator,
+    wavevector_basis_reduced: &Array2<f64>,
+) -> Result<()> {
+    let Some(sample_block) = operator.values().flat_map(|blocks| blocks.values()).next() else {
+        return Ok(());
+    };
+    let block_shape = sample_block.raw_dim();
+    let block_len = sample_block.len();
+    let original_keys = operator
+        .iter()
+        .flat_map(|(grade, blocks)| {
+            blocks
+                .keys()
+                .cloned()
+                .map(|translation| (grade.clone(), translation))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut missing_partners = std::collections::BTreeSet::new();
+    for (grade, translation) in &original_keys {
+        let partner_grade = grade.negated()?;
+        let partner_translation = translation
+            .iter()
+            .map(|value| {
+                value.checked_neg().ok_or_else(|| {
+                    TbError::Other("real-space translation negation overflow".to_string())
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let partner_exists = operator
+            .get(&partner_grade)
+            .is_some_and(|blocks| blocks.contains_key(&partner_translation));
+        if !partner_exists {
+            missing_partners.insert((partner_grade, partner_translation));
+        }
+    }
+
+    let existing_grade_count = operator.len();
+    let existing_block_count = original_keys.len();
+    let new_grades = missing_partners
+        .iter()
+        .map(|(grade, _)| grade)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|grade| !operator.contains_key(*grade))
+        .count();
+    let final_grade_count = existing_grade_count
+        .checked_add(new_grades)
+        .ok_or_else(|| TbError::Other("graded Hermiticity grade-count overflow".to_string()))?;
+    let final_block_count = existing_block_count
+        .checked_add(missing_partners.len())
+        .ok_or_else(|| TbError::Other("graded Hermiticity block-count overflow".to_string()))?;
+    let final_matrix_bytes = final_block_count
+        .checked_mul(block_len)
+        .and_then(|value| value.checked_mul(std::mem::size_of::<Complex<f64>>()))
+        .ok_or_else(|| TbError::Other("graded Hermiticity byte estimate overflow".to_string()))?;
+    if final_grade_count > MAX_GRADED_OPERATOR_GRADES
+        || final_block_count > MAX_GRADED_OPERATOR_BLOCKS
+        || final_matrix_bytes > MAX_GRADED_OPERATOR_BYTES
+    {
+        return Err(TbError::Other(format!(
+            "graded Hermiticity closure would require {final_grade_count} grades, \
+             {final_block_count} blocks, and at least {final_matrix_bytes} matrix bytes; limits \
+             are {MAX_GRADED_OPERATOR_GRADES}, {MAX_GRADED_OPERATOR_BLOCKS}, and \
+             {MAX_GRADED_OPERATOR_BYTES}"
+        )));
+    }
+    for (partner_grade, partner_translation) in missing_partners {
+        operator
+            .entry(partner_grade)
+            .or_default()
+            .insert(partner_translation, Array2::zeros(block_shape));
+    }
+
+    let closed_keys = operator
+        .iter()
+        .flat_map(|(grade, blocks)| {
+            blocks
+                .keys()
+                .cloned()
+                .map(|translation| (grade.clone(), translation))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for (grade, translation) in closed_keys {
+        let partner_grade = grade.negated()?;
+        let partner_translation = translation
+            .iter()
+            .map(|value| {
+                value.checked_neg().ok_or_else(|| {
+                    TbError::Other("real-space translation negation overflow".to_string())
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if (grade.clone(), translation.clone())
+            > (partner_grade.clone(), partner_translation.clone())
+        {
+            continue;
+        }
+        let block = operator[&grade][&translation].clone();
+        let partner = operator[&partner_grade][&partner_translation].clone();
+        let phase =
+            grade_translation_phase(&grade, wavevector_basis_reduced, translation.as_slice())?;
+        let average = (&block + &(hermitian_conjugate(&partner) * phase)) * Complex::new(0.5, 0.0);
+        let partner_average = hermitian_conjugate(&average) * phase;
+        operator
+            .get_mut(&grade)
+            .expect("closed grade exists")
+            .insert(translation, average);
+        operator
+            .get_mut(&partner_grade)
+            .expect("closed partner grade exists")
+            .insert(partner_translation, partner_average);
+    }
+    validate_graded_operator_size(operator)
+}
+
 /// Real-space commutator blocks `comm_q(R) = (AB)(R) − (BA)(R)` for the
 /// harmonic pair `A_R = T_q(R)` and `B_R = T_{−q}(R)` (see
 /// `FLOQUET_REAL_SPACE_PLAN.md` §3):
@@ -2947,7 +4606,7 @@ mod tests {
             (array![Complex::new(0.0, 0.4)], "circular"),
             (array![Complex::new(0.3, 0.2)], "elliptical"),
         ] {
-            let drive = FloquetDrive::with_modes(0.8, vec![LightMode::new(1, amplitude.clone())]);
+            let drive = FloquetDrive::uniform(0.8, vec![LightMode::uniform(1, amplitude.clone())]);
             let r = amplitude[0].norm();
             let delta = amplitude[0].arg();
             let coeffs = bessel_peierls_coeffs(&d, &drive, -6, 6, 6).unwrap();
@@ -2971,29 +4630,35 @@ mod tests {
         // multi-harmonic drives.
         let d = array![1.3, -0.7];
         let cases: Vec<FloquetDrive> = vec![
-            FloquetDrive::with_modes(
+            FloquetDrive::uniform(
                 1.0,
                 vec![
-                    LightMode::new(1, array![Complex::new(0.25, 0.0), Complex::new(0.0, 0.25)]),
-                    LightMode::new(2, array![Complex::new(0.1, 0.0), Complex::new(0.05, -0.05)]),
+                    LightMode::uniform(1, array![Complex::new(0.25, 0.0), Complex::new(0.0, 0.25)]),
+                    LightMode::uniform(
+                        2,
+                        array![Complex::new(0.1, 0.0), Complex::new(0.05, -0.05)],
+                    ),
                 ],
             ),
-            FloquetDrive::with_modes(
+            FloquetDrive::uniform(
                 0.7,
                 vec![
-                    LightMode::new(1, array![Complex::new(0.3, 0.1), Complex::new(-0.1, 0.2)]),
-                    LightMode::new(
+                    LightMode::uniform(1, array![Complex::new(0.3, 0.1), Complex::new(-0.1, 0.2)]),
+                    LightMode::uniform(
                         -3,
                         array![Complex::new(0.08, -0.04), Complex::new(0.02, 0.06)],
                     ),
                 ],
             ),
-            FloquetDrive::with_modes(
+            FloquetDrive::uniform(
                 0.5,
                 vec![
-                    LightMode::new(1, array![Complex::new(0.2, 0.0), Complex::new(0.0, 0.2)]),
-                    LightMode::new(2, array![Complex::new(0.05, 0.0), Complex::new(0.0, -0.05)]),
-                    LightMode::new(
+                    LightMode::uniform(1, array![Complex::new(0.2, 0.0), Complex::new(0.0, 0.2)]),
+                    LightMode::uniform(
+                        2,
+                        array![Complex::new(0.05, 0.0), Complex::new(0.0, -0.05)],
+                    ),
+                    LightMode::uniform(
                         3,
                         array![Complex::new(0.02, 0.01), Complex::new(0.01, -0.02)],
                     ),
@@ -3020,7 +4685,7 @@ mod tests {
     #[test]
     fn bessel_coeffs_handle_empty_drive() {
         let d = array![0.5];
-        let drive = FloquetDrive::new(1.0);
+        let drive = FloquetDrive::empty(1.0);
         let coeffs = bessel_peierls_coeffs(&d, &drive, -3, 3, 6).unwrap();
         for q in -3..=3 {
             let expected = if q == 0 {
@@ -3081,11 +4746,11 @@ mod tests {
             distinct_d.len()
         );
 
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             0.8,
             vec![
-                LightMode::new(1, array![Complex::new(0.2, 0.0), Complex::new(0.0, 0.2)]),
-                LightMode::new(2, array![Complex::new(0.05, -0.05), Complex::new(0.0, 0.0)]),
+                LightMode::uniform(1, array![Complex::new(0.2, 0.0), Complex::new(0.0, 0.2)]),
+                LightMode::uniform(2, array![Complex::new(0.05, -0.05), Complex::new(0.0, 0.0)]),
             ],
         );
         let trunc = FloquetTruncation::new(2, 512);
@@ -3123,9 +4788,9 @@ mod tests {
         model.add_hop(-1.0, 0, 0, &array![1, 0], None);
         model.add_hop(-0.5, 0, 1, &array![0, 1], None);
 
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
             )],
@@ -3166,9 +4831,9 @@ mod tests {
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.add_hop(-1.0, 0, 1, &array![0, 1], None);
 
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 100,
                 array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
             )],
@@ -3223,9 +4888,9 @@ mod tests {
         model.add_hop(-1.0, 0, 0, &array![1, 0], None);
         model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (10, 1), R = 9 > 8
 
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
             )],
@@ -3273,9 +4938,9 @@ mod tests {
         model.add_hop(-1.0, 0, 0, &array![1, 0], None);
         model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (10, 1), R = 9 > 8
 
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
             )],
@@ -3312,18 +4977,18 @@ mod tests {
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.add_hop(-1.0, 0, 0, &array![1, 0], None);
         model.add_hop(-0.5, 0, 1, &array![0, 1], None);
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
             )],
         );
         let coarse = model
-            .floquet_effective_model(&drive, &FloquetTruncation::new(55, 8), None)
+            .floquet_effective_uniform_model(&drive, &FloquetTruncation::new(55, 8), None)
             .unwrap();
         let fine = model
-            .floquet_effective_model(&drive, &FloquetTruncation::new(55, 65536), None)
+            .floquet_effective_uniform_model(&drive, &FloquetTruncation::new(55, 65536), None)
             .unwrap();
         assert_eq!(
             coarse.hamR, fine.hamR,
@@ -3343,9 +5008,9 @@ mod tests {
         // flag) for the normal, clamp, saturation, and request-dominant
         // regimes.  A broken clamp or saturation detector fails here with
         // exact values instead of a finiteness smoke test.
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
             )],
@@ -3364,9 +5029,9 @@ mod tests {
         assert!(!s.clamped && !s.saturated);
 
         // Clamp: |l|·M beyond FALLBACK_GRID_MAX.
-        let big = FloquetDrive::with_modes(
+        let big = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 10000,
                 array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
             )],
@@ -3378,9 +5043,9 @@ mod tests {
 
         // Saturation: R = 4000 exceeds the 4096-order adaptive cutoff,
         // so the bandwidth estimate is a lower bound.
-        let sat = FloquetDrive::with_modes(
+        let sat = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
             )],
@@ -3404,9 +5069,9 @@ mod tests {
         let orb = array![[0.0, 0.0], [8900.0, 0.0]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (8900, 1), R = 8900 > 8
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
             )],
@@ -3486,9 +5151,9 @@ mod tests {
         model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![1, 1], None);
 
         // Circular polarization: a = 0.3·(e_x + i·e_y).
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)],
             )],
@@ -3754,8 +5419,10 @@ mod tests {
         model.set_hop(Complex::new(-0.3, 0.1), 0, 1, &array![1], None);
         model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![2], None);
 
-        let drive =
-            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let drive = FloquetDrive::uniform(
+            1.0,
+            vec![LightMode::uniform(1, array![Complex::new(0.4, 0.2)])],
+        );
         let (_cache, a_blocks, b_blocks) = commutator_test_blocks(&model, &drive);
         let (comm_blocks, _comm_r) =
             real_space_commutator(&a_blocks, &b_blocks, &model.hamR).unwrap();
@@ -3779,8 +5446,10 @@ mod tests {
         model.set_hop(-0.3, 0, 1, &array![1], None);
         model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![2], None);
 
-        let drive =
-            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let drive = FloquetDrive::uniform(
+            1.0,
+            vec![LightMode::uniform(1, array![Complex::new(0.4, 0.2)])],
+        );
         let (_cache, a_blocks, b_blocks) = commutator_test_blocks(&model, &drive);
         let (comm_blocks, comm_r) =
             real_space_commutator(&a_blocks, &b_blocks, &model.hamR).unwrap();
@@ -3816,8 +5485,10 @@ mod tests {
         let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
         model.set_hop(-1.0, 0, 0, &array![1], None);
 
-        let drive =
-            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let drive = FloquetDrive::uniform(
+            1.0,
+            vec![LightMode::uniform(1, array![Complex::new(0.4, 0.2)])],
+        );
         let (_cache, a_blocks, b_blocks) = commutator_test_blocks(&model, &drive);
         let (comm_blocks, _comm_r) =
             real_space_commutator(&a_blocks, &b_blocks, &model.hamR).unwrap();
@@ -3847,17 +5518,17 @@ mod tests {
         model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![1, 1], None);
 
         // Circular l = 1 plus a second harmonic l = 2.
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
             vec![
-                LightMode::new(1, array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)]),
-                LightMode::new(2, array![Complex::new(0.05, -0.05), Complex::new(0.0, 0.0)]),
+                LightMode::uniform(1, array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)]),
+                LightMode::uniform(2, array![Complex::new(0.05, -0.05), Complex::new(0.0, 0.0)]),
             ],
         );
         let trunc = FloquetTruncation::new(2, 4096);
-        let options = FloquetEffectiveOptions::new().with_q_max(4);
+        let options = FloquetEffectiveOptions::new().with_harmonic_max(4);
         let bessel = model
-            .floquet_effective_model(&drive, &trunc, Some(&options))
+            .floquet_effective_uniform_model(&drive, &trunc, Some(&options))
             .unwrap();
 
         // Legacy path on the same (automatically determined) support.
@@ -3888,18 +5559,20 @@ mod tests {
         model.set_hop(-1.0, 0, 0, &array![1, 0], None);
         model.set_hop(-0.3, 0, 1, &array![0, 1], None);
         model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![1, 1], None);
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.7,
             vec![
-                LightMode::new(1, array![Complex::new(0.28, 0.03), Complex::new(0.0, 0.24)]),
-                LightMode::new(
+                LightMode::uniform(1, array![Complex::new(0.28, 0.03), Complex::new(0.0, 0.24)]),
+                LightMode::uniform(
                     2,
                     array![Complex::new(0.06, -0.04), Complex::new(0.02, 0.01)],
                 ),
             ],
         );
         let trunc = FloquetTruncation::new(2, 4096);
-        let options = FloquetEffectiveOptions::new().with_order(2).with_q_max(2);
+        let options = FloquetEffectiveOptions::new()
+            .with_order(2)
+            .with_harmonic_max(2);
         let serial_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
@@ -3910,12 +5583,12 @@ mod tests {
             .unwrap();
         let serial = serial_pool.install(|| {
             model
-                .floquet_effective_model(&drive, &trunc, Some(&options))
+                .floquet_effective_uniform_model(&drive, &trunc, Some(&options))
                 .unwrap()
         });
         let real_space = parallel_pool.install(|| {
             model
-                .floquet_effective_model(&drive, &trunc, Some(&options))
+                .floquet_effective_uniform_model(&drive, &trunc, Some(&options))
                 .unwrap()
         });
 
@@ -4001,17 +5674,17 @@ mod tests {
         // O(Ω^-2) spectral error while order 2 has O(Ω^-3) error.
         let model = two_band_qwz(0.9, 0.7, 0.35, 0.4, [[1.0, 0.0], [0.0, 1.0]]);
         let kvec = array![0.173, 0.287];
-        let mode = LightMode::new(
+        let mode = LightMode::uniform(
             1,
             array![Complex::new(0.23, 0.04), Complex::new(-0.02, 0.19)],
         );
         let trunc = FloquetTruncation::new(8, 4096);
-        let base_options = FloquetEffectiveOptions::new().with_q_max(8);
+        let base_options = FloquetEffectiveOptions::new().with_harmonic_max(8);
         let mut first_order_errors = Vec::new();
         let mut second_order_errors = Vec::new();
 
         for omega in [20.0, 40.0, 80.0] {
-            let drive = FloquetDrive::with_modes(omega, vec![mode.clone()]);
+            let drive = FloquetDrive::uniform(omega, vec![mode.clone()]);
             let sambe = model
                 .floquet_ham_onek(&kvec, &drive, &trunc, Gauge::Lattice)
                 .unwrap();
@@ -4028,11 +5701,19 @@ mod tests {
             );
 
             let first = model
-                .floquet_effective_model(&drive, &trunc, Some(&base_options.clone().with_order(1)))
+                .floquet_effective_uniform_model(
+                    &drive,
+                    &trunc,
+                    Some(&base_options.clone().with_order(1)),
+                )
                 .unwrap()
                 .solve_band_onek(&kvec);
             let second = model
-                .floquet_effective_model(&drive, &trunc, Some(&base_options.clone().with_order(2)))
+                .floquet_effective_uniform_model(
+                    &drive,
+                    &trunc,
+                    Some(&base_options.clone().with_order(2)),
+                )
                 .unwrap()
                 .solve_band_onek(&kvec);
             let first_error = first
@@ -4079,11 +5760,13 @@ mod tests {
         model.set_hop(-1.0, 0, 0, &array![1], None);
         model.set_hop(Complex::new(-0.3, 0.1), 0, 1, &array![1], None);
 
-        let drive =
-            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let drive = FloquetDrive::uniform(
+            1.0,
+            vec![LightMode::uniform(1, array![Complex::new(0.4, 0.2)])],
+        );
         let trunc = FloquetTruncation::new(1, 4096);
         let bessel = model
-            .floquet_effective_model(
+            .floquet_effective_uniform_model(
                 &drive,
                 &trunc,
                 Some(&FloquetEffectiveOptions::new().with_order(0)),
@@ -4120,15 +5803,15 @@ mod tests {
         model.set_hop(-1.0, 0, 0, &array![1, 0], None);
         model.set_hop(-0.3, 0, 1, &array![0, 1], None);
         model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![1, 1], None);
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)],
             )],
         );
         let bessel = model
-            .floquet_effective_model(&drive, &FloquetTruncation::new(1, 512), None)
+            .floquet_effective_uniform_model(&drive, &FloquetTruncation::new(1, 512), None)
             .unwrap();
 
         // Expected support: the Minkowski sum of the input hamR with
@@ -4158,14 +5841,16 @@ mod tests {
         let orb = array![[0.0]];
         let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
         model.set_hop(-1.0, 0, 0, &array![1], None);
-        let drive =
-            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
+        let drive = FloquetDrive::uniform(
+            1.0,
+            vec![LightMode::uniform(1, array![Complex::new(0.4, 0.2)])],
+        );
         let trunc = FloquetTruncation::new(1, 512);
 
         // order 2 is supported; higher orders are rejected.
         assert!(
             model
-                .floquet_effective_model(
+                .floquet_effective_uniform_model(
                     &drive,
                     &trunc,
                     Some(&FloquetEffectiveOptions::new().with_order(2))
@@ -4174,7 +5859,7 @@ mod tests {
         );
         assert!(
             model
-                .floquet_effective_model(
+                .floquet_effective_uniform_model(
                     &drive,
                     &trunc,
                     Some(&FloquetEffectiveOptions::new().with_order(3))
@@ -4185,7 +5870,7 @@ mod tests {
         let target = array![[-1], [0], [1]];
         assert!(
             model
-                .floquet_effective_model(
+                .floquet_effective_uniform_model(
                     &drive,
                     &trunc,
                     Some(&FloquetEffectiveOptions::new().with_target_hamR(target))
@@ -4195,10 +5880,10 @@ mod tests {
         // negative q_max.
         assert!(
             model
-                .floquet_effective_model(
+                .floquet_effective_uniform_model(
                     &drive,
                     &trunc,
-                    Some(&FloquetEffectiveOptions::new().with_q_max(-1))
+                    Some(&FloquetEffectiveOptions::new().with_harmonic_max(-1))
                 )
                 .is_err()
         );
@@ -4206,13 +5891,13 @@ mod tests {
         // An order-2 symmetric cache needs 4*q_max+1 harmonics.  Reject an
         // unrepresentable inclusive range before ndarray arithmetic/allocation.
         let range_error = model
-            .floquet_effective_model(
+            .floquet_effective_uniform_model(
                 &drive,
                 &trunc,
                 Some(
                     &FloquetEffectiveOptions::new()
                         .with_order(2)
-                        .with_q_max(isize::MAX / 2),
+                        .with_harmonic_max(isize::MAX / 2),
                 ),
             )
             .unwrap_err();
@@ -4223,17 +5908,39 @@ mod tests {
             "unexpected error: {range_error}"
         );
 
+        // Keep active uniform order-2 work bounded before the dense harmonic
+        // loops become impractically expensive.
+        let work_error = model
+            .floquet_effective_uniform_model(
+                &drive,
+                &trunc,
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(MAX_UNIFORM_ORDER_TWO_HARMONIC + 1),
+                ),
+            )
+            .unwrap_err();
+        assert!(
+            work_error.to_string().contains("work safety limit"),
+            "unexpected error: {work_error}"
+        );
+
         // A finite positive frequency can still have a non-representable
         // inverse-square factor.  Exact-zero scalar commutators remain valid.
-        let tiny_frequency_drive = FloquetDrive::with_modes(
+        let tiny_frequency_drive = FloquetDrive::uniform(
             1e-200,
-            vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])],
+            vec![LightMode::uniform(1, array![Complex::new(0.4, 0.2)])],
         );
         let scalar_result = model
-            .floquet_effective_model(
+            .floquet_effective_uniform_model(
                 &tiny_frequency_drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(1)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(1),
+                ),
             )
             .unwrap();
         assert!(
@@ -4246,18 +5953,22 @@ mod tests {
         // A genuinely nonzero nested commutator cannot be represented with
         // the same scale and must return an error instead of NaN/Inf blocks.
         let matrix_model = two_band_qwz(0.9, 0.7, 0.35, 0.4, [[1.0, 0.0], [0.0, 1.0]]);
-        let matrix_drive = FloquetDrive::with_modes(
+        let matrix_drive = FloquetDrive::uniform(
             1e-200,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(0.23, 0.04), Complex::new(-0.02, 0.19)],
             )],
         );
         let scale_error = matrix_model
-            .floquet_effective_model(
+            .floquet_effective_uniform_model(
                 &matrix_drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(1)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(1),
+                ),
             )
             .unwrap_err();
         assert!(
@@ -4269,7 +5980,11 @@ mod tests {
                 &tiny_frequency_drive,
                 &trunc,
                 [8],
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(1)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(1),
+                ),
             )
             .unwrap();
         let legacy_scale_error = matrix_model
@@ -4277,7 +5992,11 @@ mod tests {
                 &matrix_drive,
                 &trunc,
                 [4, 4],
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(1)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(1),
+                ),
             )
             .unwrap_err();
         assert!(
@@ -4290,10 +6009,14 @@ mod tests {
         // q_max=0 never evaluates inverse-frequency corrections and remains
         // well-defined even at the same tiny frequency.
         let zero_cutoff = model
-            .floquet_effective_model(
+            .floquet_effective_uniform_model(
                 &tiny_frequency_drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(0)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(0),
+                ),
             )
             .unwrap();
         assert!(
@@ -4321,15 +6044,17 @@ mod tests {
             SpinDirection::Z,
         );
 
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)],
             )],
         );
         let trunc = FloquetTruncation::new(1, 4096);
-        let bessel = model.floquet_effective_model(&drive, &trunc, None).unwrap();
+        let bessel = model
+            .floquet_effective_uniform_model(&drive, &trunc, None)
+            .unwrap();
         let legacy = model
             .floquet_effective_model_legacy(
                 &drive,
@@ -4354,9 +6079,11 @@ mod tests {
         // plus exact-zero commutator blocks on the Minkowski support —
         // the bands must equal the static model's.
         let model = chain_model();
-        let drive = FloquetDrive::new(0.9);
+        let drive = FloquetDrive::empty(0.9);
         let trunc = FloquetTruncation::new(2, 64);
-        let effective = model.floquet_effective_model(&drive, &trunc, None).unwrap();
+        let effective = model
+            .floquet_effective_uniform_model(&drive, &trunc, None)
+            .unwrap();
 
         let k = arr1(&[0.271]);
         for gauge in [Gauge::Lattice, Gauge::Atom] {
@@ -4391,12 +6118,16 @@ mod tests {
         // Empty harmonics take the exact-zero fast path: even when 1/W^2
         // overflows, order 2 must remain the static model rather than forming
         // inf*0 = NaN.  Its documented support is still the triple sum.
-        let tiny_drive = FloquetDrive::new(1e-200);
+        let tiny_drive = FloquetDrive::empty(1e-200);
         let order_two = model
-            .floquet_effective_model(
+            .floquet_effective_uniform_model(
                 &tiny_drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(1)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(1),
+                ),
             )
             .unwrap();
         assert!(
@@ -4415,33 +6146,24 @@ mod tests {
             (-3..=3).map(|r| vec![r]).collect::<Vec<_>>()
         );
 
-        // Equivalent non-dynamic representations use the same q-independent
-        // path: a zero mode, exactly cancelling ±frequency amplitudes, and a
-        // purely static harmonic.  A huge q_max must not create a huge cache
-        // or repeat the same support construction q_max^2 times.
+        // Empty and exactly zero-amplitude drives use the same q-independent
+        // path.  A huge harmonic cutoff must not create a huge cache or repeat
+        // the same support construction harmonic_max^2 times.  Explicit
+        // negative/zero harmonics are intentionally rejected because `Re[...]`
+        // already supplies the conjugate mode in the finite-q API.
         let non_dynamic_drives = [
-            FloquetDrive::with_modes(
+            FloquetDrive::empty(1e-200),
+            FloquetDrive::uniform(
                 1e-200,
-                vec![LightMode::new(1, array![Complex::new(0.0, 0.0)])],
-            ),
-            FloquetDrive::with_modes(
-                1e-200,
-                vec![
-                    LightMode::new(1, array![Complex::new(0.3, -0.2)]),
-                    LightMode::new(-1, array![Complex::new(-0.3, -0.2)]),
-                ],
-            ),
-            FloquetDrive::with_modes(
-                1e-200,
-                vec![LightMode::new(0, array![Complex::new(0.2, 7.0)])],
+                vec![LightMode::uniform(1, array![Complex::new(0.0, 0.0)])],
             ),
         ];
         let large_cutoff = FloquetEffectiveOptions::new()
             .with_order(2)
-            .with_q_max(1000);
+            .with_harmonic_max(1000);
         for equivalent_drive in non_dynamic_drives {
             let effective = model
-                .floquet_effective_model(&equivalent_drive, &trunc, Some(&large_cutoff))
+                .floquet_effective_uniform_model(&equivalent_drive, &trunc, Some(&large_cutoff))
                 .unwrap();
             assert!(
                 effective
@@ -4475,9 +6197,9 @@ mod tests {
         model.set_hop(-1.0, 0, 0, &array![1, 0], None);
         model.set_hop(-0.3, 0, 1, &array![0, 1], None);
         model.set_hop(Complex::new(0.1, -0.2), 1, 1, &array![1, 1], None);
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(0.3, 0.0), Complex::new(0.0, 0.3)],
             )],
@@ -4486,7 +6208,9 @@ mod tests {
 
         // Warm up once: the first call pays rayon thread-pool
         // initialization and cold caches, which would distort the ratio.
-        let warmup = model.floquet_effective_model(&drive, &trunc, None).unwrap();
+        let warmup = model
+            .floquet_effective_uniform_model(&drive, &trunc, None)
+            .unwrap();
         let legacy_options = FloquetEffectiveOptions::new().with_target_hamR(warmup.hamR.clone());
         let _ = model
             .floquet_effective_model_legacy(&drive, &trunc, [128, 128], Some(&legacy_options))
@@ -4497,11 +6221,15 @@ mod tests {
         // short Bessel call and fail the assertion (observed at 4x vs
         // the 10x threshold under suite-parallel load).
         let start = std::time::Instant::now();
-        let bessel = model.floquet_effective_model(&drive, &trunc, None).unwrap();
+        let bessel = model
+            .floquet_effective_uniform_model(&drive, &trunc, None)
+            .unwrap();
         let mut t_bessel = start.elapsed();
         for _ in 0..2 {
             let start = std::time::Instant::now();
-            let _ = model.floquet_effective_model(&drive, &trunc, None).unwrap();
+            let _ = model
+                .floquet_effective_uniform_model(&drive, &trunc, None)
+                .unwrap();
             t_bessel = t_bessel.min(start.elapsed());
         }
 
@@ -4579,9 +6307,9 @@ mod tests {
     /// Right-handed circular drive `a = α·(1, i)`, which reproduces the
     /// literature `a(t)·e_l = α·sin(ωt − 2πl/3)`.
     fn graphene_circular_drive(alpha: f64) -> FloquetDrive {
-        FloquetDrive::with_modes(
+        FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(alpha, 0.0), Complex::new(0.0, alpha)],
             )],
@@ -4655,9 +6383,9 @@ mod tests {
         let j = -1.0;
         let model = graphene_model(j);
         let alpha = 0.2;
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             5.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(alpha, 0.0), Complex::new(0.0, alpha)],
             )],
@@ -4729,9 +6457,9 @@ mod tests {
         let j = -1.0;
         let model = graphene_model(j);
         let alpha = 0.5;
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             5.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(alpha, 0.0), Complex::new(0.0, alpha)],
             )],
@@ -4759,17 +6487,17 @@ mod tests {
         };
 
         let eff = model
-            .floquet_effective_model(
+            .floquet_effective_uniform_model(
                 &drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_q_max(8)),
+                Some(&FloquetEffectiveOptions::new().with_harmonic_max(8)),
             )
             .unwrap();
         let eff2 = model
-            .floquet_effective_model(
+            .floquet_effective_uniform_model(
                 &drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_q_max(2)),
+                Some(&FloquetEffectiveOptions::new().with_harmonic_max(2)),
             )
             .unwrap();
         for k in [[0.13, 0.07], [0.23, 0.11], [-0.07, 0.31]] {
@@ -4810,7 +6538,7 @@ mod tests {
         let alpha = 0.6;
         let drive = graphene_circular_drive(alpha);
         let eff = model
-            .floquet_effective_model(
+            .floquet_effective_uniform_model(
                 &drive,
                 &trunc,
                 Some(&FloquetEffectiveOptions::new().with_order(0)),
@@ -4843,13 +6571,17 @@ mod tests {
         // R > 8 must error (the caller falls back to the time grid) instead
         // of silently violating the 1e-12 error budget via the 64 cap.
         let d = array![60.0];
-        let drive =
-            FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(1.0, 0.0)])]);
+        let drive = FloquetDrive::uniform(
+            1.0,
+            vec![LightMode::uniform(1, array![Complex::new(1.0, 0.0)])],
+        );
         assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, 6).is_err());
 
         // Harmonic ranges that exclude 0 must not panic; q_min > q_max errors.
-        let zero_l =
-            FloquetDrive::with_modes(1.0, vec![LightMode::new(0, array![Complex::new(0.1, 0.0)])]);
+        let zero_l = FloquetDrive::uniform(
+            1.0,
+            vec![LightMode::uniform(0, array![Complex::new(0.1, 0.0)])],
+        );
         let out_of_range = bessel_peierls_coeffs(&d, &zero_l, 5, 7, 6).unwrap();
         for q in 5..=7 {
             assert!((out_of_range[(q - 5) as usize]).norm() == 0.0);
@@ -4872,11 +6604,11 @@ mod tests {
         // clipped the fold support and got C_0 wrong by ~1e-3 for this
         // drive.
         let d = array![1.0, 0.0];
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
             vec![
-                LightMode::new(400, array![Complex::new(8.0, 0.0), Complex::new(0.0, 0.0)]),
-                LightMode::new(-400, array![Complex::new(8.0, 0.0), Complex::new(0.0, 0.0)]),
+                LightMode::uniform(400, array![Complex::new(8.0, 0.0), Complex::new(0.0, 0.0)]),
+                LightMode::uniform(-400, array![Complex::new(8.0, 0.0), Complex::new(0.0, 0.0)]),
             ],
         );
         let coeffs = bessel_peierls_coeffs(&d, &drive, -10, 10, 0).unwrap();
@@ -4901,9 +6633,9 @@ mod tests {
         // the window's top edge past isize::MAX during the fold.
         // Regression for the previously unchecked q + shift addition.
         let d = array![1.0, 0.0];
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 400,
                 array![Complex::new(8.0, 0.0), Complex::new(0.0, 0.0)],
             )],
@@ -4921,6 +6653,572 @@ mod tests {
         let mut model = Model::<false, 1>::tb_model(lat, orb, None).unwrap();
         model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize]), None);
         model
+    }
+
+    #[test]
+    fn finite_q_link_projection_matches_numerical_line_integral() {
+        let geometry = LinkGeometry {
+            d_fractional: array![0.8],
+            d_cartesian: array![1.6],
+            midpoint_fractional: array![0.37],
+        };
+        let mode = LightMode::new(1, array![Complex::new(0.31, -0.17)], [1]);
+        let drive = FloquetDrive::new(1.0, array![[0.23]], vec![mode.clone()]);
+        let exact = plane_wave_link_projection(&geometry, &drive, &mode).unwrap();
+
+        let start = geometry.midpoint_fractional[0] - 0.5 * geometry.d_fractional[0];
+        let samples = 1 << 16;
+        let mut numerical = Complex::new(0.0, 0.0);
+        for sample in 0..samples {
+            let lambda = (sample as f64 + 0.5) / samples as f64;
+            let position = start + lambda * geometry.d_fractional[0];
+            numerical += mode.a_complex[0]
+                * geometry.d_cartesian[0]
+                * Complex::new(0.0, TAU * 0.23 * position).exp()
+                / samples as f64;
+        }
+        assert!(
+            (exact - numerical).norm() < 2.0e-11,
+            "exact link integral {exact:?}, midpoint quadrature {numerical:?}"
+        );
+    }
+
+    #[test]
+    fn finite_q_single_mode_channels_lock_temporal_and_momentum_signs() {
+        let geometry = LinkGeometry {
+            d_fractional: array![1.0],
+            d_cartesian: array![1.0],
+            midpoint_fractional: array![0.5],
+        };
+        let drive = FloquetDrive::new(
+            2.0,
+            array![[0.25]],
+            vec![LightMode::new(1, array![Complex::new(0.4, 0.1)], [1])],
+        );
+        let channels = bessel_peierls_channels(&geometry, &drive, -5, 5, 6).unwrap();
+        assert!(!channels.is_empty());
+        for channel in channels.keys() {
+            assert_eq!(channel.grade.as_slice(), &[channel.harmonic]);
+        }
+        assert!(channels.contains_key(&ChannelKey {
+            harmonic: 1,
+            grade: MomentumGrade::new([1]),
+        }));
+        assert!(channels.contains_key(&ChannelKey {
+            harmonic: -1,
+            grade: MomentumGrade::new([-1]),
+        }));
+    }
+
+    #[test]
+    fn twisted_product_matches_explicit_four_cell_ring() {
+        let basis = array![[0.25]];
+        let grade = MomentumGrade::new([1]);
+        let mut left = RealSpaceBlockMap::new();
+        let mut right = RealSpaceBlockMap::new();
+        left.insert(vec![1], array![[Complex::new(2.0, -0.5)]]);
+        right.insert(vec![-1], array![[Complex::new(-0.3, 1.2)]]);
+        let product = twisted_real_space_product(&left, &right, &grade, &basis).unwrap();
+
+        let build_ring = |blocks: &RealSpaceBlockMap, operator_grade: &MomentumGrade| {
+            let mut matrix = Array2::<Complex<f64>>::zeros((4, 4));
+            for (translation, block) in blocks {
+                for cell in 0..4_isize {
+                    let phase = grade_translation_phase(operator_grade, &basis, &[cell]).unwrap();
+                    let column = (cell + translation[0]).rem_euclid(4) as usize;
+                    matrix[[cell as usize, column]] += phase * block[[0, 0]];
+                }
+            }
+            matrix
+        };
+        let explicit = build_ring(&left, &grade).dot(&build_ring(&right, &grade));
+        let output_grade = grade.add(&grade).unwrap();
+        let reconstructed = build_ring(&product, &output_grade);
+        for (actual, expected) in reconstructed.iter().zip(explicit.iter()) {
+            assert!((actual - expected).norm() < 1.0e-13);
+        }
+    }
+
+    #[test]
+    fn graded_hermiticity_enforces_twisted_partner_relation() {
+        let basis = array![[0.25]];
+        let grade = MomentumGrade::new([1]);
+        let partner_grade = grade.negated().unwrap();
+        let translation = vec![1];
+        let partner_translation = vec![-1];
+        let block = array![
+            [Complex::new(0.2, 0.1), Complex::new(-0.4, 0.7)],
+            [Complex::new(0.3, -0.5), Complex::new(0.9, 0.2)],
+        ];
+        let phase = grade_translation_phase(&grade, &basis, &translation).unwrap();
+        let partner = hermitian_conjugate(&block) * phase;
+        let mut operator = GradedOperator::new();
+        operator
+            .entry(grade.clone())
+            .or_default()
+            .insert(translation.clone(), block);
+        operator
+            .entry(partner_grade.clone())
+            .or_default()
+            .insert(partner_translation.clone(), partner);
+        enforce_graded_hermiticity(&mut operator, &basis).unwrap();
+        let actual = &operator[&partner_grade][&partner_translation];
+        let expected = hermitian_conjugate(&operator[&grade][&translation]) * phase;
+        assert_eq!(actual, &expected);
+    }
+
+    fn assemble_four_cell_effective(
+        result: &FloquetEffectiveResult<false, 1>,
+    ) -> Array2<Complex<f64>> {
+        let mut matrix = Array2::<Complex<f64>>::zeros((4, 4));
+        let zero_grade = MomentumGrade::zero(result.wavevector_basis_reduced.nrows());
+        let mut accumulate = |grade: &MomentumGrade,
+                              ham: &Array3<Complex<f64>>,
+                              ham_r: &Array2<isize>| {
+            for (i_r, translation) in ham_r.outer_iter().enumerate() {
+                for cell in 0..4_isize {
+                    let phase =
+                        grade_translation_phase(grade, &result.wavevector_basis_reduced, &[cell])
+                            .unwrap();
+                    let column = (cell + translation[0]).rem_euclid(4) as usize;
+                    matrix[[cell as usize, column]] += phase * ham[[i_r, 0, 0]];
+                }
+            }
+        };
+        accumulate(
+            &zero_grade,
+            &result.uniform_model.ham,
+            &result.uniform_model.hamR,
+        );
+        for (grade, component) in &result.nonuniform {
+            accumulate(grade, &component.ham, &component.ham_r);
+        }
+        matrix
+    }
+
+    fn direct_four_cell_van_vleck(
+        model: &Model<false, 1, NoRMatrix>,
+        drive: &FloquetDrive,
+        order: usize,
+        harmonic_max: isize,
+    ) -> Array2<Complex<f64>> {
+        let cache_max = effective_cache_max(order, harmonic_max).unwrap();
+        let count = (2 * cache_max + 1) as usize;
+        let mut harmonics = (0..count)
+            .map(|_| Array2::<Complex<f64>>::zeros((4, 4)))
+            .collect::<Vec<_>>();
+        let n_time = 1 << 13;
+        let mode = &drive.modes[0];
+        for sample in 0..n_time {
+            let theta = TAU * sample as f64 / n_time as f64;
+            let temporal = Complex::new(0.0, -(mode.harmonic as f64) * theta).exp();
+            let mut instantaneous = Array2::<Complex<f64>>::zeros((4, 4));
+            for (i_r, translation) in model.hamR.outer_iter().enumerate() {
+                let geometry = model.link_geometry(0, 0, &translation);
+                let origin_projection = plane_wave_link_projection(&geometry, drive, mode).unwrap();
+                for cell in 0..4_isize {
+                    let cell_phase = Complex::new(0.0, TAU * 0.25 * cell as f64).exp();
+                    let peierls =
+                        Complex::new(0.0, -(origin_projection * cell_phase * temporal).re).exp();
+                    let column = (cell + translation[0]).rem_euclid(4) as usize;
+                    instantaneous[[cell as usize, column]] += model.ham[[i_r, 0, 0]] * peierls;
+                }
+            }
+            for harmonic_index in -cache_max..=cache_max {
+                let fourier =
+                    Complex::new(0.0, harmonic_index as f64 * theta).exp() / n_time as f64;
+                harmonics[(harmonic_index + cache_max) as usize]
+                    .scaled_add(fourier, &instantaneous);
+            }
+        }
+        let harmonic = |index: isize| &harmonics[(index + cache_max) as usize];
+        let mut effective = harmonic(0).clone();
+        let inverse_omega = drive.omega0_ev.recip();
+        if order >= 1 {
+            for index in 1..=harmonic_max {
+                effective.scaled_add(
+                    Complex::new(inverse_omega / index as f64, 0.0),
+                    &matrix_commutator(harmonic(index), harmonic(-index)),
+                );
+            }
+        }
+        if order >= 2 {
+            let inverse_omega_squared = inverse_omega * inverse_omega;
+            let signed = (-harmonic_max..=harmonic_max)
+                .filter(|value| *value != 0)
+                .collect::<Vec<_>>();
+            for &m in &signed {
+                let inner = matrix_commutator(harmonic(0), harmonic(m));
+                let outer = matrix_commutator(harmonic(-m), &inner);
+                effective.scaled_add(
+                    Complex::new(inverse_omega_squared / (2.0 * (m as f64).powi(2)), 0.0),
+                    &outer,
+                );
+                for &m_prime in &signed {
+                    if m_prime == m {
+                        continue;
+                    }
+                    let inner = matrix_commutator(harmonic(m_prime - m), harmonic(m));
+                    let outer = matrix_commutator(harmonic(-m_prime), &inner);
+                    effective.scaled_add(
+                        Complex::new(
+                            inverse_omega_squared / (3.0 * (m as f64) * (m_prime as f64)),
+                            0.0,
+                        ),
+                        &outer,
+                    );
+                }
+            }
+        }
+        effective
+    }
+
+    #[test]
+    fn finite_q_orders_one_and_two_match_explicit_four_cell_oracle() {
+        let model = chain_model();
+        let drive = FloquetDrive::new(
+            7.0,
+            array![[0.25]],
+            vec![LightMode::new(1, array![Complex::new(0.43, -0.11)], [1])],
+        );
+        let trunc = FloquetTruncation::new(1, 16);
+        for order in [1, 2] {
+            let options = FloquetEffectiveOptions::new()
+                .with_order(order)
+                .with_harmonic_max(2);
+            let result = model
+                .floquet_effective_model(&drive, &trunc, Some(&options))
+                .unwrap();
+            assert_eq!(result.uniform_model.nsta(), model.nsta());
+            let actual = assemble_four_cell_effective(&result);
+            let expected = direct_four_cell_van_vleck(&model, &drive, order, 2);
+            let max_error = actual
+                .iter()
+                .zip(expected.iter())
+                .map(|(left, right)| (left - right).norm())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                max_error < 3.0e-11,
+                "finite-q order {order} four-cell mismatch: {max_error:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn finite_q_independent_mode_labels_remain_distinct() {
+        let lat = Array2::<f64>::eye(3);
+        let orb = array![[0.0, 0.0, 0.0]];
+        let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1isize, 1, 1], None);
+        let q = 0.07;
+        let basis = array![[q, q, q], [q, -q, -q], [-q, q, -q], [-q, -q, q]];
+        let modes = (0..4)
+            .map(|index| {
+                let mut label = vec![0_isize; 4];
+                label[index] = 1;
+                LightMode::new(
+                    1,
+                    array![
+                        Complex::new(0.08, 0.0),
+                        Complex::new(0.07, 0.0),
+                        Complex::new(0.06, 0.0),
+                    ],
+                    label,
+                )
+            })
+            .collect();
+        let drive = FloquetDrive::new(5.0, basis, modes);
+        validate_floquet_drive::<3>(&drive, &FloquetTruncation::new(1, 8)).unwrap();
+        let cache = model
+            .floquet_graded_harmonic_cache(&drive, -1, 1, 6)
+            .unwrap();
+        let harmonic_one = cache.harmonic(1).unwrap();
+        for index in 0..4 {
+            let mut label = vec![0_isize; 4];
+            label[index] = 1;
+            assert!(
+                harmonic_one.contains_key(&MomentumGrade::new(label)),
+                "mode {index} was merged with another momentum channel"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_momentum_labels_use_uniform_fast_path_exactly() {
+        let model = graphene_model(-1.0);
+        let amplitude = array![Complex::new(0.21, 0.03), Complex::new(-0.02, 0.19)];
+        let uniform = FloquetDrive::uniform(6.0, vec![LightMode::uniform(1, amplitude.clone())]);
+        let labelled_zero = FloquetDrive::new(
+            6.0,
+            array![[0.17, -0.09]],
+            vec![LightMode::new(1, amplitude, [0])],
+        );
+        let trunc = FloquetTruncation::new(1, 8);
+        let options = FloquetEffectiveOptions::new()
+            .with_order(2)
+            .with_harmonic_max(2);
+        let expected = model
+            .floquet_effective_model(&uniform, &trunc, Some(&options))
+            .unwrap();
+        let actual = model
+            .floquet_effective_model(&labelled_zero, &trunc, Some(&options))
+            .unwrap();
+        assert!(expected.nonuniform.is_empty());
+        assert!(actual.nonuniform.is_empty());
+        assert_eq!(expected.wavevector_basis_reduced.dim(), (0, 2));
+        assert_eq!(actual.wavevector_basis_reduced.dim(), (1, 2));
+        assert_eq!(actual.uniform_model.hamR, expected.uniform_model.hamR);
+        assert_eq!(actual.uniform_model.ham, expected.uniform_model.ham);
+    }
+
+    #[test]
+    fn finite_q_multicolor_mixing_retains_nonuniform_static_grades() {
+        let model = chain_model();
+        let drive = FloquetDrive::new(
+            5.0,
+            array![[0.25], [0.125]],
+            vec![
+                LightMode::new(1, array![Complex::new(0.31, 0.02)], [1, 0]),
+                LightMode::new(2, array![Complex::new(0.19, -0.03)], [0, 1]),
+            ],
+        );
+        let options = FloquetEffectiveOptions::new()
+            .with_order(0)
+            .with_harmonic_max(2);
+        let result = model
+            .floquet_effective_model(&drive, &FloquetTruncation::new(1, 8), Some(&options))
+            .unwrap();
+        assert!(result.nonuniform.contains_key(&MomentumGrade::new([-2, 1])));
+        assert!(result.nonuniform.contains_key(&MomentumGrade::new([2, -1])));
+    }
+
+    #[test]
+    fn finite_q_sambe_and_malformed_bases_are_rejected_explicitly() {
+        let model = chain_model();
+        let finite = FloquetDrive::new(
+            2.0,
+            array![[0.25]],
+            vec![LightMode::new(1, array![Complex::new(0.2, 0.0)], [1])],
+        );
+        let error = model
+            .floquet_model(&finite, &FloquetTruncation::new(1, 16))
+            .unwrap_err();
+        assert!(format!("{error}").contains("floquet_effective_model"));
+
+        let malformed = FloquetDrive::new(
+            2.0,
+            array![[0.25, 0.0]],
+            vec![LightMode::new(1, array![Complex::new(0.2, 0.0)], [1])],
+        );
+        assert!(
+            model
+                .floquet_effective_model(&malformed, &FloquetTruncation::new(1, 16), None,)
+                .is_err()
+        );
+
+        let malformed_empty = FloquetDrive::new(2.0, Array2::zeros((0, 2)), Vec::new());
+        assert!(
+            model
+                .floquet_effective_model(&malformed_empty, &FloquetTruncation::new(1, 16), None,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn finite_q_grade_overflow_and_large_cell_phase_are_safe() {
+        let overflow_drive = FloquetDrive::new(
+            2.0,
+            array![[0.5 * f64::MAX]],
+            vec![LightMode::new(1, array![Complex::new(1.0, 0.0)], [3])],
+        );
+        let overflow_geometry = LinkGeometry {
+            d_fractional: array![1.0],
+            d_cartesian: array![1.0],
+            midpoint_fractional: array![0.0],
+        };
+        assert!(
+            plane_wave_link_projection(
+                &overflow_geometry,
+                &overflow_drive,
+                &overflow_drive.modes[0],
+            )
+            .is_err()
+        );
+
+        if isize::BITS > 53 {
+            let unresolved_grade = (MAX_EXACT_F64_INTEGER + 1) as isize;
+            let error = grade_translation_phase(
+                &MomentumGrade::new([unresolved_grade]),
+                &array![[0.25]],
+                &[1],
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("exact f64 integer range"));
+        }
+
+        let phase =
+            grade_translation_phase(&MomentumGrade::new([1]), &array![[0.25]], &[isize::MAX])
+                .unwrap();
+        // isize::MAX mod 4 = 3 on every supported two's-complement target.
+        assert!((phase - Complex::new(0.0, -1.0)).norm() < 1.0e-14);
+
+        if isize::BITS > 53 {
+            let large_exact_grade = (MAX_EXACT_F64_INTEGER - 1) as isize;
+            let phase = grade_translation_phase(
+                &MomentumGrade::new([large_exact_grade]),
+                &array![[1.0 / 3.0]],
+                &[1],
+            )
+            .unwrap();
+            let expected = Complex::from_polar(1.0, TAU / 6.0);
+            assert!((phase - expected).norm() < 1.0e-14);
+
+            let drive = FloquetDrive::new(
+                2.0,
+                array![[1.0 / 3.0]],
+                vec![LightMode::new(
+                    1,
+                    array![Complex::new(1.0, 0.0)],
+                    [large_exact_grade],
+                )],
+            );
+            let midpoint_geometry = LinkGeometry {
+                d_fractional: array![0.0],
+                d_cartesian: array![1.0],
+                midpoint_fractional: array![1.0],
+            };
+            let projection =
+                plane_wave_link_projection(&midpoint_geometry, &drive, &drive.modes[0]).unwrap();
+            assert!((projection - expected).norm() < 1.0e-14);
+
+            let sinc_geometry = LinkGeometry {
+                d_fractional: array![1.0],
+                d_cartesian: array![1.0],
+                midpoint_fractional: array![0.0],
+            };
+            let projection =
+                plane_wave_link_projection(&sinc_geometry, &drive, &drive.modes[0]).unwrap();
+            let denominator = std::f64::consts::PI * (large_exact_grade as f64 / 3.0);
+            let expected_sinc = 0.5 / denominator;
+            assert!(projection.re != 0.0);
+            assert!((projection.re - expected_sinc).abs() < 1.0e-28);
+            assert!(projection.im.abs() < 1.0e-28);
+        }
+    }
+
+    #[test]
+    fn finite_q_preflights_pair_scans_and_cache_bytes() {
+        assert!(validate_finite_q_pair_scan_count(128).is_ok());
+        let error = validate_finite_q_pair_scan_count(1_500).unwrap_err();
+        assert!(error.to_string().contains("harmonic pairs"));
+
+        let estimated = estimated_graded_cache_bytes(50_625, 50_625, 4, 100).unwrap();
+        assert!(estimated > MAX_GRADED_CACHE_BYTES);
+
+        // Many orbital-pair geometries can coalesce into a small set of dense
+        // (harmonic, grade, R) blocks; do not charge nsta^2 once per geometry.
+        let coalesced = estimated_graded_cache_bytes(50_625, 32, 4, 100).unwrap();
+        assert!(coalesced < MAX_GRADED_CACHE_BYTES);
+    }
+
+    #[test]
+    fn finite_q_graded_product_work_is_bounded_before_multiplication() {
+        let mut operator = GradedOperator::new();
+        for grade_index in 0..1_500_isize {
+            operator
+                .entry(MomentumGrade::new([grade_index]))
+                .or_default()
+                .insert(vec![0], array![[Complex::new(1.0, 0.0)]]);
+        }
+        let error = graded_product(
+            &operator,
+            &operator,
+            &array![[0.25]],
+            &GradedWorkBudget::default(),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("support-pair work"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn finite_q_large_harmonic_window_uses_sparse_cached_support() {
+        let model = chain_model();
+        let drive = FloquetDrive::new(
+            4.0,
+            array![[0.25]],
+            vec![LightMode::new(1, array![Complex::new(0.12, 0.01)], [1])],
+        );
+        let options = FloquetEffectiveOptions::new()
+            .with_order(2)
+            .with_harmonic_max(1_000_000);
+        let result = model
+            .floquet_effective_model(&drive, &FloquetTruncation::new(1, 8), Some(&options))
+            .unwrap();
+        assert!(
+            result
+                .uniform_model
+                .ham
+                .iter()
+                .all(|value| value.re.is_finite() && value.im.is_finite())
+        );
+        assert!(result.nonuniform.values().all(|component| {
+            component
+                .ham
+                .iter()
+                .all(|value| value.re.is_finite() && value.im.is_finite())
+        }));
+    }
+
+    #[test]
+    fn finite_q_channel_explosion_returns_a_budget_error() {
+        let geometry = LinkGeometry {
+            d_fractional: array![1.0],
+            d_cartesian: array![1.0],
+            midpoint_fractional: array![0.5],
+        };
+        let basis = Array2::<f64>::zeros((5, 1));
+        let modes = (0..5)
+            .map(|index| {
+                let mut label = vec![0_isize; 5];
+                label[index] = 1;
+                LightMode::new(1, array![Complex::new(0.2, 0.0)], label)
+            })
+            .collect();
+        let drive = FloquetDrive::new(3.0, basis, modes);
+        let error = bessel_peierls_channels(&geometry, &drive, -1000, 1000, 6).unwrap_err();
+        assert!(format!("{error}").contains("channel safety limit"));
+    }
+
+    #[test]
+    fn zero_amplitude_finite_label_does_not_disable_uniform_fallback() {
+        let model = chain_model();
+        let drive = FloquetDrive::new(
+            3.0,
+            array![[0.25]],
+            vec![
+                LightMode::uniform(1, array![Complex::new(9.0, 0.0)]),
+                LightMode::new(1, array![Complex::new(0.0, 0.0)], [1]),
+            ],
+        );
+        assert!(!drive.has_nonzero_wavevector());
+        let result = model
+            .floquet_effective_model(
+                &drive,
+                &FloquetTruncation::new(1, 8),
+                Some(&FloquetEffectiveOptions::new().with_order(0)),
+            )
+            .unwrap();
+        assert!(result.nonuniform.is_empty());
+        assert!(
+            result
+                .uniform_model
+                .ham
+                .iter()
+                .all(|value| value.re.is_finite() && value.im.is_finite())
+        );
     }
 
     fn metadata_model() -> Model<false, 1, NoRMatrix> {
@@ -4950,7 +7248,7 @@ mod tests {
     fn floquet_no_drive_static_replicas() {
         let model = chain_model();
         let k = arr1(&[0.17]);
-        let drive = FloquetDrive::new(0.7);
+        let drive = FloquetDrive::empty(0.7);
         let trunc = FloquetTruncation::new(1, 64);
 
         let bands = model
@@ -4973,9 +7271,9 @@ mod tests {
         model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize, 0]), None);
         model.set_hop(-0.7_f64, 0, 0, &arr1(&[0isize, 1]), None);
 
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             0.9,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 arr1(&[Complex::new(0.11, 0.0), Complex::new(0.0, 0.07)]),
             )],
@@ -5004,9 +7302,9 @@ mod tests {
         model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize, 0]), None);
         model.set_hop(-0.6_f64, 1, 1, &arr1(&[0isize, 1]), None);
 
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             0.8,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 arr1(&[Complex::new(0.13, 0.0), Complex::new(0.0, 0.09)]),
             )],
@@ -5044,9 +7342,9 @@ mod tests {
         model.set_hop(-0.9_f64, 0, 1, &arr1(&[1isize, 0]), None);
         model.set_hop(-0.4_f64, 1, 1, &arr1(&[0isize, 1]), None);
 
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             0.6,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 arr1(&[Complex::new(0.07, 0.0), Complex::new(0.0, 0.05)]),
             )],
@@ -5077,7 +7375,7 @@ mod tests {
     #[test]
     fn floquet_models_preserve_atom_metadata() {
         let model = metadata_model();
-        let drive = FloquetDrive::new(1.2);
+        let drive = FloquetDrive::empty(1.2);
         let trunc = FloquetTruncation::new(1, 32);
 
         let sambe = model.floquet_model(&drive, &trunc).unwrap();
@@ -5095,7 +7393,9 @@ mod tests {
             .collect();
         assert_eq!(sambe.orb_projection, expected_projection);
 
-        let effective = model.floquet_effective_model(&drive, &trunc, None).unwrap();
+        let effective = model
+            .floquet_effective_uniform_model(&drive, &trunc, None)
+            .unwrap();
         assert_eq!(effective.natom(), model.natom());
         for i_atom in 0..model.natom() {
             assert_same_atom_metadata(&model.atoms[i_atom], &effective.atoms[i_atom]);
@@ -5106,7 +7406,7 @@ mod tests {
     #[test]
     fn floquet_effective_rejects_non_hermitian_target_range() {
         let model = chain_model();
-        let drive = FloquetDrive::new(1.0);
+        let drive = FloquetDrive::empty(1.0);
         let trunc = FloquetTruncation::new(1, 32);
         let options = FloquetEffectiveOptions::new().with_target_hamR(array![[0isize], [1isize]]);
 
@@ -5124,7 +7424,7 @@ mod tests {
     #[test]
     fn floquet_effective_rejects_duplicate_target_vectors() {
         let model = chain_model();
-        let drive = FloquetDrive::new(1.0);
+        let drive = FloquetDrive::empty(1.0);
         let trunc = FloquetTruncation::new(1, 32);
         let options = FloquetEffectiveOptions::new().with_target_hamR(array![[0isize], [0isize]]);
 
@@ -5142,9 +7442,9 @@ mod tests {
     #[test]
     fn floquet_effective_order0_matches_h0() {
         let model = chain_model();
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.1,
-            vec![LightMode::new(1, arr1(&[Complex::new(0.23, 0.0)]))],
+            vec![LightMode::uniform(1, arr1(&[Complex::new(0.23, 0.0)]))],
         );
         let trunc = FloquetTruncation::new(2, 512);
         let options = FloquetEffectiveOptions::new().with_order(0);
@@ -5172,7 +7472,7 @@ mod tests {
     #[test]
     fn floquet_effective_no_drive_matches_static_model() {
         let model = chain_model();
-        let drive = FloquetDrive::new(0.9);
+        let drive = FloquetDrive::empty(0.9);
         let trunc = FloquetTruncation::new(2, 64);
         let effective = model
             .floquet_effective_model_legacy(&drive, &trunc, [32], None)
@@ -5202,9 +7502,9 @@ mod tests {
     fn floquet_weak_drive_matches_first_order_peierls() {
         let model = chain_model();
         let amp = 1e-5;
-        let drive = FloquetDrive::with_modes(
+        let drive = FloquetDrive::uniform(
             1.0,
-            vec![LightMode::new(1, arr1(&[Complex::new(amp, 0.0)]))],
+            vec![LightMode::uniform(1, arr1(&[Complex::new(amp, 0.0)]))],
         );
         let trunc = FloquetTruncation::new(1, 512);
         let k = arr1(&[0.25]);
@@ -5239,8 +7539,10 @@ mod tests {
             Complex::new(1.0 / 2.0_f64.sqrt(), 0.0),
             Complex::new(0.0, 1.0 / 2.0_f64.sqrt()),
         ]);
-        let drive =
-            FloquetDrive::with_modes(0.8, vec![LightMode::new(1, circular.mapv(|z| 0.12 * z))]);
+        let drive = FloquetDrive::uniform(
+            0.8,
+            vec![LightMode::uniform(1, circular.mapv(|z| 0.12 * z))],
+        );
         let trunc = FloquetTruncation::new(1, 128);
         let k = arr1(&[0.2, 0.1, 0.0]);
 
@@ -5416,9 +7718,9 @@ mod tests {
         q_max: isize,
     ) -> Array2<Complex<f64>> {
         let trunc = FloquetTruncation::new(n_max, 512);
-        let options = FloquetEffectiveOptions::new().with_q_max(q_max);
+        let options = FloquetEffectiveOptions::new().with_harmonic_max(q_max);
         let eff = model
-            .floquet_effective_model(drive, &trunc, Some(&options))
+            .floquet_effective_uniform_model(drive, &trunc, Some(&options))
             .unwrap();
         eff.gen_ham(&array![k[0], k[1]], Gauge::Lattice)
     }
@@ -5433,15 +7735,15 @@ mod tests {
         let trunc = FloquetTruncation::new(n_max, 512);
         let options = FloquetEffectiveOptions::new().with_order(0);
         let eff = model
-            .floquet_effective_model(drive, &trunc, Some(&options))
+            .floquet_effective_uniform_model(drive, &trunc, Some(&options))
             .unwrap();
         eff.gen_ham(&array![k[0], k[1]], Gauge::Lattice)
     }
 
     fn circular_drive(kappa: f64, eta: f64, omega: f64) -> FloquetDrive {
-        FloquetDrive::with_modes(
+        FloquetDrive::uniform(
             omega,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(kappa, 0.0), Complex::new(0.0, eta * kappa)],
             )],
@@ -5449,9 +7751,9 @@ mod tests {
     }
 
     fn elliptical_drive(ax: f64, ay: f64, omega: f64) -> FloquetDrive {
-        FloquetDrive::with_modes(
+        FloquetDrive::uniform(
             omega,
-            vec![LightMode::new(
+            vec![LightMode::uniform(
                 1,
                 array![Complex::new(ax, 0.0), Complex::new(0.0, ay)],
             )],
@@ -5461,11 +7763,11 @@ mod tests {
     /// a(t) = κ (cos Ωt, sin(2Ωt+α)): mode l=1 along x, l=2 along y with
     /// a_y = κ(sin α + i cos α) (⇒ Re[…e^{−i2Ωt}] = κ sin(2Ωt+α)).
     fn exotic_drive(kappa: f64, alpha: f64, omega: f64) -> FloquetDrive {
-        FloquetDrive::with_modes(
+        FloquetDrive::uniform(
             omega,
             vec![
-                LightMode::new(1, array![Complex::new(kappa, 0.0), Complex::new(0.0, 0.0)]),
-                LightMode::new(
+                LightMode::uniform(1, array![Complex::new(kappa, 0.0), Complex::new(0.0, 0.0)]),
+                LightMode::uniform(
                     2,
                     array![
                         Complex::new(0.0, 0.0),

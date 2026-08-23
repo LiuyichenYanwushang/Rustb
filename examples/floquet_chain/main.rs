@@ -24,9 +24,9 @@ fn main() -> Result<()> {
     // lattice constant is 1, so the amplitude is dimensionless in this toy
     // model.
     let amplitude = 0.15;
-    let drive = FloquetDrive::with_modes(
+    let drive = FloquetDrive::uniform(
         0.8,
-        vec![LightMode::new(1, circular.mapv(|z| amplitude * z))],
+        vec![LightMode::uniform(1, circular.mapv(|z| amplitude * z))],
     );
     let trunc = FloquetTruncation::new(1, 128);
     let floquet_model = model.floquet_model(&drive, &trunc)?;
