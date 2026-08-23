@@ -455,15 +455,16 @@ pub struct FloquetEffectiveOptions {
 }
 
 type RealSpaceBlocks = (Vec<Array2<Complex<f64>>>, Array2<isize>);
+type RealSpaceBlockMap = std::collections::BTreeMap<Vec<isize>, Array2<Complex<f64>>>;
 
-trait RealSpaceBlockSource {
+trait RealSpaceBlockSource: Sync {
     fn nblocks(&self) -> usize;
     fn block(&self, index: usize) -> ArrayView2<'_, Complex<f64>>;
 }
 
 impl<S> RealSpaceBlockSource for ArrayBase<S, Ix3>
 where
-    S: Data<Elem = Complex<f64>>,
+    S: Data<Elem = Complex<f64>> + Sync,
 {
     fn nblocks(&self) -> usize {
         self.len_of(Axis(0))
@@ -1117,6 +1118,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// It is an approximation to the off-resonant Floquet problem, not
     /// the full enlarged Sambe model returned by [`Floquet::floquet_model`].
     ///
+    /// # Parallelism
+    ///
+    /// The order-2 signed-harmonic sum and sufficiently large real-space
+    /// hopping convolutions automatically use Rayon's global thread pool.
+    /// `RAYON_NUM_THREADS` controls the outer worker count.  When the linked
+    /// BLAS also starts worker threads, workloads with many small hopping
+    /// blocks usually perform best with `OPENBLAS_NUM_THREADS=1` or
+    /// `MKL_NUM_THREADS=1`, avoiding nested oversubscription.
+    ///
     /// # Errors
     /// Returns an error for an invalid drive or truncation, `order > 2`, a
     /// negative or unrepresentable harmonic range, a non-finite frequency
@@ -1234,7 +1244,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .filter(|harmonic| *harmonic != 0)
                 .collect::<Vec<_>>();
 
-            for &m in &signed_harmonics {
+            // Each fixed-m contribution is independent.  Accumulate one
+            // private real-space map per Rayon job and merge maps only after
+            // all nested commutators for that job are complete.  This exposes
+            // the abundant harmonic-level parallelism of the O(omega^-2)
+            // double sum without locking the output map in the hot loop.
+            let accumulate_fixed_m = |partial: &mut RealSpaceBlockMap, m: isize| -> Result<()> {
                 let h_zero = harmonic_cache.harmonic_blocks(0);
                 let h_m = harmonic_cache.harmonic_blocks(m);
                 let (inner, inner_r) =
@@ -1243,10 +1258,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 let (outer, outer_r) =
                     real_space_commutator_with_supports(&h_minus_m, &self.hamR, &inner, &inner_r)?;
                 let scale = inverse_omega_squared / (2.0 * (m as f64).powi(2));
-                accumulate_scaled_real_space_blocks(&mut blocks, &outer, &outer_r, scale)?;
-            }
+                accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
 
-            for &m in &signed_harmonics {
                 for &m_prime in &signed_harmonics {
                     if m_prime == m {
                         continue;
@@ -1267,9 +1280,37 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         &inner_r,
                     )?;
                     let scale = inverse_omega_squared / (3.0 * (m as f64) * (m_prime as f64));
-                    accumulate_scaled_real_space_blocks(&mut blocks, &outer, &outer_r, scale)?;
+                    accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
                 }
-            }
+                Ok(())
+            };
+
+            let order_two_blocks = if signed_harmonics.len() > 1 && rayon::current_num_threads() > 1
+            {
+                let min_harmonics_per_job = signed_harmonics
+                    .len()
+                    .div_ceil(rayon::current_num_threads());
+                signed_harmonics
+                    .par_iter()
+                    .with_min_len(min_harmonics_per_job)
+                    .try_fold(
+                        RealSpaceBlockMap::new,
+                        |mut partial, &m| -> Result<RealSpaceBlockMap> {
+                            accumulate_fixed_m(&mut partial, m)?;
+                            Ok(partial)
+                        },
+                    )
+                    .try_reduce(RealSpaceBlockMap::new, |left, right| {
+                        Ok(merge_real_space_block_maps(left, right))
+                    })?
+            } else {
+                let mut partial = RealSpaceBlockMap::new();
+                for &m in &signed_harmonics {
+                    accumulate_fixed_m(&mut partial, m)?;
+                }
+                partial
+            };
+            blocks = merge_real_space_block_maps(blocks, order_two_blocks);
         }
 
         // Assemble the model on the merged support and enforce exact
@@ -2441,7 +2482,7 @@ fn accumulate_scaled_matrix(
 }
 
 fn accumulate_scaled_real_space_blocks(
-    target: &mut std::collections::BTreeMap<Vec<isize>, Array2<Complex<f64>>>,
+    target: &mut RealSpaceBlockMap,
     source_blocks: &[Array2<Complex<f64>>],
     source_r: &Array2<isize>,
     scale: f64,
@@ -2475,6 +2516,23 @@ fn accumulate_scaled_real_space_blocks(
             .or_insert_with(|| source_blocks[i_r].mapv(|value| scale * value));
     }
     Ok(())
+}
+
+/// Merge two real-space block accumulators, preferring to insert the smaller
+/// map into the larger one to limit tree lookups and reallocations.
+fn merge_real_space_block_maps(
+    mut left: RealSpaceBlockMap,
+    mut right: RealSpaceBlockMap,
+) -> RealSpaceBlockMap {
+    if left.len() < right.len() {
+        std::mem::swap(&mut left, &mut right);
+    }
+    for (r, block) in right {
+        left.entry(r)
+            .and_modify(|target| *target += &block)
+            .or_insert(block);
+    }
+    left
 }
 
 /// Real-space commutator blocks `comm_q(R) = (AB)(R) − (BA)(R)` for the
@@ -2593,32 +2651,67 @@ where
     let skip_products = a_is_zero || b_is_zero;
     let one = Complex::new(1.0, 0.0);
     let minus_one = Complex::new(-1.0, 0.0);
-    let mut accumulated = std::collections::BTreeMap::<Vec<isize>, Array2<Complex<f64>>>::new();
+    let n_a = a_r.nrows();
+    let n_b = b_r.nrows();
+    let pair_count = n_a
+        .checked_mul(n_b)
+        .ok_or_else(|| TbError::Other("real-space commutator pair count overflow".to_string()))?;
 
-    // Enumerating input pairs performs exactly O(N_A N_B) support additions
-    // and product pairs.  Scanning both inputs once for every output vector
-    // would become O(N^5) for the outer order-2 commutator on sparse support.
-    for (i_a, r_a) in a_r.outer_iter().enumerate() {
-        for (i_b, r_b) in b_r.outer_iter().enumerate() {
-            let mut total = Vec::with_capacity(a_r.ncols());
-            for (axis, (&left, &right)) in r_a.iter().zip(r_b.iter()).enumerate() {
-                total.push(left.checked_add(right).ok_or_else(|| {
-                    TbError::Other(format!(
-                        "real-space Minkowski sum overflow on axis {axis}: {left} + {right}"
-                    ))
-                })?);
-            }
-            let comm = accumulated
-                .entry(total)
-                .or_insert_with(|| Array2::<Complex<f64>>::zeros((nsta, nsta)));
-            if !skip_products {
-                let a = a_blocks.block(i_a);
-                let b = b_blocks.block(i_b);
-                zgemm_row_accumulate(one, &a, &b, comm);
-                zgemm_row_accumulate(minus_one, &b, &a, comm);
-            }
+    let accumulate_pair = |accumulated: &mut RealSpaceBlockMap, pair_index: usize| -> Result<()> {
+        let i_a = pair_index / n_b;
+        let i_b = pair_index % n_b;
+        let r_a = a_r.row(i_a);
+        let r_b = b_r.row(i_b);
+        let mut total = Vec::with_capacity(a_r.ncols());
+        for (axis, (&left, &right)) in r_a.iter().zip(r_b.iter()).enumerate() {
+            total.push(left.checked_add(right).ok_or_else(|| {
+                TbError::Other(format!(
+                    "real-space Minkowski sum overflow on axis {axis}: {left} + {right}"
+                ))
+            })?);
         }
-    }
+        let comm = accumulated
+            .entry(total)
+            .or_insert_with(|| Array2::<Complex<f64>>::zeros((nsta, nsta)));
+        if !skip_products {
+            let a = a_blocks.block(i_a);
+            let b = b_blocks.block(i_b);
+            zgemm_row_accumulate(one, &a, &b, comm);
+            zgemm_row_accumulate(minus_one, &b, &a, comm);
+        }
+        Ok(())
+    };
+
+    // Each Rayon worker accumulates into a private ordered map, so the hot
+    // GEMM loop needs no locks.  The final reduction merges those maps before
+    // the deterministic lexicographic output pass below.  Small and exact-zero
+    // products stay serial to avoid scheduling and per-worker allocation cost.
+    const PARALLEL_PAIR_THRESHOLD: usize = 128;
+    let accumulated = if !skip_products
+        && pair_count >= PARALLEL_PAIR_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        let min_pairs_per_job = pair_count.div_ceil(rayon::current_num_threads());
+        (0..pair_count)
+            .into_par_iter()
+            .with_min_len(min_pairs_per_job)
+            .try_fold(
+                RealSpaceBlockMap::new,
+                |mut partial, pair_index| -> Result<RealSpaceBlockMap> {
+                    accumulate_pair(&mut partial, pair_index)?;
+                    Ok(partial)
+                },
+            )
+            .try_reduce(RealSpaceBlockMap::new, |left, right| {
+                Ok(merge_real_space_block_maps(left, right))
+            })?
+    } else {
+        let mut accumulated = RealSpaceBlockMap::new();
+        for pair_index in 0..pair_count {
+            accumulate_pair(&mut accumulated, pair_index)?;
+        }
+        accumulated
+    };
 
     let mut support_rows = Array2::<isize>::zeros((accumulated.len(), a_r.ncols()));
     let mut blocks = Vec::with_capacity(accumulated.len());
@@ -3498,6 +3591,97 @@ mod tests {
     }
 
     #[test]
+    fn real_space_commutator_parallel_matches_serial_and_k_space() {
+        // 12 * 13 pairs deliberately crosses PARALLEL_PAIR_THRESHOLD.  Run
+        // the same convolution in isolated one- and four-thread pools so the
+        // test covers both dispatch paths independently of the test runner's
+        // global Rayon configuration.
+        let a_r = Array2::from_shape_fn((12, 2), |(i, axis)| match axis {
+            0 => i as isize - 6,
+            _ => (i * i % 7) as isize - 3,
+        });
+        let b_r = Array2::from_shape_fn((13, 2), |(i, axis)| match axis {
+            0 => 2 * i as isize - 12,
+            _ => ((3 * i + 1) % 11) as isize - 5,
+        });
+        let a_blocks = (0..a_r.nrows())
+            .map(|i| {
+                let x = i as f64 + 1.0;
+                array![
+                    [
+                        Complex::new(0.03 * x, -0.02 * x),
+                        Complex::new(-0.01 * x, 0.04 * (x + 1.0))
+                    ],
+                    [
+                        Complex::new(0.02 * (x + 2.0), 0.01 * x),
+                        Complex::new(-0.025 * x, 0.015 * (x - 1.0))
+                    ]
+                ]
+            })
+            .collect::<Vec<_>>();
+        let b_blocks = (0..b_r.nrows())
+            .map(|i| {
+                let x = i as f64 + 0.5;
+                array![
+                    [
+                        Complex::new(-0.02 * x, 0.01 * (x + 1.0)),
+                        Complex::new(0.035 * x, -0.015 * x)
+                    ],
+                    [
+                        Complex::new(-0.04 * (x + 1.0), 0.02 * x),
+                        Complex::new(0.01 * x, 0.03 * (x - 2.0))
+                    ]
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        let serial_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let parallel_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let serial = serial_pool.install(|| {
+            real_space_commutator_with_supports(&a_blocks, &a_r, &b_blocks, &b_r).unwrap()
+        });
+        let parallel = parallel_pool.install(|| {
+            real_space_commutator_with_supports(&a_blocks, &a_r, &b_blocks, &b_r).unwrap()
+        });
+
+        assert_eq!(parallel.1, serial.1);
+        for (actual, expected) in parallel.0.iter().zip(serial.0.iter()) {
+            for (actual, expected) in actual.iter().zip(expected.iter()) {
+                assert!((actual - expected).norm() < 2e-14);
+            }
+        }
+
+        for k in [[0.137, 0.291], [0.419, 0.073], [0.811, 0.557]] {
+            let kvec = array![k[0], k[1]];
+            let mut a_k = Array2::<Complex<f64>>::zeros((2, 2));
+            let mut b_k = Array2::<Complex<f64>>::zeros((2, 2));
+            let mut comm_k = Array2::<Complex<f64>>::zeros((2, 2));
+            for (index, r) in a_r.outer_iter().enumerate() {
+                a_k.scaled_add(bloch_phase::<2, _>(&r, &kvec), &a_blocks[index]);
+            }
+            for (index, r) in b_r.outer_iter().enumerate() {
+                b_k.scaled_add(bloch_phase::<2, _>(&r, &kvec), &b_blocks[index]);
+            }
+            for (index, r) in parallel.1.outer_iter().enumerate() {
+                comm_k.scaled_add(bloch_phase::<2, _>(&r, &kvec), &parallel.0[index]);
+            }
+            let oracle = a_k.dot(&b_k) - b_k.dot(&a_k);
+            for (actual, expected) in comm_k.iter().zip(oracle.iter()) {
+                assert!(
+                    (actual - expected).norm() < 2e-12,
+                    "k={k:?}: real-space {actual} vs k-space {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn real_space_commutator_rejects_triple_support_overflow() {
         // Two copies of half_max still fit, so this only overflows when that
         // pair support is combined with the third primitive support.
@@ -3716,9 +3900,32 @@ mod tests {
         );
         let trunc = FloquetTruncation::new(2, 4096);
         let options = FloquetEffectiveOptions::new().with_order(2).with_q_max(2);
-        let real_space = model
-            .floquet_effective_model(&drive, &trunc, Some(&options))
+        let serial_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
             .unwrap();
+        let parallel_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let serial = serial_pool.install(|| {
+            model
+                .floquet_effective_model(&drive, &trunc, Some(&options))
+                .unwrap()
+        });
+        let real_space = parallel_pool.install(|| {
+            model
+                .floquet_effective_model(&drive, &trunc, Some(&options))
+                .unwrap()
+        });
+
+        assert_eq!(real_space.hamR, serial.hamR);
+        for (actual, expected) in real_space.ham.iter().zip(serial.ham.iter()) {
+            assert!(
+                (actual - expected).norm() < 5e-13,
+                "parallel {actual} vs serial {expected}"
+            );
+        }
 
         // Through 1/ω² the deterministic support is the union of the
         // primitive, double-, and triple-Minkowski supports.
