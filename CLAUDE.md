@@ -283,7 +283,8 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `wannier90.rs` | Wannier90 I/O; the requested `R` type controls whether `_r.dat` is loaded |
 | `cut.rs` | `CutModel` trait — slab (`cut_piece`), dot/edge (`cut_dot`) |
 | `fermi_surface.rs` | `FermiSurface`/`FermiSurfacePlane` traits; BXSF export; `write_spin_frmsf` for altermagnets |
-| `floquet.rs` | `Floquet` trait + `Model::floquet_effective_model`; `LightMode`, `FloquetDrive`, `FloquetTruncation`, `IncidentBasis`, `FloquetEffectiveOptions`, `fold_quasienergy` |
+| `floquet.rs` | `Floquet` trait + `Model::floquet_effective_model`; `LightMode`, `FloquetDrive`, `FloquetTruncation`, `FloquetEffectiveOptions`, `fold_quasienergy` |
+| `polarization.rs` | `IncidentBasis` and polarization helpers for building transverse Jones vectors |
 | `ndarray_lapack.rs` | LAPACK bindings + safe `zaxpy()` BLAS wrapper |
 | `lib.rs` | Crate root, re-exports, integration tests |
 | `solve_ham.rs` | Parallel diagonalization (`solve_all_parallel`, `solve_range_onek`) |
@@ -592,7 +593,7 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 | `LightMode` | Plane-wave component: `new(harmonic, a_complex, momentum_label)`; `uniform(...)` for q=0 |
 | `FloquetDrive` | `omega0_ev`, reduced wavevector basis, and modes; `uniform(...)` / `empty(...)` for q=0 |
 | `FloquetTruncation` | Photon cutoff `n_max` and time-grid `n_time`; `n_sector()` = `2n_max+1` |
-| `IncidentBasis` | Transverse polarization basis from incident direction |
+| `IncidentBasis` | `polarization::IncidentBasis`: transverse polarization basis from incident direction |
 | `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_harmonic_max(n)`, finite-q `with_max_total_photon_order(n)` / `with_uniform_only()` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
 | `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
 | `Model::floquet_effective_model` | Returns zero-grade `uniform_model` plus all nonzero graded real-space components |
