@@ -169,7 +169,6 @@
 //! | [`LightMode`] | One component `(harmonic, a_complex, momentum_label)` |
 //! | [`FloquetDrive`] | Base photon energy, wavevector basis, and light modes |
 //! | [`FloquetTruncation`] | Photon cutoff and time-Fourier grid |
-//! | [`IncidentBasis`] | 3D transverse basis from an incident direction |
 //! | [`FloquetEffectiveOptions`] | Optional order and temporal-harmonic cutoff |
 //! | [`Floquet::floquet_model`] | Build an enlarged static Sambe tight-binding model |
 //! | [`Model::floquet_effective_model`] | Build a momentum-graded high-frequency result |
@@ -252,8 +251,8 @@ const MAX_GRADED_PRODUCT_SUPPORT_PAIRS: usize =
     2_000_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
 // Dense real-space convolutions can legitimately be much more compute-heavy
 // than their memory footprint.  Keep this budget separate from the 64x memory
-// scale: 1.024 trillion units admits a 50-band, ~600-translation, eight-beam
-// uniform-grade A2g calculation while still rejecting unbounded work estimates.
+// scale: 1.024 trillion units admits a 50-band, ~600-translation, multi-beam
+// finite-q calculation while still rejecting unbounded work estimates.
 const MAX_GRADED_MATRIX_WORK_UNITS: usize = 100_000_000_usize.saturating_mul(10_240);
 const MAX_GRADED_OPERATOR_GRADES: usize = 65_536_usize.saturating_mul(GRADED_RESOURCE_SCALE);
 const MAX_GRADED_OPERATOR_BLOCKS: usize = 500_000_usize.saturating_mul(GRADED_RESOURCE_SCALE);
@@ -346,101 +345,6 @@ pub struct FloquetDrive {
 }
 
 impl FloquetDrive {
-    /// Build eight body-diagonal circular modes that transform as an A₂g light
-    /// envelope on a cubic-like set of momentum basis vectors.
-    ///
-    /// `momentum_basis_cartesian` should contain three reciprocal-basis rows,
-    /// for example
-    ///
-    /// ```text
-    /// qx, qy, qz  (cartesian)
-    /// ```
-    ///
-    /// and each output mode carries integer momentum labels
-    /// `(±1, ±1, ±1)`.
-    ///
-    /// The circular polarization in each direction is
-    ///
-    /// ```text
-    /// (e1 + i eta e2)/sqrt(2)
-    /// ```
-    ///
-    /// with `eta = a2g_domain * sgn(qx qy qz)`, where `a2g_domain` is `+1` or
-    /// `-1`.
-    pub fn tetrahedral_a2g_modes(
-        harmonic: isize,
-        momentum_basis_cartesian: &Array2<f64>,
-        a_complex_scale: f64,
-        a2g_domain: f64,
-    ) -> Result<Vec<LightMode>> {
-        if harmonic <= 0 {
-            return Err(TbError::Other(
-                "A2g mode construction expects positive harmonic (q->-q is conjugate)".to_string(),
-            ));
-        }
-        if momentum_basis_cartesian.nrows() != 3 || momentum_basis_cartesian.ncols() != 3 {
-            return Err(TbError::Other(format!(
-                "A2g tetrahedral mode basis must be 3x3, got {:?}x{:?}",
-                momentum_basis_cartesian.nrows(),
-                momentum_basis_cartesian.ncols()
-            )));
-        }
-        if !a2g_domain.is_finite() || (a2g_domain != 1.0 && a2g_domain != -1.0) {
-            return Err(TbError::Other(
-                "A2g domain parameter should be either +1 or -1".to_string(),
-            ));
-        }
-        if a_complex_scale.is_nan() || a_complex_scale.is_infinite() {
-            return Err(TbError::Other(
-                "A2g amplitude scale must be a finite number".to_string(),
-            ));
-        }
-
-        let mut modes = Vec::with_capacity(8);
-        let inv_sqrt2 = 1.0 / 2.0_f64.sqrt();
-        let sign_triplets = [
-            [1_isize, 1_isize, 1_isize],
-            [1_isize, 1_isize, -1_isize],
-            [1_isize, -1_isize, 1_isize],
-            [1_isize, -1_isize, -1_isize],
-            [-1_isize, 1_isize, 1_isize],
-            [-1_isize, 1_isize, -1_isize],
-            [-1_isize, -1_isize, 1_isize],
-            [-1_isize, -1_isize, -1_isize],
-        ];
-        for label in sign_triplets {
-            let direction = momentum_basis_cartesian
-                .rows()
-                .into_iter()
-                .zip(label.iter().copied())
-                .fold(Array1::<f64>::zeros(3), |mut acc, (axis, sign)| {
-                    acc[0] += axis[0] * (sign as f64);
-                    acc[1] += axis[1] * (sign as f64);
-                    acc[2] += axis[2] * (sign as f64);
-                    acc
-                });
-            let norm = direction
-                .iter()
-                .map(|value| value * value)
-                .sum::<f64>()
-                .sqrt();
-            if norm <= 0.0 {
-                return Err(TbError::Other(
-                    "A2g mode direction has zero norm after basis projection".to_string(),
-                ));
-            }
-            let incident = IncidentBasis::from_direction(&direction)?;
-            let helicity = a2g_domain * label.iter().product::<isize>() as f64;
-            let circular = incident.polarization([
-                Complex::new(inv_sqrt2, 0.0),
-                Complex::new(0.0, helicity * inv_sqrt2),
-            ]);
-            let a_complex = circular.mapv(|z| a_complex_scale * z);
-            modes.push(LightMode::new(harmonic, a_complex, label));
-        }
-        Ok(modes)
-    }
-
     /// Construct a plane-wave drive from a reduced wavevector basis and modes.
     pub fn new(
         omega0_ev: f64,
@@ -539,61 +443,6 @@ impl FloquetTruncation {
     #[inline]
     pub fn sectors(&self) -> impl Iterator<Item = isize> {
         -self.n_max..=self.n_max
-    }
-}
-
-/// Transverse polarization basis for a 3D incident direction.
-///
-/// Given a propagation direction `k_hat`, this type constructs two orthonormal
-/// transverse vectors `e1` and `e2`.  A Jones vector `(c1,c2)` then defines
-///
-/// $$
-/// \boldsymbol\epsilon = c_1\mathbf e_1+c_2\mathbf e_2.
-/// $$
-///
-/// Examples:
-///
-/// - linear polarization along `e1`: `(1,0)`; - circular polarization: `(1,i)/sqrt(2)`;
-/// - elliptical polarization: arbitrary complex `(c1,c2)`.
-#[derive(Clone, Debug)]
-pub struct IncidentBasis {
-    /// Normalized incident-light direction.
-    pub k_hat: Array1<f64>,
-    /// First transverse unit vector.
-    pub e1: Array1<f64>,
-    /// Second transverse unit vector.
-    pub e2: Array1<f64>,
-}
-
-impl IncidentBasis {
-    /// Build a right-handed transverse basis from an incident wave-vector
-    /// direction in Cartesian coordinates.
-    pub fn from_direction(k_hat_cart: &Array1<f64>) -> Result<Self> {
-        if k_hat_cart.len() != 3 {
-            return Err(TbError::DimensionMismatch {
-                context: "IncidentBasis::from_direction".to_string(),
-                expected: 3,
-                found: k_hat_cart.len(),
-            });
-        }
-        let k_hat = normalize3(k_hat_cart)?;
-        let reference = if k_hat[2].abs() < 0.9 {
-            arr1(&[0.0, 0.0, 1.0])
-        } else {
-            arr1(&[1.0, 0.0, 0.0])
-        };
-        let e1 = normalize3(&cross3(&reference, &k_hat))?;
-        let e2 = normalize3(&cross3(&k_hat, &e1))?;
-        Ok(Self { k_hat, e1, e2 })
-    }
-
-    /// Return `jones[0] * e1 + jones[1] * e2`.
-    pub fn polarization(&self, jones: [Complex<f64>; 2]) -> Array1<Complex<f64>> {
-        let mut out = Array1::<Complex<f64>>::zeros(3);
-        for i in 0..3 {
-            out[i] = jones[0] * self.e1[i] + jones[1] * self.e2[i];
-        }
-        out
     }
 }
 
@@ -5172,24 +5021,6 @@ fn hermitian_conjugate(a: &Array2<Complex<f64>>) -> Array2<Complex<f64>> {
     a.t().mapv(|x| x.conj())
 }
 
-fn normalize3(v: &Array1<f64>) -> Result<Array1<f64>> {
-    let norm = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if norm < 1e-14 {
-        return Err(TbError::Other(
-            "Cannot normalize a zero-length 3D vector".to_string(),
-        ));
-    }
-    Ok(v.mapv(|x| x / norm))
-}
-
-fn cross3(a: &Array1<f64>, b: &Array1<f64>) -> Array1<f64> {
-    arr1(&[
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7489,68 +7320,6 @@ mod tests {
     }
 
     #[test]
-    fn tetrahedral_a2g_modes_builds_eight_body_diagonal_modes_with_expected_signs() {
-        let basis = array![[0.05, 0.0, 0.0], [0.0, 0.03, 0.0], [0.0, 0.0, 0.08],];
-        let modes = FloquetDrive::tetrahedral_a2g_modes(1, &basis, 0.123, 1.0).unwrap();
-
-        assert_eq!(modes.len(), 8);
-        let mut seen = std::collections::HashSet::new();
-        for mode in modes {
-            let label = mode.momentum_label.clone();
-            assert_eq!(label.len(), 3);
-            for value in label.iter() {
-                assert_eq!(value.abs(), 1_isize);
-            }
-            assert!(seen.insert(label.clone()));
-            let sign = (label.iter().product::<isize>() as f64) * mode.harmonic as f64;
-            let direction = basis.rows().into_iter().zip(label.iter()).fold(
-                Array1::<f64>::zeros(3),
-                |mut direction, (axis, factor)| {
-                    direction += &(axis.to_owned() * (*factor as f64));
-                    direction
-                },
-            );
-            let incident = IncidentBasis::from_direction(&direction).unwrap();
-            let eta = if sign > 0.0 { 1.0 } else { -1.0 };
-            let c1_expected = Complex::new(0.123 / (2.0_f64).sqrt(), 0.0);
-            let c2_expected = Complex::new(0.0, eta * 0.123 / (2.0_f64).sqrt());
-            let expected = incident.polarization([c1_expected, c2_expected]);
-            let diff_norm = (0..3)
-                .map(|index| (mode.a_complex[index] - expected[index]).norm_sqr())
-                .sum::<f64>()
-                .sqrt();
-            assert!(
-                diff_norm < 1.0e-14,
-                "unexpected polarization reconstruction for {label:?}"
-            );
-            assert_eq!(mode.harmonic, 1);
-        }
-        assert_eq!(seen.len(), 8);
-    }
-
-    #[test]
-    fn tetrahedral_a2g_domains_are_exact_helicity_partners() {
-        let basis = array![[0.05, 0.0, 0.0], [0.0, 0.03, 0.0], [0.0, 0.0, 0.08],];
-        let positive = FloquetDrive::tetrahedral_a2g_modes(1, &basis, 0.07, 1.0).unwrap();
-        let negative = FloquetDrive::tetrahedral_a2g_modes(1, &basis, 0.07, -1.0).unwrap();
-
-        assert_eq!(positive.len(), negative.len());
-        for (mode_plus, mode_minus) in positive.iter().zip(negative.iter()) {
-            assert_eq!(mode_plus.momentum_label, mode_minus.momentum_label);
-            for index in 0..3 {
-                assert!(
-                    (mode_plus.a_complex[index].re - mode_minus.a_complex[index].re).abs()
-                        < 1.0e-14
-                );
-                assert!(
-                    (mode_plus.a_complex[index].im + mode_minus.a_complex[index].im).abs()
-                        < 1.0e-14
-                );
-            }
-        }
-    }
-
-    #[test]
     fn finite_q_single_photon_coefficient_keeps_other_modes_j_zero_factors() {
         let geometry = LinkGeometry {
             d_fractional: array![0.6],
@@ -8522,52 +8291,6 @@ mod tests {
             expected
         );
         assert!(h_q1.im.abs() < 1e-9, "imag part = {}", h_q1.im);
-    }
-
-    #[test]
-    fn floquet_incident_basis_public_api_example() {
-        let lat = array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let orb = array![[0.0, 0.0, 0.0]];
-        let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
-        model.set_hop(-1.0_f64, 0, 0, &arr1(&[1isize, 0, 0]), None);
-        model.set_hop(-0.8_f64, 0, 0, &arr1(&[0isize, 1, 0]), None);
-        model.set_hop(-0.6_f64, 0, 0, &arr1(&[0isize, 0, 1]), None);
-
-        let incident = IncidentBasis::from_direction(&arr1(&[0.0, 0.0, 1.0])).unwrap();
-        let circular = incident.polarization([
-            Complex::new(1.0 / 2.0_f64.sqrt(), 0.0),
-            Complex::new(0.0, 1.0 / 2.0_f64.sqrt()),
-        ]);
-        let drive = FloquetDrive::uniform(
-            0.8,
-            vec![LightMode::uniform(1, circular.mapv(|z| 0.12 * z))],
-        );
-        let trunc = FloquetTruncation::new(1, 128);
-        let k = arr1(&[0.2, 0.1, 0.0]);
-
-        let hf = model
-            .floquet_ham_onek(&k, &drive, &trunc, Gauge::Lattice)
-            .unwrap();
-        assert_eq!(hf.dim(), (3, 3));
-
-        let mut max_diff = 0.0f64;
-        for i in 0..hf.nrows() {
-            for j in 0..hf.ncols() {
-                max_diff = max_diff.max((hf[[i, j]] - hf[[j, i]].conj()).norm());
-            }
-        }
-        assert!(max_diff < 1e-11, "max hermiticity error = {max_diff:e}");
-
-        let qe = model
-            .floquet_quasienergy_onek(&k, &drive, &trunc, Gauge::Lattice)
-            .unwrap();
-        assert_eq!(qe.len(), 3);
-        for &x in qe.iter() {
-            assert!(
-                x >= -0.5 * drive.omega0_ev - 1e-12 && x < 0.5 * drive.omega0_ev + 1e-12,
-                "quasienergy {x} is outside the first Floquet zone"
-            );
-        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
