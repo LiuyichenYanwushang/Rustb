@@ -73,12 +73,12 @@
 //!
 //! The Fourier coefficient of the Peierls phase is
 //!
-//! $$ C_q(\mathbf d) =
+//! $$ C_n(\mathbf d) =
 //! \frac{1}{T}\int_0^T dt\,
-//! e^{iq\Omega_0 t}
+//! e^{in\Omega_0 t}
 //! \exp\left[-i\,\mathbf a(t)\cdot\mathbf d\right]. $$
 //!
-//! Two backends evaluate `C_q`.  The Sambe and time-grid paths
+//! Two backends evaluate `C_n`.  The Sambe and time-grid paths
 //! ([`Floquet::floquet_model`], `PeierlsFourierMethod::TimeGrid`) integrate
 //! the uniform time grid over one period — deliberately more general than a
 //! Bessel-function formula, handling arbitrary complex polarization and
@@ -89,10 +89,10 @@
 //!
 //! The reciprocal-space Fourier block is
 //!
-//! $$ H^{(q)}_{ij}(\mathbf k) =
+//! $$ H^{(n)}_{ij}(\mathbf k) =
 //! \sum_{\mathbf R}
 //! t_{ij}(\mathbf R)\,
-//! C_q(\mathbf d_{ij\mathbf R})\,
+//! C_n(\mathbf d_{ij\mathbf R})\,
 //! e^{i2\pi\mathbf k\cdot\mathbf R}. $$
 //!
 //! `Gauge::Lattice` returns this block directly.  `Gauge::Atom` applies the
@@ -131,8 +131,8 @@
 //! $$ H_{\mathrm{eff}}(\mathbf k) =
 //! H^{(0)}(\mathbf k)
 //! +
-//! \sum_{q=1}^{q_{\max}}
-//! \frac{[H^{(q)}(\mathbf k), H^{(-q)}(\mathbf k)]}{qW}
+//! \sum_{n=1}^{n_{\max}}
+//! \frac{[H^{(n)}(\mathbf k), H^{(-n)}(\mathbf k)]}{nW}
 //! +
 //! H_{\mathrm{eff}}^{(2)}(\mathbf k)
 //! +O(W^{-3}), $$
@@ -140,10 +140,10 @@
 //! where `order = 2` includes both nested-commutator families through
 //! $O(W^{-2})$ documented on [`Model::floquet_effective_model`].
 //!
-//! The Fourier blocks `H^{(q)}(k)` are defined in the [Peierls phase
+//! The Fourier blocks `H^{(n)}(k)` are defined in the [Peierls phase
 //! section](#peierls-phase-and-fourier-blocks) above.  Each commutator term
-//! `[H^(q), H^(-q)]` captures a virtual photon-exchange process where the
-//! system absorbs a photon of energy `q W` and immediately re-emits it,
+//! `[H^(n), H^(-n)]` captures a virtual photon-exchange process where the
+//! system absorbs a photon of energy `n W` and immediately re-emits it,
 //! staying in the same photon sector but acquiring an effective hopping
 //! correction of order `1/W`.
 //!
@@ -166,7 +166,7 @@
 //! | [`FloquetDrive`] | Base photon energy plus all light modes |
 //! | [`FloquetTruncation`] | Photon cutoff and time-Fourier grid |
 //! | [`IncidentBasis`] | 3D transverse basis from an incident direction |
-//! | [`FloquetEffectiveOptions`] | Optional order, q cutoff, and real-space truncation |
+//! | [`FloquetEffectiveOptions`] | Optional order, harmonic cutoff, and real-space truncation |
 //! | [`Floquet::floquet_model`] | Build an enlarged static Sambe tight-binding model |
 //! | [`Model::floquet_effective_model`] | Build a same-size high-frequency effective model |
 //! | [`Floquet::floquet_ham_onek`] | Build the Sambe Hamiltonian at one `k` |
@@ -323,7 +323,7 @@ impl FloquetDrive {
 ///
 /// `n_time` is the number of samples per drive period used by the Sambe and
 /// time-grid paths for the discrete Fourier transform of the Peierls
-/// coefficients `C_q(d)`.  Increase it when the drive amplitude or the
+/// coefficients `C_n(d)`.  Increase it when the drive amplitude or the
 /// maximum harmonic is large.
 ///
 /// The van Vleck effective-model path (`Model::floquet_effective_model`,
@@ -422,7 +422,7 @@ impl IncidentBasis {
 /// (real-space Bessel backend) and the crate-internal legacy k-space
 /// reference path.
 ///
-/// `order` and `q_max` control the high-frequency expansion on both paths.
+/// `order` and `harmonic_max` control the high-frequency expansion on both paths.
 /// `target_hamR` (crate-internal) applies only to the legacy path, whose
 /// inverse Fourier transform
 ///
@@ -447,8 +447,8 @@ pub struct FloquetEffectiveOptions {
     pub order: usize,
     /// Signed-harmonic cutoff for commutator sums.  Defaults to
     /// `2 * trunc.n_max`.  At order 2 the mixed component `H_(m'-m)` is
-    /// evaluated up to `|m'-m| = 2 * q_max` automatically.
-    pub q_max: Option<isize>,
+    /// evaluated up to `|m'-m| = 2 * harmonic_max` automatically.
+    pub harmonic_max: Option<isize>,
     /// Optional target real-space hopping vectors for the legacy path's
     /// inverse Fourier transform.  Rejected by the real-space path.
     pub(crate) target_hamR: Option<Array2<isize>>,
@@ -489,14 +489,14 @@ impl Default for FloquetEffectiveOptions {
     fn default() -> Self {
         Self {
             order: 1,
-            q_max: None,
+            harmonic_max: None,
             target_hamR: None,
         }
     }
 }
 
 impl FloquetEffectiveOptions {
-    /// Construct first-order options using `q_max = 2 * trunc.n_max` and the
+    /// Construct first-order options using `harmonic_max = 2 * trunc.n_max` and the
     /// original model's `hamR`.
     pub fn new() -> Self {
         Self::default()
@@ -509,8 +509,8 @@ impl FloquetEffectiveOptions {
     }
 
     /// Set the signed-harmonic cutoff used in the van Vleck sums.
-    pub fn with_q_max(mut self, q_max: isize) -> Self {
-        self.q_max = Some(q_max);
+    pub fn with_harmonic_max(mut self, harmonic_max: isize) -> Self {
+        self.harmonic_max = Some(harmonic_max);
         self
     }
 
@@ -523,7 +523,7 @@ impl FloquetEffectiveOptions {
     }
 }
 
-/// Backend selection for the Peierls Fourier coefficients `C_q(d)`.
+/// Backend selection for the Peierls Fourier coefficients `C_n(d)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PeierlsFourierMethod {
     /// Numerical DFT on a uniform time grid (`FloquetTruncation::n_time`
@@ -541,42 +541,42 @@ pub(crate) enum PeierlsFourierMethod {
     },
 }
 
-/// Precomputed `t_ij(R) * C_q(d)` for all harmonics `q ∈ [q_min, q_max]`.
+/// Precomputed `t_ij(R) * C_n(d)` for all harmonics `n ∈ [harmonic_min, harmonic_max]`.
 ///
-/// `blocks` has shape `(q_count, n_r, nsta, nsta)` where `q_count = q_max - q_min + 1`.
-/// Index `[iq, i_r, i, j]` stores the `q = q_min + iq` Fourier component of hopping
+/// `blocks` has shape `(harmonic_count, n_r, nsta, nsta)` where `harmonic_count = harmonic_max - harmonic_min + 1`.
+/// Index `[i_n, i_r, i, j]` stores the `n = harmonic_min + i_n` Fourier component of hopping
 /// from orbital `j` in cell `R = hamR[i_r]` to orbital `i` at the origin.
 /// This is independent of `k` and reusable across the entire k-mesh.
 struct FloquetHarmonicCache {
-    q_min: isize,
-    q_max: isize,
+    harmonic_min: isize,
+    harmonic_max: isize,
     blocks: Array4<Complex<f64>>,
 }
 
 impl FloquetHarmonicCache {
     #[inline]
-    fn q_index(&self, q: isize) -> usize {
+    fn harmonic_index(&self, n: isize) -> usize {
         debug_assert!(
-            q >= self.q_min && q <= self.q_max,
-            "Floquet harmonic q={q} is outside cached range [{}, {}]",
-            self.q_min,
-            self.q_max
+            n >= self.harmonic_min && n <= self.harmonic_max,
+            "Floquet harmonic n={n} is outside cached range [{}, {}]",
+            self.harmonic_min,
+            self.harmonic_max
         );
-        (q - self.q_min) as usize
+        (n - self.harmonic_min) as usize
     }
 
     #[inline]
-    fn harmonic_blocks(&self, q: isize) -> ArrayView3<'_, Complex<f64>> {
-        self.blocks.index_axis(Axis(0), self.q_index(q))
+    fn harmonic_blocks(&self, n: isize) -> ArrayView3<'_, Complex<f64>> {
+        self.blocks.index_axis(Axis(0), self.harmonic_index(n))
     }
 }
 
 /// Precomputed time-grid data for the discrete Fourier integration of
-/// Peierls coefficients `C_q(d)`.
+/// Peierls coefficients `C_n(d)`.
 ///
 /// `link_field[it, a]` stores the real part of the total dimensionless
 /// vector potential `a_a(t_it)` for each time step and spatial direction.
-/// `fourier[iq, it]` stores `exp(i * q * theta)` for each harmonic and time step.
+/// `fourier[i_n, it]` stores `exp(i * n * theta)` for each harmonic and time step.
 /// Building these once avoids recomputing the same exponentials for every
 /// hopping link.
 struct FloquetTimeGrid {
@@ -589,15 +589,15 @@ impl FloquetTimeGrid {
     fn new(
         drive: &FloquetDrive,
         trunc: &FloquetTruncation,
-        q_min: isize,
-        q_max: isize,
+        harmonic_min: isize,
+        harmonic_max: isize,
         dim: usize,
     ) -> Self {
         let n_time = trunc.n_time;
-        let q_count = (q_max - q_min + 1) as usize;
+        let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
         let inv_n_time = 1.0 / (n_time as f64);
         let mut link_field = Array2::<f64>::zeros((n_time, dim));
-        let mut fourier = Array2::<Complex<f64>>::zeros((q_count, n_time));
+        let mut fourier = Array2::<Complex<f64>>::zeros((harmonic_count, n_time));
 
         for it in 0..n_time {
             let theta = TAU * (it as f64) * inv_n_time;
@@ -607,8 +607,8 @@ impl FloquetTimeGrid {
                     link_field[[it, a]] += (mode.a_complex[a] * harmonic_phase).re;
                 }
             }
-            for (iq, q) in (q_min..=q_max).enumerate() {
-                fourier[[iq, it]] = Complex::new(0.0, (q as f64) * theta).exp();
+            for (i_n, n) in (harmonic_min..=harmonic_max).enumerate() {
+                fourier[[i_n, it]] = Complex::new(0.0, (n as f64) * theta).exp();
             }
         }
 
@@ -734,13 +734,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         let new_norb = norb * n_sector;
         let total = nsta * n_sector;
         let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
-        let q_min = -2 * trunc.n_max;
-        let q_max = 2 * trunc.n_max;
+        let harmonic_min = -2 * trunc.n_max;
+        let harmonic_max = 2 * trunc.n_max;
         let harmonic_cache = self.floquet_harmonic_cache(
             drive,
             trunc,
-            q_min,
-            q_max,
+            harmonic_min,
+            harmonic_max,
             &PeierlsFourierMethod::TimeGrid,
         );
 
@@ -773,7 +773,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
                             let row = basis_indices[in_sec][i];
                             for (im_sec, &m) in sectors.iter().enumerate() {
                                 let hopping = harmonic_cache.blocks
-                                    [[harmonic_cache.q_index(n - m), i_r, i, j]];
+                                    [[harmonic_cache.harmonic_index(n - m), i_r, i, j]];
                                 if hopping.norm_sqr() == 0.0 {
                                     continue;
                                 }
@@ -847,23 +847,23 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         let mut hamf = Array2::<Complex<f64>>::zeros((total, total));
         let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
 
-        let q_min = -2 * trunc.n_max;
-        let q_max = 2 * trunc.n_max;
+        let harmonic_min = -2 * trunc.n_max;
+        let harmonic_max = 2 * trunc.n_max;
         let harmonic_cache = self.floquet_harmonic_cache(
             drive,
             trunc,
-            q_min,
-            q_max,
+            harmonic_min,
+            harmonic_max,
             &PeierlsFourierMethod::TimeGrid,
         );
-        let hq: Vec<Array2<Complex<f64>>> = (q_min..=q_max)
-            .map(|q| self.floquet_cached_harmonic_onek(kvec, q, gauge, &harmonic_cache))
+        let harmonics: Vec<Array2<Complex<f64>>> = (harmonic_min..=harmonic_max)
+            .map(|n| self.floquet_cached_harmonic_onek(kvec, n, gauge, &harmonic_cache))
             .collect();
 
         for (in_sec, n) in trunc.sectors().enumerate() {
             for (im_sec, m) in trunc.sectors().enumerate() {
-                let q = n - m;
-                let block = &hq[(q - q_min) as usize];
+                let harmonic = n - m;
+                let block = &harmonics[(harmonic - harmonic_min) as usize];
                 for i in 0..nsta {
                     for j in 0..nsta {
                         let row = basis_indices[in_sec][i];
@@ -920,7 +920,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// With the Fourier convention used in this module,
     ///
     /// $$
-    /// H(t)=\sum_q H^{(q)}e^{-iq\Omega t},
+    /// H(t)=\sum_n H^{(n)}e^{-in\Omega t},
     /// $$
     ///
     /// the implemented van Vleck expansion through second order is
@@ -928,8 +928,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// $$ H_{\mathrm{eff}}(\mathbf k) =
     /// H^{(0)}(\mathbf k)
     /// +
-    /// \sum_{q=1}^{q_{\max}}
-    /// \frac{[H^{(q)}(\mathbf k),H^{(-q)}(\mathbf k)]}{qW}
+    /// \sum_{n=1}^{n_{\max}}
+    /// \frac{[H^{(n)}(\mathbf k),H^{(-n)}(\mathbf k)]}{nW}
     /// +H_{\mathrm{eff}}^{(2)}(\mathbf k)
     /// +O(W^{-3}), $$
     ///
@@ -945,7 +945,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// `order = 0` keeps only `H^(0)`, `order = 1` adds the `1/W`
     /// commutator, and `order = 2` also adds both nested-commutator families
     /// above.  Pass `None` for `options` to use first order,
-    /// `q_max = 2 * trunc.n_max`, and the input model's original `hamR`.
+    /// `harmonic_max = 2 * trunc.n_max`, and the input model's original `hamR`.
     ///
     /// The inverse Fourier transform is controlled by `k_mesh`:
     ///
@@ -984,7 +984,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .unwrap_or_else(|| self.hamR.clone());
         validate_target_hamr::<DIM>(&target_ham_r)?;
 
-        let q_max = effective_q_max(options, trunc)?;
+        let harmonic_max = effective_harmonic_max(options, trunc)?;
         let has_time_dependence = drive_has_time_dependent_field::<DIM>(drive);
         let static_drive;
         let cache_drive = if has_time_dependence {
@@ -994,7 +994,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             &static_drive
         };
         let cache_max = if has_time_dependence {
-            effective_cache_max(options.order, q_max)?
+            effective_cache_max(options.order, harmonic_max)?
         } else {
             0
         };
@@ -1017,7 +1017,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         kvec,
                         drive,
                         options.order,
-                        q_max,
+                        harmonic_max,
                         has_time_dependence,
                         &harmonic_cache,
                     )?;
@@ -1077,13 +1077,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// =
     /// T_0(R)
     /// +
-    /// \sum_{q=1}^{q_{\max}} \frac{[T_q,T_{-q}](R)}{q\,W}
+    /// \sum_{n=1}^{n_{\max}} \frac{[T_n,T_{-n}](R)}{n\,W}
     /// +T_{\mathrm{eff}}^{(2)}(R),\qquad W=\hbar\Omega_0,
     /// ```
     ///
     /// where `T_0(R) = t(R)·C_0(d)` are the Peierls-dressed static blocks
-    /// and `comm_q(R)` are the two-convolution commutator blocks of the
-    /// internal real-space commutator for the harmonic pair `(T_q, T_{−q})`.
+    /// and `comm_n(R)` are the two-convolution commutator blocks of the
+    /// internal real-space commutator for the harmonic pair `(T_n, T_{−n})`.
     /// The second-order term is
     ///
     /// ```math
@@ -1100,8 +1100,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// `options.order = 0` keeps only `T_0`; `order = 1` adds the `1/W`
     /// commutator terms; `order = 2` adds both `1/W^2` families.  The signed
-    /// indices `m,m'` are truncated at `q_max` (default `2 * trunc.n_max`),
-    /// while `T_(m'-m)` is evaluated automatically through `2*q_max`.
+    /// indices `m,m'` are truncated at `harmonic_max` (default `2 * trunc.n_max`),
+    /// while `T_(m'-m)` is evaluated automatically through `2*harmonic_max`.
     /// The real-space support is determined automatically: primitive at
     /// order 0, the union through the double Minkowski sum at order 1, and
     /// through the triple Minkowski sum at order 2.  No `target_hamR`
@@ -1162,7 +1162,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 target.nrows()
             )));
         }
-        let q_max = effective_q_max(options, trunc)?;
+        let harmonic_max = effective_harmonic_max(options, trunc)?;
 
         let nsta = self.nsta();
         let has_time_dependence = drive_has_time_dependent_field::<DIM>(drive);
@@ -1174,7 +1174,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             &static_drive
         };
         let cache_max = if has_time_dependence {
-            effective_cache_max(options.order, q_max)?
+            effective_cache_max(options.order, harmonic_max)?
         } else {
             0
         };
@@ -1187,22 +1187,25 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
         );
         // Zeroth order: the Peierls-dressed static blocks on the input
-        // support.  The BTreeMap merges the per-q contributions onto the
+        // support.  The BTreeMap merges the per-n contributions onto the
         // final support in lexicographic order (matching
         // real_space_commutator's deterministic output).
         let mut blocks = std::collections::BTreeMap::<Vec<isize>, Array2<Complex<f64>>>::new();
-        let iq0 = harmonic_cache.q_index(0);
+        let i_n0 = harmonic_cache.harmonic_index(0);
         for (i_r, row) in self.hamR.outer_iter().enumerate() {
             blocks.insert(
                 row.to_vec(),
-                harmonic_cache.blocks.slice(s![iq0, i_r, .., ..]).to_owned(),
+                harmonic_cache
+                    .blocks
+                    .slice(s![i_n0, i_r, .., ..])
+                    .to_owned(),
             );
         }
 
         // With no time-dependent field every nonzero harmonic vanishes.  The
         // documented support still depends on the requested order, so build
-        // each zero-valued Minkowski layer once, independent of q_max.
-        if !has_time_dependence && q_max > 0 && options.order >= 1 {
+        // each zero-valued Minkowski layer once, independent of harmonic_max.
+        if !has_time_dependence && harmonic_max > 0 && options.order >= 1 {
             let zero_primitive = (0..self.hamR.nrows())
                 .map(|_| Array2::<Complex<f64>>::zeros((nsta, nsta)))
                 .collect::<Vec<_>>();
@@ -1220,16 +1223,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
 
-        // First order: sum over q of comm_q/(q·ħΩ₀); omega0_ev carries
+        // First order: sum over n of comm_n/(n·ħΩ₀); omega0_ev carries
         // the ħΩ₀ energy (same convention as the legacy k-space path).
         let inverse_omega = drive.omega0_ev.recip();
         if options.order >= 1 && has_time_dependence {
-            for q in 1..=q_max {
-                let positive = harmonic_cache.harmonic_blocks(q);
-                let negative = harmonic_cache.harmonic_blocks(-q);
+            for n in 1..=harmonic_max {
+                let positive = harmonic_cache.harmonic_blocks(n);
+                let negative = harmonic_cache.harmonic_blocks(-n);
                 let (comm_blocks, comm_r) =
                     real_space_commutator(&positive, &negative, &self.hamR)?;
-                let scale = inverse_omega / (q as f64);
+                let scale = inverse_omega / (n as f64);
                 accumulate_scaled_real_space_blocks(&mut blocks, &comm_blocks, &comm_r, scale)?;
             }
         }
@@ -1240,7 +1243,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // before the complete sum is assembled.
         if options.order >= 2 && has_time_dependence {
             let inverse_omega_squared = inverse_omega * inverse_omega;
-            let signed_harmonics = (-q_max..=q_max)
+            let signed_harmonics = (-harmonic_max..=harmonic_max)
                 .filter(|harmonic| *harmonic != 0)
                 .collect::<Vec<_>>();
 
@@ -1344,12 +1347,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         kvec: &ArrayBase<S, Ix1>,
         drive: &FloquetDrive,
         order: usize,
-        q_max: isize,
+        harmonic_max: isize,
         has_time_dependence: bool,
         harmonic_cache: &FloquetHarmonicCache,
     ) -> Result<Array2<Complex<f64>>> {
         let cache_max = if has_time_dependence {
-            effective_cache_max(order, q_max)
+            effective_cache_max(order, harmonic_max)
                 .expect("effective harmonic range was validated by the caller")
         } else {
             0
@@ -1365,15 +1368,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let inverse_omega = drive.omega0_ev.recip();
         if order >= 1 && has_time_dependence {
-            for q in 1..=q_max {
-                let comm = matrix_commutator(harmonic(q), harmonic(-q));
-                accumulate_scaled_matrix(&mut h_eff, &comm, inverse_omega / (q as f64))?;
+            for n in 1..=harmonic_max {
+                let comm = matrix_commutator(harmonic(n), harmonic(-n));
+                accumulate_scaled_matrix(&mut h_eff, &comm, inverse_omega / (n as f64))?;
             }
         }
 
         if order >= 2 && has_time_dependence {
             let inverse_omega_squared = inverse_omega * inverse_omega;
-            let signed_harmonics = (-q_max..=q_max)
+            let signed_harmonics = (-harmonic_max..=harmonic_max)
                 .filter(|index| *index != 0)
                 .collect::<Vec<_>>();
             for &m in &signed_harmonics {
@@ -1404,13 +1407,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(h_eff)
     }
 
-    /// Build the harmonic cache: `t_ij(R) * C_q(d)` for all `q ∈ [q_min, q_max]`.
+    /// Build the harmonic cache: `t_ij(R) * C_n(d)` for all `n ∈ [harmonic_min, harmonic_max]`.
     ///
-    /// Returns a [`FloquetHarmonicCache`] whose `blocks[q_index(q), i_r, i, j]`
-    /// stores the `q`-th Fourier coefficient of the Peierls-dressed hopping from
+    /// Returns a [`FloquetHarmonicCache`] whose `blocks[harmonic_index(n), i_r, i, j]`
+    /// stores the `n`-th Fourier coefficient of the Peierls-dressed hopping from
     /// orbital `j` at cell `R = hamR[i_r]` to orbital `i` at the origin.  The
     /// cache is constructed once and reused across the whole k-mesh, avoiding the
-    /// recomputation of `C_q(d)` for every k-point.
+    /// recomputation of `C_n(d)` for every k-point.
     ///
     /// When `drive.modes` is empty (static limit), the zero-frequency block is
     /// set to the original `ham` directly.
@@ -1418,25 +1421,25 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         &self,
         drive: &FloquetDrive,
         trunc: &FloquetTruncation,
-        q_min: isize,
-        q_max: isize,
+        harmonic_min: isize,
+        harmonic_max: isize,
         method: &PeierlsFourierMethod,
     ) -> FloquetHarmonicCache {
         let nsta = self.nsta();
         let norb = self.norb();
         let n_r = self.hamR.nrows();
-        let q_count = (q_max - q_min + 1) as usize;
-        let mut blocks = Array4::<Complex<f64>>::zeros((q_count, n_r, nsta, nsta));
+        let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
+        let mut blocks = Array4::<Complex<f64>>::zeros((harmonic_count, n_r, nsta, nsta));
 
         if drive.modes.is_empty() {
-            if q_min <= 0 && 0 <= q_max {
+            if harmonic_min <= 0 && 0 <= harmonic_max {
                 blocks
-                    .slice_mut(s![(0 - q_min) as usize, .., .., ..])
+                    .slice_mut(s![(0 - harmonic_min) as usize, .., .., ..])
                     .assign(&self.ham);
             }
             return FloquetHarmonicCache {
-                q_min,
-                q_max,
+                harmonic_min,
+                harmonic_max,
                 blocks,
             };
         }
@@ -1477,9 +1480,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // sizes its own per-link fallback grid from the link's bandwidth, so
         // no eager grid is allocated on that path.
         let time_grid = match method {
-            PeierlsFourierMethod::TimeGrid => {
-                Some(FloquetTimeGrid::new(drive, trunc, q_min, q_max, DIM))
-            }
+            PeierlsFourierMethod::TimeGrid => Some(FloquetTimeGrid::new(
+                drive,
+                trunc,
+                harmonic_min,
+                harmonic_max,
+                DIM,
+            )),
             PeierlsFourierMethod::Bessel { .. } => None,
         };
         // Per-call warn-once flag: the parallel loop below may hit the
@@ -1492,7 +1499,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .par_iter()
             .map(|d| match method {
                 PeierlsFourierMethod::Bessel { cutoff_margin } => {
-                    match bessel_peierls_coeffs(d, drive, q_min, q_max, *cutoff_margin) {
+                    match bessel_peierls_coeffs(
+                        d,
+                        drive,
+                        harmonic_min,
+                        harmonic_max,
+                        *cutoff_margin,
+                    ) {
                         Ok(coeffs) => coeffs,
                         Err(error) => {
                             if !fallback_warned.swap(true, Ordering::Relaxed) {
@@ -1505,8 +1518,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             fallback_time_grid_coeffs(
                                 d,
                                 drive,
-                                q_min,
-                                q_max,
+                                harmonic_min,
+                                harmonic_max,
                                 DIM,
                                 &fallback_clamped,
                                 &fallback_saturated,
@@ -1518,7 +1531,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     let time_grid = time_grid
                         .as_ref()
                         .expect("shared time grid is built for the TimeGrid backend");
-                    Array1::from(peierls_fourier_coeffs(d, q_min, q_max, drive, time_grid))
+                    Array1::from(peierls_fourier_coeffs(
+                        d,
+                        harmonic_min,
+                        harmonic_max,
+                        drive,
+                        time_grid,
+                    ))
                 }
             })
             .collect();
@@ -1526,48 +1545,48 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // Phase 3: fill the blocks.
         for (i_r, i, j, d_index) in entries {
             let t = self.ham[[i_r, i, j]];
-            for (iq, coeff) in coeffs_per_d[d_index].iter().enumerate() {
+            for (i_n, coeff) in coeffs_per_d[d_index].iter().enumerate() {
                 if coeff.norm_sqr() != 0.0 {
-                    blocks[[iq, i_r, i, j]] = t * coeff;
+                    blocks[[i_n, i_r, i, j]] = t * coeff;
                 }
             }
         }
 
         FloquetHarmonicCache {
-            q_min,
-            q_max,
+            harmonic_min,
+            harmonic_max,
             blocks,
         }
     }
 
-    /// Build the `q`-th Fourier block `H^(q)(k)` from the precomputed cache.
+    /// Build the `n`-th Fourier block `H^(n)(k)` from the precomputed cache.
     ///
-    /// For each R-vector, multiplies the cached block `t * C_q(d)` by the Bloch
+    /// For each R-vector, multiplies the cached block `t * C_n(d)` by the Bloch
     /// phase `exp(2πi k·R)` via `zaxpy`.  The [`Gauge`] selects between the
     /// lattice gauge (raw Fourier sum) and the atom gauge (with orbital-position
     /// phases applied).
     fn floquet_cached_harmonic_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-        q: isize,
+        n: isize,
         gauge: Gauge,
         harmonic_cache: &FloquetHarmonicCache,
     ) -> Array2<Complex<f64>> {
         let nsta = self.nsta();
-        let mut hamq = Array2::<Complex<f64>>::zeros((nsta, nsta));
-        let iq = harmonic_cache.q_index(q);
-        let hamq_slice = hamq.as_slice_mut().unwrap();
+        let mut ham_n = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        let i_n = harmonic_cache.harmonic_index(n);
+        let ham_n_slice = ham_n.as_slice_mut().unwrap();
 
         for i_r in 0..self.hamR.nrows() {
             let r_vec = self.hamR.row(i_r);
             let bloch = bloch_phase::<DIM, S>(&r_vec, kvec);
-            let block = harmonic_cache.blocks.slice(s![iq, i_r, .., ..]);
-            crate::ndarray_lapack::zaxpy(bloch, block.as_slice().unwrap(), hamq_slice);
+            let block = harmonic_cache.blocks.slice(s![i_n, i_r, .., ..]);
+            crate::ndarray_lapack::zaxpy(bloch, block.as_slice().unwrap(), ham_n_slice);
         }
 
         match gauge {
-            Gauge::Lattice => hamq,
-            Gauge::Atom => self.apply_atom_gauge(kvec, hamq),
+            Gauge::Lattice => ham_n,
+            Gauge::Atom => self.apply_atom_gauge(kvec, ham_n),
         }
     }
 
@@ -1723,9 +1742,12 @@ fn validate_floquet_drive<const DIM: usize>(
     Ok(())
 }
 
-fn effective_q_max(options: &FloquetEffectiveOptions, trunc: &FloquetTruncation) -> Result<isize> {
-    let q_max = match options.q_max {
-        Some(q_max) => q_max,
+fn effective_harmonic_max(
+    options: &FloquetEffectiveOptions,
+    trunc: &FloquetTruncation,
+) -> Result<isize> {
+    let harmonic_max = match options.harmonic_max {
+        Some(harmonic_max) => harmonic_max,
         None => trunc.n_max.checked_mul(2).ok_or_else(|| {
             TbError::Other(
                 "FloquetTruncation.n_max is too large for the default effective harmonic cutoff"
@@ -1733,21 +1755,21 @@ fn effective_q_max(options: &FloquetEffectiveOptions, trunc: &FloquetTruncation)
             )
         })?,
     };
-    if q_max < 0 {
+    if harmonic_max < 0 {
         return Err(TbError::Other(format!(
-            "FloquetEffectiveOptions.q_max must be non-negative, got {q_max}"
+            "FloquetEffectiveOptions.harmonic_max must be non-negative, got {harmonic_max}"
         )));
     }
-    Ok(q_max)
+    Ok(harmonic_max)
 }
 
-fn effective_cache_max(order: usize, q_max: isize) -> Result<isize> {
+fn effective_cache_max(order: usize, harmonic_max: isize) -> Result<isize> {
     match order {
         0 => Ok(0),
-        1 => Ok(q_max),
-        2 => q_max.checked_mul(2).ok_or_else(|| {
+        1 => Ok(harmonic_max),
+        2 => harmonic_max.checked_mul(2).ok_or_else(|| {
             TbError::Other(
-                "FloquetEffectiveOptions.q_max is too large for the order-2 harmonic range"
+                "FloquetEffectiveOptions.harmonic_max is too large for the order-2 harmonic range"
                     .to_string(),
             )
         }),
@@ -1756,14 +1778,14 @@ fn effective_cache_max(order: usize, q_max: isize) -> Result<isize> {
 }
 
 fn validate_effective_cache_layout(cache_max: isize, n_r: usize, nsta: usize) -> Result<()> {
-    let q_count = cache_max
+    let harmonic_count = cache_max
         .checked_mul(2)
         .and_then(|value| value.checked_add(1))
         .and_then(|value| usize::try_from(value).ok())
         .ok_or_else(|| {
             TbError::Other("the effective harmonic range is too large to index safely".to_string())
         })?;
-    let elements = q_count
+    let elements = harmonic_count
         .checked_mul(n_r)
         .and_then(|value| value.checked_mul(nsta))
         .and_then(|value| value.checked_mul(nsta))
@@ -1850,10 +1872,10 @@ fn validate_effective_options<const DIM: usize>(
             )));
         }
     }
-    if let Some(q_max) = options.q_max {
-        if q_max < 0 {
+    if let Some(harmonic_max) = options.harmonic_max {
+        if harmonic_max < 0 {
             return Err(TbError::Other(format!(
-                "FloquetEffectiveOptions.q_max must be non-negative, got {q_max}"
+                "FloquetEffectiveOptions.harmonic_max must be non-negative, got {harmonic_max}"
             )));
         }
     }
@@ -1983,30 +2005,30 @@ fn bessel_adaptive_m_cap(r: f64, error_share: f64, margin: isize) -> isize {
     m_cap.min(4096)
 }
 
-/// Peierls Fourier coefficients `C_q(d)` via the generalized Bessel
-/// expansion, for `q ∈ [q_min, q_max]`.
+/// Peierls Fourier coefficients `C_n(d)` via the generalized Bessel
+/// expansion, for `n ∈ [harmonic_min, harmonic_max]`.
 ///
 /// For a drive `a(t) = Re Σ_α a_α e^{−i l_α Ω₀ t}` each mode contributes a
 /// scalar pair `z_α = a_α·d = R_α e^{iδ_α}` per link displacement `d`, and
 /// the Jacobi–Anger expansion of the factorized Peierls exponential gives
 ///
 /// ```math
-/// C_q(d) = \sum_{\{m_α\} : Σ_α l_α m_α = -q}
+/// C_n(d) = \sum_{\{m_α\} : Σ_α l_α m_α = -n}
 ///          \prod_α (-i)^{m_α} J_{m_α}(R_α)\, e^{-i m_α δ_α}.
 /// ```
 ///
-/// (Resonance `q + Σ l m = 0`; the equivalent form `Σ l m = +q` with phase
+/// (Resonance `n + Σ l m = 0`; the equivalent form `Σ l m = +n` with phase
 /// `e^{+imδ}` must not be mixed in.)  The multi-index sum is evaluated as a
 /// sequence of one-mode discrete convolutions
 ///
 /// ```math
-/// S^{(0)}_q = δ_{q,0},\qquad
-/// S^{(α)}_q = \sum_{m=-M_α}^{M_α} S^{(α-1)}_{q + l_α m}\, B_α(m),
+/// S^{(0)}_n = δ_{n,0},\qquad
+/// S^{(α)}_n = \sum_{m=-M_α}^{M_α} S^{(α-1)}_{n + l_α m}\, B_α(m),
 /// \qquad
 /// B_α(m) = (-i)^m J_m(R_α)\, e^{-imδ_α},
 /// ```
 ///
-/// which costs `O(N_mode · N_q · M_avg)` — independent of the time-grid
+/// which costs `O(N_mode · N_n · M_avg)` — independent of the time-grid
 /// size.  Each mode's cutoff `M_α` is chosen adaptively so the truncated
 /// tail `Σ_{|m|>M_α} |J_m(R_α)|` stays below a per-mode error share
 /// (`1e-12 / N_mode`), with `cutoff_margin` as an additional minimum.
@@ -2021,30 +2043,30 @@ fn bessel_adaptive_m_cap(r: f64, error_share: f64, margin: isize) -> isize {
 /// # Arguments
 /// * `d` - real link displacement (Cartesian, length `DIM`).
 /// * `drive` - the light drive (modes `(l_α, a_α)`, base frequency `Ω₀`).
-/// * `q_min`, `q_max` - inclusive harmonic range to return.
+/// * `harmonic_min`, `harmonic_max` - inclusive harmonic range to return.
 /// * `cutoff_margin` - minimum number of Bessel orders beyond `⌈R_α⌉`,
 ///   in `0..=48` (the adaptive tail check may push `M_α` higher; only
 ///   lower bounded by this).
 ///
 /// # Returns
-/// `C_q(d)` for `q = q_min..=q_max` as an [`Array1<Complex<f64>>`] of
-/// length `q_max - q_min + 1`.
+/// `C_n(d)` for `n = harmonic_min..=harmonic_max` as an [`Array1<Complex<f64>>`] of
+/// length `harmonic_max - harmonic_min + 1`.
 ///
 /// # Errors
-/// Returns [`TbError::Other`] when `q_min > q_max`, when `cutoff_margin`
+/// Returns [`TbError::Other`] when `harmonic_min > harmonic_max`, when `cutoff_margin`
 /// is outside `0..=48`, when any mode amplitude `R_α` exceeds 8 (the
 /// caller must fall back to the time-grid backend), or when the harmonic
 /// range / working window would overflow `isize`.
 pub(crate) fn bessel_peierls_coeffs(
     d: &Array1<f64>,
     drive: &FloquetDrive,
-    q_min: isize,
-    q_max: isize,
+    harmonic_min: isize,
+    harmonic_max: isize,
     cutoff_margin: isize,
 ) -> Result<Array1<Complex<f64>>> {
-    if q_min > q_max {
+    if harmonic_min > harmonic_max {
         return Err(TbError::Other(format!(
-            "bessel_peierls_coeffs: empty harmonic range [{q_min}, {q_max}]"
+            "bessel_peierls_coeffs: empty harmonic range [{harmonic_min}, {harmonic_max}]"
         )));
     }
     if !(0..=48).contains(&cutoff_margin) {
@@ -2052,17 +2074,17 @@ pub(crate) fn bessel_peierls_coeffs(
             "bessel_peierls_coeffs: cutoff_margin = {cutoff_margin} outside [0, 48]"
         )));
     }
-    // q_max >= q_min here, so the span is non-negative; checked_sub guards
+    // harmonic_max >= harmonic_min here, so the span is non-negative; checked_sub guards
     // the isize::MIN..=isize::MAX range against overflow.
-    let q_count = q_max.checked_sub(q_min).ok_or_else(|| {
+    let harmonic_count = harmonic_max.checked_sub(harmonic_min).ok_or_else(|| {
         TbError::Other("bessel_peierls_coeffs: harmonic range too wide".to_string())
     })? as usize
         + 1;
     // Empty drive: the Peierls exponential is 1, so only C_0 survives.
     if drive.modes.is_empty() {
-        let mut coeffs = Array1::<Complex<f64>>::zeros(q_count);
-        if q_min <= 0 && 0 <= q_max {
-            coeffs[(0 - q_min) as usize] = Complex::new(1.0, 0.0);
+        let mut coeffs = Array1::<Complex<f64>>::zeros(harmonic_count);
+        if harmonic_min <= 0 && 0 <= harmonic_max {
+            coeffs[(0 - harmonic_min) as usize] = Complex::new(1.0, 0.0);
         }
         return Ok(coeffs);
     }
@@ -2127,15 +2149,15 @@ pub(crate) fn bessel_peierls_coeffs(
     }
 
     // Second pass: the working window must cover the actual reachable
-    // support [−drift, +drift] around [q_min, q_max], because intermediates
+    // support [−drift, +drift] around [harmonic_min, harmonic_max], because intermediates
     // outside the requested range can fold back into it.
-    let work_min = q_min.checked_sub(total_drift).ok_or_else(|| {
+    let work_min = harmonic_min.checked_sub(total_drift).ok_or_else(|| {
         TbError::Other("bessel_peierls_coeffs: working window underflow".to_string())
     })?;
-    let work_max = q_max.checked_add(total_drift).ok_or_else(|| {
+    let work_max = harmonic_max.checked_add(total_drift).ok_or_else(|| {
         TbError::Other("bessel_peierls_coeffs: working window overflow".to_string())
     })?;
-    // work_max >= work_min by construction (q_max >= q_min, drift >= 0), so
+    // work_max >= work_min by construction (harmonic_max >= harmonic_min, drift >= 0), so
     // the span is non-negative; checked_sub and usize::try_from are kept
     // for hygiene.
     let work_span = work_max.checked_sub(work_min).ok_or_else(|| {
@@ -2175,16 +2197,16 @@ pub(crate) fn bessel_peierls_coeffs(
             minus_i_power *= Complex::new(0.0, -1.0); // times (-i)
         }
 
-        // Fold: S'_q = Σ_m S_{q + l·m} B(m).
+        // Fold: S'_n = Σ_m S_{n + l·m} B(m).
         let mut next = vec![Complex::new(0.0, 0.0); work_len];
         for &(m, weight) in &b {
             let shift = mode.harmonic * m;
             for (index, _) in sequence.iter().enumerate() {
-                let q = work_min + index as isize;
+                let n = work_min + index as isize;
                 // Sources outside the working window contribute nothing;
-                // checked arithmetic also skips the (q, m) pairs whose
+                // checked arithmetic also skips the (n, m) pairs whose
                 // source would leave the isize range entirely.
-                let Some(source) = q.checked_add(shift) else {
+                let Some(source) = n.checked_add(shift) else {
                     continue;
                 };
                 let Some(source_index) = source.checked_sub(work_min) else {
@@ -2199,35 +2221,36 @@ pub(crate) fn bessel_peierls_coeffs(
     }
 
     Ok(Array1::from(
-        sequence[(q_min - work_min) as usize..(q_max - work_min + 1) as usize].to_vec(),
+        sequence[(harmonic_min - work_min) as usize..(harmonic_max - work_min + 1) as usize]
+            .to_vec(),
     ))
 }
 
 fn peierls_fourier_coeffs(
     d_cart: &Array1<f64>,
-    q_min: isize,
-    q_max: isize,
+    harmonic_min: isize,
+    harmonic_max: isize,
     drive: &FloquetDrive,
     time_grid: &FloquetTimeGrid,
 ) -> Vec<Complex<f64>> {
-    let q_count = (q_max - q_min + 1) as usize;
+    let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
     if drive.modes.is_empty() {
-        let mut coeffs = vec![Complex::new(0.0, 0.0); q_count];
-        if q_min <= 0 && 0 <= q_max {
-            coeffs[(0 - q_min) as usize] = Complex::new(1.0, 0.0);
+        let mut coeffs = vec![Complex::new(0.0, 0.0); harmonic_count];
+        if harmonic_min <= 0 && 0 <= harmonic_max {
+            coeffs[(0 - harmonic_min) as usize] = Complex::new(1.0, 0.0);
         }
         return coeffs;
     }
 
-    let mut coeffs = vec![Complex::new(0.0, 0.0); q_count];
+    let mut coeffs = vec![Complex::new(0.0, 0.0); harmonic_count];
     for it in 0..time_grid.link_field.nrows() {
         let mut link_phase = 0.0;
         for a in 0..d_cart.len() {
             link_phase += time_grid.link_field[[it, a]] * d_cart[a];
         }
         let peierls = Complex::new(0.0, -link_phase).exp();
-        for (iq, coeff) in coeffs.iter_mut().enumerate() {
-            *coeff += time_grid.fourier[[iq, it]] * peierls;
+        for (i_n, coeff) in coeffs.iter_mut().enumerate() {
+            *coeff += time_grid.fourier[[i_n, it]] * peierls;
         }
     }
     for coeff in &mut coeffs {
@@ -2245,7 +2268,7 @@ struct FallbackGridSize {
     n_req: usize,
     /// Signal-bandwidth Nyquist term `2·Σ_α |l_α|·M_α + 4`.
     required: usize,
-    /// Requested-range Nyquist term `2·max(|q_min|, |q_max|) + 1`.
+    /// Requested-range Nyquist term `2·max(|harmonic_min|, |harmonic_max|) + 1`.
     request_range: usize,
     /// The unclamped size exceeded [`FALLBACK_GRID_MAX`].
     clamped: bool,
@@ -2255,18 +2278,18 @@ struct FallbackGridSize {
 }
 
 /// Size the alias-free fallback grid: `max(2·Σ_α |l_α|·M_α + 4,
-/// 2·max(|q_min|, |q_max|) + 1)`, clamped to [`FALLBACK_GRID_MAX`].  The
+/// 2·max(|harmonic_min|, |harmonic_max|) + 1)`, clamped to [`FALLBACK_GRID_MAX`].  The
 /// first term resolves the link's signal bandwidth, the second the
 /// requested harmonic range: an n-point DFT returns the aliased sum
-/// `Σ_m C_{q+mn}`, which equals the true `C_q` only for `|q| < n/2`, so
-/// every requested bin needs `n ≥ 2·max(|q_min|, |q_max|) + 1`.  Kept
+/// `Σ_m C_{n+mn}`, which equals the true `C_n` only for `|n| < n/2`, so
+/// every requested bin needs `n ≥ 2·max(|harmonic_min|, |harmonic_max|) + 1`.  Kept
 /// separate from the DFT so tests can pin the exact sizing, the clamp,
 /// and the saturation flag.
 fn fallback_grid_size(
     drive: &FloquetDrive,
     d: &Array1<f64>,
-    q_min: isize,
-    q_max: isize,
+    harmonic_min: isize,
+    harmonic_max: isize,
 ) -> FallbackGridSize {
     // Nyquist bandwidth of the Peierls exponential on this link.
     let mut bandwidth = 0_usize;
@@ -2310,8 +2333,8 @@ fn fallback_grid_size(
         bandwidth = bandwidth.saturating_add(drift);
     }
     let required = bandwidth.saturating_mul(2).saturating_add(4);
-    let q_max_abs = q_min.unsigned_abs().max(q_max.unsigned_abs());
-    let request_range = (2_usize).saturating_mul(q_max_abs).saturating_add(1);
+    let harmonic_max_abs = harmonic_min.unsigned_abs().max(harmonic_max.unsigned_abs());
+    let request_range = (2_usize).saturating_mul(harmonic_max_abs).saturating_add(1);
     let mut n_req = required.max(request_range);
     let mut clamped = false;
     if n_req > FALLBACK_GRID_MAX {
@@ -2353,13 +2376,13 @@ fn fallback_grid_size(
 fn fallback_time_grid_coeffs(
     d: &Array1<f64>,
     drive: &FloquetDrive,
-    q_min: isize,
-    q_max: isize,
+    harmonic_min: isize,
+    harmonic_max: isize,
     dim: usize,
     clamped: &AtomicBool,
     saturated: &AtomicBool,
 ) -> Array1<Complex<f64>> {
-    let size = fallback_grid_size(drive, d, q_min, q_max);
+    let size = fallback_grid_size(drive, d, harmonic_min, harmonic_max);
     if size.clamped && !clamped.swap(true, Ordering::Relaxed) {
         eprintln!(
             "Floquet fallback grid clamped to {FALLBACK_GRID_MAX} time points \
@@ -2379,11 +2402,11 @@ fn fallback_time_grid_coeffs(
         );
     }
     let n_req = size.n_req;
-    // Direct DFT at the fine resolution (no shared q_count × n_time
+    // Direct DFT at the fine resolution (no shared harmonic_count × n_time
     // Fourier matrix to reuse).
-    let q_count = (q_max - q_min + 1) as usize;
+    let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
     let inv_n = 1.0 / (n_req as f64);
-    let mut coeffs = vec![Complex::new(0.0, 0.0); q_count];
+    let mut coeffs = vec![Complex::new(0.0, 0.0); harmonic_count];
     for it in 0..n_req {
         let theta = TAU * (it as f64) * inv_n;
         let mut link_phase = 0.0;
@@ -2394,8 +2417,8 @@ fn fallback_time_grid_coeffs(
             }
         }
         let peierls = Complex::new(0.0, -link_phase).exp();
-        for (iq, q) in (q_min..=q_max).enumerate() {
-            coeffs[iq] += Complex::new(0.0, (q as f64) * theta).exp() * peierls;
+        for (i_n, n) in (harmonic_min..=harmonic_max).enumerate() {
+            coeffs[i_n] += Complex::new(0.0, (n as f64) * theta).exp() * peierls;
         }
     }
     for coeff in &mut coeffs {
@@ -2535,8 +2558,8 @@ fn merge_real_space_block_maps(
     left
 }
 
-/// Real-space commutator blocks `comm_q(R) = (AB)(R) − (BA)(R)` for the
-/// harmonic pair `A_R = T_q(R)` and `B_R = T_{−q}(R)` (see
+/// Real-space commutator blocks `comm_n(R) = (AB)(R) − (BA)(R)` for the
+/// harmonic pair `A_R = T_n(R)` and `B_R = T_{−n}(R)` (see
 /// `FLOQUET_REAL_SPACE_PLAN.md` §3):
 ///
 /// ```math
@@ -2938,7 +2961,7 @@ mod tests {
 
     #[test]
     fn bessel_coeffs_match_single_mode_closed_form() {
-        // Single mode l=1: C_q = (-i)^q J_q(R) e^{+iqδ} (verified reduction
+        // Single mode l=1: C_n = (-i)^n J_n(R) e^{+inδ} (verified reduction
         // of the generalized Bessel sum; the +iδ phase is the discriminating
         // one for complex amplitudes).
         let d = array![1.0];
@@ -2951,14 +2974,14 @@ mod tests {
             let r = amplitude[0].norm();
             let delta = amplitude[0].arg();
             let coeffs = bessel_peierls_coeffs(&d, &drive, -6, 6, 6).unwrap();
-            for q in -6..=6 {
-                let expected = Complex::from_polar(1.0, -(q as f64) * std::f64::consts::FRAC_PI_2)
-                    * bessel_j(q, r)
-                    * Complex::from_polar(1.0, (q as f64) * delta);
-                let got = coeffs[(q + 6) as usize];
+            for n in -6..=6 {
+                let expected = Complex::from_polar(1.0, -(n as f64) * std::f64::consts::FRAC_PI_2)
+                    * bessel_j(n, r)
+                    * Complex::from_polar(1.0, (n as f64) * delta);
+                let got = coeffs[(n + 6) as usize];
                 assert!(
                     (got - expected).norm() < 1e-13,
-                    "{name}: C_{q} = {got}, closed form {expected}"
+                    "{name}: C_{n} = {got}, closed form {expected}"
                 );
             }
         }
@@ -3001,17 +3024,22 @@ mod tests {
             ),
         ];
         for (case, drive) in cases.iter().enumerate() {
-            let q_min = -5_isize;
-            let q_max = 5_isize;
-            let bessel = bessel_peierls_coeffs(&d, drive, q_min, q_max, 6).unwrap();
-            let time_grid =
-                FloquetTimeGrid::new(drive, &FloquetTruncation::new(3, 512), q_min, q_max, 2);
-            let dft = peierls_fourier_coeffs(&d, q_min, q_max, drive, &time_grid);
-            for (q, (got, expected)) in bessel.iter().zip(dft.iter()).enumerate() {
+            let harmonic_min = -5_isize;
+            let harmonic_max = 5_isize;
+            let bessel = bessel_peierls_coeffs(&d, drive, harmonic_min, harmonic_max, 6).unwrap();
+            let time_grid = FloquetTimeGrid::new(
+                drive,
+                &FloquetTruncation::new(3, 512),
+                harmonic_min,
+                harmonic_max,
+                2,
+            );
+            let dft = peierls_fourier_coeffs(&d, harmonic_min, harmonic_max, drive, &time_grid);
+            for (n, (got, expected)) in bessel.iter().zip(dft.iter()).enumerate() {
                 assert!(
                     (got - expected).norm() < 1e-10,
-                    "case {case}, q={}: Bessel {got} vs DFT {expected}",
-                    q_min + q as isize
+                    "case {case}, n={}: Bessel {got} vs DFT {expected}",
+                    harmonic_min + n as isize
                 );
             }
         }
@@ -3022,13 +3050,13 @@ mod tests {
         let d = array![0.5];
         let drive = FloquetDrive::new(1.0);
         let coeffs = bessel_peierls_coeffs(&d, &drive, -3, 3, 6).unwrap();
-        for q in -3..=3 {
-            let expected = if q == 0 {
+        for n in -3..=3 {
+            let expected = if n == 0 {
                 Complex::new(1.0, 0.0)
             } else {
                 Complex::new(0.0, 0.0)
             };
-            assert!((coeffs[(q + 3) as usize] - expected).norm() < 1e-15);
+            assert!((coeffs[(n + 3) as usize] - expected).norm() < 1e-15);
         }
     }
 
@@ -3195,9 +3223,9 @@ mod tests {
         }
 
         // Physical anchor: the block stores t·C_0 with t = -1, so its
-        // q = 0 entry on the r = 50 link is -J_0(50).
+        // n = 0 entry on the r = 50 link is -J_0(50).
         let i_r_link = find_R(&model.hamR, &array![0, 1]).unwrap();
-        let c0 = bessel_cache.blocks[[bessel_cache.q_index(0), i_r_link, 0, 1]];
+        let c0 = bessel_cache.blocks[[bessel_cache.harmonic_index(0), i_r_link, 0, 1]];
         assert!(
             (c0 - Complex::new(-bessel_j(0, 50.0), 0.0)).norm() < 1e-10,
             "C_0 on the r = 50 link should be -J_0(50) (t = -1), got {c0}"
@@ -3214,7 +3242,7 @@ mod tests {
         //
         // The requested harmonic range [-110, 110] (n_max = 55) exceeds the
         // fallback link's bandwidth half-grid (required/2 = 59), so a
-        // bandwidth-only grid would alias bins near q = 110 — exactly the
+        // bandwidth-only grid would alias bins near n = 110 — exactly the
         // regime where the removed shared-grid branch used to hide the
         // difference behind a large user-chosen n_time.
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
@@ -3261,12 +3289,12 @@ mod tests {
     fn harmonic_cache_bessel_fallback_resolves_requested_range() {
         // The per-link fallback DFT must also resolve the requested
         // harmonic range, not just the signal bandwidth: an n-point DFT
-        // returns Σ_m C_{q+mn}, so bins with |q| >= n_req/2 fold genuine
+        // returns Σ_m C_{n+mn}, so bins with |n| >= n_req/2 fold genuine
         // low-order coefficients in.  For the l = 1, R = 9 link below the
         // bandwidth-only grid has n_req = 118 and corrupts bins
-        // q ∈ [103, 110] at the J_{118-q}(9) level (up to ~0.3); sizing the
+        // n ∈ [103, 110] at the J_{118-n}(9) level (up to ~0.3); sizing the
         // grid to the requested range [-110, 110] keeps every requested bin
-        // alias-free, and the true C_q for q > 57 is exponentially small.
+        // alias-free, and the true C_n for n > 57 is exponentially small.
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
         let orb = array![[0.0, 0.0], [10.0, 0.0]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
@@ -3288,15 +3316,15 @@ mod tests {
             &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
         );
         let i_r_link = find_R(&model.hamR, &array![0, 1]).unwrap();
-        // q beyond the signal bandwidth (57 for R = 9, l = 1) must vanish:
+        // n beyond the signal bandwidth (57 for R = 9, l = 1) must vanish:
         // |C_60| ~ J_60(9) ~ 1e-45, and the grid (n_req = 221) folds only
-        // coefficients with |q ± n_req| >= 111 (min |110 − 221|), also
+        // coefficients with |n ± n_req| >= 111 (min |110 − 221|), also
         // exponentially small.
-        for q in 60..=110 {
-            let coeff = cache.blocks[[cache.q_index(q), i_r_link, 0, 1]];
+        for n in 60..=110 {
+            let coeff = cache.blocks[[cache.harmonic_index(n), i_r_link, 0, 1]];
             assert!(
                 coeff.norm() < 1e-10,
-                "C_{q} on the fallback link must be ~0 (beyond the signal \
+                "C_{n} on the fallback link must be ~0 (beyond the signal \
                  bandwidth), got {coeff}"
             );
         }
@@ -3357,7 +3385,7 @@ mod tests {
         assert_eq!(s.n_req, 118); // 2·57 + 4
         assert!(!s.clamped && !s.saturated);
 
-        // Request-dominant: 2·max(|q_min|,|q_max|) + 1 exceeds the
+        // Request-dominant: 2·max(|harmonic_min|,|harmonic_max|) + 1 exceeds the
         // bandwidth term.
         let s = fallback_grid_size(&drive, &d, -100, 100);
         assert_eq!(s.n_req, 201);
@@ -3433,7 +3461,7 @@ mod tests {
         }
     }
 
-    /// Build the `q = ±1` harmonic blocks of a spinless model and return
+    /// Build the `n = ±1` harmonic blocks of a spinless model and return
     /// them aligned with `model.hamR`, together with the cache itself.
     fn commutator_test_blocks<const DIM: usize>(
         model: &Model<false, DIM, NoRMatrix>,
@@ -3452,13 +3480,13 @@ mod tests {
             &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
         );
         let n_r = model.hamR.nrows();
-        let q1 = cache.q_index(1);
-        let qm1 = cache.q_index(-1);
+        let n1 = cache.harmonic_index(1);
+        let nm1 = cache.harmonic_index(-1);
         let a_blocks = (0..n_r)
-            .map(|i_r| cache.blocks.slice(s![q1, i_r, .., ..]).to_owned())
+            .map(|i_r| cache.blocks.slice(s![n1, i_r, .., ..]).to_owned())
             .collect();
         let b_blocks = (0..n_r)
-            .map(|i_r| cache.blocks.slice(s![qm1, i_r, .., ..]).to_owned())
+            .map(|i_r| cache.blocks.slice(s![nm1, i_r, .., ..]).to_owned())
             .collect();
         (cache, a_blocks, b_blocks)
     }
@@ -3855,7 +3883,7 @@ mod tests {
             ],
         );
         let trunc = FloquetTruncation::new(2, 4096);
-        let options = FloquetEffectiveOptions::new().with_q_max(4);
+        let options = FloquetEffectiveOptions::new().with_harmonic_max(4);
         let bessel = model
             .floquet_effective_model(&drive, &trunc, Some(&options))
             .unwrap();
@@ -3899,7 +3927,9 @@ mod tests {
             ],
         );
         let trunc = FloquetTruncation::new(2, 4096);
-        let options = FloquetEffectiveOptions::new().with_order(2).with_q_max(2);
+        let options = FloquetEffectiveOptions::new()
+            .with_order(2)
+            .with_harmonic_max(2);
         let serial_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
@@ -4006,7 +4036,7 @@ mod tests {
             array![Complex::new(0.23, 0.04), Complex::new(-0.02, 0.19)],
         );
         let trunc = FloquetTruncation::new(8, 4096);
-        let base_options = FloquetEffectiveOptions::new().with_q_max(8);
+        let base_options = FloquetEffectiveOptions::new().with_harmonic_max(8);
         let mut first_order_errors = Vec::new();
         let mut second_order_errors = Vec::new();
 
@@ -4192,18 +4222,18 @@ mod tests {
                 )
                 .is_err()
         );
-        // negative q_max.
+        // negative harmonic_max.
         assert!(
             model
                 .floquet_effective_model(
                     &drive,
                     &trunc,
-                    Some(&FloquetEffectiveOptions::new().with_q_max(-1))
+                    Some(&FloquetEffectiveOptions::new().with_harmonic_max(-1))
                 )
                 .is_err()
         );
 
-        // An order-2 symmetric cache needs 4*q_max+1 harmonics.  Reject an
+        // An order-2 symmetric cache needs 4*harmonic_max+1 harmonics.  Reject an
         // unrepresentable inclusive range before ndarray arithmetic/allocation.
         let range_error = model
             .floquet_effective_model(
@@ -4212,7 +4242,7 @@ mod tests {
                 Some(
                     &FloquetEffectiveOptions::new()
                         .with_order(2)
-                        .with_q_max(isize::MAX / 2),
+                        .with_harmonic_max(isize::MAX / 2),
                 ),
             )
             .unwrap_err();
@@ -4233,7 +4263,11 @@ mod tests {
             .floquet_effective_model(
                 &tiny_frequency_drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(1)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(1),
+                ),
             )
             .unwrap();
         assert!(
@@ -4257,7 +4291,11 @@ mod tests {
             .floquet_effective_model(
                 &matrix_drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(1)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(1),
+                ),
             )
             .unwrap_err();
         assert!(
@@ -4269,7 +4307,11 @@ mod tests {
                 &tiny_frequency_drive,
                 &trunc,
                 [8],
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(1)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(1),
+                ),
             )
             .unwrap();
         let legacy_scale_error = matrix_model
@@ -4277,7 +4319,11 @@ mod tests {
                 &matrix_drive,
                 &trunc,
                 [4, 4],
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(1)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(1),
+                ),
             )
             .unwrap_err();
         assert!(
@@ -4287,13 +4333,17 @@ mod tests {
             "unexpected legacy error: {legacy_scale_error}"
         );
 
-        // q_max=0 never evaluates inverse-frequency corrections and remains
+        // harmonic_max=0 never evaluates inverse-frequency corrections and remains
         // well-defined even at the same tiny frequency.
         let zero_cutoff = model
             .floquet_effective_model(
                 &tiny_frequency_drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(0)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(0),
+                ),
             )
             .unwrap();
         assert!(
@@ -4396,7 +4446,11 @@ mod tests {
             .floquet_effective_model(
                 &tiny_drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_order(2).with_q_max(1)),
+                Some(
+                    &FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(1),
+                ),
             )
             .unwrap();
         assert!(
@@ -4415,10 +4469,10 @@ mod tests {
             (-3..=3).map(|r| vec![r]).collect::<Vec<_>>()
         );
 
-        // Equivalent non-dynamic representations use the same q-independent
+        // Equivalent non-dynamic representations use the same n-independent
         // path: a zero mode, exactly cancelling ±frequency amplitudes, and a
-        // purely static harmonic.  A huge q_max must not create a huge cache
-        // or repeat the same support construction q_max^2 times.
+        // purely static harmonic.  A huge harmonic_max must not create a huge cache
+        // or repeat the same support construction harmonic_max^2 times.
         let non_dynamic_drives = [
             FloquetDrive::with_modes(
                 1e-200,
@@ -4438,7 +4492,7 @@ mod tests {
         ];
         let large_cutoff = FloquetEffectiveOptions::new()
             .with_order(2)
-            .with_q_max(1000);
+            .with_harmonic_max(1000);
         for equivalent_drive in non_dynamic_drives {
             let effective = model
                 .floquet_effective_model(&equivalent_drive, &trunc, Some(&large_cutoff))
@@ -4559,7 +4613,7 @@ mod tests {
     /// Literature Fourier component for right-handed circular light
     /// (arXiv:1511.00755 conventions):
     /// `q_n(k) = J·J_n(α)·Σ_l e^{−ik·e_l} e^{i2πnl/3}` with the matrix
-    /// `H_n = [[0, q_n], [q*_{−n}, 0]]`.  The literature `k` is the
+    /// `H_n = [[0, q_n], [n*_{−n}, 0]]`.  The literature `k` is the
     /// Cartesian wavevector; with fractional `k` the bond phase is
     /// `k_cart·e_l = 2π·k_frac·R_int` where `R_int` is the integer
     /// lattice vector of the bond (the non-orthonormal `lat` matrix must
@@ -4612,22 +4666,22 @@ mod tests {
             for k in [[0.13, 0.21], [0.5, 0.5], [0.87, 0.11]] {
                 let kvec = array![k[0], k[1]];
                 let k_neg = [-k[0], -k[1]];
-                for q in -4..=4 {
-                    let hq = model.floquet_cached_harmonic_onek(&kvec, q, Gauge::Lattice, &cache);
+                for n in -4..=4 {
+                    let h_n = model.floquet_cached_harmonic_onek(&kvec, n, Gauge::Lattice, &cache);
                     let lit = array![
                         [
                             Complex::new(0.0, 0.0),
-                            graphene_q_n_lit(q, &k_neg, j, alpha),
+                            graphene_q_n_lit(n, &k_neg, j, alpha),
                         ],
                         [
-                            graphene_q_n_lit(-q, &k_neg, j, alpha).conj(),
+                            graphene_q_n_lit(-n, &k_neg, j, alpha).conj(),
                             Complex::new(0.0, 0.0),
                         ],
                     ];
-                    for (a, b) in hq.iter().zip(lit.iter()) {
+                    for (a, b) in h_n.iter().zip(lit.iter()) {
                         assert!(
                             (a - b).norm() < 1e-12,
-                            "alpha = {alpha}, k = {k:?}, q = {q}: {a} vs {b}"
+                            "alpha = {alpha}, k = {k:?}, n = {n}: {a} vs {b}"
                         );
                     }
                 }
@@ -4717,11 +4771,11 @@ mod tests {
         //   d_z(k) = 2·K_eff·Σ_j sin(2πk·b_j),
         //   K_eff  = −(2J²/ħω)·Σ_{n=1..N} J_n²(α)/n · sin(2πn/3),
         //
-        // with N the q_max truncation (n = 3m terms vanish exactly).
+        // with N the harmonic_max truncation (n = 3m terms vanish exactly).
         //
         // Convention note: the van Vleck commutator order here is
-        // [H_q, H_{−q}]/(qħω), opposite to the literature's
-        // [H_{−q}, H_q]/(qħω); combined with our k-convention being the
+        // [H_n, H_{−n}]/(nħω), opposite to the literature's
+        // [H_{−n}, H_n]/(nħω); combined with our k-convention being the
         // literature's mirror (H_n(k) = H_n^lit(−k)) the two sign flips
         // cancel for the TR-odd Haldane term — our d_z(k) equals the
         // literature's pointwise, and the Dirac-point mass reproduces
@@ -4762,14 +4816,14 @@ mod tests {
             .floquet_effective_model(
                 &drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_q_max(8)),
+                Some(&FloquetEffectiveOptions::new().with_harmonic_max(8)),
             )
             .unwrap();
         let eff2 = model
             .floquet_effective_model(
                 &drive,
                 &trunc,
-                Some(&FloquetEffectiveOptions::new().with_q_max(2)),
+                Some(&FloquetEffectiveOptions::new().with_harmonic_max(2)),
             )
             .unwrap();
         for k in [[0.13, 0.07], [0.23, 0.11], [-0.07, 0.31]] {
@@ -4787,7 +4841,7 @@ mod tests {
             );
             assert!(
                 (d_z_2 - d_z_lit(&k, 2)).abs() < 1e-8,
-                "k = {k:?}: q_max = 2: d_z {d_z_2} vs series {}",
+                "k = {k:?}: harmonic_max = 2: d_z {d_z_2} vs series {}",
                 d_z_lit(&k, 2)
             );
             // The neglected tail (n = 3m vanishes; n = 4, 5 are the
@@ -4847,12 +4901,12 @@ mod tests {
             FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(1.0, 0.0)])]);
         assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, 6).is_err());
 
-        // Harmonic ranges that exclude 0 must not panic; q_min > q_max errors.
+        // Harmonic ranges that exclude 0 must not panic; harmonic_min > harmonic_max errors.
         let zero_l =
             FloquetDrive::with_modes(1.0, vec![LightMode::new(0, array![Complex::new(0.1, 0.0)])]);
         let out_of_range = bessel_peierls_coeffs(&d, &zero_l, 5, 7, 6).unwrap();
-        for q in 5..=7 {
-            assert!((out_of_range[(q - 5) as usize]).norm() == 0.0);
+        for n in 5..=7 {
+            assert!((out_of_range[(n - 5) as usize]).norm() == 0.0);
         }
         assert!(bessel_peierls_coeffs(&d, &drive, 3, 2, 6).is_err());
 
@@ -4867,8 +4921,8 @@ mod tests {
     fn bessel_coeffs_large_harmonics_stay_within_error_budget() {
         // Regression for the two-pass window sizing: two modes l = ±400 at
         // r = 8 make e^{-i a(t)·d} = e^{-i·16·cos(400·Ω₀·t)}, whose closed
-        // form is C_q = (-i)^q J_q(16) on bins divisible by 400 and zero
-        // for |q| < 400.  A fixed window capped at 4096 drift units
+        // form is C_n = (-i)^n J_n(16) on bins divisible by 400 and zero
+        // for |n| < 400.  A fixed window capped at 4096 drift units
         // clipped the fold support and got C_0 wrong by ~1e-3 for this
         // drive.
         let d = array![1.0, 0.0];
@@ -4880,26 +4934,26 @@ mod tests {
             ],
         );
         let coeffs = bessel_peierls_coeffs(&d, &drive, -10, 10, 0).unwrap();
-        for q in -10..=10 {
+        for n in -10..=10 {
             // Graf's addition theorem: C_0 = Σ_m (-1)^m J_m(8)² = J_0(16).
-            let expected = if q == 0 { bessel_j(0, 16.0) } else { 0.0 };
-            let got = coeffs[(q + 10) as usize];
+            let expected = if n == 0 { bessel_j(0, 16.0) } else { 0.0 };
+            let got = coeffs[(n + 10) as usize];
             assert!(
                 (got - Complex::new(expected, 0.0)).norm() < 1e-12,
-                "q = {q}: got {got}, expected {expected}"
+                "n = {n}: got {got}, expected {expected}"
             );
         }
     }
 
     #[test]
     fn bessel_coeffs_window_edge_overflows_are_skipped() {
-        // The fold evaluates q + l·m for every (q, m) pair in the working
+        // The fold evaluates n + l·m for every (n, m) pair in the working
         // window; pairs whose source would leave the isize range must be
         // skipped, not panic (they contribute nothing — the source is
         // outside the window).  With l = 400, r = 8 and margin 48 the
         // drift is 400·56 = 22400, so a request near isize::MAX pushes
         // the window's top edge past isize::MAX during the fold.
-        // Regression for the previously unchecked q + shift addition.
+        // Regression for the previously unchecked n + shift addition.
         let d = array![1.0, 0.0];
         let drive = FloquetDrive::with_modes(
             1.0,
@@ -4908,10 +4962,10 @@ mod tests {
                 array![Complex::new(8.0, 0.0), Complex::new(0.0, 0.0)],
             )],
         );
-        let q = isize::MAX - 23_999;
-        let coeffs = bessel_peierls_coeffs(&d, &drive, q, q, 48).unwrap();
+        let n = isize::MAX - 23_999;
+        let coeffs = bessel_peierls_coeffs(&d, &drive, n, n, 48).unwrap();
         // The requested bin is far outside the mode's spectral support
-        // (±22400), so C_q = 0.
+        // (±22400), so C_n = 0.
         assert!(coeffs[0].norm() == 0.0);
     }
 
@@ -5281,7 +5335,7 @@ mod tests {
     //
     // Two independent analytic predictions are checked (fractional-k units,
     // Ω = ħω in eV, κ = |e|A₀/ħ):
-    //   Level I  (exact in field): d_eff = d_0 + (2i/Ω) Σ_{q>0} (d_q × d_{−q})/q
+    //   Level I  (exact in field): d_eff = d_0 + (2i/Ω) Σ_{n>0} (d_n × d_{−n})/n
     //   Level II (weak field):     δd_CPL = (A_x A_y / 4π²Ω)(∂_x d × ∂_y d),
     //                              δd_A²  = (κ² / 16π²)(∂_x² + ∂_y²) d.
 
@@ -5331,8 +5385,8 @@ mod tests {
         (eps, [dx, dy, dz])
     }
 
-    /// Independent (non-Bessel, non-convolution) reference for H^(q)(k), the
-    /// q-th Fourier block of the Peierls-dressed Hamiltonian, by direct
+    /// Independent (non-Bessel, non-convolution) reference for H^(n)(k), the
+    /// n-th Fourier block of the Peierls-dressed Hamiltonian, by direct
     /// trapezoidal integration of H(k,t) = Σ_R t(R) e^{i2πk·R} e^{−i a(t)·d_R}
     /// over one period, with a(t) reconstructed from the drive modes.  Shares
     /// no code with the Bessel / convolution / commutator machinery under test.
@@ -5340,12 +5394,12 @@ mod tests {
         model: &Model<false, 2, NoRMatrix>,
         k: &[f64; 2],
         drive: &FloquetDrive,
-        q: isize,
+        n: isize,
         n_time: usize,
     ) -> Array2<Complex<f64>> {
         let nsta = model.nsta();
         let norb = model.norb();
-        let mut hq = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        let mut h_n = Array2::<Complex<f64>>::zeros((nsta, nsta));
         for it in 0..n_time {
             let theta = TAU * (it as f64) / (n_time as f64);
             let mut a = [0.0f64; 2];
@@ -5381,11 +5435,11 @@ mod tests {
                     }
                 }
             }
-            // C_q = (1/T)∫ e^{+iqΩt} (⋯) dt — matches the code's convention.
-            let fourier = Complex::new(0.0, (q as f64) * theta).exp();
-            hq.scaled_add(fourier, &h);
+            // C_n = (1/T)∫ e^{+inΩt} (⋯) dt — matches the code's convention.
+            let fourier = Complex::new(0.0, (n as f64) * theta).exp();
+            h_n.scaled_add(fourier, &h);
         }
-        hq.mapv(|x| x / (n_time as f64))
+        h_n.mapv(|x| x / (n_time as f64))
     }
 
     /// Independent first-order van Vleck H_eff from the integrated harmonics.
@@ -5393,15 +5447,15 @@ mod tests {
         model: &Model<false, 2, NoRMatrix>,
         k: &[f64; 2],
         drive: &FloquetDrive,
-        q_max: isize,
+        harmonic_max: isize,
         n_time: usize,
     ) -> Array2<Complex<f64>> {
         let mut h_eff = independent_dressed_harmonic(model, k, drive, 0, n_time);
-        for q in 1..=q_max {
-            let hp = independent_dressed_harmonic(model, k, drive, q, n_time);
-            let hm = independent_dressed_harmonic(model, k, drive, -q, n_time);
+        for n in 1..=harmonic_max {
+            let hp = independent_dressed_harmonic(model, k, drive, n, n_time);
+            let hm = independent_dressed_harmonic(model, k, drive, -n, n_time);
             let comm = hp.dot(&hm) - hm.dot(&hp);
-            let scale = Complex::new(1.0 / ((q as f64) * drive.omega0_ev), 0.0);
+            let scale = Complex::new(1.0 / ((n as f64) * drive.omega0_ev), 0.0);
             h_eff.scaled_add(scale, &comm);
         }
         h_eff
@@ -5413,10 +5467,10 @@ mod tests {
         k: &[f64; 2],
         drive: &FloquetDrive,
         n_max: isize,
-        q_max: isize,
+        harmonic_max: isize,
     ) -> Array2<Complex<f64>> {
         let trunc = FloquetTruncation::new(n_max, 512);
-        let options = FloquetEffectiveOptions::new().with_q_max(q_max);
+        let options = FloquetEffectiveOptions::new().with_harmonic_max(harmonic_max);
         let eff = model
             .floquet_effective_model(drive, &trunc, Some(&options))
             .unwrap();
@@ -5479,14 +5533,14 @@ mod tests {
     #[test]
     fn two_band_level1_matches_independent_integration() {
         // Level I: for a general two-band model the first-order van Vleck
-        // effective model must equal H^(0) + Σ_{q≥1} [H^(q),H^(−q)]/(qΩ) with
-        // H^(q) the dressed harmonics — checked against an independent
+        // effective model must equal H^(0) + Σ_{n≥1} [H^(n),H^(−n)]/(nΩ) with
+        // H^(n) the dressed harmonics — checked against an independent
         // time-integration of the dressed Hamiltonian, for circular, elliptical
         // and exotic drives on both square and rectangular lattices.
         let (tx, ty, tz, m) = (1.0, 0.7, 0.5, 0.8);
         let omega = 8.0;
         let n_time = 4096;
-        let q_max = 4;
+        let harmonic_max = 4;
         let ks = [[0.13, 0.27], [0.44, 0.61]];
         let lattices = [
             ("square", [[1.0, 0.0], [0.0, 1.0]]),
@@ -5501,8 +5555,8 @@ mod tests {
             ];
             for (dname, drive) in drives {
                 for k in ks {
-                    let code = code_heff(&model, &k, &drive, 2, q_max);
-                    let indep = independent_heff(&model, &k, &drive, q_max, n_time);
+                    let code = code_heff(&model, &k, &drive, 2, harmonic_max);
+                    let indep = independent_heff(&model, &k, &drive, harmonic_max, n_time);
                     for i in 0..2 {
                         for j in 0..2 {
                             assert!(
@@ -5546,7 +5600,7 @@ mod tests {
         ];
         let d_static = qwz_d(&k, tx, ty, tz, m);
 
-        // d_eff(η) at order 1 (q_max = 1 isolates the O(κ²) cross product).
+        // d_eff(η) at order 1 (harmonic_max = 1 isolates the O(κ²) cross product).
         let d_eff = |kappa: f64, eta: f64| -> [f64; 3] {
             let drive = circular_drive(kappa, eta, omega);
             let h = code_heff(&model, &k, &drive, 1, 1);
@@ -5645,8 +5699,8 @@ mod tests {
     fn two_band_exotic_drive_first_order_commutator_is_cubic() {
         // For a(t) = κ(cos Ωt, sin(2Ωt+α)) each harmonic is linearly polarized,
         // so the O(κ²) first-order van Vleck commutator vanishes identically;
-        // the leading correction is O(κ³) (mode 1's cos² feeds q = 2 and mixes
-        // with mode 2's linear q = 2).  Verify the commutator part of the code's
+        // the leading correction is O(κ³) (mode 1's cos² feeds n = 2 and mixes
+        // with mode 2's linear n = 2).  Verify the commutator part of the code's
         // d scales as κ³ (ratio 8 for κ→κ/2), in contrast to circular (κ², ratio 4).
         let (tx, ty, tz, m) = (1.0, 0.7, 0.5, 0.8);
         let omega = 8.0;

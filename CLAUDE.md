@@ -459,7 +459,7 @@ and mixed-frequency commensurate polarization.
 Each hopping dressed by `exp[−i a(t)·d_{ijR}]`. Fourier coefficient:
 
 ```math
-C_q(d) = (1/T) ∫_0^T dt e^{iqΩ₀t} exp[−i a(t)·d]
+C_n(d) = (1/T) ∫_0^T dt e^{inΩ₀t} exp[−i a(t)·d]
 ```
 
 Main path: the generalized Bessel backend (exact, no `n_time`); the uniform
@@ -469,7 +469,7 @@ as the crate-internal cross-validation reference.
 ### Sambe Hamiltonian
 
 ```math
-H^{(q)}_{ij}(k) = Σ_R t_{ij}(R) C_q(d_{ijR}) e^{i2πk·R}
+H^{(n)}_{ij}(k) = Σ_R t_{ij}(R) C_n(d_{ijR}) e^{i2πk·R}
 ```
 
 ```math
@@ -484,12 +484,12 @@ van Vleck through `O(W⁻²)`, with `W = omega0_ev = ħΩ₀`, entirely in real 
 (only `R > 8` fallback links touch the time grid):
 
 ```math
-T_eff(R) = T_0(R) + Σ_{q=1}^{q_max} comm_q(R) / (q W),
+T_eff(R) = T_0(R) + Σ_{n=1}^{harmonic_max} comm_n(R) / (n W),
 \qquad
-comm_q(R) = (AB)(R) − (BA)(R),
+comm_n(R) = (AB)(R) − (BA)(R),
 ```
 
-with `A_R = T_q(R)`, `B_R = T_{−q}(R)` and BOTH discrete convolutions
+with `A_R = T_n(R)`, `B_R = T_{−n}(R)` and BOTH discrete convolutions
 `(AB)(R) = Σ A_{R−R'}B_{R'}` and `(BA)(R) = Σ B_{R−R'}A_{R'}` (the "P − P†"
 single-convolution simplification is wrong for non-commuting blocks).
 For `order = 2`, the implementation additionally evaluates
@@ -503,8 +503,8 @@ in lexicographic order — `target_hamR` is rejected. Hermiticity
 `T(R) = T(−R)†` is enforced exactly on the final signed sum.
 
 **Commutator-order convention (verified against the literature):** the code
-uses `[H^(q), H^(−q)]/(qħΩ)`, opposite to the literature's
-`[H^{(−q)}, H^{(q)}]/(qħω)`. Combined with our k-convention
+uses `[H^(n), H^(−n)]/(nħΩ)`, opposite to the literature's
+`[H^{(−n)}, H^{(n)}]/(nħω)`. Combined with our k-convention
 `H(k) = Σ t(R)e^{+i2πk·R}` being the literature's mirror (`H_n(k) = H_n^lit(−k)`),
 the two sign flips cancel for the TR-odd first-order terms — the results match
 the literature pointwise. Do not "fix" either sign in isolation.
@@ -549,7 +549,7 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 | `FloquetDrive` | `omega0_ev` + `Vec<LightMode>`; builder: `new()`, `with_modes()`, `add_mode()` |
 | `FloquetTruncation` | Photon cutoff `n_max` and time-grid `n_time`; `n_sector()` = `2n_max+1` |
 | `IncidentBasis` | Transverse polarization basis from incident direction |
-| `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_q_max(q)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
+| `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_harmonic_max(n)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
 | `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
 | `Model::floquet_effective_model` | Inherent method returning same-size effective Model |
 
