@@ -454,20 +454,21 @@ pub struct FloquetEffectiveOptions {
     pub(crate) target_hamR: Option<Array2<isize>>,
 }
 
-/// Strategy for `floquet_effective_q_model` when a drive contains multiple
-/// modes.
+/// Strategy for combining mode contributions when a drive contains multiple
+/// `LightMode`s.
 ///
-/// The current `floquet_effective_q_model` entry is deliberately kept apart
-/// from `floquet_effective_model` so new `q`-sector semantics can be introduced
-/// without changing the established same-size effective-model API.  At present,
-/// only two mode-combination strategies are provided.
+/// This API is currently a *mode-combination helper* built on top of
+/// [`floquet_effective_model`]; it does not implement finite-momentum
+/// (`q != 0`) Floquet grading.
 #[derive(Clone, Debug)]
 pub enum FloquetQModelMode {
     /// Treat all modes as a single coherent drive, identical to
     /// [`Model::floquet_effective_model`].
     Coherent,
 
-    /// Build one-mode effective models and combine them with real weights.
+    /// Build one-mode effective models and combine them with real weights,
+    /// including residual static weight `1 - sum(weights)` in front of the
+    /// zero-drive effective model.
     ///
     /// For weights `w_i`, the effective model is
     ///
@@ -480,7 +481,22 @@ pub enum FloquetQModelMode {
     ///
     /// This is suitable for constructing an incoherent superposition of light
     /// pulses/modes in the same base cell.
+    /// `Σ_i w_i` must be finite and in `[0, 1]` by default.
     ModeResolvedIncoherent(Vec<f64>),
+
+    /// Build one-mode effective models and combine them with real weights without
+    /// adding a residual static contribution.
+    ///
+    /// For weights `w_i`, the effective model is
+    ///
+    /// ```text
+    /// H_eff = Σ_i w_i H_eff^{(i)} .
+    /// ```
+    ///
+    /// This is useful when the user intends a direct weighted sum of mode
+    /// responses (for example, for intensity-weighted linear interpolation of
+    /// independently computed mode responses).
+    ModeResolvedIncoherentNoStatic(Vec<f64>),
 }
 
 type RealSpaceBlocks = (Vec<Array2<Complex<f64>>>, Array2<isize>);
@@ -552,7 +568,7 @@ impl FloquetEffectiveOptions {
     }
 }
 
-fn validate_incoherent_weights(mode_weights: &[f64]) -> Result<f64> {
+fn validate_incoherent_weights(mode_weights: &[f64], require_unit_sum: bool) -> Result<f64> {
     if mode_weights.is_empty() {
         return Ok(0.0);
     }
@@ -578,6 +594,12 @@ fn validate_incoherent_weights(mode_weights: &[f64]) -> Result<f64> {
         ));
     }
 
+    if require_unit_sum && total > 1.000_000_000_000_001 {
+        return Err(TbError::Other(format!(
+            "floquet_effective_q_model: mode weights exceed unit total ({total}); expected Σw <= 1"
+        )));
+    }
+
     Ok(total)
 }
 
@@ -591,7 +613,29 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// `coherence` controls whether multiple modes in `drive` are treated as a
     /// single coherent field, or whether each mode is evaluated separately and
     /// recombined with weights.
+    ///
+    /// This helper keeps real-space support unioned across the weighted mode
+    /// decomposition so modest support mismatches do not fail with an immediate
+    /// shape error.
     pub fn floquet_effective_q_model(
+        &self,
+        drive: &FloquetDrive,
+        trunc: &FloquetTruncation,
+        options: Option<&FloquetEffectiveOptions>,
+        mode: FloquetQModelMode,
+    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+        self.floquet_effective_mode_resolved_model(drive, trunc, options, mode)
+    }
+
+    /// Build a Floquet high-frequency effective model with explicit mode
+    /// combination strategy.
+    ///
+    /// This entry is a name that describes the actual behavior:
+    /// combining one-mode channels computed by [`Model::floquet_effective_model`].
+    ///
+    /// The method returns a same-size model and uses the existing real-space
+    /// Bessel backend underneath.
+    pub fn floquet_effective_mode_resolved_model(
         &self,
         drive: &FloquetDrive,
         trunc: &FloquetTruncation,
@@ -600,64 +644,115 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
         match mode {
             FloquetQModelMode::Coherent => self.floquet_effective_model(drive, trunc, options),
-            FloquetQModelMode::ModeResolvedIncoherent(weights) => {
-                if weights.len() != drive.modes.len() {
-                    return Err(TbError::Other(format!(
-                        "floquet_effective_q_model incoherent weights must match mode count: {} != {}",
-                        weights.len(),
-                        drive.modes.len()
-                    )));
-                }
+            FloquetQModelMode::ModeResolvedIncoherent(weights) => self
+                .floquet_effective_mode_resolved_incoherent_impl(
+                    drive, trunc, options, weights, true,
+                ),
+            FloquetQModelMode::ModeResolvedIncoherentNoStatic(weights) => self
+                .floquet_effective_mode_resolved_incoherent_impl(
+                    drive, trunc, options, weights, false,
+                ),
+        }
+    }
 
-                let total_weight = validate_incoherent_weights(&weights)?;
-                let default_options;
-                let options = match options {
-                    Some(options) => options,
-                    None => {
-                        default_options = FloquetEffectiveOptions::default();
-                        &default_options
-                    }
-                };
+    fn floquet_effective_mode_resolved_incoherent_impl(
+        &self,
+        drive: &FloquetDrive,
+        trunc: &FloquetTruncation,
+        options: Option<&FloquetEffectiveOptions>,
+        weights: Vec<f64>,
+        include_static: bool,
+    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+        if weights.len() != drive.modes.len() {
+            return Err(TbError::Other(format!(
+                "floquet_effective_mode_resolved_model incoherent weights must match mode count: {} != {}",
+                weights.len(),
+                drive.modes.len()
+            )));
+        }
 
-                // Reference static background and weighted one-mode corrections.
-                let mut effective = self.floquet_effective_model(
-                    &FloquetDrive::new(drive.omega0_ev),
-                    trunc,
-                    Some(options),
-                )?;
+        let total_weight = validate_incoherent_weights(&weights, include_static)?;
+        let default_options;
+        let options = match options {
+            Some(options) => options,
+            None => {
+                default_options = FloquetEffectiveOptions::default();
+                &default_options
+            }
+        };
 
-                effective.ham.mapv_inplace(|x| x * (1.0 - total_weight));
+        let static_model = self.floquet_effective_model(
+            &FloquetDrive::new(drive.omega0_ev),
+            trunc,
+            Some(options),
+        )?;
 
-                for (mode_weight, mode_def) in weights.iter().zip(drive.modes.iter()) {
-                    if *mode_weight == 0.0 {
-                        continue;
-                    }
+        let nsta = static_model.ham.len_of(Axis(1));
+        let mut union_rows = static_model
+            .hamR
+            .rows()
+            .into_iter()
+            .map(|row| row.to_vec())
+            .collect::<Vec<_>>();
+        let mut union_blocks = static_model
+            .ham
+            .axis_iter(Axis(0))
+            .map(|block| block.to_owned())
+            .collect::<Vec<_>>();
 
-                    let single_drive =
-                        FloquetDrive::with_modes(drive.omega0_ev, vec![mode_def.clone()]);
-                    let single =
-                        self.floquet_effective_model(&single_drive, trunc, Some(options))?;
-
-                    if single.hamR != effective.hamR {
-                        return Err(TbError::Other(
-                            "floquet_effective_q_model incoherent recombination got non-matching hamR shape"
-                                .to_string(),
-                        ));
-                    }
-
-                    for i_r in 0..effective.ham.len_of(Axis(0)) {
-                        let mut out = effective.ham.index_axis_mut(Axis(0), i_r);
-                        let src = single.ham.index_axis(Axis(0), i_r);
-                        for (o, s) in out.iter_mut().zip(src.iter()) {
-                            *o += *s * *mode_weight;
-                        }
-                    }
-                }
-
-                enforce_real_space_hermiticity(&mut effective.ham, &effective.hamR)?;
-                Ok(effective)
+        if !include_static {
+            for block in union_blocks.iter_mut() {
+                block.mapv_inplace(|_| Complex::new(0.0, 0.0));
+            }
+        } else {
+            let static_weight = 1.0 - total_weight;
+            for block in union_blocks.iter_mut() {
+                block.mapv_inplace(|x| x * static_weight);
             }
         }
+
+        let mut row_index = std::collections::BTreeMap::<Vec<isize>, usize>::new();
+        for (idx, row) in union_rows.iter().enumerate() {
+            row_index.insert(row.clone(), idx);
+        }
+
+        for (mode_weight, mode_def) in weights.iter().zip(drive.modes.iter()) {
+            if *mode_weight == 0.0 {
+                continue;
+            }
+
+            let single_drive = FloquetDrive::with_modes(drive.omega0_ev, vec![mode_def.clone()]);
+            let single = self.floquet_effective_model(&single_drive, trunc, Some(options))?;
+
+            for i_r in 0..single.ham.len_of(Axis(0)) {
+                let key = single.hamR.row(i_r).to_vec();
+                let union_idx = if let Some(idx) = row_index.get(&key).copied() {
+                    idx
+                } else {
+                    let idx = union_rows.len();
+                    union_rows.push(key.clone());
+                    union_blocks.push(Array2::zeros((nsta, nsta)));
+                    row_index.insert(key, idx);
+                    idx
+                };
+
+                let src = single.ham.index_axis(Axis(0), i_r);
+                let dst = &mut union_blocks[union_idx];
+                for (o, s) in dst.iter_mut().zip(src.iter()) {
+                    *o += *s * *mode_weight;
+                }
+            }
+        }
+
+        let mut effective = static_model;
+        let output_ham_views = union_blocks
+            .iter()
+            .map(|block| block.view())
+            .collect::<Vec<_>>();
+        effective.ham = ndarray::stack(Axis(0), &output_ham_views)?;
+        effective.hamR = Array2::from_shape_fn((union_rows.len(), DIM), |(i, d)| union_rows[i][d]);
+        enforce_real_space_hermiticity(&mut effective.ham, &effective.hamR)?;
+        Ok(effective)
     }
 }
 
@@ -4091,6 +4186,93 @@ mod tests {
                 "incoherent mode recombination mismatch: {diff}"
             );
         }
+    }
+
+    #[test]
+    fn floquet_effective_q_model_incoherent_mode_weights_enforce_unit_sum() {
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.22, 0.14]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.set_hop(0.9, 0, 1, &array![0, 1], None);
+
+        let mode1 = LightMode::new(1, array![Complex::new(0.28, 0.0), Complex::new(0.0, 0.21)]);
+        let mode2 = LightMode::new(
+            2,
+            array![Complex::new(0.04, 0.02), Complex::new(0.03, -0.01)],
+        );
+        let drive = FloquetDrive::with_modes(1.0, vec![mode1, mode2]);
+        let trunc = FloquetTruncation::new(2, 512);
+        let options = FloquetEffectiveOptions::new().with_harmonic_max(3);
+
+        let err = model
+            .floquet_effective_q_model(
+                &drive,
+                &trunc,
+                Some(&options),
+                FloquetQModelMode::ModeResolvedIncoherent(vec![0.6, 0.6]),
+            )
+            .expect_err("mode weights should fail to exceed unit sum");
+
+        assert!(
+            err.to_string().contains("Σw <= 1")
+                || err.to_string().contains("mode weights exceed unit total"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn floquet_effective_q_model_incoherent_no_static_matches_weighted_single_modes() {
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.22, 0.14]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.set_hop(0.9, 0, 1, &array![0, 1], None);
+        model.set_hop(Complex::new(0.4, -0.2), 1, 1, &array![1, 1], None);
+
+        let mode1 = LightMode::new(1, array![Complex::new(0.28, 0.0), Complex::new(0.0, 0.21)]);
+        let mode2 = LightMode::new(
+            2,
+            array![Complex::new(0.04, 0.02), Complex::new(0.03, -0.01)],
+        );
+        let drive = FloquetDrive::with_modes(1.0, vec![mode1.clone(), mode2.clone()]);
+        let trunc = FloquetTruncation::new(2, 512);
+        let options = FloquetEffectiveOptions::new().with_harmonic_max(3);
+
+        let mode1_only = model
+            .floquet_effective_q_model(
+                &FloquetDrive::with_modes(1.0, vec![mode1]),
+                &trunc,
+                Some(&options),
+                FloquetQModelMode::Coherent,
+            )
+            .unwrap();
+        let mode2_only = model
+            .floquet_effective_q_model(
+                &FloquetDrive::with_modes(1.0, vec![mode2]),
+                &trunc,
+                Some(&options),
+                FloquetQModelMode::Coherent,
+            )
+            .unwrap();
+        let mixed = model
+            .floquet_effective_q_model(
+                &drive,
+                &trunc,
+                Some(&options),
+                FloquetQModelMode::ModeResolvedIncoherentNoStatic(vec![0.3, 0.7]),
+            )
+            .unwrap();
+
+        let k = array![0.13, 0.27];
+        let h_mix = mixed.gen_ham(&k, Gauge::Lattice);
+        let h_expected = mode1_only.gen_ham(&k, Gauge::Lattice) * Complex::new(0.3, 0.0)
+            + mode2_only.gen_ham(&k, Gauge::Lattice) * Complex::new(0.7, 0.0);
+        let diff = &h_mix - &h_expected;
+        assert!(
+            diff.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt() < 1e-10,
+            "no-static weighted mode recombination mismatch: {diff:?}"
+        );
     }
 
     #[test]
