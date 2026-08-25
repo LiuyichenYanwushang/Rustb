@@ -454,107 +454,184 @@ pub struct FloquetEffectiveOptions {
     pub(crate) target_hamR: Option<Array2<isize>>,
 }
 
-/// Strategy for combining mode contributions when a drive contains multiple
-/// [`LightMode`]s.
+type RealSpaceBlocks = (Vec<Array2<Complex<f64>>>, Array2<isize>);
+type RealSpaceBlockMap = std::collections::BTreeMap<Vec<isize>, Array2<Complex<f64>>>;
+
+const EXACT_SUM_LIMBS: usize = 35;
+
 #[derive(Clone, Debug)]
-pub enum FloquetModeCombination {
-    /// Treat all modes as a single coherent drive, identical to
-    /// [`Model::floquet_effective_model`].
-    Coherent,
-
-    /// Build one-mode effective models and combine them with real weights,
-    /// including residual static weight `1 - sum(weights)` in front of the
-    /// zero-drive effective model.
-    ///
-    /// For weights `w_i`, the effective model is
-    ///
-    /// ```text
-    /// H_eff = (1 - Σ_i w_i) H_eff^{(0)} + Σ_i w_i H_eff^{(i)}
-    /// ```
-    ///
-    /// where `H_eff^{(0)}` is the static (`drive = 0`) effective model and
-    /// `H_eff^{(i)}` is the effective model of mode `i` alone.
-    ///
-    /// This is suitable for constructing an incoherent superposition of light
-    /// pulses/modes in the same base cell.
-    /// `Σ_i w_i` must be finite and in `[0, 1]` by default.
-    ModeResolvedIncoherent(Vec<f64>),
-
-    /// Build one-mode effective models and combine them with real weights without
-    /// adding a residual static contribution.
-    ///
-    /// For weights `w_i`, the effective model is
-    ///
-    /// ```text
-    /// H_eff = Σ_i w_i H_eff^{(i)} .
-    /// ```
-    ///
-    /// This is useful when the user intends a direct weighted sum of mode
-    /// responses (for example, for intensity-weighted linear interpolation of
-    /// independently computed mode responses).
-    ModeResolvedIncoherentNoStatic(Vec<f64>),
+struct ExactRealAccumulator {
+    positive: [u64; EXACT_SUM_LIMBS],
+    negative: [u64; EXACT_SUM_LIMBS],
+    invalid: bool,
 }
 
-/// Compatibility enum for the former, misleading mode-combination name.
-#[deprecated(
-    since = "0.7.2",
-    note = "use FloquetModeCombination; finite-q is handled by Model::floquet_effective_q_model"
-)]
-#[derive(Clone, Debug)]
-pub enum FloquetQModelMode {
-    Coherent,
-    ModeResolvedIncoherent(Vec<f64>),
-    ModeResolvedIncoherentNoStatic(Vec<f64>),
-}
-
-#[allow(deprecated)]
-impl From<FloquetQModelMode> for FloquetModeCombination {
-    fn from(mode: FloquetQModelMode) -> Self {
-        match mode {
-            FloquetQModelMode::Coherent => Self::Coherent,
-            FloquetQModelMode::ModeResolvedIncoherent(weights) => {
-                Self::ModeResolvedIncoherent(weights)
-            }
-            FloquetQModelMode::ModeResolvedIncoherentNoStatic(weights) => {
-                Self::ModeResolvedIncoherentNoStatic(weights)
-            }
+impl Default for ExactRealAccumulator {
+    fn default() -> Self {
+        Self {
+            positive: [0; EXACT_SUM_LIMBS],
+            negative: [0; EXACT_SUM_LIMBS],
+            invalid: false,
         }
     }
 }
 
-/// Input accepted by [`Model::floquet_effective_q_model`].
-///
-/// Passing a Cartesian wavevector selects the coherent `O(A^2 q / W)`
-/// calculation.  The mode-combination variant preserves source compatibility
-/// with the earlier mode-resolved helper; new code should call
-/// [`Model::floquet_effective_mode_resolved_model`] directly for that task.
-#[doc(hidden)]
-pub enum FloquetQModelInput<'a> {
-    WavevectorCartesian(&'a Array1<f64>),
-    LegacyModeCombination(FloquetModeCombination),
-}
+impl ExactRealAccumulator {
+    fn add(&mut self, value: f64) {
+        if !value.is_finite() {
+            self.invalid = true;
+            return;
+        }
+        if value == 0.0 {
+            return;
+        }
+        let bits = value.to_bits();
+        let exponent_bits = ((bits >> 52) & 0x7ff) as usize;
+        let fraction = bits & ((1_u64 << 52) - 1);
+        let (mantissa, shift) = if exponent_bits == 0 {
+            (fraction, 0)
+        } else {
+            ((1_u64 << 52) | fraction, exponent_bits - 1)
+        };
+        let target = if bits >> 63 == 0 {
+            &mut self.positive
+        } else {
+            &mut self.negative
+        };
+        exact_sum_add_shifted(target, mantissa, shift);
+    }
 
-impl<'a> From<&'a Array1<f64>> for FloquetQModelInput<'a> {
-    fn from(wavevector: &'a Array1<f64>) -> Self {
-        Self::WavevectorCartesian(wavevector)
+    fn finish(self) -> Result<f64> {
+        if self.invalid {
+            return Err(TbError::Other(
+                "floquet_effective_mode_resolved_model encountered a non-finite summand"
+                    .to_string(),
+            ));
+        }
+
+        Ok(match exact_sum_compare(&self.positive, &self.negative) {
+            std::cmp::Ordering::Equal => 0.0,
+            std::cmp::Ordering::Greater => {
+                exact_sum_to_f64(exact_sum_subtract(&self.positive, &self.negative), false)
+            }
+            std::cmp::Ordering::Less => {
+                exact_sum_to_f64(exact_sum_subtract(&self.negative, &self.positive), true)
+            }
+        })
     }
 }
 
-impl<'a> From<FloquetModeCombination> for FloquetQModelInput<'a> {
-    fn from(mode: FloquetModeCombination) -> Self {
-        Self::LegacyModeCombination(mode)
+fn exact_sum_add_word(limbs: &mut [u64; EXACT_SUM_LIMBS], mut index: usize, word: u64) {
+    let mut carry = word;
+    while carry != 0 {
+        let (updated, overflow) = limbs[index].overflowing_add(carry);
+        limbs[index] = updated;
+        carry = u64::from(overflow);
+        index += 1;
     }
 }
 
-#[allow(deprecated)]
-impl<'a> From<FloquetQModelMode> for FloquetQModelInput<'a> {
-    fn from(mode: FloquetQModelMode) -> Self {
-        Self::LegacyModeCombination(mode.into())
+fn exact_sum_add_shifted(limbs: &mut [u64; EXACT_SUM_LIMBS], mantissa: u64, shift: usize) {
+    let word_index = shift / 64;
+    let bit_offset = shift % 64;
+    let shifted = (mantissa as u128) << bit_offset;
+    exact_sum_add_word(limbs, word_index, shifted as u64);
+    let high = (shifted >> 64) as u64;
+    if high != 0 {
+        exact_sum_add_word(limbs, word_index + 1, high);
     }
 }
 
-type RealSpaceBlocks = (Vec<Array2<Complex<f64>>>, Array2<isize>);
-type RealSpaceBlockMap = std::collections::BTreeMap<Vec<isize>, Array2<Complex<f64>>>;
+fn exact_sum_compare(
+    left: &[u64; EXACT_SUM_LIMBS],
+    right: &[u64; EXACT_SUM_LIMBS],
+) -> std::cmp::Ordering {
+    for index in (0..EXACT_SUM_LIMBS).rev() {
+        match left[index].cmp(&right[index]) {
+            std::cmp::Ordering::Equal => {}
+            ordering => return ordering,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+fn exact_sum_subtract(
+    larger: &[u64; EXACT_SUM_LIMBS],
+    smaller: &[u64; EXACT_SUM_LIMBS],
+) -> [u64; EXACT_SUM_LIMBS] {
+    let mut output = [0_u64; EXACT_SUM_LIMBS];
+    let mut borrow = false;
+    for index in 0..EXACT_SUM_LIMBS {
+        let (first, borrow_first) = larger[index].overflowing_sub(smaller[index]);
+        let (second, borrow_second) = first.overflowing_sub(u64::from(borrow));
+        output[index] = second;
+        borrow = borrow_first || borrow_second;
+    }
+    debug_assert!(!borrow);
+    output
+}
+
+fn exact_sum_bit(limbs: &[u64; EXACT_SUM_LIMBS], bit: usize) -> bool {
+    ((limbs[bit / 64] >> (bit % 64)) & 1) != 0
+}
+
+fn exact_sum_any_lower_bit(limbs: &[u64; EXACT_SUM_LIMBS], bit_exclusive: usize) -> bool {
+    let full_words = bit_exclusive / 64;
+    if limbs[..full_words].iter().any(|word| *word != 0) {
+        return true;
+    }
+    let remaining = bit_exclusive % 64;
+    remaining != 0 && (limbs[full_words] & ((1_u64 << remaining) - 1)) != 0
+}
+
+fn exact_sum_shifted_low(limbs: &[u64; EXACT_SUM_LIMBS], shift: usize) -> u64 {
+    let word = shift / 64;
+    let offset = shift % 64;
+    let mut value = limbs[word] >> offset;
+    if offset != 0 && word + 1 < EXACT_SUM_LIMBS {
+        value |= limbs[word + 1] << (64 - offset);
+    }
+    value
+}
+
+fn exact_sum_to_f64(limbs: [u64; EXACT_SUM_LIMBS], negative: bool) -> f64 {
+    let Some(high_word) = limbs.iter().rposition(|word| *word != 0) else {
+        return 0.0;
+    };
+    let mut highest_bit = high_word * 64 + (63 - limbs[high_word].leading_zeros() as usize);
+    let sign = u64::from(negative) << 63;
+    if highest_bit < 52 {
+        return f64::from_bits(sign | limbs[0]);
+    }
+
+    let shift = highest_bit - 52;
+    let mut significand = exact_sum_shifted_low(&limbs, shift) & ((1_u64 << 53) - 1);
+    if shift != 0 {
+        let halfway = exact_sum_bit(&limbs, shift - 1);
+        let lower_nonzero = exact_sum_any_lower_bit(&limbs, shift - 1);
+        if halfway && (lower_nonzero || significand & 1 != 0) {
+            significand += 1;
+            if significand == 1_u64 << 53 {
+                significand >>= 1;
+                highest_bit += 1;
+            }
+        }
+    }
+
+    let unbiased_exponent = highest_bit as isize - 1074;
+    if unbiased_exponent > 1023 {
+        return f64::from_bits(sign | (0x7ff_u64 << 52));
+    }
+    let exponent_bits = (unbiased_exponent + 1023) as u64;
+    let fraction = significand & ((1_u64 << 52) - 1);
+    f64::from_bits(sign | (exponent_bits << 52) | fraction)
+}
+
+#[derive(Debug, Default)]
+struct ModeResolvedBlockTerms {
+    static_block: Option<Array2<Complex<f64>>>,
+    driven_blocks: Vec<Array2<Complex<f64>>>,
+}
 
 trait RealSpaceBlockSource: Sync {
     fn nblocks(&self) -> usize;
@@ -620,41 +697,6 @@ impl FloquetEffectiveOptions {
         self.target_hamR = Some(target_hamR);
         self
     }
-}
-
-fn validate_incoherent_weights(mode_weights: &[f64], include_static_residual: bool) -> Result<f64> {
-    if mode_weights.is_empty() {
-        return Ok(0.0);
-    }
-
-    let mut total = 0.0;
-    for &w in mode_weights {
-        if !w.is_finite() {
-            return Err(TbError::Other(format!(
-                "floquet_effective_mode_resolved_model: non-finite mode weight {w}"
-            )));
-        }
-        if w < 0.0 {
-            return Err(TbError::Other(format!(
-                "floquet_effective_mode_resolved_model: negative mode weight {w}"
-            )));
-        }
-        total += w;
-    }
-
-    if !total.is_finite() {
-        return Err(TbError::Other(
-            "floquet_effective_mode_resolved_model: total mode weight overflowed".to_string(),
-        ));
-    }
-
-    if include_static_residual && total > 1.000_000_000_000_001 {
-        return Err(TbError::Other(format!(
-            "floquet_effective_mode_resolved_model: mode weights exceed unit total ({total}); expected Σw <= 1"
-        )));
-    }
-
-    Ok(total)
 }
 
 fn coherent_positive_harmonic_amplitudes<const DIM: usize>(
@@ -755,24 +797,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// coherent beams with distinct wavevectors.  Such beams therefore need
     /// separate calls (or a future graded/supercell API); this method models
     /// one common propagation wavevector exactly to linear order.
-    pub fn floquet_effective_q_model<'a, Q>(
+    pub fn floquet_effective_q_model(
         &self,
         drive: &FloquetDrive,
         trunc: &FloquetTruncation,
         options: Option<&FloquetEffectiveOptions>,
-        q_model_input: Q,
-    ) -> Result<Model<SPIN, DIM, NoRMatrix>>
-    where
-        Q: Into<FloquetQModelInput<'a>>,
-    {
-        match q_model_input.into() {
-            FloquetQModelInput::WavevectorCartesian(wavevector_cartesian) => {
-                self.floquet_effective_q_linear_model(drive, wavevector_cartesian, trunc, options)
-            }
-            FloquetQModelInput::LegacyModeCombination(mode) => {
-                self.floquet_effective_mode_resolved_model(drive, trunc, options, mode)
-            }
-        }
+        wavevector_cartesian: &Array1<f64>,
+    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+        self.floquet_effective_q_linear_model(drive, wavevector_cartesian, trunc, options)
     }
 
     fn floquet_effective_q_linear_model(
@@ -892,54 +924,33 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(effective)
     }
 
-    /// Build a Floquet high-frequency effective model with explicit mode
-    /// combination strategy.
+    /// Build the mode-diagonal effective model of mutually incoherent modes.
     ///
-    /// This entry is a name that describes the actual behavior:
-    /// combining one-mode channels computed by [`Model::floquet_effective_model`].
+    /// Every nonzero [`LightMode`] is evaluated in its own one-mode
+    /// [`FloquetDrive`], and the induced corrections are added around one
+    /// common static Hamiltonian:
     ///
-    /// The method returns a same-size model and uses the existing real-space
-    /// Bessel backend underneath.
-    pub fn floquet_effective_mode_resolved_model<M>(
+    /// ```math
+    /// H_{\rm inc}=H_0+\sum_\alpha
+    /// \left(H_{\rm eff}[a_\alpha]-H_0\right).
+    /// ```
+    ///
+    /// The amplitude of each mode already specifies its physical intensity,
+    /// so this API has no additional statistical weights.  Cross-mode
+    /// coherent interference and mixed-mode virtual paths are intentionally
+    /// absent.  This agrees with random-relative-phase averaging at leading
+    /// `O(A^2)`, but is not an exact all-orders phase average: cross-intensity
+    /// terms such as `A_alpha^2 A_beta^2` are omitted.
+    ///
+    /// Exact-zero modes are skipped.  Real-space supports from all one-mode
+    /// results are unioned, and the returned model has the same state count
+    /// and metadata as the input model.
+    pub fn floquet_effective_mode_resolved_model(
         &self,
         drive: &FloquetDrive,
         trunc: &FloquetTruncation,
         options: Option<&FloquetEffectiveOptions>,
-        mode: M,
-    ) -> Result<Model<SPIN, DIM, NoRMatrix>>
-    where
-        M: Into<FloquetModeCombination>,
-    {
-        match mode.into() {
-            FloquetModeCombination::Coherent => self.floquet_effective_model(drive, trunc, options),
-            FloquetModeCombination::ModeResolvedIncoherent(weights) => self
-                .floquet_effective_mode_resolved_incoherent_impl(
-                    drive, trunc, options, weights, true,
-                ),
-            FloquetModeCombination::ModeResolvedIncoherentNoStatic(weights) => self
-                .floquet_effective_mode_resolved_incoherent_impl(
-                    drive, trunc, options, weights, false,
-                ),
-        }
-    }
-
-    fn floquet_effective_mode_resolved_incoherent_impl(
-        &self,
-        drive: &FloquetDrive,
-        trunc: &FloquetTruncation,
-        options: Option<&FloquetEffectiveOptions>,
-        weights: Vec<f64>,
-        include_static: bool,
     ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
-        if weights.len() != drive.modes.len() {
-            return Err(TbError::Other(format!(
-                "floquet_effective_mode_resolved_model incoherent weights must match mode count: {} != {}",
-                weights.len(),
-                drive.modes.len()
-            )));
-        }
-
-        let total_weight = validate_incoherent_weights(&weights, include_static)?;
         let default_options;
         let options = match options {
             Some(options) => options,
@@ -965,107 +976,101 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         effective_harmonic_max(options, trunc)?;
         let nsta = self.nsta();
-
-        let (mut effective, mut union_rows, mut union_blocks) = if include_static {
-            // With no drive, every van Vleck correction vanishes exactly, so
-            // the static effective model is just the input Hamiltonian with
-            // its position-matrix tag removed.
+        let active_modes = drive
+            .modes
+            .iter()
+            .filter(|mode| {
+                mode.a_complex
+                    .iter()
+                    .any(|value| value.re != 0.0 || value.im != 0.0)
+            })
+            .collect::<Vec<_>>();
+        if active_modes.is_empty() {
             let mut static_model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
                 self.lat.clone(),
                 self.orb.clone(),
                 Some(self.atoms.clone()),
             )?;
+            static_model.ham = self.ham.clone();
+            static_model.hamR = self.hamR.clone();
             static_model.orb_projection = self.orb_projection.clone();
-            let union_rows = self
-                .hamR
-                .rows()
-                .into_iter()
-                .map(|row| row.to_vec())
-                .collect::<Vec<_>>();
-            let mut union_blocks = self
-                .ham
-                .axis_iter(Axis(0))
-                .map(|block| block.to_owned())
-                .collect::<Vec<_>>();
-
-            // The validator permits a tiny roundoff excess above one.  Clamp
-            // that tolerance window instead of introducing a negative static
-            // contribution.
-            let static_weight = (1.0 - total_weight).max(0.0);
-            for block in union_blocks.iter_mut() {
-                block.mapv_inplace(|x| x * static_weight);
-            }
-            static_model.ham = Array3::zeros((0, nsta, nsta));
-            static_model.hamR = Array2::zeros((0, DIM));
-            (static_model, union_rows, union_blocks)
-        } else {
-            // Preserve a conventional zero R=0 block without evaluating a
-            // zero-drive Floquet model that will immediately be discarded.
-            let mut zero_model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
-                self.lat.clone(),
-                self.orb.clone(),
-                Some(self.atoms.clone()),
-            )?;
-            zero_model.orb_projection = self.orb_projection.clone();
-            let union_rows = zero_model
-                .hamR
-                .rows()
-                .into_iter()
-                .map(|row| row.to_vec())
-                .collect::<Vec<_>>();
-            let union_blocks = zero_model
-                .ham
-                .axis_iter(Axis(0))
-                .map(|block| block.to_owned())
-                .collect::<Vec<_>>();
-            zero_model.ham = Array3::zeros((0, nsta, nsta));
-            zero_model.hamR = Array2::zeros((0, DIM));
-            (zero_model, union_rows, union_blocks)
-        };
-
-        let mut row_index = std::collections::BTreeMap::<Vec<isize>, usize>::new();
-        for (idx, row) in union_rows.iter().enumerate() {
-            row_index.insert(row.clone(), idx);
+            static_model.validate()?;
+            return Ok(static_model);
+        }
+        if active_modes.len() == 1 {
+            let single_drive =
+                FloquetDrive::with_modes(drive.omega0_ev, vec![active_modes[0].clone()]);
+            return self.floquet_effective_model(&single_drive, trunc, Some(options));
         }
 
-        for (mode_weight, mode_def) in weights.iter().zip(drive.modes.iter()) {
-            if *mode_weight == 0.0 {
-                continue;
-            }
+        let active_mode_count = active_modes.len();
+        let mut blocks = std::collections::BTreeMap::<Vec<isize>, ModeResolvedBlockTerms>::new();
+        for (i_r, row) in self.hamR.outer_iter().enumerate() {
+            blocks.insert(
+                row.to_vec(),
+                ModeResolvedBlockTerms {
+                    static_block: Some(self.ham.index_axis(Axis(0), i_r).to_owned()),
+                    driven_blocks: Vec::with_capacity(active_mode_count),
+                },
+            );
+        }
 
+        for mode_def in active_modes {
             let single_drive = FloquetDrive::with_modes(drive.omega0_ev, vec![mode_def.clone()]);
             let single = self.floquet_effective_model(&single_drive, trunc, Some(options))?;
 
             for i_r in 0..single.ham.len_of(Axis(0)) {
                 let key = single.hamR.row(i_r).to_vec();
-                let union_idx = if let Some(idx) = row_index.get(&key).copied() {
-                    idx
-                } else {
-                    let idx = union_rows.len();
-                    union_rows.push(key.clone());
-                    union_blocks.push(Array2::zeros((nsta, nsta)));
-                    row_index.insert(key, idx);
-                    idx
-                };
-
                 let src = single.ham.index_axis(Axis(0), i_r);
-                let dst = &mut union_blocks[union_idx];
-                for (output, input) in dst.iter_mut().zip(src.iter()) {
-                    *output += *input * *mode_weight;
-                }
+                let dst = blocks.entry(key).or_insert_with(|| ModeResolvedBlockTerms {
+                    static_block: None,
+                    driven_blocks: Vec::with_capacity(active_mode_count),
+                });
+                dst.driven_blocks.push(src.to_owned());
             }
         }
 
-        let mut ordered_support = union_rows.into_iter().zip(union_blocks).collect::<Vec<_>>();
-        ordered_support.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-        let output_ham_views = ordered_support
-            .iter()
-            .map(|(_, block)| block.view())
-            .collect::<Vec<_>>();
-        effective.ham = ndarray::stack(Axis(0), &output_ham_views)?;
-        effective.hamR = Array2::from_shape_fn((ordered_support.len(), DIM), |(i, d)| {
-            ordered_support[i].0[d]
-        });
+        let mut effective = Model::<SPIN, DIM, NoRMatrix>::tb_model(
+            self.lat.clone(),
+            self.orb.clone(),
+            Some(self.atoms.clone()),
+        )?;
+        effective.orb_projection = self.orb_projection.clone();
+        effective.hamR = Array2::zeros((blocks.len(), DIM));
+        effective.ham = Array3::zeros((blocks.len(), nsta, nsta));
+        for (i_r, (row, terms)) in blocks.into_iter().enumerate() {
+            for axis in 0..DIM {
+                effective.hamR[[i_r, axis]] = row[axis];
+            }
+            let mut output = effective.ham.index_axis_mut(Axis(0), i_r);
+            for i in 0..nsta {
+                for j in 0..nsta {
+                    let mut real = ExactRealAccumulator::default();
+                    let mut imaginary = ExactRealAccumulator::default();
+                    if let Some(static_block) = &terms.static_block {
+                        let value = static_block[[i, j]];
+                        real.add(value.re);
+                        imaginary.add(value.im);
+                        for _ in 0..active_mode_count {
+                            real.add(-value.re);
+                            imaginary.add(-value.im);
+                        }
+                    }
+                    for driven_block in &terms.driven_blocks {
+                        let value = driven_block[[i, j]];
+                        real.add(value.re);
+                        imaginary.add(value.im);
+                    }
+                    let value = Complex::new(real.finish()?, imaginary.finish()?);
+                    if !value.re.is_finite() || !value.im.is_finite() {
+                        return Err(TbError::Other(format!(
+                            "floquet_effective_mode_resolved_model overflowed at support row {i_r}"
+                        )));
+                    }
+                    output[[i, j]] = value;
+                }
+            }
+        }
         enforce_real_space_hermiticity(&mut effective.ham, &effective.hamR)?;
         effective.validate()?;
         Ok(effective)
@@ -3444,13 +3449,25 @@ fn enforce_real_space_hermiticity(
 
         if i_r == j_r {
             let block = ham.index_axis(Axis(0), i_r).to_owned();
-            let herm = (&block + &hermitian_conjugate(&block)) * Complex::new(0.5, 0.0);
+            let block_dag = hermitian_conjugate(&block);
+            let herm = Array2::from_shape_fn(block.raw_dim(), |index| {
+                Complex::new(
+                    block[index].re.midpoint(block_dag[index].re),
+                    block[index].im.midpoint(block_dag[index].im),
+                )
+            });
             ham.index_axis_mut(Axis(0), i_r).assign(&herm);
             visited[i_r] = true;
         } else {
             let block_i = ham.index_axis(Axis(0), i_r).to_owned();
             let block_j = ham.index_axis(Axis(0), j_r).to_owned();
-            let avg = (&block_i + &hermitian_conjugate(&block_j)) * Complex::new(0.5, 0.0);
+            let block_j_dag = hermitian_conjugate(&block_j);
+            let avg = Array2::from_shape_fn(block_i.raw_dim(), |index| {
+                Complex::new(
+                    block_i[index].re.midpoint(block_j_dag[index].re),
+                    block_i[index].im.midpoint(block_j_dag[index].im),
+                )
+            });
             let avg_dag = hermitian_conjugate(&avg);
             ham.index_axis_mut(Axis(0), i_r).assign(&avg);
             ham.index_axis_mut(Axis(0), j_r).assign(&avg_dag);
@@ -4886,114 +4903,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn floquet_effective_q_model_preserves_legacy_enum_glob_call() {
-        use FloquetQModelMode::*;
-
-        let model = two_band_qwz(1.0, 0.7, 0.4, 0.8, [[1.0, 0.0], [0.0, 1.0]]);
-        let drive = circular_drive(0.2, 1.0, 3.0);
-        let trunc = FloquetTruncation::new(1, 32);
-        let legacy = model
-            .floquet_effective_q_model(&drive, &trunc, None, Coherent)
-            .unwrap();
-        let direct = model.floquet_effective_model(&drive, &trunc, None).unwrap();
-        assert_eq!(legacy.hamR, direct.hamR);
-        assert_eq!(legacy.ham, direct.ham);
-
-        let named = model
-            .floquet_effective_mode_resolved_model(
-                &drive,
-                &trunc,
-                None,
-                FloquetQModelMode::Coherent,
-            )
-            .unwrap();
-        assert_eq!(named.hamR, direct.hamR);
-        assert_eq!(named.ham, direct.ham);
-    }
-
-    #[test]
-    fn floquet_mode_resolved_incoherent_weight_matches_single_mode() {
-        // Mode-resolved incoherent recombination must return the exact weighted
-        // mixture of one-mode results: [w1, w2 = 0] reproduces mode1 exactly.
-        let lat = array![[1.0, 0.0], [0.0, 1.0]];
-        let orb = array![[0.0, 0.0], [0.22, 0.14]];
-        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
-        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
-        model.set_hop(0.9, 0, 1, &array![0, 1], None);
-        model.set_hop(Complex::new(0.4, -0.2), 1, 1, &array![1, 1], None);
-
-        let mode1 = LightMode::new(1, array![Complex::new(0.28, 0.0), Complex::new(0.0, 0.21)]);
-        let mode2 = LightMode::new(
-            2,
-            array![Complex::new(0.04, 0.02), Complex::new(0.03, -0.01)],
-        );
-        let drive = FloquetDrive::with_modes(1.0, vec![mode1.clone(), mode2]);
-        let trunc = FloquetTruncation::new(2, 512);
-        let options = FloquetEffectiveOptions::new().with_harmonic_max(3);
-
-        let mode1_only = model
-            .floquet_effective_mode_resolved_model(
-                &FloquetDrive::with_modes(1.0, vec![mode1.clone()]),
-                &trunc,
-                Some(&options),
-                FloquetModeCombination::Coherent,
-            )
-            .unwrap();
-        let recombined = model
-            .floquet_effective_q_model(
-                &drive,
-                &trunc,
-                Some(&options),
-                FloquetModeCombination::ModeResolvedIncoherent(vec![1.0, 0.0]),
-            )
-            .unwrap();
-
-        assert_eq!(mode1_only.hamR, recombined.hamR);
-        for (a, b) in mode1_only.ham.iter().zip(recombined.ham.iter()) {
-            let diff = a - b;
-            assert!(
-                diff.norm() < 1e-12,
-                "incoherent mode recombination mismatch: {diff}"
-            );
-        }
-    }
-
-    #[test]
-    fn floquet_mode_resolved_incoherent_weights_enforce_unit_sum() {
-        let lat = array![[1.0, 0.0], [0.0, 1.0]];
-        let orb = array![[0.0, 0.0], [0.22, 0.14]];
-        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
-        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
-        model.set_hop(0.9, 0, 1, &array![0, 1], None);
-
-        let mode1 = LightMode::new(1, array![Complex::new(0.28, 0.0), Complex::new(0.0, 0.21)]);
-        let mode2 = LightMode::new(
-            2,
-            array![Complex::new(0.04, 0.02), Complex::new(0.03, -0.01)],
-        );
-        let drive = FloquetDrive::with_modes(1.0, vec![mode1, mode2]);
-        let trunc = FloquetTruncation::new(2, 512);
-        let options = FloquetEffectiveOptions::new().with_harmonic_max(3);
-
-        let err = model
-            .floquet_effective_mode_resolved_model(
-                &drive,
-                &trunc,
-                Some(&options),
-                FloquetModeCombination::ModeResolvedIncoherent(vec![0.6, 0.6]),
-            )
-            .expect_err("mode weights should fail to exceed unit sum");
-
-        assert!(
-            err.to_string().contains("Σw <= 1")
-                || err.to_string().contains("mode weights exceed unit total"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn floquet_mode_resolved_incoherent_no_static_matches_weighted_single_modes() {
+    fn floquet_mode_resolved_matches_sum_of_isolated_corrections() {
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
         let orb = array![[0.0, 0.0], [0.22, 0.14]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
@@ -5011,43 +4921,43 @@ mod tests {
         let options = FloquetEffectiveOptions::new().with_harmonic_max(3);
 
         let mode1_only = model
-            .floquet_effective_mode_resolved_model(
+            .floquet_effective_model(
                 &FloquetDrive::with_modes(1.0, vec![mode1]),
                 &trunc,
                 Some(&options),
-                FloquetModeCombination::Coherent,
             )
             .unwrap();
         let mode2_only = model
-            .floquet_effective_mode_resolved_model(
+            .floquet_effective_model(
                 &FloquetDrive::with_modes(1.0, vec![mode2]),
                 &trunc,
                 Some(&options),
-                FloquetModeCombination::Coherent,
             )
             .unwrap();
-        let mixed = model
-            .floquet_effective_mode_resolved_model(
-                &drive,
-                &trunc,
-                Some(&options),
-                FloquetModeCombination::ModeResolvedIncoherentNoStatic(vec![0.3, 1.7]),
-            )
+        let recombined = model
+            .floquet_effective_mode_resolved_model(&drive, &trunc, Some(&options))
             .unwrap();
 
-        let k = array![0.13, 0.27];
-        let h_mix = mixed.gen_ham(&k, Gauge::Lattice);
-        let h_expected = mode1_only.gen_ham(&k, Gauge::Lattice) * Complex::new(0.3, 0.0)
-            + mode2_only.gen_ham(&k, Gauge::Lattice) * Complex::new(1.7, 0.0);
-        let diff = &h_mix - &h_expected;
-        assert!(
-            diff.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt() < 1e-10,
-            "no-static weighted mode recombination mismatch: {diff:?}"
-        );
+        for k in [array![0.13, 0.27], array![0.31, 0.08]] {
+            let h0 = model.gen_ham(&k, Gauge::Lattice);
+            let expected = mode1_only.gen_ham(&k, Gauge::Lattice)
+                + mode2_only.gen_ham(&k, Gauge::Lattice)
+                - h0;
+            let actual = recombined.gen_ham(&k, Gauge::Lattice);
+            let diff = actual - expected;
+            assert!(
+                diff.iter()
+                    .map(|value| value.norm_sqr())
+                    .sum::<f64>()
+                    .sqrt()
+                    < 1e-11,
+                "mode-diagonal correction sum mismatch: {diff:?}"
+            );
+        }
     }
 
     #[test]
-    fn floquet_mode_resolved_incoherent_no_static_zero_weights_is_zero_model() {
+    fn floquet_mode_resolved_single_mode_matches_ordinary_model() {
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
         let orb = array![[0.0, 0.0], [0.22, 0.14]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
@@ -5056,37 +4966,155 @@ mod tests {
 
         let drive = FloquetDrive::with_modes(
             1.0,
-            vec![
-                LightMode::new(1, array![Complex::new(0.28, 0.0), Complex::new(0.0, 0.21)]),
-                LightMode::new(
-                    2,
-                    array![Complex::new(0.04, 0.02), Complex::new(0.03, -0.01)],
-                ),
-            ],
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.28, 0.0), Complex::new(0.0, 0.21)],
+            )],
         );
         let trunc = FloquetTruncation::new(2, 512);
+        let options = FloquetEffectiveOptions::new().with_harmonic_max(3);
 
-        let zero = model
-            .floquet_effective_mode_resolved_model(
-                &drive,
-                &trunc,
-                None,
-                FloquetModeCombination::ModeResolvedIncoherentNoStatic(vec![0.0, 0.0]),
-            )
+        let ordinary = model
+            .floquet_effective_model(&drive, &trunc, Some(&options))
             .unwrap();
+        let resolved = model
+            .floquet_effective_mode_resolved_model(&drive, &trunc, Some(&options))
+            .unwrap();
+        assert_eq!(resolved.hamR, ordinary.hamR);
+        assert_eq!(resolved.ham, ordinary.ham);
+    }
 
-        assert_eq!(zero.hamR, Array2::<isize>::zeros((1, 2)));
-        assert_eq!(zero.ham.dim(), (1, model.nsta(), model.nsta()));
-        assert!(
-            zero.ham
-                .iter()
-                .all(|value| *value == Complex::new(0.0, 0.0))
+    #[test]
+    fn floquet_mode_resolved_avoids_transient_static_overflow() {
+        let mut model = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+        model.set_onsite(&array![1.0e308], None);
+        let drive =
+            FloquetDrive::with_modes(2.0, vec![LightMode::new(1, array![Complex::new(0.2, 0.0)])]);
+        let trunc = FloquetTruncation::new(1, 16);
+
+        // The only hopping has zero bond length, so the field induces exactly
+        // zero correction.  Forming H0 + Heff before subtracting H0 would
+        // overflow here even though the physical answer remains finite.
+        let resolved = model
+            .floquet_effective_mode_resolved_model(&drive, &trunc, None)
+            .unwrap();
+        assert_eq!(resolved.hamR, model.hamR);
+        assert_eq!(resolved.ham, model.ham);
+        assert!(resolved.ham.iter().all(|value| value.re.is_finite()));
+    }
+
+    #[test]
+    fn floquet_mode_resolved_exact_sum_handles_cancelling_large_corrections() {
+        let mut model = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+        let hopping = 1.5e308;
+        model.set_hop(hopping, 0, 0, &array![1], None);
+        let drive = FloquetDrive::with_modes(
+            2.0,
+            vec![
+                LightMode::new(1, array![Complex::new(3.0, 0.0)]),
+                LightMode::new(1, array![Complex::new(1.0e-10, 0.0)]),
+            ],
         );
-        assert!(
-            zero.gen_ham(&array![0.13, 0.27], Gauge::Lattice)
-                .iter()
-                .all(|value| *value == Complex::new(0.0, 0.0))
+        let trunc = FloquetTruncation::new(1, 16);
+        let options = FloquetEffectiveOptions::new().with_order(0);
+
+        // The first isolated correction (J0(3)-1)*hopping is outside f64,
+        // while the complete signed sum is representable because the second
+        // mode contributes J0(1e-10)≈1.  No individual delta may be formed.
+        let resolved = model
+            .floquet_effective_mode_resolved_model(&drive, &trunc, Some(&options))
+            .unwrap();
+        let expected = hopping * (bessel_j(0, 3.0) + bessel_j(0, 1.0e-10) - 1.0);
+        for block in resolved.ham.axis_iter(Axis(0)) {
+            let value = block[[0, 0]].re;
+            assert!(value.is_finite());
+            if value != 0.0 {
+                assert!(((value - expected) / expected).abs() < 1e-14);
+            }
+        }
+    }
+
+    #[test]
+    fn hermiticity_midpoint_preserves_finite_extremes() {
+        for value in [f64::from_bits(1), 1.0e308] {
+            let mut ham = Array3::from_elem((1, 1, 1), Complex::new(value, 0.0));
+            let ham_r = Array2::<isize>::zeros((1, 1));
+            enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
+            assert_eq!(ham[[0, 0, 0]].re.to_bits(), value.to_bits());
+            assert_eq!(ham[[0, 0, 0]].im.to_bits(), 0.0_f64.to_bits());
+        }
+    }
+
+    #[test]
+    fn exact_real_sum_preserves_residuals_after_large_cancellation() {
+        for (values, residual) in [
+            (
+                vec![1.0, 2.0_f64.powi(-54), -1.0, 1.0, -1.0],
+                2.0_f64.powi(-54),
+            ),
+            (
+                vec![f64::from_bits(1), f64::MAX, -f64::MAX],
+                f64::from_bits(1),
+            ),
+            (
+                vec![1.0, f64::from_bits(1), -1.0, f64::MAX, -f64::MAX],
+                f64::from_bits(1),
+            ),
+            (
+                vec![
+                    2.0_f64.powi(197),
+                    2.0_f64.powi(934),
+                    2.0_f64.powi(144),
+                    -2.0_f64.powi(197),
+                    -2.0_f64.powi(934),
+                ],
+                2.0_f64.powi(144),
+            ),
+        ] {
+            let mut sum = ExactRealAccumulator::default();
+            for value in values {
+                sum.add(value);
+            }
+            assert_eq!(sum.finish().unwrap().to_bits(), residual.to_bits());
+        }
+    }
+
+    #[test]
+    fn exact_real_sum_rejects_non_finite_summands() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut sum = ExactRealAccumulator::default();
+            sum.add(1.0);
+            sum.add(invalid);
+            sum.add(-1.0);
+            assert!(sum.finish().is_err());
+        }
+    }
+
+    #[test]
+    fn floquet_mode_resolved_empty_and_zero_modes_return_static_model() {
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.22, 0.14]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.set_hop(0.9, 0, 1, &array![0, 1], None);
+        model.set_hop(Complex::new(0.4, -0.2), 1, 1, &array![1, 1], None);
+
+        let trunc = FloquetTruncation::new(2, 512);
+        let empty = FloquetDrive::new(1.0);
+        let zero = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(0.0, 0.0), Complex::new(0.0, 0.0)],
+            )],
         );
+        for drive in [&empty, &zero] {
+            let resolved = model
+                .floquet_effective_mode_resolved_model(drive, &trunc, None)
+                .unwrap();
+            assert_eq!(resolved.hamR, model.hamR);
+            assert_eq!(resolved.ham, model.ham);
+        }
     }
 
     #[test]
