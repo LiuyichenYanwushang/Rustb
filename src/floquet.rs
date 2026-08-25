@@ -568,7 +568,7 @@ impl FloquetEffectiveOptions {
     }
 }
 
-fn validate_incoherent_weights(mode_weights: &[f64], require_unit_sum: bool) -> Result<f64> {
+fn validate_incoherent_weights(mode_weights: &[f64], include_static_residual: bool) -> Result<f64> {
     if mode_weights.is_empty() {
         return Ok(0.0);
     }
@@ -594,7 +594,7 @@ fn validate_incoherent_weights(mode_weights: &[f64], require_unit_sum: bool) -> 
         ));
     }
 
-    if require_unit_sum && total > 1.000_000_000_000_001 {
+    if include_static_residual && total > 1.000_000_000_000_001 {
         return Err(TbError::Other(format!(
             "floquet_effective_q_model: mode weights exceed unit total ({total}); expected Σw <= 1"
         )));
@@ -680,36 +680,80 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 &default_options
             }
         };
+        validate_floquet_drive::<DIM>(drive, trunc)?;
+        if options.order > 2 {
+            return Err(TbError::Other(format!(
+                "FloquetEffectiveOptions.order must be 0, 1, or 2, got {}",
+                options.order
+            )));
+        }
+        if let Some(target) = &options.target_hamR {
+            return Err(TbError::Other(format!(
+                "FloquetEffectiveOptions.target_hamR is not supported by the \
+                 real-space path: the effective support is determined \
+                 automatically (got {} target vectors)",
+                target.nrows()
+            )));
+        }
+        effective_harmonic_max(options, trunc)?;
+        let nsta = self.nsta();
 
-        let static_model = self.floquet_effective_model(
-            &FloquetDrive::new(drive.omega0_ev),
-            trunc,
-            Some(options),
-        )?;
+        let (mut effective, mut union_rows, mut union_blocks) = if include_static {
+            // With no drive, every van Vleck correction vanishes exactly, so
+            // the static effective model is just the input Hamiltonian with
+            // its position-matrix tag removed.
+            let mut static_model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
+                self.lat.clone(),
+                self.orb.clone(),
+                Some(self.atoms.clone()),
+            )?;
+            static_model.orb_projection = self.orb_projection.clone();
+            let union_rows = self
+                .hamR
+                .rows()
+                .into_iter()
+                .map(|row| row.to_vec())
+                .collect::<Vec<_>>();
+            let mut union_blocks = self
+                .ham
+                .axis_iter(Axis(0))
+                .map(|block| block.to_owned())
+                .collect::<Vec<_>>();
 
-        let nsta = static_model.ham.len_of(Axis(1));
-        let mut union_rows = static_model
-            .hamR
-            .rows()
-            .into_iter()
-            .map(|row| row.to_vec())
-            .collect::<Vec<_>>();
-        let mut union_blocks = static_model
-            .ham
-            .axis_iter(Axis(0))
-            .map(|block| block.to_owned())
-            .collect::<Vec<_>>();
-
-        if !include_static {
-            for block in union_blocks.iter_mut() {
-                block.mapv_inplace(|_| Complex::new(0.0, 0.0));
-            }
-        } else {
-            let static_weight = 1.0 - total_weight;
+            // The validator permits a tiny roundoff excess above one.  Clamp
+            // that tolerance window instead of introducing a negative static
+            // contribution.
+            let static_weight = (1.0 - total_weight).max(0.0);
             for block in union_blocks.iter_mut() {
                 block.mapv_inplace(|x| x * static_weight);
             }
-        }
+            static_model.ham = Array3::zeros((0, nsta, nsta));
+            static_model.hamR = Array2::zeros((0, DIM));
+            (static_model, union_rows, union_blocks)
+        } else {
+            // Preserve a conventional zero R=0 block without evaluating a
+            // zero-drive Floquet model that will immediately be discarded.
+            let mut zero_model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
+                self.lat.clone(),
+                self.orb.clone(),
+                Some(self.atoms.clone()),
+            )?;
+            zero_model.orb_projection = self.orb_projection.clone();
+            let union_rows = zero_model
+                .hamR
+                .rows()
+                .into_iter()
+                .map(|row| row.to_vec())
+                .collect::<Vec<_>>();
+            let union_blocks = zero_model
+                .ham
+                .axis_iter(Axis(0))
+                .map(|block| block.to_owned())
+                .collect::<Vec<_>>();
+            zero_model.ham = Array3::zeros((0, nsta, nsta));
+            zero_model.hamR = Array2::zeros((0, DIM));
+            (zero_model, union_rows, union_blocks)
+        };
 
         let mut row_index = std::collections::BTreeMap::<Vec<isize>, usize>::new();
         for (idx, row) in union_rows.iter().enumerate() {
@@ -738,20 +782,24 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
                 let src = single.ham.index_axis(Axis(0), i_r);
                 let dst = &mut union_blocks[union_idx];
-                for (o, s) in dst.iter_mut().zip(src.iter()) {
-                    *o += *s * *mode_weight;
+                for (output, input) in dst.iter_mut().zip(src.iter()) {
+                    *output += *input * *mode_weight;
                 }
             }
         }
 
-        let mut effective = static_model;
-        let output_ham_views = union_blocks
+        let mut ordered_support = union_rows.into_iter().zip(union_blocks).collect::<Vec<_>>();
+        ordered_support.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        let output_ham_views = ordered_support
             .iter()
-            .map(|block| block.view())
+            .map(|(_, block)| block.view())
             .collect::<Vec<_>>();
         effective.ham = ndarray::stack(Axis(0), &output_ham_views)?;
-        effective.hamR = Array2::from_shape_fn((union_rows.len(), DIM), |(i, d)| union_rows[i][d]);
+        effective.hamR = Array2::from_shape_fn((ordered_support.len(), DIM), |(i, d)| {
+            ordered_support[i].0[d]
+        });
         enforce_real_space_hermiticity(&mut effective.ham, &effective.hamR)?;
+        effective.validate()?;
         Ok(effective)
     }
 }
@@ -4260,18 +4308,61 @@ mod tests {
                 &drive,
                 &trunc,
                 Some(&options),
-                FloquetQModelMode::ModeResolvedIncoherentNoStatic(vec![0.3, 0.7]),
+                FloquetQModelMode::ModeResolvedIncoherentNoStatic(vec![0.3, 1.7]),
             )
             .unwrap();
 
         let k = array![0.13, 0.27];
         let h_mix = mixed.gen_ham(&k, Gauge::Lattice);
         let h_expected = mode1_only.gen_ham(&k, Gauge::Lattice) * Complex::new(0.3, 0.0)
-            + mode2_only.gen_ham(&k, Gauge::Lattice) * Complex::new(0.7, 0.0);
+            + mode2_only.gen_ham(&k, Gauge::Lattice) * Complex::new(1.7, 0.0);
         let diff = &h_mix - &h_expected;
         assert!(
             diff.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt() < 1e-10,
             "no-static weighted mode recombination mismatch: {diff:?}"
+        );
+    }
+
+    #[test]
+    fn floquet_effective_q_model_incoherent_no_static_zero_weights_is_zero_model() {
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.22, 0.14]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.set_hop(0.9, 0, 1, &array![0, 1], None);
+
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(0.28, 0.0), Complex::new(0.0, 0.21)]),
+                LightMode::new(
+                    2,
+                    array![Complex::new(0.04, 0.02), Complex::new(0.03, -0.01)],
+                ),
+            ],
+        );
+        let trunc = FloquetTruncation::new(2, 512);
+
+        let zero = model
+            .floquet_effective_q_model(
+                &drive,
+                &trunc,
+                None,
+                FloquetQModelMode::ModeResolvedIncoherentNoStatic(vec![0.0, 0.0]),
+            )
+            .unwrap();
+
+        assert_eq!(zero.hamR, Array2::<isize>::zeros((1, 2)));
+        assert_eq!(zero.ham.dim(), (1, model.nsta(), model.nsta()));
+        assert!(
+            zero.ham
+                .iter()
+                .all(|value| *value == Complex::new(0.0, 0.0))
+        );
+        assert!(
+            zero.gen_ham(&array![0.13, 0.27], Gauge::Lattice)
+                .iter()
+                .all(|value| *value == Complex::new(0.0, 0.0))
         );
     }
 
