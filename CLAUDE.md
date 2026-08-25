@@ -454,6 +454,54 @@ a(t) = Re Σ_α a_α e^{−i l_α Ω₀ t}
 `l_α` is an integer harmonic. Supports arbitrary linear, circular, elliptical,
 and mixed-frequency commensurate polarization.
 
+### Coherent and mode-resolved incoherent drives
+
+`floquet_effective_model` always treats every entry in `FloquetDrive::modes`
+as one **coherent** classical field: the complex mode amplitudes are summed
+before the Peierls exponential and Fourier decomposition.  Modes at the same
+temporal harmonic therefore interfere, and the generalized-Bessel expansion
+also retains nonlinear mixed-frequency paths.  In general,
+
+```math
+H_{\rm eff}[a_1+a_2]\ne H_{\rm eff}[a_1]+H_{\rm eff}[a_2].
+```
+
+`floquet_effective_mode_resolved_model` is a separate statistical-mixture
+helper.  It computes one complete effective model `H_eff^(i)` for each
+nonzero-weight mode in isolation, unions those supports, and only then takes a
+real weighted sum.  Zero-weight modes are skipped without evaluating their
+model or adding their support.  It does **not** put the modes into one Peierls
+exponential, so all coherent cross-mode interference and mixed-mode virtual
+paths are absent.  The weight vector must have exactly one finite, nonnegative
+entry per drive mode.  Its two mixture conventions are:
+
+```math
+\begin{aligned}
+\texttt{ModeResolvedIncoherent}:\quad
+H_{\rm mix}
+&=(1-\sum_i w_i)H_0+\sum_iw_iH_{\rm eff}^{(i)}\\
+&=H_0+\sum_iw_i\bigl(H_{\rm eff}^{(i)}-H_0\bigr),
+\qquad \sum_iw_i\le1,\\[3pt]
+\texttt{ModeResolvedIncoherentNoStatic}:\quad
+H_{\rm mix}&=\sum_iw_iH_{\rm eff}^{(i)},
+\qquad w_i\ge0.
+\end{aligned}
+```
+
+The first convention describes a normalized classical ensemble, including a
+dark fraction.  The implementation tolerates only a `1e-15` roundoff excess
+above unit total and clamps the corresponding residual static weight to zero.
+The second convention is a literal weighted Hamiltonian sum; unless
+`sum(w_i) = 1`, it also rescales the static Hamiltonian and must not be
+mistaken for `H_0 + sum_i w_i delta H_i`.  These modes are useful for an
+explicitly chosen mode-resolved mixture, but they are not an exact all-orders
+average over random relative phases.  In the weak-field `O(A^2)` limit the
+cross-mode terms average to zero, so summing the isolated corrections is the
+usual incoherent approximation.  At higher field order, phase averaging can
+retain cross-intensity terms such as `A_i^2 A_j^2`, which this helper omits.
+With `ModeResolvedIncoherentNoStatic`, all-zero weights produce the valid zero
+model with only the conventional `R = 0` zero block.
+
 ### Peierls time dependence
 
 Each hopping dressed by `exp[−i a(t)·d_{ijR}]`. Fourier coefficient:
