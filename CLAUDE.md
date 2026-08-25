@@ -466,41 +466,27 @@ also retains nonlinear mixed-frequency paths.  In general,
 H_{\rm eff}[a_1+a_2]\ne H_{\rm eff}[a_1]+H_{\rm eff}[a_2].
 ```
 
-`floquet_effective_mode_resolved_model` is a separate statistical-mixture
-helper.  It computes one complete effective model `H_eff^(i)` for each
-nonzero-weight mode in isolation, unions those supports, and only then takes a
-real weighted sum.  Zero-weight modes are skipped without evaluating their
-model or adding their support.  It does **not** put the modes into one Peierls
-exponential, so all coherent cross-mode interference and mixed-mode virtual
-paths are absent.  The weight vector must have exactly one finite, nonnegative
-entry per drive mode.  Its two mixture conventions are:
+`floquet_effective_mode_resolved_model` is the unique mutually-incoherent
+mode-combination helper.  It computes one complete effective model
+`H_eff^(alpha)` for each nonzero mode in isolation, unions those supports, and
+adds every induced correction around one common static Hamiltonian:
 
 ```math
-\begin{aligned}
-\texttt{ModeResolvedIncoherent}:\quad
-H_{\rm mix}
-&=(1-\sum_i w_i)H_0+\sum_iw_iH_{\rm eff}^{(i)}\\
-&=H_0+\sum_iw_i\bigl(H_{\rm eff}^{(i)}-H_0\bigr),
-\qquad \sum_iw_i\le1,\\[3pt]
-\texttt{ModeResolvedIncoherentNoStatic}:\quad
-H_{\rm mix}&=\sum_iw_iH_{\rm eff}^{(i)},
-\qquad w_i\ge0.
-\end{aligned}
+H_{\rm inc}=H_0+\sum_\alpha
+\left(H_{\rm eff}[a_\alpha]-H_0\right).
 ```
 
-The first convention describes a normalized classical ensemble, including a
-dark fraction.  The implementation tolerates only a `1e-15` roundoff excess
-above unit total and clamps the corresponding residual static weight to zero.
-The second convention is a literal weighted Hamiltonian sum; unless
-`sum(w_i) = 1`, it also rescales the static Hamiltonian and must not be
-mistaken for `H_0 + sum_i w_i delta H_i`.  These modes are useful for an
-explicitly chosen mode-resolved mixture, but they are not an exact all-orders
-average over random relative phases.  In the weak-field `O(A^2)` limit the
-cross-mode terms average to zero, so summing the isolated corrections is the
-usual incoherent approximation.  At higher field order, phase averaging can
-retain cross-intensity terms such as `A_i^2 A_j^2`, which this helper omits.
-With `ModeResolvedIncoherentNoStatic`, all-zero weights produce the valid zero
-model with only the conventional `R = 0` zero block.
+Each mode's `a_complex` already specifies its amplitude and intensity, so the
+API has no additional weights or combination enum.  Exact-zero modes are
+skipped and an empty/all-zero drive returns `H_0` exactly.  Modes are never put
+into one Peierls exponential, so coherent cross-mode interference and
+mixed-mode virtual paths are absent.  This mode-diagonal construction agrees
+with random-relative-phase averaging at leading weak-field `O(A^2)`.  It is
+not an exact all-orders phase average: at higher field order, phase averaging
+can retain cross-intensity terms such as `A_alpha^2 A_beta^2`, which this
+helper intentionally omits.  Probabilistic experimental mixtures or duty
+cycles should be combined by the caller as observables/configurations, rather
+than interpreted as extra optical amplitudes here.
 
 ### Coherent linear-`q` effective model
 
@@ -650,11 +636,10 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 | `FloquetTruncation` | Photon cutoff `n_max` and time-grid `n_time`; `n_sector()` = `2n_max+1` |
 | `IncidentBasis` | Transverse polarization basis from incident direction |
 | `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_harmonic_max(n)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
-| `FloquetModeCombination` | Explicit coherent or mode-resolved incoherent statistical recombination strategy |
 | `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
 | `Model::floquet_effective_model` | Inherent method returning same-size effective Model |
 | `Model::floquet_effective_q_model` | Same-size coherent weak-field correction through `O(A^2 q/W)` for one common Cartesian `q` |
-| `Model::floquet_effective_mode_resolved_model` | Separate mode-by-mode weighted statistical recombination helper |
+| `Model::floquet_effective_mode_resolved_model` | `H_0 + sum_alpha (H_eff[a_alpha] - H_0)` for mutually incoherent modes; no weights |
 
 ### Two Floquet paths
 

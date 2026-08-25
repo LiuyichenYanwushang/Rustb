@@ -468,6 +468,15 @@ let quasienergy =
 let effective =
     model.floquet_effective_model(&drive, &truncation, None)?;
 
+// Mutually incoherent beams: evaluate every nonzero mode independently and
+// add its correction around one common static H0. There are no extra weights;
+// each LightMode amplitude already fixes that beam's intensity.
+let effective_incoherent = model.floquet_effective_mode_resolved_model(
+    &drive,
+    &truncation,
+    None,
+)?;
+
 // Retain the complete van Vleck correction through O(omega^-2).
 let second_order_options = FloquetEffectiveOptions::new().with_order(2);
 let effective_second_order = model.floquet_effective_model(
@@ -492,6 +501,7 @@ let effective_linear_q = model.floquet_effective_q_model(
 |---|---:|---|
 | `floquet_model` / `floquet_ham_onek` | `nsta * (2*n_max + 1)` | Full truncated Sambe problem |
 | `floquet_effective_model` | `nsta` | Off-resonant, high-frequency expansion |
+| `floquet_effective_mode_resolved_model` | `nsta` | Mode-diagonal mutually incoherent correction sum |
 | `floquet_effective_q_model` | `nsta` | One coherent common `q`, through `O(A^2 q/W)` |
 
 `floquet_effective_model` uses the real-space generalized-Bessel backend:
@@ -502,6 +512,13 @@ does not use the value of `trunc.n_time` for the computation (the field
 only needs to be positive): out-of-range links fall back to a per-link
 time-grid DFT sized from the link's own bandwidth and the requested
 harmonic range.
+
+For multiple mutually incoherent modes,
+`floquet_effective_mode_resolved_model` computes
+`H0 + sum_alpha (H_eff[a_alpha] - H0)`.  It never combines the modes inside one
+Peierls exponential, skips exact-zero modes, and unions all generated hopping
+supports.  This is the leading weak-field random-phase result, not an exact
+all-orders phase average: higher-order cross-intensity terms are omitted.
 
 `floquet_effective_q_model` does not use numerical momentum differences.
 For a Cartesian bond `d = (R + tau_j - tau_i) * lat`, it represents
