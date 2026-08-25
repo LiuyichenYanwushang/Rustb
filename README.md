@@ -386,8 +386,9 @@ zero-temperature metallic calculations.
 - Boundaries and fields: surface Green functions and uniform magnetic fields
   through the Peierls substitution.
 - Interfaces: Wannier90 import, BXSF/FRMSF export, and band unfolding.
-- Driven systems: Floquet-Sambe Hamiltonians and same-size van Vleck effective
-  models.
+- Driven systems: Floquet-Sambe Hamiltonians, same-size van Vleck effective
+  models, and a coherent long-wavelength `O(A^2 q/W)` effective-model
+  correction.
 
 See [SKILLS.md](SKILLS.md) for current signatures and practical examples.
 The generated rustdoc contains the detailed mathematical conventions.

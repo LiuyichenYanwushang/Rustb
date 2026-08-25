@@ -32,7 +32,7 @@ let spinless = Model::<false, 2>::tb_model(lat.clone(), orb.clone(), None)?;
 let spinful = Model::<true, 2>::tb_model(lat, orb, None)?;
 ```
 
-`lat` is a square `DIM × DIM` matrix whose columns are real-space lattice
+`lat` is a square `DIM × DIM` matrix whose rows are real-space lattice
 vectors. Each row of `orb` is an orbital position in fractional coordinates.
 
 ### Hoppings and onsite terms
@@ -475,12 +475,24 @@ let effective_second_order = model.floquet_effective_model(
     &truncation,
     Some(&second_order_options),
 )?;
+
+// One coherent plane wave with a Cartesian wavevector (inverse-length units).
+// This returns the same number of states as `model` and adds the analytic
+// weak-field O(A^2 q / W) correction to the ordinary q=0 result.
+let q_cartesian = arr1(&[2.0e-3, 0.0]);
+let effective_linear_q = model.floquet_effective_q_model(
+    &drive,
+    &truncation,
+    Some(&second_order_options),
+    &q_cartesian,
+)?;
 ```
 
 | API | Basis size | Intended regime |
 |---|---:|---|
 | `floquet_model` / `floquet_ham_onek` | `nsta * (2*n_max + 1)` | Full truncated Sambe problem |
 | `floquet_effective_model` | `nsta` | Off-resonant, high-frequency expansion |
+| `floquet_effective_q_model` | `nsta` | One coherent common `q`, through `O(A^2 q/W)` |
 
 `floquet_effective_model` uses the real-space generalized-Bessel backend:
 no `k_mesh` and no `target_hamR` — the effective hopping support is
@@ -490,6 +502,19 @@ does not use the value of `trunc.n_time` for the computation (the field
 only needs to be positive): out-of-range links fall back to a per-link
 time-grid DFT sized from the link's own bandwidth and the requested
 harmonic range.
+
+`floquet_effective_q_model` does not use numerical momentum differences.
+For a Cartesian bond `d = (R + tau_j - tau_i) * lat`, it represents
+`D_a H_0` by the real-space block `i*d_a*t(R)`.  It constructs
+`G_n = a_n·D H_0`, forms `{G_n,G_n†}` by real-space convolution, and applies
+`q·D` by multiplying every resulting output hopping by `i*q·d_out`.  The
+same-harmonic complex amplitudes are summed coherently.  Both
+`|a_n·d| << 1` and `|q·d| << 1` are required; distinct coherent wavevectors
+need a graded or commensurate-supercell treatment rather than this method.
+The correction includes only positive harmonics through the effective
+`harmonic_max`; active nonpositive harmonics are rejected for nonzero `q` when
+`order >= 1`.  `order = 0` adds no linear-`q` term, and `q = 0` follows the
+ordinary `floquet_effective_model` path exactly.
 
 For three-dimensional illumination, `IncidentBasis::from_direction` constructs
 two transverse polarization vectors from a propagation direction.

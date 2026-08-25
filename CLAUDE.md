@@ -196,7 +196,7 @@ pub struct Model<
     const DIM: usize = 3,
     R: RMatrixData = NoRMatrix,
 > {
-    pub lat: Array2<f64>,     // real-space lattice vectors (columns)
+    pub lat: Array2<f64>,     // real-space lattice vectors (rows)
     pub orb: Array2<f64>,     // fractional orbital positions (rows)
     pub rmatrix: R,           // NoRMatrix = ZST, HasRMatrix = Array4 newtype
     // ...
@@ -502,6 +502,58 @@ retain cross-intensity terms such as `A_i^2 A_j^2`, which this helper omits.
 With `ModeResolvedIncoherentNoStatic`, all-zero weights produce the valid zero
 model with only the conventional `R = 0` zero block.
 
+### Coherent linear-`q` effective model
+
+`Model::floquet_effective_q_model` implements the same-size, primitive-cell
+long-wavelength correction for **one common coherent Cartesian wavevector**
+`q`.  Its field convention is
+
+```math
+a(r,t)=\operatorname{Re}\sum_{n>0}a_n e^{+iq\cdot r-in\Omega_0t}.
+```
+
+Modes with the same temporal harmonic are summed coherently before the
+correction is evaluated.  The method first computes the existing `q = 0`
+baseline—Bessel all-orders in field amplitude and van Vleck through the
+requested inverse-frequency order 0, 1, or 2—and, when `order >= 1`, adds
+
+```math
+\delta_qH_{\rm eff}
+=-\sum_{1\le n\le n_{\rm max}}\frac{q_a a_{ni}a^*_{nj}}{8nW}
+\,D_a\{D_iH_0,D_jH_0\},
+\qquad W=\hbar\Omega_0.
+```
+
+Here every `D_a` is an ordinary derivative with respect to the physical
+Cartesian electron wavevector in the fixed Wannier/atomic gauge.  It is
+computed analytically from real-space hopping, not with a finite-difference
+mesh and not by differentiating band eigenvectors:
+
+```math
+H_{0,ij}(k)=\sum_Rt_{ij}(R)e^{ik\cdot d_{ijR}},\qquad
+D_aH_{0,ij}(k)=i\sum_Rd_{ijR,a}t_{ij}(R)e^{ik\cdot d_{ijR}}.
+```
+
+The implementation therefore builds
+`G_n(R) = i (a_n · d_{ijR}) t(R)`, evaluates the real-space anticommutator
+`J_n = {G_n,G_n†}`, and applies the final directional derivative by replacing
+each output block with `i (q · d_out) J_n(R)`.  The full Cartesian bond
+`d = (R + tau_j - tau_i) · lat` includes the orbital embedding; for spinful
+models the same orbital bond is used in each spin block.
+
+The added term is controlled only through `O(A^2 q/W)` and `O(W^-1)` and
+requires both `|a_n · d| << 1` and `|q · d| << 1` on relevant bonds.  An
+`order = 2` option still retains the `q = 0` baseline through `O(W^-2)`, but
+does not promote the linear-`q` term to `O(W^-2)`.  Here `n_max` is the
+effective `harmonic_max`; higher harmonics are omitted from the correction,
+and active nonpositive harmonics are rejected when nonzero `q` and
+`order >= 1` request it.  With `order = 0` no linear-`q` term is added, while
+`q = 0` returns the ordinary baseline exactly without imposing that positive-
+harmonic restriction.  No optical supercell or photon bands are introduced.
+Coherent beams with distinct wavevectors cannot be represented by this
+one-model interface; use separate calls or a future graded/supercell solver
+instead.
+
 ### Peierls time dependence
 
 Each hopping dressed by `exp[−i a(t)·d_{ijR}]`. Fourier coefficient:
@@ -598,8 +650,11 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 | `FloquetTruncation` | Photon cutoff `n_max` and time-grid `n_time`; `n_sector()` = `2n_max+1` |
 | `IncidentBasis` | Transverse polarization basis from incident direction |
 | `FloquetEffectiveOptions` | Builder for van Vleck: `with_order(n)`, `with_harmonic_max(n)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
+| `FloquetModeCombination` | Explicit coherent or mode-resolved incoherent statistical recombination strategy |
 | `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
 | `Model::floquet_effective_model` | Inherent method returning same-size effective Model |
+| `Model::floquet_effective_q_model` | Same-size coherent weak-field correction through `O(A^2 q/W)` for one common Cartesian `q` |
+| `Model::floquet_effective_mode_resolved_model` | Separate mode-by-mode weighted statistical recombination helper |
 
 ### Two Floquet paths
 
@@ -607,6 +662,7 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 |------|---------|------------|------|
 | `floquet_model` | Enlarged `Model` | `nsta·(2N+1)` | Exact, any Ω |
 | `floquet_effective_model` | Same-size `Model` | `nsta` | Ω ≫ bandwidth; real-space Bessel backend, no `k_mesh` |
+| `floquet_effective_q_model` | Same-size `Model` | `nsta` | Coherent weak-field, long-wavelength `O(A^2 q/W)` correction |
 | `floquet_effective_model_legacy` | Same-size `Model` | `nsta` | `pub(crate)` k-space reference: cross-validation, custom `target_hamR` |
 
 `floquet_model` encodes photon sectors as additional orbitals. Spinless basis
