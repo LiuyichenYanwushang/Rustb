@@ -1785,6 +1785,32 @@ mod tests {
         model
     }
 
+    fn sg199_scalar_orbit_model() -> Model<false, 3, NoRMatrix> {
+        let positions = array![
+            [0.1, 0.1, 0.1],
+            [0.9, 0.4, 0.1],
+            [0.1, 0.9, 0.4],
+            [0.9, 0.6, 0.4],
+            [0.4, 0.1, 0.9],
+            [0.4, 0.9, 0.6],
+            [0.6, 0.4, 0.9],
+            [0.6, 0.6, 0.6]
+        ];
+        let atoms = positions
+            .outer_iter()
+            .enumerate()
+            .map(|(index, position)| {
+                Atom::with_orbitals(position.to_owned(), AtomType::H, [OrbitalId::new(index)])
+            })
+            .collect();
+        let mut model = Model::tb_model(Array2::eye(3), positions, Some(atoms)).unwrap();
+        for index in 0..8 {
+            model.set_hop(0.25, index, (index + 1) % 8, &array![0_isize, 0, 0], None);
+            model.set_hop(0.13, index, (index + 3) % 8, &array![0_isize, 0, 0], None);
+        }
+        model
+    }
+
     fn i4m_scalar_cycle_model() -> Model<false, 3, NoRMatrix> {
         let base_positions = [
             [0.1, 0.2, 0.3],
@@ -2222,6 +2248,59 @@ mod tests {
                 }),
             "selected-arm formal multiplicities must be integral"
         );
+    }
+
+    #[test]
+    fn sg199_compound_coreps_match_symmetric_orbit_characters() {
+        let model = sg199_scalar_orbit_model();
+        let target = model
+            .magnetic_crystal_symmetry_from_atoms(
+                &crate::crystal_symmetry::SymmetryParameters::default(),
+            )
+            .unwrap();
+        assert_eq!(target.spacegroup_number, 199);
+        assert_eq!(
+            target.uni_number, 1515,
+            "the scalar fixture must detect grey I2_13"
+        );
+        let symmetric = model
+            .symmetrize_hamiltonian(
+                &target,
+                &ScalarSiteBasis,
+                &HamiltonianSymmetrizationParameters::default(),
+            )
+            .unwrap();
+        let report = symmetric
+            .calculate_irrep_for_group(&target, &ScalarSiteBasis, None)
+            .unwrap();
+        assert!(report.target_hamiltonian_compatible, "{report}");
+        let p = report
+            .high_symmetry_kpoints
+            .iter()
+            .find(|point| point.label == "P")
+            .expect("SG 199 must expose its P point");
+        assert_eq!(p.bands.len(), 2, "{report}");
+        let mut labels = p
+            .bands
+            .iter()
+            .map(|band| band.label.as_str())
+            .collect::<Vec<_>>();
+        labels.sort_unstable();
+        assert_eq!(labels, ["P1P1", "P3P3"], "{report}");
+        for band in &p.bands {
+            assert!(band.is_identified(), "{report}");
+            let character_norm = band
+                .characters
+                .iter()
+                .filter_map(|character| character.value)
+                .map(|character| character.norm_sqr())
+                .sum::<f64>();
+            assert!(
+                (character_norm - 48.0).abs() < 1e-10,
+                "{} must have the norm-48 realified character, got {character_norm}",
+                band.label
+            );
+        }
     }
 
     #[test]
