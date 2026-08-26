@@ -23,7 +23,7 @@ pub enum OrbProj {
     pz,
     /// $$\ket{d_{xy}}=-\f{i}{\sqrt{2}}\lt(\ket{2,2}-\ket{2,-2}\rt)$$
     dxy,
-    /// $$\ket{d_{yz}}=-\f{i}{\sqrt{2}}\lt(\ket{2,1}+\ket{2,-1}\rt)$$
+    /// $$\ket{d_{yz}}=\f{i}{\sqrt{2}}\lt(\ket{2,1}+\ket{2,-1}\rt)$$
     dyz,
     /// $$\ket{d_{xz}}=-\f{1}{\sqrt{2}}\lt(\ket{2,1}-\ket{2,-1}\rt)$$
     dxz,
@@ -33,17 +33,17 @@ pub enum OrbProj {
     dx2y2,
     /// $$\ket{f_{z^3}}=\ket{3,0}$$
     fz3,
-    /// $$\ket{f_{xz^2}}=\f{1}{\sqrt{2}}\lt(\ket{3,1}-\ket{3,-1}\rt)$$
+    /// $$\ket{f_{xz^2}}=-\f{1}{\sqrt{2}}\lt(\ket{3,1}-\ket{3,-1}\rt)$$
     fxz2,
-    /// $$\ket{f_{yz^2}}=-\f{i}{\sqrt{2}}\lt(\ket{3,1}+\ket{3,-1}\rt)$$
+    /// $$\ket{f_{yz^2}}=\f{i}{\sqrt{2}}\lt(\ket{3,1}+\ket{3,-1}\rt)$$
     fyz2,
     /// $$\ket{f_{z(x^2-y^2)}}=\f{1}{\sqrt{2}}\lt(\ket{3,2}+\ket{3,-2}\rt)$$
     fzx2y2,
     /// $$\ket{f_{xyz}}=-\f{i}{\sqrt{2}}\lt(\ket{3,2}-\ket{3,-2}\rt)$$
     fxyz,
-    /// $$\ket{f_{x(x^2-3y^2)}}=\f{1}{\sqrt{2}}\lt(\ket{3,3}-\ket{3,-3}\rt)$$
+    /// $$\ket{f_{x(x^2-3y^2)}}=-\f{1}{\sqrt{2}}\lt(\ket{3,3}-\ket{3,-3}\rt)$$
     fxx23y2,
-    /// $$\ket{f_{y(3x^2-y^2)}}=-\f{i}{\sqrt{2}}\lt(\ket{3,3}+\ket{3,-3}\rt)$$
+    /// $$\ket{f_{y(3x^2-y^2)}}=\f{i}{\sqrt{2}}\lt(\ket{3,3}+\ket{3,-3}\rt)$$
     fy3x2y2,
     /// $$\ket{sp_{1}}=\frac{1}{\sqrt{2}}\lt(\ket{s}+\ket{p_x}\rt)$$
     sp_1,
@@ -248,8 +248,8 @@ fn pure_quantum_number(projection: OrbProj) -> Option<[Complex<f64>; 16]> {
         }
         OrbProj::dyz => {
             let mut s = [Complex::new(0.0, 0.0); 16];
-            s[5] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-            s[7] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s[5] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+            s[7] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
             s
         }
         OrbProj::dxz => {
@@ -276,14 +276,14 @@ fn pure_quantum_number(projection: OrbProj) -> Option<[Complex<f64>; 16]> {
         }
         OrbProj::fxz2 => {
             let mut s = [Complex::new(0.0, 0.0); 16];
-            s[11] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
-            s[13] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s[11] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s[13] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
             s
         }
         OrbProj::fyz2 => {
             let mut s = [Complex::new(0.0, 0.0); 16];
-            s[11] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-            s[13] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s[11] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+            s[13] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
             s
         }
         OrbProj::fzx2y2 => {
@@ -300,14 +300,14 @@ fn pure_quantum_number(projection: OrbProj) -> Option<[Complex<f64>; 16]> {
         }
         OrbProj::fxx23y2 => {
             let mut s = [Complex::new(0.0, 0.0); 16];
-            s[9] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
-            s[15] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s[9] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s[15] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
             s
         }
         OrbProj::fy3x2y2 => {
             let mut s = [Complex::new(0.0, 0.0); 16];
-            s[9] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-            s[15] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s[9] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+            s[15] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
             s
         }
         _ => return None,

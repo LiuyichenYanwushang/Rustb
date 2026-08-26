@@ -3139,6 +3139,47 @@ mod tests {
     }
 
     #[test]
+    fn automatic_real_orbital_rotation_matches_lm_phase_convention() {
+        let quarter_turn =
+            real_orbital_rotation([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], 1e-10)
+                .unwrap();
+        let angle = std::f64::consts::FRAC_PI_2;
+
+        for (column, source) in PURE_REAL_ORBITALS.iter().enumerate() {
+            let source_lm = source.to_quantum_number().unwrap();
+            let angular_momentum = (column as f64).sqrt().floor() as isize;
+            let rotated_lm = source_lm
+                .iter()
+                .enumerate()
+                .map(|(index, coefficient)| {
+                    let shell_start = (angular_momentum * angular_momentum) as usize;
+                    let magnetic = index as isize - shell_start as isize - angular_momentum;
+                    if index < shell_start
+                        || index >= shell_start + (2 * angular_momentum + 1) as usize
+                    {
+                        Complex64::new(0.0, 0.0)
+                    } else {
+                        *coefficient * Complex64::from_polar(1.0, -(magnetic as f64) * angle)
+                    }
+                })
+                .collect::<ndarray::Array1<_>>();
+
+            for (row, target) in PURE_REAL_ORBITALS.iter().enumerate() {
+                let target_lm = target.to_quantum_number().unwrap();
+                let expected = target_lm
+                    .iter()
+                    .zip(&rotated_lm)
+                    .map(|(target, rotated)| target.conj() * rotated)
+                    .sum::<Complex64>();
+                assert!(
+                    (quarter_turn[[row, column]] - expected).norm() < 1e-10,
+                    "real-orbital and |l,m> rotations disagree at ({row}, {column})"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn automatic_hybrid_sp3_basis_is_closed_and_unitary() {
         let model = atomic_orbital_cubic::<false>(&[
             OrbProj::sp3_1,
