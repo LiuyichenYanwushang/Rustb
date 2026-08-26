@@ -281,6 +281,7 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `atom_struct.rs` | `Atom` and `OrbProj` types |
 | `crystal_symmetry.rs` | Optional `cryspglib` adapter; structure and field-effective symmetry |
 | `hamiltonian_symmetry.rs` | Exact Hamiltonian covariance, residual MSG identification, and forced Hamiltonian symmetrization |
+| `irrep_analysis.rs` | Parallel high-symmetry-k band characters and magnetic corep identification |
 | `error.rs` | `TbError` enum, `Result` alias |
 | `generics.rs` | Numeric abstractions, `SpinDirection::from_index` |
 | `phy_const.rs` | Physical constants: `e`, `ħ`, `μ_B`, `Φ₀`, quantum of conductance |
@@ -758,16 +759,34 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   the complete symmetry-generated support, restore Hermiticity, keep `R=0` at
   row zero, realign old `rmatrix` blocks by R, zero-fill generated rmatrix rows,
   and postcheck every target covariance equation. Return a new Model.
+- **Band coreps diagnose rather than hide broken symmetry**: call
+  `Model::calculate_irrep(&AtomicOrbitalBasis, options)` to detect the
+  Atom-defined/field-effective magnetic group, or
+  `calculate_irrep_for_group(target, provider, options)` for an explicit
+  target. Resolve and validate every localized target action before launching
+  any eigensolver; an incomplete orbital shell or ambiguous Wannier gauge is a
+  hard `IrrepBasisRepresentation` error. Once the representation exists,
+  process independent high-symmetry k points in parallel and preserve their
+  canonical order. Group consecutive degenerate bands, compute unitary sewing
+  characters and antiunitary closure residuals, and fit formal corep
+  multiplicities. Only integer multiplicities, small reconstruction residual,
+  and a closed projected subspace may receive a database label; otherwise
+  retain raw values and print `???`. Never treat an antiunitary `Tr(U K)` as an
+  ordinary character. A nonprimitive cell whose translations alias in the
+  database frame requires unfolding and must error rather than receive
+  primitive-cell labels. Keep BLAS single-threaded under this outer Rayon
+  parallelism.
 - **Current integration status (2026-08-26)**: milestones A–E, Hamiltonian
-  certification/MSG identification F1, and forced symmetrization F2 are
-  implemented, together with strict automatic global-frame atomic-orbital
-  actions through `f` and all Wannier90 hybrid families. The focused
+  certification/MSG identification F1, forced symmetrization F2, and parallel
+  high-symmetry band-corep analysis are implemented, together with strict
+  automatic global-frame atomic-orbital actions through `f` and all Wannier90
+  hybrid families. The focused
   Hamiltonian suite covers pure/hybrid orbital actions, spinless/spinful
   antiunitary operations, cell representatives, and full cubic
   corepresentations. Strict release clippy and full-suite counts must be
   refreshed whenever this section is used as release evidence.
 - **Still deferred**: explicit radial-channel metadata, automatic local-frame
   or SOC-entangled Wannier representations, gauge-covariant Peierls
-  transformations, numerical band irrep/corep assignment, and wiring weighted
-  meshes into response solvers remain follow-up work in
+  transformations, supercell band-irrep unfolding, and wiring weighted meshes
+  into response solvers remain follow-up work in
   `CRYSPGLIB_INTEGRATION_PLAN.md`.

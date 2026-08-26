@@ -19,7 +19,9 @@
 //! returned report.  Users should normally set the selected BLAS backend to one
 //! thread when using this outer parallelism.
 
-use crate::crystal_symmetry::{CrystalSymmetryOperation, MagneticCrystalSymmetry, cry_lattice};
+use crate::crystal_symmetry::{
+    CrystalSymmetry, CrystalSymmetryOperation, MagneticCrystalSymmetry, cry_lattice,
+};
 use crate::error::{Result, TbError};
 use crate::hamiltonian_symmetry::{
     BasisActionContext, BasisSymmetryRepresentation, HamiltonianSymmetrizationParameters,
@@ -27,8 +29,9 @@ use crate::hamiltonian_symmetry::{
 };
 use crate::{Gauge, Model, RMatrixData};
 use cryspglib::irrep::magnetic_summary::{
-    MagneticCorepSummary, MagneticKPointSummary, magnetic_irrep_summary_by_uni,
+    MagneticKPointSummary, MagneticLittleGroupOperation, magnetic_irrep_summary_by_uni,
 };
+use cryspglib::irrep::types::IrrepRecord;
 use cryspglib::irrep::wigner::SettingTransform;
 use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, LeastSquaresSvd, UPLO};
@@ -237,11 +240,41 @@ struct PreparedKPoint {
     model_coordinate: [f64; 3],
     is_point: bool,
     operations: Vec<PointOperation>,
+    formal_coreps: Vec<FormalCorep>,
+}
+
+#[derive(Clone)]
+struct FormalCorep {
+    label: String,
+    dimension: usize,
+    characters: Vec<Option<Complex64>>,
 }
 
 impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
+    /// Detect the Atom-defined magnetic group and calculate its band irreps.
+    ///
+    /// This is the usual entry point. The same `Model` may be passed before or
+    /// after [`Model::symmetrize_hamiltonian`]: a broken Hamiltonian yields raw
+    /// characters and `???`, while a valid symmetrized Hamiltonian yields
+    /// integer multiplicities and database labels. Optional electric and
+    /// magnetic fields are taken from [`IrrepCalculationOptions::symmetry`].
+    pub fn calculate_irrep<P>(
+        &self,
+        representation: &P,
+        options: Option<&IrrepCalculationOptions>,
+    ) -> Result<IrrepCalculationReport>
+    where
+        P: BasisSymmetryRepresentation<SPIN, R>,
+    {
+        let owned_options = options.copied().unwrap_or_default();
+        validate_options(&owned_options)?;
+        let target_group = self
+            .magnetic_crystal_symmetry_from_atoms(&owned_options.symmetry.structural_parameters)?;
+        self.calculate_irrep_for_group(&target_group, representation, Some(&owned_options))
+    }
+
     /// Calculate magnetic little-group characters and corep labels at all
-    /// canonical high-symmetry k points.
+    /// canonical high-symmetry k points for an explicitly supplied target.
     ///
     /// `target_group` supplies the magnetic group whose labels are requested.
     /// The effective `field_preserving_operations` are used, so a uniform
@@ -257,7 +290,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// Independent k points are diagonalized in parallel with Rayon.  Result
     /// ordering remains deterministic.  To avoid nested oversubscription, use
     /// a single-threaded BLAS backend or set its thread count to one.
-    pub fn calculate_irrep<P>(
+    pub fn calculate_irrep_for_group<P>(
         &self,
         target_group: &MagneticCrystalSymmetry,
         representation: &P,
@@ -408,12 +441,15 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                 row_vector_times_matrix(canonical_coordinate, &input_to_data.basis);
             let operations =
                 map_point_operations(&point, &prepared_operations, operation_tolerance)?;
+            let formal_coreps =
+                prepare_formal_coreps::<SPIN>(summary.unitary_sg, &point, &subgroup.ops_from_hall)?;
             points.push(PreparedKPoint {
                 summary: point,
                 canonical_coordinate,
                 model_coordinate,
                 is_point,
                 operations,
+                formal_coreps,
             });
         }
 
@@ -542,6 +578,219 @@ fn point_is_isolated(unitary_sg: u8, point: &MagneticKPointSummary) -> bool {
         })
 }
 
+fn prepare_formal_coreps<const SPIN: bool>(
+    unitary_sg: u8,
+    point: &MagneticKPointSummary,
+    unitary_operations: &cryspglib::SymmetryOps,
+) -> Result<Vec<FormalCorep>> {
+    let irreps = cryspglib::irrep::query::irreps_of(unitary_sg);
+    let identity_rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    let identity_column = point.operations.iter().position(|operation| {
+        !operation.time_reversal
+            && operation.rotation == identity_rotation
+            && operation
+                .translation
+                .iter()
+                .all(|value| (value - value.round()).abs() <= 1e-8)
+    });
+
+    point
+        .coreps
+        .iter()
+        .filter(|corep| {
+            !corep.source_irreps.is_empty()
+                && corep
+                    .source_irreps
+                    .iter()
+                    .all(|source| source.spinor == SPIN)
+        })
+        .map(|corep| {
+            let source_characters = corep
+                .source_irreps
+                .iter()
+                .map(|source| {
+                    irreps
+                        .iter()
+                        .find(|irrep| irrep.ml == source.ml && irrep.spinor == SPIN)
+                        .and_then(|irrep| source_characters(irrep, point, unitary_operations))
+                })
+                .collect::<Option<Vec<_>>>();
+
+            let characters = source_characters
+                .and_then(|source_characters| {
+                    let identity_column = identity_column?;
+                    let source_dimension = source_characters
+                        .iter()
+                        .map(|characters| characters[identity_column])
+                        .collect::<Option<Vec<_>>>()?
+                        .into_iter()
+                        .sum::<Complex64>();
+                    if source_dimension.im.abs() > 1e-7 || source_dimension.re <= 0.0 {
+                        return None;
+                    }
+                    let scale = corep.dim as f64 / source_dimension.re;
+                    if !scale.is_finite() {
+                        return None;
+                    }
+                    Some(
+                        (0..point.operations.len())
+                            .map(|column| {
+                                if point.operations[column].time_reversal {
+                                    None
+                                } else {
+                                    source_characters
+                                        .iter()
+                                        .map(|characters| characters[column])
+                                        .collect::<Option<Vec<_>>>()
+                                        .map(|values| scale * values.into_iter().sum::<Complex64>())
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    // Older generated irrep tables may not retain enough
+                    // operation metadata to recover an imaginary part.  The
+                    // magnetic summary remains a safe real-valued fallback;
+                    // rank/residual checks will emit ??? if that information
+                    // is insufficient to distinguish valid coreps.
+                    point
+                        .operations
+                        .iter()
+                        .map(|operation| {
+                            (!operation.time_reversal)
+                                .then(|| Complex64::new(corep.characters[operation.column], 0.0))
+                        })
+                        .collect()
+                });
+            Ok(FormalCorep {
+                label: corep.label.clone(),
+                dimension: corep.dim,
+                characters,
+            })
+        })
+        .collect()
+}
+
+fn source_characters(
+    irrep: &IrrepRecord,
+    point: &MagneticKPointSummary,
+    unitary_operations: &cryspglib::SymmetryOps,
+) -> Option<Vec<Option<Complex64>>> {
+    if irrep.spinor {
+        spinor_source_characters(irrep, point)
+    } else {
+        scalar_source_characters(irrep, point, unitary_operations)
+    }
+}
+
+fn scalar_source_characters(
+    irrep: &IrrepRecord,
+    point: &MagneticKPointSummary,
+    unitary_operations: &cryspglib::SymmetryOps,
+) -> Option<Vec<Option<Complex64>>> {
+    let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(unitary_operations);
+    let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
+        &h_seitz,
+        irrep.pir_rotations(),
+        irrep.pir_translations(),
+    )?;
+    let (little_real, little_imag) = irrep.scalar_little_characters();
+    let use_selected_arm = !little_real.is_empty() && little_real.len() == little_imag.len();
+    let real = if use_selected_arm {
+        little_real
+    } else {
+        irrep.characters()
+    };
+    point
+        .operations
+        .iter()
+        .map(|operation| {
+            if operation.time_reversal {
+                return Some(None);
+            }
+            let h_index = find_operation_index(&unitary_operations.operations, operation)?;
+            let character_index = *h_to_irrep.get(h_index)?;
+            let real = *real.get(character_index)?;
+            let imaginary = if use_selected_arm {
+                *little_imag.get(character_index)?
+            } else {
+                0.0
+            };
+            Some(Some(Complex64::new(real, imaginary)))
+        })
+        .collect()
+}
+
+fn spinor_source_characters(
+    irrep: &IrrepRecord,
+    point: &MagneticKPointSummary,
+) -> Option<Vec<Option<Complex64>>> {
+    let (rotations, translations, _) = irrep.spin_ops();
+    let local_operation_indices = irrep.spin_lg_op_indices();
+    let real = irrep.characters();
+    let imaginary = irrep.spin_character_imag();
+    point
+        .operations
+        .iter()
+        .map(|operation| {
+            if operation.time_reversal {
+                return Some(None);
+            }
+            let spin_operation_index =
+                find_flat_operation_index(rotations, translations, operation)?;
+            let local_index = local_operation_indices
+                .iter()
+                .position(|index| usize::from(*index) == spin_operation_index)?;
+            let real = *real.get(local_index)?;
+            let imaginary = imaginary.get(local_index).copied().unwrap_or(0.0);
+            Some(Some(Complex64::new(real, imaginary)))
+        })
+        .collect()
+}
+
+fn find_operation_index(
+    operations: &[cryspglib::SymmetryOp],
+    target: &MagneticLittleGroupOperation,
+) -> Option<usize> {
+    let matches = operations
+        .iter()
+        .enumerate()
+        .filter(|(_, operation)| {
+            !operation.time_reversal
+                && operation.rotation == target.rotation
+                && translations_equivalent(operation.translation, target.translation, 1e-7)
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then_some(matches[0])
+}
+
+fn find_flat_operation_index(
+    rotations: &[i32],
+    translations: &[f64],
+    target: &MagneticLittleGroupOperation,
+) -> Option<usize> {
+    let count = rotations.len() / 9;
+    if translations.len() < 3 * count {
+        return None;
+    }
+    let matches = (0..count)
+        .filter(|index| {
+            let rotation_offset = 9 * index;
+            let translation_offset = 3 * index;
+            let rotation_matches = (0..3).all(|row| {
+                (0..3).all(|column| {
+                    rotations[rotation_offset + 3 * row + column] == target.rotation[row][column]
+                })
+            });
+            let translation = std::array::from_fn(|axis| translations[translation_offset + axis]);
+            rotation_matches && translations_equivalent(translation, target.translation, 1e-7)
+        })
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then_some(matches[0])
+}
+
 fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
     point: &PreparedKPoint,
@@ -628,8 +877,7 @@ fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
             .iter()
             .map(|character| character.projected_unitarity_residual)
             .fold(0.0_f64, f64::max);
-        let fit =
-            fit_corepresentations::<SPIN>(&point.summary.coreps, &characters, dimension, options)?;
+        let fit = fit_corepresentations(&point.formal_coreps, &characters, dimension, options)?;
         let mut diagnostics = fit.diagnostics;
         if max_subspace_leakage > options.subspace_tolerance {
             diagnostics.push(format!(
@@ -762,32 +1010,20 @@ struct CorepFit {
     diagnostics: Vec<String>,
 }
 
-fn fit_corepresentations<const SPIN: bool>(
-    all_coreps: &[MagneticCorepSummary],
+fn fit_corepresentations(
+    coreps: &[FormalCorep],
     numerical_characters: &[IrrepCharacter],
     band_dimension: usize,
     options: &IrrepCalculationOptions,
 ) -> Result<CorepFit> {
-    let coreps = all_coreps
-        .iter()
-        .filter(|corep| {
-            !corep.source_irreps.is_empty()
-                && corep
-                    .source_irreps
-                    .iter()
-                    .all(|source| source.spinor == SPIN)
-        })
-        .collect::<Vec<_>>();
     let unitary_columns = numerical_characters
         .iter()
         .filter(|character| !character.time_reversal)
         .collect::<Vec<_>>();
     let mut diagnostics = Vec::new();
     if coreps.is_empty() {
-        diagnostics.push(format!(
-            "the database has no {} corepresentations at this k point",
-            if SPIN { "spinor" } else { "single-valued" }
-        ));
+        diagnostics
+            .push("the database has no matching corepresentations at this k point".to_string());
         return Ok(CorepFit {
             label: "???".to_string(),
             multiplicities: Vec::new(),
@@ -817,13 +1053,15 @@ fn fit_corepresentations<const SPIN: bool>(
             let formal = corep
                 .characters
                 .get(numerical_character.column)
+                .copied()
+                .flatten()
                 .ok_or_else(|| TbError::IrrepCalculation {
                     message: format!(
                         "formal corep {} has no character column {}",
                         corep.label, numerical_character.column
                     ),
                 })?;
-            character_matrix[[row, column]] = Complex64::new(*formal, 0.0);
+            character_matrix[[row, column]] = formal;
         }
     }
     let least_squares = character_matrix.least_squares(&numerical)?;
@@ -880,7 +1118,7 @@ fn fit_corepresentations<const SPIN: bool>(
     let reconstructed_dimension = coreps
         .iter()
         .zip(&multiplicities)
-        .map(|(corep, multiplicity)| corep.dim * multiplicity.rounded.unwrap_or(0))
+        .map(|(corep, multiplicity)| corep.dimension * multiplicity.rounded.unwrap_or(0))
         .sum::<usize>();
     if reconstructed_dimension != band_dimension {
         diagnostics.push(format!(
@@ -920,6 +1158,7 @@ mod tests {
     use super::*;
     use crate::{
         Atom, AtomType, AtomicOrbitalBasis, CrystalSymmetry, NoRMatrix, OrbProj, OrbitalId,
+        ScalarSiteBasis,
     };
     use ndarray::{Array2, array};
 
@@ -941,16 +1180,60 @@ mod tests {
         model
     }
 
+    fn permuted_orthorhombic_scalar_model() -> Model<false, 3, NoRMatrix> {
+        Model::tb_model(
+            array![[3.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+            array![[0.0, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::H,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap()
+    }
+
+    fn shifted_cubic_scalar_model() -> Model<false, 3, NoRMatrix> {
+        let position = array![0.173, 0.271, 0.337];
+        Model::tb_model(
+            Array2::eye(3),
+            position.clone().insert_axis(ndarray::Axis(0)),
+            Some(vec![Atom::with_orbitals(
+                position,
+                AtomType::H,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap()
+    }
+
+    fn binary_hexagonal_scalar_model<const SPIN: bool>() -> Model<SPIN, 3, NoRMatrix> {
+        let mut model = Model::tb_model(
+            array![
+                [1.0, 0.0, 0.0],
+                [-0.5, 3.0_f64.sqrt() / 2.0, 0.0],
+                [0.0, 0.0, 5.0]
+            ],
+            array![[0.0, 0.0, 0.0], [1.0 / 3.0, 2.0 / 3.0, 0.0]],
+            Some(vec![
+                Atom::with_orbitals(array![0.0, 0.0, 0.0], AtomType::B, [OrbitalId::new(0)]),
+                Atom::with_orbitals(
+                    array![1.0 / 3.0, 2.0 / 3.0, 0.0],
+                    AtomType::N,
+                    [OrbitalId::new(1)],
+                ),
+            ]),
+        )
+        .unwrap();
+        model.set_onsite(&array![-1.0, 1.0], None);
+        model
+    }
+
     #[test]
     fn incomplete_orbital_shell_is_rejected_before_band_labelling() {
         let model = orbital_cubic::<false>(&[OrbProj::px, OrbProj::py]);
-        let target = model
-            .magnetic_crystal_symmetry_from_atoms(
-                &crate::crystal_symmetry::SymmetryParameters::default(),
-            )
-            .unwrap();
         let error = model
-            .calculate_irrep(&target, &AtomicOrbitalBasis, None)
+            .calculate_irrep(&AtomicOrbitalBasis, None)
             .unwrap_err();
         assert!(matches!(error, TbError::IrrepBasisRepresentation { .. }));
     }
@@ -965,9 +1248,7 @@ mod tests {
             )
             .unwrap();
 
-        let broken = model
-            .calculate_irrep(&target, &AtomicOrbitalBasis, None)
-            .unwrap();
+        let broken = model.calculate_irrep(&AtomicOrbitalBasis, None).unwrap();
         let gamma = broken
             .high_symmetry_kpoints
             .iter()
@@ -984,7 +1265,7 @@ mod tests {
             )
             .unwrap();
         let restored = symmetrized
-            .calculate_irrep(&target, &AtomicOrbitalBasis, None)
+            .calculate_irrep_for_group(&target, &AtomicOrbitalBasis, None)
             .unwrap();
         let gamma = restored
             .high_symmetry_kpoints
@@ -997,14 +1278,7 @@ mod tests {
     #[test]
     fn spinful_grey_group_uses_spinor_corepresentations() {
         let model = orbital_cubic::<true>(&[OrbProj::s]);
-        let target = model
-            .magnetic_crystal_symmetry_from_atoms(
-                &crate::crystal_symmetry::SymmetryParameters::default(),
-            )
-            .unwrap();
-        let report = model
-            .calculate_irrep(&target, &AtomicOrbitalBasis, None)
-            .unwrap();
+        let report = model.calculate_irrep(&AtomicOrbitalBasis, None).unwrap();
         let gamma = report
             .high_symmetry_kpoints
             .iter()
@@ -1014,11 +1288,118 @@ mod tests {
         assert_eq!(gamma.bands[0].band_end - gamma.bands[0].band_start + 1, 2);
         assert!(gamma.bands[0].is_identified(), "{report}");
         assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .all(IrrepBandReport::is_identified),
+            "{report}"
+        );
+        assert!(
             gamma.bands[0]
                 .characters
                 .iter()
                 .filter(|character| character.time_reversal)
                 .all(|character| character.value.is_none())
+        );
+    }
+
+    #[test]
+    fn transformed_setting_and_parallel_collection_are_deterministic() {
+        let model = permuted_orthorhombic_scalar_model();
+        let serial_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let parallel_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let first = serial_pool
+            .install(|| model.calculate_irrep(&ScalarSiteBasis, None))
+            .unwrap();
+        let second = parallel_pool
+            .install(|| model.calculate_irrep(&ScalarSiteBasis, None))
+            .unwrap();
+        assert_eq!(first, second);
+        assert!(first.high_symmetry_kpoints.len() > 1);
+        assert!(
+            first
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .all(IrrepBandReport::is_identified),
+            "{first}"
+        );
+    }
+
+    #[test]
+    fn magnetic_field_reidentifies_the_effective_target_group() {
+        let model = orbital_cubic::<false>(&[OrbProj::s]);
+        let full = model
+            .magnetic_crystal_symmetry_from_atoms(
+                &crate::crystal_symmetry::SymmetryParameters::default(),
+            )
+            .unwrap();
+        let mut options = IrrepCalculationOptions::default();
+        options
+            .symmetry
+            .structural_parameters
+            .external_fields
+            .magnetic = Some([0.0, 0.0, 1.0]);
+        let report = model
+            .calculate_irrep(&AtomicOrbitalBasis, Some(&options))
+            .unwrap();
+        assert_ne!(report.uni_number, full.uni_number);
+        assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .all(IrrepBandReport::is_identified),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn nonzero_origin_shift_preserves_database_character_phases() {
+        let model = shifted_cubic_scalar_model();
+        let report = model.calculate_irrep(&ScalarSiteBasis, None).unwrap();
+        assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .all(IrrepBandReport::is_identified),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn complex_little_group_characters_are_identified() {
+        let model = binary_hexagonal_scalar_model::<false>();
+        let report = model.calculate_irrep(&ScalarSiteBasis, None).unwrap();
+        assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .all(IrrepBandReport::is_identified),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn complex_spinor_little_group_characters_are_identified() {
+        let model = binary_hexagonal_scalar_model::<true>();
+        let report = model.calculate_irrep(&ScalarSiteBasis, None).unwrap();
+        assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .all(IrrepBandReport::is_identified),
+            "{report}"
         );
     }
 }

@@ -727,6 +727,30 @@ and postchecks every covariance equation. For `HasRMatrix`, old position-matrix
 blocks stay aligned by lattice vector and newly generated support receives
 zeros; `rmatrix` is not incorrectly treated as a scalar Hamiltonian.
 
+Band labels use the same strict representation provider:
+
+```rust
+let report = model.calculate_irrep(&AtomicOrbitalBasis, None)?;
+println!("{report}");
+
+// Or test an explicitly supplied target group:
+let target_report = model.calculate_irrep_for_group(
+    &target,
+    &AtomicOrbitalBasis,
+    Some(&IrrepCalculationOptions::default()),
+)?;
+```
+
+All target operations are resolved before diagonalization. An incomplete or
+non-closed orbital basis is therefore an error, while a representable but
+symmetry-broken Hamiltonian is still analyzed and receives `???` wherever
+subspace leakage, character residuals, or non-integer corep multiplicities
+invalidate a label. High-symmetry k points run in parallel and are collected in
+canonical order; use a one-thread BLAS configuration to avoid nested
+oversubscription. Antiunitary operations contribute sewing/closure diagnostics,
+not an ordinary trace character. Folded nonprimitive models require unfolding
+before primitive-cell database labels can be assigned.
+
 ### BLAS/LAPACK backends
 
 No backend is enabled by default; every build, test, and doc command must

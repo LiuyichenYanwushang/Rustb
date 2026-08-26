@@ -245,7 +245,7 @@ false claim that the Hamiltonian broke the operation.
 
 Every decided operation contains absolute/relative residuals and a worst
 `(R, bra, ket)` witness. Validated sewing actions remain in the report for
-future little-group and band-irrep work. A final UNI/BNS label is returned only
+little-group and band-irrep work. A final UNI/BNS label is returned only
 after cryspglib verifies group closure and derives the survivor's own family
 Hall setting; the original structural Hall is provenance only.
 
@@ -280,6 +280,50 @@ hopping block, restores Hermiticity, and rechecks every target covariance
 equation. Existing `rmatrix` blocks remain aligned by lattice vector; newly
 generated support receives zero position-matrix blocks. As with certification,
 non-scalar Wannier gauges require an explicit `BasisSymmetryRepresentation`.
+
+### Magnetic band irreps and coreps
+
+With the `cryspglib` feature, `calculate_irrep` detects the Atom-defined
+magnetic group and prints an irvsp-like table at all isolated high-symmetry k
+points:
+
+```rust
+let irreps = model.calculate_irrep(&AtomicOrbitalBasis, None)?;
+println!("{irreps}");
+```
+
+The calculation diagonalizes independent k points in parallel, restricts each
+unitary sewing matrix to consecutive degenerate bands, and fits the resulting
+characters to the magnetic-corepresentation table. Antiunitary operations are
+used for subspace-closure and sewing-unitarity checks; `Tr(U K)` is not reported
+as an ordinary character. Output order remains deterministic. For efficient
+outer parallelism, use one BLAS thread (for example `MKL_NUM_THREADS=1` or
+`OPENBLAS_NUM_THREADS=1`).
+
+This API deliberately distinguishes two failures. If an orbital set is not
+closed under a target operation, or a local Wannier representation cannot be
+constructed, it returns `TbError::IrrepBasisRepresentation` before solving any
+k point. If the representation exists but the Hamiltonian breaks the target
+group, raw complex characters and fitted multiplicities are retained while the
+unreliable band label becomes `???`. Therefore the same call can diagnose an
+input model and verify the result of `symmetrize_hamiltonian`.
+
+For a caller-supplied target use:
+
+```rust
+let irreps = model.calculate_irrep_for_group(
+    &target,
+    &AtomicOrbitalBasis,
+    Some(&IrrepCalculationOptions::default()),
+)?;
+```
+
+The target's `field_preserving_operations` are reidentified, so explicit
+electric or magnetic fields select the effective magnetic group. The current
+API expects a cell compatible with the magnetic-irrep database setting. If
+multiple input translations collapse onto one database operation (a folded,
+nonprimitive supercell), it returns an error rather than assigning primitive
+cell labels; unfold that model first.
 
 Wannier90 models can be loaded as:
 
