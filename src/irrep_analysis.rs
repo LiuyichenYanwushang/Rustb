@@ -1027,7 +1027,18 @@ fn scalar_compound_character_kind(
                 ),
             }
         })?;
-        if (second_value - first_value.conj()).norm() > 1e-6 {
+        // A genuinely distinct pair is exposed by a real-valued character
+        // column (for example +1 and -1).  Some legacy CIR rows instead put
+        // the same, contaminated k-arm value in both components, with
+        // residual imaginary parts such as 0.314159 i.  Treating that as a
+        // distinct pair would copy the contamination into the formal
+        // character table.  Non-real columns therefore cannot establish the
+        // distinct-component branch; they remain usable only after the
+        // record has been classified by an independent real column.
+        if first_value.im.abs() <= 1e-6
+            && second_value.im.abs() <= 1e-6
+            && (second_value - first_value.conj()).norm() > 1e-6
+        {
             return Ok(ScalarCompoundCharacterKind::DistinctComponentSum);
         }
     }
@@ -2358,19 +2369,26 @@ mod tests {
     }
 
     #[test]
-    fn all_known_distinct_compound_records_use_component_sums() {
+    fn known_real_distinguishing_compound_records_use_component_sums() {
         let targets = [
             (46_u8, "W1W2"),
             (80, "P1P2"),
             (97, "P3P4"),
             (107, "P3P4"),
+            (108, "P1P2"),
+            (108, "P3P3"),
+            (108, "P4P4"),
             (120, "P1P2"),
             (178, "H1H2"),
             (179, "H1H2"),
             (182, "H1H2"),
-            (188, "H3H4"),
-            (188, "H5H6"),
+            (199, "P2P2"),
+            (206, "P2P2"),
             (209, "W3W4"),
+            (219, "W3W4"),
+            (220, "P1P1"),
+            (220, "P2P2"),
+            (220, "P3P3"),
         ];
         let mut witnessed = std::collections::BTreeSet::new();
         for uni in 1..=1651 {
@@ -2450,7 +2468,10 @@ mod tests {
                             components[1][2 * character_index],
                             components[1][2 * character_index + 1],
                         );
-                        if (second - first.conj()).norm() <= 1e-6 {
+                        if first.im.abs() > 1e-6
+                            || second.im.abs() > 1e-6
+                            || (second - first.conj()).norm() <= 1e-6
+                        {
                             continue;
                         }
                         found_distinguishing_operation = true;
@@ -2475,6 +2496,62 @@ mod tests {
             targets.len(),
             "not every known distinct-component compound record was exercised: {witnessed:?}"
         );
+    }
+
+    #[test]
+    fn contaminated_same_arm_components_do_not_select_distinct_sum() {
+        let cases = [
+            (1240_usize, 146_u8, "T", "T2T3"),
+            (1445, 188, "H", "H3H4"),
+            (1445, 188, "H", "H5H6"),
+        ];
+        for (uni, spacegroup, point_label, irrep_label) in cases {
+            let summary =
+                cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni).unwrap();
+            assert_eq!(summary.unitary_sg, spacegroup);
+            let point = summary
+                .kpoints
+                .iter()
+                .find(|point| point.label == point_label)
+                .expect("the regression k point must exist");
+            let irrep = cryspglib::irrep::query::irreps_of(spacegroup)
+                .iter()
+                .find(|irrep| irrep.ml == irrep_label)
+                .expect("the compound regression record must exist");
+            let operations = cryspglib::irrep::corep::get_magnetic_operations(uni).unwrap();
+            let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(&operations);
+            let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
+                &h_seitz,
+                irrep.pir_rotations(),
+                irrep.pir_translations(),
+            )
+            .expect("unitary operations must map to the compound PIR table");
+            let components = [irrep.cir_component_chars(0), irrep.cir_component_chars(1)];
+            assert_eq!(
+                scalar_compound_character_kind(
+                    &components,
+                    irrep,
+                    point,
+                    &operations,
+                    &h_to_irrep,
+                )
+                .unwrap(),
+                ScalarCompoundCharacterKind::ConjugateRealification,
+                "UNI {uni} {irrep_label} must not be classified from a contaminated non-real column"
+            );
+            let characters = scalar_source_characters(irrep, point, &operations)
+                .unwrap()
+                .expect("the contaminated record remains recoverable by realification");
+            for (operation, character) in point.operations.iter().zip(characters) {
+                if operation.time_reversal {
+                    continue;
+                }
+                assert!(
+                    character.unwrap().im.abs() < 1e-12,
+                    "UNI {uni} {irrep_label} emitted a contaminated complex character"
+                );
+            }
+        }
     }
 
     #[test]
