@@ -766,8 +766,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
             }
         }
-        let Lx_orig = &Lup_orig + &Ldn_orig;
-        let Ly_orig = -li * (&Lup_orig - &Ldn_orig);
+        // In units of hbar, Lx=(L+ + L-)/2 and
+        // Ly=(L+ - L-)/(2i).  The one-half is essential: omitting it makes
+        // rotations generated about x or y advance by twice the requested
+        // angle, while Lz remains normally scaled.
+        let Lx_orig = Complex::new(0.5, 0.0) * (&Lup_orig + &Ldn_orig);
+        let Ly_orig = (-li * 0.5) * (&Lup_orig - &Ldn_orig);
         for atom0 in self.atoms.iter() {
             for &orbital_i in atom0.orbitals() {
                 let i = orbital_i.index();

@@ -3139,7 +3139,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_real_orbital_rotation_matches_lm_phase_convention() {
+    fn automatic_real_orbital_rotation_matches_angular_momentum_convention() {
         let quarter_turn =
             real_orbital_rotation([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], 1e-10)
                 .unwrap();
@@ -3177,6 +3177,64 @@ mod tests {
                 );
             }
         }
+
+        // Lx/Ly and Lz must use the same normalization.  Exponentiate the
+        // public Model::orb_angular() generator and compare its C4x action
+        // against the independently reconstructed real harmonics.
+        let model = atomic_orbital_cubic::<false>(&PURE_REAL_ORBITALS);
+        let angular = model.orb_angular().unwrap();
+        let lx = angular.index_axis(Axis(0), 0).to_owned();
+        let generator = lx.mapv(|value| Complex64::new(0.0, -angle) * value);
+        let identity = Array2::from_diag(&ndarray::Array1::from_elem(
+            model.norb(),
+            Complex64::new(1.0, 0.0),
+        ));
+        let mut generated = identity.clone();
+        let mut term = identity;
+        for order in 1..=64 {
+            term = term.dot(&generator).mapv(|value| value / order as f64);
+            generated += &term;
+        }
+        let quarter_turn_x =
+            real_orbital_rotation([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]], 1e-10)
+                .unwrap();
+        let residual = matrix_max_difference(&quarter_turn_x, &generated);
+        assert!(
+            residual < 1e-10,
+            "C4x orbital-generator residual is {residual:e}"
+        );
+    }
+
+    #[test]
+    fn automatic_p_orbitals_preserve_directional_sigma_hopping() {
+        let mut model = atomic_orbital_cubic::<false>(&[OrbProj::px, OrbProj::py, OrbProj::pz]);
+        model.hamR = array![
+            [0, 0, 0],
+            [1, 0, 0],
+            [-1, 0, 0],
+            [0, 1, 0],
+            [0, -1, 0],
+            [0, 0, 1],
+            [0, 0, -1]
+        ];
+        model.ham = Array3::zeros((7, 3, 3));
+        for (block, axis) in [(1, 0), (2, 0), (3, 1), (4, 1), (5, 2), (6, 2)] {
+            for orbital in 0..3 {
+                model.ham[[block, orbital, orbital]] =
+                    Complex64::new(if orbital == axis { 2.0 } else { -0.5 }, 0.0);
+            }
+        }
+        model.validate().unwrap();
+
+        let report = model
+            .check_hamiltonian_symmetry(&AtomicOrbitalBasis, &HamiltonianSymmetryRequest::default())
+            .unwrap();
+        assert!(
+            report
+                .operation_checks
+                .iter()
+                .all(|check| matches!(check.status, OperationHamiltonianStatus::Preserved(_)))
+        );
     }
 
     #[test]
