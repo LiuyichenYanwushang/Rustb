@@ -921,16 +921,36 @@ fn scalar_source_characters(
     unitary_operations: &cryspglib::SymmetryOps,
 ) -> Result<Option<Vec<Option<Complex64>>>> {
     let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(unitary_operations);
-    let Some(h_to_irrep) = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
+    let is_compound = irrep.cir_component_count() > 0;
+    let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
         &h_seitz,
         irrep.pir_rotations(),
         irrep.pir_translations(),
-    ) else {
+    );
+    let Some(h_to_irrep) = h_to_irrep else {
+        if is_compound {
+            return Err(TbError::IrrepCalculation {
+                message: format!(
+                    "compound source {} at {} cannot map unitary operations to its PIR table",
+                    irrep.ml, point.label
+                ),
+            });
+        }
         return Ok(None);
     };
     let (little_real, little_imag) = irrep.scalar_little_characters();
     let use_selected_arm = !little_real.is_empty() && little_real.len() == little_imag.len();
-    let compound_components = if !use_selected_arm && irrep.cir_component_count() > 0 {
+    let compound_components = if !use_selected_arm && is_compound {
+        if irrep.cir_component_count() != 2 {
+            return Err(TbError::IrrepCalculation {
+                message: format!(
+                    "compound source {} at {} has {} CIR components instead of one conjugate pair",
+                    irrep.ml,
+                    point.label,
+                    irrep.cir_component_count()
+                ),
+            });
+        }
         Some(
             (0..irrep.cir_component_count())
                 .map(|component| {
@@ -952,7 +972,7 @@ fn scalar_source_characters(
     } else {
         None
     };
-    let compound_uses_selected_arm = if let Some(components) = &compound_components {
+    if let Some(components) = &compound_components {
         let identity_h = h_seitz
             .iter()
             .position(|operation| {
@@ -977,31 +997,45 @@ fn scalar_source_characters(
                         irrep.ml, point.label
                     ),
                 })?;
-        let selected_dimension =
-            components
-                .iter()
-                .try_fold(Complex64::new(0.0, 0.0), |sum, characters| {
-                    Some(
-                        sum + Complex64::new(
-                            *characters.get(2 * identity_character)?,
-                            *characters.get(2 * identity_character + 1)?,
-                        ),
-                    )
-                });
-        let selected_dimension = selected_dimension.ok_or_else(|| TbError::IrrepCalculation {
-            message: format!(
-                "compound source {} at {} has incomplete CIR identity data",
-                irrep.ml, point.label
-            ),
-        })?;
-        let rounded = selected_dimension.re.round();
-        if selected_dimension.im.abs() > 1e-7
-            || rounded < 1.0
-            || (selected_dimension.re - rounded).abs() > 1e-7
+        let component_identities = components
+            .iter()
+            .map(|characters| {
+                Some(Complex64::new(
+                    *characters.get(2 * identity_character)?,
+                    *characters.get(2 * identity_character + 1)?,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| TbError::IrrepCalculation {
+                message: format!(
+                    "compound source {} at {} has incomplete CIR identity data",
+                    irrep.ml, point.label
+                ),
+            })?;
+        let first_identity = component_identities[0];
+        if !first_identity.re.is_finite()
+            || !first_identity.im.is_finite()
+            || first_identity.im.abs() > 1e-7
+            || component_identities.iter().any(|identity| {
+                !identity.re.is_finite()
+                    || !identity.im.is_finite()
+                    || identity.im.abs() > 1e-7
+                    || (identity.re - first_identity.re).abs() > 1e-7
+            })
         {
             return Err(TbError::IrrepCalculation {
                 message: format!(
-                    "compound source {} at {} has invalid selected-arm identity character {}",
+                    "compound source {} at {} has inconsistent CIR identity characters",
+                    irrep.ml, point.label
+                ),
+            });
+        }
+        let selected_dimension = 2.0 * first_identity.re;
+        let rounded = selected_dimension.round();
+        if rounded < 1.0 || (selected_dimension - rounded).abs() > 1e-7 {
+            return Err(TbError::IrrepCalculation {
+                message: format!(
+                    "compound source {} at {} has invalid realified dimension {}",
                     irrep.ml, point.label, selected_dimension
                 ),
             });
@@ -1016,10 +1050,7 @@ fn scalar_source_characters(
                 ),
             });
         }
-        full_dimension != selected_dimension
-    } else {
-        false
-    };
+    }
     let characters = point
         .operations
         .iter()
@@ -1034,36 +1065,28 @@ fn scalar_source_characters(
                     *little_real.get(character_index)?,
                     *little_imag.get(character_index)?,
                 )
-            } else if compound_uses_selected_arm {
-                let components = compound_components.as_ref()?;
-                // A compound real PIR stores its selected complex
-                // constituents separately.  Summing those CIR characters
-                // gives the physical little-group representation on one
-                // star arm.  Using the full PIR trace here would instead sum
-                // over every star arm and double dimensions such as SG 76
-                // R1R2 in an all-unitary magnetic little group.
-                let value =
-                    components
-                        .iter()
-                        .try_fold(Complex64::new(0.0, 0.0), |sum, characters| {
-                            Some(
-                                sum + Complex64::new(
-                                    *characters.get(2 * character_index)?,
-                                    *characters.get(2 * character_index + 1)?,
-                                ),
-                            )
-                        })?;
-                (value.im.abs() <= 1e-7).then_some(value)?
+            } else if let Some(components) = &compound_components {
+                // A compound scalar PIR is the realification of one complex
+                // CIR component.  Its selected-arm trace is therefore
+                // chi + chi* = 2 Re(chi).  Reconstructing it from the first
+                // component is also robust to older generated tables whose
+                // second component was aligned with the wrong Bloch phase for
+                // centered translations.  The full PIR row cannot be used:
+                // it may contain every star arm rather than the selected one.
+                let first = components.first()?;
+                let real = *first.get(2 * character_index)?;
+                real.is_finite()
+                    .then_some(Complex64::new(2.0 * real, 0.0))?
             } else {
                 Complex64::new(*irrep.characters().get(character_index)?, 0.0)
             };
             Some(Some(value))
         })
         .collect::<Option<Vec<_>>>();
-    if compound_uses_selected_arm && characters.is_none() {
+    if is_compound && characters.is_none() {
         return Err(TbError::IrrepCalculation {
             message: format!(
-                "compound source {} at {} has inconsistent selected-arm CIR characters",
+                "compound source {} at {} has incomplete selected-arm CIR characters",
                 irrep.ml, point.label
             ),
         });
@@ -1610,6 +1633,55 @@ mod tests {
         model
     }
 
+    fn i4m_scalar_cycle_model() -> Model<false, 3, NoRMatrix> {
+        let base_positions = [
+            [0.1, 0.2, 0.3],
+            [-0.2, 0.1, 0.3],
+            [-0.1, -0.2, 0.3],
+            [0.2, -0.1, 0.3],
+            [-0.1, -0.2, -0.3],
+            [0.2, -0.1, -0.3],
+            [0.1, 0.2, -0.3],
+            [-0.2, 0.1, -0.3],
+        ];
+        let positions = base_positions
+            .into_iter()
+            .flat_map(|position| {
+                [
+                    position.map(|value| (value + 1.0) % 1.0),
+                    [
+                        (position[0] + 1.5) % 1.0,
+                        (position[1] + 1.5) % 1.0,
+                        (position[2] + 1.5) % 1.0,
+                    ],
+                ]
+            })
+            .collect::<Vec<_>>();
+        let position_array = Array2::from_shape_vec(
+            (positions.len(), 3),
+            positions.iter().flatten().copied().collect(),
+        )
+        .unwrap();
+        let atoms = position_array
+            .outer_iter()
+            .enumerate()
+            .map(|(index, position)| {
+                Atom::with_orbitals(position.to_owned(), AtomType::H, [OrbitalId::new(index)])
+            })
+            .collect();
+        let mut model = Model::tb_model(
+            array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.3]],
+            position_array,
+            Some(atoms),
+        )
+        .unwrap();
+        for index in 0..16 {
+            let next = (index + 1) % 8 + (index / 8) * 8;
+            model.set_hop(0.3, index, next, &array![0_isize, 0, 0], None);
+        }
+        model
+    }
+
     struct InvalidIdentityCorepresentation;
 
     impl BasisSymmetryRepresentation<true, NoRMatrix> for InvalidIdentityCorepresentation {
@@ -2039,5 +2111,93 @@ mod tests {
                 "{actual} != {expected}"
             );
         }
+    }
+
+    #[test]
+    fn compound_realification_keeps_centering_translation_phase() {
+        let summary =
+            cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(1591).unwrap();
+        assert_eq!(summary.unitary_sg, 220);
+        let point = summary
+            .kpoints
+            .iter()
+            .find(|point| point.label == "H")
+            .expect("SG 220 must expose its H point");
+        let irrep = cryspglib::irrep::query::irreps_of(220)
+            .iter()
+            .find(|irrep| irrep.ml == "H3H3")
+            .expect("SG 220 H must contain H3H3");
+        let operations = cryspglib::irrep::corep::get_magnetic_operations(1591).unwrap();
+        let characters = scalar_source_characters(irrep, point, &operations)
+            .unwrap()
+            .expect("compound scalar characters must be available");
+        let identity_rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+        let identity_column = point
+            .operations
+            .iter()
+            .position(|operation| {
+                !operation.time_reversal
+                    && operation.rotation == identity_rotation
+                    && operation
+                        .translation
+                        .iter()
+                        .all(|value| (*value - value.round()).abs() < 1e-8)
+            })
+            .expect("H little group must contain the identity");
+        let translated_column = point
+            .operations
+            .iter()
+            .position(|operation| {
+                if operation.time_reversal || operation.rotation != identity_rotation {
+                    return false;
+                }
+                let (kx, ky, kz, denominator) = point.coords;
+                let phase = -std::f64::consts::TAU
+                    * (f64::from(kx) * operation.translation[0]
+                        + f64::from(ky) * operation.translation[1]
+                        + f64::from(kz) * operation.translation[2])
+                    / f64::from(denominator);
+                operation
+                    .translation
+                    .iter()
+                    .any(|value| (*value - value.round()).abs() >= 1e-8)
+                    && phase.sin().abs() < 1e-8
+                    && phase.cos() < -0.9
+            })
+            .expect("H little group must contain the body-centering translation");
+        let dimension = characters[identity_column].unwrap().re;
+        let translated = characters[translated_column].unwrap();
+        assert!((dimension - 4.0).abs() < 1e-12);
+        assert!((translated.re + dimension).abs() < 1e-12);
+        assert!(translated.im.abs() < 1e-12);
+    }
+
+    #[test]
+    fn compound_misaligned_second_arm_does_not_abort_report() {
+        let model = i4m_scalar_cycle_model();
+        let mut target = model
+            .magnetic_crystal_symmetry_from_atoms(
+                &crate::crystal_symmetry::SymmetryParameters::default(),
+            )
+            .unwrap();
+        assert_eq!(target.spacegroup_number, 87);
+        assert_eq!(target.uni_number, 736);
+        target.uni_number = 735;
+        target.magnetic_type = crate::crystal_symmetry::MagneticGroupType::Ordinary;
+        target
+            .operations
+            .retain(|operation| !operation.time_reversal);
+        target.field_preserving_operations = target.operations.clone();
+
+        let report = model
+            .calculate_irrep_for_group(&target, &ScalarSiteBasis, None)
+            .expect("a recoverable compound CIR phase must not abort the whole report");
+        assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .any(|point| point.label == "P"),
+            "{report}"
+        );
     }
 }
