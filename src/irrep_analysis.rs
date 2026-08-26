@@ -815,7 +815,7 @@ fn prepare_formal_coreps<const SPIN: bool>(
                 })
                 .collect::<Option<Vec<_>>>();
 
-            let characters = source_characters
+            let (dimension, characters) = source_characters
                 .and_then(|source_characters| {
                     let identity_column = identity_column?;
                     let source_dimension = source_characters
@@ -827,11 +827,28 @@ fn prepare_formal_coreps<const SPIN: bool>(
                     if source_dimension.im.abs() > 1e-7 || source_dimension.re <= 0.0 {
                         return None;
                     }
-                    let scale = corep.dim as f64 / source_dimension.re;
+                    // With no anti-unitary little-group operation this is an
+                    // ordinary little-group representation.  The selected-arm
+                    // source characters therefore carry the authoritative
+                    // dimension.  Older cryspglib compound-CIR summaries can
+                    // retain the dimension of the full induced star here (for
+                    // example SG 76 R1R2: 4 instead of 2), even though their
+                    // selected-arm source characters are already [2, 0].
+                    let dimension = if point.antiunitary_order == 0 {
+                        let rounded = source_dimension.re.round();
+                        if rounded < 1.0 || (source_dimension.re - rounded).abs() > 1e-7 {
+                            return None;
+                        }
+                        rounded as usize
+                    } else {
+                        corep.dim
+                    };
+                    let scale = dimension as f64 / source_dimension.re;
                     if !scale.is_finite() {
                         return None;
                     }
-                    Some(
+                    Some((
+                        dimension,
                         (0..point.operations.len())
                             .map(|column| {
                                 if point.operations[column].time_reversal {
@@ -845,7 +862,7 @@ fn prepare_formal_coreps<const SPIN: bool>(
                                 }
                             })
                             .collect::<Vec<_>>(),
-                    )
+                    ))
                 })
                 .unwrap_or_else(|| {
                     // Older generated irrep tables may not retain enough
@@ -853,18 +870,22 @@ fn prepare_formal_coreps<const SPIN: bool>(
                     // magnetic summary remains a safe real-valued fallback;
                     // rank/residual checks will emit ??? if that information
                     // is insufficient to distinguish valid coreps.
-                    point
-                        .operations
-                        .iter()
-                        .map(|operation| {
-                            (!operation.time_reversal)
-                                .then(|| Complex64::new(corep.characters[operation.column], 0.0))
-                        })
-                        .collect()
+                    (
+                        corep.dim,
+                        point
+                            .operations
+                            .iter()
+                            .map(|operation| {
+                                (!operation.time_reversal).then(|| {
+                                    Complex64::new(corep.characters[operation.column], 0.0)
+                                })
+                            })
+                            .collect(),
+                    )
                 });
             Ok(FormalCorep {
                 label: corep.label.clone(),
-                dimension: corep.dim,
+                dimension,
                 characters,
             })
         })
@@ -896,11 +917,19 @@ fn scalar_source_characters(
     )?;
     let (little_real, little_imag) = irrep.scalar_little_characters();
     let use_selected_arm = !little_real.is_empty() && little_real.len() == little_imag.len();
-    let real = if use_selected_arm {
-        little_real
-    } else {
-        irrep.characters()
-    };
+    let compound_components = (!use_selected_arm && irrep.cir_component_count() > 0)
+        .then(|| {
+            (0..irrep.cir_component_count())
+                .map(|component| {
+                    let characters = irrep.cir_component_chars(component);
+                    if characters.len() != 2 * h_seitz.len() {
+                        return None;
+                    }
+                    Some(characters)
+                })
+                .collect::<Option<Vec<_>>>()
+        })
+        .flatten();
     point
         .operations
         .iter()
@@ -910,13 +939,32 @@ fn scalar_source_characters(
             }
             let h_index = find_operation_index(&unitary_operations.operations, operation)?;
             let character_index = *h_to_irrep.get(h_index)?;
-            let real = *real.get(character_index)?;
-            let imaginary = if use_selected_arm {
-                *little_imag.get(character_index)?
+            let value = if use_selected_arm {
+                Complex64::new(
+                    *little_real.get(character_index)?,
+                    *little_imag.get(character_index)?,
+                )
+            } else if let Some(components) = &compound_components {
+                // A compound real PIR stores its selected complex
+                // constituents separately.  Summing those CIR characters
+                // gives the physical little-group representation on one
+                // star arm.  Using the full PIR trace here would instead sum
+                // over every star arm and double dimensions such as SG 76
+                // R1R2 in an all-unitary magnetic little group.
+                components
+                    .iter()
+                    .try_fold(Complex64::new(0.0, 0.0), |sum, characters| {
+                        Some(
+                            sum + Complex64::new(
+                                *characters.get(2 * h_index)?,
+                                *characters.get(2 * h_index + 1)?,
+                            ),
+                        )
+                    })?
             } else {
-                0.0
+                Complex64::new(*irrep.characters().get(character_index)?, 0.0)
             };
-            Some(Some(Complex64::new(real, imaginary)))
+            Some(Some(value))
         })
         .collect()
 }
@@ -1434,6 +1482,32 @@ mod tests {
         model
     }
 
+    fn p41_scalar_cycle_model() -> Model<false, 3, NoRMatrix> {
+        let positions = array![
+            [0.1, 0.2, 0.3],
+            [-0.2, 0.1, 0.55],
+            [-0.1, -0.2, 0.8],
+            [0.2, -0.1, 1.05]
+        ];
+        let atoms = positions
+            .outer_iter()
+            .enumerate()
+            .map(|(index, position)| {
+                Atom::with_orbitals(position.to_owned(), AtomType::H, [OrbitalId::new(index)])
+            })
+            .collect();
+        let mut model = Model::tb_model(
+            array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+            positions,
+            Some(atoms),
+        )
+        .unwrap();
+        for (left, right) in [(0, 1), (1, 2), (2, 3), (3, 0)] {
+            model.set_hop(0.5, left, right, &array![0_isize, 0, 0], None);
+        }
+        model
+    }
+
     struct InvalidIdentityCorepresentation;
 
     impl BasisSymmetryRepresentation<true, NoRMatrix> for InvalidIdentityCorepresentation {
@@ -1770,6 +1844,55 @@ mod tests {
                 .flat_map(|point| &point.bands)
                 .all(IrrepBandReport::is_identified),
             "{report}"
+        );
+    }
+
+    #[test]
+    fn type_i_compound_corep_uses_selected_star_arm_dimension() {
+        let model = p41_scalar_cycle_model();
+        let mut target = model
+            .magnetic_crystal_symmetry_from_atoms(
+                &crate::crystal_symmetry::SymmetryParameters::default(),
+            )
+            .unwrap();
+        assert_eq!(target.uni_number, 668, "the fixture must detect grey P4_1");
+        target.uni_number = 667;
+        target.magnetic_type = crate::crystal_symmetry::MagneticGroupType::Ordinary;
+        target.bns_number = "76.7".to_string();
+        target.og_number = "76.1.668".to_string();
+        target
+            .operations
+            .retain(|operation| !operation.time_reversal);
+        target.field_preserving_operations = target.operations.clone();
+
+        let symmetric = model
+            .symmetrize_hamiltonian(
+                &target,
+                &ScalarSiteBasis,
+                &HamiltonianSymmetrizationParameters::default(),
+            )
+            .unwrap();
+        let report = symmetric
+            .calculate_irrep_for_group(&target, &ScalarSiteBasis, None)
+            .unwrap();
+        let r = report
+            .high_symmetry_kpoints
+            .iter()
+            .find(|point| point.label == "R")
+            .expect("P4_1 must expose its R point");
+        assert_eq!(r.bands.len(), 2, "{report}");
+        assert!(
+            r.bands
+                .iter()
+                .all(|band| band.label == "R1R2" && band.is_identified()),
+            "{report}"
+        );
+        assert!(
+            r.bands
+                .iter()
+                .flat_map(|band| &band.multiplicities)
+                .all(|multiplicity| multiplicity.value.re != 0.5),
+            "selected-arm formal multiplicities must be integral"
         );
     }
 }
