@@ -45,9 +45,9 @@ pub enum OrbProj {
     fxx23y2,
     /// $$\ket{f_{y(3x^2-y^2)}}=-\f{i}{\sqrt{2}}\lt(\ket{3,3}+\ket{3,-3}\rt)$$
     fy3x2y2,
-    /// $$\ket{sp_{1}}=\frac{1}{\sqrt{2}}\lt(\ket{s}+\ket{p}\rt)$$
+    /// $$\ket{sp_{1}}=\frac{1}{\sqrt{2}}\lt(\ket{s}+\ket{p_x}\rt)$$
     sp_1,
-    /// $$\ket{sp_{2}}=\frac{1}{\sqrt{2}}\lt(\ket{s}-\ket{p}\rt)$$
+    /// $$\ket{sp_{2}}=\frac{1}{\sqrt{2}}\lt(\ket{s}-\ket{p_x}\rt)$$
     sp_2,
     /// $$\ket{sp^2_{1}}=\f{1}{\sqrt{3}}\ket{s}-\f{1}{\sqrt{6}}\ket{p_x}+\f{1}{\sqrt{2}}\ket{p_y}$$
     sp2_1,
@@ -77,9 +77,9 @@ pub enum OrbProj {
     sp3d2_1,
     /// $$\ket{sp^3d^2_{2}}=\frac{1}{\sqrt{6}}\ket{s}+\f{1}{\sqrt{2}}\ket{p_x}-\f{1}{\sqrt{12}}\ket{d_{z^2}}+\f{1}{2}\ket{d_{x^2-y^2}}$$
     sp3d2_2,
-    /// $$\ket{sp^3d^2_{3}}=\frac{1}{\sqrt{6}}\ket{s}-\f{1}{\sqrt{2}}\ket{p_x}-\f{1}{\sqrt{12}}\ket{d_{z^2}}-\f{1}{2}\ket{d_{x^2-y^2}}$$
+    /// $$\ket{sp^3d^2_{3}}=\frac{1}{\sqrt{6}}\ket{s}-\f{1}{\sqrt{2}}\ket{p_y}-\f{1}{\sqrt{12}}\ket{d_{z^2}}-\f{1}{2}\ket{d_{x^2-y^2}}$$
     sp3d2_3,
-    /// $$\ket{sp^3d^2_{4}}=\frac{1}{\sqrt{6}}\ket{s}+\f{1}{\sqrt{2}}\ket{p_x}-\f{1}{\sqrt{12}}\ket{d_{z^2}}-\f{1}{2}\ket{d_{x^2-y^2}}$$
+    /// $$\ket{sp^3d^2_{4}}=\frac{1}{\sqrt{6}}\ket{s}+\f{1}{\sqrt{2}}\ket{p_y}-\f{1}{\sqrt{12}}\ket{d_{z^2}}-\f{1}{2}\ket{d_{x^2-y^2}}$$
     sp3d2_4,
     /// $$\ket{sp^3d^2_{5}}=\frac{1}{\sqrt{6}}\ket{s}-\f{1}{\sqrt{2}}\ket{p_z}+\f{1}{\sqrt{3}}\ket{d_{z^2}}$$
     sp3d2_5,
@@ -91,104 +91,228 @@ impl OrbProj {
     /// Converts atomic orbital basis functions ($\ket{p_x}$, $\ket{p_y}$, $\ket{p_z}$, etc.) into the $(l, m)$ quantum-number basis.
     /// Takes an atomic orbital such as $\ket{p_x}$ as input and returns a 16-element `Array1<Complex<f64>>` representing the expansion in:
     /// $$[\ket{0,0},\ket{1,-1},\ket{1,0},\ket{1,1},\ket{2,-2},\cdots,\ket{3,3}]$$
+    ///
+    /// Hybrid projections use the same coefficients as Wannier90. They are
+    /// expanded in this common angular basis rather than treated as separate
+    /// angular-momentum shells.
     pub fn to_quantum_number(&self) -> Result<Array1<Complex<f64>>> {
-        let s = match self {
-            OrbProj::s => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[0] = Complex::new(1.0, 0.0);
-                s
+        if let Some(state) = pure_quantum_number(*self) {
+            return Ok(Array1::from(state.to_vec()));
+        }
+
+        let mut state = [Complex::new(0.0, 0.0); 16];
+        let mut add = |projection: OrbProj, coefficient: f64| {
+            let component = pure_quantum_number(projection)
+                .expect("hybrid definitions only reference pure angular orbitals");
+            for (target, value) in state.iter_mut().zip(component) {
+                *target += coefficient * value;
             }
-            OrbProj::px => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[1] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
-                s[3] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
-                s
-            }
-            OrbProj::py => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[1] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
-                s[3] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
-                s
-            }
-            OrbProj::pz => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[2] = Complex::new(1.0, 0.0);
-                s
-            }
-            OrbProj::dxy => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[4] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
-                s[8] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-                s
-            }
-            OrbProj::dyz => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[5] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-                s[7] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-                s
-            }
-            OrbProj::dxz => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[5] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
-                s[7] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
-                s
-            }
-            OrbProj::dz2 => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[6] = Complex::new(1.0, 0.0);
-                s
-            }
-            OrbProj::dx2y2 => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[4] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
-                s[8] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
-                s
-            }
-            OrbProj::fz3 => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[12] = Complex::new(1.0, 0.0);
-                s
-            }
-            OrbProj::fxz2 => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[11] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
-                s[13] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
-                s
-            }
-            OrbProj::fyz2 => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[11] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-                s[13] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-                s
-            }
-            OrbProj::fzx2y2 => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[10] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
-                s[14] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
-                s
-            }
-            OrbProj::fxyz => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[10] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
-                s[14] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-                s
-            }
-            OrbProj::fxx23y2 => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[9] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
-                s[15] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
-                s
-            }
-            OrbProj::fy3x2y2 => {
-                let mut s = [Complex::new(0.0, 0.0); 16];
-                s[9] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-                s[15] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
-                s
-            }
-            _ => return Err(TbError::HybridOrbitalNotSupported("sp,sp2,sp3".to_string())),
         };
-        Ok(Array1::from(s.to_vec()))
+        match self {
+            OrbProj::sp_1 => {
+                add(OrbProj::s, 1.0 / 2.0_f64.sqrt());
+                add(OrbProj::px, 1.0 / 2.0_f64.sqrt());
+            }
+            OrbProj::sp_2 => {
+                add(OrbProj::s, 1.0 / 2.0_f64.sqrt());
+                add(OrbProj::px, -1.0 / 2.0_f64.sqrt());
+            }
+            OrbProj::sp2_1 => {
+                add(OrbProj::s, 1.0 / 3.0_f64.sqrt());
+                add(OrbProj::px, -1.0 / 6.0_f64.sqrt());
+                add(OrbProj::py, 1.0 / 2.0_f64.sqrt());
+            }
+            OrbProj::sp2_2 => {
+                add(OrbProj::s, 1.0 / 3.0_f64.sqrt());
+                add(OrbProj::px, -1.0 / 6.0_f64.sqrt());
+                add(OrbProj::py, -1.0 / 2.0_f64.sqrt());
+            }
+            OrbProj::sp2_3 => {
+                add(OrbProj::s, 1.0 / 3.0_f64.sqrt());
+                add(OrbProj::px, 2.0 / 6.0_f64.sqrt());
+            }
+            OrbProj::sp3_1 => {
+                for projection in [OrbProj::s, OrbProj::px, OrbProj::py, OrbProj::pz] {
+                    add(projection, 0.5);
+                }
+            }
+            OrbProj::sp3_2 => {
+                add(OrbProj::s, 0.5);
+                add(OrbProj::px, 0.5);
+                add(OrbProj::py, -0.5);
+                add(OrbProj::pz, -0.5);
+            }
+            OrbProj::sp3_3 => {
+                add(OrbProj::s, 0.5);
+                add(OrbProj::px, -0.5);
+                add(OrbProj::py, 0.5);
+                add(OrbProj::pz, -0.5);
+            }
+            OrbProj::sp3_4 => {
+                add(OrbProj::s, 0.5);
+                add(OrbProj::px, -0.5);
+                add(OrbProj::py, -0.5);
+                add(OrbProj::pz, 0.5);
+            }
+            OrbProj::sp3d_1 => {
+                add(OrbProj::s, 1.0 / 3.0_f64.sqrt());
+                add(OrbProj::px, -1.0 / 6.0_f64.sqrt());
+                add(OrbProj::py, 1.0 / 2.0_f64.sqrt());
+            }
+            OrbProj::sp3d_2 => {
+                add(OrbProj::s, 1.0 / 3.0_f64.sqrt());
+                add(OrbProj::px, -1.0 / 6.0_f64.sqrt());
+                add(OrbProj::py, -1.0 / 2.0_f64.sqrt());
+            }
+            OrbProj::sp3d_3 => {
+                add(OrbProj::s, 1.0 / 3.0_f64.sqrt());
+                add(OrbProj::px, 2.0 / 6.0_f64.sqrt());
+            }
+            OrbProj::sp3d_4 => {
+                add(OrbProj::pz, 1.0 / 2.0_f64.sqrt());
+                add(OrbProj::dz2, 1.0 / 2.0_f64.sqrt());
+            }
+            OrbProj::sp3d_5 => {
+                add(OrbProj::pz, -1.0 / 2.0_f64.sqrt());
+                add(OrbProj::dz2, 1.0 / 2.0_f64.sqrt());
+            }
+            OrbProj::sp3d2_1 => {
+                add(OrbProj::s, 1.0 / 6.0_f64.sqrt());
+                add(OrbProj::px, -1.0 / 2.0_f64.sqrt());
+                add(OrbProj::dz2, -1.0 / 12.0_f64.sqrt());
+                add(OrbProj::dx2y2, 0.5);
+            }
+            OrbProj::sp3d2_2 => {
+                add(OrbProj::s, 1.0 / 6.0_f64.sqrt());
+                add(OrbProj::px, 1.0 / 2.0_f64.sqrt());
+                add(OrbProj::dz2, -1.0 / 12.0_f64.sqrt());
+                add(OrbProj::dx2y2, 0.5);
+            }
+            OrbProj::sp3d2_3 => {
+                add(OrbProj::s, 1.0 / 6.0_f64.sqrt());
+                add(OrbProj::py, -1.0 / 2.0_f64.sqrt());
+                add(OrbProj::dz2, -1.0 / 12.0_f64.sqrt());
+                add(OrbProj::dx2y2, -0.5);
+            }
+            OrbProj::sp3d2_4 => {
+                add(OrbProj::s, 1.0 / 6.0_f64.sqrt());
+                add(OrbProj::py, 1.0 / 2.0_f64.sqrt());
+                add(OrbProj::dz2, -1.0 / 12.0_f64.sqrt());
+                add(OrbProj::dx2y2, -0.5);
+            }
+            OrbProj::sp3d2_5 => {
+                add(OrbProj::s, 1.0 / 6.0_f64.sqrt());
+                add(OrbProj::pz, -1.0 / 2.0_f64.sqrt());
+                add(OrbProj::dz2, 1.0 / 3.0_f64.sqrt());
+            }
+            OrbProj::sp3d2_6 => {
+                add(OrbProj::s, 1.0 / 6.0_f64.sqrt());
+                add(OrbProj::pz, 1.0 / 2.0_f64.sqrt());
+                add(OrbProj::dz2, 1.0 / 3.0_f64.sqrt());
+            }
+            _ => unreachable!("pure projections returned above"),
+        }
+        Ok(Array1::from(state.to_vec()))
     }
+}
+
+fn pure_quantum_number(projection: OrbProj) -> Option<[Complex<f64>; 16]> {
+    let state = match projection {
+        OrbProj::s => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[0] = Complex::new(1.0, 0.0);
+            s
+        }
+        OrbProj::px => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[1] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s[3] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
+            s
+        }
+        OrbProj::py => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[1] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+            s[3] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+            s
+        }
+        OrbProj::pz => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[2] = Complex::new(1.0, 0.0);
+            s
+        }
+        OrbProj::dxy => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[4] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+            s[8] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s
+        }
+        OrbProj::dyz => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[5] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s[7] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s
+        }
+        OrbProj::dxz => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[5] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s[7] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
+            s
+        }
+        OrbProj::dz2 => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[6] = Complex::new(1.0, 0.0);
+            s
+        }
+        OrbProj::dx2y2 => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[4] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s[8] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s
+        }
+        OrbProj::fz3 => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[12] = Complex::new(1.0, 0.0);
+            s
+        }
+        OrbProj::fxz2 => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[11] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
+            s[13] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s
+        }
+        OrbProj::fyz2 => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[11] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s[13] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s
+        }
+        OrbProj::fzx2y2 => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[10] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s[14] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s
+        }
+        OrbProj::fxyz => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[10] = Complex::new(0.0, 1.0 / 2_f64.sqrt());
+            s[14] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s
+        }
+        OrbProj::fxx23y2 => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[9] = Complex::new(-1.0 / 2_f64.sqrt(), 0.0);
+            s[15] = Complex::new(1.0 / 2_f64.sqrt(), 0.0);
+            s
+        }
+        OrbProj::fy3x2y2 => {
+            let mut s = [Complex::new(0.0, 0.0); 16];
+            s[9] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s[15] = Complex::new(0.0, -1.0 / 2_f64.sqrt());
+            s
+        }
+        _ => return None,
+    };
+    Some(state)
 }
 
 impl FromStr for OrbProj {
@@ -860,11 +984,59 @@ impl fmt::Display for Atom {
 mod tests {
     use super::*;
 
+    fn assert_orthonormal_family(family: &[OrbProj]) {
+        let states = family
+            .iter()
+            .map(|projection| projection.to_quantum_number().unwrap())
+            .collect::<Vec<_>>();
+        for (left_index, left) in states.iter().enumerate() {
+            for (right_index, right) in states.iter().enumerate() {
+                let overlap = left
+                    .iter()
+                    .zip(right)
+                    .map(|(left, right)| left.conj() * right)
+                    .sum::<Complex<f64>>();
+                let expected = if left_index == right_index { 1.0 } else { 0.0 };
+                assert!(
+                    (overlap - Complex::new(expected, 0.0)).norm() < 1e-12,
+                    "family {family:?}: overlap ({left_index}, {right_index}) = {overlap}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn parse_orbitals_from_str() {
         assert_eq!("s".parse::<OrbProj>().unwrap(), OrbProj::s);
         assert_eq!("dx2-y2".parse::<OrbProj>().unwrap(), OrbProj::dx2y2);
         assert!("xx".parse::<OrbProj>().is_err());
+    }
+
+    #[test]
+    fn wannier90_hybrid_projection_families_are_orthonormal() {
+        assert_orthonormal_family(&[OrbProj::sp_1, OrbProj::sp_2]);
+        assert_orthonormal_family(&[OrbProj::sp2_1, OrbProj::sp2_2, OrbProj::sp2_3]);
+        assert_orthonormal_family(&[
+            OrbProj::sp3_1,
+            OrbProj::sp3_2,
+            OrbProj::sp3_3,
+            OrbProj::sp3_4,
+        ]);
+        assert_orthonormal_family(&[
+            OrbProj::sp3d_1,
+            OrbProj::sp3d_2,
+            OrbProj::sp3d_3,
+            OrbProj::sp3d_4,
+            OrbProj::sp3d_5,
+        ]);
+        assert_orthonormal_family(&[
+            OrbProj::sp3d2_1,
+            OrbProj::sp3d2_2,
+            OrbProj::sp3d2_3,
+            OrbProj::sp3d2_4,
+            OrbProj::sp3d2_5,
+            OrbProj::sp3d2_6,
+        ]);
     }
 
     #[test]
