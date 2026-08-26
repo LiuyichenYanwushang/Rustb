@@ -730,8 +730,9 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   E/B filtering. Use `AtomicOrbitalBasis` for strict automatic actions of
   Atom-owned, globally aligned Wannier90 `s/p/d/f` and hybrid projections; it
   supports spinless/spinful and unitary/antiunitary operations, and rejects
-  incomplete shells, duplicate radial channels, non-atom-centred functions,
-  and non-closed subspaces. `ScalarSiteBasis` remains the one-`s`-orbital
+  projection subsets not closed under a target operation, duplicate radial
+  channels, non-atom-centred functions, and other non-closed subspaces.
+  `ScalarSiteBasis` remains the one-`s`-orbital
   special case. General Wannier gauges and local frames must implement
   `BasisSymmetryRepresentation`; missing metadata is `Unresolved`, never
   `Broken`.

@@ -374,9 +374,9 @@ Implementation flow:
    `AtomicOrbitalBasis` automatically handles complete atom-centred,
    global-frame Wannier90 `s/p/d/f` and hybrid projection subspaces, including
    orbital cell representatives and the spin action. `ScalarSiteBasis` remains
-   the one-`s` special case. Repeated radial channels, incomplete shells, local
-   frames, and custom Wannier gauges provide finite `CellShiftAction` matrices
-   explicitly.
+   the one-`s` special case. Repeated radial channels, projection subsets not
+   closed under the requested operations, local frames, and custom Wannier
+   gauges provide finite `CellShiftAction` matrices explicitly.
 4. Represent the localized action as
 
    ```text

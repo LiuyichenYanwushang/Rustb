@@ -234,8 +234,9 @@ cell shifts; it does not infer a group from a sampled k mesh.
 `s/p/d/f`, `sp`, `sp2`, `sp3`, `sp3d`, and `sp3d2` functions for both
 `SPIN=false` and `SPIN=true`; antiunitary operations include the appropriate
 complex conjugation and, for spinful models, the spin-1/2 action. The provider
-rejects incomplete shells, duplicate/radial channels, non-atom-centred
-orbitals, and non-closed local subspaces instead of guessing. Local orbital
+rejects incomplete projection sets whenever they are not closed under a target
+operation, along with duplicate/radial channels, non-atom-centred orbitals, and
+other non-closed local subspaces, instead of guessing. Local orbital
 frames, SOC-entangled orbitals, or arbitrary Wannier gauges must implement
 `BasisSymmetryRepresentation` and return explicit `LocalizedBasisAction`
 cell-shift matrices. `ScalarSiteBasis` remains as the narrower one-`s`-orbital

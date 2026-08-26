@@ -691,9 +691,10 @@ inconclusive reason.
 aligned Wannier90 `s/p/d/f`, `sp`, `sp2`, `sp3`, `sp3d`, and `sp3d2`
 projections. It verifies atom centres, orthonormality, closure, integer cell
 shifts, and the orbital/spin magnetic corepresentation. It rejects repeated
-radial channels, incomplete shells, local frames, and general Wannier gauges;
-use a custom `BasisSymmetryRepresentation` for those. `ScalarSiteBasis` remains
-valid only for exactly one atom-centred `s` orbital per Atom. The checker
+radial channels, projection subsets not closed under a target operation, local
+frames, and general Wannier gauges; use a custom
+`BasisSymmetryRepresentation` for those. `ScalarSiteBasis` remains valid only
+for exactly one atom-centred `s` orbital per Atom. The checker
 validates each Laurent action, checks the complete finite `hamR` support,
 verifies survivor closure, and lets cryspglib derive the effective family Hall.
 Do not replace an `Unresolved`/`Inconclusive` outcome by calling operation-only

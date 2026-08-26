@@ -213,9 +213,9 @@ pub struct ScalarSiteBasis;
 /// modulo a lattice vector, each atom-local projection list must be
 /// orthonormal and closed under the requested operation, and same-species
 /// sites must map uniquely. Repeated angular projections (for example two
-/// radial `p_x` functions), incomplete shells, local orbital frames, and
-/// general Wannier gauges require a custom [`BasisSymmetryRepresentation`]
-/// instead of being guessed.
+/// radial `p_x` functions), incomplete subspaces that are not closed under the
+/// target operations, local orbital frames, and general Wannier gauges require
+/// a custom [`BasisSymmetryRepresentation`] instead of being guessed.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AtomicOrbitalBasis;
 
