@@ -293,8 +293,10 @@ println!("{irreps}");
 ```
 
 Before diagonalization, the calculation verifies the full localized actions,
-their projective magnetic-group composition, and exact covariance of the
-complete real-space Hamiltonian. It then diagonalizes independent k points in
+their `SPIN`-appropriate magnetic factor system (including
+$\mathcal T^2=-1$ for spinful models), and exact covariance of the complete
+real-space Hamiltonian. Covariance thresholds are invariant under adding a
+constant energy to every band. It then diagonalizes independent k points in
 parallel, restricts each unitary sewing matrix to consecutive degenerate bands,
 and fits the resulting characters to the magnetic-corepresentation table. The
 printed table includes every raw complex unitary character; antiunitary rows

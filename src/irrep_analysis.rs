@@ -371,37 +371,37 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
         validate_options(&options)?;
         self.validate()?;
 
-        let external_fields = if supplied_options {
-            options.symmetry.structural_parameters.external_fields
+        let target_operations = if supplied_options {
+            let external_fields = options.symmetry.structural_parameters.external_fields;
+            cryspglib::SymmetryOps {
+                operations: target_group
+                    .operations
+                    .iter()
+                    .map(|operation| cryspglib::SymmetryOp {
+                        rotation: operation.rotation,
+                        translation: operation.translation,
+                        time_reversal: operation.time_reversal,
+                    })
+                    .collect(),
+            }
+            .preserving_fields(
+                &cry_lattice(self),
+                cryspglib::ExternalFields {
+                    electric: external_fields.electric,
+                    magnetic: external_fields.magnetic,
+                },
+                options.symmetry.structural_parameters.field_tolerance,
+            )?
+            .iter()
+            .map(|operation| CrystalSymmetryOperation {
+                rotation: operation.rotation,
+                translation: operation.translation,
+                time_reversal: operation.time_reversal,
+            })
+            .collect::<Vec<_>>()
         } else {
-            target_group.external_fields
+            target_group.field_preserving_operations.clone()
         };
-        let target_operations = cryspglib::SymmetryOps {
-            operations: target_group
-                .operations
-                .iter()
-                .map(|operation| cryspglib::SymmetryOp {
-                    rotation: operation.rotation,
-                    translation: operation.translation,
-                    time_reversal: operation.time_reversal,
-                })
-                .collect(),
-        }
-        .preserving_fields(
-            &cry_lattice(self),
-            cryspglib::ExternalFields {
-                electric: external_fields.electric,
-                magnetic: external_fields.magnetic,
-            },
-            options.symmetry.structural_parameters.field_tolerance,
-        )?
-        .iter()
-        .map(|operation| CrystalSymmetryOperation {
-            rotation: operation.rotation,
-            translation: operation.translation,
-            time_reversal: operation.time_reversal,
-        })
-        .collect::<Vec<_>>();
         if target_operations.is_empty() {
             return Err(TbError::IrrepCalculation {
                 message: "the target magnetic group has no field-preserving operations".to_string(),
@@ -543,6 +543,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
             .map(|prepared| (prepared.operation, prepared.action.clone()))
             .collect::<Vec<_>>();
         validate_projective_corepresentation(
+            self,
             &operations_and_actions,
             options.symmetry.tolerances.operation,
             options.symmetry.tolerances.representation,
@@ -1451,6 +1452,22 @@ mod tests {
         }
     }
 
+    struct WrongSpinfulFactorSystem;
+
+    impl BasisSymmetryRepresentation<true, NoRMatrix> for WrongSpinfulFactorSystem {
+        fn resolve(
+            &self,
+            context: BasisActionContext<'_, true, NoRMatrix>,
+        ) -> std::result::Result<LocalizedBasisAction, crate::BasisRepresentationError> {
+            Ok(LocalizedBasisAction {
+                sectors: vec![CellShiftAction {
+                    shift: [0, 0, 0],
+                    matrix: Array2::eye(context.model.nsta()),
+                }],
+            })
+        }
+    }
+
     #[test]
     fn incomplete_orbital_shell_is_rejected_before_band_labelling() {
         let model = orbital_cubic::<false>(&[OrbProj::px, OrbProj::py]);
@@ -1470,11 +1487,31 @@ mod tests {
     }
 
     #[test]
+    fn spinful_time_reversal_with_positive_square_is_rejected() {
+        let model: Model<true, 3, NoRMatrix> = Model::tb_model(
+            array![[1.0, 0.1, 0.2], [0.2, 1.3, 0.1], [0.1, 0.3, 1.7]],
+            array![[0.0, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::H,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        let error = model
+            .calculate_irrep(&WrongSpinfulFactorSystem, None)
+            .unwrap_err();
+        assert!(matches!(error, TbError::IrrepBasisCorepresentation { .. }));
+        assert!(error.to_string().contains("factor-system phase"));
+    }
+
+    #[test]
     fn anisotropic_scalar_hopping_invalidates_all_target_labels() {
         let mut model = orbital_cubic::<false>(&[OrbProj::s]);
         model.set_hop(1.0, 0, 0, &array![1_isize, 0, 0], None);
         model.set_hop(2.0, 0, 0, &array![0_isize, 1, 0], None);
         model.set_hop(3.0, 0, 0, &array![0_isize, 0, 1], None);
+        model.set_onsite(&array![1e12], None);
 
         let report = model.calculate_irrep(&AtomicOrbitalBasis, None).unwrap();
         assert!(!report.target_hamiltonian_compatible);
@@ -1656,6 +1693,30 @@ mod tests {
         assert_eq!(explicit.uni_number, report.uni_number);
         assert_eq!(explicit.bns_number, report.bns_number);
         assert_eq!(explicit.high_symmetry_kpoints, report.high_symmetry_kpoints);
+    }
+
+    #[test]
+    fn explicit_target_none_preserves_its_precomputed_field_subset() {
+        let model = orbital_cubic::<false>(&[OrbProj::s]);
+        let mut parameters = crate::crystal_symmetry::SymmetryParameters::default();
+        parameters.external_fields.magnetic = Some([1e-6, 0.0, 0.0]);
+        parameters.field_tolerance = 1e-3;
+        let target = model
+            .magnetic_crystal_symmetry_from_atoms(&parameters)
+            .unwrap();
+        assert_eq!(
+            target.field_preserving_operations.len(),
+            target.operations.len()
+        );
+
+        let report = model
+            .calculate_irrep_for_group(&target, &AtomicOrbitalBasis, None)
+            .unwrap();
+        assert_eq!(report.uni_number, target.uni_number);
+        assert_eq!(
+            report.hamiltonian_operation_diagnostics.len(),
+            target.field_preserving_operations.len()
+        );
     }
 
     #[test]

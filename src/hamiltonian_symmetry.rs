@@ -315,14 +315,21 @@ pub struct HamiltonianResidualWitness {
 
 /// Norms of the Hamiltonian covariance residual for one operation.
 ///
-/// With $\Delta_g(\mathbf R)=H(\mathbf R)-H_g(\mathbf R)$, the report stores
+/// With $\widetilde H$ denoting the energy-origin-centred Hamiltonian and
+/// $\Delta_g(\mathbf R)=\widetilde H(\mathbf R)-\widetilde H_g(\mathbf R)$,
+/// the report stores
 ///
 /// $$
 /// r_\infty=\max_{\mathbf R,a,b}|\Delta_{g,ab}(\mathbf R)|,
 /// \qquad
 /// r_F=\frac{\sqrt{\sum_{\mathbf R}\|\Delta_g(\mathbf R)\|_F^2}}
-/// {\max(\sqrt{\sum_{\mathbf R}\|H(\mathbf R)\|_F^2},\epsilon)}.
+/// {\max(\sqrt{\sum_{\mathbf R}\|\widetilde H(\mathbf R)\|_F^2},\epsilon)}.
 /// $$
+///
+/// Both relative scales use $\widetilde H$, obtained by removing
+/// $\operatorname{Tr}H(\mathbf0)/N$ from the onsite diagonal. This makes the
+/// diagnostic and its acceptance threshold invariant under an arbitrary
+/// energy-origin shift $H\mapsto H+C\mathbb1$.
 #[derive(Debug, Clone)]
 pub struct HamiltonianResidual {
     pub max_absolute: f64,
@@ -1130,6 +1137,7 @@ fn cartesian_rotation<const SPIN: bool, R: RMatrixData>(
 #[derive(Debug)]
 pub(crate) struct HamiltonianSupport {
     matrices: BTreeMap<[isize; 3], Array2<Complex64>>,
+    centered_onsite: Option<Array2<Complex64>>,
     max_element: f64,
     frobenius_norm: f64,
 }
@@ -1166,8 +1174,6 @@ pub(crate) fn validate_hamiltonian<const SPIN: bool, R: RMatrixData>(
     }
 
     let mut matrices = BTreeMap::new();
-    let mut max_element = 0.0_f64;
-    let mut norm_squared = 0.0_f64;
     for index in 0..model.hamR.nrows() {
         let lattice_vector = [
             model.hamR[[index, 0]],
@@ -1181,11 +1187,6 @@ pub(crate) fn validate_hamiltonian<const SPIN: bool, R: RMatrixData>(
             });
         }
         let matrix = model.ham.index_axis(Axis(0), index).to_owned();
-        for value in &matrix {
-            let norm = value.norm();
-            max_element = max_element.max(norm);
-            norm_squared += norm * norm;
-        }
         matrices.insert(lattice_vector, matrix);
     }
 
@@ -1221,8 +1222,39 @@ pub(crate) fn validate_hamiltonian<const SPIN: bool, R: RMatrixData>(
         }
     }
 
+    // A scalar energy-origin shift C I at R=0 is invariant under every
+    // unitary/antiunitary basis action and must not relax a relative symmetry
+    // threshold. Keep the original matrices for symmetrization, but use the
+    // traceless onsite block for covariance residuals and their scale.
+    let centered_onsite = matrices.get(&[0, 0, 0]).map(|onsite| {
+        let scalar = (0..model.nsta())
+            .map(|index| onsite[[index, index]])
+            .sum::<Complex64>()
+            / model.nsta() as f64;
+        let mut centered = onsite.clone();
+        for index in 0..model.nsta() {
+            centered[[index, index]] -= scalar;
+        }
+        centered
+    });
+    let mut max_element = 0.0_f64;
+    let mut norm_squared = 0.0_f64;
+    for (lattice_vector, matrix) in &matrices {
+        let scaled = if *lattice_vector == [0, 0, 0] {
+            centered_onsite.as_ref().unwrap_or(matrix)
+        } else {
+            matrix
+        };
+        for value in scaled {
+            let norm = value.norm();
+            max_element = max_element.max(norm);
+            norm_squared += norm * norm;
+        }
+    }
+
     Ok(HamiltonianSupport {
         matrices,
+        centered_onsite,
         max_element,
         frobenius_norm: norm_squared.sqrt(),
     })
@@ -1472,6 +1504,7 @@ fn transformed_hamiltonian_at(
     operation: &CrystalSymmetryOperation,
     action: &LocalizedBasisAction,
     lattice_vector: [isize; 3],
+    remove_scalar_onsite: bool,
 ) -> std::result::Result<Array2<Complex64>, BasisRepresentationError> {
     let rotated =
         checked_rotation_vector(&operation.rotation, lattice_vector).ok_or_else(|| {
@@ -1500,7 +1533,12 @@ fn transformed_hamiltonian_at(
                     "translated Hamiltonian lattice vector overflows isize".to_string(),
                 ));
             };
-            if let Some(hamiltonian) = support.matrices.get(&image) {
+            let hamiltonian = if remove_scalar_onsite && image == [0, 0, 0] {
+                support.centered_onsite.as_ref()
+            } else {
+                support.matrices.get(&image)
+            };
+            if let Some(hamiltonian) = hamiltonian {
                 covariance += &dagger.dot(hamiltonian).dot(&right.matrix);
             }
         }
@@ -1533,8 +1571,13 @@ pub(crate) fn hamiltonian_residual(
     let mut residual_norm_squared = 0.0_f64;
 
     for lattice_vector in domain {
-        let predicted = transformed_hamiltonian_at(support, operation, action, lattice_vector)?;
-        let original = support.matrices.get(&lattice_vector);
+        let predicted =
+            transformed_hamiltonian_at(support, operation, action, lattice_vector, true)?;
+        let original = if lattice_vector == [0, 0, 0] {
+            support.centered_onsite.as_ref()
+        } else {
+            support.matrices.get(&lattice_vector)
+        };
         for row in 0..dimension {
             for column in 0..dimension {
                 let original_value = original
@@ -1810,7 +1853,55 @@ fn corepresentation_generators(
     Ok(generators)
 }
 
-pub(crate) fn validate_projective_corepresentation(
+fn spin_composition_phase<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+    left: &CrystalSymmetryOperation,
+    right: &CrystalSymmetryOperation,
+    product: &CrystalSymmetryOperation,
+    tolerance: f64,
+) -> std::result::Result<Complex64, BasisRepresentationError> {
+    let left_spin = scalar_spin_action(model, left, tolerance)?;
+    let mut right_spin = scalar_spin_action(model, right, tolerance)?;
+    if left.time_reversal {
+        right_spin = right_spin.map(|row| row.map(|value| value.conj()));
+    }
+    let actual = multiply_2x2(left_spin, right_spin);
+    let expected = scalar_spin_action(model, product, tolerance)?;
+    let reference = (0..2)
+        .flat_map(|row| (0..2).map(move |column| (row, column)))
+        .max_by(|&(left_row, left_column), &(right_row, right_column)| {
+            expected[left_row][left_column]
+                .norm()
+                .total_cmp(&expected[right_row][right_column].norm())
+        })
+        .ok_or_else(|| {
+            BasisRepresentationError::Invalid(
+                "spin factor-system reference matrix is empty".to_string(),
+            )
+        })?;
+    let expected_reference = expected[reference.0][reference.1];
+    let actual_reference = actual[reference.0][reference.1];
+    if expected_reference.norm() <= tolerance || actual_reference.norm() <= tolerance {
+        return Err(BasisRepresentationError::Invalid(
+            "spin factor-system reference coefficient is numerically zero".to_string(),
+        ));
+    }
+    let ratio = actual_reference / expected_reference;
+    let phase = ratio / ratio.norm();
+    let residual = (0..2)
+        .flat_map(|row| (0..2).map(move |column| (row, column)))
+        .map(|(row, column)| (actual[row][column] - phase * expected[row][column]).norm())
+        .fold(0.0_f64, f64::max);
+    if residual > tolerance {
+        return Err(BasisRepresentationError::Invalid(format!(
+            "canonical spin lift does not close projectively (maximum residual {residual:e})"
+        )));
+    }
+    Ok(phase)
+}
+
+pub(crate) fn validate_projective_corepresentation<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
     operations_and_actions: &[(CrystalSymmetryOperation, LocalizedBasisAction)],
     operation_tolerance: f64,
     representation_tolerance: f64,
@@ -1847,7 +1938,7 @@ pub(crate) fn validate_projective_corepresentation(
                 "identity action {identity_index} has no zero-cell sector"
             ))
         })?;
-    let phase = (0..dimension)
+    let identity_reference = (0..dimension)
         .map(|index| identity_matrix[[index, index]])
         .max_by(|left, right| left.norm().total_cmp(&right.norm()))
         .ok_or_else(|| {
@@ -1855,9 +1946,9 @@ pub(crate) fn validate_projective_corepresentation(
                 "the localized corepresentation has zero dimension".to_string(),
             )
         })?;
-    if (phase.norm() - 1.0).abs() > representation_tolerance {
+    if (identity_reference - Complex64::new(1.0, 0.0)).norm() > representation_tolerance {
         return Err(BasisRepresentationError::Invalid(format!(
-            "identity action {identity_index} is not a unit-modulus phase times the identity"
+            "identity action {identity_index} does not use the canonical +I phase"
         )));
     }
     let mut identity_residual = 0.0_f64;
@@ -1865,7 +1956,7 @@ pub(crate) fn validate_projective_corepresentation(
         for row in 0..dimension {
             for column in 0..dimension {
                 let expected = if sector.shift == [0, 0, 0] && row == column {
-                    phase
+                    Complex64::new(1.0, 0.0)
                 } else {
                     Complex64::new(0.0, 0.0)
                 };
@@ -1876,7 +1967,7 @@ pub(crate) fn validate_projective_corepresentation(
     }
     if identity_residual > representation_tolerance {
         return Err(BasisRepresentationError::Invalid(format!(
-            "identity action {identity_index} is not a global phase times the zero-shift identity (maximum residual {identity_residual:e})"
+            "identity action {identity_index} is not the zero-shift identity (maximum residual {identity_residual:e})"
         )));
     }
 
@@ -1939,6 +2030,18 @@ pub(crate) fn validate_projective_corepresentation(
             }
             let phase_ratio = actual_reference / reference.3;
             let phase = phase_ratio / phase_ratio.norm();
+            let expected_phase = spin_composition_phase(
+                model,
+                left_operation,
+                &operations_and_actions[right_index].0,
+                &operations_and_actions[product_index].0,
+                representation_tolerance,
+            )?;
+            if (phase - expected_phase).norm() > representation_tolerance {
+                return Err(BasisRepresentationError::Invalid(format!(
+                    "basis actions {left_index} and {right_index} have factor-system phase {phase}, expected {expected_phase} for SPIN={SPIN}"
+                )));
+            }
             let keys = actual
                 .keys()
                 .chain(expected.keys())
@@ -1995,7 +2098,8 @@ fn symmetrized_support(
     for lattice_vector in domain {
         let mut matrix = Array2::zeros((dimension, dimension));
         for (operation, action) in operations_and_actions {
-            matrix += &transformed_hamiltonian_at(support, operation, action, lattice_vector)?;
+            matrix +=
+                &transformed_hamiltonian_at(support, operation, action, lattice_vector, false)?;
         }
         matrix.mapv_inplace(|value| value / normalizer);
         averaged.insert(lattice_vector, matrix);
@@ -2402,10 +2506,12 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// $$
     ///
     /// where $\mathbf n_{g,h}$ accounts for the integer translation used to
-    /// normalize the Seitz representative. Allowing the global phase
-    /// $z_{g,h}$ admits spin-$\tfrac12$ double groups and
-    /// $\mathcal T^2=-1$, while still rejecting unrelated per-operation
-    /// matrices.
+    /// normalize the Seitz representative. The phase $z_{g,h}$ is not fitted
+    /// arbitrarily: it must equal the canonical axial spin lift for the
+    /// Model's `SPIN` sector. Thus spinless actions use the linear factor
+    /// system, while spinful actions retain the double-group signs and
+    /// $\mathcal T^2=-1$. This prevents an invalid custom provider such as
+    /// $\mathcal T=K$ from being accepted for a spin-$\tfrac12$ model.
     ///
     /// For a localized action $D^g_{\mathbf s}$, define the real-linear group
     /// action on Hamiltonians by
@@ -2580,6 +2686,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
         }
 
         validate_projective_corepresentation(
+            self,
             &operations_and_actions,
             parameters.tolerances.operation,
             parameters.tolerances.representation,
@@ -2877,6 +2984,7 @@ mod tests {
         model.set_hop(1.0_f64, 0, 0, &array![1_isize, 0, 0], None);
         model.set_hop(2.0_f64, 0, 0, &array![0_isize, 1, 0], None);
         model.set_hop(3.0_f64, 0, 0, &array![0_isize, 0, 1], None);
+        model.set_onsite(&array![1e12], None);
 
         let report = model
             .check_hamiltonian_symmetry(
@@ -3832,7 +3940,9 @@ mod tests {
                 ],
             }],
         };
+        let model = spinful_cubic();
         let error = validate_projective_corepresentation(
+            &model,
             &[(identity, identity_action), (c2z, bad_c2_action)],
             1e-8,
             1e-8,

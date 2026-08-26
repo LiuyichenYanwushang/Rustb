@@ -741,10 +741,13 @@ let target_report = model.calculate_irrep_for_group(
 )?;
 ```
 
-All target operations and their projective group composition are resolved
-before diagonalization. An incomplete or non-closed orbital basis is therefore
-an error. The full real-space Hamiltonian is then certified against every
-target operation: if it is broken, the calculation retains covariance
+All target operations and their `SPIN`-appropriate factor system are resolved
+before diagonalization; the spinful path explicitly enforces the canonical
+double-group signs and $\mathcal T^2=-1$. An incomplete/non-closed orbital
+basis or inconsistent custom representation is therefore an error. The full
+real-space Hamiltonian is then certified against every target operation with
+an energy-origin-invariant residual scale: if it is broken, the calculation
+retains covariance
 residuals and raw complex characters but all target labels become `???`.
 High-symmetry k points run in parallel and are collected in canonical order;
 use a one-thread BLAS configuration to avoid nested oversubscription. The

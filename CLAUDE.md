@@ -765,12 +765,15 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   `calculate_irrep_for_group(target, provider, options)` for an explicit
   target. Resolve and validate every localized target action before launching
   any eigensolver; an incomplete orbital shell or ambiguous Wannier gauge is a
-  hard `IrrepBasisRepresentation` error; actions that do not compose as a
-  projective magnetic corepresentation are also a hard pre-solve error. Check
+  hard `IrrepBasisRepresentation` error; actions that do not compose with the
+  canonical factor system for `SPIN` (linear spinless, spin-half double group
+  and T-squared-minus-one spinful) are also a hard pre-solve error. Check
   exact real-space covariance under every target operation before any
-  eigensolver. If any operation breaks H, retain residuals and raw characters
-  but mark every target label `???`, even when a sampled eigenspace happens to
-  close. Once preflight is complete, process independent high-symmetry k points
+  eigensolver, using a scale with the scalar onsite energy removed so the
+  decision is invariant under `H -> H + C I`. If any operation breaks H,
+  retain residuals and raw characters but mark every target label `???`, even
+  when a sampled eigenspace happens to close. Once preflight is complete,
+  process independent high-symmetry k points
   in parallel and preserve their canonical order. Group consecutive degenerate
   bands with an energy-origin-invariant threshold, compute unitary sewing
   characters and antiunitary closure residuals, and fit formal corep
