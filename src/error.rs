@@ -46,6 +46,19 @@ pub enum TbError {
     MagneticIrrepAnalysis { uni: usize, message: String },
 
     #[cfg(feature = "cryspglib")]
+    #[error("band-irrep calculation failed: {message}")]
+    IrrepCalculation { message: String },
+
+    #[cfg(feature = "cryspglib")]
+    #[error(
+        "cannot construct the localized-basis representation of target magnetic operation {operation_index}: {reason}"
+    )]
+    IrrepBasisRepresentation {
+        operation_index: usize,
+        reason: String,
+    },
+
+    #[cfg(feature = "cryspglib")]
     #[error("invalid Hamiltonian-symmetry input '{parameter}': {message}")]
     InvalidHamiltonianSymmetryInput {
         parameter: &'static str,

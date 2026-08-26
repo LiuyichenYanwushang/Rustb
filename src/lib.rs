@@ -213,6 +213,8 @@ pub mod hamiltonian_symmetry;
 #[path = "Hubbard.rs"]
 pub mod hubbard;
 pub mod io;
+#[cfg(feature = "cryspglib")]
+pub mod irrep_analysis;
 pub mod kpath;
 pub mod kplane;
 pub mod kpoints;
@@ -258,6 +260,11 @@ pub use crate::hamiltonian_symmetry::{
 };
 pub use crate::hubbard::*;
 pub use crate::io::*;
+#[cfg(feature = "cryspglib")]
+pub use crate::irrep_analysis::{
+    IrrepBandReport, IrrepCalculationOptions, IrrepCalculationReport, IrrepCharacter,
+    IrrepKPointReport, IrrepMultiplicity,
+};
 pub use crate::kpath::*;
 pub use crate::kplane::*;
 pub use crate::kpoints::*;

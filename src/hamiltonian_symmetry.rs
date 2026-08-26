@@ -1236,7 +1236,7 @@ fn checked_negate(vector: [isize; 3]) -> Option<[isize; 3]> {
     ])
 }
 
-fn validate_action(
+pub(crate) fn validate_action(
     action: LocalizedBasisAction,
     dimension: usize,
     tolerance: f64,
@@ -1320,7 +1320,7 @@ fn validate_action(
     Ok(LocalizedBasisAction { sectors })
 }
 
-fn validate_action_geometry<const SPIN: bool, R: RMatrixData>(
+pub(crate) fn validate_action_geometry<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
     operation: &CrystalSymmetryOperation,
     action: &LocalizedBasisAction,
