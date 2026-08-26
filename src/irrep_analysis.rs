@@ -915,6 +915,133 @@ fn source_characters(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScalarCompoundCharacterKind {
+    ConjugateRealification,
+    DistinctComponentSum,
+}
+
+fn scalar_cir_character(component: &[f64], character_index: usize) -> Option<Complex64> {
+    let value = Complex64::new(
+        *component.get(2 * character_index)?,
+        *component.get(2 * character_index + 1)?,
+    );
+    (value.re.is_finite() && value.im.is_finite()).then_some(value)
+}
+
+fn scalar_compound_character_kind(
+    components: &[&[f64]],
+    irrep: &IrrepRecord,
+    point: &MagneticKPointSummary,
+    unitary_operations: &cryspglib::SymmetryOps,
+    h_to_irrep: &[usize],
+) -> Result<ScalarCompoundCharacterKind> {
+    let [first, second] = components else {
+        return Err(TbError::IrrepCalculation {
+            message: format!(
+                "compound source {} at {} has {} CIR components instead of two scalar components",
+                irrep.ml,
+                point.label,
+                components.len()
+            ),
+        });
+    };
+    let pir_translations = irrep.pir_translations();
+    let operation_count = first.len() / 2;
+    if pir_translations.len() != 3 * operation_count {
+        return Err(TbError::IrrepCalculation {
+            message: format!(
+                "compound source {} at {} has {} PIR translation values for {} operations",
+                irrep.ml,
+                point.label,
+                pir_translations.len(),
+                operation_count
+            ),
+        });
+    }
+    let (kx, ky, kz, denominator) = point.coords;
+    if denominator == 0 {
+        return Err(TbError::IrrepCalculation {
+            message: format!(
+                "compound source {} at {} has a zero k-vector denominator",
+                irrep.ml, point.label
+            ),
+        });
+    }
+    let k = [f64::from(kx), f64::from(ky), f64::from(kz)];
+    let denominator = f64::from(denominator);
+    let mut compared_phase_real_operation = false;
+    for operation in point
+        .operations
+        .iter()
+        .filter(|operation| !operation.time_reversal)
+    {
+        let h_index =
+            find_operation_index(&unitary_operations.operations, operation).ok_or_else(|| {
+                TbError::IrrepCalculation {
+                    message: format!(
+                        "compound source {} at {} cannot map unitary character column {}",
+                        irrep.ml, point.label, operation.column
+                    ),
+                }
+            })?;
+        let character_index =
+            *h_to_irrep
+                .get(h_index)
+                .ok_or_else(|| TbError::IrrepCalculation {
+                    message: format!(
+                        "compound source {} at {} has no PIR mapping for unitary operation {}",
+                        irrep.ml, point.label, h_index
+                    ),
+                })?;
+        let translation: [f64; 3] =
+            std::array::from_fn(|axis| pir_translations[3 * character_index + axis]);
+        let phase_argument = -std::f64::consts::TAU
+            * k.iter()
+                .zip(translation)
+                .map(|(component, translation)| component * translation)
+                .sum::<f64>()
+            / denominator;
+        // Both members of a conjugate realification have conjugate
+        // characters only when the common Bloch phase is real.  At a complex
+        // centering/screw phase, old generated tables can align the second
+        // member with the same k arm instead of the conjugate arm, so those
+        // columns must not decide which kind of compound record this is.
+        if phase_argument.sin().abs() > 1e-7 {
+            continue;
+        }
+        compared_phase_real_operation = true;
+        let first_value = scalar_cir_character(first, character_index).ok_or_else(|| {
+            TbError::IrrepCalculation {
+                message: format!(
+                    "compound source {} at {} has incomplete or non-finite first CIR component",
+                    irrep.ml, point.label
+                ),
+            }
+        })?;
+        let second_value = scalar_cir_character(second, character_index).ok_or_else(|| {
+            TbError::IrrepCalculation {
+                message: format!(
+                    "compound source {} at {} has incomplete or non-finite second CIR component",
+                    irrep.ml, point.label
+                ),
+            }
+        })?;
+        if (second_value - first_value.conj()).norm() > 1e-6 {
+            return Ok(ScalarCompoundCharacterKind::DistinctComponentSum);
+        }
+    }
+    if !compared_phase_real_operation {
+        return Err(TbError::IrrepCalculation {
+            message: format!(
+                "compound source {} at {} has no phase-real unitary operation for CIR classification",
+                irrep.ml, point.label
+            ),
+        });
+    }
+    Ok(ScalarCompoundCharacterKind::ConjugateRealification)
+}
+
 fn scalar_source_characters(
     irrep: &IrrepRecord,
     point: &MagneticKPointSummary,
@@ -944,7 +1071,7 @@ fn scalar_source_characters(
         if irrep.cir_component_count() != 2 {
             return Err(TbError::IrrepCalculation {
                 message: format!(
-                    "compound source {} at {} has {} CIR components instead of one conjugate pair",
+                    "compound source {} at {} has {} CIR components instead of two scalar components",
                     irrep.ml,
                     point.label,
                     irrep.cir_component_count()
@@ -972,6 +1099,18 @@ fn scalar_source_characters(
     } else {
         None
     };
+    let compound_character_kind = compound_components
+        .as_deref()
+        .map(|components| {
+            scalar_compound_character_kind(
+                components,
+                irrep,
+                point,
+                unitary_operations,
+                &h_to_irrep,
+            )
+        })
+        .transpose()?;
     if let Some(components) = &compound_components {
         let identity_h = h_seitz
             .iter()
@@ -999,12 +1138,7 @@ fn scalar_source_characters(
                 })?;
         let component_identities = components
             .iter()
-            .map(|characters| {
-                Some(Complex64::new(
-                    *characters.get(2 * identity_character)?,
-                    *characters.get(2 * identity_character + 1)?,
-                ))
-            })
+            .map(|characters| scalar_cir_character(characters, identity_character))
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| TbError::IrrepCalculation {
                 message: format!(
@@ -1035,7 +1169,7 @@ fn scalar_source_characters(
         if rounded < 1.0 || (selected_dimension - rounded).abs() > 1e-7 {
             return Err(TbError::IrrepCalculation {
                 message: format!(
-                    "compound source {} at {} has invalid realified dimension {}",
+                    "compound source {} at {} has invalid selected-arm dimension {}",
                     irrep.ml, point.label, selected_dimension
                 ),
             });
@@ -1066,17 +1200,24 @@ fn scalar_source_characters(
                     *little_imag.get(character_index)?,
                 )
             } else if let Some(components) = &compound_components {
-                // A compound scalar PIR is the realification of one complex
-                // CIR component.  Its selected-arm trace is therefore
-                // chi + chi* = 2 Re(chi).  Reconstructing it from the first
-                // component is also robust to older generated tables whose
-                // second component was aligned with the wrong Bloch phase for
-                // centered translations.  The full PIR row cannot be used:
-                // it may contain every star arm rather than the selected one.
                 let first = components.first()?;
-                let real = *first.get(2 * character_index)?;
-                real.is_finite()
-                    .then_some(Complex64::new(2.0 * real, 0.0))?
+                let second = components.get(1)?;
+                let first_value = scalar_cir_character(first, character_index)?;
+                let second_value = scalar_cir_character(second, character_index)?;
+                match compound_character_kind? {
+                    // A conjugate realification has trace chi + chi*.  Use
+                    // the first component so legacy tables whose second arm
+                    // carries the wrong centered-translation phase remain
+                    // recoverable.
+                    ScalarCompoundCharacterKind::ConjugateRealification => {
+                        Complex64::new(2.0 * first_value.re, 0.0)
+                    }
+                    // Some compound PIRs instead combine two distinct real
+                    // little-group representations.  Their selected-arm
+                    // trace is the actual component sum; replacing it by
+                    // 2 Re(chi_1) corrupts characters such as SG 182 H1H2.
+                    ScalarCompoundCharacterKind::DistinctComponentSum => first_value + second_value,
+                }
             } else {
                 Complex64::new(*irrep.characters().get(character_index)?, 0.0)
             };
@@ -2170,6 +2311,220 @@ mod tests {
         assert!((dimension - 4.0).abs() < 1e-12);
         assert!((translated.re + dimension).abs() < 1e-12);
         assert!(translated.im.abs() < 1e-12);
+    }
+
+    #[test]
+    fn distinct_compound_components_are_summed() {
+        let summary =
+            cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(1409).unwrap();
+        assert_eq!(summary.unitary_sg, 182);
+        let point = summary
+            .kpoints
+            .iter()
+            .find(|point| point.label == "H")
+            .expect("SG 182 must expose its H point");
+        let irrep = cryspglib::irrep::query::irreps_of(182)
+            .iter()
+            .find(|irrep| irrep.ml == "H1H2")
+            .expect("SG 182 H must contain H1H2");
+        let operations = cryspglib::irrep::corep::get_magnetic_operations(1409).unwrap();
+        let characters = scalar_source_characters(irrep, point, &operations)
+            .unwrap()
+            .expect("distinct compound scalar characters must be available");
+        let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(&operations);
+        let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
+            &h_seitz,
+            irrep.pir_rotations(),
+            irrep.pir_translations(),
+        )
+        .expect("H operations must map to the H1H2 PIR table");
+        let distinguishing_column = point
+            .operations
+            .iter()
+            .position(|operation| {
+                if operation.time_reversal {
+                    return false;
+                }
+                find_operation_index(&operations.operations, operation)
+                    .and_then(|h_index| h_to_irrep.get(h_index))
+                    .is_some_and(|character_index| *character_index == 7)
+            })
+            .expect("H1 and H2 must be distinguished by PIR operation 7");
+        let value = characters[distinguishing_column].unwrap();
+        assert!(
+            value.norm() < 1e-12,
+            "H1 + H2 has character +1 - 1 = 0, not 2 Re(H1) = 2; got {value}"
+        );
+    }
+
+    #[test]
+    fn all_known_distinct_compound_records_use_component_sums() {
+        let targets = [
+            (46_u8, "W1W2"),
+            (80, "P1P2"),
+            (97, "P3P4"),
+            (107, "P3P4"),
+            (120, "P1P2"),
+            (178, "H1H2"),
+            (179, "H1H2"),
+            (182, "H1H2"),
+            (188, "H3H4"),
+            (188, "H5H6"),
+            (209, "W3W4"),
+        ];
+        let mut witnessed = std::collections::BTreeSet::new();
+        for uni in 1..=1651 {
+            if witnessed.len() == targets.len() {
+                break;
+            }
+            let summary =
+                cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni).unwrap();
+            let matching_labels = targets
+                .iter()
+                .filter_map(|&(spacegroup, label)| {
+                    (spacegroup == summary.unitary_sg && !witnessed.contains(&(spacegroup, label)))
+                        .then_some(label)
+                })
+                .collect::<Vec<_>>();
+            if matching_labels.is_empty() {
+                continue;
+            }
+            let subgroup = cryspglib::irrep::corep::identify_unitary_subgroup_with_hall(uni)
+                .expect("every magnetic group must expose its unitary subgroup");
+            let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(&subgroup.ops_from_hall);
+            let irreps = cryspglib::irrep::query::irreps_of(summary.unitary_sg);
+            for point in &summary.kpoints {
+                for &label in &matching_labels {
+                    if witnessed.contains(&(summary.unitary_sg, label))
+                        || !point.coreps.iter().any(|corep| {
+                            corep
+                                .source_irreps
+                                .iter()
+                                .any(|source| !source.spinor && source.ml == label)
+                        })
+                    {
+                        continue;
+                    }
+                    let irrep = irreps
+                        .iter()
+                        .find(|irrep| !irrep.spinor && irrep.ml == label)
+                        .expect("the compound source must exist in the unitary irrep table");
+                    let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
+                        &h_seitz,
+                        irrep.pir_rotations(),
+                        irrep.pir_translations(),
+                    )
+                    .expect("unitary operations must map to the compound PIR table");
+                    let components = [irrep.cir_component_chars(0), irrep.cir_component_chars(1)];
+                    let actual = scalar_source_characters(irrep, point, &subgroup.ops_from_hall)
+                        .unwrap()
+                        .expect("compound source characters must be available");
+                    let (kx, ky, kz, denominator) = point.coords;
+                    let k = [f64::from(kx), f64::from(ky), f64::from(kz)];
+                    let mut found_distinguishing_operation = false;
+                    for (column, operation) in point.operations.iter().enumerate() {
+                        if operation.time_reversal {
+                            continue;
+                        }
+                        let h_index =
+                            find_operation_index(&subgroup.ops_from_hall.operations, operation)
+                                .expect("unitary little-group operation must map into H");
+                        let character_index = h_to_irrep[h_index];
+                        let translation = std::array::from_fn::<_, 3, _>(|axis| {
+                            irrep.pir_translations()[3 * character_index + axis]
+                        });
+                        let phase_argument = std::f64::consts::TAU
+                            * k.iter()
+                                .zip(translation)
+                                .map(|(component, translation)| component * translation)
+                                .sum::<f64>()
+                            / f64::from(denominator);
+                        if phase_argument.sin().abs() > 1e-7 {
+                            continue;
+                        }
+                        let first = Complex64::new(
+                            components[0][2 * character_index],
+                            components[0][2 * character_index + 1],
+                        );
+                        let second = Complex64::new(
+                            components[1][2 * character_index],
+                            components[1][2 * character_index + 1],
+                        );
+                        if (second - first.conj()).norm() <= 1e-6 {
+                            continue;
+                        }
+                        found_distinguishing_operation = true;
+                        let value = actual[column]
+                            .expect("a unitary operation must have an ordinary character");
+                        assert!(
+                            (value - first - second).norm() < 1e-10,
+                            "UNI {uni} SG {} {label} at {} column {column} used {value} instead of the distinct-component sum {}",
+                            summary.unitary_sg,
+                            point.label,
+                            first + second
+                        );
+                    }
+                    if found_distinguishing_operation {
+                        witnessed.insert((summary.unitary_sg, label));
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            witnessed.len(),
+            targets.len(),
+            "not every known distinct-component compound record was exercised: {witnessed:?}"
+        );
+    }
+
+    #[test]
+    fn distinct_compound_sum_retains_bloch_translation_phase() {
+        let summary =
+            cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(339).unwrap();
+        assert_eq!(summary.unitary_sg, 46);
+        let point = summary
+            .kpoints
+            .iter()
+            .find(|point| point.label == "W")
+            .expect("SG 46 must expose its W point");
+        let irrep = cryspglib::irrep::query::irreps_of(46)
+            .iter()
+            .find(|irrep| irrep.ml == "W1W2")
+            .expect("SG 46 W must contain W1W2");
+        let operations = cryspglib::irrep::corep::get_magnetic_operations(339).unwrap();
+        let characters = scalar_source_characters(irrep, point, &operations)
+            .unwrap()
+            .expect("distinct compound scalar characters must be available");
+        let identity_rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+        let translated_column = point
+            .operations
+            .iter()
+            .position(|operation| {
+                !operation.time_reversal
+                    && operation.rotation == identity_rotation
+                    && operation
+                        .translation
+                        .iter()
+                        .any(|value| (*value - value.round()).abs() >= 1e-8)
+            })
+            .expect("the W little group must contain the centering translation");
+        let operation = &point.operations[translated_column];
+        let (kx, ky, kz, denominator) = point.coords;
+        let phase_argument = std::f64::consts::TAU
+            * (f64::from(kx) * operation.translation[0]
+                + f64::from(ky) * operation.translation[1]
+                + f64::from(kz) * operation.translation[2])
+            / f64::from(denominator);
+        let expected = 2.0 * Complex64::new(0.0, phase_argument).exp();
+        let actual = characters[translated_column].unwrap();
+        assert!(
+            (actual - expected).norm() < 1e-12,
+            "a pure translation must act as its Bloch phase times the selected dimension: {actual} != {expected}"
+        );
+        assert!(
+            actual.im.abs() > 1.0,
+            "the distinct-component sum must not discard its physical imaginary part"
+        );
     }
 
     #[test]
