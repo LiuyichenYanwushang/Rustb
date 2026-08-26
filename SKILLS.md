@@ -675,7 +675,7 @@ candidates, call the separate exact real-space checker:
 
 ```rust
 let report = model.check_hamiltonian_symmetry(
-    &ScalarSiteBasis::default(),
+    &AtomicOrbitalBasis,
     &HamiltonianSymmetryRequest::default(),
 )?;
 ```
@@ -687,16 +687,18 @@ reported as `Preserved`, `Broken`, or `Unresolved`; use
 `report.final_group` for an identified residual UNI/BNS group or a structured
 inconclusive reason.
 
-`ScalarSiteBasis` is valid only for one atom-centred `s` orbital per Atom and
-requires every orbital to have an Atom owner. Never apply it to a general
-Wannier model merely because `orb_projection` happens to contain `s`; use a
-custom `BasisSymmetryRepresentation` (or a closure implementing its signature)
-that returns the correct `LocalizedBasisAction` matrices and integer cell
-shifts. The checker validates each Laurent action, checks the complete finite
-`hamR` support, verifies survivor closure, and lets cryspglib derive the
-effective family Hall. Do not replace an `Unresolved`/`Inconclusive` outcome by
-calling operation-only magnetic classification or by assuming the structural
-Hall is the reduced group's family Hall.
+`AtomicOrbitalBasis` is the strict automatic choice for Atom-owned, globally
+aligned Wannier90 `s/p/d/f`, `sp`, `sp2`, `sp3`, `sp3d`, and `sp3d2`
+projections. It verifies atom centres, orthonormality, closure, integer cell
+shifts, and the orbital/spin magnetic corepresentation. It rejects repeated
+radial channels, incomplete shells, local frames, and general Wannier gauges;
+use a custom `BasisSymmetryRepresentation` for those. `ScalarSiteBasis` remains
+valid only for exactly one atom-centred `s` orbital per Atom. The checker
+validates each Laurent action, checks the complete finite `hamR` support,
+verifies survivor closure, and lets cryspglib derive the effective family Hall.
+Do not replace an `Unresolved`/`Inconclusive` outcome by calling operation-only
+magnetic classification or by assuming the structural Hall is the reduced
+group's family Hall.
 
 Forced symmetrization is a separate opt-in constructor:
 
@@ -705,7 +707,7 @@ let target = model
     .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())?;
 let symmetrized = model.symmetrize_hamiltonian(
     &target,
-    &ScalarSiteBasis,
+    &AtomicOrbitalBasis,
     &HamiltonianSymmetrizationParameters::default(),
 )?;
 ```

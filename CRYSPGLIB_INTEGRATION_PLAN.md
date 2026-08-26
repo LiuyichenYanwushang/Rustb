@@ -2,10 +2,10 @@
 
 Status: milestones A–E, F1 (exact Hamiltonian-symmetry certification plus
 residual magnetic-group identification), and F2 (validated opt-in Hamiltonian
-symmetrization) are implemented for Rustb 0.7 pre-release. Wiring weighted
-meshes into response solvers, automatic non-s orbital representations,
-gauge-covariant Peierls actions, and numerical band irrep/corep assignment
-remain follow-up work.
+symmetrization), plus strict global-frame atomic-orbital representations, are
+implemented for Rustb 0.7 pre-release. Wiring weighted meshes into response
+solvers, local-frame/radial-channel representations, gauge-covariant Peierls
+actions, and numerical band irrep/corep assignment remain follow-up work.
 
 ## 1. Objective and non-objectives
 
@@ -370,10 +370,13 @@ Implementation flow:
    `G + G 1'` by default, and then apply the per-call uniform electric/magnetic
    field context. Testing only the unitary structural group is available as a
    diagnostic mode but cannot return a certified final MSG.
-3. Resolve every candidate through `BasisSymmetryRepresentation`. The built-in
-   `ScalarSiteBasis` accepts only one `s` orbital per atom, total orbital
-   ownership, and (by default) orbital centers coincident with their Atom.
-   Custom Wannier gauges provide finite `CellShiftAction` matrices explicitly.
+3. Resolve every candidate through `BasisSymmetryRepresentation`.
+   `AtomicOrbitalBasis` automatically handles complete atom-centred,
+   global-frame Wannier90 `s/p/d/f` and hybrid projection subspaces, including
+   orbital cell representatives and the spin action. `ScalarSiteBasis` remains
+   the one-`s` special case. Repeated radial channels, incomplete shells, local
+   frames, and custom Wannier gauges provide finite `CellShiftAction` matrices
+   explicitly.
 4. Represent the localized action as
 
    ```text
@@ -489,12 +492,13 @@ Implemented tests:
 - incompatible lattice, Atom type, stored moments, and external fields fail
   before basis resolution.
 
-#### F3 — deferred band representations and general gauges
+#### F3 — partially implemented orbital actions; deferred band representations and general gauges
 
-1. Add shell/channel/local-frame metadata and automatic complete `p`, `d`, and
-   `f` atomic-harmonic representations. `OrbProj` alone is insufficient for a
-   general Wannier gauge, repeated radial channels, incomplete shells, or
-   spin-orbit-entangled orbitals.
+1. Complete `s/p/d/f` shells and Wannier90 hybrid families are now inferred
+   from Atom ownership plus `OrbProj` in the global Cartesian frame. Add
+   explicit radial-channel and local-frame metadata before extending inference
+   to repeated shells. `OrbProj` alone remains insufficient for a general
+   Wannier gauge, incomplete shells, or spin-orbit-entangled orbitals.
 2. Add gauge-covariant Peierls-field actions where spatial operations require
    position-dependent `U(1)` compensation.
 3. Restrict retained sewing matrices to little groups, handle degenerate
@@ -504,8 +508,8 @@ Implemented tests:
 Expected result:
 
 - structure symmetry and Hamiltonian symmetry are reported separately;
-- unsupported hybrid/user Wannier representations require explicit user
-  matrices rather than being guessed;
+- unsupported local-frame/radial/user Wannier representations require explicit
+  user matrices rather than being guessed;
 - a closed reduced operation set is identified as its final UNI/BNS magnetic
   group with family-Hall and coordinate-transform metadata;
 - threshold-induced nonclosure and incomplete basis metadata are explicit

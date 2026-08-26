@@ -2091,11 +2091,15 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     ///
     /// # Basis metadata and inconclusive results
     ///
-    /// [`OrbProj`] alone does not determine the symmetry gauge of a general
-    /// Wannier basis. [`ScalarSiteBasis`] is therefore intentionally strict;
-    /// use a custom [`BasisSymmetryRepresentation`] for orbital mixing, local
-    /// frames, or an explicit Wannier gauge. If any action is unsupported or
-    /// ambiguous, the result is [`FinalMagneticGroup::Inconclusive`] and
+    /// [`AtomicOrbitalBasis`] automatically handles atom-centred, globally
+    /// aligned Wannier90 `s/p/d/f` and hybrid projections when each atom-local
+    /// projection subspace is orthonormal and closed. [`ScalarSiteBasis`] is a
+    /// narrower special case for one `s` orbital per atom. [`OrbProj`] alone
+    /// still cannot determine local frames, repeated radial channels,
+    /// incomplete-shell embeddings, or a general Wannier gauge; those cases
+    /// require a custom [`BasisSymmetryRepresentation`]. If any action is
+    /// unsupported or ambiguous, the result is
+    /// [`FinalMagneticGroup::Inconclusive`] and
     /// [`HamiltonianSymmetryCompleteness::LowerBound`]. Such an operation is
     /// never misreported as physically broken.
     ///

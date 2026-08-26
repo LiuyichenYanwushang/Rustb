@@ -209,7 +209,7 @@ Hamiltonian certification API:
 
 ```rust
 let report = model.check_hamiltonian_symmetry(
-    &ScalarSiteBasis::default(),
+    &AtomicOrbitalBasis,
     &HamiltonianSymmetryRequest::default(),
 )?;
 
@@ -229,13 +229,18 @@ fields in `SymmetryParameters` filter those candidates first. The checker then
 uses Rustb's exact finite real-space hopping support, including nonsymmorphic
 cell shifts; it does not infer a group from a sampled k mesh.
 
-`ScalarSiteBasis` is deliberately limited to one atom-centred `s` orbital per
-Atom (with complete orbital ownership). For `p/d/f`, hybrid, local-frame, SOC
-entangled, or arbitrary Wannier bases, implement
-`BasisSymmetryRepresentation`—closures implementing the same signature are
-accepted as well—and return explicit `LocalizedBasisAction` cell-shift
-matrices. Missing basis metadata is `Unresolved`/`Inconclusive`, not a false
-claim that the Hamiltonian broke the operation.
+`AtomicOrbitalBasis` reads each Atom's owned orbital IDs and the corresponding
+`orb_projection` labels. It automatically handles globally aligned Wannier90
+`s/p/d/f`, `sp`, `sp2`, `sp3`, `sp3d`, and `sp3d2` functions for both
+`SPIN=false` and `SPIN=true`; antiunitary operations include the appropriate
+complex conjugation and, for spinful models, the spin-1/2 action. The provider
+rejects incomplete shells, duplicate/radial channels, non-atom-centred
+orbitals, and non-closed local subspaces instead of guessing. Local orbital
+frames, SOC-entangled orbitals, or arbitrary Wannier gauges must implement
+`BasisSymmetryRepresentation` and return explicit `LocalizedBasisAction`
+cell-shift matrices. `ScalarSiteBasis` remains as the narrower one-`s`-orbital
+special case. Missing basis metadata is `Unresolved`/`Inconclusive`, not a
+false claim that the Hamiltonian broke the operation.
 
 Every decided operation contains absolute/relative residuals and a worst
 `(R, bra, ket)` witness. Validated sewing actions remain in the report for
@@ -255,7 +260,7 @@ let target = model
 
 let symmetrized = model.symmetrize_hamiltonian(
     &target,
-    &ScalarSiteBasis,
+    &AtomicOrbitalBasis,
     &HamiltonianSymmetrizationParameters::default(),
 )?;
 ```

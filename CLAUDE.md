@@ -727,10 +727,14 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   `Model::check_hamiltonian_symmetry(provider, request)`. It always obtains
   structural candidates from Atom positions; an orbital-only model is
   rejected. The default checks the structural grey extension after optional
-  E/B filtering. `ScalarSiteBasis` is deliberately strict (one atom-centred
-  `s` orbital per Atom and complete ownership). General Wannier gauges must
-  implement `BasisSymmetryRepresentation`; missing metadata is `Unresolved`,
-  never `Broken`.
+  E/B filtering. Use `AtomicOrbitalBasis` for strict automatic actions of
+  Atom-owned, globally aligned Wannier90 `s/p/d/f` and hybrid projections; it
+  supports spinless/spinful and unitary/antiunitary operations, and rejects
+  incomplete shells, duplicate radial channels, non-atom-centred functions,
+  and non-closed subspaces. `ScalarSiteBasis` remains the one-`s`-orbital
+  special case. General Wannier gauges and local frames must implement
+  `BasisSymmetryRepresentation`; missing metadata is `Unresolved`, never
+  `Broken`.
 - **Exact real-space convention**: for
   `g|b,R> = sum_(s,a) D_s[a,b]|a,W R+s>`, evaluate
   `K_g(R) = sum_(s,t) D_s^dag H(W R+t-s) D_t`. A unitary operation requires
@@ -753,17 +757,16 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   the complete symmetry-generated support, restore Hermiticity, keep `R=0` at
   row zero, realign old `rmatrix` blocks by R, zero-fill generated rmatrix rows,
   and postcheck every target covariance equation. Return a new Model.
-- **Current integration status (2026-08-12)**: milestones A–E, Hamiltonian
+- **Current integration status (2026-08-26)**: milestones A–E, Hamiltonian
   certification/MSG identification F1, and forced symmetrization F2 are
-  implemented. Final independent reviews found no critical/high defect after
-  the orbital-cell-gauge and tolerance fixes. Rustb release library tests pass
-  122/122; the focused Hamiltonian suite passes 28/28. cryspglib passes 210
-  unit tests plus every integration
-  suite and 26 doctests. Strict release clippy passes for both crates with a
-  backend selected, feature-off Rustb intentionally fails (no BLAS/LAPACK
-  backend selected), and Rustb doctests pass 22/22 (2 ignored).
-- **Still deferred**: automatic shell/channel/local-frame representations for
-  non-s orbitals, gauge-covariant Peierls transformations, numerical band
-  irrep/corep assignment, and wiring weighted meshes into response solvers
-  remain follow-up work in
+  implemented, together with strict automatic global-frame atomic-orbital
+  actions through `f` and all Wannier90 hybrid families. The focused
+  Hamiltonian suite covers pure/hybrid orbital actions, spinless/spinful
+  antiunitary operations, cell representatives, and full cubic
+  corepresentations. Strict release clippy and full-suite counts must be
+  refreshed whenever this section is used as release evidence.
+- **Still deferred**: explicit radial-channel metadata, automatic local-frame
+  or SOC-entangled Wannier representations, gauge-covariant Peierls
+  transformations, numerical band irrep/corep assignment, and wiring weighted
+  meshes into response solvers remain follow-up work in
   `CRYSPGLIB_INTEGRATION_PLAN.md`.
