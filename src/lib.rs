@@ -249,9 +249,9 @@ use crate::generics::UseFloat;
 pub use crate::geometry::*;
 #[cfg(feature = "cryspglib")]
 pub use crate::hamiltonian_symmetry::{
-    BasisActionContext, BasisRepresentationError, BasisSymmetryRepresentation, CellShiftAction,
-    FinalMagneticGroup, HamiltonianCompatibility, HamiltonianResidual, HamiltonianResidualWitness,
-    HamiltonianSymmetrizationParameters, HamiltonianSymmetryCandidates,
+    AtomicOrbitalBasis, BasisActionContext, BasisRepresentationError, BasisSymmetryRepresentation,
+    CellShiftAction, FinalMagneticGroup, HamiltonianCompatibility, HamiltonianResidual,
+    HamiltonianResidualWitness, HamiltonianSymmetrizationParameters, HamiltonianSymmetryCandidates,
     HamiltonianSymmetryCompleteness, HamiltonianSymmetryReport, HamiltonianSymmetryRequest,
     HamiltonianSymmetryTolerances, IdentifiedMagneticSubgroup, LocalizedBasisAction,
     OperationHamiltonianCheck, OperationHamiltonianStatus, ScalarSiteBasis,

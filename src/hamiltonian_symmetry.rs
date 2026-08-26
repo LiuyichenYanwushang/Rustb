@@ -201,6 +201,24 @@ where
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ScalarSiteBasis;
 
+/// Automatic representation for atom-centred Wannier90 orbital projections.
+///
+/// The provider reads each atom's owned orbitals and the corresponding
+/// [`OrbProj`] labels, rotates their global Cartesian angular functions, and
+/// tensors that orbital action with the existing spin-1/2 action when
+/// `SPIN=true`. It supports the pure `s`, `p`, `d`, and `f` projections and the
+/// Wannier90 `sp`, `sp2`, `sp3`, `sp3d`, and `sp3d2` hybrids.
+///
+/// This inference is intentionally strict. Every orbital must be atom-centred
+/// modulo a lattice vector, each atom-local projection list must be
+/// orthonormal and closed under the requested operation, and same-species
+/// sites must map uniquely. Repeated angular projections (for example two
+/// radial `p_x` functions), incomplete shells, local orbital frames, and
+/// general Wannier gauges require a custom [`BasisSymmetryRepresentation`]
+/// instead of being guessed.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AtomicOrbitalBasis;
+
 /// Candidate magnetic supergroup tested against the Hamiltonian.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HamiltonianSymmetryCandidates {
@@ -565,6 +583,433 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
             sectors.push(CellShiftAction { shift, matrix });
         }
         Ok(LocalizedBasisAction { sectors })
+    }
+}
+
+impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for AtomicOrbitalBasis {
+    fn resolve(
+        &self,
+        context: BasisActionContext<'_, SPIN, R>,
+    ) -> std::result::Result<LocalizedBasisAction, BasisRepresentationError> {
+        let model = context.model;
+        validate_automatic_basis_context(&context, "AtomicOrbitalBasis")?;
+
+        let angular_rotation = real_orbital_rotation(
+            cartesian_rotation(model, context.operation)?,
+            context.representation_tolerance,
+        )?;
+        let spin_action =
+            scalar_spin_action(model, context.operation, context.representation_tolerance)?;
+        let site_projections = model
+            .atoms
+            .iter()
+            .enumerate()
+            .map(|(atom_index, atom)| {
+                atom_projection_matrix(model, atom_index, atom.orbitals(), &context)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let mut used_target_atoms = BTreeSet::new();
+        let mut mapped_entries: BTreeMap<[isize; 3], Vec<(usize, usize, Complex64)>> =
+            BTreeMap::new();
+        for (source_atom, atom) in model.atoms.iter().enumerate() {
+            let target_atom =
+                uniquely_mapped_atom(model, context.operation, source_atom, &context)?;
+            if !used_target_atoms.insert(target_atom) {
+                return Err(BasisRepresentationError::Ambiguous(format!(
+                    "operation maps more than one source atom onto target atom {target_atom}"
+                )));
+            }
+
+            let source_coefficients = &site_projections[source_atom];
+            let target_coefficients = &site_projections[target_atom];
+            if source_coefficients.ncols() != target_coefficients.ncols() {
+                return Err(BasisRepresentationError::Unsupported(format!(
+                    "operation maps atom {source_atom} with {} orbitals to atom {target_atom} with {} orbitals",
+                    source_coefficients.ncols(),
+                    target_coefficients.ncols()
+                )));
+            }
+            if source_coefficients.ncols() == 0 {
+                continue;
+            }
+
+            let rotated_source = angular_rotation.dot(source_coefficients);
+            let target_dagger = target_coefficients.t().mapv(|value| value.conj());
+            let local_action = target_dagger.dot(&rotated_source);
+            let reconstructed = target_coefficients.dot(&local_action);
+            let closure_residual = matrix_max_difference(&rotated_source, &reconstructed);
+            if closure_residual > context.representation_tolerance {
+                return Err(BasisRepresentationError::Unsupported(format!(
+                    "atom {source_atom} projections are not closed on target atom {target_atom} under the operation (maximum residual {closure_residual:e}); include the complete shell or provide a custom representation"
+                )));
+            }
+            let local_gram = local_action
+                .t()
+                .mapv(|value| value.conj())
+                .dot(&local_action);
+            let local_unitarity = identity_residual(&local_gram);
+            if local_unitarity > context.representation_tolerance {
+                return Err(BasisRepresentationError::Invalid(format!(
+                    "atom-local orbital action from atom {source_atom} to {target_atom} is not unitary (maximum residual {local_unitarity:e})"
+                )));
+            }
+
+            for (source_local, source_id) in atom.orbitals().iter().enumerate() {
+                let source_orbital = source_id.index();
+                let transformed_source: [f64; 3] = std::array::from_fn(|axis| {
+                    context.operation.translation[axis]
+                        + (0..3)
+                            .map(|input| {
+                                f64::from(context.operation.rotation[axis][input])
+                                    * model.orb[[source_orbital, input]]
+                            })
+                            .sum::<f64>()
+                });
+                for (target_local, target_id) in
+                    model.atoms[target_atom].orbitals().iter().enumerate()
+                {
+                    let coefficient = local_action[[target_local, source_local]];
+                    if coefficient.norm() <= context.representation_tolerance {
+                        continue;
+                    }
+                    let target_orbital = target_id.index();
+                    let displacement = std::array::from_fn(|axis| {
+                        transformed_source[axis] - model.orb[[target_orbital, axis]]
+                    });
+                    let Some(shift) = integer_shift_if_close(
+                        displacement,
+                        &model.lat,
+                        context.position_tolerance,
+                    ) else {
+                        return Err(BasisRepresentationError::Invalid(format!(
+                            "operation mixes source orbital {source_orbital} into target orbital {target_orbital}, but their centres differ by a non-lattice vector"
+                        )));
+                    };
+                    mapped_entries.entry(shift).or_default().push((
+                        target_orbital,
+                        source_orbital,
+                        coefficient,
+                    ));
+                }
+            }
+        }
+
+        if mapped_entries.is_empty() {
+            return Err(BasisRepresentationError::Invalid(
+                "automatic orbital action contains no nonzero matrix elements".to_string(),
+            ));
+        }
+        let mut sectors = Vec::with_capacity(mapped_entries.len());
+        for (shift, entries) in mapped_entries {
+            let mut matrix = Array2::zeros((model.nsta(), model.nsta()));
+            for (target_orbital, source_orbital, orbital_coefficient) in entries {
+                if SPIN {
+                    for target_spin in 0..2 {
+                        for source_spin in 0..2 {
+                            matrix[[
+                                target_spin * model.norb() + target_orbital,
+                                source_spin * model.norb() + source_orbital,
+                            ]] += orbital_coefficient * spin_action[target_spin][source_spin];
+                        }
+                    }
+                } else {
+                    matrix[[target_orbital, source_orbital]] += orbital_coefficient;
+                }
+            }
+            sectors.push(CellShiftAction { shift, matrix });
+        }
+        Ok(LocalizedBasisAction { sectors })
+    }
+}
+
+fn validate_automatic_basis_context<const SPIN: bool, R: RMatrixData>(
+    context: &BasisActionContext<'_, SPIN, R>,
+    provider: &str,
+) -> std::result::Result<(), BasisRepresentationError> {
+    if !context.position_tolerance.is_finite() || context.position_tolerance <= 0.0 {
+        return Err(BasisRepresentationError::Invalid(
+            "position tolerance must be finite and positive".to_string(),
+        ));
+    }
+    if !context.representation_tolerance.is_finite() || context.representation_tolerance <= 0.0 {
+        return Err(BasisRepresentationError::Invalid(
+            "representation tolerance must be finite and positive".to_string(),
+        ));
+    }
+    context
+        .model
+        .validate()
+        .map_err(|error| BasisRepresentationError::Invalid(error.to_string()))?;
+    if context.model.atoms.is_empty() {
+        return Err(BasisRepresentationError::Unsupported(format!(
+            "{provider} requires explicit atoms"
+        )));
+    }
+    let owners = context
+        .model
+        .orbital_owners()
+        .map_err(|error| BasisRepresentationError::Invalid(error.to_string()))?;
+    if let Some(unowned) = owners.iter().position(Option::is_none) {
+        return Err(BasisRepresentationError::Unsupported(format!(
+            "orbital {unowned} is not owned by an atom"
+        )));
+    }
+    Ok(())
+}
+
+fn atom_projection_matrix<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+    atom_index: usize,
+    orbitals: &[crate::OrbitalId],
+    context: &BasisActionContext<'_, SPIN, R>,
+) -> std::result::Result<Array2<Complex64>, BasisRepresentationError> {
+    let mut coefficients = Array2::zeros((16, orbitals.len()));
+    for (column, orbital_id) in orbitals.iter().enumerate() {
+        let orbital = orbital_id.index();
+        let displacement = std::array::from_fn(|axis| {
+            model.orb[[orbital, axis]] - model.atoms[atom_index].position_ref()[axis]
+        });
+        if integer_shift_if_close(displacement, &model.lat, context.position_tolerance).is_none() {
+            return Err(BasisRepresentationError::Unsupported(format!(
+                "orbital {orbital} is not centred on atom {atom_index} modulo a lattice vector"
+            )));
+        }
+        let state = projection_in_real_orbital_basis(model.orb_projection[orbital])?;
+        for row in 0..16 {
+            coefficients[[row, column]] = state[row];
+        }
+    }
+
+    let gram = coefficients
+        .t()
+        .mapv(|value| value.conj())
+        .dot(&coefficients);
+    let residual = identity_residual(&gram);
+    if residual > context.representation_tolerance {
+        return Err(BasisRepresentationError::Ambiguous(format!(
+            "atom {atom_index} orbital projections are not an orthonormal labelled basis (maximum Gram residual {residual:e}); repeated radial shells need an explicit representation"
+        )));
+    }
+    Ok(coefficients)
+}
+
+fn uniquely_mapped_atom<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+    operation: &CrystalSymmetryOperation,
+    source_atom: usize,
+    context: &BasisActionContext<'_, SPIN, R>,
+) -> std::result::Result<usize, BasisRepresentationError> {
+    let source = &model.atoms[source_atom];
+    let transformed: [f64; 3] = std::array::from_fn(|row| {
+        operation.translation[row]
+            + (0..3)
+                .map(|column| {
+                    f64::from(operation.rotation[row][column]) * source.position_ref()[column]
+                })
+                .sum::<f64>()
+    });
+    let mut matches = model
+        .atoms
+        .iter()
+        .enumerate()
+        .filter_map(|(target_atom, target)| {
+            if target.atom_type() != source.atom_type() {
+                return None;
+            }
+            let displacement =
+                std::array::from_fn(|axis| transformed[axis] - target.position_ref()[axis]);
+            integer_shift_if_close(displacement, &model.lat, context.position_tolerance)
+                .map(|_| target_atom)
+        });
+    let Some(target_atom) = matches.next() else {
+        return Err(BasisRepresentationError::Invalid(format!(
+            "operation does not map atom {source_atom} to an atom of the same type"
+        )));
+    };
+    if matches.next().is_some() {
+        return Err(BasisRepresentationError::Ambiguous(format!(
+            "operation maps atom {source_atom} to more than one atom within tolerance"
+        )));
+    }
+    Ok(target_atom)
+}
+
+fn identity_residual(matrix: &Array2<Complex64>) -> f64 {
+    let (rows, columns) = matrix.dim();
+    if rows != columns {
+        return f64::INFINITY;
+    }
+    let mut residual = 0.0_f64;
+    for row in 0..rows {
+        for column in 0..columns {
+            let expected = if row == column {
+                Complex64::new(1.0, 0.0)
+            } else {
+                Complex64::new(0.0, 0.0)
+            };
+            residual = residual.max((matrix[[row, column]] - expected).norm());
+        }
+    }
+    residual
+}
+
+fn matrix_max_difference(left: &Array2<Complex64>, right: &Array2<Complex64>) -> f64 {
+    if left.dim() != right.dim() {
+        return f64::INFINITY;
+    }
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| (*left - *right).norm())
+        .fold(0.0_f64, f64::max)
+}
+
+const PURE_REAL_ORBITALS: [OrbProj; 16] = [
+    OrbProj::s,
+    OrbProj::px,
+    OrbProj::py,
+    OrbProj::pz,
+    OrbProj::dxy,
+    OrbProj::dyz,
+    OrbProj::dxz,
+    OrbProj::dz2,
+    OrbProj::dx2y2,
+    OrbProj::fz3,
+    OrbProj::fxz2,
+    OrbProj::fyz2,
+    OrbProj::fzx2y2,
+    OrbProj::fxyz,
+    OrbProj::fxx23y2,
+    OrbProj::fy3x2y2,
+];
+
+fn projection_in_real_orbital_basis(
+    projection: OrbProj,
+) -> std::result::Result<[Complex64; 16], BasisRepresentationError> {
+    let state = projection
+        .to_quantum_number()
+        .map_err(|error| BasisRepresentationError::Unsupported(error.to_string()))?;
+    let mut coefficients = [Complex64::new(0.0, 0.0); 16];
+    for (row, pure_projection) in PURE_REAL_ORBITALS.iter().enumerate() {
+        let pure = pure_projection
+            .to_quantum_number()
+            .map_err(|error| BasisRepresentationError::Invalid(error.to_string()))?;
+        coefficients[row] = pure
+            .iter()
+            .zip(&state)
+            .map(|(pure, state)| pure.conj() * state)
+            .sum();
+    }
+    Ok(coefficients)
+}
+
+fn real_orbital_rotation(
+    cartesian: [[f64; 3]; 3],
+    tolerance: f64,
+) -> std::result::Result<Array2<Complex64>, BasisRepresentationError> {
+    if cartesian.iter().flatten().any(|value| !value.is_finite()) {
+        return Err(BasisRepresentationError::Invalid(
+            "Cartesian orbital rotation contains non-finite entries".to_string(),
+        ));
+    }
+    let rotation = Array2::from_shape_fn((3, 3), |(row, column)| cartesian[row][column]);
+    let orthogonality = rotation.t().dot(&rotation);
+    let orthogonality_residual = (0..3)
+        .flat_map(|row| (0..3).map(move |column| (row, column)))
+        .map(|(row, column)| {
+            let expected = if row == column { 1.0 } else { 0.0 };
+            (orthogonality[[row, column]] - expected).abs()
+        })
+        .fold(0.0_f64, f64::max);
+    if orthogonality_residual > tolerance {
+        return Err(BasisRepresentationError::Invalid(format!(
+            "Cartesian orbital rotation is not orthogonal (maximum residual {orthogonality_residual:e})"
+        )));
+    }
+
+    let sample_count = 32;
+    let golden_angle = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+    let sample_points = (0..sample_count)
+        .map(|sample| {
+            let z = 1.0 - 2.0 * (sample as f64 + 0.5) / sample_count as f64;
+            let radius = (1.0 - z * z).sqrt();
+            let phi = golden_angle * sample as f64;
+            [radius * phi.cos(), radius * phi.sin(), z]
+        })
+        .collect::<Vec<_>>();
+    let inverse_points = sample_points
+        .iter()
+        .map(|point| {
+            std::array::from_fn(|row| {
+                (0..3)
+                    .map(|column| cartesian[column][row] * point[column])
+                    .sum::<f64>()
+            })
+        })
+        .collect::<Vec<[f64; 3]>>();
+
+    let mut result = Array2::zeros((16, 16));
+    for angular_momentum in 0..=3_isize {
+        let dimension = (2 * angular_momentum + 1) as usize;
+        let basis = Array2::from_shape_fn((sample_count, dimension), |(sample, column)| {
+            let orbital = (angular_momentum * angular_momentum) as usize + column;
+            Complex64::new(real_orbital_value(orbital, sample_points[sample]), 0.0)
+        });
+        let rotated = Array2::from_shape_fn((sample_count, dimension), |(sample, column)| {
+            let orbital = (angular_momentum * angular_momentum) as usize + column;
+            Complex64::new(real_orbital_value(orbital, inverse_points[sample]), 0.0)
+        });
+        let dagger = basis.t().mapv(|value| value.conj());
+        let gram_inverse = dagger
+            .dot(&basis)
+            .inv()
+            .map_err(|error| BasisRepresentationError::Invalid(error.to_string()))?;
+        let block = gram_inverse.dot(&dagger).dot(&rotated);
+        let fit_residual = matrix_max_difference(&basis.dot(&block), &rotated);
+        if fit_residual > tolerance.max(1e-12) * 8.0 {
+            return Err(BasisRepresentationError::Invalid(format!(
+                "failed to construct l={angular_momentum} orbital rotation (fit residual {fit_residual:e})"
+            )));
+        }
+        let start = (angular_momentum * angular_momentum) as usize;
+        for row in 0..dimension {
+            for column in 0..dimension {
+                result[[start + row, start + column]] = block[[row, column]];
+            }
+        }
+    }
+    let unitarity = identity_residual(&result.t().mapv(|value| value.conj()).dot(&result));
+    if unitarity > tolerance.max(1e-12) * 8.0 {
+        return Err(BasisRepresentationError::Invalid(format!(
+            "angular orbital rotation is not unitary (maximum residual {unitarity:e})"
+        )));
+    }
+    Ok(result)
+}
+
+fn real_orbital_value(orbital: usize, point: [f64; 3]) -> f64 {
+    debug_assert!(orbital < 16);
+    let norm = point.iter().map(|value| value * value).sum::<f64>().sqrt();
+    let [x, y, z] = point.map(|component| component / norm);
+    let pi = std::f64::consts::PI;
+    match orbital {
+        0 => 1.0 / (4.0 * pi).sqrt(),
+        1 => (3.0 / (4.0 * pi)).sqrt() * x,
+        2 => (3.0 / (4.0 * pi)).sqrt() * y,
+        3 => (3.0 / (4.0 * pi)).sqrt() * z,
+        4 => (15.0 / (4.0 * pi)).sqrt() * x * y,
+        5 => (15.0 / (4.0 * pi)).sqrt() * y * z,
+        6 => (15.0 / (4.0 * pi)).sqrt() * x * z,
+        7 => (5.0 / (16.0 * pi)).sqrt() * (3.0 * z * z - 1.0),
+        8 => (15.0 / (16.0 * pi)).sqrt() * (x * x - y * y),
+        9 => 7.0_f64.sqrt() / (4.0 * pi.sqrt()) * (5.0 * z * z * z - 3.0 * z),
+        10 => 21.0_f64.sqrt() / (4.0 * (2.0 * pi).sqrt()) * (5.0 * z * z - 1.0) * x,
+        11 => 21.0_f64.sqrt() / (4.0 * (2.0 * pi).sqrt()) * (5.0 * z * z - 1.0) * y,
+        12 => 105.0_f64.sqrt() / (4.0 * pi.sqrt()) * z * (x * x - y * y),
+        13 => 105.0_f64.sqrt() / (2.0 * pi.sqrt()) * x * y * z,
+        14 => 35.0_f64.sqrt() / (4.0 * (2.0 * pi).sqrt()) * x * (x * x - 3.0 * y * y),
+        15 => 35.0_f64.sqrt() / (4.0 * (2.0 * pi).sqrt()) * y * (3.0 * x * x - y * y),
+        _ => unreachable!("real orbital index is bounded by the 16-state basis"),
     }
 }
 
@@ -2250,6 +2695,54 @@ mod tests {
         .unwrap()
     }
 
+    fn atomic_orbital_cubic<const SPIN: bool>(
+        projections: &[OrbProj],
+    ) -> Model<SPIN, 3, NoRMatrix> {
+        let orbitals = (0..projections.len())
+            .map(OrbitalId::new)
+            .collect::<Vec<_>>();
+        let mut model = Model::tb_model(
+            Array2::eye(3),
+            Array2::zeros((projections.len(), 3)),
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::Si,
+                orbitals,
+            )]),
+        )
+        .unwrap();
+        model.orb_projection = projections.to_vec();
+        model
+    }
+
+    fn c4z(time_reversal: bool) -> CrystalSymmetryOperation {
+        CrystalSymmetryOperation {
+            rotation: [[0, -1, 0], [1, 0, 0], [0, 0, 1]],
+            translation: [0.0; 3],
+            time_reversal,
+        }
+    }
+
+    fn identity_operation(time_reversal: bool) -> CrystalSymmetryOperation {
+        CrystalSymmetryOperation {
+            rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            translation: [0.0; 3],
+            time_reversal,
+        }
+    }
+
+    fn resolve_atomic<const SPIN: bool>(
+        model: &Model<SPIN, 3, NoRMatrix>,
+        operation: &CrystalSymmetryOperation,
+    ) -> std::result::Result<LocalizedBasisAction, BasisRepresentationError> {
+        AtomicOrbitalBasis.resolve(BasisActionContext {
+            model,
+            operation,
+            position_tolerance: 1e-8,
+            representation_tolerance: 1e-8,
+        })
+    }
+
     fn half_translation_model(intracell: f64, intercell: f64) -> Model<false, 3, NoRMatrix> {
         let mut model: Model<false, 3, NoRMatrix> = Model::tb_model(
             Array2::eye(3),
@@ -2603,6 +3096,159 @@ mod tests {
                 .iter()
                 .skip(1)
                 .all(|coefficient| coefficient.norm() == 0.0)
+        );
+    }
+
+    #[test]
+    fn automatic_p_shell_representation_has_the_expected_c4z_action() {
+        let model = atomic_orbital_cubic::<false>(&[OrbProj::px, OrbProj::py, OrbProj::pz]);
+        let action =
+            validate_action(resolve_atomic(&model, &c4z(false)).unwrap(), 3, 1e-8).unwrap();
+        assert_eq!(action.sectors.len(), 1);
+        assert_eq!(action.sectors[0].shift, [0, 0, 0]);
+        let matrix = &action.sectors[0].matrix;
+        let expected = array![[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+            .mapv(|value| Complex64::new(value, 0.0));
+        assert!(matrix_max_difference(matrix, &expected) < 1e-12);
+    }
+
+    #[test]
+    fn automatic_d_shell_representation_uses_real_wannier90_orbitals() {
+        let model = atomic_orbital_cubic::<false>(&[
+            OrbProj::dxy,
+            OrbProj::dyz,
+            OrbProj::dxz,
+            OrbProj::dz2,
+            OrbProj::dx2y2,
+        ]);
+        let action =
+            validate_action(resolve_atomic(&model, &c4z(false)).unwrap(), 5, 1e-8).unwrap();
+        let expected = array![
+            [-1.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, -1.0],
+        ]
+        .mapv(|value| Complex64::new(value, 0.0));
+        assert!(matrix_max_difference(&action.sectors[0].matrix, &expected) < 1e-12);
+    }
+
+    #[test]
+    fn automatic_hybrid_sp3_basis_is_closed_and_unitary() {
+        let model = atomic_orbital_cubic::<false>(&[
+            OrbProj::sp3_1,
+            OrbProj::sp3_2,
+            OrbProj::sp3_3,
+            OrbProj::sp3_4,
+        ]);
+        let action = resolve_atomic(&model, &c4z(false)).unwrap();
+        validate_action(action, model.nsta(), 1e-8).unwrap();
+    }
+
+    #[test]
+    fn automatic_angular_rotation_has_correct_inversion_parity_through_f() {
+        let inversion = real_orbital_rotation(
+            [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+            1e-10,
+        )
+        .unwrap();
+        for angular_momentum in 0..=3 {
+            let expected = if angular_momentum % 2 == 0 {
+                Complex64::new(1.0, 0.0)
+            } else {
+                Complex64::new(-1.0, 0.0)
+            };
+            let start = angular_momentum * angular_momentum;
+            let end = (angular_momentum + 1) * (angular_momentum + 1);
+            for row in start..end {
+                for column in start..end {
+                    let target = if row == column {
+                        expected
+                    } else {
+                        Complex64::new(0.0, 0.0)
+                    };
+                    assert!((inversion[[row, column]] - target).norm() < 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_basis_rejects_incomplete_and_duplicate_angular_shells() {
+        let incomplete = atomic_orbital_cubic::<false>(&[OrbProj::px]);
+        assert!(matches!(
+            resolve_atomic(&incomplete, &c4z(false)),
+            Err(BasisRepresentationError::Unsupported(_))
+        ));
+
+        let duplicate = atomic_orbital_cubic::<false>(&[OrbProj::px, OrbProj::px]);
+        assert!(matches!(
+            resolve_atomic(&duplicate, &identity_operation(false)),
+            Err(BasisRepresentationError::Ambiguous(_))
+        ));
+    }
+
+    #[test]
+    fn automatic_spinful_time_reversal_tensors_orbitals_with_i_sigma_y() {
+        let model = atomic_orbital_cubic::<true>(&[OrbProj::px, OrbProj::py, OrbProj::pz]);
+        let operation = identity_operation(true);
+        let action = validate_action(resolve_atomic(&model, &operation).unwrap(), 6, 1e-8).unwrap();
+        let matrix = &action.sectors[0].matrix;
+        for orbital in 0..3 {
+            assert!((matrix[[orbital, 3 + orbital]] - Complex64::new(1.0, 0.0)).norm() < 1e-12);
+            assert!((matrix[[3 + orbital, orbital]] + Complex64::new(1.0, 0.0)).norm() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn automatic_basis_tracks_orbital_cell_representatives_by_sector() {
+        let mut model = atomic_orbital_cubic::<false>(&[OrbProj::px, OrbProj::py, OrbProj::pz]);
+        model.orb.row_mut(0).assign(&array![1.0, 0.0, 0.0]);
+        model.orb.row_mut(1).assign(&array![0.0, 1.0, 0.0]);
+        let action = resolve_atomic(&model, &c4z(false)).unwrap();
+        let action = validate_action(action, model.nsta(), 1e-8).unwrap();
+        validate_action_geometry(&model, &c4z(false), &action, 1e-8, 1e-8).unwrap();
+        assert!(
+            action
+                .sectors
+                .iter()
+                .any(|sector| sector.shift == [0, 0, 0])
+        );
+        assert!(
+            action
+                .sectors
+                .iter()
+                .any(|sector| sector.shift == [-2, 0, 0])
+        );
+    }
+
+    #[test]
+    fn automatic_p_shell_certifies_the_full_cubic_grey_group() {
+        let model = atomic_orbital_cubic::<false>(&[OrbProj::px, OrbProj::py, OrbProj::pz]);
+        let report = model
+            .check_hamiltonian_symmetry(&AtomicOrbitalBasis, &HamiltonianSymmetryRequest::default())
+            .unwrap();
+        assert_eq!(report.structure_candidates.len(), 96);
+        assert_eq!(report.surviving_operations.len(), 96);
+        assert_eq!(report.compatibility, HamiltonianCompatibility::Compatible);
+        assert_eq!(
+            report.completeness,
+            HamiltonianSymmetryCompleteness::Complete
+        );
+    }
+
+    #[test]
+    fn automatic_complete_s_p_d_f_basis_certifies_cubic_corepresentation() {
+        let model = atomic_orbital_cubic::<false>(&PURE_REAL_ORBITALS);
+        let report = model
+            .check_hamiltonian_symmetry(&AtomicOrbitalBasis, &HamiltonianSymmetryRequest::default())
+            .unwrap();
+        assert_eq!(report.surviving_operations.len(), 96);
+        assert_eq!(report.compatibility, HamiltonianCompatibility::Compatible);
+        assert_eq!(
+            report.completeness,
+            HamiltonianSymmetryCompleteness::Complete
         );
     }
 
