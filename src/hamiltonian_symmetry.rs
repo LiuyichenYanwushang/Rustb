@@ -1128,13 +1128,13 @@ fn cartesian_rotation<const SPIN: bool, R: RMatrixData>(
 }
 
 #[derive(Debug)]
-struct HamiltonianSupport {
+pub(crate) struct HamiltonianSupport {
     matrices: BTreeMap<[isize; 3], Array2<Complex64>>,
     max_element: f64,
     frobenius_norm: f64,
 }
 
-fn validate_hamiltonian<const SPIN: bool, R: RMatrixData>(
+pub(crate) fn validate_hamiltonian<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
     tolerance: f64,
 ) -> Result<HamiltonianSupport> {
@@ -1512,7 +1512,7 @@ fn transformed_hamiltonian_at(
     }
 }
 
-fn hamiltonian_residual(
+pub(crate) fn hamiltonian_residual(
     support: &HamiltonianSupport,
     operation: &CrystalSymmetryOperation,
     action: &LocalizedBasisAction,
@@ -1574,7 +1574,7 @@ fn validate_request(request: &HamiltonianSymmetryRequest) -> Result<()> {
     validate_tolerances(request.tolerances)
 }
 
-fn validate_tolerances(tolerances: HamiltonianSymmetryTolerances) -> Result<()> {
+pub(crate) fn validate_tolerances(tolerances: HamiltonianSymmetryTolerances) -> Result<()> {
     for (parameter, value) in [
         ("absolute_tolerance", tolerances.absolute),
         ("relative_tolerance", tolerances.relative),
@@ -1715,7 +1715,102 @@ fn compose_localized_actions(
     Ok(composed)
 }
 
-fn validate_projective_corepresentation(
+fn corepresentation_product(
+    operations_and_actions: &[(CrystalSymmetryOperation, LocalizedBasisAction)],
+    left_index: usize,
+    right_index: usize,
+    operation_tolerance: f64,
+) -> std::result::Result<(usize, [isize; 3]), BasisRepresentationError> {
+    let left_operation = &operations_and_actions[left_index].0;
+    let right_operation = &operations_and_actions[right_index].0;
+    let product_rotation = compose_rotation(&left_operation.rotation, &right_operation.rotation)?;
+    let product_translation: [f64; 3] = std::array::from_fn(|axis| {
+        left_operation.translation[axis]
+            + (0..3)
+                .map(|input| {
+                    f64::from(left_operation.rotation[axis][input])
+                        * right_operation.translation[input]
+                })
+                .sum::<f64>()
+    });
+    let product_operation = CrystalSymmetryOperation {
+        rotation: product_rotation,
+        translation: product_translation,
+        time_reversal: left_operation.time_reversal ^ right_operation.time_reversal,
+    };
+    let mut products = operations_and_actions
+        .iter()
+        .enumerate()
+        .filter(|(_, (candidate, _))| {
+            operations_equivalent(&product_operation, candidate, operation_tolerance)
+        });
+    let Some((product_index, (canonical_product, _))) = products.next() else {
+        return Err(BasisRepresentationError::Invalid(format!(
+            "basis-action product ({left_index}, {right_index}) has no target operation"
+        )));
+    };
+    if products.next().is_some() {
+        return Err(BasisRepresentationError::Ambiguous(format!(
+            "basis-action product ({left_index}, {right_index}) matches multiple target operations"
+        )));
+    }
+    let mut representative_shift = [0_isize; 3];
+    for axis in 0..3 {
+        let difference = product_translation[axis] - canonical_product.translation[axis];
+        let nearest = difference.round();
+        if (difference - nearest).abs() > operation_tolerance
+            || nearest < isize::MIN as f64
+            || nearest > isize::MAX as f64
+        {
+            return Err(BasisRepresentationError::Invalid(format!(
+                "operation product ({left_index}, {right_index}) has an inconsistent translation representative"
+            )));
+        }
+        representative_shift[axis] = nearest as isize;
+    }
+    Ok((product_index, representative_shift))
+}
+
+fn corepresentation_generators(
+    operations_and_actions: &[(CrystalSymmetryOperation, LocalizedBasisAction)],
+    identity_index: usize,
+    operation_tolerance: f64,
+) -> std::result::Result<Vec<usize>, BasisRepresentationError> {
+    let mut generated = BTreeSet::from([identity_index]);
+    let mut generators = Vec::new();
+    while generated.len() != operations_and_actions.len() {
+        let generator = (0..operations_and_actions.len())
+            .find(|index| !generated.contains(index))
+            .ok_or_else(|| {
+                BasisRepresentationError::Invalid(
+                    "failed to select a generator for the target operation set".to_string(),
+                )
+            })?;
+        generators.push(generator);
+        generated.insert(generator);
+        loop {
+            let before = generated.len();
+            let known = generated.iter().copied().collect::<Vec<_>>();
+            for &left in &generators {
+                for &right in &known {
+                    let (product, _) = corepresentation_product(
+                        operations_and_actions,
+                        left,
+                        right,
+                        operation_tolerance,
+                    )?;
+                    generated.insert(product);
+                }
+            }
+            if generated.len() == before {
+                break;
+            }
+        }
+    }
+    Ok(generators)
+}
+
+pub(crate) fn validate_projective_corepresentation(
     operations_and_actions: &[(CrystalSymmetryOperation, LocalizedBasisAction)],
     operation_tolerance: f64,
     representation_tolerance: f64,
@@ -1785,57 +1880,22 @@ fn validate_projective_corepresentation(
         )));
     }
 
-    for (left_index, (left_operation, left_action)) in operations_and_actions.iter().enumerate() {
-        for (right_index, (right_operation, right_action)) in
-            operations_and_actions.iter().enumerate()
-        {
-            let product_rotation =
-                compose_rotation(&left_operation.rotation, &right_operation.rotation)?;
-            let product_translation: [f64; 3] = std::array::from_fn(|axis| {
-                left_operation.translation[axis]
-                    + (0..3)
-                        .map(|input| {
-                            f64::from(left_operation.rotation[axis][input])
-                                * right_operation.translation[input]
-                        })
-                        .sum::<f64>()
-            });
-            let product_operation = CrystalSymmetryOperation {
-                rotation: product_rotation,
-                translation: product_translation,
-                time_reversal: left_operation.time_reversal ^ right_operation.time_reversal,
-            };
-            let mut products =
-                operations_and_actions
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (candidate, _))| {
-                        operations_equivalent(&product_operation, candidate, operation_tolerance)
-                    });
-            let Some((product_index, (canonical_product, product_action))) = products.next() else {
-                return Err(BasisRepresentationError::Invalid(format!(
-                    "basis-action product ({left_index}, {right_index}) has no target operation"
-                )));
-            };
-            if products.next().is_some() {
-                return Err(BasisRepresentationError::Ambiguous(format!(
-                    "basis-action product ({left_index}, {right_index}) matches multiple target operations"
-                )));
-            }
-            let mut representative_shift = [0_isize; 3];
-            for axis in 0..3 {
-                let difference = product_translation[axis] - canonical_product.translation[axis];
-                let nearest = difference.round();
-                if (difference - nearest).abs() > operation_tolerance
-                    || nearest < isize::MIN as f64
-                    || nearest > isize::MAX as f64
-                {
-                    return Err(BasisRepresentationError::Invalid(format!(
-                        "operation product ({left_index}, {right_index}) has an inconsistent translation representative"
-                    )));
-                }
-                representative_shift[axis] = nearest as isize;
-            }
+    // It is sufficient to verify left multiplication by a generating set:
+    // associativity then extends the projective composition law to every
+    // group element. This reduces dense action products from |G|^2 to roughly
+    // d(G)|G|, which matters for large magnetic groups and Wannier bases.
+    let generators =
+        corepresentation_generators(operations_and_actions, identity_index, operation_tolerance)?;
+    for left_index in generators {
+        let (left_operation, left_action) = &operations_and_actions[left_index];
+        for (right_index, (_, right_action)) in operations_and_actions.iter().enumerate() {
+            let (product_index, representative_shift) = corepresentation_product(
+                operations_and_actions,
+                left_index,
+                right_index,
+                operation_tolerance,
+            )?;
+            let product_action = &operations_and_actions[product_index].1;
 
             let actual = compose_localized_actions(left_operation, left_action, right_action)?;
             let mut expected = BTreeMap::new();

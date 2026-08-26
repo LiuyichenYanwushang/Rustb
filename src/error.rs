@@ -59,6 +59,10 @@ pub enum TbError {
     },
 
     #[cfg(feature = "cryspglib")]
+    #[error("localized-basis actions do not form the target magnetic corepresentation: {reason}")]
+    IrrepBasisCorepresentation { reason: String },
+
+    #[cfg(feature = "cryspglib")]
     #[error("invalid Hamiltonian-symmetry input '{parameter}': {message}")]
     InvalidHamiltonianSymmetryInput {
         parameter: &'static str,

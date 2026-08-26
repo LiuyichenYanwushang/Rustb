@@ -263,7 +263,7 @@ pub use crate::io::*;
 #[cfg(feature = "cryspglib")]
 pub use crate::irrep_analysis::{
     IrrepBandReport, IrrepCalculationOptions, IrrepCalculationReport, IrrepCharacter,
-    IrrepKPointReport, IrrepMultiplicity,
+    IrrepHamiltonianOperationDiagnostic, IrrepKPointReport, IrrepMultiplicity,
 };
 pub use crate::kpath::*;
 pub use crate::kplane::*;

@@ -46,7 +46,7 @@ impl Default for SymmetryParameters {
 }
 
 impl SymmetryParameters {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if !self.symprec.is_finite() || self.symprec <= 0.0 {
             return Err(TbError::InvalidCrystalSymmetryInput {
                 parameter: "symprec",

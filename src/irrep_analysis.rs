@@ -25,7 +25,8 @@ use crate::crystal_symmetry::{
 use crate::error::{Result, TbError};
 use crate::hamiltonian_symmetry::{
     BasisActionContext, BasisSymmetryRepresentation, HamiltonianSymmetrizationParameters,
-    LocalizedBasisAction, validate_action, validate_action_geometry,
+    LocalizedBasisAction, hamiltonian_residual, validate_action, validate_action_geometry,
+    validate_hamiltonian, validate_projective_corepresentation, validate_tolerances,
 };
 use crate::{Gauge, Model, RMatrixData};
 use cryspglib::irrep::magnetic_summary::{
@@ -135,12 +136,30 @@ pub struct IrrepKPointReport {
     pub bands: Vec<IrrepBandReport>,
 }
 
+/// Exact real-space covariance diagnostic for one target magnetic operation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrrepHamiltonianOperationDiagnostic {
+    pub operation_index: usize,
+    pub rotation: [[i32; 3]; 3],
+    pub translation: [f64; 3],
+    pub time_reversal: bool,
+    pub max_absolute_residual: f64,
+    pub max_relative_residual: f64,
+    pub relative_frobenius_residual: f64,
+    pub acceptance_threshold: f64,
+    pub preserved: bool,
+}
+
 /// Structured and printable result of [`Model::calculate_irrep`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct IrrepCalculationReport {
     pub uni_number: usize,
     pub bns_number: String,
     pub spinful: bool,
+    /// Whether every requested magnetic operation preserves the complete
+    /// real-space Hamiltonian, not merely the sampled high-symmetry subspaces.
+    pub target_hamiltonian_compatible: bool,
+    pub hamiltonian_operation_diagnostics: Vec<IrrepHamiltonianOperationDiagnostic>,
     pub high_symmetry_kpoints: Vec<IrrepKPointReport>,
 }
 
@@ -277,9 +296,10 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// canonical high-symmetry k points for an explicitly supplied target.
     ///
     /// `target_group` supplies the magnetic group whose labels are requested.
-    /// The effective `field_preserving_operations` are used, so a uniform
-    /// electric or magnetic field can reduce the target group.  The operation
-    /// set is validated and reidentified before any eigenproblem is solved.
+    /// When `options` is `Some`, its electric/magnetic fields are reapplied to
+    /// the full target operation set. With `None`, the field context stored in
+    /// `target_group` is retained. The resulting operation set is validated
+    /// and reidentified before any eigenproblem is solved.
     ///
     /// Every target operation is first resolved through `representation`.
     /// Failure here (for example, an orbital set not closed under a rotation)
@@ -299,11 +319,42 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     where
         P: BasisSymmetryRepresentation<SPIN, R>,
     {
+        let supplied_options = options.is_some();
         let options = options.copied().unwrap_or_default();
         validate_options(&options)?;
         self.validate()?;
 
-        let target_operations = &target_group.field_preserving_operations;
+        let external_fields = if supplied_options {
+            options.symmetry.structural_parameters.external_fields
+        } else {
+            target_group.external_fields
+        };
+        let target_operations = cryspglib::SymmetryOps {
+            operations: target_group
+                .operations
+                .iter()
+                .map(|operation| cryspglib::SymmetryOp {
+                    rotation: operation.rotation,
+                    translation: operation.translation,
+                    time_reversal: operation.time_reversal,
+                })
+                .collect(),
+        }
+        .preserving_fields(
+            &cry_lattice(self),
+            cryspglib::ExternalFields {
+                electric: external_fields.electric,
+                magnetic: external_fields.magnetic,
+            },
+            options.symmetry.structural_parameters.field_tolerance,
+        )?
+        .iter()
+        .map(|operation| CrystalSymmetryOperation {
+            rotation: operation.rotation,
+            translation: operation.translation,
+            time_reversal: operation.time_reversal,
+        })
+        .collect::<Vec<_>>();
         if target_operations.is_empty() {
             return Err(TbError::IrrepCalculation {
                 message: "the target magnetic group has no field-preserving operations".to_string(),
@@ -418,6 +469,94 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
         }
 
         let operation_tolerance = options.symmetry.tolerances.operation.max(1e-8);
+        for left in 0..prepared_operations.len() {
+            for right in (left + 1)..prepared_operations.len() {
+                let left_operation = &prepared_operations[left];
+                let right_operation = &prepared_operations[right];
+                if left_operation.data_rotation == right_operation.data_rotation
+                    && left_operation.operation.time_reversal
+                        == right_operation.operation.time_reversal
+                    && translations_equivalent(
+                        left_operation.data_translation_modulo,
+                        right_operation.data_translation_modulo,
+                        operation_tolerance,
+                    )
+                {
+                    return Err(TbError::IrrepCalculation {
+                        message: format!(
+                            "target operations {left} and {right} collapse onto the same data-Hall Seitz representative; folded/nonprimitive cells must be unfolded before band-irrep analysis"
+                        ),
+                    });
+                }
+            }
+        }
+
+        let operations_and_actions = prepared_operations
+            .iter()
+            .map(|prepared| (prepared.operation, prepared.action.clone()))
+            .collect::<Vec<_>>();
+        validate_projective_corepresentation(
+            &operations_and_actions,
+            options.symmetry.tolerances.operation,
+            options.symmetry.tolerances.representation,
+        )
+        .map_err(|error| TbError::IrrepBasisCorepresentation {
+            reason: error.to_string(),
+        })?;
+
+        // A little-group eigenspace check alone cannot certify H: for a
+        // one-dimensional basis the full band subspace is invariant under any
+        // scalar sewing matrix, even when anisotropic hopping breaks the
+        // requested crystal rotation. Certify every target operation on the
+        // complete real-space Hamiltonian before starting any eigensolver.
+        let support = validate_hamiltonian(self, options.symmetry.tolerances.hermiticity)?;
+        let hamiltonian_operation_diagnostics = prepared_operations
+            .par_iter()
+            .enumerate()
+            .map(|(operation_index, prepared)| {
+                let residual = hamiltonian_residual(
+                    &support,
+                    &prepared.operation,
+                    &prepared.action,
+                    options.symmetry.tolerances,
+                )
+                .map_err(|error| TbError::IrrepCalculation {
+                    message: format!(
+                        "target operation {operation_index} Hamiltonian covariance failed: {error}"
+                    ),
+                })?;
+                Ok(IrrepHamiltonianOperationDiagnostic {
+                    operation_index,
+                    rotation: prepared.operation.rotation,
+                    translation: prepared.operation.translation,
+                    time_reversal: prepared.operation.time_reversal,
+                    max_absolute_residual: residual.max_absolute,
+                    max_relative_residual: residual.max_relative,
+                    relative_frobenius_residual: residual.relative_frobenius,
+                    acceptance_threshold: residual.acceptance_threshold,
+                    preserved: residual.max_absolute <= residual.acceptance_threshold,
+                })
+            })
+            .collect::<Vec<Result<_>>>()
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        let target_hamiltonian_compatible = hamiltonian_operation_diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.preserved);
+        let target_hamiltonian_diagnostic = (!target_hamiltonian_compatible).then(|| {
+            let broken_count = hamiltonian_operation_diagnostics
+                .iter()
+                .filter(|diagnostic| !diagnostic.preserved)
+                .count();
+            let max_residual = hamiltonian_operation_diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.max_absolute_residual)
+                .fold(0.0_f64, f64::max);
+            format!(
+                "the real-space Hamiltonian breaks {broken_count} target magnetic operations (maximum covariance residual {max_residual:e})"
+            )
+        });
+
         let mut points = Vec::new();
         for point in summary.kpoints {
             let is_point = point_is_isolated(summary.unitary_sg, &point);
@@ -455,7 +594,15 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
 
         let point_results = points
             .par_iter()
-            .map(|point| calculate_kpoint(self, point, &prepared_operations, &options))
+            .map(|point| {
+                calculate_kpoint(
+                    self,
+                    point,
+                    &prepared_operations,
+                    target_hamiltonian_diagnostic.as_deref(),
+                    &options,
+                )
+            })
             .collect::<Vec<_>>()
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
@@ -464,12 +611,16 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
             uni_number: uni,
             bns_number: identification.bns_number,
             spinful: SPIN,
+            target_hamiltonian_compatible,
+            hamiltonian_operation_diagnostics,
             high_symmetry_kpoints: point_results,
         })
     }
 }
 
 fn validate_options(options: &IrrepCalculationOptions) -> Result<()> {
+    options.symmetry.structural_parameters.validate()?;
+    validate_tolerances(options.symmetry.tolerances)?;
     for (name, value) in [
         ("degeneracy_absolute", options.degeneracy_absolute),
         ("degeneracy_relative", options.degeneracy_relative),
@@ -795,6 +946,7 @@ fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
     point: &PreparedKPoint,
     prepared_operations: &[PreparedOperation],
+    target_hamiltonian_diagnostic: Option<&str>,
     options: &IrrepCalculationOptions,
 ) -> Result<IrrepKPointReport> {
     let k = Array1::from_vec(point.model_coordinate.to_vec());
@@ -879,6 +1031,9 @@ fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
             .fold(0.0_f64, f64::max);
         let fit = fit_corepresentations(&point.formal_coreps, &characters, dimension, options)?;
         let mut diagnostics = fit.diagnostics;
+        if let Some(diagnostic) = target_hamiltonian_diagnostic {
+            diagnostics.push(diagnostic.to_string());
+        }
         if max_subspace_leakage > options.subspace_tolerance {
             diagnostics.push(format!(
                 "symmetry-transformed eigenspace leakage {max_subspace_leakage:e} exceeds {:e}",
@@ -923,11 +1078,13 @@ fn degeneracy_groups(energies: &[f64], absolute: f64, relative: f64) -> Vec<(usi
     if energies.is_empty() {
         return Vec::new();
     }
+    let spectral_width = (energies[energies.len() - 1] - energies[0]).abs();
     let mut groups = Vec::new();
     let mut start = 0;
     for boundary in 1..energies.len() {
-        let scale = energies[boundary - 1].abs().max(energies[boundary].abs());
-        if (energies[boundary] - energies[boundary - 1]).abs() > absolute + relative * scale {
+        if (energies[boundary] - energies[boundary - 1]).abs()
+            > absolute + relative * spectral_width
+        {
             groups.push((start, boundary));
             start = boundary;
         }
@@ -1157,8 +1314,8 @@ fn frobenius_vector_norm(vector: &Array1<Complex64>) -> f64 {
 mod tests {
     use super::*;
     use crate::{
-        Atom, AtomType, AtomicOrbitalBasis, CrystalSymmetry, NoRMatrix, OrbProj, OrbitalId,
-        ScalarSiteBasis,
+        Atom, AtomType, AtomicOrbitalBasis, CellShiftAction, CrystalSymmetry, NoRMatrix, OrbProj,
+        OrbitalId, ScalarSiteBasis,
     };
     use ndarray::{Array2, array};
 
@@ -1229,6 +1386,24 @@ mod tests {
         model
     }
 
+    struct InvalidIdentityCorepresentation;
+
+    impl BasisSymmetryRepresentation<true, NoRMatrix> for InvalidIdentityCorepresentation {
+        fn resolve(
+            &self,
+            context: BasisActionContext<'_, true, NoRMatrix>,
+        ) -> std::result::Result<LocalizedBasisAction, crate::BasisRepresentationError> {
+            let mut matrix = Array2::eye(context.model.nsta());
+            matrix[[1, 1]] = Complex64::new(-1.0, 0.0);
+            Ok(LocalizedBasisAction {
+                sectors: vec![CellShiftAction {
+                    shift: [0, 0, 0],
+                    matrix,
+                }],
+            })
+        }
+    }
+
     #[test]
     fn incomplete_orbital_shell_is_rejected_before_band_labelling() {
         let model = orbital_cubic::<false>(&[OrbProj::px, OrbProj::py]);
@@ -1236,6 +1411,70 @@ mod tests {
             .calculate_irrep(&AtomicOrbitalBasis, None)
             .unwrap_err();
         assert!(matches!(error, TbError::IrrepBasisRepresentation { .. }));
+    }
+
+    #[test]
+    fn inconsistent_local_actions_are_rejected_before_band_labelling() {
+        let model = orbital_cubic::<true>(&[OrbProj::s]);
+        let error = model
+            .calculate_irrep(&InvalidIdentityCorepresentation, None)
+            .unwrap_err();
+        assert!(matches!(error, TbError::IrrepBasisCorepresentation { .. }));
+    }
+
+    #[test]
+    fn anisotropic_scalar_hopping_invalidates_all_target_labels() {
+        let mut model = orbital_cubic::<false>(&[OrbProj::s]);
+        model.set_hop(1.0, 0, 0, &array![1_isize, 0, 0], None);
+        model.set_hop(2.0, 0, 0, &array![0_isize, 1, 0], None);
+        model.set_hop(3.0, 0, 0, &array![0_isize, 0, 1], None);
+
+        let report = model.calculate_irrep(&AtomicOrbitalBasis, None).unwrap();
+        assert!(!report.target_hamiltonian_compatible);
+        assert!(
+            report
+                .hamiltonian_operation_diagnostics
+                .iter()
+                .any(|diagnostic| !diagnostic.preserved)
+        );
+        assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .all(|band| band.label == "???"),
+            "{report}"
+        );
+        assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .all(|band| band.max_subspace_leakage < 1e-12),
+            "this regression must exercise the failure of a local leakage-only check"
+        );
+    }
+
+    #[test]
+    fn degeneracy_grouping_is_invariant_under_energy_origin_shifts() {
+        let original = degeneracy_groups(&[0.0, 1.0, 2.0], 1e-7, 1e-9);
+        let shifted = degeneracy_groups(&[1e12, 1e12 + 1.0, 1e12 + 2.0], 1e-7, 1e-9);
+        assert_eq!(original, vec![(0, 1), (1, 2), (2, 3)]);
+        assert_eq!(shifted, original);
+    }
+
+    #[test]
+    fn nested_symmetry_tolerances_are_validated() {
+        let model = orbital_cubic::<false>(&[OrbProj::s]);
+        let mut options = IrrepCalculationOptions::default();
+        options.symmetry.tolerances.hermiticity = f64::NAN;
+        let error = model
+            .calculate_irrep(&AtomicOrbitalBasis, Some(&options))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            TbError::InvalidHamiltonianSymmetryInput { .. }
+        ));
     }
 
     #[test]
@@ -1359,6 +1598,13 @@ mod tests {
                 .all(IrrepBandReport::is_identified),
             "{report}"
         );
+
+        let explicit = model
+            .calculate_irrep_for_group(&full, &AtomicOrbitalBasis, Some(&options))
+            .unwrap();
+        assert_eq!(explicit.uni_number, report.uni_number);
+        assert_eq!(explicit.bns_number, report.bns_number);
+        assert_eq!(explicit.high_symmetry_kpoints, report.high_symmetry_kpoints);
     }
 
     #[test]
