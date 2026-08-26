@@ -741,15 +741,17 @@ let target_report = model.calculate_irrep_for_group(
 )?;
 ```
 
-All target operations are resolved before diagonalization. An incomplete or
-non-closed orbital basis is therefore an error, while a representable but
-symmetry-broken Hamiltonian is still analyzed and receives `???` wherever
-subspace leakage, character residuals, or non-integer corep multiplicities
-invalidate a label. High-symmetry k points run in parallel and are collected in
-canonical order; use a one-thread BLAS configuration to avoid nested
-oversubscription. Antiunitary operations contribute sewing/closure diagnostics,
-not an ordinary trace character. Folded nonprimitive models require unfolding
-before primitive-cell database labels can be assigned.
+All target operations and their projective group composition are resolved
+before diagonalization. An incomplete or non-closed orbital basis is therefore
+an error. The full real-space Hamiltonian is then certified against every
+target operation: if it is broken, the calculation retains covariance
+residuals and raw complex characters but all target labels become `???`.
+High-symmetry k points run in parallel and are collected in canonical order;
+use a one-thread BLAS configuration to avoid nested oversubscription. The
+printed table contains every unitary complex character. Antiunitary operations
+contribute sewing/closure diagnostics and are printed as `N/A`, not as an
+ordinary trace character. Folded nonprimitive models require unfolding before
+primitive-cell database labels can be assigned.
 
 ### BLAS/LAPACK backends
 

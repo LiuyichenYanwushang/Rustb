@@ -292,21 +292,24 @@ let irreps = model.calculate_irrep(&AtomicOrbitalBasis, None)?;
 println!("{irreps}");
 ```
 
-The calculation diagonalizes independent k points in parallel, restricts each
-unitary sewing matrix to consecutive degenerate bands, and fits the resulting
-characters to the magnetic-corepresentation table. Antiunitary operations are
-used for subspace-closure and sewing-unitarity checks; `Tr(U K)` is not reported
-as an ordinary character. Output order remains deterministic. For efficient
-outer parallelism, use one BLAS thread (for example `MKL_NUM_THREADS=1` or
-`OPENBLAS_NUM_THREADS=1`).
+Before diagonalization, the calculation verifies the full localized actions,
+their projective magnetic-group composition, and exact covariance of the
+complete real-space Hamiltonian. It then diagonalizes independent k points in
+parallel, restricts each unitary sewing matrix to consecutive degenerate bands,
+and fits the resulting characters to the magnetic-corepresentation table. The
+printed table includes every raw complex unitary character; antiunitary rows
+are marked `N/A` because `Tr(U K)` is not an ordinary character. Output order
+remains deterministic. For efficient outer parallelism, use one BLAS thread
+(for example `MKL_NUM_THREADS=1` or `OPENBLAS_NUM_THREADS=1`).
 
 This API deliberately distinguishes two failures. If an orbital set is not
 closed under a target operation, or a local Wannier representation cannot be
 constructed, it returns `TbError::IrrepBasisRepresentation` before solving any
 k point. If the representation exists but the Hamiltonian breaks the target
-group, raw complex characters and fitted multiplicities are retained while the
-unreliable band label becomes `???`. Therefore the same call can diagnose an
-input model and verify the result of `symmetrize_hamiltonian`.
+group, exact real-space residuals, raw complex characters, and fitted
+multiplicities are retained while every unreliable target label becomes `???`.
+Therefore the same call can diagnose an input model and verify the result of
+`symmetrize_hamiltonian`.
 
 For a caller-supplied target use:
 
@@ -318,12 +321,13 @@ let irreps = model.calculate_irrep_for_group(
 )?;
 ```
 
-The target's `field_preserving_operations` are reidentified, so explicit
-electric or magnetic fields select the effective magnetic group. The current
-API expects a cell compatible with the magnetic-irrep database setting. If
-multiple input translations collapse onto one database operation (a folded,
-nonprimitive supercell), it returns an error rather than assigning primitive
-cell labels; unfold that model first.
+When explicit options are supplied, their electric/magnetic fields are applied
+to the target's full operation set before reidentification; with `None`, the
+field context stored in `target` is retained. The current API expects a cell
+compatible with the magnetic-irrep database setting. If multiple input
+translations collapse onto one database operation (a folded, nonprimitive
+supercell), a preflight error is returned rather than assigning primitive-cell
+labels; unfold that model first.
 
 Wannier90 models can be loaded as:
 

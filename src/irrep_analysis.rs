@@ -9,10 +9,12 @@
 //! A missing localized-basis representation is a hard error.  In particular,
 //! incomplete orbital shells, ambiguous local frames, and general Wannier
 //! gauges are never guessed.  A Hamiltonian that breaks the requested magnetic
-//! group is different: the numerical calculation still runs, but a subspace
-//! with excessive leakage, non-integer corep multiplicities, or a poor
-//! character reconstruction is labelled `???`.  This makes the same API useful
-//! both before and after [`Model::symmetrize_hamiltonian`].
+//! group is different: the numerical calculation still runs, but every label
+//! is withheld when exact real-space covariance fails. A subspace with
+//! excessive leakage, non-integer corep multiplicities, or a poor character
+//! reconstruction is likewise labelled `???`. Raw complex characters remain
+//! available in both cases. This makes the same API useful before and after
+//! [`Model::symmetrize_hamiltonian`].
 //!
 //! High-symmetry k points are independent and are evaluated with Rayon.  The
 //! indexed parallel collection preserves the canonical database order in the
@@ -47,7 +49,8 @@ pub struct IrrepCalculationOptions {
     pub symmetry: HamiltonianSymmetrizationParameters,
     /// Absolute energy tolerance used to form degenerate band clusters.
     pub degeneracy_absolute: f64,
-    /// Relative energy tolerance used to form degenerate band clusters.
+    /// Relative energy tolerance, scaled by the shift-invariant spectral
+    /// width at each k point, used to form degenerate band clusters.
     pub degeneracy_relative: f64,
     /// Maximum normalized leakage of a transformed band subspace.
     pub subspace_tolerance: f64,
@@ -179,6 +182,27 @@ impl Display for IrrepCalculationReport {
             self.bns_number,
             if self.spinful { "spinful" } else { "spinless" }
         )?;
+        let max_hamiltonian_residual = self
+            .hamiltonian_operation_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.max_absolute_residual)
+            .fold(0.0_f64, f64::max);
+        let broken_operations = self
+            .hamiltonian_operation_diagnostics
+            .iter()
+            .filter(|diagnostic| !diagnostic.preserved)
+            .count();
+        writeln!(
+            formatter,
+            "Target-H covariance: {}  broken operations: {}  max residual: {:.3e}",
+            if self.target_hamiltonian_compatible {
+                "compatible"
+            } else {
+                "BROKEN"
+            },
+            broken_operations,
+            max_hamiltonian_residual,
+        )?;
         writeln!(
             formatter,
             "band       energy range                 dim  irrep/corep  leakage      char.residual"
@@ -211,6 +235,29 @@ impl Display for IrrepCalculationReport {
                     band.max_subspace_leakage,
                     band.character_fit_residual,
                 )?;
+                for character in &band.characters {
+                    write!(
+                        formatter,
+                        "             chi[{:>3}] {} = ",
+                        character.column,
+                        if character.time_reversal { "A" } else { "U" },
+                    )?;
+                    if let Some(value) = character.value {
+                        write!(formatter, "{:+.8}{:+.8}i", value.re, value.im)?;
+                    } else {
+                        write!(formatter, "N/A (antiunitary)")?;
+                    }
+                    writeln!(
+                        formatter,
+                        "  leak={:.3e} unit={:.3e} R={:?} t=({:.8},{:.8},{:.8})",
+                        character.subspace_leakage,
+                        character.projected_unitarity_residual,
+                        character.rotation,
+                        character.translation[0],
+                        character.translation[1],
+                        character.translation[2],
+                    )?;
+                }
                 if !band.is_identified() {
                     let mut detail = String::new();
                     for (index, multiplicity) in band.multiplicities.iter().enumerate() {
@@ -1494,7 +1541,11 @@ mod tests {
             .find(|point| point.label == "GM")
             .unwrap();
         assert!(gamma.bands.iter().any(|band| band.label == "???"));
-        assert!(broken.format_irvsp().contains("???"));
+        let broken_text = broken.format_irvsp();
+        assert!(broken_text.contains("???"));
+        assert!(broken_text.contains("Target-H covariance: BROKEN"));
+        assert!(broken_text.contains("chi["));
+        assert!(broken_text.contains("N/A (antiunitary)"));
 
         let symmetrized = model
             .symmetrize_hamiltonian(
@@ -1633,6 +1684,18 @@ mod tests {
                 .all(IrrepBandReport::is_identified),
             "{report}"
         );
+        let complex_character = report
+            .high_symmetry_kpoints
+            .iter()
+            .flat_map(|point| &point.bands)
+            .flat_map(|band| &band.characters)
+            .filter_map(|character| character.value)
+            .find(|value| value.im.abs() > 1e-6)
+            .expect("the hexagonal K/H table must contain a complex character");
+        assert!(report.format_irvsp().contains(&format!(
+            "{:+.8}{:+.8}i",
+            complex_character.re, complex_character.im
+        )));
     }
 
     #[test]

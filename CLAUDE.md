@@ -765,17 +765,21 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   `calculate_irrep_for_group(target, provider, options)` for an explicit
   target. Resolve and validate every localized target action before launching
   any eigensolver; an incomplete orbital shell or ambiguous Wannier gauge is a
-  hard `IrrepBasisRepresentation` error. Once the representation exists,
-  process independent high-symmetry k points in parallel and preserve their
-  canonical order. Group consecutive degenerate bands, compute unitary sewing
+  hard `IrrepBasisRepresentation` error; actions that do not compose as a
+  projective magnetic corepresentation are also a hard pre-solve error. Check
+  exact real-space covariance under every target operation before any
+  eigensolver. If any operation breaks H, retain residuals and raw characters
+  but mark every target label `???`, even when a sampled eigenspace happens to
+  close. Once preflight is complete, process independent high-symmetry k points
+  in parallel and preserve their canonical order. Group consecutive degenerate
+  bands with an energy-origin-invariant threshold, compute unitary sewing
   characters and antiunitary closure residuals, and fit formal corep
   multiplicities. Only integer multiplicities, small reconstruction residual,
-  and a closed projected subspace may receive a database label; otherwise
-  retain raw values and print `???`. Never treat an antiunitary `Tr(U K)` as an
-  ordinary character. A nonprimitive cell whose translations alias in the
-  database frame requires unfolding and must error rather than receive
-  primitive-cell labels. Keep BLAS single-threaded under this outer Rayon
-  parallelism.
+  and a closed projected subspace may receive a database label. Print every raw
+  complex unitary character; mark antiunitary entries `N/A`. A nonprimitive
+  cell whose translations alias in the database frame requires unfolding and
+  must error rather than receive primitive-cell labels. Keep BLAS
+  single-threaded under this outer Rayon parallelism.
 - **Current integration status (2026-08-26)**: milestones A–E, Hamiltonian
   certification/MSG identification F1, forced symmetrization F2, and parallel
   high-symmetry band-corep analysis are implemented, together with strict
