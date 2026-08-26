@@ -3257,6 +3257,39 @@ mod tests {
     }
 
     #[test]
+    fn forced_symmetrization_uses_automatic_p_orbital_representation() {
+        let mut model = atomic_orbital_cubic::<false>(&[OrbProj::px, OrbProj::py, OrbProj::pz]);
+        model.ham[[0, 0, 0]] = Complex64::new(1.0, 0.0);
+        model.ham[[0, 1, 1]] = Complex64::new(2.0, 0.0);
+        model.ham[[0, 2, 2]] = Complex64::new(3.0, 0.0);
+        let target = model
+            .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())
+            .unwrap();
+
+        let symmetrized = model
+            .symmetrize_hamiltonian(
+                &target,
+                &AtomicOrbitalBasis,
+                &HamiltonianSymmetrizationParameters::default(),
+            )
+            .unwrap();
+        for row in 0..3 {
+            for column in 0..3 {
+                let expected = if row == column { 2.0 } else { 0.0 };
+                assert!(
+                    (symmetrized.ham[[0, row, column]] - Complex64::new(expected, 0.0)).norm()
+                        < 1e-10
+                );
+            }
+        }
+        let report = symmetrized
+            .check_hamiltonian_symmetry(&AtomicOrbitalBasis, &HamiltonianSymmetryRequest::default())
+            .unwrap();
+        assert_eq!(report.compatibility, HamiltonianCompatibility::Compatible);
+        assert_eq!(report.surviving_operations.len(), 96);
+    }
+
+    #[test]
     fn orbital_only_model_is_rejected_at_the_hamiltonian_symmetry_boundary() {
         let model: Model<false, 3, NoRMatrix> =
             Model::tb_model(Array2::eye(3), array![[0.0, 0.0, 0.0]], None).unwrap();
