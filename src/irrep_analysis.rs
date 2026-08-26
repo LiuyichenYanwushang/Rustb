@@ -919,7 +919,6 @@ fn source_characters(
 enum ScalarCompoundCharacterKind {
     ConjugateRealification,
     DistinctComponentSum,
-    PirMatrixTrace,
 }
 
 fn scalar_cir_character(component: &[f64], character_index: usize) -> Option<Complex64> {
@@ -972,8 +971,6 @@ fn scalar_compound_character_kind(
     let k = [f64::from(kx), f64::from(ky), f64::from(kz)];
     let denominator = f64::from(denominator);
     let mut compared_phase_real_operation = false;
-    let mut has_distinct_real_components = false;
-    let mut has_ambiguous_nonreal_components = false;
     for operation in point
         .operations
         .iter()
@@ -1042,18 +1039,7 @@ fn scalar_compound_character_kind(
             && second_value.im.abs() <= 1e-6
             && (second_value - first_value.conj()).norm() > 1e-6
         {
-            has_distinct_real_components = true;
-        } else if (first_value.im.abs() > 1e-6 || second_value.im.abs() > 1e-6)
-            && (second_value - first_value).norm() > 1e-6
-            && (second_value - first_value.conj()).norm() > 1e-6
-        {
-            // Neither the component sum nor conjugate realification is
-            // trustworthy when a phase-real operation has two genuinely
-            // different non-real rows.  This occurs in a small set of legacy
-            // compound tables (notably SG 167 T1T2 and SG 199 P1P1/P3P3).
-            // Their full PIR already has the selected dimension, so its
-            // matrix trace provides an independent, lossless fallback.
-            has_ambiguous_nonreal_components = true;
+            return Ok(ScalarCompoundCharacterKind::DistinctComponentSum);
         }
     }
     if !compared_phase_real_operation {
@@ -1064,147 +1050,7 @@ fn scalar_compound_character_kind(
             ),
         });
     }
-    if has_ambiguous_nonreal_components {
-        Ok(ScalarCompoundCharacterKind::PirMatrixTrace)
-    } else if has_distinct_real_components {
-        Ok(ScalarCompoundCharacterKind::DistinctComponentSum)
-    } else {
-        Ok(ScalarCompoundCharacterKind::ConjugateRealification)
-    }
-}
-
-fn scalar_compound_pir_matrix_characters(
-    irrep: &IrrepRecord,
-    point: &MagneticKPointSummary,
-    unitary_operations: &cryspglib::SymmetryOps,
-    h_to_irrep: &[usize],
-    selected_dimension: usize,
-) -> Result<Vec<Option<Complex64>>> {
-    let full_dimension = usize::from(irrep.dim);
-    if full_dimension != selected_dimension {
-        return Err(TbError::IrrepCalculation {
-            message: format!(
-                "compound source {} at {} has ambiguous CIR characters, but its full PIR dimension {} differs from the selected dimension {}",
-                irrep.ml, point.label, full_dimension, selected_dimension
-            ),
-        });
-    }
-    let operation_count = irrep.pir_rotations().len() / 9;
-    let block_size =
-        full_dimension
-            .checked_mul(full_dimension)
-            .ok_or_else(|| TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} PIR matrix dimension overflows",
-                    irrep.ml, point.label
-                ),
-            })?;
-    let expected_matrix_values =
-        operation_count
-            .checked_mul(block_size)
-            .ok_or_else(|| TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} PIR matrix storage size overflows",
-                    irrep.ml, point.label
-                ),
-            })?;
-    let matrices = irrep.matrices();
-    if matrices.len() < expected_matrix_values {
-        return Err(TbError::IrrepCalculation {
-            message: format!(
-                "compound source {} at {} has ambiguous CIR characters and only {} of {} required PIR matrix values",
-                irrep.ml,
-                point.label,
-                matrices.len(),
-                expected_matrix_values
-            ),
-        });
-    }
-    let translations = irrep.pir_translations();
-    if translations.len() != 3 * operation_count {
-        return Err(TbError::IrrepCalculation {
-            message: format!(
-                "compound source {} at {} has {} PIR translation values for {} operations",
-                irrep.ml,
-                point.label,
-                translations.len(),
-                operation_count
-            ),
-        });
-    }
-    let (kx, ky, kz, denominator) = point.coords;
-    if denominator == 0 {
-        return Err(TbError::IrrepCalculation {
-            message: format!(
-                "compound source {} at {} has a zero k-vector denominator",
-                irrep.ml, point.label
-            ),
-        });
-    }
-    let k = [f64::from(kx), f64::from(ky), f64::from(kz)];
-    let denominator = f64::from(denominator);
-
-    point
-        .operations
-        .iter()
-        .map(|operation| {
-            if operation.time_reversal {
-                return Ok(None);
-            }
-            let h_index =
-                find_operation_index(&unitary_operations.operations, operation).ok_or_else(
-                    || TbError::IrrepCalculation {
-                        message: format!(
-                            "compound source {} at {} cannot map unitary character column {} for PIR matrix reconstruction",
-                            irrep.ml, point.label, operation.column
-                        ),
-                    },
-                )?;
-            let character_index =
-                *h_to_irrep
-                    .get(h_index)
-                    .ok_or_else(|| TbError::IrrepCalculation {
-                        message: format!(
-                            "compound source {} at {} has no PIR matrix mapping for unitary operation {}",
-                            irrep.ml, point.label, h_index
-                        ),
-                    })?;
-            if character_index >= operation_count {
-                return Err(TbError::IrrepCalculation {
-                    message: format!(
-                        "compound source {} at {} maps unitary operation {} to out-of-range PIR operation {}",
-                        irrep.ml, point.label, h_index, character_index
-                    ),
-                });
-            }
-            let matrix = &matrices
-                [character_index * block_size..(character_index + 1) * block_size];
-            let trace = (0..full_dimension)
-                .map(|basis| matrix[basis * full_dimension + basis])
-                .sum::<f64>();
-            if !trace.is_finite() {
-                return Err(TbError::IrrepCalculation {
-                    message: format!(
-                        "compound source {} at {} has a non-finite PIR matrix trace for operation {}",
-                        irrep.ml, point.label, character_index
-                    ),
-                });
-            }
-            let translation: [f64; 3] =
-                std::array::from_fn(|axis| translations[3 * character_index + axis]);
-            // The stored scalar PIR matrices are real crystallographic
-            // blocks.  Restore the translational Bloch factor in the same
-            // exp(+i k.t) convention used by the localized-basis character
-            // calculation below.
-            let phase_argument = std::f64::consts::TAU
-                * k.iter()
-                    .zip(translation)
-                    .map(|(component, translation)| component * translation)
-                    .sum::<f64>()
-                / denominator;
-            Ok(Some(trace * Complex64::new(0.0, phase_argument).exp()))
-        })
-        .collect()
+    Ok(ScalarCompoundCharacterKind::ConjugateRealification)
 }
 
 fn scalar_source_characters(
@@ -1276,7 +1122,7 @@ fn scalar_source_characters(
             )
         })
         .transpose()?;
-    let compound_selected_dimension = if let Some(components) = &compound_components {
+    if let Some(components) = &compound_components {
         let identity_h = h_seitz
             .iter()
             .position(|operation| {
@@ -1349,37 +1195,11 @@ fn scalar_source_characters(
                 ),
             });
         }
-        Some(selected_dimension)
-    } else {
-        None
-    };
-    let compound_matrix_characters = if matches!(
-        compound_character_kind,
-        Some(ScalarCompoundCharacterKind::PirMatrixTrace)
-    ) {
-        let selected_dimension = compound_selected_dimension.ok_or_else(|| {
-            TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} requires PIR matrix reconstruction without a selected dimension",
-                    irrep.ml, point.label
-                ),
-            }
-        })?;
-        Some(scalar_compound_pir_matrix_characters(
-            irrep,
-            point,
-            unitary_operations,
-            &h_to_irrep,
-            selected_dimension,
-        )?)
-    } else {
-        None
-    };
+    }
     let characters = point
         .operations
         .iter()
-        .enumerate()
-        .map(|(column, operation)| {
+        .map(|operation| {
             if operation.time_reversal {
                 return Some(None);
             }
@@ -1408,14 +1228,6 @@ fn scalar_source_characters(
                     // trace is the actual component sum; replacing it by
                     // 2 Re(chi_1) corrupts characters such as SG 182 H1H2.
                     ScalarCompoundCharacterKind::DistinctComponentSum => first_value + second_value,
-                    // If a phase-real column contains two different non-real
-                    // CIR values, neither legacy component row is a reliable
-                    // selected representation.  The prevalidated full PIR
-                    // matrix has the selected dimension in this branch.
-                    ScalarCompoundCharacterKind::PirMatrixTrace => compound_matrix_characters
-                        .as_ref()?
-                        .get(column)
-                        .copied()??,
                 }
             } else {
                 Complex64::new(*irrep.characters().get(character_index)?, 0.0)
@@ -2739,71 +2551,6 @@ mod tests {
                     "UNI {uni} {irrep_label} emitted a contaminated complex character"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn ambiguous_compound_components_use_full_pir_matrix_trace() {
-        let uni = 1514;
-        let summary =
-            cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni).unwrap();
-        assert_eq!(summary.unitary_sg, 199);
-        let point = summary
-            .kpoints
-            .iter()
-            .find(|point| point.label == "P")
-            .expect("SG 199 must expose its P point");
-        let subgroup = cryspglib::irrep::corep::identify_unitary_subgroup_with_hall(uni)
-            .expect("UNI 1514 must expose its unitary subgroup");
-        let operations = &subgroup.ops_from_hall;
-        let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(operations);
-        let formal_coreps = prepare_formal_coreps::<false>(199, point, operations)
-            .expect("the reconstructed characters must reach the formal-corep table");
-
-        for (label, expected_real_character) in [("P1P1", -1.73204), ("P3P3", 1.73204)] {
-            let irrep = cryspglib::irrep::query::irreps_of(199)
-                .iter()
-                .find(|irrep| irrep.ml == label)
-                .expect("the SG 199 compound regression record must exist");
-            let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
-                &h_seitz,
-                irrep.pir_rotations(),
-                irrep.pir_translations(),
-            )
-            .expect("unitary operations must map to the compound PIR table");
-            let components = [irrep.cir_component_chars(0), irrep.cir_component_chars(1)];
-            assert_eq!(
-                scalar_compound_character_kind(&components, irrep, point, operations, &h_to_irrep,)
-                    .unwrap(),
-                ScalarCompoundCharacterKind::PirMatrixTrace,
-                "{label} must not realify two different non-real CIR rows"
-            );
-
-            let characters = scalar_source_characters(irrep, point, operations)
-                .unwrap()
-                .expect("the full PIR matrix must reconstruct the ambiguous compound record");
-            let threefold_character = characters[3].unwrap();
-            assert!(
-                (threefold_character - Complex64::new(expected_real_character, 0.0)).norm() < 1e-10,
-                "{label} emitted {threefold_character} instead of the full PIR trace {expected_real_character}"
-            );
-            let centered_translation_character = characters[8].unwrap();
-            assert!(
-                (centered_translation_character - Complex64::new(0.0, -4.0)).norm() < 1e-10,
-                "{label} lost the positive-convention Bloch phase: {centered_translation_character}"
-            );
-
-            let formal = formal_coreps
-                .iter()
-                .find(|corep| corep.label == label)
-                .expect("the reconstructed source must remain in the formal-corep table");
-            assert_eq!(formal.dimension, 4);
-            assert!(
-                (formal.characters[3].unwrap() - Complex64::new(expected_real_character, 0.0))
-                    .norm()
-                    < 1e-10,
-                "{label} was altered while assembling the formal corepresentation"
-            );
         }
     }
 
