@@ -888,7 +888,12 @@ fn prepare_formal_coreps<const SPIN: bool>(
                             .iter()
                             .map(|operation| {
                                 (!operation.time_reversal).then(|| {
-                                    Complex64::new(corep.characters[operation.column], 0.0)
+                                    Complex64::new(
+                                        canonicalize_tabulated_character_component(
+                                            corep.characters[operation.column],
+                                        ),
+                                        0.0,
+                                    )
                                 })
                             })
                             .collect(),
@@ -935,10 +940,44 @@ fn compound_label_repeats_constituent(label: &str) -> bool {
     !bytes.is_empty() && bytes.len().is_multiple_of(2) && bytes[..midpoint] == bytes[midpoint..]
 }
 
+const CHARACTER_INV_SQRT_2: f64 = std::f64::consts::FRAC_1_SQRT_2;
+const CHARACTER_SQRT_2: f64 = std::f64::consts::SQRT_2;
+const CHARACTER_TWO_SQRT_2: f64 = 2.0 * std::f64::consts::SQRT_2;
+const CHARACTER_SQRT_3_OVER_2: f64 = 0.866_025_403_784_438_6;
+const CHARACTER_SQRT_3: f64 = 1.732_050_807_568_877_2;
+
+/// Restore exact algebraic character values rounded in legacy ISO-IR tables.
+///
+/// This is deliberately a small whitelist of crystallographic character
+/// magnitudes.  Each tolerance only covers the decimal spellings found in the
+/// generated tables (for example `0.70711` and `1.41422`); unrelated finite
+/// values remain untouched so malformed source data is not silently hidden.
+fn canonicalize_tabulated_character_component(value: f64) -> f64 {
+    if !value.is_finite() {
+        return value;
+    }
+    const MAGNITUDES_AND_TOLERANCES: [(f64, f64); 6] = [
+        (0.5, 1.0e-8),
+        (CHARACTER_INV_SQRT_2, 3.3e-6),
+        (CHARACTER_SQRT_3_OVER_2, 5.5e-6),
+        (CHARACTER_SQRT_2, 6.5e-6),
+        (CHARACTER_SQRT_3, 1.1e-5),
+        (CHARACTER_TWO_SQRT_2, 1.0e-9),
+    ];
+
+    let magnitude = value.abs();
+    MAGNITUDES_AND_TOLERANCES
+        .iter()
+        .find_map(|&(canonical, tolerance)| {
+            ((magnitude - canonical).abs() <= tolerance).then_some(value.signum() * canonical)
+        })
+        .unwrap_or(value)
+}
+
 fn scalar_cir_character(component: &[f64], character_index: usize) -> Option<Complex64> {
     let value = Complex64::new(
-        *component.get(2 * character_index)?,
-        *component.get(2 * character_index + 1)?,
+        canonicalize_tabulated_character_component(*component.get(2 * character_index)?),
+        canonicalize_tabulated_character_component(*component.get(2 * character_index + 1)?),
     );
     (value.re.is_finite() && value.im.is_finite()).then_some(value)
 }
@@ -1229,8 +1268,8 @@ fn scalar_source_characters(
             let character_index = *h_to_irrep.get(h_index)?;
             let value = if use_selected_arm {
                 Complex64::new(
-                    *little_real.get(character_index)?,
-                    *little_imag.get(character_index)?,
+                    canonicalize_tabulated_character_component(*little_real.get(character_index)?),
+                    canonicalize_tabulated_character_component(*little_imag.get(character_index)?),
                 )
             } else if let Some(components) = &compound_components {
                 let first = components.first()?;
@@ -1252,7 +1291,12 @@ fn scalar_source_characters(
                     ScalarCompoundCharacterKind::DistinctComponentSum => first_value + second_value,
                 }
             } else {
-                Complex64::new(*irrep.characters().get(character_index)?, 0.0)
+                Complex64::new(
+                    canonicalize_tabulated_character_component(
+                        *irrep.characters().get(character_index)?,
+                    ),
+                    0.0,
+                )
             };
             Some(Some(value))
         })
@@ -1288,8 +1332,10 @@ fn spinor_source_characters(
             let local_index = local_operation_indices
                 .iter()
                 .position(|index| usize::from(*index) == spin_operation_index)?;
-            let real = *real.get(local_index)?;
-            let imaginary = imaginary.get(local_index).copied().unwrap_or(0.0);
+            let real = canonicalize_tabulated_character_component(*real.get(local_index)?);
+            let imaginary = canonicalize_tabulated_character_component(
+                imaginary.get(local_index).copied().unwrap_or(0.0),
+            );
             Some(Some(Complex64::new(real, imaginary)))
         })
         .collect()
@@ -1309,7 +1355,10 @@ fn find_operation_index(
         })
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    (matches.len() == 1).then_some(matches[0])
+    let [index] = matches.as_slice() else {
+        return None;
+    };
+    Some(*index)
 }
 
 fn find_flat_operation_index(
@@ -1334,7 +1383,10 @@ fn find_flat_operation_index(
             rotation_matches && translations_equivalent(translation, target.translation, 1e-7)
         })
         .collect::<Vec<_>>();
-    (matches.len() == 1).then_some(matches[0])
+    let [index] = matches.as_slice() else {
+        return None;
+    };
+    Some(*index)
 }
 
 fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
@@ -2369,9 +2421,27 @@ mod tests {
                 &HamiltonianSymmetrizationParameters::default(),
             )
             .unwrap();
+        let mut options = IrrepCalculationOptions::default();
+        options.character_tolerance = 1.0e-10;
         let report = symmetric
-            .calculate_irrep_for_group(&target, &ScalarSiteBasis, None)
+            .calculate_irrep_for_group(&target, &ScalarSiteBasis, Some(&options))
             .unwrap();
+        assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .all(IrrepBandReport::is_identified),
+            "legacy radical spellings must not defeat a strict character fit:\n{report}"
+        );
+        assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .all(|band| band.character_fit_residual < 1.0e-12),
+            "canonicalized formal characters must fit at floating-point accuracy:\n{report}"
+        );
         let r = report
             .high_symmetry_kpoints
             .iter()
@@ -2393,6 +2463,75 @@ mod tests {
                 }),
             "selected-arm formal multiplicities must be integral"
         );
+    }
+
+    #[test]
+    fn legacy_algebraic_character_spellings_are_canonicalized() {
+        let cases = [
+            (0.499_999_999_7, 0.5),
+            (0.707_11, CHARACTER_INV_SQRT_2),
+            (1.414_22, CHARACTER_SQRT_2),
+            (0.866_02, CHARACTER_SQRT_3_OVER_2),
+            (0.866_03, CHARACTER_SQRT_3_OVER_2),
+            (1.732_04, CHARACTER_SQRT_3),
+            (1.732_06, CHARACTER_SQRT_3),
+            (2.828_427_124, CHARACTER_TWO_SQRT_2),
+        ];
+        for (legacy, canonical) in cases {
+            assert_eq!(
+                canonicalize_tabulated_character_component(legacy),
+                canonical
+            );
+            assert_eq!(
+                canonicalize_tabulated_character_component(-legacy),
+                -canonical
+            );
+        }
+
+        for untouched in [0.314_159_120_3, 0.628_318_975_3, 0.707_0, 1.732_0] {
+            assert_eq!(
+                canonicalize_tabulated_character_component(untouched),
+                untouched,
+                "non-whitelisted value {untouched} must remain visible"
+            );
+        }
+    }
+
+    #[test]
+    fn spinor_summary_fallback_canonicalizes_compound_radicals() {
+        let uni = 1200;
+        let summary =
+            cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni).unwrap();
+        let point = summary
+            .kpoints
+            .iter()
+            .find(|point| point.label == "P")
+            .expect("UNI 1200 must expose the P point");
+        let operation = point
+            .operations
+            .iter()
+            .find(|operation| !operation.time_reversal)
+            .expect("the P little group must contain a unitary operation");
+        assert_eq!(find_operation_index(&[], operation), None);
+        assert_eq!(find_flat_operation_index(&[], &[], operation), None);
+        let subgroup = cryspglib::irrep::corep::identify_unitary_subgroup_with_hall(uni)
+            .expect("UNI 1200 must expose its unitary subgroup");
+        let formal =
+            prepare_formal_coreps::<true>(summary.unitary_sg, point, &subgroup.ops_from_hall)
+                .unwrap();
+
+        let compound = formal
+            .iter()
+            .filter(|corep| matches!(corep.label.as_str(), "P6" | "P7"))
+            .collect::<Vec<_>>();
+        assert_eq!(compound.len(), 2);
+        assert!(compound.iter().all(|corep| {
+            corep
+                .characters
+                .iter()
+                .flatten()
+                .any(|character| character.im == 0.0 && character.re.abs() == CHARACTER_TWO_SQRT_2)
+        }));
     }
 
     #[test]
