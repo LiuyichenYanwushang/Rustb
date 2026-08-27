@@ -1833,6 +1833,129 @@ mod tests {
         model
     }
 
+    fn scalar_hall_orbit_model(uni_number: usize, base: [f64; 3]) -> Model<false, 3, NoRMatrix> {
+        let subgroup = cryspglib::irrep::corep::identify_unitary_subgroup_with_hall(uni_number)
+            .expect("the regression group must expose its unitary Hall setting");
+        let mut orbit = Vec::<[f64; 3]>::new();
+        for operation in subgroup
+            .ops_from_hall
+            .operations
+            .iter()
+            .filter(|operation| !operation.time_reversal)
+        {
+            let image = std::array::from_fn(|row| {
+                (0..3)
+                    .map(|column| f64::from(operation.rotation[row][column]) * base[column])
+                    .sum::<f64>()
+                    + operation.translation[row]
+            });
+            let reduced = image.map(|value| value.rem_euclid(1.0));
+            if !orbit.iter().any(|position| {
+                position
+                    .iter()
+                    .zip(reduced)
+                    .all(|(left, right)| (left - right).abs() < 1e-7)
+            }) {
+                orbit.push(reduced);
+            }
+        }
+        let positions = Array2::from_shape_fn((orbit.len(), 3), |(site, axis)| orbit[site][axis]);
+        let atoms = positions
+            .outer_iter()
+            .enumerate()
+            .map(|(index, position)| {
+                Atom::with_orbitals(position.to_owned(), AtomType::H, [OrbitalId::new(index)])
+            })
+            .collect();
+        let mut model = Model::tb_model(Array2::eye(3), positions, Some(atoms)).unwrap();
+        for index in 0..orbit.len() {
+            model.set_hop(
+                0.31,
+                index,
+                (index + 1) % orbit.len(),
+                &array![0_isize, 0, 0],
+                None,
+            );
+            model.set_hop(
+                0.17,
+                index,
+                (index + 3) % orbit.len(),
+                &array![0_isize, 0, 0],
+                None,
+            );
+        }
+        model
+    }
+
+    fn assert_repeated_compound_orbit_labels(
+        uni_number: usize,
+        spacegroup_number: usize,
+        expected_site_count: usize,
+        expected_labels: &[&str],
+    ) {
+        let model = scalar_hall_orbit_model(uni_number, [0.1, 0.0, 0.25]);
+        assert_eq!(model.nsta(), expected_site_count);
+        let target = model
+            .magnetic_crystal_symmetry_from_atoms(
+                &crate::crystal_symmetry::SymmetryParameters::default(),
+            )
+            .unwrap();
+        assert_eq!(target.spacegroup_number, spacegroup_number);
+        assert_eq!(target.uni_number, uni_number);
+        let symmetric = model
+            .symmetrize_hamiltonian(
+                &target,
+                &ScalarSiteBasis,
+                &HamiltonianSymmetrizationParameters::default(),
+            )
+            .unwrap();
+        let report = symmetric
+            .calculate_irrep_for_group(&target, &ScalarSiteBasis, None)
+            .unwrap();
+        assert!(report.target_hamiltonian_compatible, "{report}");
+        let point = report
+            .high_symmetry_kpoints
+            .iter()
+            .find(|point| point.label == "P")
+            .expect("the cubic regression group must expose its P point");
+        let mut labels = point
+            .bands
+            .iter()
+            .map(|band| band.label.as_str())
+            .collect::<Vec<_>>();
+        labels.sort_unstable();
+        let mut expected_labels = expected_labels.to_vec();
+        expected_labels.sort_unstable();
+        assert_eq!(labels, expected_labels, "{report}");
+        for band in &point.bands {
+            assert!(band.is_identified(), "{report}");
+            assert!(
+                band.characters.iter().all(|character| {
+                    character.value.is_none_or(|value| value.im.abs() < 1e-10)
+                }),
+                "{} must have a realified character row",
+                band.label
+            );
+            let unitary_order = band
+                .characters
+                .iter()
+                .filter(|character| !character.time_reversal)
+                .count();
+            let character_norm = band
+                .characters
+                .iter()
+                .filter_map(|character| character.value)
+                .map(|character| character.norm_sqr())
+                .sum::<f64>();
+            assert!(
+                (character_norm - 2.0 * unitary_order as f64).abs() < 1e-8,
+                "{} has character norm {character_norm}, expected {}",
+                band.label,
+                2 * unitary_order
+            );
+        }
+    }
+
     fn i4m_scalar_cycle_model() -> Model<false, 3, NoRMatrix> {
         let base_positions = [
             [0.1, 0.2, 0.3],
@@ -2323,6 +2446,16 @@ mod tests {
                 band.label
             );
         }
+    }
+
+    #[test]
+    fn sg199_repeated_compound_coreps_match_general_orbit() {
+        assert_repeated_compound_orbit_labels(1515, 199, 12, &["P1P1", "P2P2", "P3P3"]);
+    }
+
+    #[test]
+    fn sg220_repeated_compound_coreps_match_general_orbit() {
+        assert_repeated_compound_orbit_labels(1592, 220, 24, &["P1P1", "P2P2", "P3P3", "P3P3"]);
     }
 
     #[test]
