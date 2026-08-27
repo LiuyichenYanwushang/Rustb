@@ -921,6 +921,20 @@ enum ScalarCompoundCharacterKind {
     DistinctComponentSum,
 }
 
+/// Whether an ISO-IR compound Miller--Love label repeats one constituent.
+///
+/// Compound scalar labels concatenate their two CIR constituent labels.  A
+/// repeated label such as `P2P2` denotes the synthesized conjugate/star-arm
+/// copy of the same constituent, whereas `H1H2` names two distinct
+/// constituents.  The raw CIR rows of a repeated label need not look
+/// conjugate in the selected data-Hall convention, so their numerical values
+/// alone cannot safely distinguish these cases.
+fn compound_label_repeats_constituent(label: &str) -> bool {
+    let bytes = label.as_bytes();
+    let midpoint = bytes.len() / 2;
+    !bytes.is_empty() && bytes.len().is_multiple_of(2) && bytes[..midpoint] == bytes[midpoint..]
+}
+
 fn scalar_cir_character(component: &[f64], character_index: usize) -> Option<Complex64> {
     let value = Complex64::new(
         *component.get(2 * character_index)?,
@@ -958,6 +972,14 @@ fn scalar_compound_character_kind(
                 operation_count
             ),
         });
+    }
+    // ISO-IR explicitly identifies these records as repeated constituents.
+    // Their second stored CIR row can use a different star-arm convention
+    // and may even be character-orthogonal to the first (SG 199 P2P2 is a
+    // concrete example).  The physical real selected-arm trace is therefore
+    // chi + chi* rather than the literal sum of the two stored rows.
+    if compound_label_repeats_constituent(irrep.ml) {
+        return Ok(ScalarCompoundCharacterKind::ConjugateRealification);
     }
     let (kx, ky, kz, denominator) = point.coords;
     if denominator == 0 {
@@ -2448,6 +2470,60 @@ mod tests {
     }
 
     #[test]
+    fn repeated_compound_constituents_are_realified() {
+        let cases = [
+            (1515_usize, 199_u8, "P", &["P1P1", "P2P2", "P3P3"][..]),
+            (1592, 220, "P", &["P1P1", "P2P2", "P3P3"][..]),
+        ];
+        for (uni, spacegroup, point_label, labels) in cases {
+            let summary =
+                cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni).unwrap();
+            assert_eq!(summary.unitary_sg, spacegroup);
+            let point = summary
+                .kpoints
+                .iter()
+                .find(|point| point.label == point_label)
+                .expect("the repeated-compound regression k point must exist");
+            let subgroup = cryspglib::irrep::corep::identify_unitary_subgroup_with_hall(uni)
+                .expect("the magnetic group must expose its unitary subgroup");
+            let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(&subgroup.ops_from_hall);
+            let irreps = cryspglib::irrep::query::irreps_of(spacegroup);
+            for label in labels {
+                assert!(
+                    compound_label_repeats_constituent(label),
+                    "{label} must encode the same constituent twice"
+                );
+                let irrep = irreps
+                    .iter()
+                    .find(|irrep| !irrep.spinor && irrep.ml == *label)
+                    .expect("the repeated compound source must exist");
+                let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
+                    &h_seitz,
+                    irrep.pir_rotations(),
+                    irrep.pir_translations(),
+                )
+                .expect("unitary operations must map to the compound PIR table");
+                let components = [irrep.cir_component_chars(0), irrep.cir_component_chars(1)];
+                assert_eq!(
+                    scalar_compound_character_kind(
+                        &components,
+                        irrep,
+                        point,
+                        &subgroup.ops_from_hall,
+                        &h_to_irrep,
+                    )
+                    .unwrap(),
+                    ScalarCompoundCharacterKind::ConjugateRealification,
+                    "UNI {uni} {label} must use the repeated constituent, not sum two stored star arms"
+                );
+            }
+        }
+        assert!(!compound_label_repeats_constituent("H1H2"));
+        assert!(!compound_label_repeats_constituent("GM2+GM3+"));
+        assert!(compound_label_repeats_constituent("R1+R1+"));
+    }
+
+    #[test]
     fn known_real_distinguishing_compound_records_use_component_sums() {
         let targets = [
             (46_u8, "W1W2"),
@@ -2455,19 +2531,12 @@ mod tests {
             (97, "P3P4"),
             (107, "P3P4"),
             (108, "P1P2"),
-            (108, "P3P3"),
-            (108, "P4P4"),
             (120, "P1P2"),
             (178, "H1H2"),
             (179, "H1H2"),
             (182, "H1H2"),
-            (199, "P2P2"),
-            (206, "P2P2"),
             (209, "W3W4"),
             (219, "W3W4"),
-            (220, "P1P1"),
-            (220, "P2P2"),
-            (220, "P3P3"),
         ];
         let mut witnessed = std::collections::BTreeSet::new();
         for uni in 1..=1651 {
@@ -2506,6 +2575,10 @@ mod tests {
                         .iter()
                         .find(|irrep| !irrep.spinor && irrep.ml == label)
                         .expect("the compound source must exist in the unitary irrep table");
+                    assert!(
+                        !compound_label_repeats_constituent(irrep.ml),
+                        "a repeated constituent cannot exercise the distinct-component branch"
+                    );
                     let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
                         &h_seitz,
                         irrep.pir_rotations(),
