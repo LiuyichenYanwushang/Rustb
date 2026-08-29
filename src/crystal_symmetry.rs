@@ -11,7 +11,7 @@ use crate::model::{Model, RMatrixData};
 use cryspglib::irrep::corep::symmetry_operations_of;
 use cryspglib::irrep::magnetic_summary::{
     MagneticCharacterTableColumns, format_magnetic_character_table_with_columns,
-    magnetic_irrep_summary_by_uni,
+    magnetic_irrep_summary_by_uni_partial,
 };
 use cryspglib::irrep::query::{format_character_table, irreps_of, kpoints_of};
 use cryspglib::irrep::types::generated_data::SG_DATA_HALL;
@@ -329,6 +329,7 @@ impl MagneticCrystalSymmetry {
         self.ensure_database_symmetry_is_effective()?;
         let summary = self.corep_summary()?;
         summary
+            .summary
             .kpoints
             .iter()
             .map(|point| {
@@ -355,7 +356,11 @@ impl MagneticCrystalSymmetry {
     pub fn character_table_at(&self, label: &str, columns: MagneticTableColumns) -> Result<String> {
         self.ensure_database_symmetry_is_effective()?;
         let summary = self.corep_summary()?;
-        let mut matches = summary.kpoints.iter().filter(|point| point.label == label);
+        let mut matches = summary
+            .summary
+            .kpoints
+            .iter()
+            .filter(|point| point.label == label);
         let point = matches
             .next()
             .ok_or_else(|| TbError::InvalidCrystalSymmetryInput {
@@ -374,17 +379,36 @@ impl MagneticCrystalSymmetry {
                 MagneticCharacterTableColumns::ConjugacyClasses
             }
         };
-        Ok(format_magnetic_character_table_with_columns(point, columns))
+        let mut table = format_magnetic_character_table_with_columns(point, columns);
+        let unresolved = summary
+            .unresolved_coreps
+            .iter()
+            .filter(|failure| failure.k_label == label)
+            .collect::<Vec<_>>();
+        if !unresolved.is_empty() {
+            table.push_str("\n\nUnresolved source corepresentations:\n");
+            for failure in unresolved {
+                use std::fmt::Write as _;
+                let _ = writeln!(
+                    table,
+                    "- {} (spinor={}): {}",
+                    failure.source_irrep, failure.spinor, failure.reason
+                );
+            }
+        }
+        Ok(table)
     }
 
-    fn corep_summary(&self) -> Result<cryspglib::irrep::magnetic_summary::MagneticIrrepSummary> {
+    fn corep_summary(
+        &self,
+    ) -> Result<cryspglib::irrep::magnetic_summary::PartialMagneticIrrepSummary> {
         if self.uni_number == 0 {
             return Err(TbError::MagneticIrrepAnalysis {
                 uni: 0,
                 message: "the detected structure is non-magnetic".to_string(),
             });
         }
-        magnetic_irrep_summary_by_uni(self.uni_number).map_err(|error| {
+        magnetic_irrep_summary_by_uni_partial(self.uni_number).map_err(|error| {
             TbError::MagneticIrrepAnalysis {
                 uni: self.uni_number,
                 message: format!("{error:?}"),
@@ -1222,6 +1246,10 @@ mod tests {
             .character_table_at(label, MagneticTableColumns::Operations)
             .unwrap();
         assert!(table.contains("operation"));
+        assert!(
+            table.contains("Unresolved source corepresentations"),
+            "the partial table must disclose omitted compound sources: {table}"
+        );
     }
 
     #[test]

@@ -32,9 +32,9 @@ use crate::hamiltonian_symmetry::{
 };
 use crate::{Gauge, Model, RMatrixData};
 use cryspglib::irrep::magnetic_summary::{
-    MagneticKPointSummary, MagneticLittleGroupOperation, magnetic_irrep_summary_by_uni,
+    MagneticKPointSummary, UnresolvedMagneticCorep, magnetic_irrep_summary_by_uni_partial,
 };
-use cryspglib::irrep::types::IrrepRecord;
+use cryspglib::irrep::types::{CharacterViewError, IrrepRecord, SeitzOperation};
 use cryspglib::irrep::wigner::SettingTransform;
 use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, LeastSquaresSvd, UPLO};
@@ -54,13 +54,9 @@ pub struct IrrepCalculationOptions {
     pub degeneracy_relative: f64,
     /// Maximum normalized leakage of a transformed band subspace.
     pub subspace_tolerance: f64,
-    /// Maximum relative residual of the fitted character vector.
+    /// Maximum relative residual of the fitted band-character vector.
     ///
-    /// Some generated compound-CIR table entries currently carry about five
-    /// significant decimal digits.  The default `1e-5` accommodates that
-    /// source precision; requesting a substantially smaller value can reject
-    /// an otherwise exact symmetry classification until those upstream tables
-    /// are regenerated at higher precision.
+    /// This controls only the numerical band-character fitting residual.
     pub character_tolerance: f64,
     /// Tolerance for a fitted corep multiplicity to be a non-negative integer.
     pub integer_tolerance: f64,
@@ -313,6 +309,7 @@ struct PreparedKPoint {
     is_point: bool,
     operations: Vec<PointOperation>,
     formal_coreps: Vec<FormalCorep>,
+    unresolved_coreps: Vec<UnresolvedMagneticCorep>,
 }
 
 #[derive(Clone)]
@@ -440,11 +437,14 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                 message: format!("target magnetic-group identification failed: {error}"),
             })?;
         let uni = identification.uni_number;
-        let summary =
-            magnetic_irrep_summary_by_uni(uni).map_err(|error| TbError::MagneticIrrepAnalysis {
+        let partial_summary = magnetic_irrep_summary_by_uni_partial(uni).map_err(|error| {
+            TbError::MagneticIrrepAnalysis {
                 uni,
                 message: format!("{error:?}"),
-            })?;
+            }
+        })?;
+        let summary = partial_summary.summary;
+        let unresolved_coreps = partial_summary.unresolved_coreps;
 
         let input_to_standard = SettingTransform {
             basis: identification.transformation_matrix,
@@ -634,8 +634,19 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                 row_vector_times_matrix(canonical_coordinate, &input_to_data.basis);
             let operations =
                 map_point_operations(&point, &prepared_operations, operation_tolerance)?;
-            let formal_coreps =
-                prepare_formal_coreps::<SPIN>(summary.unitary_sg, &point, &subgroup.ops_from_hall)?;
+            let mut formal_coreps = prepare_formal_coreps::<SPIN>(summary.unitary_sg, &point)?;
+            let point_failures = unresolved_coreps
+                .iter()
+                .filter(|failure| failure.spinor == SPIN && failure.k_label == point.label)
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut unresolved_coreps = Vec::new();
+            for failure in point_failures {
+                match recover_complex_formal_corep::<SPIN>(summary.unitary_sg, &point, &failure)? {
+                    Some(corep) => formal_coreps.push(corep),
+                    None => unresolved_coreps.push(failure),
+                }
+            }
             points.push(PreparedKPoint {
                 summary: point,
                 canonical_coordinate,
@@ -643,6 +654,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                 is_point,
                 operations,
                 formal_coreps,
+                unresolved_coreps,
             });
         }
 
@@ -783,22 +795,26 @@ fn point_is_isolated(unitary_sg: u8, point: &MagneticKPointSummary) -> bool {
         })
 }
 
+fn source_record_matches(
+    irrep: &IrrepRecord,
+    source_sg: u8,
+    source_ml: &str,
+    source_spinor: bool,
+    unitary_sg: u8,
+    coords: (i8, i8, i8, i8),
+) -> bool {
+    irrep.sg == source_sg
+        && irrep.sg == unitary_sg
+        && irrep.ml == source_ml
+        && irrep.spinor == source_spinor
+        && (irrep.kx, irrep.ky, irrep.kz, irrep.kd) == coords
+}
+
 fn prepare_formal_coreps<const SPIN: bool>(
     unitary_sg: u8,
     point: &MagneticKPointSummary,
-    unitary_operations: &cryspglib::SymmetryOps,
 ) -> Result<Vec<FormalCorep>> {
     let irreps = cryspglib::irrep::query::irreps_of(unitary_sg);
-    let identity_rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-    let identity_column = point.operations.iter().position(|operation| {
-        !operation.time_reversal
-            && operation.rotation == identity_rotation
-            && operation
-                .translation
-                .iter()
-                .all(|value| (value - value.round()).abs() <= 1e-8)
-    });
-
     point
         .coreps
         .iter()
@@ -810,95 +826,105 @@ fn prepare_formal_coreps<const SPIN: bool>(
                     .all(|source| source.spinor == SPIN)
         })
         .map(|corep| {
-            let source_characters = corep
+            let expected_sources = corep_source_arity(corep.corep_type);
+            if corep.source_irreps.len() != expected_sources {
+                return Err(formal_corep_error(
+                    unitary_sg,
+                    point,
+                    &corep.label,
+                    None,
+                    format!(
+                        "corep type {:?} requires {expected_sources} source irreps, found {}",
+                        corep.corep_type,
+                        corep.source_irreps.len()
+                    ),
+                ));
+            }
+            let sources = corep
                 .source_irreps
                 .iter()
                 .map(|source| {
-                    let Some(irrep) = irreps
-                        .iter()
-                        .find(|irrep| irrep.ml == source.ml && irrep.spinor == SPIN)
-                    else {
-                        return Ok(None);
-                    };
-                    source_characters(irrep, point, unitary_operations)
-                })
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .collect::<Option<Vec<_>>>();
-
-            let (dimension, characters) = source_characters
-                .and_then(|source_characters| {
-                    let identity_column = identity_column?;
-                    let source_dimension = source_characters
-                        .iter()
-                        .map(|characters| characters[identity_column])
-                        .collect::<Option<Vec<_>>>()?
-                        .into_iter()
-                        .sum::<Complex64>();
-                    if source_dimension.im.abs() > 1e-7 || source_dimension.re <= 0.0 {
-                        return None;
+                    if source.spinor != SPIN {
+                        return Err(formal_corep_error(
+                            unitary_sg,
+                            point,
+                            &corep.label,
+                            Some(source.ml),
+                            format!(
+                                "source spinor={} disagrees with requested SPIN={SPIN}",
+                                source.spinor
+                            ),
+                        ));
                     }
-                    // With no anti-unitary little-group operation this is an
-                    // ordinary little-group representation.  The selected-arm
-                    // source characters therefore carry the authoritative
-                    // dimension.  Older cryspglib compound-CIR summaries can
-                    // retain the dimension of the full induced star here (for
-                    // example SG 76 R1R2: 4 instead of 2), even though their
-                    // selected-arm source characters are already [2, 0].
-                    let dimension = if point.antiunitary_order == 0 {
-                        let rounded = source_dimension.re.round();
-                        if rounded < 1.0 || (source_dimension.re - rounded).abs() > 1e-7 {
-                            return None;
-                        }
-                        rounded as usize
-                    } else {
-                        corep.dim
+                    let matches = irreps
+                        .iter()
+                        .filter(|irrep| {
+                            source_record_matches(
+                                irrep,
+                                source.sg,
+                                source.ml,
+                                source.spinor,
+                                unitary_sg,
+                                point.coords,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let [irrep] = matches.as_slice() else {
+                        return Err(formal_corep_error(
+                            unitary_sg,
+                            point,
+                            &corep.label,
+                            Some(source.ml),
+                            format!(
+                                "source lookup matched {} records for SG {} at the exact k tuple {:?}",
+                                matches.len(),
+                                source.sg,
+                                point.coords
+                            ),
+                        ));
                     };
-                    let scale = dimension as f64 / source_dimension.re;
-                    if !scale.is_finite() {
-                        return None;
+                    let typed = typed_source_characters(*irrep, point, unitary_sg, &corep.label)?;
+                    if source.dim as usize != typed.dimension {
+                        return Err(formal_corep_error(
+                            unitary_sg,
+                            point,
+                            &corep.label,
+                            Some(source.ml),
+                            format!(
+                                "summary source dimension {} disagrees with typed dimension {}",
+                                source.dim, typed.dimension
+                            ),
+                        ));
                     }
-                    Some((
-                        dimension,
-                        (0..point.operations.len())
-                            .map(|column| {
-                                if point.operations[column].time_reversal {
-                                    None
-                                } else {
-                                    source_characters
-                                        .iter()
-                                        .map(|characters| characters[column])
-                                        .collect::<Option<Vec<_>>>()
-                                        .map(|values| scale * values.into_iter().sum::<Complex64>())
-                                }
-                            })
-                            .collect::<Vec<_>>(),
-                    ))
+                    Ok(typed)
                 })
-                .unwrap_or_else(|| {
-                    // Older generated irrep tables may not retain enough
-                    // operation metadata to recover an imaginary part.  The
-                    // magnetic summary remains a safe real-valued fallback;
-                    // rank/residual checks will emit ??? if that information
-                    // is insufficient to distinguish valid coreps.
-                    (
-                        corep.dim,
-                        point
-                            .operations
-                            .iter()
-                            .map(|operation| {
-                                (!operation.time_reversal).then(|| {
-                                    Complex64::new(
-                                        canonicalize_tabulated_character_component(
-                                            corep.characters[operation.column],
-                                        ),
-                                        0.0,
-                                    )
-                                })
-                            })
-                            .collect(),
-                    )
-                });
+                .collect::<Result<Vec<_>>>()?;
+            let (dimension, factor) = corep_shape(
+                corep.corep_type,
+                &sources.iter().map(|source| source.dimension).collect::<Vec<_>>(),
+            )
+            .map_err(|detail| {
+                formal_corep_error(unitary_sg, point, &corep.label, None, detail)
+            })?;
+            if dimension == 0 || corep.dim != dimension {
+                return Err(formal_corep_error(
+                    unitary_sg,
+                    point,
+                    &corep.label,
+                    None,
+                    format!(
+                        "corep dimension {} disagrees with typed expected dimension {}",
+                        corep.dim, dimension
+                    ),
+                ));
+            }
+            let characters = combine_formal_characters(
+                corep.corep_type,
+                &sources,
+                &point.operations,
+                factor,
+            )
+            .map_err(|detail| formal_corep_error(unitary_sg, point, &corep.label, None, detail))?;
             Ok(FormalCorep {
                 label: corep.label.clone(),
                 dimension,
@@ -908,485 +934,338 @@ fn prepare_formal_coreps<const SPIN: bool>(
         .collect()
 }
 
-fn source_characters(
-    irrep: &IrrepRecord,
+fn recover_complex_formal_corep<const SPIN: bool>(
+    unitary_sg: u8,
     point: &MagneticKPointSummary,
-    unitary_operations: &cryspglib::SymmetryOps,
-) -> Result<Option<Vec<Option<Complex64>>>> {
-    if irrep.spinor {
-        Ok(spinor_source_characters(irrep, point))
-    } else {
-        scalar_source_characters(irrep, point, unitary_operations)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScalarCompoundCharacterKind {
-    ConjugateRealification,
-    DistinctComponentSum,
-}
-
-/// Whether an ISO-IR compound Miller--Love label repeats one constituent.
-///
-/// Compound scalar labels concatenate their two CIR constituent labels.  A
-/// repeated label such as `P2P2` denotes the synthesized conjugate/star-arm
-/// copy of the same constituent, whereas `H1H2` names two distinct
-/// constituents.  The raw CIR rows of a repeated label need not look
-/// conjugate in the selected data-Hall convention, so their numerical values
-/// alone cannot safely distinguish these cases.
-fn compound_label_repeats_constituent(label: &str) -> bool {
-    let bytes = label.as_bytes();
-    let midpoint = bytes.len() / 2;
-    !bytes.is_empty() && bytes.len().is_multiple_of(2) && bytes[..midpoint] == bytes[midpoint..]
-}
-
-const CHARACTER_INV_SQRT_2: f64 = std::f64::consts::FRAC_1_SQRT_2;
-const CHARACTER_SQRT_2: f64 = std::f64::consts::SQRT_2;
-const CHARACTER_TWO_SQRT_2: f64 = 2.0 * std::f64::consts::SQRT_2;
-const CHARACTER_SQRT_3_OVER_2: f64 = 0.866_025_403_784_438_6;
-const CHARACTER_SQRT_3: f64 = 1.732_050_807_568_877_2;
-
-/// Restore exact algebraic character values rounded in legacy ISO-IR tables.
-///
-/// This is deliberately a small whitelist of crystallographic character
-/// magnitudes.  Each tolerance only covers the decimal spellings found in the
-/// generated tables (for example `0.70711` and `1.41422`); unrelated finite
-/// values remain untouched so malformed source data is not silently hidden.
-fn canonicalize_tabulated_character_component(value: f64) -> f64 {
-    if !value.is_finite() {
-        return value;
-    }
-    const MAGNITUDES_AND_TOLERANCES: [(f64, f64); 6] = [
-        (0.5, 1.0e-8),
-        (CHARACTER_INV_SQRT_2, 3.3e-6),
-        (CHARACTER_SQRT_3_OVER_2, 5.5e-6),
-        (CHARACTER_SQRT_2, 6.5e-6),
-        (CHARACTER_SQRT_3, 1.1e-5),
-        (CHARACTER_TWO_SQRT_2, 1.0e-9),
-    ];
-
-    let magnitude = value.abs();
-    MAGNITUDES_AND_TOLERANCES
-        .iter()
-        .find_map(|&(canonical, tolerance)| {
-            ((magnitude - canonical).abs() <= tolerance).then_some(value.signum() * canonical)
-        })
-        .unwrap_or(value)
-}
-
-fn scalar_cir_character(component: &[f64], character_index: usize) -> Option<Complex64> {
-    let value = Complex64::new(
-        canonicalize_tabulated_character_component(*component.get(2 * character_index)?),
-        canonicalize_tabulated_character_component(*component.get(2 * character_index + 1)?),
-    );
-    (value.re.is_finite() && value.im.is_finite()).then_some(value)
-}
-
-fn scalar_compound_character_kind(
-    components: &[&[f64]],
-    irrep: &IrrepRecord,
-    point: &MagneticKPointSummary,
-    unitary_operations: &cryspglib::SymmetryOps,
-    h_to_irrep: &[usize],
-) -> Result<ScalarCompoundCharacterKind> {
-    let [first, second] = components else {
-        return Err(TbError::IrrepCalculation {
-            message: format!(
-                "compound source {} at {} has {} CIR components instead of two scalar components",
-                irrep.ml,
-                point.label,
-                components.len()
-            ),
-        });
-    };
-    let pir_translations = irrep.pir_translations();
-    let operation_count = first.len() / 2;
-    if pir_translations.len() != 3 * operation_count {
-        return Err(TbError::IrrepCalculation {
-            message: format!(
-                "compound source {} at {} has {} PIR translation values for {} operations",
-                irrep.ml,
-                point.label,
-                pir_translations.len(),
-                operation_count
-            ),
-        });
-    }
-    // ISO-IR explicitly identifies these records as repeated constituents.
-    // Their second stored CIR row can use a different star-arm convention
-    // and may even be character-orthogonal to the first (SG 199 P2P2 is a
-    // concrete example).  The physical real selected-arm trace is therefore
-    // chi + chi* rather than the literal sum of the two stored rows.
-    if compound_label_repeats_constituent(irrep.ml) {
-        return Ok(ScalarCompoundCharacterKind::ConjugateRealification);
-    }
-    let (kx, ky, kz, denominator) = point.coords;
-    if denominator == 0 {
-        return Err(TbError::IrrepCalculation {
-            message: format!(
-                "compound source {} at {} has a zero k-vector denominator",
-                irrep.ml, point.label
-            ),
-        });
-    }
-    let k = [f64::from(kx), f64::from(ky), f64::from(kz)];
-    let denominator = f64::from(denominator);
-    let mut compared_phase_real_operation = false;
-    for operation in point
-        .operations
-        .iter()
-        .filter(|operation| !operation.time_reversal)
-    {
-        let h_index =
-            find_operation_index(&unitary_operations.operations, operation).ok_or_else(|| {
-                TbError::IrrepCalculation {
-                    message: format!(
-                        "compound source {} at {} cannot map unitary character column {}",
-                        irrep.ml, point.label, operation.column
-                    ),
-                }
-            })?;
-        let character_index =
-            *h_to_irrep
-                .get(h_index)
-                .ok_or_else(|| TbError::IrrepCalculation {
-                    message: format!(
-                        "compound source {} at {} has no PIR mapping for unitary operation {}",
-                        irrep.ml, point.label, h_index
-                    ),
-                })?;
-        let translation: [f64; 3] =
-            std::array::from_fn(|axis| pir_translations[3 * character_index + axis]);
-        let phase_argument = -std::f64::consts::TAU
-            * k.iter()
-                .zip(translation)
-                .map(|(component, translation)| component * translation)
-                .sum::<f64>()
-            / denominator;
-        // Both members of a conjugate realification have conjugate
-        // characters only when the common Bloch phase is real.  At a complex
-        // centering/screw phase, old generated tables can align the second
-        // member with the same k arm instead of the conjugate arm, so those
-        // columns must not decide which kind of compound record this is.
-        if phase_argument.sin().abs() > 1e-7 {
-            continue;
-        }
-        compared_phase_real_operation = true;
-        let first_value = scalar_cir_character(first, character_index).ok_or_else(|| {
-            TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} has incomplete or non-finite first CIR component",
-                    irrep.ml, point.label
-                ),
-            }
-        })?;
-        let second_value = scalar_cir_character(second, character_index).ok_or_else(|| {
-            TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} has incomplete or non-finite second CIR component",
-                    irrep.ml, point.label
-                ),
-            }
-        })?;
-        // A genuinely distinct pair is exposed by a real-valued character
-        // column (for example +1 and -1).  Some legacy CIR rows instead put
-        // the same, contaminated k-arm value in both components, with
-        // residual imaginary parts such as 0.314159 i.  Treating that as a
-        // distinct pair would copy the contamination into the formal
-        // character table.  Non-real columns therefore cannot establish the
-        // distinct-component branch; they remain usable only after the
-        // record has been classified by an independent real column.
-        if first_value.im.abs() <= 1e-6
-            && second_value.im.abs() <= 1e-6
-            && (second_value - first_value.conj()).norm() > 1e-6
-        {
-            return Ok(ScalarCompoundCharacterKind::DistinctComponentSum);
-        }
-    }
-    if !compared_phase_real_operation {
-        return Err(TbError::IrrepCalculation {
-            message: format!(
-                "compound source {} at {} has no phase-real unitary operation for CIR classification",
-                irrep.ml, point.label
-            ),
-        });
-    }
-    Ok(ScalarCompoundCharacterKind::ConjugateRealification)
-}
-
-fn scalar_source_characters(
-    irrep: &IrrepRecord,
-    point: &MagneticKPointSummary,
-    unitary_operations: &cryspglib::SymmetryOps,
-) -> Result<Option<Vec<Option<Complex64>>>> {
-    let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(unitary_operations);
-    let is_compound = irrep.cir_component_count() > 0;
-    let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
-        &h_seitz,
-        irrep.pir_rotations(),
-        irrep.pir_translations(),
-    );
-    let Some(h_to_irrep) = h_to_irrep else {
-        if is_compound {
-            return Err(TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} cannot map unitary operations to its PIR table",
-                    irrep.ml, point.label
-                ),
-            });
-        }
+    failure: &UnresolvedMagneticCorep,
+) -> Result<Option<FormalCorep>> {
+    let Some(corep_type) = failure.classified_type else {
         return Ok(None);
     };
-    let (little_real, little_imag) = irrep.scalar_little_characters();
-    let use_selected_arm = !little_real.is_empty() && little_real.len() == little_imag.len();
-    let compound_components = if !use_selected_arm && is_compound {
-        if irrep.cir_component_count() != 2 {
-            return Err(TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} has {} CIR components instead of two scalar components",
-                    irrep.ml,
-                    point.label,
-                    irrep.cir_component_count()
-                ),
-            });
-        }
-        Some(
-            (0..irrep.cir_component_count())
-                .map(|component| {
-                    let characters = irrep.cir_component_chars(component);
-                    (characters.len() == 2 * h_seitz.len())
-                        .then_some(characters)
-                        .ok_or_else(|| TbError::IrrepCalculation {
-                            message: format!(
-                                "compound source {} at {} has {} CIR character values for {} unitary operations",
-                                irrep.ml,
-                                point.label,
-                                characters.len(),
-                                h_seitz.len()
-                            ),
-                        })
-                })
-                .collect::<Result<Vec<_>>>()?,
-        )
-    } else {
-        None
-    };
-    let compound_character_kind = compound_components
-        .as_deref()
-        .map(|components| {
-            scalar_compound_character_kind(
-                components,
+    if !matches!(
+        corep_type,
+        cryspglib::irrep::corep::CorepType::A | cryspglib::irrep::corep::CorepType::B
+    ) {
+        return Ok(None);
+    }
+    let matches = cryspglib::irrep::query::irreps_of(unitary_sg)
+        .iter()
+        .filter(|irrep| {
+            source_record_matches(
                 irrep,
-                point,
-                unitary_operations,
-                &h_to_irrep,
+                failure.sg,
+                &failure.source_irrep,
+                failure.spinor,
+                unitary_sg,
+                point.coords,
             )
         })
-        .transpose()?;
-    if let Some(components) = &compound_components {
-        let identity_h = h_seitz
-            .iter()
-            .position(|operation| {
-                operation.rot == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-                    && operation
-                        .trans
-                        .iter()
-                        .all(|value| (*value - value.round()).abs() <= 1e-8)
-            })
-            .ok_or_else(|| TbError::IrrepCalculation {
-                message: format!(
-                    "unitary operation table for compound source {} at {} has no identity",
-                    irrep.ml, point.label
-                ),
-            })?;
-        let identity_character =
-            *h_to_irrep
-                .get(identity_h)
-                .ok_or_else(|| TbError::IrrepCalculation {
-                    message: format!(
-                        "compound source {} at {} has no PIR identity mapping",
-                        irrep.ml, point.label
-                    ),
-                })?;
-        let component_identities = components
-            .iter()
-            .map(|characters| scalar_cir_character(characters, identity_character))
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} has incomplete CIR identity data",
-                    irrep.ml, point.label
-                ),
-            })?;
-        let first_identity = component_identities[0];
-        if !first_identity.re.is_finite()
-            || !first_identity.im.is_finite()
-            || first_identity.im.abs() > 1e-7
-            || component_identities.iter().any(|identity| {
-                !identity.re.is_finite()
-                    || !identity.im.is_finite()
-                    || identity.im.abs() > 1e-7
-                    || (identity.re - first_identity.re).abs() > 1e-7
-            })
-        {
-            return Err(TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} has inconsistent CIR identity characters",
-                    irrep.ml, point.label
-                ),
-            });
-        }
-        let selected_dimension = 2.0 * first_identity.re;
-        let rounded = selected_dimension.round();
-        if rounded < 1.0 || (selected_dimension - rounded).abs() > 1e-7 {
-            return Err(TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} has invalid selected-arm dimension {}",
-                    irrep.ml, point.label, selected_dimension
-                ),
-            });
-        }
-        let selected_dimension = rounded as usize;
-        let full_dimension = usize::from(irrep.dim);
-        if !full_dimension.is_multiple_of(selected_dimension) {
-            return Err(TbError::IrrepCalculation {
-                message: format!(
-                    "compound source {} at {} has full dimension {} incompatible with selected-arm dimension {}",
-                    irrep.ml, point.label, full_dimension, selected_dimension
-                ),
-            });
-        }
-    }
-    let characters = point
-        .operations
-        .iter()
-        .map(|operation| {
-            if operation.time_reversal {
-                return Some(None);
-            }
-            let h_index = find_operation_index(&unitary_operations.operations, operation)?;
-            let character_index = *h_to_irrep.get(h_index)?;
-            let value = if use_selected_arm {
-                Complex64::new(
-                    canonicalize_tabulated_character_component(*little_real.get(character_index)?),
-                    canonicalize_tabulated_character_component(*little_imag.get(character_index)?),
-                )
-            } else if let Some(components) = &compound_components {
-                let first = components.first()?;
-                let second = components.get(1)?;
-                let first_value = scalar_cir_character(first, character_index)?;
-                let second_value = scalar_cir_character(second, character_index)?;
-                match compound_character_kind? {
-                    // A conjugate realification has trace chi + chi*.  Use
-                    // the first component so legacy tables whose second arm
-                    // carries the wrong centered-translation phase remain
-                    // recoverable.
-                    ScalarCompoundCharacterKind::ConjugateRealification => {
-                        Complex64::new(2.0 * first_value.re, 0.0)
-                    }
-                    // Some compound PIRs instead combine two distinct real
-                    // little-group representations.  Their selected-arm
-                    // trace is the actual component sum; replacing it by
-                    // 2 Re(chi_1) corrupts characters such as SG 182 H1H2.
-                    ScalarCompoundCharacterKind::DistinctComponentSum => first_value + second_value,
-                }
-            } else {
-                Complex64::new(
-                    canonicalize_tabulated_character_component(
-                        *irrep.characters().get(character_index)?,
-                    ),
-                    0.0,
-                )
-            };
-            Some(Some(value))
-        })
-        .collect::<Option<Vec<_>>>();
-    if is_compound && characters.is_none() {
-        return Err(TbError::IrrepCalculation {
-            message: format!(
-                "compound source {} at {} has incomplete selected-arm CIR characters",
-                irrep.ml, point.label
+        .collect::<Vec<_>>();
+    let [irrep] = matches.as_slice() else {
+        return Err(formal_corep_error(
+            unitary_sg,
+            point,
+            &failure.source_irrep,
+            Some(&failure.source_irrep),
+            format!(
+                "classified complex source lookup matched {} records instead of one",
+                matches.len()
             ),
-        });
+        ));
+    };
+    if irrep.spinor != SPIN {
+        return Ok(None);
     }
-    Ok(characters)
+    let source = typed_source_characters(*irrep, point, unitary_sg, &failure.source_irrep)?;
+    let (dimension, factor) = corep_shape(corep_type, &[source.dimension]).map_err(|detail| {
+        formal_corep_error(
+            unitary_sg,
+            point,
+            &failure.source_irrep,
+            Some(&failure.source_irrep),
+            detail,
+        )
+    })?;
+    if failure.classified_dimension != Some(dimension) {
+        return Err(formal_corep_error(
+            unitary_sg,
+            point,
+            &failure.source_irrep,
+            Some(&failure.source_irrep),
+            format!(
+                "classified dimension {:?} disagrees with typed expected dimension {dimension}",
+                failure.classified_dimension
+            ),
+        ));
+    }
+    let characters = combine_formal_characters(corep_type, &[source], &point.operations, factor)
+        .map_err(|detail| {
+            formal_corep_error(
+                unitary_sg,
+                point,
+                &failure.source_irrep,
+                Some(&failure.source_irrep),
+                detail,
+            )
+        })?;
+    Ok(Some(FormalCorep {
+        label: failure.source_irrep.clone(),
+        dimension,
+        characters,
+    }))
 }
 
-fn spinor_source_characters(
-    irrep: &IrrepRecord,
-    point: &MagneticKPointSummary,
-) -> Option<Vec<Option<Complex64>>> {
-    let (rotations, translations, _) = irrep.spin_ops();
-    let local_operation_indices = irrep.spin_lg_op_indices();
-    let real = irrep.characters();
-    let imaginary = irrep.spin_character_imag();
-    point
-        .operations
+fn corep_source_arity(corep_type: cryspglib::irrep::corep::CorepType) -> usize {
+    match corep_type {
+        cryspglib::irrep::corep::CorepType::A | cryspglib::irrep::corep::CorepType::B => 1,
+        cryspglib::irrep::corep::CorepType::C => 2,
+    }
+}
+
+fn corep_shape(
+    corep_type: cryspglib::irrep::corep::CorepType,
+    source_dimensions: &[usize],
+) -> std::result::Result<(usize, usize), String> {
+    let expected_sources = corep_source_arity(corep_type);
+    if source_dimensions.len() != expected_sources {
+        return Err(format!(
+            "corep type {corep_type:?} requires {expected_sources} source irreps, found {}",
+            source_dimensions.len()
+        ));
+    }
+    let sum_dimension = source_dimensions
         .iter()
-        .map(|operation| {
+        .try_fold(0usize, |sum, dimension| {
+            sum.checked_add(*dimension)
+                .ok_or_else(|| "typed source dimensions overflowed usize".to_string())
+        })?;
+    let (dimension, factor) = match corep_type {
+        cryspglib::irrep::corep::CorepType::A | cryspglib::irrep::corep::CorepType::C => {
+            (sum_dimension, 1)
+        }
+        cryspglib::irrep::corep::CorepType::B => sum_dimension
+            .checked_mul(2)
+            .map(|dimension| (dimension, 2))
+            .ok_or_else(|| "Type-B corep dimension overflowed usize".to_string())?,
+    };
+    if dimension == 0 {
+        return Err("corep has zero typed dimension".to_string());
+    }
+    Ok((dimension, factor))
+}
+
+fn combine_formal_characters(
+    corep_type: cryspglib::irrep::corep::CorepType,
+    sources: &[TypedSourceCharacters],
+    operations: &[cryspglib::irrep::magnetic_summary::MagneticLittleGroupOperation],
+    factor: usize,
+) -> std::result::Result<Vec<Option<Complex64>>, String> {
+    if sources.len() != corep_source_arity(corep_type) {
+        return Err(format!(
+            "corep type {corep_type:?} requires {} typed source rows, found {}",
+            corep_source_arity(corep_type),
+            sources.len()
+        ));
+    }
+    if sources
+        .iter()
+        .any(|source| source.values.len() != operations.len())
+    {
+        return Err("typed source and magnetic operation lengths differ".to_string());
+    }
+    operations
+        .iter()
+        .enumerate()
+        .map(|(column, operation)| {
             if operation.time_reversal {
-                return Some(None);
+                return Ok(None);
             }
-            let spin_operation_index =
-                find_flat_operation_index(rotations, translations, operation)?;
-            let local_index = local_operation_indices
-                .iter()
-                .position(|index| usize::from(*index) == spin_operation_index)?;
-            let real = canonicalize_tabulated_character_component(*real.get(local_index)?);
-            let imaginary = canonicalize_tabulated_character_component(
-                imaginary.get(local_index).copied().unwrap_or(0.0),
-            );
-            Some(Some(Complex64::new(real, imaginary)))
+            let mut value = Complex64::new(0.0, 0.0);
+            for source in sources {
+                value += source.values[column].ok_or_else(|| {
+                    format!("unitary character column {column} has no typed source value")
+                })?;
+            }
+            value *= factor as f64;
+            if !value.re.is_finite() || !value.im.is_finite() {
+                return Err(format!(
+                    "unitary character column {column} is non-finite: {value}"
+                ));
+            }
+            Ok(Some(value))
         })
         .collect()
 }
 
-fn find_operation_index(
-    operations: &[cryspglib::SymmetryOp],
-    target: &MagneticLittleGroupOperation,
-) -> Option<usize> {
-    let matches = operations
-        .iter()
-        .enumerate()
-        .filter(|(_, operation)| {
-            !operation.time_reversal
-                && operation.rotation == target.rotation
-                && translations_equivalent(operation.translation, target.translation, 1e-7)
-        })
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    let [index] = matches.as_slice() else {
-        return None;
-    };
-    Some(*index)
+struct TypedSourceCharacters {
+    dimension: usize,
+    values: Vec<Option<Complex64>>,
 }
 
-fn find_flat_operation_index(
-    rotations: &[i32],
-    translations: &[f64],
-    target: &MagneticLittleGroupOperation,
-) -> Option<usize> {
-    let count = rotations.len() / 9;
-    if translations.len() < 3 * count {
-        return None;
+fn formal_corep_error(
+    unitary_sg: u8,
+    point: &MagneticKPointSummary,
+    corep_label: &str,
+    source: Option<&str>,
+    detail: String,
+) -> TbError {
+    TbError::IrrepCalculation {
+        message: format!(
+            "SG {unitary_sg} k-point {} corep {}{}: {detail}",
+            point.label,
+            corep_label,
+            source.map_or_else(String::new, |source| format!(" source {source}"))
+        ),
     }
-    let matches = (0..count)
-        .filter(|index| {
-            let rotation_offset = 9 * index;
-            let translation_offset = 3 * index;
-            let rotation_matches = (0..3).all(|row| {
-                (0..3).all(|column| {
-                    rotations[rotation_offset + 3 * row + column] == target.rotation[row][column]
-                })
-            });
-            let translation = std::array::from_fn(|axis| translations[translation_offset + axis]);
-            rotation_matches && translations_equivalent(translation, target.translation, 1e-7)
-        })
-        .collect::<Vec<_>>();
-    let [index] = matches.as_slice() else {
-        return None;
+}
+
+fn typed_source_characters(
+    irrep: &'static IrrepRecord,
+    point: &MagneticKPointSummary,
+    unitary_sg: u8,
+    corep_label: &str,
+) -> Result<TypedSourceCharacters> {
+    let (dimension, entries): (usize, Vec<(SeitzOperation, Complex64)>) = if irrep.spinor {
+        let row = irrep.spinor_selected_arm_view().map_err(|error| {
+            formal_corep_error(
+                unitary_sg,
+                point,
+                corep_label,
+                Some(irrep.ml),
+                format!("typed spinor row failed: {error}"),
+            )
+        })?;
+        if row.values().len() != row.operations().len() {
+            return Err(formal_corep_error(
+                unitary_sg,
+                point,
+                corep_label,
+                Some(irrep.ml),
+                "typed spinor values and operations have different lengths".to_string(),
+            ));
+        }
+        (
+            row.dimension(),
+            row.values()
+                .iter()
+                .copied()
+                .zip(row.operations().iter().map(|operation| operation.seitz))
+                .map(|(value, operation)| (operation, value))
+                .collect(),
+        )
+    } else {
+        let row = match irrep.ordinary_scalar_selected_arm_block_trace() {
+            Ok(row) => row,
+            Err(CharacterViewError::NotApplicable) => irrep
+                .compound_selected_arm_view()
+                .map_err(|error| {
+                    formal_corep_error(
+                        unitary_sg,
+                        point,
+                        corep_label,
+                        Some(irrep.ml),
+                        format!("typed compound row failed: {error}"),
+                    )
+                })?
+                .block_trace()
+                .clone(),
+            Err(error) => {
+                return Err(formal_corep_error(
+                    unitary_sg,
+                    point,
+                    corep_label,
+                    Some(irrep.ml),
+                    format!("typed scalar row failed: {error}"),
+                ));
+            }
+        };
+        if row.values().len() != row.operations().len() {
+            return Err(formal_corep_error(
+                unitary_sg,
+                point,
+                corep_label,
+                Some(irrep.ml),
+                "typed scalar values and operations have different lengths".to_string(),
+            ));
+        }
+        (
+            row.dimension(),
+            row.values()
+                .iter()
+                .copied()
+                .zip(row.operations().iter().copied())
+                .map(|(value, operation)| (operation, value))
+                .collect(),
+        )
     };
-    Some(*index)
+    if dimension == 0
+        || entries.iter().any(|(operation, value)| {
+            !value.re.is_finite()
+                || !value.im.is_finite()
+                || operation.translation.iter().any(|value| !value.is_finite())
+        })
+    {
+        return Err(formal_corep_error(
+            unitary_sg,
+            point,
+            corep_label,
+            Some(irrep.ml),
+            "typed source contains zero dimension or non-finite value".to_string(),
+        ));
+    }
+    let values = match_typed_entries_to_point(&entries, point, unitary_sg, corep_label, irrep.ml)?;
+    Ok(TypedSourceCharacters { dimension, values })
+}
+
+fn match_typed_entries_to_point(
+    entries: &[(SeitzOperation, Complex64)],
+    point: &MagneticKPointSummary,
+    unitary_sg: u8,
+    corep_label: &str,
+    source_label: &str,
+) -> Result<Vec<Option<Complex64>>> {
+    point
+        .operations
+        .iter()
+        .enumerate()
+        .map(|(column, target)| {
+            if target.time_reversal {
+                return Ok(None);
+            }
+            if target.translation.iter().any(|value| !value.is_finite()) {
+                return Err(formal_corep_error(
+                    unitary_sg,
+                    point,
+                    corep_label,
+                    Some(source_label),
+                    format!("unitary column {column} has a non-finite translation"),
+                ));
+            }
+            let matches = entries
+                .iter()
+                .filter(|(operation, _)| {
+                    operation
+                        .rotation
+                        .into_iter()
+                        .eq(target.rotation.into_iter().flatten())
+                        && operation.translation == target.translation
+                })
+                .collect::<Vec<_>>();
+            let [(_, value)] = matches.as_slice() else {
+                return Err(formal_corep_error(
+                    unitary_sg,
+                    point,
+                    corep_label,
+                    Some(source_label),
+                    format!(
+                        "unitary column {column} matched {} typed complete Seitz operations",
+                        matches.len()
+                    ),
+                ));
+            };
+            Ok(Some(*value))
+        })
+        .collect()
 }
 
 fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
@@ -1478,6 +1357,18 @@ fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
             .fold(0.0_f64, f64::max);
         let fit = fit_corepresentations(&point.formal_coreps, &characters, dimension, options)?;
         let mut diagnostics = fit.diagnostics;
+        diagnostics.extend(
+            point
+                .unresolved_coreps
+                .iter()
+                .filter(|failure| failure.minimum_dimension.is_none_or(|minimum| dimension >= minimum))
+                .map(|failure| {
+                    format!(
+                        "database corep {} is unavailable at {} and may contribute to this {}-band cluster: {}",
+                        failure.source_irrep, point.summary.label, dimension, failure.reason
+                    )
+                }),
+        );
         if let Some(diagnostic) = target_hamiltonian_diagnostic {
             diagnostics.push(diagnostic.to_string());
         }
@@ -1833,230 +1724,6 @@ mod tests {
         model
     }
 
-    fn p41_scalar_cycle_model() -> Model<false, 3, NoRMatrix> {
-        let positions = array![
-            [0.1, 0.2, 0.3],
-            [-0.2, 0.1, 0.55],
-            [-0.1, -0.2, 0.8],
-            [0.2, -0.1, 1.05]
-        ];
-        let atoms = positions
-            .outer_iter()
-            .enumerate()
-            .map(|(index, position)| {
-                Atom::with_orbitals(position.to_owned(), AtomType::H, [OrbitalId::new(index)])
-            })
-            .collect();
-        let mut model = Model::tb_model(
-            array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
-            positions,
-            Some(atoms),
-        )
-        .unwrap();
-        for (left, right) in [(0, 1), (1, 2), (2, 3), (3, 0)] {
-            model.set_hop(0.5, left, right, &array![0_isize, 0, 0], None);
-        }
-        model
-    }
-
-    fn sg199_scalar_orbit_model() -> Model<false, 3, NoRMatrix> {
-        let positions = array![
-            [0.1, 0.1, 0.1],
-            [0.9, 0.4, 0.1],
-            [0.1, 0.9, 0.4],
-            [0.9, 0.6, 0.4],
-            [0.4, 0.1, 0.9],
-            [0.4, 0.9, 0.6],
-            [0.6, 0.4, 0.9],
-            [0.6, 0.6, 0.6]
-        ];
-        let atoms = positions
-            .outer_iter()
-            .enumerate()
-            .map(|(index, position)| {
-                Atom::with_orbitals(position.to_owned(), AtomType::H, [OrbitalId::new(index)])
-            })
-            .collect();
-        let mut model = Model::tb_model(Array2::eye(3), positions, Some(atoms)).unwrap();
-        for index in 0..8 {
-            model.set_hop(0.25, index, (index + 1) % 8, &array![0_isize, 0, 0], None);
-            model.set_hop(0.13, index, (index + 3) % 8, &array![0_isize, 0, 0], None);
-        }
-        model
-    }
-
-    fn scalar_hall_orbit_model(uni_number: usize, base: [f64; 3]) -> Model<false, 3, NoRMatrix> {
-        let subgroup = cryspglib::irrep::corep::identify_unitary_subgroup_with_hall(uni_number)
-            .expect("the regression group must expose its unitary Hall setting");
-        let mut orbit = Vec::<[f64; 3]>::new();
-        for operation in subgroup
-            .ops_from_hall
-            .operations
-            .iter()
-            .filter(|operation| !operation.time_reversal)
-        {
-            let image = std::array::from_fn(|row| {
-                (0..3)
-                    .map(|column| f64::from(operation.rotation[row][column]) * base[column])
-                    .sum::<f64>()
-                    + operation.translation[row]
-            });
-            let reduced = image.map(|value| value.rem_euclid(1.0));
-            if !orbit.iter().any(|position| {
-                position
-                    .iter()
-                    .zip(reduced)
-                    .all(|(left, right)| (left - right).abs() < 1e-7)
-            }) {
-                orbit.push(reduced);
-            }
-        }
-        let positions = Array2::from_shape_fn((orbit.len(), 3), |(site, axis)| orbit[site][axis]);
-        let atoms = positions
-            .outer_iter()
-            .enumerate()
-            .map(|(index, position)| {
-                Atom::with_orbitals(position.to_owned(), AtomType::H, [OrbitalId::new(index)])
-            })
-            .collect();
-        let mut model = Model::tb_model(Array2::eye(3), positions, Some(atoms)).unwrap();
-        for index in 0..orbit.len() {
-            model.set_hop(
-                0.31,
-                index,
-                (index + 1) % orbit.len(),
-                &array![0_isize, 0, 0],
-                None,
-            );
-            model.set_hop(
-                0.17,
-                index,
-                (index + 3) % orbit.len(),
-                &array![0_isize, 0, 0],
-                None,
-            );
-        }
-        model
-    }
-
-    fn assert_repeated_compound_orbit_labels(
-        uni_number: usize,
-        spacegroup_number: usize,
-        expected_site_count: usize,
-        expected_labels: &[&str],
-    ) {
-        let model = scalar_hall_orbit_model(uni_number, [0.1, 0.0, 0.25]);
-        assert_eq!(model.nsta(), expected_site_count);
-        let target = model
-            .magnetic_crystal_symmetry_from_atoms(
-                &crate::crystal_symmetry::SymmetryParameters::default(),
-            )
-            .unwrap();
-        assert_eq!(target.spacegroup_number, spacegroup_number);
-        assert_eq!(target.uni_number, uni_number);
-        let symmetric = model
-            .symmetrize_hamiltonian(
-                &target,
-                &ScalarSiteBasis,
-                &HamiltonianSymmetrizationParameters::default(),
-            )
-            .unwrap();
-        let report = symmetric
-            .calculate_irrep_for_group(&target, &ScalarSiteBasis, None)
-            .unwrap();
-        assert!(report.target_hamiltonian_compatible, "{report}");
-        let point = report
-            .high_symmetry_kpoints
-            .iter()
-            .find(|point| point.label == "P")
-            .expect("the cubic regression group must expose its P point");
-        let mut labels = point
-            .bands
-            .iter()
-            .map(|band| band.label.as_str())
-            .collect::<Vec<_>>();
-        labels.sort_unstable();
-        let mut expected_labels = expected_labels.to_vec();
-        expected_labels.sort_unstable();
-        assert_eq!(labels, expected_labels, "{report}");
-        for band in &point.bands {
-            assert!(band.is_identified(), "{report}");
-            assert!(
-                band.characters.iter().all(|character| {
-                    character.value.is_none_or(|value| value.im.abs() < 1e-10)
-                }),
-                "{} must have a realified character row",
-                band.label
-            );
-            let unitary_order = band
-                .characters
-                .iter()
-                .filter(|character| !character.time_reversal)
-                .count();
-            let character_norm = band
-                .characters
-                .iter()
-                .filter_map(|character| character.value)
-                .map(|character| character.norm_sqr())
-                .sum::<f64>();
-            assert!(
-                (character_norm - 2.0 * unitary_order as f64).abs() < 1e-8,
-                "{} has character norm {character_norm}, expected {}",
-                band.label,
-                2 * unitary_order
-            );
-        }
-    }
-
-    fn i4m_scalar_cycle_model() -> Model<false, 3, NoRMatrix> {
-        let base_positions = [
-            [0.1, 0.2, 0.3],
-            [-0.2, 0.1, 0.3],
-            [-0.1, -0.2, 0.3],
-            [0.2, -0.1, 0.3],
-            [-0.1, -0.2, -0.3],
-            [0.2, -0.1, -0.3],
-            [0.1, 0.2, -0.3],
-            [-0.2, 0.1, -0.3],
-        ];
-        let positions = base_positions
-            .into_iter()
-            .flat_map(|position| {
-                [
-                    position.map(|value| (value + 1.0) % 1.0),
-                    [
-                        (position[0] + 1.5) % 1.0,
-                        (position[1] + 1.5) % 1.0,
-                        (position[2] + 1.5) % 1.0,
-                    ],
-                ]
-            })
-            .collect::<Vec<_>>();
-        let position_array = Array2::from_shape_vec(
-            (positions.len(), 3),
-            positions.iter().flatten().copied().collect(),
-        )
-        .unwrap();
-        let atoms = position_array
-            .outer_iter()
-            .enumerate()
-            .map(|(index, position)| {
-                Atom::with_orbitals(position.to_owned(), AtomType::H, [OrbitalId::new(index)])
-            })
-            .collect();
-        let mut model = Model::tb_model(
-            array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.3]],
-            position_array,
-            Some(atoms),
-        )
-        .unwrap();
-        for index in 0..16 {
-            let next = (index + 1) % 8 + (index / 8) * 8;
-            model.set_hop(0.3, index, next, &array![0_isize, 0, 0], None);
-        }
-        model
-    }
-
     struct InvalidIdentityCorepresentation;
 
     impl BasisSymmetryRepresentation<true, NoRMatrix> for InvalidIdentityCorepresentation {
@@ -2360,6 +2027,7 @@ mod tests {
     fn complex_little_group_characters_are_identified() {
         let model = binary_hexagonal_scalar_model::<false>();
         let report = model.calculate_irrep(&ScalarSiteBasis, None).unwrap();
+        assert_eq!(report.uni_number, 1440);
         assert!(
             report
                 .high_symmetry_kpoints
@@ -2368,24 +2036,23 @@ mod tests {
                 .all(IrrepBandReport::is_identified),
             "{report}"
         );
-        let complex_character = report
-            .high_symmetry_kpoints
-            .iter()
-            .flat_map(|point| &point.bands)
-            .flat_map(|band| &band.characters)
-            .filter_map(|character| character.value)
-            .find(|value| value.im.abs() > 1e-6)
-            .expect("the hexagonal K/H table must contain a complex character");
-        assert!(report.format_irvsp().contains(&format!(
-            "{:+.8}{:+.8}i",
-            complex_character.re, complex_character.im
-        )));
+        assert!(
+            report
+                .high_symmetry_kpoints
+                .iter()
+                .flat_map(|point| &point.bands)
+                .flat_map(|band| &band.characters)
+                .filter_map(|character| character.value)
+                .any(|value| value.im.abs() > 0.5),
+            "the scalar regression must exercise a genuinely complex character"
+        );
     }
 
     #[test]
     fn complex_spinor_little_group_characters_are_identified() {
         let model = binary_hexagonal_scalar_model::<true>();
         let report = model.calculate_irrep(&ScalarSiteBasis, None).unwrap();
+        assert_eq!(report.uni_number, 1440);
         assert!(
             report
                 .high_symmetry_kpoints
@@ -2394,666 +2061,364 @@ mod tests {
                 .all(IrrepBandReport::is_identified),
             "{report}"
         );
-    }
-
-    #[test]
-    fn type_i_compound_corep_uses_selected_star_arm_dimension() {
-        let model = p41_scalar_cycle_model();
-        let mut target = model
-            .magnetic_crystal_symmetry_from_atoms(
-                &crate::crystal_symmetry::SymmetryParameters::default(),
-            )
-            .unwrap();
-        assert_eq!(target.uni_number, 668, "the fixture must detect grey P4_1");
-        target.uni_number = 667;
-        target.magnetic_type = crate::crystal_symmetry::MagneticGroupType::Ordinary;
-        target.bns_number = "76.7".to_string();
-        target.og_number = "76.1.668".to_string();
-        target
-            .operations
-            .retain(|operation| !operation.time_reversal);
-        target.field_preserving_operations = target.operations.clone();
-
-        let symmetric = model
-            .symmetrize_hamiltonian(
-                &target,
-                &ScalarSiteBasis,
-                &HamiltonianSymmetrizationParameters::default(),
-            )
-            .unwrap();
-        let mut options = IrrepCalculationOptions::default();
-        options.character_tolerance = 1.0e-10;
-        let report = symmetric
-            .calculate_irrep_for_group(&target, &ScalarSiteBasis, Some(&options))
-            .unwrap();
         assert!(
             report
                 .high_symmetry_kpoints
                 .iter()
                 .flat_map(|point| &point.bands)
-                .all(IrrepBandReport::is_identified),
-            "legacy radical spellings must not defeat a strict character fit:\n{report}"
-        );
-        assert!(
-            report
-                .high_symmetry_kpoints
-                .iter()
-                .flat_map(|point| &point.bands)
-                .all(|band| band.character_fit_residual < 1.0e-12),
-            "canonicalized formal characters must fit at floating-point accuracy:\n{report}"
-        );
-        let r = report
-            .high_symmetry_kpoints
-            .iter()
-            .find(|point| point.label == "R")
-            .expect("P4_1 must expose its R point");
-        assert_eq!(r.bands.len(), 2, "{report}");
-        assert!(
-            r.bands
-                .iter()
-                .all(|band| band.label == "R1R2" && band.is_identified()),
-            "{report}"
-        );
-        assert!(
-            r.bands
-                .iter()
-                .flat_map(|band| &band.multiplicities)
-                .all(|multiplicity| {
-                    multiplicity.rounded == Some(1) && multiplicity.value.im.abs() < 1e-12
-                }),
-            "selected-arm formal multiplicities must be integral"
-        );
-    }
-
-    #[test]
-    fn legacy_algebraic_character_spellings_are_canonicalized() {
-        let cases = [
-            (0.499_999_999_7, 0.5),
-            (0.707_11, CHARACTER_INV_SQRT_2),
-            (1.414_22, CHARACTER_SQRT_2),
-            (0.866_02, CHARACTER_SQRT_3_OVER_2),
-            (0.866_03, CHARACTER_SQRT_3_OVER_2),
-            (1.732_04, CHARACTER_SQRT_3),
-            (1.732_06, CHARACTER_SQRT_3),
-            (2.828_427_124, CHARACTER_TWO_SQRT_2),
-        ];
-        for (legacy, canonical) in cases {
-            assert_eq!(
-                canonicalize_tabulated_character_component(legacy),
-                canonical
-            );
-            assert_eq!(
-                canonicalize_tabulated_character_component(-legacy),
-                -canonical
-            );
-        }
-
-        for untouched in [0.314_159_120_3, 0.628_318_975_3, 0.707_0, 1.732_0] {
-            assert_eq!(
-                canonicalize_tabulated_character_component(untouched),
-                untouched,
-                "non-whitelisted value {untouched} must remain visible"
-            );
-        }
-    }
-
-    #[test]
-    fn spinor_summary_fallback_canonicalizes_compound_radicals() {
-        let uni = 1200;
-        let summary =
-            cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni).unwrap();
-        let point = summary
-            .kpoints
-            .iter()
-            .find(|point| point.label == "P")
-            .expect("UNI 1200 must expose the P point");
-        let operation = point
-            .operations
-            .iter()
-            .find(|operation| !operation.time_reversal)
-            .expect("the P little group must contain a unitary operation");
-        assert_eq!(find_operation_index(&[], operation), None);
-        assert_eq!(find_flat_operation_index(&[], &[], operation), None);
-        let subgroup = cryspglib::irrep::corep::identify_unitary_subgroup_with_hall(uni)
-            .expect("UNI 1200 must expose its unitary subgroup");
-        let formal =
-            prepare_formal_coreps::<true>(summary.unitary_sg, point, &subgroup.ops_from_hall)
-                .unwrap();
-
-        let compound = formal
-            .iter()
-            .filter(|corep| matches!(corep.label.as_str(), "P6" | "P7"))
-            .collect::<Vec<_>>();
-        assert_eq!(compound.len(), 2);
-        assert!(compound.iter().all(|corep| {
-            corep
-                .characters
-                .iter()
-                .flatten()
-                .any(|character| character.im == 0.0 && character.re.abs() == CHARACTER_TWO_SQRT_2)
-        }));
-    }
-
-    #[test]
-    fn sg199_compound_coreps_match_symmetric_orbit_characters() {
-        let model = sg199_scalar_orbit_model();
-        let target = model
-            .magnetic_crystal_symmetry_from_atoms(
-                &crate::crystal_symmetry::SymmetryParameters::default(),
-            )
-            .unwrap();
-        assert_eq!(target.spacegroup_number, 199);
-        assert_eq!(
-            target.uni_number, 1515,
-            "the scalar fixture must detect grey I2_13"
-        );
-        let symmetric = model
-            .symmetrize_hamiltonian(
-                &target,
-                &ScalarSiteBasis,
-                &HamiltonianSymmetrizationParameters::default(),
-            )
-            .unwrap();
-        let report = symmetric
-            .calculate_irrep_for_group(&target, &ScalarSiteBasis, None)
-            .unwrap();
-        assert!(report.target_hamiltonian_compatible, "{report}");
-        let p = report
-            .high_symmetry_kpoints
-            .iter()
-            .find(|point| point.label == "P")
-            .expect("SG 199 must expose its P point");
-        assert_eq!(p.bands.len(), 2, "{report}");
-        let mut labels = p
-            .bands
-            .iter()
-            .map(|band| band.label.as_str())
-            .collect::<Vec<_>>();
-        labels.sort_unstable();
-        assert_eq!(labels, ["P1P1", "P3P3"], "{report}");
-        for band in &p.bands {
-            assert!(band.is_identified(), "{report}");
-            let character_norm = band
-                .characters
-                .iter()
+                .flat_map(|band| &band.characters)
                 .filter_map(|character| character.value)
-                .map(|character| character.norm_sqr())
-                .sum::<f64>();
-            assert!(
-                (character_norm - 48.0).abs() < 1e-10,
-                "{} must have the norm-48 realified character, got {character_norm}",
-                band.label
-            );
-        }
-    }
-
-    #[test]
-    fn sg199_repeated_compound_coreps_match_general_orbit() {
-        assert_repeated_compound_orbit_labels(1515, 199, 12, &["P1P1", "P2P2", "P3P3"]);
-    }
-
-    #[test]
-    fn sg220_repeated_compound_coreps_match_general_orbit() {
-        assert_repeated_compound_orbit_labels(1592, 220, 24, &["P1P1", "P2P2", "P3P3", "P3P3"]);
-    }
-
-    #[test]
-    fn repeated_label_compound_keeps_real_single_arm_characters() {
-        let summary =
-            cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(1234).unwrap();
-        assert_eq!(summary.unitary_sg, 144);
-        let point = summary
-            .kpoints
-            .iter()
-            .find(|point| point.label == "H")
-            .expect("SG 144 must expose its H point");
-        assert_eq!(point.antiunitary_order, 0);
-        let formal = point
-            .coreps
-            .iter()
-            .find(|corep| corep.label == "H2H2")
-            .expect("SG 144 H must contain H2H2");
-        let irrep = cryspglib::irrep::query::irreps_of(144)
-            .iter()
-            .find(|irrep| irrep.ml == "H2H2")
-            .expect("SG 144 database must contain H2H2");
-        let operations = cryspglib::irrep::corep::get_magnetic_operations(1234).unwrap();
-        let characters = scalar_source_characters(irrep, point, &operations)
-            .unwrap()
-            .expect("repeated-label scalar characters must be available");
-        let characters = characters
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .expect("the type-I H little group must be entirely unitary");
-        assert_eq!(characters.len(), formal.characters.len());
-        for (actual, expected) in characters.iter().zip(&formal.characters) {
-            assert!(
-                actual.im.abs() < 1e-12,
-                "unexpected complex character {actual}"
-            );
-            assert!(
-                (actual.re - expected).abs() < 1e-12,
-                "{actual} != {expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn compound_realification_keeps_centering_translation_phase() {
-        let summary =
-            cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(1591).unwrap();
-        assert_eq!(summary.unitary_sg, 220);
-        let point = summary
-            .kpoints
-            .iter()
-            .find(|point| point.label == "H")
-            .expect("SG 220 must expose its H point");
-        let irrep = cryspglib::irrep::query::irreps_of(220)
-            .iter()
-            .find(|irrep| irrep.ml == "H3H3")
-            .expect("SG 220 H must contain H3H3");
-        let operations = cryspglib::irrep::corep::get_magnetic_operations(1591).unwrap();
-        let characters = scalar_source_characters(irrep, point, &operations)
-            .unwrap()
-            .expect("compound scalar characters must be available");
-        let identity_rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-        let identity_column = point
-            .operations
-            .iter()
-            .position(|operation| {
-                !operation.time_reversal
-                    && operation.rotation == identity_rotation
-                    && operation
-                        .translation
-                        .iter()
-                        .all(|value| (*value - value.round()).abs() < 1e-8)
-            })
-            .expect("H little group must contain the identity");
-        let translated_column = point
-            .operations
-            .iter()
-            .position(|operation| {
-                if operation.time_reversal || operation.rotation != identity_rotation {
-                    return false;
-                }
-                let (kx, ky, kz, denominator) = point.coords;
-                let phase = -std::f64::consts::TAU
-                    * (f64::from(kx) * operation.translation[0]
-                        + f64::from(ky) * operation.translation[1]
-                        + f64::from(kz) * operation.translation[2])
-                    / f64::from(denominator);
-                operation
-                    .translation
-                    .iter()
-                    .any(|value| (*value - value.round()).abs() >= 1e-8)
-                    && phase.sin().abs() < 1e-8
-                    && phase.cos() < -0.9
-            })
-            .expect("H little group must contain the body-centering translation");
-        let dimension = characters[identity_column].unwrap().re;
-        let translated = characters[translated_column].unwrap();
-        assert!((dimension - 4.0).abs() < 1e-12);
-        assert!((translated.re + dimension).abs() < 1e-12);
-        assert!(translated.im.abs() < 1e-12);
-    }
-
-    #[test]
-    fn distinct_compound_components_are_summed() {
-        let summary =
-            cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(1409).unwrap();
-        assert_eq!(summary.unitary_sg, 182);
-        let point = summary
-            .kpoints
-            .iter()
-            .find(|point| point.label == "H")
-            .expect("SG 182 must expose its H point");
-        let irrep = cryspglib::irrep::query::irreps_of(182)
-            .iter()
-            .find(|irrep| irrep.ml == "H1H2")
-            .expect("SG 182 H must contain H1H2");
-        let operations = cryspglib::irrep::corep::get_magnetic_operations(1409).unwrap();
-        let characters = scalar_source_characters(irrep, point, &operations)
-            .unwrap()
-            .expect("distinct compound scalar characters must be available");
-        let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(&operations);
-        let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
-            &h_seitz,
-            irrep.pir_rotations(),
-            irrep.pir_translations(),
-        )
-        .expect("H operations must map to the H1H2 PIR table");
-        let distinguishing_column = point
-            .operations
-            .iter()
-            .position(|operation| {
-                if operation.time_reversal {
-                    return false;
-                }
-                find_operation_index(&operations.operations, operation)
-                    .and_then(|h_index| h_to_irrep.get(h_index))
-                    .is_some_and(|character_index| *character_index == 7)
-            })
-            .expect("H1 and H2 must be distinguished by PIR operation 7");
-        let value = characters[distinguishing_column].unwrap();
-        assert!(
-            value.norm() < 1e-12,
-            "H1 + H2 has character +1 - 1 = 0, not 2 Re(H1) = 2; got {value}"
+                .any(|value| value.im.abs() > 0.5),
+            "the spinor regression must exercise a genuinely complex character"
         );
     }
 
     #[test]
-    fn repeated_compound_constituents_are_realified() {
-        let cases = [
-            (1515_usize, 199_u8, "P", &["P1P1", "P2P2", "P3P3"][..]),
-            (1592, 220, "P", &["P1P1", "P2P2", "P3P3"][..]),
-        ];
-        for (uni, spacegroup, point_label, labels) in cases {
-            let summary =
-                cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni).unwrap();
-            assert_eq!(summary.unitary_sg, spacegroup);
-            let point = summary
-                .kpoints
-                .iter()
-                .find(|point| point.label == point_label)
-                .expect("the repeated-compound regression k point must exist");
-            let subgroup = cryspglib::irrep::corep::identify_unitary_subgroup_with_hall(uni)
-                .expect("the magnetic group must expose its unitary subgroup");
-            let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(&subgroup.ops_from_hall);
-            let irreps = cryspglib::irrep::query::irreps_of(spacegroup);
-            for label in labels {
-                assert!(
-                    compound_label_repeats_constituent(label),
-                    "{label} must encode the same constituent twice"
-                );
-                let irrep = irreps
-                    .iter()
-                    .find(|irrep| !irrep.spinor && irrep.ml == *label)
-                    .expect("the repeated compound source must exist");
-                let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
-                    &h_seitz,
-                    irrep.pir_rotations(),
-                    irrep.pir_translations(),
-                )
-                .expect("unitary operations must map to the compound PIR table");
-                let components = [irrep.cir_component_chars(0), irrep.cir_component_chars(1)];
-                assert_eq!(
-                    scalar_compound_character_kind(
-                        &components,
-                        irrep,
-                        point,
-                        &subgroup.ops_from_hall,
-                        &h_to_irrep,
-                    )
-                    .unwrap(),
-                    ScalarCompoundCharacterKind::ConjugateRealification,
-                    "UNI {uni} {label} must use the repeated constituent, not sum two stored star arms"
-                );
-            }
+    fn type_i_compound_summary_propagates_upstream_error() {
+        assert_summary_error(667, 76, "GM3GM4", "compound");
+    }
+
+    fn synthetic_magnetic_operation(
+        column: usize,
+        magnetic_operation_index: usize,
+        rotation: [[i32; 3]; 3],
+        translation: [f64; 3],
+        time_reversal: bool,
+    ) -> cryspglib::irrep::magnetic_summary::MagneticLittleGroupOperation {
+        cryspglib::irrep::magnetic_summary::MagneticLittleGroupOperation {
+            column,
+            magnetic_operation_index,
+            rotation,
+            translation,
+            time_reversal,
         }
-        assert!(!compound_label_repeats_constituent("H1H2"));
-        assert!(!compound_label_repeats_constituent("GM2+GM3+"));
-        assert!(compound_label_repeats_constituent("R1+R1+"));
+    }
+
+    fn synthetic_point(
+        operations: Vec<cryspglib::irrep::magnetic_summary::MagneticLittleGroupOperation>,
+    ) -> MagneticKPointSummary {
+        let unitary_order = operations
+            .iter()
+            .filter(|operation| !operation.time_reversal)
+            .count();
+        MagneticKPointSummary {
+            label: "synthetic".to_string(),
+            coords: (0, 0, 0, 1),
+            little_group_order: operations.len(),
+            unitary_order,
+            antiunitary_order: operations.len() - unitary_order,
+            operations,
+            conjugacy_classes: Vec::new(),
+            coreps: Vec::new(),
+        }
     }
 
     #[test]
-    fn known_real_distinguishing_compound_records_use_component_sums() {
-        let targets = [
-            (46_u8, "W1W2"),
-            (80, "P1P2"),
-            (97, "P3P4"),
-            (107, "P3P4"),
-            (108, "P1P2"),
-            (120, "P1P2"),
-            (178, "H1H2"),
-            (179, "H1H2"),
-            (182, "H1H2"),
-            (209, "W3W4"),
-            (219, "W3W4"),
+    fn typed_mapping_matches_complete_seitz_operations_exactly() {
+        let identity = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+        let quarter_turn = [[0, -1, 0], [1, 0, 0], [0, 0, 1]];
+        let point = synthetic_point(vec![
+            synthetic_magnetic_operation(0, 4, identity, [0.5, 0.0, 0.0], false),
+            synthetic_magnetic_operation(1, 5, identity, [0.0, 0.0, 0.0], true),
+            synthetic_magnetic_operation(2, 6, quarter_turn, [0.0, 0.0, 0.0], false),
+        ]);
+        let entries = vec![
+            (
+                SeitzOperation {
+                    rotation: [0, -1, 0, 1, 0, 0, 0, 0, 1],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                Complex64::new(3.0, 0.0),
+            ),
+            (
+                SeitzOperation {
+                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                    translation: [0.5, 0.0, 0.0],
+                },
+                Complex64::new(2.0, 0.0),
+            ),
         ];
-        let mut witnessed = std::collections::BTreeSet::new();
-        for uni in 1..=1651 {
-            if witnessed.len() == targets.len() {
-                break;
-            }
-            let summary =
-                cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni).unwrap();
-            let matching_labels = targets
-                .iter()
-                .filter_map(|&(spacegroup, label)| {
-                    (spacegroup == summary.unitary_sg && !witnessed.contains(&(spacegroup, label)))
-                        .then_some(label)
-                })
-                .collect::<Vec<_>>();
-            if matching_labels.is_empty() {
-                continue;
-            }
-            let subgroup = cryspglib::irrep::corep::identify_unitary_subgroup_with_hall(uni)
-                .expect("every magnetic group must expose its unitary subgroup");
-            let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(&subgroup.ops_from_hall);
-            let irreps = cryspglib::irrep::query::irreps_of(summary.unitary_sg);
-            for point in &summary.kpoints {
-                for &label in &matching_labels {
-                    if witnessed.contains(&(summary.unitary_sg, label))
-                        || !point.coreps.iter().any(|corep| {
-                            corep
-                                .source_irreps
-                                .iter()
-                                .any(|source| !source.spinor && source.ml == label)
-                        })
-                    {
-                        continue;
-                    }
-                    let irrep = irreps
-                        .iter()
-                        .find(|irrep| !irrep.spinor && irrep.ml == label)
-                        .expect("the compound source must exist in the unitary irrep table");
-                    assert!(
-                        !compound_label_repeats_constituent(irrep.ml),
-                        "a repeated constituent cannot exercise the distinct-component branch"
-                    );
-                    let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
-                        &h_seitz,
-                        irrep.pir_rotations(),
-                        irrep.pir_translations(),
-                    )
-                    .expect("unitary operations must map to the compound PIR table");
-                    let components = [irrep.cir_component_chars(0), irrep.cir_component_chars(1)];
-                    let actual = scalar_source_characters(irrep, point, &subgroup.ops_from_hall)
-                        .unwrap()
-                        .expect("compound source characters must be available");
-                    let (kx, ky, kz, denominator) = point.coords;
-                    let k = [f64::from(kx), f64::from(ky), f64::from(kz)];
-                    let mut found_distinguishing_operation = false;
-                    for (column, operation) in point.operations.iter().enumerate() {
-                        if operation.time_reversal {
-                            continue;
-                        }
-                        let h_index =
-                            find_operation_index(&subgroup.ops_from_hall.operations, operation)
-                                .expect("unitary little-group operation must map into H");
-                        let character_index = h_to_irrep[h_index];
-                        let translation = std::array::from_fn::<_, 3, _>(|axis| {
-                            irrep.pir_translations()[3 * character_index + axis]
-                        });
-                        let phase_argument = std::f64::consts::TAU
-                            * k.iter()
-                                .zip(translation)
-                                .map(|(component, translation)| component * translation)
-                                .sum::<f64>()
-                            / f64::from(denominator);
-                        if phase_argument.sin().abs() > 1e-7 {
-                            continue;
-                        }
-                        let first = Complex64::new(
-                            components[0][2 * character_index],
-                            components[0][2 * character_index + 1],
-                        );
-                        let second = Complex64::new(
-                            components[1][2 * character_index],
-                            components[1][2 * character_index + 1],
-                        );
-                        if first.im.abs() > 1e-6
-                            || second.im.abs() > 1e-6
-                            || (second - first.conj()).norm() <= 1e-6
-                        {
-                            continue;
-                        }
-                        found_distinguishing_operation = true;
-                        let value = actual[column]
-                            .expect("a unitary operation must have an ordinary character");
-                        assert!(
-                            (value - first - second).norm() < 1e-10,
-                            "UNI {uni} SG {} {label} at {} column {column} used {value} instead of the distinct-component sum {}",
-                            summary.unitary_sg,
-                            point.label,
-                            first + second
-                        );
-                    }
-                    if found_distinguishing_operation {
-                        witnessed.insert((summary.unitary_sg, label));
-                    }
-                }
-            }
-        }
+        let values = match_typed_entries_to_point(&entries, &point, 1, "synthetic", "S1")
+            .expect("complete Seitz operations should match");
         assert_eq!(
-            witnessed.len(),
-            targets.len(),
-            "not every known distinct-component compound record was exercised: {witnessed:?}"
+            values,
+            vec![
+                Some(Complex64::new(2.0, 0.0)),
+                None,
+                Some(Complex64::new(3.0, 0.0))
+            ]
         );
     }
 
     #[test]
-    fn contaminated_same_arm_components_do_not_select_distinct_sum() {
-        let cases = [
-            (1240_usize, 146_u8, "T", "T2T3"),
-            (1445, 188, "H", "H3H4"),
-            (1445, 188, "H", "H5H6"),
+    fn typed_mapping_distinguishes_translations_and_rejects_lattice_shifts() {
+        let identity = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+        let point = synthetic_point(vec![synthetic_magnetic_operation(
+            0,
+            0,
+            identity,
+            [0.5, 0.0, 0.0],
+            false,
+        )]);
+        let matching = vec![
+            (
+                SeitzOperation {
+                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                Complex64::new(1.0, 0.0),
+            ),
+            (
+                SeitzOperation {
+                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                    translation: [0.5, 0.0, 0.0],
+                },
+                Complex64::new(2.0, 0.0),
+            ),
         ];
-        for (uni, spacegroup, point_label, irrep_label) in cases {
-            let summary =
-                cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni).unwrap();
-            assert_eq!(summary.unitary_sg, spacegroup);
-            let point = summary
-                .kpoints
-                .iter()
-                .find(|point| point.label == point_label)
-                .expect("the regression k point must exist");
-            let irrep = cryspglib::irrep::query::irreps_of(spacegroup)
-                .iter()
-                .find(|irrep| irrep.ml == irrep_label)
-                .expect("the compound regression record must exist");
-            let operations = cryspglib::irrep::corep::get_magnetic_operations(uni).unwrap();
-            let h_seitz = cryspglib::irrep::wigner::ops_to_seitz(&operations);
-            let h_to_irrep = cryspglib::irrep::wigner::build_h_to_irrep_op_map(
-                &h_seitz,
-                irrep.pir_rotations(),
-                irrep.pir_translations(),
+        assert_eq!(
+            match_typed_entries_to_point(&matching, &point, 1, "synthetic", "S1").unwrap(),
+            vec![Some(Complex64::new(2.0, 0.0))]
+        );
+        let lattice_shift = vec![(
+            SeitzOperation {
+                rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                translation: [1.5, 0.0, 0.0],
+            },
+            Complex64::new(2.0, 0.0),
+        )];
+        assert!(
+            match_typed_entries_to_point(&lattice_shift, &point, 1, "synthetic", "S1").is_err(),
+            "integer lattice shifts must not be treated as exact matches"
+        );
+    }
+
+    #[test]
+    fn typed_mapping_rejects_duplicate_operations_and_is_order_independent() {
+        let identity = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+        let quarter_turn = [[0, -1, 0], [1, 0, 0], [0, 0, 1]];
+        let duplicate = vec![
+            (
+                SeitzOperation {
+                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                Complex64::new(1.0, 0.0),
+            ),
+            (
+                SeitzOperation {
+                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                Complex64::new(1.0, 0.0),
+            ),
+        ];
+        let point = synthetic_point(vec![synthetic_magnetic_operation(
+            0,
+            0,
+            identity,
+            [0.0, 0.0, 0.0],
+            false,
+        )]);
+        assert!(match_typed_entries_to_point(&duplicate, &point, 1, "synthetic", "S1").is_err());
+
+        let reordered = synthetic_point(vec![
+            synthetic_magnetic_operation(0, 1, quarter_turn, [0.0, 0.0, 0.0], false),
+            synthetic_magnetic_operation(1, 0, identity, [0.0, 0.0, 0.0], false),
+        ]);
+        let entries = vec![
+            (
+                SeitzOperation {
+                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                Complex64::new(1.0, 0.0),
+            ),
+            (
+                SeitzOperation {
+                    rotation: [0, -1, 0, 1, 0, 0, 0, 0, 1],
+                    translation: [0.0, 0.0, 0.0],
+                },
+                Complex64::new(2.0, 0.0),
+            ),
+        ];
+        assert_eq!(
+            match_typed_entries_to_point(&entries, &reordered, 1, "synthetic", "S1").unwrap(),
+            vec![
+                Some(Complex64::new(2.0, 0.0)),
+                Some(Complex64::new(1.0, 0.0))
+            ]
+        );
+        assert_eq!(
+            corep_shape(cryspglib::irrep::corep::CorepType::A, &[1]),
+            Ok((1, 1))
+        );
+    }
+
+    #[test]
+    fn corep_type_factors_and_source_identity_are_explicit() {
+        use cryspglib::irrep::corep::CorepType;
+
+        assert_eq!(corep_shape(CorepType::A, &[2]), Ok((2, 1)));
+        assert_eq!(corep_shape(CorepType::B, &[2]), Ok((4, 2)));
+        assert_eq!(corep_shape(CorepType::C, &[1, 3]), Ok((4, 1)));
+        assert!(corep_shape(CorepType::C, &[4]).is_err());
+
+        let operations = synthetic_point(vec![
+            synthetic_magnetic_operation(
+                0,
+                0,
+                [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                [0.0, 0.0, 0.0],
+                false,
+            ),
+            synthetic_magnetic_operation(
+                1,
+                1,
+                [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                [0.0, 0.0, 0.0],
+                true,
+            ),
+        ])
+        .operations;
+        let scalar_source = |value: f64| TypedSourceCharacters {
+            dimension: 1,
+            values: vec![Some(Complex64::new(value, 0.0)), None],
+        };
+        assert_eq!(
+            combine_formal_characters(CorepType::A, &[scalar_source(1.0)], &operations, 1).unwrap(),
+            vec![Some(Complex64::new(1.0, 0.0)), None]
+        );
+        assert_eq!(
+            combine_formal_characters(CorepType::B, &[scalar_source(2.0)], &operations, 2).unwrap(),
+            vec![Some(Complex64::new(4.0, 0.0)), None]
+        );
+        assert_eq!(
+            combine_formal_characters(
+                CorepType::C,
+                &[scalar_source(1.0), scalar_source(3.0)],
+                &operations,
+                1,
             )
-            .expect("unitary operations must map to the compound PIR table");
-            let components = [irrep.cir_component_chars(0), irrep.cir_component_chars(1)];
-            assert_eq!(
-                scalar_compound_character_kind(
-                    &components,
-                    irrep,
-                    point,
-                    &operations,
-                    &h_to_irrep,
-                )
-                .unwrap(),
-                ScalarCompoundCharacterKind::ConjugateRealification,
-                "UNI {uni} {irrep_label} must not be classified from a contaminated non-real column"
-            );
-            let characters = scalar_source_characters(irrep, point, &operations)
-                .unwrap()
-                .expect("the contaminated record remains recoverable by realification");
-            for (operation, character) in point.operations.iter().zip(characters) {
-                if operation.time_reversal {
-                    continue;
+            .unwrap(),
+            vec![Some(Complex64::new(4.0, 0.0)), None]
+        );
+
+        let record = cryspglib::irrep::query::irreps_of(1)
+            .iter()
+            .find(|record| !record.spinor)
+            .expect("SG1 must provide a scalar record");
+        let coords = (record.kx, record.ky, record.kz, record.kd);
+        assert!(source_record_matches(
+            record, 1, record.ml, false, 1, coords
+        ));
+        assert!(!source_record_matches(
+            record, 1, record.ml, true, 1, coords
+        ));
+        assert!(!source_record_matches(
+            record,
+            1,
+            record.ml,
+            false,
+            1,
+            (record.kx, record.ky, record.kz, record.kd + 1)
+        ));
+        assert!(!source_record_matches(
+            record, 2, record.ml, false, 1, coords
+        ));
+        assert_eq!(
+            cryspglib::irrep::query::irreps_of(1)
+                .iter()
+                .filter(|candidate| {
+                    source_record_matches(candidate, 1, record.ml, false, 1, coords)
+                })
+                .count(),
+            1
+        );
+        let no_match = cryspglib::irrep::query::irreps_of(1)
+            .iter()
+            .filter(|candidate| source_record_matches(candidate, 1, "missing", false, 1, coords))
+            .count();
+        assert_eq!(no_match, 0);
+        let duplicate_candidates = [record, record]
+            .iter()
+            .filter(|candidate| source_record_matches(candidate, 1, record.ml, false, 1, coords))
+            .count();
+        assert_eq!(duplicate_candidates, 2);
+    }
+
+    #[test]
+    #[ignore = "exhaustive typed-row acceptance census"]
+    fn exhaustive_typed_formal_corep_acceptance_census() {
+        let mut summaries = 0usize;
+        let mut points = 0usize;
+        let mut formal_coreps = 0usize;
+        for uni in 1..=1651 {
+            let Ok(summary) =
+                cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni)
+            else {
+                continue;
+            };
+            summaries += 1;
+            for point in &summary.kpoints {
+                points += 1;
+                for spinor in [false, true] {
+                    let result = if spinor {
+                        prepare_formal_coreps::<true>(summary.unitary_sg, point)
+                    } else {
+                        prepare_formal_coreps::<false>(summary.unitary_sg, point)
+                    };
+                    let coreps = result.unwrap_or_else(|error| {
+                        panic!(
+                            "UNI {uni} SG {} k-point {} SPIN={spinor} typed mapping failed: {error:?}",
+                            summary.unitary_sg, point.label
+                        )
+                    });
+                    formal_coreps += coreps.len();
                 }
+            }
+        }
+        println!(
+            "typed formal corep acceptance census: summaries={summaries}, points={points}, coreps={formal_coreps}"
+        );
+    }
+
+    fn assert_summary_error(uni: usize, sg: u8, source: &str, reason_fragment: &str) {
+        let error = cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni)
+            .expect_err("compound summary must propagate its structured upstream error");
+        match error {
+            cryspglib::irrep::magnetic_summary::MagneticIrrepError::CorepComputationFailed {
+                uni: error_uni,
+                sg: error_sg,
+                k_label,
+                source_irrep,
+                reason,
+            } => {
+                assert_eq!(error_uni, uni);
+                assert_eq!(error_sg, sg);
+                assert_eq!(k_label, "GM");
+                assert_eq!(source_irrep, source);
                 assert!(
-                    character.unwrap().im.abs() < 1e-12,
-                    "UNI {uni} {irrep_label} emitted a contaminated complex character"
+                    reason.contains(reason_fragment),
+                    "unexpected reason: {reason}"
                 );
             }
+            other => panic!("unexpected UNI {uni} compound summary error: {other:?}"),
         }
     }
 
     #[test]
-    fn distinct_compound_sum_retains_bloch_translation_phase() {
-        let summary =
-            cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(339).unwrap();
-        assert_eq!(summary.unitary_sg, 46);
-        let point = summary
-            .kpoints
-            .iter()
-            .find(|point| point.label == "W")
-            .expect("SG 46 must expose its W point");
-        let irrep = cryspglib::irrep::query::irreps_of(46)
-            .iter()
-            .find(|irrep| irrep.ml == "W1W2")
-            .expect("SG 46 W must contain W1W2");
-        let operations = cryspglib::irrep::corep::get_magnetic_operations(339).unwrap();
-        let characters = scalar_source_characters(irrep, point, &operations)
-            .unwrap()
-            .expect("distinct compound scalar characters must be available");
-        let identity_rotation = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-        let translated_column = point
-            .operations
-            .iter()
-            .position(|operation| {
-                !operation.time_reversal
-                    && operation.rotation == identity_rotation
-                    && operation
-                        .translation
-                        .iter()
-                        .any(|value| (*value - value.round()).abs() >= 1e-8)
-            })
-            .expect("the W little group must contain the centering translation");
-        let operation = &point.operations[translated_column];
-        let (kx, ky, kz, denominator) = point.coords;
-        let phase_argument = std::f64::consts::TAU
-            * (f64::from(kx) * operation.translation[0]
-                + f64::from(ky) * operation.translation[1]
-                + f64::from(kz) * operation.translation[2])
-            / f64::from(denominator);
-        let expected = 2.0 * Complex64::new(0.0, phase_argument).exp();
-        let actual = characters[translated_column].unwrap();
-        assert!(
-            (actual - expected).norm() < 1e-12,
-            "a pure translation must act as its Bloch phase times the selected dimension: {actual} != {expected}"
-        );
-        assert!(
-            actual.im.abs() > 1.0,
-            "the distinct-component sum must not discard its physical imaginary part"
-        );
+    fn sg199_compound_summary_propagates_upstream_error() {
+        assert_summary_error(1515, 199, "GM2GM3", "compound");
     }
 
     #[test]
-    fn compound_misaligned_second_arm_does_not_abort_report() {
-        let model = i4m_scalar_cycle_model();
-        let mut target = model
-            .magnetic_crystal_symmetry_from_atoms(
-                &crate::crystal_symmetry::SymmetryParameters::default(),
-            )
-            .unwrap();
-        assert_eq!(target.spacegroup_number, 87);
-        assert_eq!(target.uni_number, 736);
-        target.uni_number = 735;
-        target.magnetic_type = crate::crystal_symmetry::MagneticGroupType::Ordinary;
-        target
-            .operations
-            .retain(|operation| !operation.time_reversal);
-        target.field_preserving_operations = target.operations.clone();
-
-        let report = model
-            .calculate_irrep_for_group(&target, &ScalarSiteBasis, None)
-            .expect("a recoverable compound CIR phase must not abort the whole report");
-        assert!(
-            report
-                .high_symmetry_kpoints
-                .iter()
-                .any(|point| point.label == "P"),
-            "{report}"
+    fn sg220_compound_summary_propagates_upstream_error() {
+        assert_summary_error(
+            1592,
+            220,
+            "GM6",
+            "phase-aligned exact full-Seitz spin character mapping unavailable",
         );
     }
 }
