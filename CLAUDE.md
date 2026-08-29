@@ -797,3 +797,36 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   transformations, supercell band-irrep unfolding, and wiring weighted meshes
   into response solvers remain follow-up work in
   `CRYSPGLIB_INTEGRATION_PLAN.md`.
+
+### Current cryspglib corep boundary used by Rustb (2026-08-30)
+
+- Rustb must consume
+  `cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni_partial`,
+  not the strict summary API.  A single unavailable source corepresentation
+  must not discard independently valid k-points and coreps.
+- Classified complex Type-A/Type-B failures from cryspglib's legacy
+  real-valued `Corepresentation` surface are recovered from the typed,
+  operation-aware `Complex64` scalar/spinor source rows.  This path was added
+  in cryspglib `daf04eb` and Rustb `9cbc7b8`; never regress to pairing raw
+  character arrays with Hall operations.
+- Three scientific cases remain unresolved and may produce `???` for an
+  affected band cluster: magnetic compound coreps, general Type-C partners
+  when the magnetic little group lacks direct `{I|0}Theta`, and spinor rows
+  requiring a nontrivial full-Seitz lattice/centering Bloch phase.  Do not
+  infer these labels from dimensions, names, rounded characters, or nearby
+  supported rows.
+- Type-A antiunitary characters may be
+  `TypeAAntiunitaryPending`.  Rustb fits the available unitary characters and
+  prints antiunitary entries as `N/A`; it must not present the placeholder
+  zeros as computed antiunitary characters.
+- cryspglib currently supplies fixed-k magnetic-little-group coreps, not
+  full-k-star corepresentations.  Rustb's present high-symmetry band labeling
+  uses the fixed-k data; any future star/unfolding API must treat this as an
+  explicit missing capability.
+- The 2026-08-30 full partial-summary census covered all 1,651 UNI groups with
+  zero summary-level fatal errors and retained 28,823 safe coreps.  Unresolved
+  source occurrences were: 4,820 compound (1,027 UNI), 12,430 general Type-C
+  partner (930 UNI), 5,669 spin full-Seitz phase (477 UNI), and 6,556 legacy
+  real-surface complex A/B (844 UNI).  The last category is recovered by
+  Rustb; UNI counts overlap and source-occurrence counts are not unique-irrep
+  database counts.
