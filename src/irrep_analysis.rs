@@ -649,9 +649,12 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
             let mut unresolved_coreps = Vec::new();
             let mut recovered_coreps = Vec::new();
             for failure in point_failures {
-                match recover_complex_formal_corep::<SPIN>(summary.unitary_sg, &point, &failure)? {
-                    Some(corep) => recovered_coreps.push(corep),
-                    None => unresolved_coreps.push(failure),
+                let recovered =
+                    recover_complex_formal_corep::<SPIN>(summary.unitary_sg, &point, &failure)?;
+                if recovered.is_empty() {
+                    unresolved_coreps.push(failure);
+                } else {
+                    recovered_coreps.extend(recovered);
                 }
             }
             formal_coreps.extend(merge_recovered_formal_coreps(recovered_coreps));
@@ -946,10 +949,7 @@ fn recover_complex_formal_corep<const SPIN: bool>(
     unitary_sg: u8,
     point: &MagneticKPointSummary,
     failure: &UnresolvedMagneticCorep,
-) -> Result<Option<RecoveredFormalCorep>> {
-    let Some(corep_type) = failure.classified_type else {
-        return Ok(None);
-    };
+) -> Result<Vec<RecoveredFormalCorep>> {
     let matches = cryspglib::irrep::query::irreps_of(unitary_sg)
         .iter()
         .filter(|irrep| {
@@ -976,14 +976,59 @@ fn recover_complex_formal_corep<const SPIN: bool>(
         ));
     };
     if irrep.spinor != SPIN {
-        return Ok(None);
+        return Ok(Vec::new());
     }
+    if irrep.compound_metadata().is_some() {
+        let branches = match irrep.compound_complex_corepresentations(failure.uni) {
+            Ok(branches) => branches,
+            Err(_) => return Ok(Vec::new()),
+        };
+        return branches
+            .into_iter()
+            .map(|branch| {
+                let source_label = branch
+                    .sources
+                    .iter()
+                    .map(|source| match source.kind {
+                        cryspglib::irrep::corep::CompoundCorepSourceKind::AuthoritativeCir => {
+                            source.label.to_string()
+                        }
+                        cryspglib::irrep::corep::CompoundCorepSourceKind::ConjugateRealification => {
+                            format!("conj({})", source.label)
+                        }
+                        cryspglib::irrep::corep::CompoundCorepSourceKind::DerivedAntiunitaryPartner => {
+                            format!("a0({})", source.label)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" + ");
+                let characters = match_complex_corep_to_point(
+                    &branch.corep,
+                    point,
+                    unitary_sg,
+                    &failure.source_irrep,
+                )?;
+                Ok(RecoveredFormalCorep {
+                    source_label: source_label.clone(),
+                    corep_type: branch.corep.corep_type,
+                    formal: FormalCorep {
+                        label: source_label,
+                        dimension: branch.corep.dim,
+                        characters,
+                    },
+                })
+            })
+            .collect();
+    }
+    let Some(corep_type) = failure.classified_type else {
+        return Ok(Vec::new());
+    };
     let complex = match irrep.complex_corepresentation(failure.uni) {
         Ok(corep) => corep,
         // A completed legacy classification can still lack an exact complex
         // transport (for example a non-identity spin Type-C representative).
         // Preserve that source as unresolved instead of guessing a row.
-        Err(_) => return Ok(None),
+        Err(_) => return Ok(Vec::new()),
     };
     if complex.corep_type != corep_type {
         return Err(formal_corep_error(
@@ -1046,7 +1091,7 @@ fn recover_complex_formal_corep<const SPIN: bool>(
     }
     let characters =
         match_complex_corep_to_point(&complex, point, unitary_sg, &failure.source_irrep)?;
-    Ok(Some(RecoveredFormalCorep {
+    Ok(vec![RecoveredFormalCorep {
         source_label: failure.source_irrep.clone(),
         corep_type,
         formal: FormalCorep {
@@ -1054,7 +1099,7 @@ fn recover_complex_formal_corep<const SPIN: bool>(
             dimension: complex.dim,
             characters,
         },
-    }))
+    }])
 }
 
 fn match_complex_corep_to_point(
@@ -2600,10 +2645,9 @@ mod tests {
 
         let recovered = failures
             .iter()
-            .map(|failure| {
+            .flat_map(|failure| {
                 recover_complex_formal_corep::<true>(partial.summary.unitary_sg, point, failure)
                     .expect("complex recovery must preserve structural invariants")
-                    .expect("UNI 54 Type-C row is available on the complex API")
             })
             .collect::<Vec<_>>();
         for recovered in &recovered {
@@ -2649,6 +2693,44 @@ mod tests {
                 .iter()
                 .all(|corep| corep.label.split(" + ").count() == 2)
         );
+    }
+
+    #[test]
+    fn compound_constituent_orbit_recovery_preserves_complex_type_c_row() {
+        let partial = magnetic_irrep_summary_by_uni_partial(340)
+            .expect("UNI 340 partial summary must retain compound provenance");
+        let failure = partial
+            .unresolved_coreps
+            .iter()
+            .find(|failure| failure.source_irrep == "W1W2" && !failure.spinor)
+            .expect("SG46 W1W2 must exercise the plural complex boundary");
+        let point = partial
+            .summary
+            .kpoints
+            .iter()
+            .find(|point| point.label == failure.k_label)
+            .expect("unresolved compound source must name an existing k point");
+        let recovered =
+            recover_complex_formal_corep::<false>(partial.summary.unitary_sg, point, failure)
+                .expect("compound plural recovery must preserve structural invariants");
+        assert_eq!(recovered.len(), 1);
+        let corep = &recovered[0];
+        assert_eq!(corep.corep_type, cryspglib::irrep::corep::CorepType::C);
+        assert_eq!(corep.formal.dimension, 2);
+        assert_eq!(corep.formal.characters.len(), point.operations.len());
+        assert!(corep.source_label.contains("W1"));
+        assert!(corep.source_label.contains("W2"));
+        assert!(
+            corep
+                .formal
+                .characters
+                .iter()
+                .flatten()
+                .any(|character| character.im.abs() > 1.0)
+        );
+        for (character, operation) in corep.formal.characters.iter().zip(&point.operations) {
+            assert_eq!(character.is_none(), operation.time_reversal);
+        }
     }
 
     #[test]
@@ -2730,15 +2812,17 @@ mod tests {
                                 partial.summary.unitary_sg, point.label, failure.source_irrep
                             )
                         });
-                        match result {
-                            Some(corep) => {
-                                recovered_sources += 1;
-                                recovered_type_c_sources += usize::from(
-                                    corep.corep_type == cryspglib::irrep::corep::CorepType::C,
-                                );
-                                recovered.push(corep);
-                            }
-                            None => still_unresolved += 1,
+                        if result.is_empty() {
+                            still_unresolved += 1;
+                        } else {
+                            recovered_sources += result.len();
+                            recovered_type_c_sources += result
+                                .iter()
+                                .filter(|corep| {
+                                    corep.corep_type == cryspglib::irrep::corep::CorepType::C
+                                })
+                                .count();
+                            recovered.extend(result);
                         }
                     }
                     let merged = merge_recovered_formal_coreps(recovered);
@@ -2756,33 +2840,27 @@ mod tests {
         );
     }
 
-    fn assert_summary_error(uni: usize, sg: u8, source: &str, reason_fragment: &str) {
-        let error = cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni)
-            .expect_err("compound summary must propagate its structured upstream error");
-        match error {
-            cryspglib::irrep::magnetic_summary::MagneticIrrepError::CorepComputationFailed {
-                uni: error_uni,
-                sg: error_sg,
-                k_label,
-                source_irrep,
-                reason,
-            } => {
-                assert_eq!(error_uni, uni);
-                assert_eq!(error_sg, sg);
-                assert_eq!(k_label, "GM");
-                assert_eq!(source_irrep, source);
-                assert!(
-                    reason.contains(reason_fragment),
-                    "unexpected reason: {reason}"
-                );
-            }
-            other => panic!("unexpected UNI {uni} compound summary error: {other:?}"),
-        }
-    }
-
     #[test]
-    fn sg199_compound_summary_propagates_upstream_error() {
-        assert_summary_error(1515, 199, "GM2GM3", "compound");
+    fn sg199_compound_source_is_no_longer_an_upstream_blocker() {
+        let partial = magnetic_irrep_summary_by_uni_partial(1515)
+            .expect("UNI 1515 partial summary must retain classified compound branches");
+        assert!(
+            partial
+                .unresolved_coreps
+                .iter()
+                .all(|failure| failure.source_irrep != "GM2GM3"),
+            "the compound physical record must be resolved by constituent-orbit analysis"
+        );
+        let source_labels = partial
+            .summary
+            .kpoints
+            .iter()
+            .flat_map(|point| &point.coreps)
+            .flat_map(|corep| &corep.source_irreps)
+            .map(|source| source.ml)
+            .collect::<Vec<_>>();
+        assert!(source_labels.contains(&"GM2"));
+        assert!(source_labels.contains(&"GM3"));
     }
 
     #[test]
