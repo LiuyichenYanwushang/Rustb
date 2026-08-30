@@ -1,6 +1,6 @@
 [package]
 name = "Rustb"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2024"
 
 categories = ["science"]
@@ -39,7 +39,7 @@ katexit = "0.1.5"
 thiserror = "2.0.12"
 toml = "0.8"
 puruspe = "0.4"
-cryspglib = { path = "../cryspglib", version = "0.2.0", optional = true, default-features = false }
+cryspglib = { path = "../cryspglib", version = "0.2.1", optional = true, default-features = false }
 
 
 [dependencies.intel-mkl-src]

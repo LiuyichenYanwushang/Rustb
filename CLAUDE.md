@@ -21,7 +21,7 @@ Rustb is a Rust library for tight-binding model calculations in condensed matter
 - **Repo**: https://github.com/LiuyichenYanwushang/Rustb
 - **Error handling**: Uses `thiserror` for `TbError` enum.
 - **Docs**: `katexit` renders LaTeX in rustdoc; `docs-header.html` for custom CSS.
-- **Version**: 0.7.2.
+- **Version**: 0.7.3.
 - **SKILLS.md**: Practical usage guide with code examples for the entire crate. When adding or changing any public API, update that file as well.
 
 > **Note**: README.md and SKILLS.md both use the current const-generic API.
@@ -825,9 +825,9 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   `points=10390`, and `coreps=52793`.  A future strict-summary failure is a
   correctness regression and must not be hidden as `???` or routed through a
   consumer-side fallback.
-- The corresponding Rustb release library gate is `261 passed / 2 ignored`;
+- The corresponding Rustb release library gate is `262 passed / 2 ignored`;
   the two ignored full-library censuses pass explicitly.  Release doc-tests are
-  `22 passed / 2 ignored`, and the `intel-mkl-system,cryspglib` all-target check
+  `24 passed / 2 ignored`, and the `intel-mkl-system,cryspglib` all-target check
   succeeds.
 - Type-A antiunitary characters may be
   `TypeAAntiunitaryPending`.  Rustb fits the available unitary characters and

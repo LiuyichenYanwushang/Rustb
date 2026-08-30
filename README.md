@@ -8,7 +8,7 @@ and Floquet calculations.
 
 [![Crates.io](https://img.shields.io/crates/v/Rustb.svg)](https://crates.io/crates/Rustb)
 
-The current API version is **0.7.2** and uses the const-generic model type
+The current API version is **0.7.3** and uses the const-generic model type
 `Model<SPIN, DIM, R>`.
 
 ## Installation

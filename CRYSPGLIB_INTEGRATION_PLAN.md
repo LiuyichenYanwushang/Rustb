@@ -127,7 +127,7 @@ but clearer APIs are added:
 Rustb adds one optional feature:
 
 ```toml
-cryspglib = { path = "../cryspglib", version = "0.2.0", optional = true,
+cryspglib = { path = "../cryspglib", version = "0.2.1", optional = true,
               default-features = false }
 
 [features]
