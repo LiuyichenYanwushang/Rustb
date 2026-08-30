@@ -804,29 +804,38 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   `cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni_partial`,
   not the strict summary API.  A single unavailable source corepresentation
   must not discard independently valid k-points and coreps.
-- Classified complex Type-A/Type-B failures from cryspglib's legacy
-  real-valued `Corepresentation` surface are recovered from the typed,
-  operation-aware `Complex64` scalar/spinor source rows.  This path was added
-  in cryspglib `daf04eb` and Rustb `9cbc7b8`; never regress to pairing raw
-  character arrays with Hall operations.
-- Three scientific cases remain unresolved and may produce `???` for an
-  affected band cluster: magnetic compound coreps, general Type-C partners
-  when the magnetic little group lacks direct `{I|0}Theta`, and spinor rows
-  requiring a nontrivial full-Seitz lattice/centering Bloch phase.  Do not
-  infer these labels from dimensions, names, rounded characters, or nearby
-  supported rows.
+- Every unresolved source row from the partial summary is recovered only
+  through cryspglib's typed, operation-aware complex APIs.  Ordinary and
+  spinor rows use their paired `Complex64` character/Seitz data; compound rows
+  use the plural constituent-orbit API and are merged by explicit source
+  provenance.  Never regress to pairing raw character arrays with Hall
+  operations or splitting Miller--Love labels in Rustb.
+- The former scientific blockers are implemented: compound constituent
+  orbits, general Type-C partner transport, lattice/centering Bloch phases,
+  and general crystallographic SU(2) frame transport.  Type-C evaluates
+  `chi(a0^-1 h a0)^*` with exact Seitz reduction, the residual lattice phase,
+  and the double-group central sign.  The relevant cryspglib commits are
+  `efc7e24`, `9e956c4`, `0851ca9`, `1de71e1`, and `83ca8e8`; Rustb consumes the
+  plural compound surface from `da4df70`.
+- The release-only
+  `exhaustive_partial_complex_corep_recovery_census` is a hard regression
+  gate.  Its 2026-08-30 result over all 1,651 UNI groups was
+  `points=10390`, `recovered_sources=15343`,
+  `recovered_type_c_sources=4240`, `merged_coreps=13247`, and
+  `still_unresolved=0`.  A future nonzero unresolved count is a correctness
+  regression and must not be hidden as `???`.
 - Type-A antiunitary characters may be
   `TypeAAntiunitaryPending`.  Rustb fits the available unitary characters and
   prints antiunitary entries as `N/A`; it must not present the placeholder
-  zeros as computed antiunitary characters.
+  zeros as computed antiunitary characters.  This does not prevent irrep/corep
+  labels because antiunitary traces are basis/gauge dependent and the Wigner
+  type plus unitary character row supplies the formal fitting data.
 - cryspglib currently supplies fixed-k magnetic-little-group coreps, not
   full-k-star corepresentations.  Rustb's present high-symmetry band labeling
   uses the fixed-k data; any future star/unfolding API must treat this as an
   explicit missing capability.
-- The 2026-08-30 full partial-summary census covered all 1,651 UNI groups with
-  zero summary-level fatal errors and retained 28,823 safe coreps.  Unresolved
-  source occurrences were: 4,820 compound (1,027 UNI), 12,430 general Type-C
-  partner (930 UNI), 5,669 spin full-Seitz phase (477 UNI), and 6,556 legacy
-  real-surface complex A/B (844 UNI).  The last category is recovered by
-  Rustb; UNI counts overlap and source-occurrence counts are not unique-irrep
-  database counts.
+- The strict cryspglib summary still exposes a legacy real-valued character
+  surface and therefore rejects genuinely complex rows.  Rustb must continue
+  using the partial summary plus typed complex recovery until cryspglib grows
+  a native complex summary type; this is an API-shape limitation, not missing
+  formal character data.
