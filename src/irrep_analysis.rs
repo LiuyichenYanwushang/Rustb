@@ -2777,6 +2777,7 @@ mod tests {
         let mut recovered_type_c_sources = 0usize;
         let mut merged_coreps = 0usize;
         let mut still_unresolved = 0usize;
+        let mut unresolved_categories = std::collections::BTreeMap::<String, usize>::new();
 
         for uni in 1..=1651 {
             let partial = magnetic_irrep_summary_by_uni_partial(uni)
@@ -2814,6 +2815,28 @@ mod tests {
                         });
                         if result.is_empty() {
                             still_unresolved += 1;
+                            let category = if failure
+                                .reason
+                                .contains("compound constituent branches are classified")
+                            {
+                                "compound complex surface"
+                            } else if failure.reason.contains("complex unitary character for") {
+                                "A/B complex unitary surface"
+                            } else if failure.reason.contains("operation-aware Type-C character") {
+                                "Type-C complex unitary surface"
+                            } else if failure.reason.contains(
+                                "parent-to-unitary spin frame is not a signed permutation",
+                            ) {
+                                "spin frame transport"
+                            } else if failure.reason.contains("transported lift of a0^-1") {
+                                "spin conjugated lift"
+                            } else {
+                                "other"
+                            };
+                            let family = if failure.spinor { "spin" } else { "scalar" };
+                            *unresolved_categories
+                                .entry(format!("{family} {category}"))
+                                .or_default() += 1;
                         } else {
                             recovered_sources += result.len();
                             recovered_type_c_sources += result
@@ -2837,6 +2860,13 @@ mod tests {
         assert!(recovered_type_c_sources > 0);
         println!(
             "partial complex recovery census: points={points} recovered_sources={recovered_sources} recovered_type_c_sources={recovered_type_c_sources} merged_coreps={merged_coreps} still_unresolved={still_unresolved}"
+        );
+        for (category, count) in &unresolved_categories {
+            println!("  unresolved {category}: {count}");
+        }
+        assert_eq!(
+            still_unresolved, 0,
+            "every partial-summary source corep must be recoverable through the typed complex/plural APIs; unresolved categories: {unresolved_categories:?}"
         );
     }
 
