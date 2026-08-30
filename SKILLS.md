@@ -727,19 +727,21 @@ and postchecks every covariance equation. For `HasRMatrix`, old position-matrix
 blocks stay aligned by lattice vector and newly generated support receives
 zeros; `rmatrix` is not incorrectly treated as a scalar Hamiltonian.
 
-Band labels use the same strict representation provider:
+Band labels use the model's atom-centred orbital metadata directly:
 
 ```rust
-let report = model.calculate_irrep(&AtomicOrbitalBasis, None)?;
+let report = model.calculate_irrep(None)?;
 println!("{report}");
 
 // Or test an explicitly supplied target group:
 let target_report = model.calculate_irrep_for_group(
     &target,
-    &AtomicOrbitalBasis,
     Some(&IrrepCalculationOptions::default()),
 )?;
 ```
+
+This band-irrep entry point is intentionally fixed to the automatic atomic
+orbital representation. It does not accept a custom basis provider.
 
 All target operations and their `SPIN`-appropriate factor system are resolved
 before diagonalization; the spinful path explicitly enforces the canonical

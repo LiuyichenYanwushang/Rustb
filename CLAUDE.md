@@ -760,10 +760,11 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   row zero, realign old `rmatrix` blocks by R, zero-fill generated rmatrix rows,
   and postcheck every target covariance equation. Return a new Model.
 - **Band coreps diagnose rather than hide broken symmetry**: call
-  `Model::calculate_irrep(&AtomicOrbitalBasis, options)` to detect the
-  Atom-defined/field-effective magnetic group, or
-  `calculate_irrep_for_group(target, provider, options)` for an explicit
-  target. Resolve and validate every localized target action before launching
+  `Model::calculate_irrep(options)` to detect the Atom-defined/field-effective
+  magnetic group, or `calculate_irrep_for_group(target, options)` for an
+  explicit target. These band-label entry points always use the atom-centred
+  orbital IDs and `Model::orb_projection`; they do not accept a custom basis
+  provider. Resolve and validate every localized target action before launching
   any eigensolver; an incomplete orbital shell or ambiguous Wannier gauge is a
   hard `IrrepBasisRepresentation` error; actions that do not compose with the
   canonical factor system for `SPIN` (linear spinless, spin-half double group

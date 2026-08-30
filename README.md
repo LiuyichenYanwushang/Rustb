@@ -288,9 +288,16 @@ magnetic group and prints an irvsp-like table at all isolated high-symmetry k
 points:
 
 ```rust
-let irreps = model.calculate_irrep(&AtomicOrbitalBasis, None)?;
+let irreps = model.calculate_irrep(None)?;
 println!("{irreps}");
 ```
+
+`None` selects `IrrepCalculationOptions::default()`; pass `Some(&options)` to
+override tolerances or external fields. The band-irrep entry point currently
+supports the atom-centred basis recorded directly by `Atom` orbital IDs and
+`Model::orb_projection` (`OrbProj::s`, `px`, `py`, `pz`, and the supported
+`d`/`f`/hybrid projections). It does not accept a second basis argument and
+does not guess local Wannier frames or general Wannier gauges.
 
 Before diagonalization, the calculation verifies the full localized actions,
 their `SPIN`-appropriate magnetic factor system (including
@@ -318,7 +325,6 @@ For a caller-supplied target use:
 ```rust
 let irreps = model.calculate_irrep_for_group(
     &target,
-    &AtomicOrbitalBasis,
     Some(&IrrepCalculationOptions::default()),
 )?;
 ```

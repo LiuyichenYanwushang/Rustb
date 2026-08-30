@@ -30,7 +30,7 @@ use crate::hamiltonian_symmetry::{
     LocalizedBasisAction, hamiltonian_residual, validate_action, validate_action_geometry,
     validate_hamiltonian, validate_projective_corepresentation, validate_tolerances,
 };
-use crate::{Gauge, Model, RMatrixData};
+use crate::{AtomicOrbitalBasis, Gauge, Model, RMatrixData};
 use cryspglib::irrep::magnetic_summary::{MagneticKPointSummary, magnetic_irrep_summary_by_uni};
 use cryspglib::irrep::wigner::SettingTransform;
 use ndarray::{Array1, Array2, s};
@@ -318,12 +318,151 @@ struct FormalCorep {
 impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// Detect the Atom-defined magnetic group and calculate its band irreps.
     ///
-    /// This is the usual entry point. The same `Model` may be passed before or
-    /// after [`Model::symmetrize_hamiltonian`]: a broken Hamiltonian yields raw
+    /// The band-irrep API currently supports only atom-centred orbital
+    /// metadata through [`AtomicOrbitalBasis`]. It reads each atom's owned
+    /// [`crate::OrbProj`] entries automatically; callers do not provide a
+    /// second basis description. Local orbital frames, repeated radial
+    /// channels, and general Wannier gauges are rejected rather than guessed.
+    ///
+    /// The same `Model` may be passed before or after
+    /// [`Model::symmetrize_hamiltonian`]: a broken Hamiltonian yields raw
     /// characters and `???`, while a valid symmetrized Hamiltonian yields
-    /// integer multiplicities and database labels. Optional electric and
-    /// magnetic fields are taken from [`IrrepCalculationOptions::symmetry`].
-    pub fn calculate_irrep<P>(
+    /// integer multiplicities and database labels. Pass `None` to use
+    /// [`IrrepCalculationOptions::default`], or `Some(&options)` to override
+    /// numerical controls and external fields.
+    ///
+    /// # Examples
+    ///
+    /// ## Graphene: labels and characters of the two `p_z` bands
+    ///
+    /// Graphene is embedded in a three-dimensional hexagonal cell because the
+    /// magnetic-irrep database is three-dimensional. The atom-to-orbital IDs
+    /// and `p_z` projections are part of the model, so no separate basis
+    /// argument is needed.
+    ///
+    /// ```
+    /// use ndarray::array;
+    /// use num_complex::Complex64;
+    /// use Rustb::{Atom, AtomType, Model, OrbProj, OrbitalId, Result};
+    ///
+    /// # fn main() -> Result<()> {
+    /// let lattice = array![
+    ///     [3.0_f64.sqrt(), -1.0, 0.0],
+    ///     [3.0_f64.sqrt(),  1.0, 0.0],
+    ///     [0.0,               0.0, 20.0],
+    /// ];
+    /// let positions = array![[0.0, 0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0, 0.0]];
+    /// let atoms = vec![
+    ///     Atom::with_orbitals(positions.row(0).to_owned(), AtomType::C, [OrbitalId::new(0)]),
+    ///     Atom::with_orbitals(positions.row(1).to_owned(), AtomType::C, [OrbitalId::new(1)]),
+    /// ];
+    /// let mut model = Model::<false, 3>::tb_model(lattice, positions, Some(atoms))?;
+    /// model.set_projection(&vec![OrbProj::pz, OrbProj::pz]);
+    ///
+    /// let hopping = Complex64::new(-2.7, 0.0);
+    /// for cell in [array![0, 0, 0], array![-1, 0, 0], array![0, -1, 0]] {
+    ///     model.add_hop(hopping, 0, 1, &cell, None);
+    /// }
+    ///
+    /// let report = model.calculate_irrep(None)?;
+    /// for point in &report.high_symmetry_kpoints {
+    ///     for band in &point.bands {
+    ///         println!("{}  E={:?}  {}", point.label, band.energies, band.label);
+    ///         for character in &band.characters {
+    ///             if let Some(value) = character.value {
+    ///                 println!("  chi[{}] = {value}", character.column);
+    ///             }
+    ///         }
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## Body-centred cubic lattice: a single `s` band
+    ///
+    /// This uses the conventional cubic Hall setting, with the corner and
+    /// body-centre sites explicitly represented. The eight listed hoppings
+    /// connect their nearest-neighbour images.
+    ///
+    /// ```
+    /// use ndarray::array;
+    /// use num_complex::Complex64;
+    /// use Rustb::{Atom, AtomType, Model, OrbitalId, Result};
+    ///
+    /// # fn main() -> Result<()> {
+    /// let lattice = array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    /// let positions = array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]];
+    /// let atoms = vec![
+    ///     Atom::with_orbitals(positions.row(0).to_owned(), AtomType::Fe, [OrbitalId::new(0)]),
+    ///     Atom::with_orbitals(positions.row(1).to_owned(), AtomType::Fe, [OrbitalId::new(1)]),
+    /// ];
+    /// let mut model = Model::<false, 3>::tb_model(lattice, positions, Some(atoms))?;
+    /// let hopping = Complex64::new(-1.0, 0.0);
+    /// for cell in [
+    ///     array![ 0,  0,  0],
+    ///     array![-1,  0,  0],
+    ///     array![ 0, -1,  0],
+    ///     array![-1, -1,  0],
+    ///     array![ 0,  0, -1],
+    ///     array![-1,  0, -1],
+    ///     array![ 0, -1, -1],
+    ///     array![-1, -1, -1],
+    /// ] {
+    ///     model.add_hop(hopping, 0, 1, &cell, None);
+    /// }
+    ///
+    /// let report = model.calculate_irrep(None)?;
+    /// for point in &report.high_symmetry_kpoints {
+    ///     for band in &point.bands {
+    ///         let unitary_characters = band
+    ///             .characters
+    ///             .iter()
+    ///             .filter_map(|character| character.value)
+    ///             .collect::<Vec<_>>();
+    ///         println!("{}: {}  chi={unitary_characters:?}", point.label, band.label);
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn calculate_irrep(
+        &self,
+        options: Option<&IrrepCalculationOptions>,
+    ) -> Result<IrrepCalculationReport> {
+        let options = options.copied().unwrap_or_default();
+        validate_options(&options)?;
+        let target_group =
+            self.magnetic_crystal_symmetry_from_atoms(&options.symmetry.structural_parameters)?;
+        self.calculate_irrep_for_group_with_representation(
+            &target_group,
+            &AtomicOrbitalBasis,
+            Some(&options),
+        )
+    }
+
+    /// Calculate magnetic little-group characters and corep labels at all
+    /// canonical high-symmetry k points for an explicitly supplied target.
+    ///
+    /// Basis interpretation is fixed to [`AtomicOrbitalBasis`]. With `None`,
+    /// the field context already stored in `target_group` is retained and the
+    /// remaining numerical controls use their defaults. With `Some`, the
+    /// requested fields are reapplied to the full target operation set before
+    /// validation.
+    pub fn calculate_irrep_for_group(
+        &self,
+        target_group: &MagneticCrystalSymmetry,
+        options: Option<&IrrepCalculationOptions>,
+    ) -> Result<IrrepCalculationReport> {
+        self.calculate_irrep_for_group_with_representation(
+            target_group,
+            &AtomicOrbitalBasis,
+            options,
+        )
+    }
+
+    #[cfg(test)]
+    fn calculate_irrep_with_representation<P>(
         &self,
         representation: &P,
         options: Option<&IrrepCalculationOptions>,
@@ -331,32 +470,30 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     where
         P: BasisSymmetryRepresentation<SPIN, R>,
     {
-        let owned_options = options.copied().unwrap_or_default();
-        validate_options(&owned_options)?;
-        let target_group = self
-            .magnetic_crystal_symmetry_from_atoms(&owned_options.symmetry.structural_parameters)?;
-        self.calculate_irrep_for_group(&target_group, representation, Some(&owned_options))
+        let options = options.copied().unwrap_or_default();
+        validate_options(&options)?;
+        let target_group =
+            self.magnetic_crystal_symmetry_from_atoms(&options.symmetry.structural_parameters)?;
+        self.calculate_irrep_for_group_with_representation(
+            &target_group,
+            representation,
+            Some(&options),
+        )
     }
 
-    /// Calculate magnetic little-group characters and corep labels at all
-    /// canonical high-symmetry k points for an explicitly supplied target.
+    /// Internal implementation seam used to validate the automatic provider
+    /// against deliberately invalid representations in unit tests.
     ///
-    /// `target_group` supplies the magnetic group whose labels are requested.
-    /// When `options` is `Some`, its electric/magnetic fields are reapplied to
-    /// the full target operation set. With `None`, the field context stored in
-    /// `target_group` is retained. The resulting operation set is validated
-    /// and reidentified before any eigenproblem is solved.
-    ///
-    /// Every target operation is first resolved through `representation`.
+    /// Every target operation is resolved before any eigenproblem is solved.
     /// Failure here (for example, an orbital set not closed under a rotation)
-    /// returns [`TbError::IrrepBasisRepresentation`] immediately.  In contrast,
+    /// returns [`TbError::IrrepBasisRepresentation`] immediately. In contrast,
     /// the Hamiltonian itself need not preserve the target: broken band
     /// subspaces remain in the report with raw characters and the label `???`.
     ///
     /// Independent k points are diagonalized in parallel with Rayon.  Result
     /// ordering remains deterministic.  To avoid nested oversubscription, use
     /// a single-threaded BLAS backend or set its thread count to one.
-    pub fn calculate_irrep_for_group<P>(
+    fn calculate_irrep_for_group_with_representation<P>(
         &self,
         target_group: &MagneticCrystalSymmetry,
         representation: &P,
@@ -1364,9 +1501,7 @@ mod tests {
     #[test]
     fn incomplete_orbital_shell_is_rejected_before_band_labelling() {
         let model = orbital_cubic::<false>(&[OrbProj::px, OrbProj::py]);
-        let error = model
-            .calculate_irrep(&AtomicOrbitalBasis, None)
-            .unwrap_err();
+        let error = model.calculate_irrep(None).unwrap_err();
         assert!(matches!(error, TbError::IrrepBasisRepresentation { .. }));
     }
 
@@ -1374,7 +1509,7 @@ mod tests {
     fn inconsistent_local_actions_are_rejected_before_band_labelling() {
         let model = orbital_cubic::<true>(&[OrbProj::s]);
         let error = model
-            .calculate_irrep(&InvalidIdentityCorepresentation, None)
+            .calculate_irrep_with_representation(&InvalidIdentityCorepresentation, None)
             .unwrap_err();
         assert!(matches!(error, TbError::IrrepBasisCorepresentation { .. }));
     }
@@ -1392,7 +1527,7 @@ mod tests {
         )
         .unwrap();
         let error = model
-            .calculate_irrep(&WrongSpinfulFactorSystem, None)
+            .calculate_irrep_with_representation(&WrongSpinfulFactorSystem, None)
             .unwrap_err();
         assert!(matches!(error, TbError::IrrepBasisCorepresentation { .. }));
         assert!(error.to_string().contains("factor-system phase"));
@@ -1406,7 +1541,7 @@ mod tests {
         model.set_hop(3.0, 0, 0, &array![0_isize, 0, 1], None);
         model.set_onsite(&array![1e12], None);
 
-        let report = model.calculate_irrep(&AtomicOrbitalBasis, None).unwrap();
+        let report = model.calculate_irrep(None).unwrap();
         assert!(!report.target_hamiltonian_compatible);
         assert!(
             report
@@ -1445,9 +1580,7 @@ mod tests {
         let model = orbital_cubic::<false>(&[OrbProj::s]);
         let mut options = IrrepCalculationOptions::default();
         options.symmetry.tolerances.hermiticity = f64::NAN;
-        let error = model
-            .calculate_irrep(&AtomicOrbitalBasis, Some(&options))
-            .unwrap_err();
+        let error = model.calculate_irrep(Some(&options)).unwrap_err();
         assert!(matches!(
             error,
             TbError::InvalidHamiltonianSymmetryInput { .. }
@@ -1464,7 +1597,7 @@ mod tests {
             )
             .unwrap();
 
-        let broken = model.calculate_irrep(&AtomicOrbitalBasis, None).unwrap();
+        let broken = model.calculate_irrep(None).unwrap();
         let gamma = broken
             .high_symmetry_kpoints
             .iter()
@@ -1485,7 +1618,7 @@ mod tests {
             )
             .unwrap();
         let restored = symmetrized
-            .calculate_irrep_for_group(&target, &AtomicOrbitalBasis, None)
+            .calculate_irrep_for_group(&target, None)
             .unwrap();
         let gamma = restored
             .high_symmetry_kpoints
@@ -1498,7 +1631,7 @@ mod tests {
     #[test]
     fn spinful_grey_group_uses_spinor_corepresentations() {
         let model = orbital_cubic::<true>(&[OrbProj::s]);
-        let report = model.calculate_irrep(&AtomicOrbitalBasis, None).unwrap();
+        let report = model.calculate_irrep(None).unwrap();
         let gamma = report
             .high_symmetry_kpoints
             .iter()
@@ -1536,10 +1669,10 @@ mod tests {
             .build()
             .unwrap();
         let first = serial_pool
-            .install(|| model.calculate_irrep(&ScalarSiteBasis, None))
+            .install(|| model.calculate_irrep_with_representation(&ScalarSiteBasis, None))
             .unwrap();
         let second = parallel_pool
-            .install(|| model.calculate_irrep(&ScalarSiteBasis, None))
+            .install(|| model.calculate_irrep_with_representation(&ScalarSiteBasis, None))
             .unwrap();
         assert_eq!(first, second);
         assert!(first.high_symmetry_kpoints.len() > 1);
@@ -1567,9 +1700,7 @@ mod tests {
             .structural_parameters
             .external_fields
             .magnetic = Some([0.0, 0.0, 1.0]);
-        let report = model
-            .calculate_irrep(&AtomicOrbitalBasis, Some(&options))
-            .unwrap();
+        let report = model.calculate_irrep(Some(&options)).unwrap();
         assert_ne!(report.uni_number, full.uni_number);
         assert!(
             report
@@ -1581,7 +1712,7 @@ mod tests {
         );
 
         let explicit = model
-            .calculate_irrep_for_group(&full, &AtomicOrbitalBasis, Some(&options))
+            .calculate_irrep_for_group(&full, Some(&options))
             .unwrap();
         assert_eq!(explicit.uni_number, report.uni_number);
         assert_eq!(explicit.bns_number, report.bns_number);
@@ -1602,9 +1733,7 @@ mod tests {
             target.operations.len()
         );
 
-        let report = model
-            .calculate_irrep_for_group(&target, &AtomicOrbitalBasis, None)
-            .unwrap();
+        let report = model.calculate_irrep_for_group(&target, None).unwrap();
         assert_eq!(report.uni_number, target.uni_number);
         assert_eq!(
             report.hamiltonian_operation_diagnostics.len(),
@@ -1615,7 +1744,9 @@ mod tests {
     #[test]
     fn nonzero_origin_shift_preserves_database_character_phases() {
         let model = shifted_cubic_scalar_model();
-        let report = model.calculate_irrep(&ScalarSiteBasis, None).unwrap();
+        let report = model
+            .calculate_irrep_with_representation(&ScalarSiteBasis, None)
+            .unwrap();
         assert!(
             report
                 .high_symmetry_kpoints
@@ -1629,7 +1760,9 @@ mod tests {
     #[test]
     fn complex_little_group_characters_are_identified() {
         let model = binary_hexagonal_scalar_model::<false>();
-        let report = model.calculate_irrep(&ScalarSiteBasis, None).unwrap();
+        let report = model
+            .calculate_irrep_with_representation(&ScalarSiteBasis, None)
+            .unwrap();
         assert_eq!(report.uni_number, 1440);
         assert!(
             report
@@ -1654,7 +1787,9 @@ mod tests {
     #[test]
     fn complex_spinor_little_group_characters_are_identified() {
         let model = binary_hexagonal_scalar_model::<true>();
-        let report = model.calculate_irrep(&ScalarSiteBasis, None).unwrap();
+        let report = model
+            .calculate_irrep_with_representation(&ScalarSiteBasis, None)
+            .unwrap();
         assert_eq!(report.uni_number, 1440);
         assert!(
             report
