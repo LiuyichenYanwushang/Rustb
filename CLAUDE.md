@@ -774,8 +774,10 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   decision is invariant under `H -> H + C I`. If any operation breaks H,
   retain residuals and raw characters but mark every target label `???`, even
   when a sampled eigenspace happens to close. Once preflight is complete,
-  process independent high-symmetry k points
-  in parallel and preserve their canonical order. Group consecutive degenerate
+  resolve target actions, validate generator-by-operation composition, check
+  real-space covariance, and process independent high-symmetry k points in
+  parallel while preserving canonical order and deterministic first errors.
+  Group consecutive degenerate
   bands with an energy-origin-invariant threshold, compute unitary sewing
   characters and antiunitary closure residuals, and fit formal corep
   multiplicities. Only integer multiplicities, small reconstruction residual,

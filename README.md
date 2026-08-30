@@ -304,8 +304,10 @@ their `SPIN`-appropriate magnetic factor system (including
 $\mathcal T^2=-1$ for spinful models), and exact covariance of the complete
 real-space Hamiltonian. Covariance thresholds are invariant under adding a
 constant energy to every band. It then diagonalizes independent k points in
-parallel, restricts each unitary sewing matrix to consecutive degenerate bands,
-and fits the resulting characters to the magnetic-corepresentation table. The
+parallel; operation-action preparation, projective composition checks, and
+Hamiltonian covariance checks are parallel as well. It restricts each unitary
+sewing matrix to consecutive degenerate bands and fits the resulting characters
+to the magnetic-corepresentation table. The
 printed table includes every raw complex unitary character; antiunitary rows
 are marked `N/A` because `Tr(U K)` is not an ordinary character. Output order
 remains deterministic. For efficient outer parallelism, use one BLAS thread

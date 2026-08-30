@@ -468,7 +468,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
         options: Option<&IrrepCalculationOptions>,
     ) -> Result<IrrepCalculationReport>
     where
-        P: BasisSymmetryRepresentation<SPIN, R>,
+        P: BasisSymmetryRepresentation<SPIN, R> + Sync,
     {
         let options = options.copied().unwrap_or_default();
         validate_options(&options)?;
@@ -485,6 +485,8 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// against deliberately invalid representations in unit tests.
     ///
     /// Every target operation is resolved before any eigenproblem is solved.
+    /// Independent operation actions and k points are evaluated in parallel;
+    /// both results and the first reported error retain database order.
     /// Failure here (for example, an orbital set not closed under a rotation)
     /// returns [`TbError::IrrepBasisRepresentation`] immediately. In contrast,
     /// the Hamiltonian itself need not preserve the target: broken band
@@ -500,7 +502,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
         options: Option<&IrrepCalculationOptions>,
     ) -> Result<IrrepCalculationReport>
     where
-        P: BasisSymmetryRepresentation<SPIN, R>,
+        P: BasisSymmetryRepresentation<SPIN, R> + Sync,
     {
         let supplied_options = options.is_some();
         let options = options.copied().unwrap_or_default();
@@ -592,64 +594,72 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                 input_to_standard.then(msg_to_data)
             });
 
-        // This is intentionally serial and precedes every eigenproblem.  A
-        // partially representable orbital basis must fail as a whole rather
-        // than producing a mixture of valid and guessed k-point labels.
+        // Resolve every operation before any eigenproblem. A partially
+        // representable orbital basis must fail as a whole rather than
+        // producing a mixture of valid and guessed k-point labels. Indexed
+        // parallel collection preserves canonical operation/error order.
         let position_tolerance = options
             .symmetry
             .tolerances
             .position
             .unwrap_or(options.symmetry.structural_parameters.symprec);
-        let mut prepared_operations = Vec::with_capacity(validated.len());
-        for (operation_index, operation) in validated.operations().iter().enumerate() {
-            let operation = CrystalSymmetryOperation {
-                rotation: operation.rotation,
-                translation: operation.translation,
-                time_reversal: operation.time_reversal,
-            };
-            let action = representation
-                .resolve(BasisActionContext {
-                    model: self,
-                    operation: &operation,
-                    position_tolerance,
-                    representation_tolerance: options.symmetry.tolerances.representation,
-                })
-                .and_then(|action| {
-                    let action = validate_action(
-                        action,
-                        self.nsta(),
-                        options.symmetry.tolerances.representation,
-                    )?;
-                    validate_action_geometry(
-                        self,
-                        &operation,
-                        &action,
+        let prepared_operations = validated
+            .operations()
+            .operations
+            .par_iter()
+            .enumerate()
+            .map(|(operation_index, operation)| {
+                let operation = CrystalSymmetryOperation {
+                    rotation: operation.rotation,
+                    translation: operation.translation,
+                    time_reversal: operation.time_reversal,
+                };
+                let action = representation
+                    .resolve(BasisActionContext {
+                        model: self,
+                        operation: &operation,
                         position_tolerance,
-                        options.symmetry.tolerances.representation,
-                    )?;
-                    Ok(action)
+                        representation_tolerance: options.symmetry.tolerances.representation,
+                    })
+                    .and_then(|action| {
+                        let action = validate_action(
+                            action,
+                            self.nsta(),
+                            options.symmetry.tolerances.representation,
+                        )?;
+                        validate_action_geometry(
+                            self,
+                            &operation,
+                            &action,
+                            position_tolerance,
+                            options.symmetry.tolerances.representation,
+                        )?;
+                        Ok(action)
+                    })
+                    .map_err(|error| TbError::IrrepBasisRepresentation {
+                        operation_index,
+                        reason: error.to_string(),
+                    })?;
+                let (data_rotation, data_translation_modulo) = input_to_data
+                    .transform_seitz(&operation.rotation, &operation.translation)
+                    .ok_or_else(|| TbError::IrrepCalculation {
+                        message: format!(
+                            "operation {operation_index} cannot be transformed to the irrep data-Hall frame"
+                        ),
+                    })?;
+                let data_translation_exact =
+                    exact_transformed_translation(&input_to_data, &operation, &data_rotation);
+                Ok(PreparedOperation {
+                    operation,
+                    action,
+                    data_rotation,
+                    data_translation_modulo,
+                    data_translation_exact,
                 })
-                .map_err(|error| TbError::IrrepBasisRepresentation {
-                    operation_index,
-                    reason: error.to_string(),
-                })?;
-            let (data_rotation, data_translation_modulo) = input_to_data
-                .transform_seitz(&operation.rotation, &operation.translation)
-                .ok_or_else(|| TbError::IrrepCalculation {
-                    message: format!(
-                        "operation {operation_index} cannot be transformed to the irrep data-Hall frame"
-                    ),
-                })?;
-            let data_translation_exact =
-                exact_transformed_translation(&input_to_data, &operation, &data_rotation);
-            prepared_operations.push(PreparedOperation {
-                operation,
-                action,
-                data_rotation,
-                data_translation_modulo,
-                data_translation_exact,
-            });
-        }
+            })
+            .collect::<Vec<Result<_>>>()
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
 
         let operation_tolerance = options.symmetry.tolerances.operation.max(1e-8);
         for left in 0..prepared_operations.len() {

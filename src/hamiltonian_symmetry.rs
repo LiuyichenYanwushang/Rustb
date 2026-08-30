@@ -56,6 +56,7 @@ use crate::model::{Model, RMatrixData};
 use ndarray::{Array2, Array3, Array4, Axis};
 use ndarray_linalg::Inverse;
 use num_complex::Complex64;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One cell-shift sector of a localized-basis symmetry action.
@@ -169,7 +170,9 @@ pub enum BasisRepresentationError {
 /// Implement this trait for Wannier gauges, local frames, orbital shells, or
 /// other bases whose transformation law cannot be inferred from [`OrbProj`].
 /// Returning an error marks only that operation as unresolved; it does not
-/// falsely label the operation as broken.
+/// falsely label the operation as broken. Whole-group analysis resolves
+/// independent operations concurrently with Rayon, so providers passed to
+/// those methods must be [`Sync`] and must not depend on invocation order.
 pub trait BasisSymmetryRepresentation<const SPIN: bool, R: RMatrixData> {
     fn resolve(
         &self,
@@ -1900,6 +1903,106 @@ fn spin_composition_phase<const SPIN: bool, R: RMatrixData>(
     Ok(phase)
 }
 
+fn validate_corepresentation_pair<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+    operations_and_actions: &[(CrystalSymmetryOperation, LocalizedBasisAction)],
+    left_index: usize,
+    right_index: usize,
+    operation_tolerance: f64,
+    representation_tolerance: f64,
+) -> std::result::Result<(), BasisRepresentationError> {
+    let (left_operation, left_action) = &operations_and_actions[left_index];
+    let (_, right_action) = &operations_and_actions[right_index];
+    let (product_index, representative_shift) = corepresentation_product(
+        operations_and_actions,
+        left_index,
+        right_index,
+        operation_tolerance,
+    )?;
+    let product_action = &operations_and_actions[product_index].1;
+
+    let actual = compose_localized_actions(left_operation, left_action, right_action)?;
+    let mut expected = BTreeMap::new();
+    for sector in &product_action.sectors {
+        let shifted = [
+            sector.shift[0].checked_add(representative_shift[0]),
+            sector.shift[1].checked_add(representative_shift[1]),
+            sector.shift[2].checked_add(representative_shift[2]),
+        ];
+        let shifted = collect_three_options(shifted).ok_or_else(|| {
+            BasisRepresentationError::Invalid(
+                "target action shift overflows during composition check".to_string(),
+            )
+        })?;
+        expected.insert(shifted, sector.matrix.clone());
+    }
+
+    let reference = expected
+        .iter()
+        .flat_map(|(shift, matrix)| {
+            matrix
+                .indexed_iter()
+                .map(move |((row, column), value)| (*shift, row, column, *value))
+        })
+        .max_by(|left, right| left.3.norm().total_cmp(&right.3.norm()))
+        .ok_or_else(|| {
+            BasisRepresentationError::Invalid(format!("target action {product_index} is empty"))
+        })?;
+    let actual_reference = actual
+        .get(&reference.0)
+        .map(|matrix| matrix[[reference.1, reference.2]])
+        .unwrap_or_else(|| Complex64::new(0.0, 0.0));
+    if reference.3.norm() <= representation_tolerance
+        || actual_reference.norm() <= representation_tolerance
+    {
+        return Err(BasisRepresentationError::Invalid(format!(
+            "basis actions {left_index} and {right_index} do not compose to target action {product_index}"
+        )));
+    }
+    let phase_ratio = actual_reference / reference.3;
+    let phase = phase_ratio / phase_ratio.norm();
+    let expected_phase = spin_composition_phase(
+        model,
+        left_operation,
+        &operations_and_actions[right_index].0,
+        &operations_and_actions[product_index].0,
+        representation_tolerance,
+    )?;
+    if (phase - expected_phase).norm() > representation_tolerance {
+        return Err(BasisRepresentationError::Invalid(format!(
+            "basis actions {left_index} and {right_index} have factor-system phase {phase}, expected {expected_phase} for SPIN={SPIN}"
+        )));
+    }
+    let keys = actual
+        .keys()
+        .chain(expected.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let dimension = left_action.sectors[0].matrix.nrows();
+    let mut max_residual = 0.0_f64;
+    for shift in keys {
+        for row in 0..dimension {
+            for column in 0..dimension {
+                let actual_value = actual
+                    .get(&shift)
+                    .map(|matrix| matrix[[row, column]])
+                    .unwrap_or_else(|| Complex64::new(0.0, 0.0));
+                let expected_value = expected
+                    .get(&shift)
+                    .map(|matrix| phase * matrix[[row, column]])
+                    .unwrap_or_else(|| Complex64::new(0.0, 0.0));
+                max_residual = max_residual.max((actual_value - expected_value).norm());
+            }
+        }
+    }
+    if max_residual > representation_tolerance {
+        return Err(BasisRepresentationError::Invalid(format!(
+            "basis actions {left_index} and {right_index} violate projective group composition for target {product_index} (maximum residual {max_residual:e})"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_projective_corepresentation<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
     operations_and_actions: &[(CrystalSymmetryOperation, LocalizedBasisAction)],
@@ -1977,101 +2080,26 @@ pub(crate) fn validate_projective_corepresentation<const SPIN: bool, R: RMatrixD
     // d(G)|G|, which matters for large magnetic groups and Wannier bases.
     let generators =
         corepresentation_generators(operations_and_actions, identity_index, operation_tolerance)?;
-    for left_index in generators {
-        let (left_operation, left_action) = &operations_and_actions[left_index];
-        for (right_index, (_, right_action)) in operations_and_actions.iter().enumerate() {
-            let (product_index, representative_shift) = corepresentation_product(
+    generators
+        .into_iter()
+        .flat_map(|left_index| {
+            (0..operations_and_actions.len()).map(move |right_index| (left_index, right_index))
+        })
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|(left_index, right_index)| {
+            validate_corepresentation_pair(
+                model,
                 operations_and_actions,
                 left_index,
                 right_index,
                 operation_tolerance,
-            )?;
-            let product_action = &operations_and_actions[product_index].1;
-
-            let actual = compose_localized_actions(left_operation, left_action, right_action)?;
-            let mut expected = BTreeMap::new();
-            for sector in &product_action.sectors {
-                let shifted = [
-                    sector.shift[0].checked_add(representative_shift[0]),
-                    sector.shift[1].checked_add(representative_shift[1]),
-                    sector.shift[2].checked_add(representative_shift[2]),
-                ];
-                let shifted = collect_three_options(shifted).ok_or_else(|| {
-                    BasisRepresentationError::Invalid(
-                        "target action shift overflows during composition check".to_string(),
-                    )
-                })?;
-                expected.insert(shifted, sector.matrix.clone());
-            }
-
-            let reference = expected
-                .iter()
-                .flat_map(|(shift, matrix)| {
-                    matrix
-                        .indexed_iter()
-                        .map(move |((row, column), value)| (*shift, row, column, *value))
-                })
-                .max_by(|left, right| left.3.norm().total_cmp(&right.3.norm()))
-                .ok_or_else(|| {
-                    BasisRepresentationError::Invalid(format!(
-                        "target action {product_index} is empty"
-                    ))
-                })?;
-            let actual_reference = actual
-                .get(&reference.0)
-                .map(|matrix| matrix[[reference.1, reference.2]])
-                .unwrap_or_else(|| Complex64::new(0.0, 0.0));
-            if reference.3.norm() <= representation_tolerance
-                || actual_reference.norm() <= representation_tolerance
-            {
-                return Err(BasisRepresentationError::Invalid(format!(
-                    "basis actions {left_index} and {right_index} do not compose to target action {product_index}"
-                )));
-            }
-            let phase_ratio = actual_reference / reference.3;
-            let phase = phase_ratio / phase_ratio.norm();
-            let expected_phase = spin_composition_phase(
-                model,
-                left_operation,
-                &operations_and_actions[right_index].0,
-                &operations_and_actions[product_index].0,
                 representation_tolerance,
-            )?;
-            if (phase - expected_phase).norm() > representation_tolerance {
-                return Err(BasisRepresentationError::Invalid(format!(
-                    "basis actions {left_index} and {right_index} have factor-system phase {phase}, expected {expected_phase} for SPIN={SPIN}"
-                )));
-            }
-            let keys = actual
-                .keys()
-                .chain(expected.keys())
-                .copied()
-                .collect::<BTreeSet<_>>();
-            let dimension = left_action.sectors[0].matrix.nrows();
-            let mut max_residual = 0.0_f64;
-            for shift in keys {
-                for row in 0..dimension {
-                    for column in 0..dimension {
-                        let actual_value = actual
-                            .get(&shift)
-                            .map(|matrix| matrix[[row, column]])
-                            .unwrap_or_else(|| Complex64::new(0.0, 0.0));
-                        let expected_value = expected
-                            .get(&shift)
-                            .map(|matrix| phase * matrix[[row, column]])
-                            .unwrap_or_else(|| Complex64::new(0.0, 0.0));
-                        max_residual = max_residual.max((actual_value - expected_value).norm());
-                    }
-                }
-            }
-            if max_residual > representation_tolerance {
-                return Err(BasisRepresentationError::Invalid(format!(
-                    "basis actions {left_index} and {right_index} violate projective group composition for target {product_index} (maximum residual {max_residual:e})"
-                )));
-            }
-        }
-    }
-    Ok(())
+            )
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn symmetrized_support(
@@ -2094,16 +2122,23 @@ fn symmetrized_support(
 
     let dimension = support.matrices.values().next().map_or(0, Array2::nrows);
     let normalizer = operations_and_actions.len() as f64;
-    let mut averaged = BTreeMap::new();
-    for lattice_vector in domain {
-        let mut matrix = Array2::zeros((dimension, dimension));
-        for (operation, action) in operations_and_actions {
-            matrix +=
-                &transformed_hamiltonian_at(support, operation, action, lattice_vector, false)?;
-        }
-        matrix.mapv_inplace(|value| value / normalizer);
-        averaged.insert(lattice_vector, matrix);
-    }
+    let domain = domain.into_iter().collect::<Vec<_>>();
+    let mut averaged = domain
+        .into_par_iter()
+        .map(|lattice_vector| {
+            let mut matrix = Array2::zeros((dimension, dimension));
+            // Preserve group-order accumulation inside each block so the
+            // parallel implementation is bitwise deterministic.
+            for (operation, action) in operations_and_actions {
+                matrix +=
+                    &transformed_hamiltonian_at(support, operation, action, lattice_vector, false)?;
+            }
+            matrix.mapv_inplace(|value| value / normalizer);
+            Ok((lattice_vector, matrix))
+        })
+        .collect::<Vec<std::result::Result<_, BasisRepresentationError>>>()
+        .into_iter()
+        .collect::<std::result::Result<BTreeMap<_, _>, _>>()?;
 
     // A Reynolds average of a Hermitian Hamiltonian is Hermitian in exact
     // arithmetic. Enforce the paired relation once to remove roundoff without
@@ -2274,13 +2309,17 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// Peierls magnetic field requiring a position-dependent gauge phase needs
     /// a richer representation provider; field metadata alone does not add
     /// those gauge compensations.
+    ///
+    /// Candidate operations are checked concurrently with Rayon while the
+    /// returned operation order remains canonical. For workloads that also
+    /// call BLAS, keep BLAS single-threaded to avoid nested oversubscription.
     pub fn check_hamiltonian_symmetry<P>(
         &self,
         representation: &P,
         request: &HamiltonianSymmetryRequest,
     ) -> Result<HamiltonianSymmetryReport>
     where
-        P: BasisSymmetryRepresentation<SPIN, R>,
+        P: BasisSymmetryRepresentation<SPIN, R> + Sync,
     {
         validate_request(request)?;
         let support = validate_hamiltonian(self, request.tolerances.hermiticity)?;
@@ -2312,71 +2351,78 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
             .map(from_cry_operation)
             .collect::<Vec<_>>();
 
-        let mut operation_checks = Vec::with_capacity(field_allowed_operations.len());
-        let mut surviving_operations = Vec::new();
-        let mut unresolved = false;
-        let mut broken = false;
-        for operation in &field_allowed_operations {
-            let resolved = representation
-                .resolve(BasisActionContext {
-                    model: self,
-                    operation,
-                    position_tolerance,
-                    representation_tolerance: request.tolerances.representation,
-                })
-                .and_then(|action| {
-                    let action =
-                        validate_action(action, self.nsta(), request.tolerances.representation)?;
-                    validate_action_geometry(
-                        self,
+        let operation_checks = field_allowed_operations
+            .par_iter()
+            .map(|operation| {
+                let resolved = representation
+                    .resolve(BasisActionContext {
+                        model: self,
                         operation,
-                        &action,
                         position_tolerance,
-                        request.tolerances.representation,
-                    )?;
-                    Ok(action)
-                });
-            match resolved {
-                Ok(action) => {
-                    let residual =
-                        hamiltonian_residual(&support, operation, &action, request.tolerances);
-                    match residual {
-                        Ok(residual) if residual.max_absolute <= residual.acceptance_threshold => {
-                            surviving_operations.push(*operation);
-                            operation_checks.push(OperationHamiltonianCheck {
-                                operation: *operation,
-                                action: Some(action),
-                                status: OperationHamiltonianStatus::Preserved(residual),
-                            });
-                        }
-                        Ok(residual) => {
-                            broken = true;
-                            operation_checks.push(OperationHamiltonianCheck {
+                        representation_tolerance: request.tolerances.representation,
+                    })
+                    .and_then(|action| {
+                        let action = validate_action(
+                            action,
+                            self.nsta(),
+                            request.tolerances.representation,
+                        )?;
+                        validate_action_geometry(
+                            self,
+                            operation,
+                            &action,
+                            position_tolerance,
+                            request.tolerances.representation,
+                        )?;
+                        Ok(action)
+                    });
+                match resolved {
+                    Ok(action) => {
+                        let residual =
+                            hamiltonian_residual(&support, operation, &action, request.tolerances);
+                        match residual {
+                            Ok(residual)
+                                if residual.max_absolute <= residual.acceptance_threshold =>
+                            {
+                                OperationHamiltonianCheck {
+                                    operation: *operation,
+                                    action: Some(action),
+                                    status: OperationHamiltonianStatus::Preserved(residual),
+                                }
+                            }
+                            Ok(residual) => OperationHamiltonianCheck {
                                 operation: *operation,
                                 action: Some(action),
                                 status: OperationHamiltonianStatus::Broken(residual),
-                            });
-                        }
-                        Err(error) => {
-                            unresolved = true;
-                            operation_checks.push(OperationHamiltonianCheck {
+                            },
+                            Err(error) => OperationHamiltonianCheck {
                                 operation: *operation,
                                 action: Some(action),
                                 status: OperationHamiltonianStatus::Unresolved(error),
-                            });
+                            },
                         }
                     }
-                }
-                Err(error) => {
-                    unresolved = true;
-                    operation_checks.push(OperationHamiltonianCheck {
+                    Err(error) => OperationHamiltonianCheck {
                         operation: *operation,
                         action: None,
                         status: OperationHamiltonianStatus::Unresolved(error),
-                    });
+                    },
                 }
-            }
-        }
+            })
+            .collect::<Vec<_>>();
+        let surviving_operations = operation_checks
+            .iter()
+            .filter_map(|check| {
+                matches!(check.status, OperationHamiltonianStatus::Preserved(_))
+                    .then_some(check.operation)
+            })
+            .collect::<Vec<_>>();
+        let unresolved = operation_checks
+            .iter()
+            .any(|check| matches!(check.status, OperationHamiltonianStatus::Unresolved(_)));
+        let broken = operation_checks
+            .iter()
+            .any(|check| matches!(check.status, OperationHamiltonianStatus::Broken(_)));
 
         let completeness = if unresolved {
             HamiltonianSymmetryCompleteness::LowerBound
@@ -2546,6 +2592,11 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// are preserved and newly introduced `hamR` blocks receive zero position
     /// matrices. This method certifies the returned Hamiltonian, not arbitrary
     /// auxiliary operators.
+    ///
+    /// Independent basis actions, group-composition checks, real-space
+    /// support blocks, and final residuals are evaluated with Rayon. Matrix
+    /// accumulation within each block retains group order, making the result
+    /// bitwise independent of the Rayon thread count.
     pub fn symmetrize_hamiltonian<P>(
         &self,
         target_group: &MagneticCrystalSymmetry,
@@ -2553,7 +2604,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
         parameters: &HamiltonianSymmetrizationParameters,
     ) -> Result<Self>
     where
-        P: BasisSymmetryRepresentation<SPIN, R>,
+        P: BasisSymmetryRepresentation<SPIN, R> + Sync,
     {
         validate_tolerances(parameters.tolerances)?;
         let support = validate_hamiltonian(self, parameters.tolerances.hermiticity)?;
@@ -2656,34 +2707,42 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
             .tolerances
             .position
             .unwrap_or(parameters.structural_parameters.symprec);
-        let mut operations_and_actions = Vec::with_capacity(normalized_target_operations.len());
-        for (index, operation) in normalized_target_operations.iter().enumerate() {
-            let action = representation
-                .resolve(BasisActionContext {
-                    model: self,
-                    operation,
-                    position_tolerance,
-                    representation_tolerance: parameters.tolerances.representation,
-                })
-                .and_then(|action| {
-                    let action =
-                        validate_action(action, self.nsta(), parameters.tolerances.representation)?;
-                    validate_action_geometry(
-                        self,
+        let operations_and_actions = normalized_target_operations
+            .par_iter()
+            .enumerate()
+            .map(|(index, operation)| {
+                let action = representation
+                    .resolve(BasisActionContext {
+                        model: self,
                         operation,
-                        &action,
                         position_tolerance,
-                        parameters.tolerances.representation,
-                    )?;
-                    Ok(action)
-                })
-                .map_err(|error| TbError::TargetMagneticGroupIncompatible {
-                    reason: format!(
-                        "operation {index} has no compatible localized-basis action: {error}"
-                    ),
-                })?;
-            operations_and_actions.push((*operation, action));
-        }
+                        representation_tolerance: parameters.tolerances.representation,
+                    })
+                    .and_then(|action| {
+                        let action = validate_action(
+                            action,
+                            self.nsta(),
+                            parameters.tolerances.representation,
+                        )?;
+                        validate_action_geometry(
+                            self,
+                            operation,
+                            &action,
+                            position_tolerance,
+                            parameters.tolerances.representation,
+                        )?;
+                        Ok(action)
+                    })
+                    .map_err(|error| TbError::TargetMagneticGroupIncompatible {
+                        reason: format!(
+                            "operation {index} has no compatible localized-basis action: {error}"
+                        ),
+                    })?;
+                Ok((*operation, action))
+            })
+            .collect::<Vec<Result<_>>>()
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
 
         validate_projective_corepresentation(
             self,
@@ -2705,14 +2764,20 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
         let symmetrized = model_with_hamiltonian_support(self, averaged)?;
         let projected_support =
             validate_hamiltonian(&symmetrized, parameters.tolerances.hermiticity)?;
-        for (index, (operation, action)) in operations_and_actions.iter().enumerate() {
-            let residual =
+        let post_projection_residuals = operations_and_actions
+            .par_iter()
+            .enumerate()
+            .map(|(index, (operation, action))| {
                 hamiltonian_residual(&projected_support, operation, action, parameters.tolerances)
                     .map_err(|error| TbError::TargetMagneticGroupIncompatible {
                         reason: format!(
                             "post-projection check failed for operation {index}: {error}"
                         ),
-                    })?;
+                    })
+            })
+            .collect::<Vec<_>>();
+        for (index, residual) in post_projection_residuals.into_iter().enumerate() {
+            let residual = residual?;
             if residual.max_absolute > residual.acceptance_threshold {
                 return Err(TbError::TargetMagneticGroupIncompatible {
                     reason: format!(
@@ -3614,6 +3679,59 @@ mod tests {
                 .iter()
                 .zip(symmetrized.ham.iter())
                 .all(|(left, right)| (*left - *right).norm() < 1e-12)
+        );
+    }
+
+    #[test]
+    fn parallel_symmetry_analysis_and_projection_are_bitwise_deterministic() {
+        let mut model = scalar_cubic();
+        model.set_hop(1.0_f64, 0, 0, &array![1_isize, 0, 0], None);
+        model.set_hop(2.0_f64, 0, 0, &array![0_isize, 1, 0], None);
+        model.set_hop(3.0_f64, 0, 0, &array![0_isize, 0, 1], None);
+        let target = model
+            .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())
+            .unwrap();
+        let request = HamiltonianSymmetryRequest::default();
+        let parameters = HamiltonianSymmetrizationParameters::default();
+        let one_thread = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let four_threads = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+
+        let serial_report = one_thread.install(|| {
+            model
+                .check_hamiltonian_symmetry(&ScalarSiteBasis, &request)
+                .unwrap()
+        });
+        let parallel_report = four_threads.install(|| {
+            model
+                .check_hamiltonian_symmetry(&ScalarSiteBasis, &request)
+                .unwrap()
+        });
+        assert_eq!(format!("{serial_report:?}"), format!("{parallel_report:?}"));
+
+        let serial_model = one_thread.install(|| {
+            model
+                .symmetrize_hamiltonian(&target, &ScalarSiteBasis, &parameters)
+                .unwrap()
+        });
+        let parallel_model = four_threads.install(|| {
+            model
+                .symmetrize_hamiltonian(&target, &ScalarSiteBasis, &parameters)
+                .unwrap()
+        });
+        assert_eq!(serial_model.hamR, parallel_model.hamR);
+        assert!(
+            serial_model
+                .ham
+                .iter()
+                .zip(parallel_model.ham.iter())
+                .all(|(left, right)| left.re.to_bits() == right.re.to_bits()
+                    && left.im.to_bits() == right.im.to_bits())
         );
     }
 
