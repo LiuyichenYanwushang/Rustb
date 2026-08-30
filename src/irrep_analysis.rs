@@ -31,10 +31,7 @@ use crate::hamiltonian_symmetry::{
     validate_hamiltonian, validate_projective_corepresentation, validate_tolerances,
 };
 use crate::{Gauge, Model, RMatrixData};
-use cryspglib::irrep::magnetic_summary::{
-    MagneticKPointSummary, UnresolvedMagneticCorep, magnetic_irrep_summary_by_uni_partial,
-};
-use cryspglib::irrep::types::{CharacterViewError, IrrepRecord, SeitzOperation};
+use cryspglib::irrep::magnetic_summary::{MagneticKPointSummary, magnetic_irrep_summary_by_uni};
 use cryspglib::irrep::wigner::SettingTransform;
 use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, LeastSquaresSvd, UPLO};
@@ -309,7 +306,6 @@ struct PreparedKPoint {
     is_point: bool,
     operations: Vec<PointOperation>,
     formal_coreps: Vec<FormalCorep>,
-    unresolved_coreps: Vec<UnresolvedMagneticCorep>,
 }
 
 #[derive(Clone)]
@@ -317,12 +313,6 @@ struct FormalCorep {
     label: String,
     dimension: usize,
     characters: Vec<Option<Complex64>>,
-}
-
-struct RecoveredFormalCorep {
-    source_label: String,
-    corep_type: cryspglib::irrep::corep::CorepType,
-    formal: FormalCorep,
 }
 
 impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
@@ -443,14 +433,11 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                 message: format!("target magnetic-group identification failed: {error}"),
             })?;
         let uni = identification.uni_number;
-        let partial_summary = magnetic_irrep_summary_by_uni_partial(uni).map_err(|error| {
-            TbError::MagneticIrrepAnalysis {
+        let summary =
+            magnetic_irrep_summary_by_uni(uni).map_err(|error| TbError::MagneticIrrepAnalysis {
                 uni,
                 message: format!("{error:?}"),
-            }
-        })?;
-        let summary = partial_summary.summary;
-        let unresolved_coreps = partial_summary.unresolved_coreps;
+            })?;
 
         let input_to_standard = SettingTransform {
             basis: identification.transformation_matrix,
@@ -640,24 +627,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                 row_vector_times_matrix(canonical_coordinate, &input_to_data.basis);
             let operations =
                 map_point_operations(&point, &prepared_operations, operation_tolerance)?;
-            let mut formal_coreps = prepare_formal_coreps::<SPIN>(summary.unitary_sg, &point)?;
-            let point_failures = unresolved_coreps
-                .iter()
-                .filter(|failure| failure.spinor == SPIN && failure.k_label == point.label)
-                .cloned()
-                .collect::<Vec<_>>();
-            let mut unresolved_coreps = Vec::new();
-            let mut recovered_coreps = Vec::new();
-            for failure in point_failures {
-                let recovered =
-                    recover_complex_formal_corep::<SPIN>(summary.unitary_sg, &point, &failure)?;
-                if recovered.is_empty() {
-                    unresolved_coreps.push(failure);
-                } else {
-                    recovered_coreps.extend(recovered);
-                }
-            }
-            formal_coreps.extend(merge_recovered_formal_coreps(recovered_coreps));
+            let formal_coreps = prepare_formal_coreps::<SPIN>(summary.unitary_sg, &point)?;
             points.push(PreparedKPoint {
                 summary: point,
                 canonical_coordinate,
@@ -665,7 +635,6 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                 is_point,
                 operations,
                 formal_coreps,
-                unresolved_coreps,
             });
         }
 
@@ -806,26 +775,10 @@ fn point_is_isolated(unitary_sg: u8, point: &MagneticKPointSummary) -> bool {
         })
 }
 
-fn source_record_matches(
-    irrep: &IrrepRecord,
-    source_sg: u8,
-    source_ml: &str,
-    source_spinor: bool,
-    unitary_sg: u8,
-    coords: (i8, i8, i8, i8),
-) -> bool {
-    irrep.sg == source_sg
-        && irrep.sg == unitary_sg
-        && irrep.ml == source_ml
-        && irrep.spinor == source_spinor
-        && (irrep.kx, irrep.ky, irrep.kz, irrep.kd) == coords
-}
-
 fn prepare_formal_coreps<const SPIN: bool>(
     unitary_sg: u8,
     point: &MagneticKPointSummary,
 ) -> Result<Vec<FormalCorep>> {
-    let irreps = cryspglib::irrep::query::irreps_of(unitary_sg);
     point
         .coreps
         .iter()
@@ -837,520 +790,80 @@ fn prepare_formal_coreps<const SPIN: bool>(
                     .all(|source| source.spinor == SPIN)
         })
         .map(|corep| {
-            let expected_sources = corep_source_arity(corep.corep_type);
-            if corep.source_irreps.len() != expected_sources {
+            if corep.dim == 0 {
+                return Err(formal_corep_error(
+                    unitary_sg,
+                    point,
+                    &corep.label,
+                    None,
+                    "strict summary contains a zero-dimensional corepresentation".to_string(),
+                ));
+            }
+            if corep.characters.len() != point.operations.len()
+                || corep.timerev.len() != point.operations.len()
+            {
                 return Err(formal_corep_error(
                     unitary_sg,
                     point,
                     &corep.label,
                     None,
                     format!(
-                        "corep type {:?} requires {expected_sources} source irreps, found {}",
-                        corep.corep_type,
-                        corep.source_irreps.len()
+                        "strict summary character/timerev lengths ({}, {}) disagree with {} operation columns",
+                        corep.characters.len(),
+                        corep.timerev.len(),
+                        point.operations.len()
                     ),
                 ));
             }
-            let sources = corep
-                .source_irreps
+            let characters = point
+                .operations
                 .iter()
-                .map(|source| {
-                    if source.spinor != SPIN {
+                .zip(&corep.timerev)
+                .zip(&corep.characters)
+                .enumerate()
+                .map(|(column, ((operation, &time_reversal), character))| {
+                    if operation.column != column || operation.time_reversal != time_reversal {
                         return Err(formal_corep_error(
                             unitary_sg,
                             point,
                             &corep.label,
-                            Some(source.ml),
+                            None,
                             format!(
-                                "source spinor={} disagrees with requested SPIN={SPIN}",
-                                source.spinor
+                                "strict summary column {column} is not aligned with its operation metadata"
                             ),
                         ));
                     }
-                    let matches = irreps
-                        .iter()
-                        .filter(|irrep| {
-                            source_record_matches(
-                                irrep,
-                                source.sg,
-                                source.ml,
-                                source.spinor,
-                                unitary_sg,
-                                point.coords,
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    let [irrep] = matches.as_slice() else {
+                    if operation.time_reversal {
+                        return Ok(None);
+                    }
+                    let value = character.ok_or_else(|| {
+                        formal_corep_error(
+                            unitary_sg,
+                            point,
+                            &corep.label,
+                            None,
+                            format!("unitary strict-summary column {column} is undefined"),
+                        )
+                    })?;
+                    if !value.re.is_finite() || !value.im.is_finite() {
                         return Err(formal_corep_error(
                             unitary_sg,
                             point,
                             &corep.label,
-                            Some(source.ml),
-                            format!(
-                                "source lookup matched {} records for SG {} at the exact k tuple {:?}",
-                                matches.len(),
-                                source.sg,
-                                point.coords
-                            ),
-                        ));
-                    };
-                    let typed = typed_source_characters(*irrep, point, unitary_sg, &corep.label)?;
-                    if source.dim as usize != typed.dimension {
-                        return Err(formal_corep_error(
-                            unitary_sg,
-                            point,
-                            &corep.label,
-                            Some(source.ml),
-                            format!(
-                                "summary source dimension {} disagrees with typed dimension {}",
-                                source.dim, typed.dimension
-                            ),
+                            None,
+                            format!("unitary strict-summary column {column} is non-finite: {value}"),
                         ));
                     }
-                    Ok(typed)
+                    Ok(Some(value))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let (dimension, factor) = corep_shape(
-                corep.corep_type,
-                &sources.iter().map(|source| source.dimension).collect::<Vec<_>>(),
-            )
-            .map_err(|detail| {
-                formal_corep_error(unitary_sg, point, &corep.label, None, detail)
-            })?;
-            if dimension == 0 || corep.dim != dimension {
-                return Err(formal_corep_error(
-                    unitary_sg,
-                    point,
-                    &corep.label,
-                    None,
-                    format!(
-                        "corep dimension {} disagrees with typed expected dimension {}",
-                        corep.dim, dimension
-                    ),
-                ));
-            }
-            let characters = combine_formal_characters(
-                corep.corep_type,
-                &sources,
-                &point.operations,
-                factor,
-            )
-            .map_err(|detail| formal_corep_error(unitary_sg, point, &corep.label, None, detail))?;
             Ok(FormalCorep {
                 label: corep.label.clone(),
-                dimension,
+                dimension: corep.dim,
                 characters,
             })
         })
         .collect()
-}
-
-fn recover_complex_formal_corep<const SPIN: bool>(
-    unitary_sg: u8,
-    point: &MagneticKPointSummary,
-    failure: &UnresolvedMagneticCorep,
-) -> Result<Vec<RecoveredFormalCorep>> {
-    let matches = cryspglib::irrep::query::irreps_of(unitary_sg)
-        .iter()
-        .filter(|irrep| {
-            source_record_matches(
-                irrep,
-                failure.sg,
-                &failure.source_irrep,
-                failure.spinor,
-                unitary_sg,
-                point.coords,
-            )
-        })
-        .collect::<Vec<_>>();
-    let [irrep] = matches.as_slice() else {
-        return Err(formal_corep_error(
-            unitary_sg,
-            point,
-            &failure.source_irrep,
-            Some(&failure.source_irrep),
-            format!(
-                "classified complex source lookup matched {} records instead of one",
-                matches.len()
-            ),
-        ));
-    };
-    if irrep.spinor != SPIN {
-        return Ok(Vec::new());
-    }
-    if irrep.compound_metadata().is_some() {
-        let branches = match irrep.compound_complex_corepresentations(failure.uni) {
-            Ok(branches) => branches,
-            Err(_) => return Ok(Vec::new()),
-        };
-        return branches
-            .into_iter()
-            .map(|branch| {
-                let source_label = branch
-                    .sources
-                    .iter()
-                    .map(|source| match source.kind {
-                        cryspglib::irrep::corep::CompoundCorepSourceKind::AuthoritativeCir => {
-                            source.label.to_string()
-                        }
-                        cryspglib::irrep::corep::CompoundCorepSourceKind::ConjugateRealification => {
-                            format!("conj({})", source.label)
-                        }
-                        cryspglib::irrep::corep::CompoundCorepSourceKind::DerivedAntiunitaryPartner => {
-                            format!("a0({})", source.label)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" + ");
-                let characters = match_complex_corep_to_point(
-                    &branch.corep,
-                    point,
-                    unitary_sg,
-                    &failure.source_irrep,
-                )?;
-                Ok(RecoveredFormalCorep {
-                    source_label: source_label.clone(),
-                    corep_type: branch.corep.corep_type,
-                    formal: FormalCorep {
-                        label: source_label,
-                        dimension: branch.corep.dim,
-                        characters,
-                    },
-                })
-            })
-            .collect();
-    }
-    let Some(corep_type) = failure.classified_type else {
-        return Ok(Vec::new());
-    };
-    let complex = match irrep.complex_corepresentation(failure.uni) {
-        Ok(corep) => corep,
-        // A completed legacy classification can still lack an exact complex
-        // transport (for example a non-identity spin Type-C representative).
-        // Preserve that source as unresolved instead of guessing a row.
-        Err(_) => return Ok(Vec::new()),
-    };
-    if complex.corep_type != corep_type {
-        return Err(formal_corep_error(
-            unitary_sg,
-            point,
-            &failure.source_irrep,
-            Some(&failure.source_irrep),
-            format!(
-                "complex API returned type {:?}, but the partial summary classified {:?}",
-                complex.corep_type, corep_type
-            ),
-        ));
-    }
-    if failure
-        .wigner_source
-        .is_some_and(|source| source != complex.source)
-    {
-        return Err(formal_corep_error(
-            unitary_sg,
-            point,
-            &failure.source_irrep,
-            Some(&failure.source_irrep),
-            format!(
-                "complex API returned Wigner source {:?}, but the partial summary classified {:?}",
-                complex.source, failure.wigner_source
-            ),
-        ));
-    }
-    if failure.classified_dimension != Some(complex.dim) {
-        return Err(formal_corep_error(
-            unitary_sg,
-            point,
-            &failure.source_irrep,
-            Some(&failure.source_irrep),
-            format!(
-                "complex dimension {} disagrees with classified dimension {:?}",
-                complex.dim, failure.classified_dimension
-            ),
-        ));
-    }
-    if let Some(source_dimension) = failure.minimum_dimension {
-        let expected_dimension = match corep_type {
-            cryspglib::irrep::corep::CorepType::A => Some(source_dimension),
-            cryspglib::irrep::corep::CorepType::B | cryspglib::irrep::corep::CorepType::C => {
-                source_dimension.checked_mul(2)
-            }
-        };
-        if expected_dimension != Some(complex.dim) {
-            return Err(formal_corep_error(
-                unitary_sg,
-                point,
-                &failure.source_irrep,
-                Some(&failure.source_irrep),
-                format!(
-                    "complex dimension {} disagrees with selected-arm source dimension {} for {:?}",
-                    complex.dim, source_dimension, corep_type
-                ),
-            ));
-        }
-    }
-    let characters =
-        match_complex_corep_to_point(&complex, point, unitary_sg, &failure.source_irrep)?;
-    Ok(vec![RecoveredFormalCorep {
-        source_label: failure.source_irrep.clone(),
-        corep_type,
-        formal: FormalCorep {
-            label: failure.source_irrep.clone(),
-            dimension: complex.dim,
-            characters,
-        },
-    }])
-}
-
-fn match_complex_corep_to_point(
-    corep: &cryspglib::irrep::corep::ComplexCorepresentation,
-    point: &MagneticKPointSummary,
-    unitary_sg: u8,
-    source_label: &str,
-) -> Result<Vec<Option<Complex64>>> {
-    let column_count = corep.characters.len();
-    if corep.timerev.len() != column_count
-        || corep.magnetic_operation_indices.len() != column_count
-        || corep.operations.len() != column_count
-        || point.operations.len() != column_count
-    {
-        return Err(formal_corep_error(
-            unitary_sg,
-            point,
-            source_label,
-            Some(source_label),
-            format!(
-                "complex API parallel column lengths ({column_count}, {}, {}, {}) disagree with the summary length {}",
-                corep.timerev.len(),
-                corep.magnetic_operation_indices.len(),
-                corep.operations.len(),
-                point.operations.len()
-            ),
-        ));
-    }
-
-    let mut used = vec![false; column_count];
-    let mut characters = Vec::with_capacity(column_count);
-    for (column, target) in point.operations.iter().enumerate() {
-        if target.column != column {
-            return Err(formal_corep_error(
-                unitary_sg,
-                point,
-                source_label,
-                Some(source_label),
-                format!(
-                    "summary operation at position {column} declares column {}",
-                    target.column
-                ),
-            ));
-        }
-        let matches = corep
-            .magnetic_operation_indices
-            .iter()
-            .enumerate()
-            .filter(|(_, index)| **index == target.magnetic_operation_index)
-            .map(|(position, _)| position)
-            .collect::<Vec<_>>();
-        let [position] = matches.as_slice() else {
-            return Err(formal_corep_error(
-                unitary_sg,
-                point,
-                source_label,
-                Some(source_label),
-                format!(
-                    "summary column {column} magnetic operation {} matched {} complex API columns",
-                    target.magnetic_operation_index,
-                    matches.len()
-                ),
-            ));
-        };
-        if std::mem::replace(&mut used[*position], true) {
-            return Err(formal_corep_error(
-                unitary_sg,
-                point,
-                source_label,
-                Some(source_label),
-                format!("complex API column {position} was matched more than once"),
-            ));
-        }
-        let operation = &corep.operations[*position];
-        if corep.timerev[*position] != target.time_reversal
-            || operation.time_reversal != target.time_reversal
-            || operation.rotation != target.rotation
-            || operation.translation != target.translation
-        {
-            return Err(formal_corep_error(
-                unitary_sg,
-                point,
-                source_label,
-                Some(source_label),
-                format!(
-                    "complex API column {position} does not describe summary operation column {column}"
-                ),
-            ));
-        }
-        let value = corep.characters[*position];
-        if !value.re.is_finite() || !value.im.is_finite() {
-            return Err(formal_corep_error(
-                unitary_sg,
-                point,
-                source_label,
-                Some(source_label),
-                format!("complex API column {position} is non-finite: {value}"),
-            ));
-        }
-        characters.push((!target.time_reversal).then_some(value));
-    }
-    if used.iter().any(|used| !used) {
-        return Err(formal_corep_error(
-            unitary_sg,
-            point,
-            source_label,
-            Some(source_label),
-            "complex API contains an unmatched magnetic little-group column".to_string(),
-        ));
-    }
-    Ok(characters)
-}
-
-fn merge_recovered_formal_coreps(recovered: Vec<RecoveredFormalCorep>) -> Vec<FormalCorep> {
-    let mut formal = Vec::<FormalCorep>::new();
-    let mut type_c_groups = Vec::<(usize, Vec<String>)>::new();
-
-    for recovered in recovered {
-        if recovered.corep_type != cryspglib::irrep::corep::CorepType::C {
-            formal.push(recovered.formal);
-            continue;
-        }
-        if let Some((_, labels)) = type_c_groups.iter_mut().find(|(formal_index, _)| {
-            formal_corep_rows_equivalent(&formal[*formal_index], &recovered.formal)
-        }) {
-            labels.push(recovered.source_label);
-            continue;
-        }
-        let formal_index = formal.len();
-        formal.push(recovered.formal);
-        type_c_groups.push((formal_index, vec![recovered.source_label]));
-    }
-
-    for (formal_index, mut labels) in type_c_groups {
-        labels.sort();
-        labels.dedup();
-        formal[formal_index].label = labels.join(" + ");
-    }
-    formal
-}
-
-fn formal_corep_rows_equivalent(left: &FormalCorep, right: &FormalCorep) -> bool {
-    let dimension = left.dimension;
-    left.dimension == right.dimension
-        && left.characters.len() == right.characters.len()
-        && left
-            .characters
-            .iter()
-            .zip(&right.characters)
-            .all(
-                |(left_value, right_value)| match (left_value, right_value) {
-                    (None, None) => true,
-                    (Some(left), Some(right)) => {
-                        representational_roundoff_equal(left.re, right.re, dimension)
-                            && representational_roundoff_equal(left.im, right.im, dimension)
-                    }
-                    _ => false,
-                },
-            )
-}
-
-fn representational_roundoff_equal(left: f64, right: f64, dimension: usize) -> bool {
-    let scale = (dimension as f64).max(1.0).max(left.abs()).max(right.abs());
-    (left - right).abs() <= 8.0 * f64::EPSILON * scale
-}
-
-fn corep_source_arity(corep_type: cryspglib::irrep::corep::CorepType) -> usize {
-    match corep_type {
-        cryspglib::irrep::corep::CorepType::A | cryspglib::irrep::corep::CorepType::B => 1,
-        cryspglib::irrep::corep::CorepType::C => 2,
-    }
-}
-
-fn corep_shape(
-    corep_type: cryspglib::irrep::corep::CorepType,
-    source_dimensions: &[usize],
-) -> std::result::Result<(usize, usize), String> {
-    let expected_sources = corep_source_arity(corep_type);
-    if source_dimensions.len() != expected_sources {
-        return Err(format!(
-            "corep type {corep_type:?} requires {expected_sources} source irreps, found {}",
-            source_dimensions.len()
-        ));
-    }
-    let sum_dimension = source_dimensions
-        .iter()
-        .try_fold(0usize, |sum, dimension| {
-            sum.checked_add(*dimension)
-                .ok_or_else(|| "typed source dimensions overflowed usize".to_string())
-        })?;
-    let (dimension, factor) = match corep_type {
-        cryspglib::irrep::corep::CorepType::A | cryspglib::irrep::corep::CorepType::C => {
-            (sum_dimension, 1)
-        }
-        cryspglib::irrep::corep::CorepType::B => sum_dimension
-            .checked_mul(2)
-            .map(|dimension| (dimension, 2))
-            .ok_or_else(|| "Type-B corep dimension overflowed usize".to_string())?,
-    };
-    if dimension == 0 {
-        return Err("corep has zero typed dimension".to_string());
-    }
-    Ok((dimension, factor))
-}
-
-fn combine_formal_characters(
-    corep_type: cryspglib::irrep::corep::CorepType,
-    sources: &[TypedSourceCharacters],
-    operations: &[cryspglib::irrep::magnetic_summary::MagneticLittleGroupOperation],
-    factor: usize,
-) -> std::result::Result<Vec<Option<Complex64>>, String> {
-    if sources.len() != corep_source_arity(corep_type) {
-        return Err(format!(
-            "corep type {corep_type:?} requires {} typed source rows, found {}",
-            corep_source_arity(corep_type),
-            sources.len()
-        ));
-    }
-    if sources
-        .iter()
-        .any(|source| source.values.len() != operations.len())
-    {
-        return Err("typed source and magnetic operation lengths differ".to_string());
-    }
-    operations
-        .iter()
-        .enumerate()
-        .map(|(column, operation)| {
-            if operation.time_reversal {
-                return Ok(None);
-            }
-            let mut value = Complex64::new(0.0, 0.0);
-            for source in sources {
-                value += source.values[column].ok_or_else(|| {
-                    format!("unitary character column {column} has no typed source value")
-                })?;
-            }
-            value *= factor as f64;
-            if !value.re.is_finite() || !value.im.is_finite() {
-                return Err(format!(
-                    "unitary character column {column} is non-finite: {value}"
-                ));
-            }
-            Ok(Some(value))
-        })
-        .collect()
-}
-
-struct TypedSourceCharacters {
-    dimension: usize,
-    values: Vec<Option<Complex64>>,
 }
 
 fn formal_corep_error(
@@ -1368,155 +881,6 @@ fn formal_corep_error(
             source.map_or_else(String::new, |source| format!(" source {source}"))
         ),
     }
-}
-
-fn typed_source_characters(
-    irrep: &'static IrrepRecord,
-    point: &MagneticKPointSummary,
-    unitary_sg: u8,
-    corep_label: &str,
-) -> Result<TypedSourceCharacters> {
-    let (dimension, entries): (usize, Vec<(SeitzOperation, Complex64)>) = if irrep.spinor {
-        let row = irrep.spinor_selected_arm_view().map_err(|error| {
-            formal_corep_error(
-                unitary_sg,
-                point,
-                corep_label,
-                Some(irrep.ml),
-                format!("typed spinor row failed: {error}"),
-            )
-        })?;
-        if row.values().len() != row.operations().len() {
-            return Err(formal_corep_error(
-                unitary_sg,
-                point,
-                corep_label,
-                Some(irrep.ml),
-                "typed spinor values and operations have different lengths".to_string(),
-            ));
-        }
-        (
-            row.dimension(),
-            row.values()
-                .iter()
-                .copied()
-                .zip(row.operations().iter().map(|operation| operation.seitz))
-                .map(|(value, operation)| (operation, value))
-                .collect(),
-        )
-    } else {
-        let row = match irrep.ordinary_scalar_selected_arm_block_trace() {
-            Ok(row) => row,
-            Err(CharacterViewError::NotApplicable) => irrep
-                .compound_selected_arm_view()
-                .map_err(|error| {
-                    formal_corep_error(
-                        unitary_sg,
-                        point,
-                        corep_label,
-                        Some(irrep.ml),
-                        format!("typed compound row failed: {error}"),
-                    )
-                })?
-                .block_trace()
-                .clone(),
-            Err(error) => {
-                return Err(formal_corep_error(
-                    unitary_sg,
-                    point,
-                    corep_label,
-                    Some(irrep.ml),
-                    format!("typed scalar row failed: {error}"),
-                ));
-            }
-        };
-        if row.values().len() != row.operations().len() {
-            return Err(formal_corep_error(
-                unitary_sg,
-                point,
-                corep_label,
-                Some(irrep.ml),
-                "typed scalar values and operations have different lengths".to_string(),
-            ));
-        }
-        (
-            row.dimension(),
-            row.values()
-                .iter()
-                .copied()
-                .zip(row.operations().iter().copied())
-                .map(|(value, operation)| (operation, value))
-                .collect(),
-        )
-    };
-    if dimension == 0
-        || entries.iter().any(|(operation, value)| {
-            !value.re.is_finite()
-                || !value.im.is_finite()
-                || operation.translation.iter().any(|value| !value.is_finite())
-        })
-    {
-        return Err(formal_corep_error(
-            unitary_sg,
-            point,
-            corep_label,
-            Some(irrep.ml),
-            "typed source contains zero dimension or non-finite value".to_string(),
-        ));
-    }
-    let values = match_typed_entries_to_point(&entries, point, unitary_sg, corep_label, irrep.ml)?;
-    Ok(TypedSourceCharacters { dimension, values })
-}
-
-fn match_typed_entries_to_point(
-    entries: &[(SeitzOperation, Complex64)],
-    point: &MagneticKPointSummary,
-    unitary_sg: u8,
-    corep_label: &str,
-    source_label: &str,
-) -> Result<Vec<Option<Complex64>>> {
-    point
-        .operations
-        .iter()
-        .enumerate()
-        .map(|(column, target)| {
-            if target.time_reversal {
-                return Ok(None);
-            }
-            if target.translation.iter().any(|value| !value.is_finite()) {
-                return Err(formal_corep_error(
-                    unitary_sg,
-                    point,
-                    corep_label,
-                    Some(source_label),
-                    format!("unitary column {column} has a non-finite translation"),
-                ));
-            }
-            let matches = entries
-                .iter()
-                .filter(|(operation, _)| {
-                    operation
-                        .rotation
-                        .into_iter()
-                        .eq(target.rotation.into_iter().flatten())
-                        && operation.translation == target.translation
-                })
-                .collect::<Vec<_>>();
-            let [(_, value)] = matches.as_slice() else {
-                return Err(formal_corep_error(
-                    unitary_sg,
-                    point,
-                    corep_label,
-                    Some(source_label),
-                    format!(
-                        "unitary column {column} matched {} typed complete Seitz operations",
-                        matches.len()
-                    ),
-                ));
-            };
-            Ok(Some(*value))
-        })
-        .collect()
 }
 
 fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
@@ -1608,18 +972,6 @@ fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
             .fold(0.0_f64, f64::max);
         let fit = fit_corepresentations(&point.formal_coreps, &characters, dimension, options)?;
         let mut diagnostics = fit.diagnostics;
-        diagnostics.extend(
-            point
-                .unresolved_coreps
-                .iter()
-                .filter(|failure| failure.minimum_dimension.is_none_or(|minimum| dimension >= minimum))
-                .map(|failure| {
-                    format!(
-                        "database corep {} is unavailable at {} and may contribute to this {}-band cluster: {}",
-                        failure.source_irrep, point.summary.label, dimension, failure.reason
-                    )
-                }),
-        );
         if let Some(diagnostic) = target_hamiltonian_diagnostic {
             diagnostics.push(diagnostic.to_string());
         }
@@ -2326,10 +1678,9 @@ mod tests {
 
     #[test]
     fn type_i_compound_summary_retains_r1r2_selected_arm_corep() {
-        let partial = magnetic_irrep_summary_by_uni_partial(667)
-            .expect("UNI 667 partial summary must remain available");
-        let point = partial
-            .summary
+        let summary = magnetic_irrep_summary_by_uni(667)
+            .expect("UNI 667 strict summary must remain available");
+        let point = summary
             .kpoints
             .iter()
             .find(|point| point.label == "R")
@@ -2337,414 +1688,108 @@ mod tests {
         let corep = point
             .coreps
             .iter()
-            .find(|corep| corep.label == "R1R2")
+            .find(|corep| {
+                let labels = corep
+                    .source_irreps
+                    .iter()
+                    .map(|source| source.ml)
+                    .collect::<Vec<_>>();
+                labels.contains(&"R1") && labels.contains(&"R2")
+            })
             .expect("R1R2 selected-arm compound corep must not be dropped");
         assert_eq!(corep.dim, 2);
+        let formal = prepare_formal_coreps::<false>(summary.unitary_sg, point).unwrap();
         assert!(
-            partial
-                .unresolved_coreps
+            formal
                 .iter()
-                .all(|failure| failure.source_irrep != "R1R2")
-        );
-    }
-
-    fn synthetic_magnetic_operation(
-        column: usize,
-        magnetic_operation_index: usize,
-        rotation: [[i32; 3]; 3],
-        translation: [f64; 3],
-        time_reversal: bool,
-    ) -> cryspglib::irrep::magnetic_summary::MagneticLittleGroupOperation {
-        cryspglib::irrep::magnetic_summary::MagneticLittleGroupOperation {
-            column,
-            magnetic_operation_index,
-            rotation,
-            translation,
-            time_reversal,
-        }
-    }
-
-    fn synthetic_point(
-        operations: Vec<cryspglib::irrep::magnetic_summary::MagneticLittleGroupOperation>,
-    ) -> MagneticKPointSummary {
-        let unitary_order = operations
-            .iter()
-            .filter(|operation| !operation.time_reversal)
-            .count();
-        MagneticKPointSummary {
-            label: "synthetic".to_string(),
-            coords: (0, 0, 0, 1),
-            little_group_order: operations.len(),
-            unitary_order,
-            antiunitary_order: operations.len() - unitary_order,
-            operations,
-            conjugacy_classes: Vec::new(),
-            coreps: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn typed_mapping_matches_complete_seitz_operations_exactly() {
-        let identity = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-        let quarter_turn = [[0, -1, 0], [1, 0, 0], [0, 0, 1]];
-        let point = synthetic_point(vec![
-            synthetic_magnetic_operation(0, 4, identity, [0.5, 0.0, 0.0], false),
-            synthetic_magnetic_operation(1, 5, identity, [0.0, 0.0, 0.0], true),
-            synthetic_magnetic_operation(2, 6, quarter_turn, [0.0, 0.0, 0.0], false),
-        ]);
-        let entries = vec![
-            (
-                SeitzOperation {
-                    rotation: [0, -1, 0, 1, 0, 0, 0, 0, 1],
-                    translation: [0.0, 0.0, 0.0],
-                },
-                Complex64::new(3.0, 0.0),
-            ),
-            (
-                SeitzOperation {
-                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-                    translation: [0.5, 0.0, 0.0],
-                },
-                Complex64::new(2.0, 0.0),
-            ),
-        ];
-        let values = match_typed_entries_to_point(&entries, &point, 1, "synthetic", "S1")
-            .expect("complete Seitz operations should match");
-        assert_eq!(
-            values,
-            vec![
-                Some(Complex64::new(2.0, 0.0)),
-                None,
-                Some(Complex64::new(3.0, 0.0))
-            ]
+                .any(|candidate| candidate.label == corep.label)
         );
     }
 
     #[test]
-    fn typed_mapping_distinguishes_translations_and_rejects_lattice_shifts() {
-        let identity = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-        let point = synthetic_point(vec![synthetic_magnetic_operation(
-            0,
-            0,
-            identity,
-            [0.5, 0.0, 0.0],
-            false,
-        )]);
-        let matching = vec![
-            (
-                SeitzOperation {
-                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-                    translation: [0.0, 0.0, 0.0],
-                },
-                Complex64::new(1.0, 0.0),
-            ),
-            (
-                SeitzOperation {
-                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-                    translation: [0.5, 0.0, 0.0],
-                },
-                Complex64::new(2.0, 0.0),
-            ),
-        ];
-        assert_eq!(
-            match_typed_entries_to_point(&matching, &point, 1, "synthetic", "S1").unwrap(),
-            vec![Some(Complex64::new(2.0, 0.0))]
-        );
-        let lattice_shift = vec![(
-            SeitzOperation {
-                rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-                translation: [1.5, 0.0, 0.0],
-            },
-            Complex64::new(2.0, 0.0),
-        )];
-        assert!(
-            match_typed_entries_to_point(&lattice_shift, &point, 1, "synthetic", "S1").is_err(),
-            "integer lattice shifts must not be treated as exact matches"
-        );
-    }
-
-    #[test]
-    fn typed_mapping_rejects_duplicate_operations_and_is_order_independent() {
-        let identity = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-        let quarter_turn = [[0, -1, 0], [1, 0, 0], [0, 0, 1]];
-        let duplicate = vec![
-            (
-                SeitzOperation {
-                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-                    translation: [0.0, 0.0, 0.0],
-                },
-                Complex64::new(1.0, 0.0),
-            ),
-            (
-                SeitzOperation {
-                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-                    translation: [0.0, 0.0, 0.0],
-                },
-                Complex64::new(1.0, 0.0),
-            ),
-        ];
-        let point = synthetic_point(vec![synthetic_magnetic_operation(
-            0,
-            0,
-            identity,
-            [0.0, 0.0, 0.0],
-            false,
-        )]);
-        assert!(match_typed_entries_to_point(&duplicate, &point, 1, "synthetic", "S1").is_err());
-
-        let reordered = synthetic_point(vec![
-            synthetic_magnetic_operation(0, 1, quarter_turn, [0.0, 0.0, 0.0], false),
-            synthetic_magnetic_operation(1, 0, identity, [0.0, 0.0, 0.0], false),
-        ]);
-        let entries = vec![
-            (
-                SeitzOperation {
-                    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-                    translation: [0.0, 0.0, 0.0],
-                },
-                Complex64::new(1.0, 0.0),
-            ),
-            (
-                SeitzOperation {
-                    rotation: [0, -1, 0, 1, 0, 0, 0, 0, 1],
-                    translation: [0.0, 0.0, 0.0],
-                },
-                Complex64::new(2.0, 0.0),
-            ),
-        ];
-        assert_eq!(
-            match_typed_entries_to_point(&entries, &reordered, 1, "synthetic", "S1").unwrap(),
-            vec![
-                Some(Complex64::new(2.0, 0.0)),
-                Some(Complex64::new(1.0, 0.0))
-            ]
-        );
-        assert_eq!(
-            corep_shape(cryspglib::irrep::corep::CorepType::A, &[1]),
-            Ok((1, 1))
-        );
-    }
-
-    #[test]
-    fn corep_type_factors_and_source_identity_are_explicit() {
+    fn strict_summary_directly_supplies_complex_type_c_operation_columns() {
         use cryspglib::irrep::corep::CorepType;
 
-        assert_eq!(corep_shape(CorepType::A, &[2]), Ok((2, 1)));
-        assert_eq!(corep_shape(CorepType::B, &[2]), Ok((4, 2)));
-        assert_eq!(corep_shape(CorepType::C, &[1, 3]), Ok((4, 1)));
-        assert!(corep_shape(CorepType::C, &[4]).is_err());
-
-        let operations = synthetic_point(vec![
-            synthetic_magnetic_operation(
-                0,
-                0,
-                [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                [0.0, 0.0, 0.0],
-                false,
-            ),
-            synthetic_magnetic_operation(
-                1,
-                1,
-                [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                [0.0, 0.0, 0.0],
-                true,
-            ),
-        ])
-        .operations;
-        let scalar_source = |value: f64| TypedSourceCharacters {
-            dimension: 1,
-            values: vec![Some(Complex64::new(value, 0.0)), None],
-        };
-        assert_eq!(
-            combine_formal_characters(CorepType::A, &[scalar_source(1.0)], &operations, 1).unwrap(),
-            vec![Some(Complex64::new(1.0, 0.0)), None]
-        );
-        assert_eq!(
-            combine_formal_characters(CorepType::B, &[scalar_source(2.0)], &operations, 2).unwrap(),
-            vec![Some(Complex64::new(4.0, 0.0)), None]
-        );
-        assert_eq!(
-            combine_formal_characters(
-                CorepType::C,
-                &[scalar_source(1.0), scalar_source(3.0)],
-                &operations,
-                1,
-            )
-            .unwrap(),
-            vec![Some(Complex64::new(4.0, 0.0)), None]
-        );
-
-        let record = cryspglib::irrep::query::irreps_of(1)
-            .iter()
-            .find(|record| !record.spinor)
-            .expect("SG1 must provide a scalar record");
-        let coords = (record.kx, record.ky, record.kz, record.kd);
-        assert!(source_record_matches(
-            record, 1, record.ml, false, 1, coords
-        ));
-        assert!(!source_record_matches(
-            record, 1, record.ml, true, 1, coords
-        ));
-        assert!(!source_record_matches(
-            record,
-            1,
-            record.ml,
-            false,
-            1,
-            (record.kx, record.ky, record.kz, record.kd + 1)
-        ));
-        assert!(!source_record_matches(
-            record, 2, record.ml, false, 1, coords
-        ));
-        assert_eq!(
-            cryspglib::irrep::query::irreps_of(1)
-                .iter()
-                .filter(|candidate| {
-                    source_record_matches(candidate, 1, record.ml, false, 1, coords)
-                })
-                .count(),
-            1
-        );
-        let no_match = cryspglib::irrep::query::irreps_of(1)
-            .iter()
-            .filter(|candidate| source_record_matches(candidate, 1, "missing", false, 1, coords))
-            .count();
-        assert_eq!(no_match, 0);
-        let duplicate_candidates = [record, record]
-            .iter()
-            .filter(|candidate| source_record_matches(candidate, 1, record.ml, false, 1, coords))
-            .count();
-        assert_eq!(duplicate_candidates, 2);
-    }
-
-    #[test]
-    fn complex_type_c_recovery_uses_operation_columns_and_merges_partners() {
-        use cryspglib::irrep::corep::CorepType;
-
-        let partial = magnetic_irrep_summary_by_uni_partial(54)
-            .expect("UNI 54 partial magnetic summary must remain available");
-        let point = partial
-            .summary
+        let summary = magnetic_irrep_summary_by_uni(54)
+            .expect("UNI 54 strict magnetic summary must remain available");
+        let point = summary
             .kpoints
             .iter()
             .find(|point| point.label == "Y")
             .expect("UNI 54 has a Y point");
-        let failures = partial
-            .unresolved_coreps
+        let formal = prepare_formal_coreps::<true>(summary.unitary_sg, point)
+            .expect("strict summary columns must be directly consumable");
+        let type_c = point
+            .coreps
             .iter()
-            .filter(|failure| {
-                failure.k_label == point.label
-                    && failure.spinor
-                    && failure.classified_type == Some(CorepType::C)
+            .filter(|corep| {
+                corep.corep_type == CorepType::C
+                    && corep.source_irreps.iter().all(|source| source.spinor)
             })
             .collect::<Vec<_>>();
         assert!(
-            failures.len() >= 2 && failures.len().is_multiple_of(2),
-            "UNI 54 Y must expose complete Type-C partner pairs"
+            !type_c.is_empty(),
+            "UNI 54 Y must expose a complete spinor Type-C row"
         );
-
-        let recovered = failures
-            .iter()
-            .flat_map(|failure| {
-                recover_complex_formal_corep::<true>(partial.summary.unitary_sg, point, failure)
-                    .expect("complex recovery must preserve structural invariants")
-            })
-            .collect::<Vec<_>>();
-        for recovered in &recovered {
-            assert_eq!(recovered.corep_type, CorepType::C);
-            assert_eq!(recovered.formal.dimension, 2);
-            assert_eq!(recovered.formal.characters.len(), point.operations.len());
+        for corep in type_c {
+            let direct = formal
+                .iter()
+                .find(|candidate| candidate.label == corep.label)
+                .expect("every strict Type-C row must reach the fitter");
+            assert_eq!(direct.dimension, corep.dim);
+            assert_eq!(direct.characters.len(), point.operations.len());
             assert!(
-                recovered
-                    .formal
+                direct
                     .characters
                     .iter()
                     .flatten()
                     .any(|character| character.im.abs() > 1.0),
                 "the regression must exercise a genuinely complex Type-C character"
             );
-            for (character, operation) in recovered.formal.characters.iter().zip(&point.operations)
-            {
+            for (character, operation) in direct.characters.iter().zip(&point.operations) {
                 assert_eq!(character.is_none(), operation.time_reversal);
             }
         }
-
-        let merged = merge_recovered_formal_coreps(recovered);
-        assert_eq!(
-            merged.len() * 2,
-            failures.len(),
-            "each pair of partner seeds must describe one Type-C corep"
-        );
-        let mut expected_labels = failures
-            .iter()
-            .map(|failure| failure.source_irrep.as_str())
-            .collect::<Vec<_>>();
-        expected_labels.sort();
-        expected_labels.dedup();
-        let mut merged_labels = merged
-            .iter()
-            .flat_map(|corep| corep.label.split(" + "))
-            .collect::<Vec<_>>();
-        merged_labels.sort();
-        merged_labels.dedup();
-        assert_eq!(merged_labels, expected_labels);
-        assert!(
-            merged
-                .iter()
-                .all(|corep| corep.label.split(" + ").count() == 2)
-        );
     }
 
     #[test]
-    fn compound_constituent_orbit_recovery_preserves_complex_type_c_row() {
-        let partial = magnetic_irrep_summary_by_uni_partial(340)
-            .expect("UNI 340 partial summary must retain compound provenance");
-        let failure = partial
-            .unresolved_coreps
-            .iter()
-            .find(|failure| failure.source_irrep == "W1W2" && !failure.spinor)
-            .expect("SG46 W1W2 must exercise the plural complex boundary");
-        let point = partial
-            .summary
+    fn strict_summary_directly_supplies_compound_complex_type_c_row() {
+        let summary = magnetic_irrep_summary_by_uni(340)
+            .expect("UNI 340 strict summary must retain compound provenance");
+        let point = summary
             .kpoints
             .iter()
-            .find(|point| point.label == failure.k_label)
-            .expect("unresolved compound source must name an existing k point");
-        let recovered =
-            recover_complex_formal_corep::<false>(partial.summary.unitary_sg, point, failure)
-                .expect("compound plural recovery must preserve structural invariants");
-        assert_eq!(recovered.len(), 1);
-        let corep = &recovered[0];
-        assert_eq!(corep.corep_type, cryspglib::irrep::corep::CorepType::C);
-        assert_eq!(corep.formal.dimension, 2);
-        assert_eq!(corep.formal.characters.len(), point.operations.len());
-        assert!(corep.source_label.contains("W1"));
-        assert!(corep.source_label.contains("W2"));
+            .find(|point| point.label == "W")
+            .expect("UNI 340 must expose its W point");
+        let formal = prepare_formal_coreps::<false>(summary.unitary_sg, point)
+            .expect("compound strict rows must be directly consumable");
+        let corep = formal
+            .iter()
+            .find(|corep| corep.label.contains("W1") && corep.label.contains("W2"))
+            .expect("missing W1/W2 compound branch");
+        assert_eq!(corep.dimension, 2);
+        assert_eq!(corep.characters.len(), point.operations.len());
         assert!(
             corep
-                .formal
                 .characters
                 .iter()
                 .flatten()
                 .any(|character| character.im.abs() > 1.0)
         );
-        for (character, operation) in corep.formal.characters.iter().zip(&point.operations) {
+        for (character, operation) in corep.characters.iter().zip(&point.operations) {
             assert_eq!(character.is_none(), operation.time_reversal);
         }
     }
 
     #[test]
-    #[ignore = "exhaustive typed-row acceptance census"]
-    fn exhaustive_typed_formal_corep_acceptance_census() {
+    #[ignore = "exhaustive strict complex-summary acceptance census"]
+    fn exhaustive_strict_complex_summary_acceptance_census() {
         let mut summaries = 0usize;
         let mut points = 0usize;
         let mut formal_coreps = 0usize;
         for uni in 1..=1651 {
-            let Ok(summary) =
-                cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni(uni)
-            else {
-                continue;
-            };
+            let summary = magnetic_irrep_summary_by_uni(uni)
+                .unwrap_or_else(|error| panic!("UNI {uni} strict summary failed: {error:?}"));
             summaries += 1;
             for point in &summary.kpoints {
                 points += 1;
@@ -2765,124 +1810,62 @@ mod tests {
             }
         }
         println!(
-            "typed formal corep acceptance census: summaries={summaries}, points={points}, coreps={formal_coreps}"
+            "strict complex summary acceptance census: summaries={summaries}, points={points}, coreps={formal_coreps}"
         );
+        assert_eq!(summaries, 1651);
+        assert_eq!(points, 10390);
+        assert_eq!(formal_coreps, 52793);
     }
 
     #[test]
-    #[ignore = "exhaustive 1651-UNI partial complex-corep recovery census"]
-    fn exhaustive_partial_complex_corep_recovery_census() {
+    #[ignore = "exhaustive strict-summary complex/pending column census"]
+    fn exhaustive_strict_summary_column_semantics_census() {
         let mut points = 0usize;
-        let mut recovered_sources = 0usize;
-        let mut recovered_type_c_sources = 0usize;
-        let mut merged_coreps = 0usize;
-        let mut still_unresolved = 0usize;
-        let mut unresolved_categories = std::collections::BTreeMap::<String, usize>::new();
+        let mut complex_unitary = 0usize;
+        let mut pending_antiunitary = 0usize;
+        let mut defined_antiunitary = 0usize;
 
         for uni in 1..=1651 {
-            let partial = magnetic_irrep_summary_by_uni_partial(uni)
-                .unwrap_or_else(|error| panic!("UNI {uni} partial summary failed: {error:?}"));
-            for point in &partial.summary.kpoints {
+            let summary = magnetic_irrep_summary_by_uni(uni)
+                .unwrap_or_else(|error| panic!("UNI {uni} strict summary failed: {error:?}"));
+            for point in &summary.kpoints {
                 points += 1;
-                for spinor in [false, true] {
-                    let failures = partial
-                        .unresolved_coreps
-                        .iter()
-                        .filter(|failure| {
-                            failure.k_label == point.label && failure.spinor == spinor
-                        })
-                        .collect::<Vec<_>>();
-                    let mut recovered = Vec::new();
-                    for failure in failures {
-                        let result = if spinor {
-                            recover_complex_formal_corep::<true>(
-                                partial.summary.unitary_sg,
-                                point,
-                                failure,
-                            )
-                        } else {
-                            recover_complex_formal_corep::<false>(
-                                partial.summary.unitary_sg,
-                                point,
-                                failure,
-                            )
-                        }
-                        .unwrap_or_else(|error| {
-                            panic!(
-                                "UNI {uni} SG {} k-point {} source {} SPIN={spinor} recovery invariant failed: {error:?}",
-                                partial.summary.unitary_sg, point.label, failure.source_irrep
-                            )
-                        });
-                        if result.is_empty() {
-                            still_unresolved += 1;
-                            let category = if failure
-                                .reason
-                                .contains("compound constituent branches are classified")
-                            {
-                                "compound complex surface"
-                            } else if failure.reason.contains("complex unitary character for") {
-                                "A/B complex unitary surface"
-                            } else if failure.reason.contains("operation-aware Type-C character") {
-                                "Type-C complex unitary surface"
-                            } else if failure.reason.contains(
-                                "parent-to-unitary spin frame is not a signed permutation",
-                            ) {
-                                "spin frame transport"
-                            } else if failure.reason.contains("transported lift of a0^-1") {
-                                "spin conjugated lift"
-                            } else {
-                                "other"
-                            };
-                            let family = if failure.spinor { "spin" } else { "scalar" };
-                            *unresolved_categories
-                                .entry(format!("{family} {category}"))
-                                .or_default() += 1;
-                        } else {
-                            recovered_sources += result.len();
-                            recovered_type_c_sources += result
-                                .iter()
-                                .filter(|corep| {
-                                    corep.corep_type == cryspglib::irrep::corep::CorepType::C
-                                })
-                                .count();
-                            recovered.extend(result);
+                for corep in &point.coreps {
+                    assert_eq!(corep.characters.len(), point.operations.len());
+                    for (character, operation) in corep.characters.iter().zip(&point.operations) {
+                        match (character, operation.time_reversal) {
+                            (Some(value), false) => {
+                                assert!(value.re.is_finite() && value.im.is_finite());
+                                complex_unitary += usize::from(value.im != 0.0);
+                            }
+                            (Some(value), true) => {
+                                assert!(value.re.is_finite() && value.im.is_finite());
+                                defined_antiunitary += 1;
+                            }
+                            (None, true) => pending_antiunitary += 1,
+                            (None, false) => panic!(
+                                "UNI {uni} k-point {} corep {} has an undefined unitary column",
+                                point.label, corep.label
+                            ),
                         }
                     }
-                    let merged = merge_recovered_formal_coreps(recovered);
-                    assert!(merged.iter().all(|corep| {
-                        corep.dimension > 0 && corep.characters.len() == point.operations.len()
-                    }));
-                    merged_coreps += merged.len();
                 }
             }
         }
-        assert!(recovered_sources > 0);
-        assert!(recovered_type_c_sources > 0);
         println!(
-            "partial complex recovery census: points={points} recovered_sources={recovered_sources} recovered_type_c_sources={recovered_type_c_sources} merged_coreps={merged_coreps} still_unresolved={still_unresolved}"
+            "strict summary column census: points={points} complex_unitary={complex_unitary} pending_antiunitary={pending_antiunitary} defined_antiunitary={defined_antiunitary}"
         );
-        for (category, count) in &unresolved_categories {
-            println!("  unresolved {category}: {count}");
-        }
-        assert_eq!(
-            still_unresolved, 0,
-            "every partial-summary source corep must be recoverable through the typed complex/plural APIs; unresolved categories: {unresolved_categories:?}"
-        );
+        assert_eq!(points, 10390);
+        assert!(complex_unitary > 0);
+        assert!(pending_antiunitary > 0);
+        assert!(defined_antiunitary > 0);
     }
 
     #[test]
     fn sg199_compound_source_is_no_longer_an_upstream_blocker() {
-        let partial = magnetic_irrep_summary_by_uni_partial(1515)
-            .expect("UNI 1515 partial summary must retain classified compound branches");
-        assert!(
-            partial
-                .unresolved_coreps
-                .iter()
-                .all(|failure| failure.source_irrep != "GM2GM3"),
-            "the compound physical record must be resolved by constituent-orbit analysis"
-        );
-        let source_labels = partial
-            .summary
+        let summary = magnetic_irrep_summary_by_uni(1515)
+            .expect("UNI 1515 strict summary must retain classified compound branches");
+        let source_labels = summary
             .kpoints
             .iter()
             .flat_map(|point| &point.coreps)
@@ -2894,28 +1877,18 @@ mod tests {
     }
 
     #[test]
-    fn sg220_partial_summary_retains_safe_rows_alongside_unresolved_sources() {
-        let partial = magnetic_irrep_summary_by_uni_partial(1592)
-            .expect("UNI 1592 partial summary must retain independently safe rows");
-        assert!(
-            !partial.unresolved_coreps.is_empty(),
-            "the remaining unsupported sources must stay explicit"
-        );
-        assert!(
-            partial
-                .unresolved_coreps
-                .iter()
-                .all(|failure| failure.uni == 1592 && !failure.reason.is_empty())
-        );
-        assert!(
-            partial
-                .summary
-                .kpoints
-                .iter()
-                .flat_map(|point| &point.coreps)
-                .next()
-                .is_some(),
-            "one unsupported source must not discard independently safe rows"
-        );
+    fn sg220_strict_summary_is_directly_consumable() {
+        let summary = magnetic_irrep_summary_by_uni(1592)
+            .expect("UNI 1592 strict summary must contain every formal row");
+        let mut formal = 0usize;
+        for point in &summary.kpoints {
+            formal += prepare_formal_coreps::<false>(summary.unitary_sg, point)
+                .expect("scalar strict rows must be consumable")
+                .len();
+            formal += prepare_formal_coreps::<true>(summary.unitary_sg, point)
+                .expect("spin strict rows must be consumable")
+                .len();
+        }
+        assert!(formal > 0);
     }
 }

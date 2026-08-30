@@ -800,16 +800,16 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
 
 ### Current cryspglib corep boundary used by Rustb (2026-08-30)
 
-- Rustb must consume
-  `cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni_partial`,
-  not the strict summary API.  A single unavailable source corepresentation
-  must not discard independently valid k-points and coreps.
-- Every unresolved source row from the partial summary is recovered only
-  through cryspglib's typed, operation-aware complex APIs.  Ordinary and
-  spinor rows use their paired `Complex64` character/Seitz data; compound rows
-  use the plural constituent-orbit API and are merged by explicit source
-  provenance.  Never regress to pairing raw character arrays with Hall
-  operations or splitting Miller--Love labels in Rustb.
+- Rustb consumes the strict
+  `cryspglib::irrep::magnetic_summary::magnetic_irrep_summary_by_uni` surface.
+  Each operation-aligned character is `Option<Complex64>`: `Some(z)` is a
+  computed value, including a defined zero, while `None` is reserved for a
+  genuinely pending Type-A antiunitary column.  Never convert this distinction
+  back into placeholder `f64` zeros.
+- Ordinary, spinor, and compound coreps are already merged by cryspglib with
+  explicit source provenance and authoritative dimensions.  Rustb must not
+  reconstruct source tables, parse compound Miller--Love labels, pair raw
+  character arrays with Hall operations, or run a second recovery pass.
 - The former scientific blockers are implemented: compound constituent
   orbits, general Type-C partner transport, lattice/centering Bloch phases,
   and general crystallographic SU(2) frame transport.  Type-C evaluates
@@ -817,13 +817,15 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   and the double-group central sign.  The relevant cryspglib commits are
   `efc7e24`, `9e956c4`, `0851ca9`, `1de71e1`, and `83ca8e8`; Rustb consumes the
   plural compound surface from `da4df70`.
-- The release-only
-  `exhaustive_partial_complex_corep_recovery_census` is a hard regression
-  gate.  Its 2026-08-30 result over all 1,651 UNI groups was
-  `points=10390`, `recovered_sources=15343`,
-  `recovered_type_c_sources=4240`, `merged_coreps=13247`, and
-  `still_unresolved=0`.  A future nonzero unresolved count is a correctness
-  regression and must not be hidden as `???`.
+- The release-only `exhaustive_strict_complex_summary_acceptance_census` is a
+  hard regression gate.  Its 2026-08-30 result is `summaries=1651`,
+  `points=10390`, and `coreps=52793`.  A future strict-summary failure is a
+  correctness regression and must not be hidden as `???` or routed through a
+  consumer-side fallback.
+- The corresponding Rustb release library gate is `261 passed / 2 ignored`;
+  the two ignored full-library censuses pass explicitly.  Release doc-tests are
+  `22 passed / 2 ignored`, and the `intel-mkl-system,cryspglib` all-target check
+  succeeds.
 - Type-A antiunitary characters may be
   `TypeAAntiunitaryPending`.  Rustb fits the available unitary characters and
   prints antiunitary entries as `N/A`; it must not present the placeholder
@@ -834,8 +836,7 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   full-k-star corepresentations.  Rustb's present high-symmetry band labeling
   uses the fixed-k data; any future star/unfolding API must treat this as an
   explicit missing capability.
-- The strict cryspglib summary still exposes a legacy real-valued character
-  surface and therefore rejects genuinely complex rows.  Rustb must continue
-  using the partial summary plus typed complex recovery until cryspglib grows
-  a native complex summary type; this is an API-shape limitation, not missing
-  formal character data.
+- The old real-valued cryspglib corep APIs remain only as deprecated
+  compatibility surfaces.  New Rustb code must use the strict complex summary;
+  reintroducing the legacy `Vec<f64>` path would again erase genuine imaginary
+  characters and conflate a pending antiunitary value with a physical zero.
