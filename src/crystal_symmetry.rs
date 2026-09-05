@@ -156,13 +156,13 @@ impl CrystalSymmetryDataset {
                 effective_operations: self.field_preserving_operations.len(),
             });
         }
-        let sg = u8::try_from(self.spacegroup_number).map_err(|_| {
-            TbError::InvalidCrystalSymmetryInput {
+        if !(1..=230).contains(&self.spacegroup_number) {
+            return Err(TbError::InvalidCrystalSymmetryInput {
                 parameter: "spacegroup_number",
                 message: format!("{} is outside 1..=230", self.spacegroup_number),
-            }
-        })?;
-        let data_hall = SG_DATA_HALL[sg as usize] as usize;
+            });
+        }
+        let data_hall = SG_DATA_HALL[self.spacegroup_number] as usize;
         if data_hall != self.hall_number {
             return Err(TbError::UnsupportedHighSymmetrySetting {
                 detected_hall: self.hall_number,
@@ -1011,6 +1011,33 @@ mod tests {
         assert!(table.contains("| ML | BC |"));
         assert!(table.contains("| 1 |"));
         assert_eq!(dataset.character_table_operations().unwrap().len(), 48);
+    }
+
+    #[test]
+    fn invalid_spacegroup_numbers_are_rejected_by_database_apis() {
+        let mut dataset = simple_cubic()
+            .crystal_symmetry(&SymmetryParameters::default())
+            .unwrap();
+
+        for spacegroup_number in [0, 231, 255, 256, usize::MAX] {
+            dataset.spacegroup_number = spacegroup_number;
+            for result in [
+                dataset.high_symmetry_kpoints().map(|_| ()),
+                dataset.character_table_at("GM").map(|_| ()),
+                dataset.character_table_operations().map(|_| ()),
+            ] {
+                assert!(
+                    matches!(
+                        result,
+                        Err(TbError::InvalidCrystalSymmetryInput {
+                            parameter: "spacegroup_number",
+                            ..
+                        })
+                    ),
+                    "spacegroup_number={spacegroup_number}: {result:?}"
+                );
+            }
+        }
     }
 
     #[test]
