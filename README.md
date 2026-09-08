@@ -8,8 +8,15 @@ and Floquet calculations.
 
 [![Crates.io](https://img.shields.io/crates/v/Rustb.svg)](https://crates.io/crates/Rustb)
 
-The current API version is **0.7.3** and uses the const-generic model type
+The development API is **0.7.3 (unreleased)** and uses the const-generic model type
 `Model<SPIN, DIM, R>`.
+
+Source builds pin the optional `cryspglib` dependency to a public Git commit
+because its required 0.2.1 complex-character API is not yet on crates.io.
+Clone builds do not need a sibling checkout. Publishing Rustb 0.7.3 requires
+publishing cryspglib 0.2.1 first, then replacing its `git`/`rev` dependency
+with the registry version. The crates.io installation below currently gives
+the released 0.7.1 API.
 
 ## Installation
 
@@ -38,6 +45,16 @@ Rustb = { version = "0.7", features = ["intel-mkl-system", "cryspglib"] }
 
 The optional `mimalloc` and `jemalloc` allocator features are mutually
 exclusive and can be combined with one backend feature.
+
+On Debian/Ubuntu, `netlib-src` expects `libcblas.so`, while the distribution
+provides its CBLAS symbols inside `libblas.so`. After installing `libblas-dev`,
+`liblapack-dev` and `gfortran`, provide a local linker alias when using Netlib:
+
+```sh
+mkdir -p target/netlib-link
+ln -sf "$(cc -print-file-name=libblas.so)" target/netlib-link/libcblas.so
+LIBRARY_PATH="$PWD/target/netlib-link${LIBRARY_PATH:+:$LIBRARY_PATH}" cargo test --release --features netlib-system
+```
 
 Rustb requires Rust 1.90 or newer.
 
@@ -339,6 +356,68 @@ translations collapse onto one database operation (a folded, nonprimitive
 supercell), a preflight error is returned rather than assigning primitive-cell
 labels; unfold that model first.
 
+## Floquet driven systems
+
+`FloquetDrive` represents a commensurate periodic vector potential. Its base
+photon energy `omega0_ev` is measured in eV, while each
+`LightMode::a_complex` is the complex amplitude of `e A / hbar` in inverse
+lattice-length units. The mode's integer harmonic is measured relative to the
+base frequency:
+
+```rust
+let drive = FloquetDrive::with_modes(
+    0.8,
+    vec![LightMode::new(
+        1,
+        arr1(&[
+            Complex::new(0.12, 0.0),
+            Complex::new(0.0, 0.12),
+        ]),
+    )],
+);
+let truncation = FloquetTruncation::new(1, 128);
+let k = arr1(&[0.2, 0.1]);
+
+// Full truncated Sambe problem and folded quasienergies.
+let sambe_model = model.floquet_model(&drive, &truncation)?;
+let quasienergies = model.floquet_quasienergy_onek(
+    &k,
+    &drive,
+    &truncation,
+    Gauge::Lattice,
+)?;
+
+// Same-size off-resonant van Vleck model.
+let effective = model.floquet_effective_model(&drive, None)?;
+
+// Retain terms through O(omega^-2).
+let options = FloquetEffectiveOptions::new().with_order(2);
+let effective_second_order =
+    model.floquet_effective_model(&drive, Some(&options))?;
+```
+
+| API | Returned basis size | Intended use |
+|-----|--------------------:|--------------|
+| `floquet_model` / `floquet_ham_onek` | `nsta * (2*n_max + 1)` | Full truncated Sambe problem |
+| `floquet_quasienergy_onek` | `nsta * (2*n_max + 1)` | Quasienergies folded into one Floquet zone |
+| `floquet_effective_model` | `nsta` | Coherent, off-resonant van Vleck expansion |
+| `floquet_effective_mode_resolved_model` | `nsta` | Mutually incoherent mode-diagonal correction sum |
+| `floquet_effective_q_model` | `nsta` | Coherent long-wavelength correction through `O(A^2 q/W)` |
+
+The real-space effective-model path determines its generated hopping support
+automatically. `FloquetEffectiveOptions::harmonic_max` controls the commutator
+sums and defaults to `2`; `order` defaults to `1` and may be `0`, `1`, or `2`.
+All three effective-model APIs take only `FloquetEffectiveOptions` as numerical
+controls. `FloquetTruncation` controls photon sectors and time sampling for the
+full Sambe calculation. When migrating an effective-model call that relied on
+the old cutoff, set `.with_harmonic_max(2 * old_n_max)` explicitly to preserve
+its harmonic range.
+Use `floquet_effective_mode_resolved_model` when different modes are mutually
+incoherent. Modes passed together to `floquet_effective_model` instead
+interfere coherently inside the same Peierls phase. See
+[`examples/floquet_chain/main.rs`](examples/floquet_chain/main.rs) for a
+complete executable example.
+
 Wannier90 models can be loaded as:
 
 ```rust
@@ -468,7 +547,7 @@ cargo doc --no-deps --features openblas-system
 ```
 
 Numerical tests should be run in release mode. Some integration-style tests
-invoke gnuplot and regenerate files below `tests/`.
+invoke gnuplot and write generated files below `target/test-output/`.
 
 ## License
 

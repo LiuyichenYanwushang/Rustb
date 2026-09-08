@@ -5,7 +5,7 @@ edition = "2024"
 
 categories = ["science"]
 description = "A package for calculating band, angle state, linear and nonlinear conductivities based on tight-binding models"
-exclude = ["target/", "examples/", ".github/", "crate/","tests/", "benches/", "CLAUDE.md", ".claude/"]
+exclude = ["target/", "target-pkg/", ".github/", "crate/", "tests/", "benches/*.txt", "CLAUDE.md", "AGENTS.md", "*_PLAN.md", ".claude/", ".codex/", ".agents/", ".cargo/", ".gitignore"]
 keywords = ["tight-binding","physics","Rustb"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -39,7 +39,9 @@ katexit = "0.1.5"
 thiserror = "2.0.12"
 toml = "0.8"
 puruspe = "0.4"
-cryspglib = { path = "../cryspglib", version = "0.2.1", optional = true, default-features = false }
+# 0.2.1 is not on crates.io yet. Pin the public implementation required by the
+# complex-character API; replace git/rev with the version when it is published.
+cryspglib = { git = "https://github.com/LiuyichenYanwushang/cryspglib.git", rev = "8fd276963d1403277f2b625f4d60653b5f45dcfb", version = "0.2.1", optional = true, default-features = false }
 
 
 [dependencies.intel-mkl-src]
@@ -74,10 +76,6 @@ criterion = "0.5"
 [[bench]]
 name = "bench_main"
 harness = false
-
-[[package.metadata.docs.rs.artifacts]]
-src = "doc/dos_2D.svg"
-dst = "dos_2D.svg"
 
 [features]
 # There is intentionally no default backend; callers must enable exactly one of
