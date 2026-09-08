@@ -62,6 +62,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
         k: &ArrayBase<S, Ix1>,
         params: &Parameters<DIM>,
     ) -> Result<BandBerryCurvature> {
+        self.validate()?;
         if k.len() != DIM {
             return Err(TbError::KVectorLengthMismatch {
                 expected: DIM,
@@ -106,6 +107,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
         k_points: &ArrayBase<S, Ix2>,
         params: &Parameters<DIM>,
     ) -> Result<Array1<f64>> {
+        self.validate()?;
         if k_points.ncols() != DIM {
             return Err(TbError::DimensionMismatch {
                 context: "Berry-curvature k-points".into(),

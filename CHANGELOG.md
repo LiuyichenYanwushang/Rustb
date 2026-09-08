@@ -4,6 +4,15 @@
 
 ### Safety and numerical fixes
 
+- Correct the interband optical Kubo kernel: retain both longitudinal absorption
+  and the antisymmetric Hall response, with `e²/hbar` omitted. Unbroadened poles
+  return errors instead of silently vanishing; Drude terms remain excluded.
+- Hopping setters/adders identify onsite terms by `R=0` and orbital indices,
+  independent of support row order. All effective Floquet paths place the origin
+  first, validate results, and remain safe to edit with `add_onsite`.
+- Floquet time-grid estimates no longer apply the Bessel precision margin as a
+  minimum bandwidth. Saturated adaptive estimates use an amplitude-dependent
+  analytic bound; an arbitrary fixed grid cap is not treated as sufficient.
 - Low-level LAPACK eigensolvers return `Result`, reject non-square inputs and
   overflowing dimensions, support empty matrices, and pack logical matrices
   in column-major order. Both eigenvector APIs return row kets; the range
@@ -39,6 +48,17 @@
   time bandwidth. Returned real-space models place the origin block first.
   Quasienergy folding avoids overflow when both energy and frequency are finite.
 
+### API changes
+
+- `FloquetEffectiveOptions.harmonic_max` is `isize`; negative cutoffs are rejected.
+  `floquet_effective_q_model` takes `(drive, options, wavevector_cartesian)` and
+  no longer takes a Sambe truncation.
+- Atomic `Model::orb_angular()` returns `(3, nsta, nsta)`, replacing
+  `(dim_r, norb, norb)`, with spin-major duplication of the orbital blocks.
+- Add `gen_ham_batch`, `gen_v_batch`, `gen_v_projected_batch`, and parallel/batched
+  band solvers. Stored position matrices must span every `hamR` row, consistent
+  with `Model::validate`; omitted blocks must be explicitly zero-padded.
+
 ### Build and repository changes
 
 - Replace the sibling `cryspglib` path with a fixed public 0.2.1 Git commit.
@@ -57,3 +77,6 @@ This repair batch does not migrate every infallible library API to `Result`,
 privatize `Model` fields, add Floquet q-scan caches, split large modules,
 or clear all existing clippy style/complexity warnings. Those are separate
 API, performance and maintenance changes. Git history has not been rewritten.
+
+Known test coverage gap: native LAPACK `info != 0` failure paths do not yet
+have a backend-independent regression test.

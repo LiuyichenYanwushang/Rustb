@@ -379,12 +379,13 @@ structure, `Parameters<DIM>`:
 | `eta` | Denominator broadening in eV | `intrinsic_nonlinear_hall` |
 | `kmesh` | Uniform k-mesh `[usize; DIM]` | per-k-point trait methods |
 | `omega` | Frequency(ies) in eV; only `optical_conductivity` scans all supplied frequencies | hall, quantum geometry, extrinsic/intrinsic nonlinear Hall |
-| `spin` | `None` = charge current, `Some(dir)` = spin current | quantum geometry, optical, intrinsic |
+| `spin` | `None` = charge current, `Some(dir)` = spin current | quantum geometry, optical |
 | `direction` | `Array2<f64>` with shape `(rank, DIM)` — rank 2 for Hall / geometry / optical, rank 3 `(current, field_1, field_2)` for nonlinear | — |
 | `integration` | `Integration::Direct` / `Simplex` / `EnergyCut` | per-k-point trait methods |
 | `field_symmetry` | `FieldSymmetry` for extrinsic NLH only | all other methods |
 
-Fields a method does not need are simply ignored.
+Unused fields are ignored except for `intrinsic_nonlinear_hall`'s `spin`:
+it must be `None`; `Some(_)` returns `InvalidResponseParameter`.
 
 Build parameters with `Parameters::new`, `at_mu`, `rank2`, or `rank3`, then
 tune fields directly or via the builder helpers `with_temperature`,
@@ -523,6 +524,13 @@ For reusable band-resolved data, use the `QuantumGeometry` trait methods
 `eta` from the same `Parameters` value.
 
 ### Optical conductivity
+
+Returns the retarded **interband** Kubo conductivity with `e²/hbar` omitted,
+normalized by `|det(lat)|`; it excludes Drude terms and exactly degenerate
+pairs. Frequencies and broadening are in eV. Use positive `eta` at resonances;
+an unbroadened pole returns an error. For `det(lat) > 0`, its insulating DC
+antisymmetric part is minus the occupied Berry-curvature integral returned by
+`hall_conductivity`, which retains a signed-determinant convention.
 
 Full Cartesian tensors share one eigendecomposition and one band-tracking
 pass across components, retaining the Cartesian band velocities. Simplex

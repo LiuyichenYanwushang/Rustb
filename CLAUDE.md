@@ -593,7 +593,8 @@ The two operands of an inner/outer commutator may have different supports;
 `real_space_commutator_with_supports` returns their Minkowski sum without
 premature Hermitian symmetrization. The output support is the union through
 the double Minkowski sum at order 1 and through the triple sum at order 2,
-in lexicographic order — `target_hamR` is rejected. Hermiticity
+with the origin first and remaining rows in lexicographic order;
+`target_hamR` is rejected. Hermiticity
 `T(R) = T(−R)†` is enforced exactly on the final signed sum.
 
 **Commutator-order convention (verified against the literature):** the code

@@ -413,7 +413,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 );
 
                 // Update matrix elements at negative R position (unless onsite and R=0)
-                if index != 0 || ind_i != ind_j {
+                if !is_onsite {
                     update_hamiltonian!(
                         SPIN,
                         pauli,
@@ -529,7 +529,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 );
 
                 // Update matrix elements at negative R position (unless onsite and R=0)
-                if index != 0 || ind_i != ind_j {
+                if !is_onsite {
                     add_hamiltonian!(
                         SPIN,
                         pauli,
@@ -639,7 +639,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         if let Some(index) = find_R(&self.hamR, &R) {
             let index_inv = find_R(&self.hamR, &(-R)).expect("Negative R not found in hamR");
             self.ham[[index, ind_i, ind_j]] = tmp;
-            if index != 0 || ind_i != ind_j {
+            if !onsite {
                 self.ham[[index_inv, ind_j, ind_i]] = tmp.conj();
             }
         } else {
@@ -2096,6 +2096,34 @@ mod fold_tests {
         .unwrap();
         model.add_hop(-1.0, 0, 0, &array![1], None);
         model
+    }
+
+    #[test]
+    fn hopping_updates_are_independent_of_origin_row() {
+        let mut model =
+            Model::<false, 1>::tb_model(array![[1.0]], array![[0.0], [0.0]], None).unwrap();
+        model.add_hop(0.2, 0, 0, &array![1], None);
+        let order = [1, 0, 2];
+        model.ham = model.ham.select(Axis(0), &order);
+        model.hamR = model.hamR.select(Axis(0), &order);
+        model.set_onsite(&array![0.5, 0.25], None);
+        model.add_onsite(&array![1.0, 1.0], None);
+        assert_eq!(model.ham[[1, 0, 0]], Complex::new(1.5, 0.0));
+        assert_eq!(model.ham[[1, 1, 1]], Complex::new(1.25, 0.0));
+
+        // A nonzero translation in row zero still needs its conjugate.
+        let value = Complex::new(0.3, 0.4);
+        model.set_hop(value, 0, 0, &array![1], None);
+        assert_eq!(model.ham[[2, 0, 0]], value.conj());
+        model.add_hop(value, 0, 0, &array![1], None);
+        assert_eq!(model.ham[[2, 0, 0]], 2.0 * value.conj());
+        model.add_element(value, 0, 0, &array![1]).unwrap();
+        assert_eq!(model.ham[[2, 0, 0]], value.conj());
+
+        // Off-diagonal intracell terms must continue to update both entries.
+        model.add_hop(value, 0, 1, &array![0], None);
+        assert_eq!(model.ham[[1, 0, 1]], value);
+        assert_eq!(model.ham[[1, 1, 0]], value.conj());
     }
 
     #[test]

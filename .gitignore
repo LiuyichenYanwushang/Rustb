@@ -1,6 +1,10 @@
 # Build cache (cargo target directory)
 /target/
 
+# Vim swap files
+*.swp
+*.swo
+
 # Generated numerical/plot outputs (test source files remain trackable)
 **/BAND.dat
 *.surf_*

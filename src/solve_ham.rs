@@ -184,6 +184,16 @@ pub trait Solve {
         &self,
         kvec: &ArrayBase<S, Ix1>,
     ) -> (Array1<f64>, Array2<Complex<f64>>);
+    /// Solve eigenvalues in the half-open energy window `(range.0, range.1]`.
+    ///
+    /// Returns ascending energies and row ket coefficients with shape
+    /// `(number_of_selected_bands, nsta)`, in the same gauge as [`Self::solve_onek`].
+    /// `epsilon` is LAPACK's absolute convergence tolerance; nonpositive values
+    /// select its default tolerance.
+    ///
+    /// # Panics
+    /// Panics for a k-vector with the wrong dimension, nonfinite or unordered
+    /// range bounds, a nonfinite tolerance, or an eigensolver failure.
     fn solve_range_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
@@ -681,7 +691,11 @@ mod tests {
         position.ham.swap_axes(1, 2);
         position.rmatrix.0.swap_axes(2, 3);
         compare_operators(&position);
-        position.rmatrix.0 = position.rmatrix.0.slice(s![..1, .., .., ..]).to_owned();
+        position
+            .rmatrix
+            .0
+            .slice_mut(s![1.., .., .., ..])
+            .fill(Complex::new(0.0, 0.0));
         compare_operators(&position);
         bare.hamR = Array2::zeros((0, DIM));
         bare.ham = Array3::zeros((0, bare.nsta(), bare.nsta()));
@@ -696,6 +710,25 @@ mod tests {
         operator_case::<true, 1>();
         operator_case::<true, 2>();
         operator_case::<true, 3>();
+    }
+
+    #[test]
+    fn velocity_rejects_position_support_prefix_like_model_validation() {
+        let mut model =
+            Model::<false, 1, HasRMatrix>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+        model.add_hop(1.0, 0, 0, &array![1], None);
+        model.rmatrix.0 = model.rmatrix.0.slice(s![..1, .., .., ..]).to_owned();
+        assert!(model.validate().is_err());
+        for nproj in [0, 1] {
+            assert!(
+                std::panic::catch_unwind(|| model.gen_v_projected_batch(
+                    &Array2::<f64>::zeros((0, 1)),
+                    Gauge::Atom,
+                    &Array2::zeros((nproj, 1)),
+                ))
+                .is_err()
+            );
+        }
     }
 
     #[test]

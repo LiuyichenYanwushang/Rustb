@@ -3,12 +3,20 @@
 //! The direct and simplex algorithms evaluate the same kernel,
 //!
 //! ```math
-//! \sigma^{ab}(\omega) = \sum_{n\ne m}\int_{BZ}
-//! \frac{(f_n-f_m)v^a_{nm}v^b_{mn}}
-//! {(E_n-E_m)^2-(\omega+i\eta)^2}\,dk,
+//! \widetilde\sigma^{ab}(\omega) = \frac1V\sum_{n\ne m}\int_{[0,1)^{DIM}}
+//! \frac{-i(f_n-f_m)v^a_{nm}v^b_{mn}}
+//! {(E_n-E_m)(E_n-E_m+\omega+i\eta)}\,d k_{\rm frac},
 //! ```
 //!
-//! and therefore share one [`Parameters`] input and one named
+//! with `V = |det(lat)|` and `v = dH/dk_cart`. The physical factor `e²/hbar`
+//! is omitted. This is the interband part of the
+//! [Kubo conductivity](https://wannier90.readthedocs.io/en/latest/user_guide/postw90/berry/#berry-taskkubo-optical-conductivity-and-joint-density-of-states);
+//! intraband Drude terms and exactly degenerate pairs are excluded. In the
+//! insulating, zero-broadening DC limit, for `det(lat) > 0`, its antisymmetric
+//! part is minus the occupied Berry-curvature integral returned by
+//! `hall_conductivity` (which retains a signed-determinant convention).
+//!
+//! The algorithms share one [`Parameters`] input and one named
 //! [`OpticalConductivityResult`] output. A component calculation and a full
 //! Cartesian tensor calculation differ only through the direction matrix.
 
@@ -82,6 +90,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// parameter set; `spin` and `field_symmetry` are ignored.
     /// A full tensor shares one eigendecomposition and band-tracking pass
     /// across all components, retaining `DIM` band-velocity matrices per k.
+    ///
+    /// Returns the interband conductivity with `e²/hbar` omitted; no Drude
+    /// term is included. Positive `eta` resolves optical resonances. A pole at
+    /// `eta = 0`, or nonfinite numerical output, returns an error.
     pub fn optical_conductivity(
         &self,
         params: &Parameters<DIM>,
@@ -129,7 +141,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
         let thermal_width = parameters_occupation(params).energy_width()?;
         let chemical_potential = params.mu[0];
-        let determinant = self.lat.det()?;
+        let determinant = self.lat.det()?.abs();
         let mut conductivity =
             Array2::<Complex<f64>>::zeros((direction_pairs.len(), params.omega.len()));
         let mut unsafe_simplex_count = 0usize;
@@ -261,6 +273,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
 
+        if conductivity
+            .iter()
+            .any(|value| !value.re.is_finite() || !value.im.is_finite())
+        {
+            return Err(TbError::Other(
+                "optical conductivity is nonfinite; use positive eta at resonances and check the model's energy scales".into(),
+            ));
+        }
         Ok(OpticalConductivityResult {
             frequencies: params.omega.clone(),
             directions: direction_pairs,
@@ -367,6 +387,104 @@ fn integrate_simplex(
 mod tests {
     use super::*;
     use ndarray::array;
+
+    #[test]
+    fn optical_dimer_matches_analytic_absorption() {
+        // Independent dimers: E=+-1, |v_x,-+|^2=1/4 at every k, no Drude term.
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0], [0.5, 0.0]], None)
+                .unwrap();
+        model.set_hop(1.0, 0, 1, &array![0, 0], None);
+        let mut params = Parameters::at_mu([3, 4], Array2::zeros((0, 2)), 0.0);
+        params.T = array![0.0];
+        params.eta = 0.2;
+        params.omega = array![0.0, 0.3, -0.3, 2.0];
+        for handedness in [1.0, -1.0] {
+            model.lat[[0, 0]] = handedness;
+            for integration in [Integration::Direct, Integration::Simplex] {
+                params.integration = integration;
+                let result = model.optical_conductivity(&params).unwrap();
+                for (index, &omega) in params.omega.iter().enumerate() {
+                    let z = Complex::new(omega, params.eta);
+                    let expected = Complex::new(0.0, -0.25) * z / (4.0 - z * z);
+                    assert!(expected.re > 0.0);
+                    assert!((result.conductivity[[0, index]] - expected).norm() < 1e-12);
+                    for component in 1..4 {
+                        assert!(result.conductivity[[component, index]].norm() < 1e-12);
+                    }
+                }
+                assert!(
+                    (result.conductivity[[0, 1]].conj() - result.conductivity[[0, 2]]).norm()
+                        < 1e-12
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn optical_gamma_tensor_keeps_longitudinal_and_hall_parts() {
+        // H(q) = sin(q_x) sigma_x + sin(q_y) sigma_y + sigma_z.
+        // At Gamma: gap=2, Kxx=Kyy=1, Kxy=-i for the occupied lower band.
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0], [0.0, 0.0]], None)
+                .unwrap();
+        model.set_onsite(&array![1.0, -1.0], None);
+        model.set_hop(Complex::new(0.0, -0.5), 0, 1, &array![1, 0], None);
+        model.set_hop(Complex::new(0.0, 0.5), 0, 1, &array![-1, 0], None);
+        model.set_hop(-0.5, 0, 1, &array![0, 1], None);
+        model.set_hop(0.5, 0, 1, &array![0, -1], None);
+        let mut params = Parameters::at_mu([1, 1], Array2::zeros((0, 2)), 0.0);
+        params.T = array![0.0];
+        params.eta = 0.2;
+        params.omega = array![0.0, 0.3, -0.3, 2.0];
+        let result = model.optical_conductivity(&params).unwrap();
+        for (index, &omega) in params.omega.iter().enumerate() {
+            let z = Complex::new(omega, params.eta);
+            let diagonal = Complex::new(0.0, -1.0) * z / (4.0 - z * z);
+            let hall = -2.0 / (4.0 - z * z);
+            for (component, expected) in [diagonal, hall, -hall, diagonal].into_iter().enumerate() {
+                assert!((result.conductivity[[component, index]] - expected).norm() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn optical_unbroadened_poles_return_errors() {
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0], [0.5, 0.0]], None)
+                .unwrap();
+        model.set_hop(1.0, 0, 1, &array![0, 0], None);
+        let mut params = Parameters::rank2([1, 1], [1.0, 0.0], [1.0, 0.0], array![0.0]);
+        params.T = array![0.0];
+        params.eta = 0.0;
+        for integration in [Integration::Direct, Integration::Simplex] {
+            params.integration = integration;
+            params.omega = array![0.3];
+            let regular = model.optical_conductivity(&params).unwrap();
+            let expected = Complex::new(0.0, -0.25 * 0.3 / (4.0 - 0.3 * 0.3));
+            assert!((regular.conductivity[[0, 0]] - expected).norm() < 1e-12);
+            params.omega = array![2.0];
+            assert!(model.optical_conductivity(&params).is_err());
+        }
+    }
+
+    #[test]
+    fn optical_kernel_resolves_thermal_near_degeneracy() {
+        let k = array![
+            [Complex::new(0.0, 0.0), Complex::new(1.0, 0.0)],
+            [Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)]
+        ];
+        let gap = 1e-18;
+        let z = Complex::new(0.3, 0.2);
+        let actual = eval_optical_kernel(&[-gap / 2.0, gap / 2.0], &k, z.re, z.im, 0.0, 1.0, 2);
+        // tanh(gap/4)/gap -> 1/4, so the pair tends to i/(2z).
+        let expected = Complex::new(0.0, 0.5) / z;
+        assert!((actual - expected).norm() < 1e-12);
+        assert_eq!(
+            eval_optical_kernel(&[0.0, 0.0], &k, z.re, z.im, 0.0, 1.0, 2),
+            Complex::new(0.0, 0.0)
+        );
+    }
 
     fn qwz_model(mass: f64) -> Model<false, 2> {
         let mut model = Model::<false, 2>::tb_model(
@@ -543,9 +661,9 @@ mod tests {
         };
         let frequencies = array![0.3, 1.1];
         // f_lower=1, f_upper=0: summing both off-diagonal terms gives
-        // 2i / (4 - (omega+i eta)^2), independent of the spatial mesh.
+        // 2 / (4 - (omega+i eta)^2), independent of the spatial mesh.
         let exact: Array1<Complex<f64>> =
-            frequencies.mapv(|omega| 2.0 * Complex::i() / (4.0 - Complex::new(omega, 0.2).powi(2)));
+            frequencies.mapv(|omega| 2.0 / (4.0 - Complex::new(omega, 0.2).powi(2)));
         for cells in [1, 256, 8193] {
             let vertices = vec![vertex.clone(); cells];
             let mut previous: Option<Array1<Complex<f64>>> = None;

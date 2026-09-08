@@ -187,7 +187,8 @@
 //! - **R**: integer lattice vectors from `hamR`
 //! - $R\_\alpha^{\rm (cart)}$, $\tau\_{n\alpha}^{\rm (cart)}$: Cartesian coordinates (in Å),
 //!   obtained by multiplying fractional vectors with the lattice matrix `lat`
-//! - The returned velocity matrix is **anti-Hermitian**: $v\_\alpha^\dagger = -v\_\alpha$
+//! - For a Hermitian Hamiltonian and position operator, the returned velocity
+//!   is **Hermitian**: $v\_\alpha^\dagger = v\_\alpha$.
 use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
@@ -313,6 +314,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Returns `(nk, n_proj, nsta, nsta)` velocities and `(nk, nsta, nsta)`
     /// Hamiltonians in input order. Workspace grows with the supplied batch;
     /// pass bounded subsets when processing large k-meshes.
+    ///
+    /// # Panics
+    /// Panics for incompatible dimensions. A stored position matrix must have
+    /// one block per `hamR` row, as required by [`Model::validate`]; pad absent
+    /// position blocks with zeros.
     pub fn gen_v_projected_batch<S: Data<Elem = f64>>(
         &self,
         points: &ArrayBase<S, Ix2>,
@@ -329,6 +335,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let nr = self.hamR.nrows();
         let nsta = self.nsta();
         let nproj = directions.nrows();
+        if R::HAS_RMATRIX {
+            assert_eq!(self.rmatrix.as_array4().dim(), (nr, DIM, nsta, nsta));
+        }
         let lattice_directions = self.lat.dot(&directions.t());
         let r_projected = Array2::from_shape_fn((nr, nproj), |(ir, p)| {
             (0..DIM)
@@ -356,15 +365,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut velocities = summed.slice_move(s![.., 1.., .., ..]);
         drop(coefficients);
 
-        // Position blocks use the same phase matrix, including models whose
-        // stored position support is a prefix of the hopping support.
+        // Position and hopping blocks share the same translation support.
         let connections = if R::HAS_RMATRIX && nproj > 0 {
             let position = self.rmatrix.as_array4();
-            let n_position = position.len_of(Axis(0));
-            assert!(n_position <= nr, "position support exceeds hopping support");
-            assert_eq!(position.dim(), (n_position, DIM, nsta, nsta));
             Some(
-                fourier_sum(&phases.slice(s![.., ..n_position]), position)
+                fourier_sum(&phases.view(), position)
                     .into_shape_with_order((nk, DIM, nsta, nsta))
                     .unwrap(),
             )

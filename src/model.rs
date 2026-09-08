@@ -1135,6 +1135,46 @@ mod ownership_tests {
         }
     }
 
+    #[test]
+    fn validation_rejects_nonfinite_atomic_and_orbital_geometry() {
+        let valid = Model::<false, 2>::tb_model(
+            Array2::eye(2),
+            array![[0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut model = valid.clone();
+            model.orb[[0, 1]] = value;
+            assert!(matches!(
+                model.validate(),
+                Err(TbError::InvalidModelInvariant {
+                    invariant: "finite_geometry",
+                    ..
+                })
+            ));
+            model.orb[[0, 1]] = 0.0;
+            model.atoms[0].set_position(array![value, 0.0]);
+            assert!(matches!(
+                model.validate(),
+                Err(TbError::InvalidModelInvariant {
+                    invariant: "atomic_position",
+                    ..
+                })
+            ));
+            // Nonfinite moments are rejected by the public setter before
+            // they can enter a model; preserve the previous valid metadata.
+            let mut atom = valid.atoms[0].clone();
+            atom.set_magnetic_moment([1.0, 2.0, 3.0]).unwrap();
+            assert!(atom.set_magnetic_moment([value, 0.0, 0.0]).is_err());
+            assert_eq!(atom.magnetic_moment(), Some([1.0, 2.0, 3.0]));
+        }
+    }
+
     fn assert_model_round_trip<const SPIN: bool, R>()
     where
         R: RMatrixData + Serialize,

@@ -137,6 +137,8 @@
 //! -
 //! \frac{\Omega_0}{2}.
 //! ```
+//! The implementation compares distances after taking a signed remainder,
+//! avoiding overflow in the equivalent expression `epsilon + Omega_0/2`.
 //!
 //! # Van Vleck effective model (high-frequency expansion)
 //!
@@ -484,6 +486,31 @@ pub struct FloquetEffectiveOptions {
 
 type RealSpaceBlocks = (Vec<Array2<Complex<f64>>>, Array2<isize>);
 type RealSpaceBlockMap = std::collections::BTreeMap<Vec<isize>, Array2<Complex<f64>>>;
+
+/// Keep public real-space models compatible with origin-first consumers.
+/// Other support rows retain their relative order.
+fn place_origin_first(ham: &mut Array3<Complex<f64>>, ham_r: &mut Array2<isize>) -> Result<()> {
+    let zero = Array1::zeros(ham_r.ncols());
+    let origin = match find_R(ham_r, &zero) {
+        Some(index) => index,
+        None => {
+            ham.push(
+                Axis(0),
+                Array2::zeros((ham.len_of(Axis(1)), ham.len_of(Axis(2)))).view(),
+            )?;
+            ham_r.push_row(zero.view())?;
+            ham_r.nrows() - 1
+        }
+    };
+    if origin != 0 {
+        let order: Vec<_> = std::iter::once(origin)
+            .chain((0..ham_r.nrows()).filter(|&index| index != origin))
+            .collect();
+        *ham = ham.select(Axis(0), &order);
+        *ham_r = ham_r.select(Axis(0), &order);
+    }
+    Ok(())
+}
 
 const EXACT_SUM_LIMBS: usize = 35;
 
@@ -935,6 +962,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
             ham.index_axis_mut(Axis(0), i_r).assign(&block);
         }
+        place_origin_first(&mut ham, &mut ham_r)?;
         enforce_real_space_hermiticity(&mut ham, &ham_r)?;
         if ham
             .iter()
@@ -1019,6 +1047,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             static_model.ham = self.ham.clone();
             static_model.hamR = self.hamR.clone();
             static_model.orb_projection = self.orb_projection.clone();
+            place_origin_first(&mut static_model.ham, &mut static_model.hamR)?;
             static_model.validate()?;
             return Ok(static_model);
         }
@@ -1096,6 +1125,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
             }
         }
+        place_origin_first(&mut effective.ham, &mut effective.hamR)?;
         enforce_real_space_hermiticity(&mut effective.ham, &effective.hamR)?;
         effective.validate()?;
         Ok(effective)
@@ -1369,25 +1399,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
                 }
             });
 
-        let zero_r = Array1::<isize>::zeros(DIM);
-        let onsite_index = match find_R(&ham_r, &zero_r) {
-            Some(index) => index,
-            None => {
-                ham.push(
-                    Axis(0),
-                    Array2::<Complex<f64>>::zeros((total, total)).view(),
-                )?;
-                ham_r.push_row(zero_r.view())?;
-                ham.len_of(Axis(0)) - 1
-            }
-        };
-
-        if onsite_index != 0 {
-            let mut order: Vec<_> = (0..ham_r.nrows()).collect();
-            order.swap(0, onsite_index);
-            ham = ham.select(Axis(0), &order);
-            ham_r = ham_r.select(Axis(0), &order);
-        }
+        place_origin_first(&mut ham, &mut ham_r)?;
         let onsite_index = 0;
 
         for (in_sec, &n) in sectors.iter().enumerate() {
@@ -1497,7 +1509,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         gauge: Gauge,
     ) -> Result<Array1<f64>> {
         let hamf = self.floquet_ham_onek(kvec, drive, trunc, gauge)?;
-        eigvalsh_v(&hamf, UPLO::Upper)
+        let values = eigvalsh_v(&hamf, UPLO::Upper)?;
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err(TbError::Other("Floquet eigenvalues are not finite".into()));
+        }
+        Ok(values)
     }
 
     fn floquet_quasienergy_onek<S: Data<Elem = f64>>(
@@ -1509,10 +1525,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
     ) -> Result<Array1<f64>> {
         let mut values = self.floquet_band_onek(kvec, drive, trunc, gauge)?;
         values.mapv_inplace(|x| fold_quasienergy(x, drive.omega0_ev));
-        values
-            .as_slice_mut()
-            .unwrap()
-            .sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values.as_slice_mut().unwrap().sort_by(f64::total_cmp);
         Ok(values)
     }
 }
@@ -1744,6 +1757,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         drive: &FloquetDrive,
         options: Option<&FloquetEffectiveOptions>,
     ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+        self.validate()?;
         let default_options;
         let options = match options {
             Some(options) => options,
@@ -1931,6 +1945,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
             ham.index_axis_mut(Axis(0), i).assign(&block);
         }
+        place_origin_first(&mut ham, &mut ham_r)?;
         enforce_real_space_hermiticity(&mut ham, &ham_r)?;
 
         let mut model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
@@ -1941,7 +1956,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         model.ham = ham;
         model.hamR = ham_r;
         model.orb_projection = self.orb_projection.clone();
-
+        model.validate()?;
         Ok(model)
     }
 
@@ -2476,7 +2491,7 @@ fn validate_sambe_allocation_and_grid<const SPIN: bool, const DIM: usize, R: RMa
             continue;
         }
         let grid = fallback_grid_size(drive, &d, -harmonic_max, harmonic_max);
-        if grid.saturated || trunc.n_time < grid.required.max(grid.request_range) {
+        if trunc.n_time < grid.required.max(grid.request_range) {
             return Err(TbError::Other(format!(
                 "Floquet n_time={} does not resolve the link spectrum: need at least {} samples (bandwidth estimate saturated: {})",
                 trunc.n_time,
@@ -2852,10 +2867,10 @@ pub(crate) fn bessel_peierls_coeffs(
             // Degenerate mode: only m = 0 contributes (B = 1), a no-op fold.
             continue;
         }
-        if r > 8.0 {
+        if !r.is_finite() || r > 8.0 {
             return Err(TbError::Other(format!(
-                "bessel_peierls_coeffs: mode amplitude R = {r:.3} exceeds the \
-                 Bessel backend's range (R ≤ 8); use the time-grid backend"
+                "bessel_peierls_coeffs: mode amplitude R = {r:.3} is outside the \
+                 Bessel backend's finite range (R ≤ 8); use the time-grid backend"
             )));
         }
         // Adaptive cutoff: grow M until the two-sided Bessel tail
@@ -3010,8 +3025,8 @@ struct FallbackGridSize {
     request_range: usize,
     /// The unclamped size exceeded [`FALLBACK_GRID_MAX`].
     clamped: bool,
-    /// A mode's adaptive cutoff saturated at 4096 orders, so the
-    /// bandwidth estimate is only a lower bound.
+    /// A mode's adaptive cutoff saturated at 4096 orders, requiring a
+    /// conservative analytic tail bound instead.
     saturated: bool,
 }
 
@@ -3031,9 +3046,9 @@ fn fallback_grid_size(
 ) -> FallbackGridSize {
     // Nyquist bandwidth of the Peierls exponential on this link.
     let mut bandwidth = 0_usize;
-    // Set when a mode's adaptive cutoff saturates at 4096 orders, so the
-    // bandwidth estimate below is only a lower bound.
     let mut saturated = false;
+    let mode_count = drive.modes.len().max(1);
+    let error_share = 1e-12 / mode_count as f64;
     for mode in &drive.modes {
         // A DC mode contributes a constant phase, independent of its complex
         // amplitude, and therefore has no Fourier bandwidth or Bessel tail.
@@ -3056,23 +3071,25 @@ fn fallback_grid_size(
             // inside the Bessel order search.
             continue;
         }
-        // Adaptive tail cutoff from the same family the Bessel path uses
-        // (there the 1e-12 budget is split over the modes; here the full
-        // budget is a conservative sizing estimate).  The margin of 48 is
-        // a starting estimate that already meets the 1e-12 budget for
-        // R ≲ 65.
-        let m_cap = bessel_adaptive_m_cap(r, 1e-12, 48);
-        // bessel_adaptive_m_cap saturates at 4096 orders.  When the
-        // returned order does not actually meet the 1e-12 tail budget
-        // (extreme amplitudes), the bandwidth estimate is a lower bound
-        // and the sized grid would alias the missing high orders.  The
-        // tail re-check shares bessel_two_sided_tail with the cutoff
-        // itself; amplitudes beyond 2^19 cannot be resolved by any
-        // fallback grid and are treated as saturated unconditionally.
-        if m_cap >= 4096 && (r > 5.242_88e5 || bessel_two_sided_tail(m_cap, r) > 1e-12) {
-            saturated = true;
-        }
-        let drift = (mode.harmonic.unsigned_abs() as usize).saturating_mul(m_cap as usize);
+        // The Bessel backend's precision margin is not a sampling floor.
+        let m_cap = if r > 4096.0 {
+            4096
+        } else {
+            bessel_adaptive_m_cap(r, error_share, 0)
+        };
+        let cutoff =
+            if m_cap >= 4096 && (r >= 4096.0 || bessel_two_sided_tail(m_cap, r) > error_share) {
+                saturated = true;
+                // For m >= 3r, |J_m(r)| <= (r/2)^m/m! <= (e/6)^m < 2^-m
+                // (DLMF 10.14.4). Thus the two-sided tail is <= 2^(1-M).
+                // Split its budget across modes. Float casts and all grid-size
+                // arithmetic saturate; the explicit requirement is never clamped.
+                let tail_floor = 44 + (usize::BITS - mode_count.leading_zeros()) as usize;
+                ((3.0 * r).ceil() as usize).max(tail_floor)
+            } else {
+                m_cap as usize
+            };
+        let drift = (mode.harmonic.unsigned_abs() as usize).saturating_mul(cutoff);
         bandwidth = bandwidth.saturating_add(drift);
     }
     let required = bandwidth.saturating_mul(2).saturating_add(4);
@@ -3085,8 +3102,8 @@ fn fallback_grid_size(
         clamped = true;
     }
     if saturated {
-        // The bandwidth estimate is a lower bound: use the maximum grid
-        // so the fold only involves exponentially small tails.
+        // Automatic fallback retains its maximum-grid policy; explicit Sambe
+        // grids are checked against the unclamped analytic requirement above.
         n_req = FALLBACK_GRID_MAX;
     }
     FallbackGridSize {
@@ -3113,9 +3130,9 @@ fn fallback_grid_size(
 /// and a warn-once message is printed).  When the adaptive bandwidth
 /// estimate saturates at its 4096-order cap (mode amplitude ≈ 4000, the
 /// point where the two-sided tail beyond order 4096 still exceeds the
-/// 1e-12 budget) the estimate is only a lower bound: the grid then uses
-/// the maximum size and a warn-once message is printed, and alias-freedom
-/// is limited to resolvable bandwidths (≲ 2^19).
+/// 1e-12 budget), sizing switches to a conservative analytic tail bound.
+/// The automatic grid uses the maximum size and prints a warn-once message;
+/// it can still be too small when the analytic requirement exceeds this cap.
 fn fallback_time_grid_coeffs(
     d: &Array1<f64>,
     drive: &FloquetDrive,
@@ -4354,17 +4371,194 @@ mod tests {
         let model = chain_model();
         let trunc = FloquetTruncation::new(1, 32);
         let k = array![0.21];
-        let empty = model
-            .floquet_ham_onek(&k, &FloquetDrive::new(1.0), &trunc, Gauge::Atom)
-            .unwrap();
+        for amplitude in [0.2, 5000.0] {
+            let drive = FloquetDrive::with_modes(
+                1.0,
+                vec![LightMode::new(0, array![Complex::new(amplitude, 17.0)])],
+            );
+            let dc = model
+                .floquet_ham_onek(&k, &drive, &trunc, Gauge::Atom)
+                .unwrap();
+            // Only Re(a_0) enters: t(R) -> t(R) exp(-i a_0 R).
+            let energy = -2.0 * (TAU * k[0] - amplitude).cos();
+            for i in 0..3 {
+                for j in 0..3 {
+                    let expected = if i == j { energy + i as f64 - 1.0 } else { 0.0 };
+                    assert!((dc[[i, j]] - expected).norm() < 2e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn weak_sambe_drive_accepts_64_samples() {
+        let model = chain_model();
+        for amplitude in [0.05, 0.1, 0.5] {
+            let drive = FloquetDrive::with_modes(
+                5.0,
+                vec![LightMode::new(1, array![Complex::new(amplitude, 0.0)])],
+            );
+            let coarse = model
+                .floquet_ham_onek(
+                    &array![0.21],
+                    &drive,
+                    &FloquetTruncation::new(1, 64),
+                    Gauge::Atom,
+                )
+                .unwrap();
+            let fine = model
+                .floquet_ham_onek(
+                    &array![0.21],
+                    &drive,
+                    &FloquetTruncation::new(1, 512),
+                    Gauge::Atom,
+                )
+                .unwrap();
+            assert!(
+                coarse
+                    .iter()
+                    .zip(&fine)
+                    .all(|(a, b)| (a - b).norm() < 1e-12)
+            );
+            let bloch = Complex::new(0.0, TAU * 0.21).exp();
+            for i in 0..3 {
+                for j in 0..3 {
+                    let harmonic = i as i32 - j as i32;
+                    let mut expected = -bessel_j(harmonic as isize, amplitude)
+                        * ((-Complex::<f64>::i()).powi(harmonic) * bloch
+                            + Complex::<f64>::i().powi(harmonic) * bloch.conj());
+                    if i == j {
+                        expected += (i as f64 - 1.0) * drive.omega0_ev;
+                    }
+                    assert!((coarse[[i, j]] - expected).norm() < 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saturated_sambe_estimate_uses_amplitude_and_harmonic_bounds() {
+        let model = chain_model();
         let drive = FloquetDrive::with_modes(
             1.0,
-            vec![LightMode::new(0, array![Complex::new(0.0, 5000.0)])],
+            vec![LightMode::new(1, array![Complex::new(4000.0, 0.0)])],
         );
-        let dc = model
-            .floquet_ham_onek(&k, &drive, &trunc, Gauge::Atom)
+        let h = model
+            .floquet_ham_onek(
+                &array![0.0],
+                &drive,
+                &FloquetTruncation::new(0, 32768),
+                Gauge::Atom,
+            )
             .unwrap();
-        assert!(empty.iter().zip(&dc).all(|(a, b)| (a - b).norm() < 1e-12));
+        assert!((h[[0, 0]].re + 2.0 * bessel_j(0, 4000.0)).abs() < 1e-10);
+        for (harmonic, amplitude) in [(1, FALLBACK_GRID_MAX as f64), (10000, 4000.0)] {
+            let unresolved = FloquetDrive::with_modes(
+                1.0,
+                vec![LightMode::new(
+                    harmonic,
+                    array![Complex::new(amplitude, 0.0)],
+                )],
+            );
+            assert!(
+                validate_sambe_allocation_and_grid(
+                    &model,
+                    &unresolved,
+                    &FloquetTruncation::new(0, FALLBACK_GRID_MAX),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn effective_models_put_origin_first_and_add_onsite_once() {
+        let mut original = chain_model();
+        original.set_onsite(&array![0.5], None);
+        for support in [vec![0, 1, 2], vec![1, 0, 2], vec![1, 2]] {
+            let mut model = original.clone();
+            model.ham = model.ham.select(Axis(0), &support);
+            model.hamR = model.hamR.select(Axis(0), &support);
+            for order in 0..=2 {
+                let options = FloquetEffectiveOptions::new()
+                    .with_order(order)
+                    .with_harmonic_max(1);
+                for modes in [
+                    vec![],
+                    vec![LightMode::new(1, array![Complex::new(0.1, 0.0)])],
+                    vec![
+                        LightMode::new(1, array![Complex::new(0.1, 0.0)]),
+                        LightMode::new(2, array![Complex::new(0.05, 0.0)]),
+                    ],
+                ] {
+                    let drive = FloquetDrive::with_modes(5.0, modes);
+                    for mut effective in [
+                        model
+                            .floquet_effective_model(&drive, Some(&options))
+                            .unwrap(),
+                        model
+                            .floquet_effective_q_model(&drive, Some(&options), &array![0.01])
+                            .unwrap(),
+                        model
+                            .floquet_effective_mode_resolved_model(&drive, Some(&options))
+                            .unwrap(),
+                    ] {
+                        let origin = find_R(&effective.hamR, &array![0]).unwrap();
+                        let before = effective.ham[[origin, 0, 0]];
+                        effective.add_onsite(&array![1.0], None);
+                        assert!((effective.ham[[origin, 0, 0]] - before - 1.0).norm() < 1e-12);
+                        assert_eq!(origin, 0);
+                        effective.validate().unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn effective_model_rejects_nonfinite_output_from_finite_input() {
+        let mut model = chain_model();
+        model.hamR *= 2;
+        let drive = FloquetDrive::with_modes(
+            5.0,
+            vec![LightMode::new(0, array![Complex::new(f64::MAX, 0.0)])],
+        );
+        assert!(
+            model
+                .floquet_effective_model(
+                    &drive,
+                    Some(&FloquetEffectiveOptions::new().with_order(0)),
+                )
+                .is_err()
+        );
+        let mut cancellation =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
+        cancellation.add_hop(1.0, 0, 0, &array![2, 2], None);
+        let drive = FloquetDrive::with_modes(
+            5.0,
+            vec![LightMode::new(
+                0,
+                array![Complex::new(f64::MAX, 0.0), Complex::new(-f64::MAX, 0.0)],
+            )],
+        );
+        // Finite operands produce inf-inf in a·d. This must return Err
+        // instead of entering Bessel recursion with a NaN amplitude.
+        let options = FloquetEffectiveOptions::new().with_order(0);
+        assert!(
+            cancellation
+                .floquet_effective_model(&drive, Some(&options))
+                .is_err()
+        );
+        assert!(
+            cancellation
+                .floquet_effective_q_model(&drive, Some(&options), &array![0.0, 0.0])
+                .is_err()
+        );
+        assert!(
+            cancellation
+                .floquet_effective_mode_resolved_model(&drive, Some(&options))
+                .is_err()
+        );
     }
 
     #[test]
@@ -4406,6 +4600,26 @@ mod tests {
     }
 
     #[test]
+    fn floquet_rejects_nonfinite_eigenvalues_before_folding() {
+        let mut model =
+            Model::<false, 1>::tb_model(array![[1.0]], array![[0.0], [0.0]], None).unwrap();
+        // Every matrix entry is finite, but its upper eigenvalue is 2e308.
+        model.ham.fill(Complex::new(1e308, 0.0));
+        let drive = FloquetDrive::new(1.0);
+        let trunc = FloquetTruncation::new(0, 1);
+        assert!(
+            model
+                .floquet_band_onek(&array![0.0], &drive, &trunc, Gauge::Atom)
+                .is_err()
+        );
+        assert!(
+            model
+                .floquet_quasienergy_onek(&array![0.0], &drive, &trunc, Gauge::Atom)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn fallback_grid_size_clamps_and_saturates() {
         // Pin the exact sizing decision (n_req, clamp flag, saturation
         // flag) for the normal, clamp, saturation, and request-dominant
@@ -4420,9 +4634,9 @@ mod tests {
         );
         let d = array![10.0, 1.0]; // R = 9 > 8: fallback link
 
-        // Normal: sized from the signal bandwidth (M(9) = 57).
+        // Normal: sized from the signal bandwidth (M(9) = 29).
         let s = fallback_grid_size(&drive, &d, -3, 3);
-        assert_eq!(s.n_req, 118); // 2·57 + 4
+        assert_eq!(s.n_req, 62); // 2·29 + 4
         assert!(!s.clamped && !s.saturated);
 
         // Request-dominant: 2·max(|harmonic_min|,|harmonic_max|) + 1 exceeds the
@@ -4435,7 +4649,7 @@ mod tests {
         let big = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(
-                10000,
+                20000,
                 array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
             )],
         );
@@ -4444,8 +4658,7 @@ mod tests {
         assert!(s.clamped);
         assert!(!s.saturated);
 
-        // Saturation: R = 4000 exceeds the 4096-order adaptive cutoff,
-        // so the bandwidth estimate is a lower bound.
+        // Saturation: R = 4000 needs the analytic cutoff beyond order 4096.
         let sat = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(
@@ -5543,7 +5756,9 @@ mod tests {
             .outer_iter()
             .map(|row| row.to_vec())
             .collect();
-        assert_eq!(actual_support, Vec::from_iter(expected_support));
+        let mut expected_support = Vec::from_iter(expected_support);
+        expected_support.sort_by_key(|row| row.iter().any(|&r| r != 0));
+        assert_eq!(actual_support, expected_support);
 
         let legacy = model
             .floquet_effective_model_legacy(
@@ -5700,8 +5915,8 @@ mod tests {
 
     #[test]
     fn floquet_effective_model_bessel_support_and_hermiticity() {
-        // First-order support = Minkowski sum of hamR with itself, in
-        // lexicographic order, and the output blocks satisfy
+        // First-order support = Minkowski sum of hamR with itself, origin
+        // first and then lexicographic order, and the output blocks satisfy
         // T(R) = T(−R)† exactly.
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
         let orb = array![[0.0, 0.0], [0.35, 0.2]];
@@ -5719,7 +5934,7 @@ mod tests {
         let bessel = model.floquet_effective_model(&drive, None).unwrap();
 
         // Expected support: the Minkowski sum of the input hamR with
-        // itself, lexicographically ordered.
+        // itself, with the origin first and other rows lexicographically ordered.
         let mut expected = std::collections::BTreeSet::<Vec<isize>>::new();
         for r1 in model.hamR.outer_iter() {
             for r2 in model.hamR.outer_iter() {
@@ -5727,7 +5942,10 @@ mod tests {
             }
         }
         let got: Vec<Vec<isize>> = bessel.hamR.outer_iter().map(|row| row.to_vec()).collect();
-        assert_eq!(got, Vec::from_iter(expected), "support mismatch");
+        let expected: Vec<_> = std::iter::once(vec![0, 0])
+            .chain(expected.into_iter().filter(|row| row != &[0, 0]))
+            .collect();
+        assert_eq!(got, expected, "support mismatch");
 
         // Exact Hermiticity pairing.
         for i in 0..bessel.hamR.nrows() {
@@ -5980,7 +6198,7 @@ mod tests {
             .outer_iter()
             .map(|row| row.to_vec())
             .collect();
-        let expected: Vec<Vec<isize>> = (-2..=2).map(|r| vec![r]).collect();
+        let expected: Vec<Vec<isize>> = [0, -2, -1, 1, 2].into_iter().map(|r| vec![r]).collect();
         assert_eq!(
             got, expected,
             "empty-drive support must be the Minkowski union"
@@ -6013,7 +6231,10 @@ mod tests {
             .collect();
         assert_eq!(
             order_two_support,
-            (-3..=3).map(|r| vec![r]).collect::<Vec<_>>()
+            [0, -3, -2, -1, 1, 2, 3]
+                .into_iter()
+                .map(|r| vec![r])
+                .collect::<Vec<_>>()
         );
 
         // Equivalent non-dynamic representations use the same n-independent
@@ -6056,7 +6277,7 @@ mod tests {
                     .outer_iter()
                     .map(|row| row.to_vec())
                     .collect::<Vec<_>>(),
-                (-3..=3).map(|r| vec![r]).collect::<Vec<_>>()
+                order_two_support
             );
         }
     }

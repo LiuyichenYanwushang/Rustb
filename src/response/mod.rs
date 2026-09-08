@@ -454,6 +454,18 @@ mod regression_tests {
                 Err(crate::TbError::InvalidModelInvariant { .. })
             ));
             assert!(matches!(
+                model.berry_curvature_at(&array![0.0, 0.0], &rank2),
+                Err(crate::TbError::InvalidModelInvariant { .. })
+            ));
+            assert!(matches!(
+                model.occupied_berry_curvature_at(&array![0.0, 0.0], &rank2),
+                Err(crate::TbError::InvalidModelInvariant { .. })
+            ));
+            assert!(matches!(
+                model.occupied_berry_curvature_on(&Array2::zeros((0, 2)), &rank2),
+                Err(crate::TbError::InvalidModelInvariant { .. })
+            ));
+            assert!(matches!(
                 model.optical_conductivity(&rank2),
                 Err(crate::TbError::InvalidModelInvariant { .. })
             ));

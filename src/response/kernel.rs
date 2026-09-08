@@ -11,7 +11,7 @@
 //! | `eval_berry_band_at_lam` | $\Delta_{nm}^2 + \eta^2$ | $\Omega_n$ (single band at barycentrics) |
 //! | `eval_berry_complex_at_lam` | $\Delta_{nm}^2 + \eta^2$ | $(g_n, \Omega_n)$ (single band) |
 //! | `eval_intrinsic_G_at_lam` | $\Delta_{nm}^3$ | $G^{ij}_n$ (single band, no $\eta$) |
-//! | `eval_optical_kernel` | $\Delta_{nm}^2 - (\omega+i\eta)^2$ | $\sum_{nm} (f_n-f_m)K_{nm}/{\rm denom}$ |
+//! | `eval_optical_kernel` | $\Delta_{nm}(\Delta_{nm}+\omega+i\eta)$ | $\sum_{nm} -i(f_n-f_m)K_{nm}/{\rm denom}$ |
 //!
 //! The single‑band functions (`_at_lam`) interpolate only the $n$‑th row
 //! of $K$ and avoid allocating the full $nsta\times nsta$ matrix.
@@ -437,8 +437,11 @@ pub(crate) fn eval_intrinsic_G3_at_lam_buf(
 /// Evaluate the optical conductivity kernel at one quadrature point.
 ///
 /// ```text
-/// σ_nm = (f_n − f_m) · K_nm / (d² − (ω+iη)²)
+/// σ_nm = -i (f_n − f_m) · K_nm / [d (d + ω + iη)]
 /// ```
+/// This is the interband Kubo conductivity with `e²/hbar` omitted. Exactly
+/// degenerate pairs and intraband Drude terms are excluded. Unbroadened poles
+/// propagate nonfinite values, which the public entry point reports as an error.
 pub(crate) fn eval_optical_kernel(
     band_q: &[f64],
     k_ab_q: &Array2<Complex<f64>>,
@@ -450,24 +453,28 @@ pub(crate) fn eval_optical_kernel(
 ) -> Complex<f64> {
     let mut total = Complex::new(0.0, 0.0);
     let w_plus_ieta = Complex::new(omega, eta);
-    let denom_shift = w_plus_ieta * w_plus_ieta;
     for n in 0..nsta {
         let fn_val = fermi(band_q[n], mu, thermal_width);
         for m in 0..nsta {
             if m == n {
                 continue;
             }
-            let fm_val = fermi(band_q[m], mu, thermal_width);
-            let df = fn_val - fm_val;
-            if df.abs() < 1e-30 {
-                continue;
-            }
             let d = band_q[n] - band_q[m];
-            let denom = d * d - denom_shift;
-            if denom.norm_sqr() < 1e-30 {
+            if d == 0.0 || k_ab_q[[n, m]] == Complex::new(0.0, 0.0) {
                 continue;
             }
-            total += df * k_ab_q[[n, m]] / denom;
+            let fm_val = fermi(band_q[m], mu, thermal_width);
+            // The midpoint derivative avoids cancellation in the divided
+            // difference at finite T; its error is O((d/thermal_width)^2).
+            let df_over_d = if thermal_width > 0.0 && d.abs() < 1e-5 * thermal_width {
+                -fermi_deriv(band_q[n].midpoint(band_q[m]), mu, thermal_width)
+            } else {
+                (fn_val - fm_val) / d
+            };
+            if df_over_d == 0.0 {
+                continue;
+            }
+            total += Complex::new(0.0, -df_over_d) * k_ab_q[[n, m]] / (d + w_plus_ieta);
         }
     }
     total
