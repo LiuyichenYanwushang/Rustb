@@ -4,7 +4,9 @@
 //!
 //! The $E=\mu$ line intersects a triangle in a line segment.  The integral
 //!
-//! $$\int_T A(k)\,\delta(E(k)-\mu)\,d^2k = \frac{|pq|}{|\nabla E|}\int_0^1 A(t)\,dt$$
+//! ```math
+//! \int_T A(k)\,\delta(E(k)-\mu)\,d^2k = \frac{|pq|}{|\nabla E|}\int_0^1 A(t)\,dt
+//! ```
 //!
 //! is evaluated with 2‑point Gauss‑Legendre K‑quadrature along the segment:
 //! $E_m$, $K_{nm}^{ab}$, and diagonal velocities are barycentrically
@@ -15,8 +17,10 @@
 //! The $E=\mu$ plane intersects a tetrahedron in a convex polygon (triangle
 //! or quadrilateral).  The surface integral
 //!
-//! $$\int_T A(k)\,\delta(E(k)-\mu)\,d^3k = \frac{\mathrm{area}}{|\nabla E|}\,
-//!   \frac{1}{\mathrm{area}}\int_{\mathrm{polygon}} A\,dS$$
+//! ```math
+//! \int_T A(k)\,\delta(E(k)-\mu)\,d^3k = \frac{\mathrm{area}}{|\nabla E|}\,
+//! \frac{1}{\mathrm{area}}\int_{\mathrm{polygon}} A\,dS
+//! ```
 //!
 //! uses polygon triangulation + 3‑point K‑quadrature on each sub‑triangle.
 //! `build_tetrahedra_3d_diagavg` provides diagonal‑averaged tetrahedralization
@@ -39,9 +43,7 @@ use rayon::prelude::*;
 
 use super::kernel::{eval_berry_band_at_lam_buf, eval_berry_complex_at_lam_buf, eval_berry_kernel};
 use super::quadrature::{TET_QUAD_PTS_4, TET_QUAD_WTS_4, TRI_QUAD_PTS_3, TRI_QUAD_WTS_3};
-use super::tracking::{
-    build_tetrahedra_3d, build_tetrahedra_3d_diagavg, build_triangles_2d_diagavg,
-};
+use super::tracking::{build_tetrahedra_3d_diagavg, build_triangles_2d_diagavg};
 use super::types::{SIMPLEX_GAP_TOL, TrackedSimplex, VertexKernel};
 
 const ENERGY_CUT_EPS: f64 = 1e-12;
@@ -1345,8 +1347,10 @@ fn integrate_fermi_cut_2d_t0(
 /// computed exactly within each triangle (no energy binning). At finite width
 /// the zero-width result is thermally convolved:
 ///
-/// $$\sigma_T(\mu) = \int_{-\infty}^\infty w(x)\,\sigma_0(\mu + x/\beta)\,dx,
-/// \qquad w(x)=\frac{e^x}{(1+e^x)^2}$$
+/// ```math
+/// \sigma_T(\mu) = \int_{-\infty}^\infty w(x)\,\sigma_0(\mu + x/\beta)\,dx,
+/// \qquad w(x)=\frac{e^x}{(1+e^x)^2}
+/// ```
 ///
 /// Returns $\sigma(\mu_i)$ for each $\mu$ in `mu` (fractional BZ volume;
 /// divide by $\det(L)$ for Cartesian).
@@ -1369,41 +1373,9 @@ pub(crate) fn integrate_fermi_cut_2d(
         return integrate_fermi_cut_2d_t0(all_pts, k_mesh, mu, eta);
     }
 
-    // Finite-width convolution of the zero-temperature result.
-    let beta = 1.0 / thermal_width;
-    let x_max = 12.0; // w(x) < 6e-6 for |x| > 12
-    let mu_min = mu.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-    let mu_max = mu.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-    let mu_lo = mu_min - x_max / beta;
-    let mu_hi = mu_max + x_max / beta;
-    let dmu_fine = 0.1 / beta; // fine grid for accurate linear interpolation
-    let n_ext = ((mu_hi - mu_lo) / dmu_fine).ceil() as usize + 1;
-    let mu_ext = Array1::linspace(mu_lo, mu_hi, n_ext);
-
-    let sigma0 = integrate_fermi_cut_2d_t0(all_pts, k_mesh, &mu_ext, eta);
-
-    let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
-    let result: Vec<f64> = mu
-        .into_par_iter()
-        .map(|&m| {
-            let mut sum = 0.0;
-            for iq in 0..FERMI_X_STEPS {
-                let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
-                let w = fermi_window_x(x);
-                let e_target = m + x / beta;
-                let i_f = (e_target - mu_lo) / dmu_fine;
-                let i_lo = (i_f.floor() as isize).max(0) as usize;
-                let i_hi = (i_lo + 1).min(n_ext - 1);
-                if i_hi > i_lo {
-                    let t = i_f - i_lo as f64;
-                    let val = sigma0[i_lo] + t * (sigma0[i_hi] - sigma0[i_lo]);
-                    sum += dx * w * val;
-                }
-            }
-            sum
-        })
-        .collect();
-    Array1::from_vec(result)
+    thermal_convolution(mu, thermal_width, |shifted_mu| {
+        integrate_fermi_cut_2d_t0(all_pts, k_mesh, shifted_mu, eta)
+    })
 }
 
 /// Diagnostic counters for hybrid energy‑cut.
@@ -1597,38 +1569,43 @@ fn tetrahedron_occupied_hybrid(
             k_buf,
         )
     } else if mu <= e_v[c] + eps {
-        // 2 below (a,b) → 3 sub‑tets via diagonal p_ac → p_bd
-        sub_tet_k_quad(
-            &[unit(a), unit(b), cut_bary(a, c), cut_bary(b, d)],
-            bands,
-            kmats,
-            n,
-            eta,
-            nsta,
-            coords,
-            e_buf,
-            k_buf,
-        ) + sub_tet_k_quad(
-            &[unit(a), cut_bary(a, c), cut_bary(a, d), cut_bary(b, d)],
-            bands,
-            kmats,
-            n,
-            eta,
-            nsta,
-            coords,
-            e_buf,
-            k_buf,
-        ) + sub_tet_k_quad(
-            &[unit(b), cut_bary(b, c), cut_bary(b, d), cut_bary(a, c)],
-            bands,
-            kmats,
-            n,
-            eta,
-            nsta,
-            coords,
-            e_buf,
-            k_buf,
-        )
+        // Average the two diagonals of the cut prism. Either triangulation
+        // is valid, but using only one makes quadrature depend on how nearly
+        // equal vertex energies are ordered (including k / -k partners).
+        let mut split = |c, d| {
+            sub_tet_k_quad(
+                &[unit(a), unit(b), cut_bary(a, c), cut_bary(b, d)],
+                bands,
+                kmats,
+                n,
+                eta,
+                nsta,
+                coords,
+                e_buf,
+                k_buf,
+            ) + sub_tet_k_quad(
+                &[unit(a), cut_bary(a, c), cut_bary(a, d), cut_bary(b, d)],
+                bands,
+                kmats,
+                n,
+                eta,
+                nsta,
+                coords,
+                e_buf,
+                k_buf,
+            ) + sub_tet_k_quad(
+                &[unit(b), cut_bary(b, c), cut_bary(b, d), cut_bary(a, c)],
+                bands,
+                kmats,
+                n,
+                eta,
+                nsta,
+                coords,
+                e_buf,
+                k_buf,
+            )
+        };
+        0.5 * (split(c, d) + split(d, c))
     } else {
         // 3 below (a,b,c) → full − sub‑tet(d, cut(a,d), cut(b,d), cut(c,d))
         let full_val = full_vol * (omega_v[0] + omega_v[1] + omega_v[2] + omega_v[3]) / 4.0;
@@ -1669,8 +1646,9 @@ fn integrate_fermi_cut_3d_t0(
                 let iz = idx % nz;
                 let iy = (idx / nz) % ny;
                 let ix = idx / (ny * nz);
-                let sims =
-                    build_tetrahedra_3d(ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts);
+                let sims = build_tetrahedra_3d_diagavg(
+                    ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
+                );
                 for sim in &sims {
                     let coords = fixed_coords_to_array2(&sim.coords);
                     let vol = tet_vol_from_pts(
@@ -1811,39 +1789,59 @@ pub(crate) fn integrate_fermi_cut_3d(
         return integrate_fermi_cut_3d_t0(all_pts, k_mesh, mu, eta);
     }
 
-    // Finite-width thermal convolution.
-    let beta = 1.0 / thermal_width;
-    let x_max = 12.0;
-    let mu_min = mu.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-    let mu_max = mu.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-    let mu_lo = mu_min - x_max / beta;
-    let mu_hi = mu_max + x_max / beta;
-    let dmu_fine = 0.1 / beta;
-    let n_ext = ((mu_hi - mu_lo) / dmu_fine).ceil() as usize + 1;
-    let mu_ext = Array1::linspace(mu_lo, mu_hi, n_ext);
+    thermal_convolution(mu, thermal_width, |shifted_mu| {
+        integrate_fermi_cut_3d_t0(all_pts, k_mesh, shifted_mu, eta)
+    })
+}
 
-    let sigma0 = integrate_fermi_cut_3d_t0(all_pts, k_mesh, &mu_ext, eta);
-
+// Evaluate only the chemical potentials used by the thermal quadrature. The
+// work is bounded by mu.len() * FERMI_X_STEPS, independently of 1/T or the
+// distance between requested chemical potentials. Sorting preserves the
+// zero-temperature integrators' ascending-mu contract; no table extrapolation.
+fn thermal_convolution(
+    mu: &Array1<f64>,
+    thermal_width: f64,
+    zero_temperature: impl FnOnce(&Array1<f64>) -> Array1<f64>,
+) -> Array1<f64> {
     let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
-    let result: Vec<f64> = mu
-        .into_par_iter()
-        .map(|&m| {
-            let mut sum = 0.0;
-            for iq in 0..FERMI_X_STEPS {
-                let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
-                let w = fermi_window_x(x);
-                let e_target = m + x / beta;
-                let i_f = (e_target - mu_lo) / dmu_fine;
-                let i_lo = (i_f.floor() as isize).max(0) as usize;
-                let i_hi = (i_lo + 1).min(n_ext - 1);
-                if i_hi > i_lo {
-                    let t = i_f - i_lo as f64;
-                    let val = sigma0[i_lo] + t * (sigma0[i_hi] - sigma0[i_lo]);
-                    sum += dx * w * val;
-                }
+    let mut samples = Vec::new();
+    for (index, &m) in mu.iter().enumerate() {
+        for iq in 0..FERMI_X_STEPS {
+            let x = -FERMI_X_CUT + (iq as f64 + 0.5) * dx;
+            samples.push((m + thermal_width * x, index, dx * fermi_window_x(x)));
+        }
+    }
+    samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let shifted_mu = Array1::from_iter(samples.iter().map(|sample| sample.0));
+    let values = zero_temperature(&shifted_mu);
+    let mut result = Array1::zeros(mu.len());
+    for ((_, index, weight), value) in samples.into_iter().zip(values) {
+        result[index] += weight * value;
+    }
+    result
+}
+
+#[cfg(test)]
+mod thermal_tests {
+    use super::*;
+
+    #[test]
+    fn finite_temperature_convolution_is_bounded_and_preserves_moments() {
+        let mu = array![-10.0, 0.0, 0.2, 20.0];
+        for width in [1e-12, 1e-4, 0.3] {
+            let values = thermal_convolution(&mu, width, |points| {
+                assert_eq!(points.len(), mu.len() * FERMI_X_STEPS);
+                assert!(points.windows(2).into_iter().all(|w| w[0] <= w[1]));
+                // Convolution of E^2: mu^2 + pi^2 * width^2 / 3.
+                points.mapv(|energy| energy * energy)
+            });
+            for (&actual, &m) in values.iter().zip(&mu) {
+                let expected = m * m + std::f64::consts::PI.powi(2) * width * width / 3.0;
+                assert!(
+                    (actual - expected).abs() < 2e-5,
+                    "width={width}, mu={m}, actual={actual}, expected={expected}"
+                );
             }
-            sum
-        })
-        .collect();
-    Array1::from_vec(result)
+        }
+    }
 }

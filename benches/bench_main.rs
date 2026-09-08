@@ -2,6 +2,8 @@
 //!
 //! Run with: cargo bench --features intel-mkl-system
 //! Filter:    cargo bench --features intel-mkl-system -- gen_ham
+//! Batched bands: RAYON_NUM_THREADS=8 MKL_NUM_THREADS=1 cargo bench
+//!                --features intel-mkl-system -- solve_band_all_parallel
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use ndarray::*;
@@ -101,6 +103,21 @@ const SPINLESS_MODELS: &[SpinlessModelFactory] = &[
 
 fn build_large5() -> Model<false, 2> {
     build_large(5)
+}
+
+/// A 64 MiB hopping array exposes repeated reads without external input files.
+fn build_dense() -> Model<false, 1> {
+    let mut model =
+        Model::<false, 1>::tb_model(array![[1.0]], Array2::zeros((128, 1)), None).unwrap();
+    model.hamR = Array2::from_shape_fn((257, 1), |(ir, _)| ir as isize - 128);
+    model.ham = Array3::from_shape_fn((257, 128, 128), |(ir, i, j)| {
+        let r = ir as f64 - 128.0;
+        Complex::new(
+            ((i + j + 1) as f64).cos() / (1.0 + r.abs()),
+            (j as f64 - i as f64).sin() / (1.0 + r.abs()),
+        )
+    });
+    model
 }
 
 const SPINLESS_SMALL: &[SpinlessModelFactory] = &[
@@ -238,6 +255,50 @@ fn bench_solve_band_parallel(c: &mut Criterion) {
     let kvec = gen_kmesh(&kmesh).unwrap();
     group.bench_function("small_101x101", |b| {
         b.iter(|| model.solve_band_all_parallel(black_box(&kvec)))
+    });
+
+    let dense = build_dense();
+    let points = Array2::from_shape_fn((128, 1), |(i, _)| i as f64 / 128.0);
+    group.bench_function("dense_128sta_257R_128k_batched", |b| {
+        b.iter(|| dense.solve_band_all_parallel(black_box(&points)))
+    });
+    group.bench_function("dense_128sta_257R_128k_pointwise", |b| {
+        b.iter(|| {
+            let mut bands = Array2::zeros((points.nrows(), dense.nsta()));
+            Zip::from(black_box(&points).outer_iter())
+                .and(bands.outer_iter_mut())
+                .par_for_each(|k, mut row| row.assign(&dense.solve_band_onek(&k)));
+            bands
+        })
+    });
+    group.finish();
+}
+
+fn bench_batch_construction(c: &mut Criterion) {
+    let mut group = c.benchmark_group("batch_construction");
+    let model = build_dense();
+    let points = Array2::from_shape_fn((16, 1), |(i, _)| i as f64 / 16.0);
+    group.bench_function("ham_batch_16k", |b| {
+        b.iter(|| model.gen_ham_batch(black_box(&points), Gauge::Atom))
+    });
+    group.bench_function("ham_pointwise_16k", |b| {
+        b.iter(|| {
+            black_box(&points)
+                .outer_iter()
+                .map(|k| model.gen_ham(&k, Gauge::Atom))
+                .collect::<Vec<_>>()
+        })
+    });
+    group.bench_function("velocity_batch_16k", |b| {
+        b.iter(|| model.gen_v_batch(black_box(&points), Gauge::Atom))
+    });
+    group.bench_function("velocity_pointwise_16k", |b| {
+        b.iter(|| {
+            black_box(&points)
+                .outer_iter()
+                .map(|k| model.gen_v(&k, Gauge::Atom))
+                .collect::<Vec<_>>()
+        })
     });
     group.finish();
 }
@@ -458,6 +519,7 @@ criterion_group!(
     bench_gen_v,
     bench_solve_onek,
     bench_solve_band_parallel,
+    bench_batch_construction,
     bench_occupied_berry_curvature_at,
     bench_hall_conductivity,
     bench_dos,

@@ -560,8 +560,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(owners)
     }
 
-    /// Validate synchronized model arrays and atom-to-orbital references.
+    /// Validate synchronized model arrays, finite data, an invertible lattice,
+    /// and atom-to-orbital references.
+    ///
+    /// This checks storage and geometry. Hermiticity and translation-support
+    /// conventions must additionally be checked by the consuming algorithm.
     pub fn validate(&self) -> Result<()> {
+        if !(1..=3).contains(&DIM) {
+            return Err(TbError::InvalidDimension {
+                dim: DIM,
+                supported: vec![1, 2, 3],
+            });
+        }
         if self.norb() == 0 {
             return Err(TbError::NoOrbitals);
         }
@@ -596,6 +606,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     self.norb(),
                     self.orb_projection.len()
                 ),
+            });
+        }
+        if self.lat.inv().map_or(true, |inverse| {
+            inverse.iter().any(|value| !value.is_finite())
+        }) {
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "invertible_lattice",
+                message: "the lattice must have a finite inverse".into(),
             });
         }
         for (index, atom) in self.atoms.iter().enumerate() {
@@ -654,6 +672,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 message: format!("expected {DIM} columns, found {}", self.hamR.ncols()),
             });
         }
+        if self
+            .ham
+            .iter()
+            .any(|z| !z.re.is_finite() || !z.im.is_finite())
+        {
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "finite_hamiltonian",
+                message: "all Hamiltonian matrix elements must be finite".into(),
+            });
+        }
         if R::HAS_RMATRIX {
             let expected = (self.hamR.nrows(), DIM, self.nsta(), self.nsta());
             if self.rmatrix.as_array4().dim() != expected {
@@ -663,6 +691,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         "expected {expected:?}, found {:?}",
                         self.rmatrix.as_array4().dim()
                     ),
+                });
+            }
+            if self
+                .rmatrix
+                .as_array4()
+                .iter()
+                .any(|z| !z.re.is_finite() || !z.im.is_finite())
+            {
+                return Err(TbError::InvalidModelInvariant {
+                    invariant: "finite_position_matrix",
+                    message: "all position matrix elements must be finite".into(),
                 });
             }
         }
@@ -705,6 +744,32 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     pub fn nsta(&self) -> usize {
         if SPIN { 2 * self.norb() } else { self.norb() }
     }
+    /// 构造局域原子轨道角动量矩阵，数值以 ℏ 为单位，即返回 `L / ℏ`。
+    ///
+    /// 返回形状始终为 `(3, nsta, nsta)`，第一轴依次是 `Lx, Ly, Lz`，
+    /// 对应 [`OrbProj`] 定义的笛卡尔坐标轴，与晶格维数 `DIM` 无关。
+    /// 后两轴为模型基底中的 `(bra, ket)`，即
+    /// `result[[a, i, j]] = ⟨i|L_a/ℏ|j⟩`，不是能带表象。
+    ///
+    /// 无自旋时基底按全局轨道编号排列；有自旋时依次为
+    /// `(全部轨道 ↑, 全部轨道 ↓)`，每个分量返回 `diag(L_a, L_a)`，
+    /// 两个交叉自旋块均为零。这是轨道角动量，不含自旋角动量 `S`。
+    /// 若 [`Solve::solve_onek`](crate::solve_ham::Solve::solve_onek) 返回的
+    /// 本征矢矩阵为 `C[band, basis]`（每行存一个 ket 的系数），则能带表象为
+    /// `C.mapv(|z| z.conj()).dot(&L_a).dot(&C.t())`；不能漏掉左侧共轭。
+    ///
+    /// 矩阵元由同一原子上轨道的 s/p/d/f 球谐展开（包括杂化轨道）计算，
+    /// 不同原子之间置零。这里采用局域原子轨道近似，并未使用实际 Wannier
+    /// 波函数的空间积分，也不是 Bloch 态的轨道磁矩或体材料的轨道磁化。
+    /// `OrbProj` 不包含径向壳层及局域坐标架信息：调用者应保证同一原子的
+    /// 投影构成与模型一致的正交角向基底，不能据此区分如 2p 与 3p 的径向壳层。
+    ///
+    /// 对不完整的轨道子空间，返回投影后的 `P L_a P / ℏ`；例如仅保留
+    /// `(px, py)` 时 `Lx = Ly = 0`，但 `Lz` 非零。这样的截断一般不再满足
+    /// 完整角动量代数；完整的单个 l 壳层则满足 `[Lx, Ly] = i Lz` 和
+    /// `Lx² + Ly² + Lz² = l(l+1) I`（均指上述无量纲矩阵）。
+    ///
+    /// 没有原子结构、存在未归属原子的轨道或模型校验失败时返回错误。
     #[inline(always)]
     pub fn orb_angular(&self) -> Result<Array3<Complex<f64>>> {
         if self.atoms.is_empty() {
@@ -724,10 +789,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             )));
         }
         let li = Complex::i() * 1.0;
-        let mut L = Array3::<Complex<f64>>::zeros((self.dim_r(), self.norb(), self.norb()));
-        let _Lx = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
-        let _Ly = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
-        let _Lz = Array2::<Complex<f64>>::zeros((self.norb(), self.norb()));
+        let norb = self.norb();
+        let mut L = Array3::<Complex<f64>>::zeros((3, self.nsta(), self.nsta()));
         let mut Lz_orig = Array2::<Complex<f64>>::zeros((16, 16));
         Lz_orig
             .slice_mut(s![1..4, 1..4])
@@ -784,6 +847,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     L[[0, i, j]] = proj_i.dot(&Lx_orig.dot(&proj_j));
                     L[[1, i, j]] = proj_i.dot(&Ly_orig.dot(&proj_j));
                     L[[2, i, j]] = proj_i.dot(&Lz_orig.dot(&proj_j));
+                    if SPIN {
+                        // The model stores all spin-up orbitals before all
+                        // spin-down orbitals; orbital L acts identically on both.
+                        for axis in 0..3 {
+                            L[[axis, i + norb, j + norb]] = L[[axis, i, j]];
+                        }
+                    }
                 }
             }
         }
@@ -792,10 +862,278 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 }
 
 #[cfg(test)]
+mod angular_momentum_tests {
+    use super::*;
+    use crate::AtomType;
+
+    fn atomic<const SPIN: bool, const DIM: usize>(projections: &[OrbProj]) -> Model<SPIN, DIM> {
+        let mut model = Model::tb_model(
+            Array2::eye(DIM),
+            Array2::zeros((projections.len(), DIM)),
+            Some(vec![Atom::with_orbitals(
+                Array1::zeros(DIM),
+                AtomType::C,
+                (0..projections.len()).map(OrbitalId::new),
+            )]),
+        )
+        .unwrap();
+        model.set_projection(&projections.to_vec());
+        model
+    }
+
+    fn assert_matrix_close(
+        actual: ArrayView2<'_, Complex<f64>>,
+        expected: ArrayView2<'_, Complex<f64>>,
+    ) {
+        assert_eq!(actual.dim(), expected.dim());
+        assert!(
+            actual
+                .iter()
+                .zip(expected.iter())
+                .all(|(a, b)| (a - b).norm() < 1e-12)
+        );
+    }
+
+    // Independent Cartesian oracle: L = -i r × grad acting on (px, py, pz).
+    fn p_generators() -> Array3<Complex<f64>> {
+        array![
+            [[0.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
+            [[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
+            [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        ]
+        .mapv(|value| Complex::new(0.0, value))
+    }
+
+    fn check_p<const DIM: usize>() {
+        let angular = atomic::<false, DIM>(&[OrbProj::px, OrbProj::py, OrbProj::pz])
+            .orb_angular()
+            .unwrap();
+        let expected = p_generators();
+        assert_eq!(angular.dim(), (3, 3, 3));
+        for d in 0..3 {
+            assert_matrix_close(
+                angular.index_axis(Axis(0), d),
+                expected.index_axis(Axis(0), d),
+            );
+        }
+    }
+
+    #[test]
+    fn cartesian_p_generators_do_not_depend_on_crystal_dimension() {
+        check_p::<1>();
+        check_p::<2>();
+        check_p::<3>();
+    }
+
+    #[test]
+    fn complete_shells_obey_hermiticity_commutators_and_casimir() {
+        let shells = [
+            vec![OrbProj::s],
+            vec![OrbProj::px, OrbProj::py, OrbProj::pz],
+            vec![
+                OrbProj::dxy,
+                OrbProj::dyz,
+                OrbProj::dxz,
+                OrbProj::dz2,
+                OrbProj::dx2y2,
+            ],
+            vec![
+                OrbProj::fz3,
+                OrbProj::fxz2,
+                OrbProj::fyz2,
+                OrbProj::fzx2y2,
+                OrbProj::fxyz,
+                OrbProj::fxx23y2,
+                OrbProj::fy3x2y2,
+            ],
+        ];
+        for (l, projections) in shells.iter().enumerate() {
+            let angular = atomic::<false, 3>(projections).orb_angular().unwrap();
+            let mut casimir = Array2::<Complex<f64>>::zeros((projections.len(), projections.len()));
+            for d in 0..3 {
+                let a = angular.index_axis(Axis(0), d);
+                let b = angular.index_axis(Axis(0), (d + 1) % 3);
+                let c = angular.index_axis(Axis(0), (d + 2) % 3);
+                assert_matrix_close(a, a.t().mapv(|value| value.conj()).view());
+                assert_matrix_close((&a.dot(&b) - &b.dot(&a)).view(), (Complex::i() * &c).view());
+                casimir += &a.dot(&a);
+            }
+            let expected = Array2::<Complex<f64>>::eye(projections.len())
+                * Complex::new((l * (l + 1)) as f64, 0.0);
+            assert_matrix_close(casimir.view(), expected.view());
+        }
+    }
+
+    #[test]
+    fn spinful_operator_has_two_identical_blocks_and_no_spin_flip() {
+        let model = atomic::<true, 3>(&[OrbProj::px, OrbProj::py, OrbProj::pz]);
+        let angular = model.orb_angular().unwrap();
+        assert_eq!(angular.dim(), (3, model.nsta(), model.nsta()));
+        let p = p_generators();
+        for d in 0..3 {
+            assert_matrix_close(angular.slice(s![d, ..3, ..3]), p.index_axis(Axis(0), d));
+            assert_matrix_close(angular.slice(s![d, 3.., 3..]), p.index_axis(Axis(0), d));
+            assert!(
+                angular
+                    .slice(s![d, ..3, 3..])
+                    .iter()
+                    .all(|z| z.norm() == 0.0)
+            );
+            assert!(
+                angular
+                    .slice(s![d, 3.., ..3])
+                    .iter()
+                    .all(|z| z.norm() == 0.0)
+            );
+        }
+    }
+
+    #[test]
+    fn atom_ownership_and_projection_order_determine_matrix_elements() {
+        let groups = [[4, 0, 2], [3, 5, 1]]; // (px, py, pz) for each atom
+        let mut orbitals = Array2::zeros((6, 3));
+        for &i in &groups[1] {
+            orbitals[[i, 0]] = 0.4;
+        }
+        let mut model = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            orbitals,
+            Some(vec![
+                Atom::with_orbitals(
+                    array![0.0, 0.0, 0.0],
+                    AtomType::C,
+                    groups[0].map(OrbitalId::new),
+                ),
+                Atom::with_orbitals(
+                    array![0.4, 0.0, 0.0],
+                    AtomType::C,
+                    groups[1].map(OrbitalId::new),
+                ),
+            ]),
+        )
+        .unwrap();
+        model.set_projection(&vec![
+            OrbProj::py,
+            OrbProj::pz,
+            OrbProj::pz,
+            OrbProj::px,
+            OrbProj::px,
+            OrbProj::py,
+        ]);
+        let angular = model.orb_angular().unwrap();
+        let mut expected = Array3::zeros((3, 6, 6));
+        let p = p_generators();
+        for group in &groups {
+            for d in 0..3 {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        expected[[d, group[i], group[j]]] = p[[d, i, j]];
+                    }
+                }
+            }
+        }
+        for d in 0..3 {
+            assert_matrix_close(
+                angular.index_axis(Axis(0), d),
+                expected.index_axis(Axis(0), d),
+            );
+        }
+    }
+
+    #[test]
+    fn sp3_hybrids_and_incomplete_p_basis_are_projected_operators() {
+        let angular = atomic::<false, 3>(&[
+            OrbProj::sp3_1,
+            OrbProj::sp3_2,
+            OrbProj::sp3_3,
+            OrbProj::sp3_4,
+        ])
+        .orb_angular()
+        .unwrap();
+        let transform = array![
+            [1., 1., 1., 1.],
+            [1., 1., -1., -1.],
+            [1., -1., 1., -1.],
+            [1., -1., -1., 1.]
+        ]
+        .mapv(|value| Complex::new(0.5 * value, 0.0));
+        let p = p_generators();
+        let partial = atomic::<false, 3>(&[OrbProj::px, OrbProj::py])
+            .orb_angular()
+            .unwrap();
+        for d in 0..3 {
+            let mut sp = Array2::zeros((4, 4));
+            sp.slice_mut(s![1.., 1..]).assign(&p.index_axis(Axis(0), d));
+            let expected = transform.dot(&sp.dot(&transform.t()));
+            assert_matrix_close(angular.index_axis(Axis(0), d), expected.view());
+            assert_matrix_close(partial.index_axis(Axis(0), d), p.slice(s![d, ..2, ..2]));
+        }
+        // The truncated (px,py) subspace is not closed under Lx/Ly. It must
+        // retain P L P, rather than being forced to satisfy the full algebra.
+        assert!(
+            partial
+                .slice(s![0..2, .., ..])
+                .iter()
+                .all(|z| z.norm() < 1e-12)
+        );
+        assert!((partial[[2, 0, 1]] + Complex::i()).norm() < 1e-12);
+    }
+}
+
+#[cfg(test)]
 mod ownership_tests {
     use super::*;
     use crate::AtomType;
     use ndarray::array;
+
+    #[test]
+    fn validation_rejects_singular_lattices_and_nonfinite_operators() {
+        let valid = Model::<false, 2, HasRMatrix>::tb_model(
+            array![[1.0, 0.2], [0.3, 1.0]],
+            array![[0.0, 0.0]],
+            None,
+        )
+        .unwrap();
+        for lattice in [
+            array![[0.0, 0.0], [0.0, 0.0]],
+            array![[1.0, 2.0], [2.0, 4.0]],
+        ] {
+            let mut model = valid.clone();
+            model.lat = lattice.clone();
+            assert!(matches!(
+                model.validate(),
+                Err(TbError::InvalidModelInvariant {
+                    invariant: "invertible_lattice",
+                    ..
+                })
+            ));
+            assert!(Model::<false, 2>::tb_model(lattice, array![[0.0, 0.0]], None).is_err());
+            let encoded = toml::to_string(&model).unwrap();
+            assert!(toml::from_str::<Model<false, 2, HasRMatrix>>(&encoded).is_err());
+        }
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut model = valid.clone();
+            model.ham[[0, 0, 0]].re = value;
+            assert!(matches!(
+                model.validate(),
+                Err(TbError::InvalidModelInvariant {
+                    invariant: "finite_hamiltonian",
+                    ..
+                })
+            ));
+            let encoded = toml::to_string(&model).unwrap();
+            assert!(toml::from_str::<Model<false, 2, HasRMatrix>>(&encoded).is_err());
+            model.ham[[0, 0, 0]].re = 0.0;
+            model.rmatrix[[0, 0, 0, 0]].im = value;
+            assert!(matches!(
+                model.validate(),
+                Err(TbError::InvalidModelInvariant {
+                    invariant: "finite_position_matrix",
+                    ..
+                })
+            ));
+        }
+    }
 
     fn assert_model_round_trip<const SPIN: bool, R>()
     where

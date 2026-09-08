@@ -1,12 +1,139 @@
-//! Surface Green's function calculations for semi-infinite systems.
+//! Surface Green functions for semi-infinite tight-binding systems.
 //!
-//! This module implements algorithms for computing the surface Green's function
-//! $G^s(\omega, \mathbf{k}_\parallel)$ of semi-infinite tight-binding systems.
-//! The surface Green's function is defined as:
-//! $$
-//! G^s(\omega, \mathbf{k}_\parallel) = [\omega - H_{00}(\mathbf{k}_\parallel) - \Sigma(\omega, \mathbf{k}_\parallel)]^{-1}
-//! $$
-//! where $\Sigma$ is the self-energy due to the semi-infinite bulk.
+//! This module implements the iterative principal-layer decimation method of
+//! López Sancho, López Sancho, and Rubio. It computes the Green functions of the
+//! two possible terminations of a periodic bulk, together with the bulk Green
+//! function, without constructing a thick finite slab.
+//!
+//! # Principal-layer Hamiltonian
+//!
+//! At fixed surface-parallel momentum $\mathbf{k}_\parallel$, a sufficiently
+//! large principal layer makes the Hamiltonian block tridiagonal along the
+//! surface-normal direction:
+//!
+//! ```math
+//! \mathcal{H}(\mathbf{k}_\parallel)=
+//! \begin{pmatrix}
+//! H_0 & \alpha_0 & 0 & \cdots \\
+//! \beta_0 & H_0 & \alpha_0 & \ddots \\
+//! 0 & \beta_0 & H_0 & \ddots \\
+//! \vdots & \ddots & \ddots & \ddots
+//! \end{pmatrix},
+//! \qquad
+//! \beta_0=\alpha_0^\dagger.
+//! ```
+//!
+//! [`SurfGreen::from_Model`] obtains such a layer by enlarging the unit cell
+//! along the requested surface normal to cover the model's normal hopping
+//! range. [`SurfGreen::gen_ham_onek`] then Fourier transforms the remaining
+//! in-plane translations:
+//!
+//! ```math
+//! H_0(\mathbf{k}_\parallel)
+//! =\sum_{\mathbf{R}_\parallel}
+//! H_0(\mathbf{R}_\parallel)
+//! e^{2\pi i\mathbf{k}_\parallel\cdot\mathbf{R}_\parallel},
+//! \qquad
+//! \alpha_0(\mathbf{k}_\parallel)
+//! =\sum_{\mathbf{R}_\parallel}
+//! H_{01}(\mathbf{R}_\parallel)
+//! e^{2\pi i\mathbf{k}_\parallel\cdot\mathbf{R}_\parallel}.
+//! ```
+//!
+//! Both blocks are returned in the atom-position gauge. For orbital positions
+//! $\boldsymbol{\tau}_m$, the applied gauge transformation is
+//!
+//! ```math
+//! H_{mn}\longmapsto
+//! e^{-2\pi i\boldsymbol{\tau}_m\cdot\mathbf{k}_\parallel}
+//! H_{mn}
+//! e^{ 2\pi i\boldsymbol{\tau}_n\cdot\mathbf{k}_\parallel}.
+//! ```
+//!
+//! # López-Sancho decimation
+//!
+//! Define the retarded energy $z=E+i\eta$ with $\eta>0$, and initialize
+//!
+//! ```math
+//! \epsilon_0=\epsilon_0^L=\epsilon_0^R=H_0,
+//! \qquad
+//! \alpha_0=H_{01},
+//! \qquad
+//! \beta_0=H_{01}^\dagger.
+//! ```
+//!
+//! One decimation step first forms
+//!
+//! ```math
+//! g_n=(zI-\epsilon_n)^{-1},
+//! ```
+//!
+//! and then updates the effective bulk layer, the two surface layers, and the
+//! residual inter-layer couplings:
+//!
+//! ```math
+//! \begin{aligned}
+//! \epsilon_{n+1}
+//! &=\epsilon_n
+//!   +\alpha_n g_n\beta_n
+//!   +\beta_n g_n\alpha_n,\\
+//! \epsilon_{n+1}^{L}
+//! &=\epsilon_n^{L}+\alpha_n g_n\beta_n,\\
+//! \epsilon_{n+1}^{R}
+//! &=\epsilon_n^{R}+\beta_n g_n\alpha_n,\\
+//! \alpha_{n+1}&=\alpha_n g_n\alpha_n,\\
+//! \beta_{n+1}&=\beta_n g_n\beta_n.
+//! \end{aligned}
+//! ```
+//!
+//! Each iteration doubles the number of original layers represented by one
+//! effective layer. Once the residual couplings have decayed, the required
+//! Green functions are
+//!
+//! ```math
+//! G_L^s=(zI-\epsilon_\infty^L)^{-1},
+//! \qquad
+//! G_R^s=(zI-\epsilon_\infty^R)^{-1},
+//! \qquad
+//! G_B=(zI-\epsilon_\infty)^{-1}.
+//! ```
+//!
+//! Equivalently, the left surface Green function obeys the nonlinear Dyson
+//! equation
+//!
+//! ```math
+//! G_L^s=\left[zI-H_0-H_{01}G_L^sH_{01}^\dagger\right]^{-1},
+//! ```
+//!
+//! with the coupling order reversed for the right termination.
+//!
+//! # Returned spectral densities
+//!
+//! The public evaluation routines return the trace spectral density of a whole
+//! principal layer, rather than the Green matrices themselves:
+//!
+//! ```math
+//! \rho_X(E,\mathbf{k}_\parallel)
+//! =-\frac{1}{\pi}\operatorname{Im}\operatorname{Tr}G_X,
+//! \qquad X\in\{L,R,B\}.
+//! ```
+//!
+//! A positive [`SurfGreen::eta`] gives retarded broadening. The scalar-energy
+//! routine uses at most 10 decimation steps and stops when
+//! $\sum_{ij}|(\alpha_n)_{ij}|<10^{-8}$; the vector-energy routine uses the
+//! same limit with a threshold of $10^{-6}$.
+//!
+//! # References
+//!
+//! - M. P. López Sancho, J. M. López Sancho, and J. Rubio,
+//!   “Quick iterative scheme for the calculation of transfer matrices:
+//!   application to Mo (100),” *Journal of Physics F: Metal Physics* **14**,
+//!   1205–1215 (1984),
+//!   [doi:10.1088/0305-4608/14/5/016](https://doi.org/10.1088/0305-4608/14/5/016).
+//! - M. P. López Sancho, J. M. López Sancho, and J. Rubio,
+//!   “Highly convergent schemes for the calculation of bulk and surface Green
+//!   functions,” *Journal of Physics F: Metal Physics* **15**, 851–858 (1985),
+//!   [doi:10.1088/0305-4608/15/4/009](https://doi.org/10.1088/0305-4608/15/4/009).
 use crate::Model;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
@@ -124,6 +251,11 @@ impl SurfGreen {
     ///
     /// `eta` is the small imaginary part for the Green's function.
     ///
+    /// With `Np = None`, the principal-layer thickness is the largest absolute
+    /// hopping range along `dir`. `Some(np)` caps that thickness at `np`; use a
+    /// cap smaller than the true hopping range only when that approximation is
+    /// intentional.
+    ///
     /// For directions not aligned with a lattice vector, use [`Model::make_supercell`] first.
     pub fn from_Model<const SPIN: bool, const DIM: usize, R: RMatrixData>(
         model: &Model<SPIN, DIM, R>,
@@ -198,6 +330,15 @@ impl SurfGreen {
         Ok(green)
     }
 
+    /// Construct the principal-layer blocks at one surface momentum.
+    ///
+    /// The returned pair is `(H_0(k_parallel), H_01(k_parallel))`, in the
+    /// atom-position gauge described in the [module-level documentation](self).
+    /// Both matrices have shape `nsta × nsta`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `kvec.len() != self.dim_r`.
     #[inline(always)]
     pub fn gen_ham_onek<S: Data<Elem = f64>>(
         &self,
@@ -245,6 +386,17 @@ impl SurfGreen {
         }
         (ham0k, hamRk)
     }
+    /// Evaluate the two surface densities and the bulk density at one energy.
+    ///
+    /// Returns `(rho_right, rho_left, rho_bulk)`. Each value is
+    /// $-\operatorname{Im}\operatorname{Tr}(G)/\pi$ for one principal layer.
+    /// The implementation performs at most 10 López-Sancho iterations and uses
+    /// a residual-coupling threshold of `1e-8`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `kvec` has the wrong length or a required matrix inversion
+    /// fails.
     #[inline(always)]
     pub fn surf_green_one<S: Data<Elem = f64>>(
         &self,
@@ -288,6 +440,16 @@ impl SurfGreen {
         (N_R, N_L, N_B)
     }
 
+    /// Evaluate the two surface densities and the bulk density over an energy grid.
+    ///
+    /// Returns `(rho_right, rho_left, rho_bulk)`; every array follows the order
+    /// of `Energy`. The implementation performs at most 10 López-Sancho
+    /// iterations per energy and uses a residual-coupling threshold of `1e-6`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `kvec` has the wrong length or a required matrix inversion
+    /// fails.
     #[inline(always)]
     pub fn surf_green_onek<S: Data<Elem = f64>>(
         &self,
@@ -339,6 +501,12 @@ impl SurfGreen {
         (N_R, N_L, N_B)
     }
 
+    /// Evaluate surface and bulk spectral densities along a momentum path.
+    ///
+    /// The three returned arrays have shape `(kvec.nrows(), E_n)` and are
+    /// ordered as `(rho_left, rho_right, rho_bulk)`. Notice that this public
+    /// path-level ordering is the reverse of the first two elements returned by
+    /// [`SurfGreen::surf_green_one`] and [`SurfGreen::surf_green_onek`].
     pub fn surf_green_path(
         &self,
         kvec: &Array2<f64>,

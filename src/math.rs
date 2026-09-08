@@ -27,6 +27,6 @@ where
     B: Data<Elem = T>,
     T: LinalgScalar, // 约束条件：T 必须实现 LinalgScalar trait
 {
-    //! Compute the anti-commutator $\{A, B\} = AB + BA$.
+    //! Compute the anti-commutator $\lbrace A, B\rbrace = AB + BA$.
     A.dot(B) + B.dot(A)
 }

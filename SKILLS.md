@@ -4,6 +4,12 @@ This guide follows the const-generic `Model<SPIN, DIM, R>` API in the current
 source tree. For mathematical definitions and complete error semantics, use the
 generated rustdoc.
 
+`Model::validate()` checks array shapes, finite Hamiltonian/position data,
+an invertible lattice, and atom/orbital references. Deserialization and
+high-level response/DOS entry points run these checks. It does not certify
+Hermiticity or every real-space support convention; directly editing public
+model fields still requires the caller to preserve those invariants.
+
 Most snippets below assume:
 
 ```rust
@@ -67,12 +73,36 @@ spinful.add_hop(0.1, 0, 0, &array![1, 0], SpinDirection::Z);
 
 ### Orbital projections
 
-Orbital projections are needed by operations such as `orb_angular`:
+`orb_angular` requires orbital projections and an explicit owning atom for
+every orbital:
 
 ```rust
-model.set_projection(&vec![OrbProj::s]);
+let mut model = Model::<false, 2>::tb_model(
+    arr2(&[[1.0, 0.0], [0.0, 1.0]]),
+    arr2(&[[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]),
+    Some(vec![Atom::with_orbitals(
+        array![0.0, 0.0],
+        AtomType::C,
+        [OrbitalId::new(0), OrbitalId::new(1), OrbitalId::new(2)],
+    )]),
+)?;
+model.set_projection(&vec![OrbProj::px, OrbProj::py, OrbProj::pz]);
 let angular_momentum = model.orb_angular()?;
+assert_eq!(angular_momentum.dim(), (3, model.nsta(), model.nsta()));
 ```
+
+The result contains `(Lx, Ly, Lz) / ℏ` in the model basis, even for a 1D or
+2D crystal. A spinful model uses `diag(L_a, L_a)` in the basis
+`(all ↑ orbitals, all ↓ orbitals)`; it does not include spin angular momentum.
+With the row-ket eigenvectors `C[band, basis]` returned by `solve_onek`, use
+`C.mapv(|z| z.conj()).dot(&L_a).dot(&C.t())` to obtain a band-basis operator.
+
+This is a local atomic approximation derived from the angular projections;
+inter-atom blocks are zero. The projection metadata does not distinguish
+radial shells or local coordinate frames. Use an orthonormal angular basis
+consistent with the model. A truncated shell returns `P L_a P / ℏ`, which
+need not obey the full angular-momentum commutators. This operator is not
+the Bloch-state orbital magnetic moment or bulk orbital magnetization.
 
 ### Wannier90 import
 
@@ -145,6 +175,125 @@ let h_atom = model.gen_ham(&k, Gauge::Atom);
 let h_lattice = model.gen_ham(&k, Gauge::Lattice);
 let band = model.solve_band_onek(&k);
 ```
+
+For several points, construct a batch with a shared Fourier sum:
+
+```rust
+let points = arr2(&[[0.25, 0.0], [0.3, 0.1]]);
+let hams = model.gen_ham_batch(&points, Gauge::Atom);
+// hams.shape() == [2, model.nsta(), model.nsta()]
+```
+
+`gen_ham_batch` creates no Rayon tasks. It uses GEMM to reuse hopping data
+across points and supports both gauges and non-contiguous input views.
+Call it on bounded subsets when the complete H(k) array would be too large.
+
+Both serial and parallel band/eigenvector solvers use this shared batch
+constructor. Parallel jobs receive contiguous k-point ranges and process them
+in bounded batches. The default policy balances the known point/thread counts
+under a 128 MiB total budget for Bloch phase matrices and Hamiltonian batches;
+it has no fixed 16-point cap. Output arrays, orbital phases and LAPACK workspace
+are additional to this budget. A single point is still processed when its
+buffers exceed the budget.
+
+Batching is internal to the existing solver methods and requires no options.
+When points are fewer than workers, jobs can contain a single point; the policy
+does not guarantee an optimal batch size on every machine. Rayon chooses which
+workers run the jobs; they are not pinned to CPU cores. Configure BLAS threading
+separately (for example `MKL_NUM_THREADS=1` with outer Rayon parallelism).
+
+### Eigenvalue ordering and eigenvector axes
+
+`solve_onek(&k)` returns `(energies, evec)` with shapes `(nsta,)` and
+`(nsta, nsta)`. Energies are in ascending order, including all spin states in
+one ordering. Row `evec.row(n)` contains the **ket coefficients** belonging to
+`energies[n]`; eigenvectors are not columns and the row is not a bra.
+
+`solve_all(&points)` and `solve_all_parallel(&points)` return shapes
+`(nk, nsta)` and `(nk, nsta, nsta)`, with indices `[ik, n]` and
+`[ik, n, basis]`. The k axis preserves input order; each k-point is sorted
+independently by energy. The basis axis follows the model: spin-up orbitals,
+then spin-down orbitals for spinful models. This does not imply spin ordering
+of the bands. Neither method tracks band character or aligns eigenvector
+phases between k-points.
+
+All three methods return Atom-gauge states. Let `C` be the returned two-dimensional
+eigenvector matrix at one k-point, and `*` mean elementwise conjugation:
+
+```text
+H C^T = C^T diag(E)
+C* C^T = I
+O_band = C* O C^T
+```
+
+For example, with `op` in the same Atom gauge and basis:
+
+```rust
+let (energies, evec) = model.solve_onek(&k);
+let ket = evec.row(0); // H.dot(&ket) ≈ energies[0] * ket
+let op_band = evec.mapv(|z| z.conj()).dot(&op.dot(&evec.t()));
+```
+
+The raw `ndarray-linalg 0.18.1` `.eigh()` result for a C-layout complex H uses
+a different convention: its internal axis swap makes LAPACK solve `H^T = H*`.
+Rustb converts that raw matrix `U` with `ndarray_linalg::conjugate(&U)` into
+`C = U†`. Here `conjugate()` means **conjugate transpose**; `.t()` only
+transposes, while `mapv(|z| z.conj())` only conjugates. The raw-U formula
+`U^T O U*` must not be used with the returned C. Recheck this compensation if
+the dependency or input memory layout changes; matching energies alone will
+not detect a conjugated-eigenvector error.
+
+Eigenvectors have arbitrary overall phases; a degenerate subspace admits
+arbitrary orthonormal rotations. Compare residuals, overlaps or subspace
+projectors instead of requiring elementwise equality across calls or backends.
+The `Solve::solve_onek` and `Solve::solve_all` rustdoc contains executable
+complex-H examples checking these conventions.
+
+The low-level `ndarray_lapack::{eigh_x, eigh_r, eigvalsh_x, eigvalsh_r,
+eigvalsh_v}` functions return `Result`. They require square matrices, accept
+C/F/strided views, and honor the requested triangle of the logical input.
+`eigh_x` and `eigh_r` return row kets directly; do not conjugate their result.
+
+### Bloch orbital angular momentum
+
+`orbital_angular::OrbitalAngular` computes the band-space Bloch operator
+`L / hbar`, including complex off-diagonal elements, using Busch, Mertig and
+Göbel (2023), Eq. (3). This differs from the atomic-orbital matrices returned
+by `Model::orb_angular()` and from bulk orbital magnetization.
+
+```rust
+use Rustb::orbital_angular::OrbitalAngular;
+// Energies in eV; lat and rmatrix in angstroms, as for velocities.
+let angular = model.orbital_angular_momentum_onek(&k)?;
+// shape: (3, nsta, nsta), axes Lx / Ly / Lz, ascending-energy band basis.
+let lz_band0 = angular[[2, 0, 0]].re;
+```
+
+This isolated-band formula rejects gaps <= `1e-10` eV, non-Hermitian
+operators, and invalid inputs. Band matrix elements transform covariantly
+under band rephasing. In 2D only Lz is nonzero.
+
+`k_path` requires at least two distinct consecutive nodes and at least as
+many samples as nodes. Its distances retain the reciprocal convention
+without `2*pi`. Mesh and plane generators reject zero and overflowing sizes.
+`phy_0` is the superconducting flux quantum `h/(2e)` in webers.
+
+Intrinsic nonlinear Hall calculations reject a nonempty `params.spin`
+because that API currently computes charge current. Direct and energy-cut
+intrinsic kernels both omit gaps <= `1e-10` eV. Finite-temperature Hall
+energy-cut convolution samples only the requested Fermi windows, so its
+sample count does not grow as `1/T`.
+
+`FloquetTruncation::n_sector()` and `sectors()` now return `Result`; use `?`
+in fallible code. Sambe entry points check allocation arithmetic and reject
+a time grid below the per-link spectral estimate instead of silently aliasing
+high harmonics. For a k scan, construct `floquet_model` once and use its
+ordinary band solvers to reuse the Fourier work.
+
+Examples write to `target/example-output/`; plotting tests write to
+`target/test-output/`. Local documentation needs no workspace-specific Cargo
+configuration. To include the custom header, run from the repository root:
+`RUSTDOCFLAGS="--html-in-header docs-header.html" cargo doc --no-deps --features openblas-system`.
 
 ### Density of states
 
@@ -255,6 +404,24 @@ let (projected_velocity, h_k) =
 `gen_v` returns an array with shape `(DIM, nsta, nsta)`.
 `gen_v_projected` returns one operator for each row of `directions`.
 
+The batch counterparts share phase factors and combine H plus all requested
+derivative sums in one GEMM:
+
+```rust
+let (velocities, hams) = model.gen_v_batch(&k_points, Gauge::Atom);
+let (projected, hams) =
+    model.gen_v_projected_batch(&k_points, Gauge::Atom, &directions);
+```
+
+The velocity shapes are `(nk, DIM, nsta, nsta)` and
+`(nk, directions.nrows(), nsta, nsta)`; H has shape `(nk, nsta, nsta)`.
+These constructors create no Rayon jobs, and their output/workspace grows with
+the supplied point count. Single-point `gen_v` and `gen_v_projected` use the
+same implementation, allowing H and direction derivatives to share hopping
+reads even at a single point. Position-matrix commutators and the existing
+atom/lattice gauge conventions are retained. Each H(k) is still diagonalized
+individually; no block-diagonal Hamiltonian mixing different k-points is built.
+
 ### Temperature and occupation
 
 `T` selects the electronic occupation: `0.0` is the exact zero-temperature
@@ -332,6 +499,8 @@ let extrinsic_result = model.extrinsic_nonlinear_hall(&extrinsic)?;
 
 `FieldSymmetry::Symmetrized` (the default) averages the two external-field
 permutations; `FieldSymmetry::Ordered` returns one raw ordered kernel. Direct
+and energy-cut calculations share one eigendecomposition per k-point between
+the two field orderings; energy-cut also shares one band-tracking pass. Direct
 integration requires a finite temperature. Energy-cut integration accepts
 `T[0] == 0.0` (exact zero-temperature limit). The extrinsic response is DC
 only: `omega` is ignored.
@@ -354,6 +523,11 @@ For reusable band-resolved data, use the `QuantumGeometry` trait methods
 `eta` from the same `Parameters` value.
 
 ### Optical conductivity
+
+Full Cartesian tensors share one eigendecomposition and one band-tracking
+pass across components, retaining the Cartesian band velocities. Simplex
+frequency scans interpolate energies and kernels once per quadrature point
+and reuse them across the full frequency list.
 
 ```rust
 let mut params = Parameters::rank2([51, 51], [1.0, 0.0], [0.0, 1.0], array![0.0])
@@ -466,22 +640,21 @@ let quasienergy =
     model.floquet_quasienergy_onek(&k, &drive, &truncation, Gauge::Lattice)?;
 
 let effective =
-    model.floquet_effective_model(&drive, &truncation, None)?;
+    model.floquet_effective_model(&drive, None)?;
 
 // Mutually incoherent beams: evaluate every nonzero mode independently and
 // add its correction around one common static H0. There are no extra weights;
 // each LightMode amplitude already fixes that beam's intensity.
-let effective_incoherent = model.floquet_effective_mode_resolved_model(
-    &drive,
-    &truncation,
-    None,
-)?;
+let options = FloquetEffectiveOptions::new()
+    .with_order(1)
+    .with_harmonic_max(2);
+let effective_incoherent =
+    model.floquet_effective_mode_resolved_model(&drive, Some(&options))?;
 
 // Retain the complete van Vleck correction through O(omega^-2).
 let second_order_options = FloquetEffectiveOptions::new().with_order(2);
 let effective_second_order = model.floquet_effective_model(
     &drive,
-    &truncation,
     Some(&second_order_options),
 )?;
 
@@ -491,7 +664,6 @@ let effective_second_order = model.floquet_effective_model(
 let q_cartesian = arr1(&[2.0e-3, 0.0]);
 let effective_linear_q = model.floquet_effective_q_model(
     &drive,
-    &truncation,
     Some(&second_order_options),
     &q_cartesian,
 )?;
@@ -507,11 +679,17 @@ let effective_linear_q = model.floquet_effective_q_model(
 `floquet_effective_model` uses the real-space generalized-Bessel backend:
 no `k_mesh` and no `target_hamR` — the effective hopping support is
 determined automatically: up to the double Minkowski sum for the default
-`order = 1`, and up to the triple Minkowski sum for `order = 2`. It
-does not use the value of `trunc.n_time` for the computation (the field
-only needs to be positive): out-of-range links fall back to a per-link
+`order = 1`, and up to the triple Minkowski sum for `order = 2`.
+All three effective-model APIs use `FloquetEffectiveOptions`, whose defaults
+are `order = 1` and `harmonic_max = 2`. The harmonic cutoff is a concrete
+nonnegative integer, independent of the Sambe photon cutoff. These APIs take
+no `FloquetTruncation`: out-of-range links fall back to a per-link
 time-grid DFT sized from the link's own bandwidth and the requested
 harmonic range.
+
+`FloquetTruncation` controls photon sectors and time sampling only for the
+full Sambe APIs. To preserve an old effective-model call's implicit harmonic
+range during migration, pass `.with_harmonic_max(2 * old_n_max)` explicitly.
 
 For multiple mutually incoherent modes,
 `floquet_effective_mode_resolved_model` computes
@@ -791,4 +969,4 @@ cargo doc --no-deps --features intel-mkl-system
 ```
 
 Use release mode for numerical tests. Several integration-style tests invoke
-gnuplot and regenerate tracked artifacts below `tests/`.
+gnuplot and write generated artifacts below `target/test-output/`.

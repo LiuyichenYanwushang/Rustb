@@ -8,7 +8,7 @@
 //!
 //! # Wilson loop algorithm
 //!
-//! For a closed loop of k-points \\(\{\mathbf k_i\}\\), the overlap matrix is
+//! For a closed loop of k-points \\(\lbrace\mathbf k_i\rbrace\\), the overlap matrix is
 //!
 //! $$
 //! F_{mn,\mathbf k} = \langle \psi_{m,\mathbf k} | \psi_{n,\mathbf k+\Delta\mathbf k} \rangle.

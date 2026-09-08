@@ -1,8 +1,72 @@
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.10.0/dist/katex.min.css" integrity="sha384-9eLZqc9ds8eNjO3TmqPeYcDj8n+Qfa4nuSiGYa6DjLNcv9BtN69ZIulL9+8CqC9Y" crossorigin="anonymous">
-<script src="https://cdn.jsdelivr.net/npm/katex@0.10.0/dist/katex.min.js"                  integrity="sha384-K3vbOmF2BtaVai+Qk37uypf7VrgBubhQreNQe9aGsz9lB63dIFiQVlJbr92dw2Lx" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/katex@0.10.0/dist/contrib/auto-render.min.js"    integrity="sha384-kmZOZB5ObwgQnS/DuDg6TScgOiWWBiVt0plIRkZCmE6rDZGrEOQeHM5PcHi+nyqe" crossorigin="anonymous"></script> 
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.5/dist/katex.min.css" integrity="sha384-2dNi/m6JtSiviznrOIZ5fTiZ5As0In2QwkuXSgoqcQtCNplvJAbt+jveeN+8en73" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.18.5/dist/katex.min.js" integrity="sha384-TTF8eEsEKInX2meLzP5V1z/npGYIElXYGksx93f0qBZHu6IL3PdzVB8objytx+TR" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.18.5/dist/contrib/auto-render.min.js" integrity="sha384-bjyGPfbij8/NDKJhSGZNP/khQVgtHUE5exjm4Ydllo42FwIgYsdLO2lXGmRBf5Mz" crossorigin="anonymous"></script>
+<style>
+    .rustdoc-math-display {
+        margin: 1em 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        text-align: center;
+    }
+</style>
 <script>
     document.addEventListener("DOMContentLoaded", function() {
+        const macros = {
+            "\\rt": "\\right",
+            "\\lt": "\\left",
+            "\\ket": "\\left\\vert#1\\right\\rangle",
+            "\\bra": "\\left\\langle#1\\right\\vert",
+            "\\dyad": "\\left\\vert#1\\right\\rangle\\left\\langle#1\\right\\vert",
+            "\\ketbra": "\\left\\vert#1\\right\\rangle\\left\\langle#1\\right\\vert",
+            "\\braket": "\\left\\langle#1\\middle|#2\\right\\rangle",
+            "\\pdv": "\\frac{\\partial #1}{\\partial #2}",
+            "\\eval": "\\left. #1\\right\\vert",
+            "\\dd": "\\mathrm{d}",
+            "\\p": "\\partial",
+            "\\ap": "\\alpha",
+            "\\bt": "\\beta",
+            "\\f": "\\frac",
+            "\\og": "\\omega",
+            "\\Og": "\\Omega",
+            "\\dt": "\\delta",
+            "\\Dt": "\\Delta",
+            "\\gm": "\\gamma",
+            "\\Gm": "\\Gamma",
+            "\\sg": "\\sigma",
+            "\\mcl": "\\mathcal",
+            "\\ve": "\\varepsilon",
+            "\\vp": "\\varphi",
+            "\\lm": "\\lambda",
+            "\\tha": "\\theta",
+            "\\nb": "\\bm\\nabla",
+            "\\ep": "\\epsilon",
+            "\\upa": "\\uparrow",
+            "\\doa": "\\downarrow",
+            "\\pr": "\\prime",
+            "\\tx": "\\text",
+        };
+        const renderOptions = {
+            macros: macros,
+            throwOnError: false,
+        };
+
+        // rustdoc renders fenced `math` blocks as <pre><code>. KaTeX's
+        // auto-render extension deliberately ignores those tags, so render
+        // these blocks explicitly before processing delimiter-based formulas.
+        document.querySelectorAll("pre.language-math").forEach(function(pre) {
+            const display = document.createElement("div");
+            display.className = "rustdoc-math-display";
+            katex.render(pre.textContent, display, {
+                ...renderOptions,
+                displayMode: true,
+            });
+            const wrapper = pre.parentElement !== null
+                && pre.parentElement.classList.contains("example-wrap")
+                ? pre.parentElement
+                : pre;
+            wrapper.replaceWith(display);
+        });
+
         renderMathInElement(document.body, {
             delimiters: [
                 {left: "$$", right: "$$", display: true},
@@ -10,39 +74,7 @@
                 {left: "$", right: "$", display: false},
                 {left: "\\[", right: "\\]", display: true}
             ],
-            macros: {
-                "\\rt": "\\right",
-                "\\lt": "\\left",
-                "\\ket": "\\left\\vert#1\\right\\rangle",
-                "\\bra": "\\left\\langle#1\\right\\vert",
-                "\\dyad": "\\left\\vert#1\\right\\rangle\\left\\langle#1\\right\\vert",
-                "\\braket": "\\left\\langle#1\\right\\vert\\left\.#2\\right\\rangle",
-                "\\pdv": "\\frac{\\partial #1}{\\partial #2}",
-                "\\eval":"\\left\\. #1\\right\\vert",
-                "\\dd": "\\mathrm{d}",
-                "\\p": "\\partial",
-                "\\ap": "\\alpha",
-                "\\bt": "\\beta",
-                "\\f": "\\frac",
-                "\\og": "\\omega",
-                "\\Og": "\\Omega",
-                "\\dt": "\\delta",
-                "\\Dt": "\\Delta",
-                "\\gm": "\\gamma",
-                "\\Gm": "\\Gamma",
-                "\\sg": "\\sigma",
-                "\\mcl": "\\mathcal",
-                "\\ve" : "\\varepsilon",
-                "\\vp" : "\\varphi",
-                "\\lm" : "\\lambda",
-                "\\tha": "\\theta",
-                "\\nb" : "\\bm\\nabla",
-                "\\ep" : "\\epsilon",
-                "\\upa": "\\uparrow",
-                "\\doa": "\\downarrow",
-                "\\pr" : "\\prime",
-                "\\tx" : "\\text",
-            }
+            ...renderOptions,
         });
     });
 </script>

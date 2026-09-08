@@ -159,7 +159,7 @@ T_0(R)
 /// 求 C_n(d) 的两种后端。
 pub enum PeierlsFourierMethod {
     /// 时间网格数值 DFT（现状；reference/兜底）
-    TimeGrid,
+    TimeGrid { n_time: usize },
     /// 广义 Bessel 解析展开（精确、O(N_mode·N_n·M)）
     Bessel { cutoff_margin: isize },   // 最小 margin 与测试钩子；实际截断自适应（见 §2.1）
 }
@@ -190,7 +190,7 @@ fn bessel_peierls_coeffs(
 ### 4.3 谐波缓存（复用现有 `FloquetHarmonicCache`）
 
 ```
-floquet_harmonic_cache(drive, trunc, harmonic_min, harmonic_max, method)
+floquet_harmonic_cache(drive, harmonic_min, harmonic_max, method)
     -> FloquetHarmonicCache
     // blocks[harmonic_index(n), i_r, i, j] = t_ij(R) · C_n(d_ijR)
 ```
@@ -231,13 +231,12 @@ fn real_space_commutator(
 pub fn floquet_effective_model(
     &self,
     drive: &FloquetDrive,
-    trunc: &FloquetTruncation,
-    options: Option<&FloquetEffectiveOptions>,   // order=1、harmonic_max；target_hamR 报错
+    options: Option<&FloquetEffectiveOptions>,   // 默认 order=1、harmonic_max=2；target_hamR 报错
 ) -> Result<Model<SPIN, DIM, NoRMatrix>>
 ```
 
 内部：
-1. `cache = floquet_harmonic_cache(drive, trunc, −harmonic_max, harmonic_max, Bessel)`（含 d 去重）
+1. `cache = floquet_harmonic_cache(drive, −harmonic_max, harmonic_max, Bessel)`（含 d 去重）
 2. `T_0(R)` = cache 的 n=0 块（静态模型重建）
 3. 对 `n = 1..harmonic_max`：`comm_n = real_space_commutator(cache.blocks[n], hamR)`，
    `T_eff(R) += comm_n(R)/(n·ħΩ₀)`（按 R 合并块、去重）
@@ -248,13 +247,14 @@ pub fn floquet_effective_model(
 ```rust
 /// k 空间 + 逆 FT 参考路径，改名 *_legacy，pub(crate)——仅内部交叉验证使用
 pub(crate) fn floquet_effective_model_legacy(
-    &self, drive, trunc, k_mesh, options
+    &self, drive, n_time, k_mesh, options
 ) -> Result<Model<SPIN, DIM, NoRMatrix>>
 ```
 
-最终公开 API（已落地）：`floquet_effective_model(drive, trunc, options)` 指向 Bessel 实空间
+最终公开 API（已落地）：`floquet_effective_model(drive, options)` 指向 Bessel 实空间
 路径，`k_mesh` 参数删除（0.7 预发布允许 breaking）；`target_hamR` 在新路径上显式报错
-（支持集自动确定）。SKILLS.md 已同步更新。
+（支持集自动确定）。三个公开有效模型入口统一只接收有效模型选项；
+`FloquetTruncation` 仅控制完整 Sambe 矩阵。SKILLS.md 已同步更新。
 
 ---
 

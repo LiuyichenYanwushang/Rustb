@@ -1,10 +1,7 @@
 //! Uniform magnetic field for a tight-binding model.
 //!
 //! This module exposes only one public interface:
-//!
-//! $$
-//! \texttt{Model::add\_magnetic\_field(mag\_dir, expand, phi\_total)}.
-//! $$
+//! [`MagneticField::add_magnetic_field`].
 //!
 //! Everything else is kept internal on purpose.
 //!
@@ -23,7 +20,7 @@
 //! Peierls substitution
 //!
 //! $$
-//! H_{ij}(\mathbf R)\;\to\;H_{ij}(\mathbf R)\exp\bigl(i\theta_{ij}(\mathbf R)\bigr),
+//! H_{ij}(\mathbf R)\\;\to\\;H_{ij}(\mathbf R)\exp\bigl(i\theta_{ij}(\mathbf R)\bigr),
 //! $$
 //!
 //! with the electron-sign convention
@@ -48,7 +45,7 @@
 //! $(U_1,U_2)$ and use the periodic Landau gauge
 //!
 //! $$
-//! \mathbf A(\mathbf r)=N_\phi\,\Phi_0\,U_1\,\nabla U_2,
+//! \mathbf A(\mathbf r)=N_\phi\\,\Phi_0\\,U_1\\,\nabla U_2,
 //! $$
 //!
 //! where `phi_total = N_\phi` is the **integer number of flux quanta through the
@@ -60,7 +57,7 @@
 //! $$
 //! \theta_{ij}
 //! =-2\pi N_\phi\left[
-//! \frac{U_{1,i}+V_{1,j}}{2}\,(V_{2,j}-U_{2,i})-R_1V_{2,j}
+//! \frac{U_{1,i}+V_{1,j}}{2}\\,(V_{2,j}-U_{2,i})-R_1V_{2,j}
 //! \right],
 //! $$
 //!
@@ -79,19 +76,19 @@
 //!
 //! The library stores
 //!
-//! $$
+//! ```math
 //! r^{\alpha}_{ij}(\mathbf R)=\langle i,\mathbf 0|\hat r_\alpha|j,\mathbf R\rangle.
-//! $$
+//! ```
 //!
 //! Under the same magnetic gauge dressing of the localized basis, every nonlocal
 //! one-body matrix element acquires the same link phase. Therefore, if `rmatrix`
 //! contains nonlocal entries, they must transform as
 //!
-//! $$
+//! ```math
 //! r^{\alpha}_{ij}(\mathbf R)
 //! \to
 //! e^{i\theta_{ij}(\mathbf R)}r^{\alpha}_{ij}(\mathbf R).
-//! $$
+//! ```
 //!
 //! This implementation therefore applies the same Peierls phase both to `ham` and
 //! to `rmatrix`. For purely onsite diagonal `rmatrix`, this changes nothing because
@@ -102,13 +99,13 @@
 //! If spin is enabled, the onsite Zeeman term is added in Cartesian spin space:
 //!
 //! $$
-//! H_Z=\frac{g\mu_B}{2}\,\mathbf B\cdot\boldsymbol\sigma.
+//! H_Z=\frac{g\mu_B}{2}\\,\mathbf B\cdot\boldsymbol\sigma.
 //! $$
 //!
 //! In 3D the actual magnetic field is taken as
 //!
 //! $$
-//! \mathbf B=\beta\,\mathbf a_{\mathrm{mag}},
+//! \mathbf B=\beta\\,\mathbf a_{\mathrm{mag}},
 //! $$
 //!
 //! where $\mathbf a_{\mathrm{mag}}$ is the lattice vector selected by `mag_dir`, and
@@ -133,21 +130,12 @@ pub trait MagneticField {
     ///
     /// The interface is intentionally minimal:
     ///
-    /// $$
-    /// \texttt{mag\_dir}
-    /// $$
-    /// selects the lattice direction of the field in 3D, or must be `2` in 2D.
-    ///
-    /// $$
-    /// \texttt{expand=[m,n]}
-    /// $$
-    /// gives the magnetic-supercell enlargement factors along the two directions
-    /// perpendicular to the field.
-    ///
-    /// $$
-    /// \texttt{phi\_total}=N_\phi
-    /// $$
-    /// is the integer number of flux quanta threading the full magnetic supercell.
+    /// - `mag_dir` selects the lattice direction of the field in 3D, or must
+    ///   be `2` in 2D.
+    /// - `expand = [m, n]` gives the magnetic-supercell enlargement factors
+    ///   along the two directions perpendicular to the field.
+    /// - `phi_total` is the integer number `N_\phi` of flux quanta threading
+    ///   the full magnetic supercell.
     ///
     /// Equivalently, the flux per primitive plaquette is
     ///

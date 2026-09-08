@@ -661,7 +661,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
 
-        let operation_tolerance = options.symmetry.tolerances.operation.max(1e-8);
+        let operation_tolerance = options.symmetry.tolerances.operation;
         for left in 0..prepared_operations.len() {
             for right in (left + 1)..prepared_operations.len() {
                 let left_operation = &prepared_operations[left];
@@ -1595,6 +1595,37 @@ mod tests {
             error,
             TbError::InvalidHamiltonianSymmetryInput { .. }
         ));
+    }
+
+    #[test]
+    fn point_operation_mapping_honors_strict_translation_tolerance() {
+        let summary = magnetic_irrep_summary_by_uni(1).unwrap();
+        let point = &summary.kpoints[0];
+        let mut prepared: Vec<_> = point
+            .operations
+            .iter()
+            .map(|operation| PreparedOperation {
+                operation: CrystalSymmetryOperation {
+                    rotation: operation.rotation,
+                    translation: operation.translation,
+                    time_reversal: operation.time_reversal,
+                },
+                action: LocalizedBasisAction { sectors: vec![] }, // mapping uses only Seitz data
+                data_rotation: operation.rotation,
+                data_translation_modulo: operation.translation,
+                data_translation_exact: operation.translation,
+            })
+            .collect();
+        assert!(map_point_operations(point, &prepared, 1e-12).is_ok());
+        prepared[0].data_translation_modulo[0] += 5e-9;
+        prepared[0].data_translation_exact[0] += 5e-9;
+        assert!(map_point_operations(point, &prepared, 1e-8).is_ok());
+        assert!(map_point_operations(point, &prepared, 1e-12).is_err());
+        // Integer lattice shifts remain equivalent even with strict matching.
+        prepared[0].data_translation_modulo = point.operations[0].translation;
+        prepared[0].data_translation_exact[0] = point.operations[0].translation[0] + 1.0;
+        let mapped = map_point_operations(point, &prepared, 1e-12).unwrap();
+        assert_eq!(mapped[0].lattice_shift_in_data_frame, [1.0, 0.0, 0.0]);
     }
 
     #[test]

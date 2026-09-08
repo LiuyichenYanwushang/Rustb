@@ -29,7 +29,8 @@ use ndarray::{Array1, Array2};
 ///
 /// # Errors
 /// Returns `TbError::KVectorLengthMismatch` if `origin`, `vec1`, `vec2` have
-/// different lengths.
+/// different lengths. Rejects empty dimensions, zero sample counts, non-finite
+/// coordinates and output sizes that overflow the addressable array size.
 #[inline(always)]
 pub fn gen_kplane(
     origin: &Array1<f64>,
@@ -39,14 +40,37 @@ pub fn gen_kplane(
     n2: usize,
 ) -> Result<Array2<f64>> {
     let dim = origin.len();
-    if vec1.len() != dim || vec2.len() != dim {
-        return Err(TbError::KVectorLengthMismatch {
-            expected: dim,
-            actual: vec1.len().max(vec2.len()),
-        });
+    for vector in [vec1, vec2] {
+        if vector.len() != dim {
+            return Err(TbError::KVectorLengthMismatch {
+                expected: dim,
+                actual: vector.len(),
+            });
+        }
     }
-
-    let nk = n1 * n2;
+    if dim == 0 || n1 == 0 || n2 == 0 {
+        return Err(TbError::Other(
+            "k-plane dimensions and sample counts must be positive".into(),
+        ));
+    }
+    if origin
+        .iter()
+        .chain(vec1.iter())
+        .chain(vec2.iter())
+        .any(|x| !x.is_finite())
+    {
+        return Err(TbError::Other("k-plane coordinates must be finite".into()));
+    }
+    let nk = n1
+        .checked_mul(n2)
+        .filter(|&n| {
+            n.checked_mul(dim)
+                .and_then(|n| n.checked_mul(size_of::<f64>()))
+                .is_some_and(|bytes| bytes <= isize::MAX as usize)
+        })
+        .ok_or_else(|| {
+            TbError::Other("k-plane output size exceeds the addressable array size".into())
+        })?;
     let mut kvec = Array2::<f64>::zeros((nk, dim));
 
     let n1_f = n1 as f64;
@@ -110,5 +134,31 @@ mod tests {
         let vec2 = arr1(&[0.0, 1.0, 0.0]); // wrong length
         let result = gen_kplane(&origin, &vec1, &vec2, 2, 2);
         assert!(result.is_err());
+        assert!(matches!(
+            gen_kplane(&origin, &arr1(&[1.0]), &vec1, 2, 2),
+            Err(TbError::KVectorLengthMismatch {
+                expected: 2,
+                actual: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn kplane_rejects_empty_nonfinite_and_overflowing_grids() {
+        let zero = Array1::zeros(2);
+        for (n1, n2) in [(0, 2), (2, 0), (usize::MAX, 2), (isize::MAX as usize, 1)] {
+            assert!(gen_kplane(&zero, &zero, &zero, n1, n2).is_err());
+        }
+        assert!(
+            gen_kplane(
+                &Array1::zeros(0),
+                &Array1::zeros(0),
+                &Array1::zeros(0),
+                1,
+                1
+            )
+            .is_err()
+        );
+        assert!(gen_kplane(&zero, &arr1(&[f64::INFINITY, 0.0]), &zero, 2, 2).is_err());
     }
 }

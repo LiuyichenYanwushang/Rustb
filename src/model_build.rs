@@ -151,7 +151,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// This constructor initializes a [`Model`] with the specified lattice
     /// vectors and orbital positions. The Hamiltonian and position matrices
     /// start with a single on-site block (for `R = 0`) and are populated using
-    /// [`set_hop`], [`set_onsite`], and related methods.
+    /// [`Self::set_hop`], [`Self::set_onsite`], and related methods.
     ///
     /// If no `atom` list is provided, the result is an orbital-only model with
     /// an empty atomic structure. Rustb never invents atomic species or treats
@@ -444,7 +444,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Add to a hopping term (accumulate without overwriting).
     ///
-    /// Identical to [`set_hop`] except the hopping amplitude is **added** to
+    /// Identical to [`Self::set_hop`] except the hopping amplitude is **added** to
     /// any existing value:
     ///
     /// ```math
@@ -455,7 +455,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// separate kinetic and spin-orbit coupling terms for the same orbital
     /// pair). The Hermitian conjugate at `-R` is also updated with `tmp*`.
     ///
-    /// See [`set_hop`] for a full description of the parameters and panics.
+    /// See [`Self::set_hop`] for a full description of the parameters and panics.
     ///
     /// # Examples
     ///
@@ -566,8 +566,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// \langle i,\mathbf{0} | \hat{H} | j,\mathbf{R} \rangle = \text{tmp}
     /// ```
     ///
-    /// using the **full** (spin-doubled) basis indices. Unlike [`set_hop`] and
-    /// [`add_hop`], it does **not** apply Pauli matrix decoration. The indices
+    /// using the **full** (spin-doubled) basis indices. Unlike [`Self::set_hop`] and
+    /// [`Self::add_hop`], it does **not** apply Pauli matrix decoration. The indices
     /// `ind_i` and `ind_j` must be in `0..nsta()`.
     ///
     /// This is the low-level interface for Hamiltonian manipulation, useful
@@ -659,7 +659,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Set (overwrite) all on-site energies at once.
     ///
-    /// Convenience method that calls [`set_hop`] for every orbital `i` with
+    /// Convenience method that calls [`Self::set_hop`] for every orbital `i` with
     /// `R = 0`:
     ///
     /// ```math
@@ -702,7 +702,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Add to all on-site energies (accumulate without overwriting).
     ///
-    /// Accumulating counterpart of [`set_onsite`]. Adds `tmp[i]` to the
+    /// Accumulating counterpart of [`Self::set_onsite`]. Adds `tmp[i]` to the
     /// existing on-site energy of orbital `i`:
     ///
     /// ```math
@@ -758,7 +758,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// \langle \text{ind},\mathbf{0} | \hat{H} | \text{ind},\mathbf{0} \rangle = \text{tmp}
     /// ```
     ///
-    /// Convenience wrapper around [`set_hop`] with `R = 0`.
+    /// Convenience wrapper around [`Self::set_hop`] with `R = 0`.
     ///
     /// # Arguments
     /// * `tmp` - The on-site energy (must be real).
@@ -795,7 +795,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Delete (zero out) a hopping term.
     ///
-    /// Sets the specified hopping to zero via [`set_hop`] with amplitude 0.
+    /// Sets the specified hopping to zero via [`Self::set_hop`] with amplitude 0.
     /// Both `+R` and `-R` terms (and their spin components) are zeroed.
     ///
     /// # Arguments
@@ -846,7 +846,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Append `count` zero position-matrix blocks for newly added hopping vectors.
     ///
     /// Keeps `rmatrix` shape in sync with `hamR` when new hopping vectors are
-    /// added by [`set_hop`], [`add_hop`], or [`add_element`]: a hopping
+    /// added by [`Self::set_hop`], [`Self::add_hop`], or [`add_element`]: a hopping
     /// introduced through these methods has no position-matrix elements yet,
     /// so the corresponding blocks are zero-filled.  Compile-time eliminated
     /// for `NoRMatrix` models.
@@ -905,9 +905,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Move the orbital positions to the positions of their parent atoms
     /// (alternate implementation).
     ///
-    /// Performs the same operation as [`shift_to_atom`] but uses a different
+    /// Performs the same operation as [`Self::shift_to_atom`] but uses a different
     /// indexing pattern (iterates by atom index rather than by atom reference).
-    /// See [`shift_to_atom`] for details.
+    /// See [`Self::shift_to_atom`] for details.
     pub fn move_to_atom(&mut self) -> Result<()> {
         self.shift_to_atom()
     }
@@ -1428,7 +1428,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // candidate-R box or floating-point reverse lookup is needed.
         let mut new_ham_r = Array2::<isize>::zeros((1, DIM));
         let mut new_ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta));
-        let mut new_rmatrix = Array4::<Complex<f64>>::zeros((1, DIM, nsta, nsta));
+        let mut new_rmatrix = if R::HAS_RMATRIX {
+            Array4::<Complex<f64>>::zeros((1, DIM, nsta, nsta))
+        } else {
+            Array4::zeros((0, 0, 0, 0))
+        };
         let mut block_by_vector = HashMap::<Vec<isize>, usize>::new();
         block_by_vector.insert(vec![0_isize; DIM], 0);
         let old_rmatrix = if R::HAS_RMATRIX {
@@ -1509,10 +1513,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                     Axis(0),
                                     Array2::<Complex<f64>>::zeros((nsta, nsta)).view(),
                                 )?;
-                                new_rmatrix.push(
-                                    Axis(0),
-                                    Array3::<Complex<f64>>::zeros((DIM, nsta, nsta)).view(),
-                                )?;
+                                if R::HAS_RMATRIX {
+                                    new_rmatrix.push(
+                                        Axis(0),
+                                        Array3::<Complex<f64>>::zeros((DIM, nsta, nsta)).view(),
+                                    )?;
+                                }
                                 block_by_vector.insert(new_r, block);
                                 block
                             }

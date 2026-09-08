@@ -90,6 +90,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry<DIM>
         k: &ArrayBase<S, Ix1>,
         params: &Parameters<DIM>,
     ) -> Result<BandQuantumGeometry> {
+        self.validate()?;
         if k.len() != DIM {
             return Err(TbError::KVectorLengthMismatch {
                 expected: DIM,
@@ -106,6 +107,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry<DIM>
         k_points: &ArrayBase<S, Ix2>,
         params: &Parameters<DIM>,
     ) -> Result<QuantumGeometryMap> {
+        self.validate()?;
         if k_points.ncols() != DIM {
             return Err(TbError::DimensionMismatch {
                 context: "quantum geometry k-points".into(),
@@ -195,6 +197,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// number of small-gap simplices encountered during band tracking.
     pub fn quantum_geometry(&self, params: &Parameters<DIM>) -> Result<QuantumGeometryResult> {
         params.validate_rank2()?;
+        self.validate()?;
         if params.integration == Integration::EnergyCut {
             return Err(TbError::InvalidResponseParameter {
                 parameter: "integration",

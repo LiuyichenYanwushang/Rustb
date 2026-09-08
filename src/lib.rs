@@ -4,8 +4,9 @@
 //!
 //! A Rust library for tight-binding model calculations in condensed matter physics.
 //! It supports model construction from both explicit hopping parameters and
-//! Slater-Koster integrals, band structure solving, topological analysis, and
-//! linear/nonlinear transport property calculations.
+//! Slater-Koster integrals, band structure solving, topological analysis,
+//! linear/nonlinear transport properties, Floquet driven systems, and optional
+//! crystallographic and magnetic-symmetry analysis.
 //!
 //! ## Module overview
 //!
@@ -37,6 +38,13 @@
 //! | [`solve_ham`] | Parallel diagonalization of H(k) over k-point meshes
 //! |   (`solve_all_parallel`, `solve_band_all_parallel`) |
 //! | [`ndarray_lapack`] | LAPACK bindings for ndarray matrices |
+//!
+//! ### Floquet driven systems
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`floquet`] | Floquet-Sambe Hamiltonians and quasienergies, together with
+//! |   same-size van Vleck effective models for coherent and mode-resolved drives |
 //!
 //! ### k-space sampling
 //!
@@ -88,6 +96,19 @@
 //! |--------|---------|
 //! | [`magnetic_field`] | Uniform magnetic field via Peierls substitution |
 //!
+//! ### Crystal and Hamiltonian symmetry
+//!
+//! The following modules are available with the `cryspglib` feature.
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | `crystal_symmetry` | Structural and magnetic space groups, high-symmetry
+//! |   k-points, character tables, and irreducible reciprocal meshes |
+//! | `hamiltonian_symmetry` | Localized orbital symmetry actions, exact
+//! |   Hamiltonian covariance checks, residual magnetic groups, and forced symmetrization |
+//! | `irrep_analysis` | Parallel high-symmetry band-character calculation and
+//! |   magnetic corepresentation identification (`Model::calculate_irrep`) |
+//!
 //! ### Output and I/O
 //!
 //! | Module | Purpose |
@@ -107,35 +128,35 @@
 //!
 //! The tight-binding Hamiltonian in second-quantized form:
 //!
-//! $$
+//! ```math
 //! H = \sum_{i,j} t_{ij} c_i^\dagger c_j + \sum_i \epsilon_i c_i^\dagger c_i
-//! $$
+//! ```
 //!
 //! where t_{ij} are hopping parameters and epsilon_i are on-site energies.
 //!
 //! The Bloch Hamiltonian at a given k-point is:
 //!
-//! $$
+//! ```math
 //! H_{mn}(\mathbf{k}) = \sum_{\mathbf{R}} H_{mn}(\mathbf{R})\, e^{i \mathbf{k} \cdot \mathbf{R}}
-//! $$
+//! ```
 //!
 //! where R runs over lattice vectors and H_{mn}(R) is the
 //! hopping matrix element from orbital n to orbital m.
 //!
 //! For transport, the Berry curvature is computed as:
 //!
-//! $$
+//! ```math
 //! \Omega_n(\mathbf{k}) = -2\,\operatorname{Im}\sum_{m\neq n}
 //! \frac{\bra{n}\partial_{k_x} H\ket{m}\bra{m}\partial_{k_y} H\ket{n}}
 //!      {(E_n - E_m)^2}
-//! $$
+//! ```
 //!
 //! and the anomalous Hall conductivity follows from the Brillouin-zone integral:
 //!
-//! $$
+//! ```math
 //! \sigma_{xy} = \frac{e^2}{\hbar} \int \frac{d^d k}{(2\pi)^d}\,
 //! \sum_n f_n(\mathbf{k})\, \Omega_n(\mathbf{k})
-//! $$
+//! ```
 //!
 //! ## Quick start
 //!
@@ -942,7 +963,9 @@ mod tests {
         let (k_vec, _k_dist, _k_node) = model.k_path(&path, nk).unwrap();
         let (_eval, _evec) = model.solve_all_parallel(&k_vec);
         let label = vec!["G", "K", "M", "K'", "G"];
-        model.show_band(&path, &label, nk, "tests/Haldan").unwrap();
+        model
+            .show_band(&path, &label, nk, "target/test-output/Haldan")
+            .unwrap();
         // --- Compute Hall conductivity ---
         let nk: usize = 31;
         let T: f64 = 0.0;
@@ -1011,7 +1034,7 @@ mod tests {
         axes.lines(&x, &y, &[Color("black")]);
         let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/Haldan");
+        pdf_name.push_str("target/test-output/Haldan");
         pdf_name.push_str("/hall_mu.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
@@ -1049,7 +1072,7 @@ mod tests {
         axes.lines(&x, &y, &[Color("black")]);
         let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/Haldan");
+        pdf_name.push_str("target/test-output/Haldan");
         pdf_name.push_str("/par_f.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
@@ -1075,7 +1098,7 @@ mod tests {
         );
         let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/Haldan");
+        pdf_name.push_str("target/test-output/Haldan");
         pdf_name.push_str("/omega_energy.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
@@ -1089,7 +1112,16 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
-        green.show_surf_state("tests/Haldan/surf", &path, &label, nk, E_min, E_max, E_n, 0);
+        green.show_surf_state(
+            "target/test-output/Haldan/surf",
+            &path,
+            &label,
+            nk,
+            E_min,
+            E_max,
+            E_n,
+            0,
+        );
 
         //-----算一下wilson loop 的结果-----------------------
         let dir_1 = arr1(&[1.0, 0.0]);
@@ -1151,7 +1183,7 @@ mod tests {
             ],
         );
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/Haldan/wcc.pdf");
+        pdf_name.push_str("target/test-output/Haldan/wcc.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
         //-----------用 berry_flux 算一下
@@ -1313,7 +1345,7 @@ mod tests {
         let (_eval, _evec) = model.solve_all_parallel(&k_vec);
         let label = vec!["G", "K", "M", "G"];
         model
-            .show_band(&path, &label, nk, "tests/graphene")
+            .show_band(&path, &label, nk, "target/test-output/graphene")
             .unwrap();
 
         // 开始计算两个本征态
@@ -1353,7 +1385,7 @@ mod tests {
         //let label=vec!["G","X","M","Y","G"];
         let label = vec!["G", "M", "G"];
         zig_model
-            .show_band(&path, &label, nk, "tests/graphene_zig")
+            .show_band(&path, &label, nk, "target/test-output/graphene_zig")
             .unwrap();
 
         //开始计算石墨烯的态密度
@@ -1371,7 +1403,7 @@ mod tests {
         axes.lines(&x, &y, &[Color("black")]);
         let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/graphene");
+        pdf_name.push_str("target/test-output/graphene");
         pdf_name.push_str("/dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
@@ -1407,7 +1439,7 @@ mod tests {
         axes.lines(&x, &y, &[Color("black")]);
         let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/graphene");
+        pdf_name.push_str("target/test-output/graphene");
         pdf_name.push_str("/nonlinear_ex.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
@@ -1481,7 +1513,9 @@ mod tests {
         let (k_vec, _k_dist, _k_node) = model.k_path(&path, nk).unwrap();
         let (_eval, _evec) = model.solve_all_parallel(&k_vec);
         let label = vec!["G", "K", "M", "K'", "G"];
-        model.show_band(&path, &label, nk, "tests/kane").unwrap();
+        model
+            .show_band(&path, &label, nk, "target/test-output/kane")
+            .unwrap();
         //开始计算超胞
 
         let super_model = model.cut_piece(50, 0).unwrap();
@@ -1489,7 +1523,7 @@ mod tests {
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
         super_model
-            .show_band(&path, &label, nk, "tests/kane_super")
+            .show_band(&path, &label, nk, "target/test-output/kane_super")
             .unwrap();
         //开始计算表面态
         let nk = 101;
@@ -1500,148 +1534,8 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
-        green.show_surf_state("tests/kane", &path, &label, nk, E_min, E_max, E_n, 0);
-
-        //-----算一下wilson loop 结果-----------------------
-        let n = 51;
-        let dir_1 = arr1(&[1.0, 0.0]);
-        let dir_2 = arr1(&[0.0, 1.0]);
-        let occ = vec![0, 1];
-        let wcc = model.wannier_centre(&occ, &array![0.0, 0.0], &dir_1, &dir_2, n, n);
-        let nocc = occ.len();
-        let mut fg = Figure::new();
-        let x: Vec<f64> = Array1::<f64>::linspace(0.0, 1.0, n).to_vec();
-        let axes = fg.axes2d();
-        for j in -1..2 {
-            for i in 0..nocc {
-                let a = wcc.row(i).to_owned() + (j as f64) * 2.0 * PI;
-                let y: Vec<f64> = a.to_vec();
-                axes.points(&x, &y, &[Color("black"), gnuplot::PointSymbol('O')]);
-            }
-        }
-        let axes = axes.set_x_range(Fix(0.0), Fix(1.0));
-        let axes = axes.set_y_range(Fix(0.0), Fix(2.0 * PI));
-        let show_ticks = vec![
-            Major(0.0, Fix("0")),
-            Major(0.5, Fix("π")),
-            Major(1.0, Fix("2π")),
-        ];
-        axes.set_x_ticks_custom(
-            show_ticks.into_iter(),
-            &[],
-            &[Font("Times New Roman", 32.0)],
-        );
-        let show_ticks = vec![
-            Major(0.0, Fix("0")),
-            Major(PI, Fix("π")),
-            Major(2.0 * PI, Fix("2π")),
-        ];
-        axes.set_y_ticks_custom(
-            show_ticks.into_iter(),
-            &[],
-            &[Font("Times New Roman", 32.0)],
-        );
-        axes.set_x_label(
-            "k_x",
-            &[Font("Times New Roman", 32.0), TextOffset(0.0, -0.5)],
-        );
-        axes.set_y_label(
-            "WCC",
-            &[
-                Font("Times New Roman", 32.0),
-                Rotate(90.0),
-                TextOffset(-1.0, 0.0),
-            ],
-        );
-        let mut pdf_name = String::new();
-        pdf_name.push_str("tests/kane/wcc.pdf");
-        fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show().expect("failed to draw gnuplot figure");
-
-        // --- Compute Hall conductivity ---
-        let nk: usize = 31;
-        let T: f64 = 0.0;
-        let eta: f64 = 0.001;
-        let _og: f64 = 0.0;
-        let mu: f64 = 0.0;
-        //let dir_1=arr1(&[3.0_f64.sqrt()/2.0,-0.5]);
-        let dir_1 = arr1(&[1.0, 0.0]);
-        let dir_2 = arr1(&[0.0, 1.0]);
-        let spin = Some(SpinDirection::Z);
-        let kmesh = arr1(&[nk, nk]);
-        let start = Instant::now(); // 开始计时
-        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
-        let end = Instant::now(); // 结束计时
-        let duration = end.duration_since(start); // 计算执行时间
-        println!("{}", conductivity * (2.0 * PI));
-        println!("function_a took {} seconds", duration.as_secs_f64()); // 输出执行时间
-        let nk: usize = 21;
-        let kmesh = arr1(&[nk, nk]);
-        let start = Instant::now(); // 开始计时
-        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
-        let end = Instant::now(); // 结束计时
-        let duration = end.duration_since(start); // 计算执行时间
-        println!("{}", conductivity * (2.0 * PI));
-        println!("function_a took {} seconds", duration.as_secs_f64()); // 输出执行时间
-
-        let (E0, dos) = model.dos(&kmesh, E_min, E_max, E_n, 1e-2).unwrap();
-        //开始绘制dos
-        let mut fg = Figure::new();
-        let x: Vec<f64> = E0.to_vec();
-        let axes = fg.axes2d();
-        let y: Vec<f64> = dos.to_vec();
-        axes.lines(&x, &y, &[Color("black")]);
-        let _show_ticks = Vec::<String>::new();
-        let mut pdf_name = String::new();
-        pdf_name.push_str("tests/kane");
-        pdf_name.push_str("/dos.pdf");
-        fg.set_terminal("pdfcairo", &pdf_name);
-        fg.show().expect("failed to draw gnuplot figure");
-        //绘制非线性霍尔电导的平面图
-
-        //画一下贝利曲率的分布
-        let nk: usize = 31;
-        let kmesh = arr1(&[nk, nk]);
-        let kvec = gen_kmesh(&kmesh).unwrap();
-        //let kvec=kvec-0.5;
-        let kvec = kvec * 2.0;
-        let kvec = model.lat.dot(&(kvec.reversed_axes()));
-        let kvec = kvec.reversed_axes();
-        let berry_curv = occupied_berry_curvature(
-            &model,
-            &kvec,
-            &dir_1,
-            &dir_2,
-            0.0,
-            T,
-            Some(SpinDirection::X),
-            1e-3,
-        );
-        let data = berry_curv.to_shape((nk, nk)).unwrap();
-        draw_heatmap(
-            &(-data).map(|x| (x + 1.0).log(10.0)),
-            "./tests/kane/berry_curvature_distribution.pdf",
-        );
-
-        //开始考虑磁场, 加入磁性
-        let B = 0.1 + 0.0 * li;
-        let tha = 0.0 / 180.0 * PI;
-
-        model.add_hop(B * tha.cos(), 0, 0, &array![0, 0], SpinDirection::X);
-        model.add_hop(B * tha.cos(), 1, 1, &array![0, 0], SpinDirection::X);
-        model.add_hop(B * tha.sin(), 0, 0, &array![0, 0], SpinDirection::Y);
-        model.add_hop(B * tha.sin(), 1, 1, &array![0, 0], SpinDirection::Y);
-        //考虑添加onsite 项破坏空间反演和mirror
-
-        let green = SurfGreen::from_Model(&model, 0, 1e-3, None).unwrap();
-        let E_min = -1.0;
-        let E_max = 1.0;
-        let E_n = nk;
-        let path = [[0.0], [0.5], [1.0]];
-        let path = arr2(&path);
-        let label = vec!["G", "M", "G"];
         green.show_surf_state(
-            "tests/kane/magnetic",
+            "target/test-output/kane",
             &path,
             &label,
             nk,
@@ -1703,7 +1597,156 @@ mod tests {
             ],
         );
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/kane/magnetic/wcc.pdf");
+        pdf_name.push_str("target/test-output/kane/wcc.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show().expect("failed to draw gnuplot figure");
+
+        // --- Compute Hall conductivity ---
+        let nk: usize = 31;
+        let T: f64 = 0.0;
+        let eta: f64 = 0.001;
+        let _og: f64 = 0.0;
+        let mu: f64 = 0.0;
+        //let dir_1=arr1(&[3.0_f64.sqrt()/2.0,-0.5]);
+        let dir_1 = arr1(&[1.0, 0.0]);
+        let dir_2 = arr1(&[0.0, 1.0]);
+        let spin = Some(SpinDirection::Z);
+        let kmesh = arr1(&[nk, nk]);
+        let start = Instant::now(); // 开始计时
+        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
+        let end = Instant::now(); // 结束计时
+        let duration = end.duration_since(start); // 计算执行时间
+        println!("{}", conductivity * (2.0 * PI));
+        println!("function_a took {} seconds", duration.as_secs_f64()); // 输出执行时间
+        let nk: usize = 21;
+        let kmesh = arr1(&[nk, nk]);
+        let start = Instant::now(); // 开始计时
+        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
+        let end = Instant::now(); // 结束计时
+        let duration = end.duration_since(start); // 计算执行时间
+        println!("{}", conductivity * (2.0 * PI));
+        println!("function_a took {} seconds", duration.as_secs_f64()); // 输出执行时间
+
+        let (E0, dos) = model.dos(&kmesh, E_min, E_max, E_n, 1e-2).unwrap();
+        //开始绘制dos
+        let mut fg = Figure::new();
+        let x: Vec<f64> = E0.to_vec();
+        let axes = fg.axes2d();
+        let y: Vec<f64> = dos.to_vec();
+        axes.lines(&x, &y, &[Color("black")]);
+        let _show_ticks = Vec::<String>::new();
+        let mut pdf_name = String::new();
+        pdf_name.push_str("target/test-output/kane");
+        pdf_name.push_str("/dos.pdf");
+        fg.set_terminal("pdfcairo", &pdf_name);
+        fg.show().expect("failed to draw gnuplot figure");
+        //绘制非线性霍尔电导的平面图
+
+        //画一下贝利曲率的分布
+        let nk: usize = 31;
+        let kmesh = arr1(&[nk, nk]);
+        let kvec = gen_kmesh(&kmesh).unwrap();
+        //let kvec=kvec-0.5;
+        let kvec = kvec * 2.0;
+        let kvec = model.lat.dot(&(kvec.reversed_axes()));
+        let kvec = kvec.reversed_axes();
+        let berry_curv = occupied_berry_curvature(
+            &model,
+            &kvec,
+            &dir_1,
+            &dir_2,
+            0.0,
+            T,
+            Some(SpinDirection::X),
+            1e-3,
+        );
+        let data = berry_curv.to_shape((nk, nk)).unwrap();
+        draw_heatmap(
+            &(-data).map(|x| (x + 1.0).log(10.0)),
+            "target/test-output/kane/berry_curvature_distribution.pdf",
+        );
+
+        //开始考虑磁场, 加入磁性
+        let B = 0.1 + 0.0 * li;
+        let tha = 0.0 / 180.0 * PI;
+
+        model.add_hop(B * tha.cos(), 0, 0, &array![0, 0], SpinDirection::X);
+        model.add_hop(B * tha.cos(), 1, 1, &array![0, 0], SpinDirection::X);
+        model.add_hop(B * tha.sin(), 0, 0, &array![0, 0], SpinDirection::Y);
+        model.add_hop(B * tha.sin(), 1, 1, &array![0, 0], SpinDirection::Y);
+        //考虑添加onsite 项破坏空间反演和mirror
+
+        let green = SurfGreen::from_Model(&model, 0, 1e-3, None).unwrap();
+        let E_min = -1.0;
+        let E_max = 1.0;
+        let E_n = nk;
+        let path = [[0.0], [0.5], [1.0]];
+        let path = arr2(&path);
+        let label = vec!["G", "M", "G"];
+        green.show_surf_state(
+            "target/test-output/kane/magnetic",
+            &path,
+            &label,
+            nk,
+            E_min,
+            E_max,
+            E_n,
+            0,
+        );
+
+        //-----算一下wilson loop 结果-----------------------
+        let n = 51;
+        let dir_1 = arr1(&[1.0, 0.0]);
+        let dir_2 = arr1(&[0.0, 1.0]);
+        let occ = vec![0, 1];
+        let wcc = model.wannier_centre(&occ, &array![0.0, 0.0], &dir_1, &dir_2, n, n);
+        let nocc = occ.len();
+        let mut fg = Figure::new();
+        let x: Vec<f64> = Array1::<f64>::linspace(0.0, 1.0, n).to_vec();
+        let axes = fg.axes2d();
+        for j in -1..2 {
+            for i in 0..nocc {
+                let a = wcc.row(i).to_owned() + (j as f64) * 2.0 * PI;
+                let y: Vec<f64> = a.to_vec();
+                axes.points(&x, &y, &[Color("black"), gnuplot::PointSymbol('O')]);
+            }
+        }
+        let axes = axes.set_x_range(Fix(0.0), Fix(1.0));
+        let axes = axes.set_y_range(Fix(0.0), Fix(2.0 * PI));
+        let show_ticks = vec![
+            Major(0.0, Fix("0")),
+            Major(0.5, Fix("π")),
+            Major(1.0, Fix("2π")),
+        ];
+        axes.set_x_ticks_custom(
+            show_ticks.into_iter(),
+            &[],
+            &[Font("Times New Roman", 32.0)],
+        );
+        let show_ticks = vec![
+            Major(0.0, Fix("0")),
+            Major(PI, Fix("π")),
+            Major(2.0 * PI, Fix("2π")),
+        ];
+        axes.set_y_ticks_custom(
+            show_ticks.into_iter(),
+            &[],
+            &[Font("Times New Roman", 32.0)],
+        );
+        axes.set_x_label(
+            "k_x",
+            &[Font("Times New Roman", 32.0), TextOffset(0.0, -0.5)],
+        );
+        axes.set_y_label(
+            "WCC",
+            &[
+                Font("Times New Roman", 32.0),
+                Rotate(90.0),
+                TextOffset(-1.0, 0.0),
+            ],
+        );
+        let mut pdf_name = String::new();
+        pdf_name.push_str("target/test-output/kane/magnetic/wcc.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
 
@@ -1740,10 +1783,11 @@ mod tests {
         let show_str = new_model.atom_position().dot(&model.lat);
         let show_str = show_str.slice(s![.., 0..2]).to_owned();
         let _show_size = size.row(new_model.norb()).to_owned();
-        create_dir_all("tests/kane/magnetic").expect("can't creat the file");
-        write_txt_1(band, "tests/kane/magnetic/band.txt").expect("write_txt failed");
-        write_txt(size, "tests/kane/magnetic/evec.txt").expect("write_txt failed");
-        write_txt(show_str, "tests/kane/magnetic/structure.txt").expect("write_txt failed");
+        create_dir_all("target/test-output/kane/magnetic").expect("can't creat the file");
+        write_txt_1(band, "target/test-output/kane/magnetic/band.txt").expect("write_txt failed");
+        write_txt(size, "target/test-output/kane/magnetic/evec.txt").expect("write_txt failed");
+        write_txt(show_str, "target/test-output/kane/magnetic/structure.txt")
+            .expect("write_txt failed");
         //开始绘制角态
     }
 
@@ -1798,7 +1842,7 @@ mod tests {
         let label = vec!["G", "K", "M", "G", "K", "H", "G", "A", "H", "L", "A"];
         let nk = 101;
         model
-            .show_band(&path, &label, nk, "tests/Enonlinear")
+            .show_band(&path, &label, nk, "target/test-output/Enonlinear")
             .unwrap();
 
         //开始计算非线性霍尔电导
@@ -1839,7 +1883,7 @@ mod tests {
         axes.set_x_range(Fix(E_min), Fix(E_max));
         let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/Enonlinear");
+        pdf_name.push_str("target/test-output/Enonlinear");
         pdf_name.push_str("/nonlinear_ex.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
@@ -1865,7 +1909,7 @@ mod tests {
         axes.set_x_range(Fix(E_min), Fix(E_max));
         let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/Enonlinear");
+        pdf_name.push_str("target/test-output/Enonlinear");
         pdf_name.push_str("/nonlinear_in.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
@@ -1879,7 +1923,7 @@ mod tests {
         axes.lines(&x, &y, &[Color("black")]);
         let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/Enonlinear");
+        pdf_name.push_str("target/test-output/Enonlinear");
         pdf_name.push_str("/dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
@@ -1903,7 +1947,9 @@ mod tests {
         let path = [[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.], [0.0, 0.0]];
         let path = arr2(&path);
         let label = vec!["G", "K", "M", "G"];
-        model.show_band(&path, &label, nk, "tests/kagome/").unwrap();
+        model
+            .show_band(&path, &label, nk, "target/test-output/kagome/")
+            .unwrap();
         //start to draw the band structure
         //Starting to calculate the edge state, first is the zigzag state
         let nk: usize = 101;
@@ -1916,7 +1962,7 @@ mod tests {
         let (_eval, _evec) = super_model.solve_all_parallel(&k_vec);
         let label = vec!["G", "M", "G"];
         zig_model
-            .show_band(&path, &label, nk, "tests/kagome_zig/")
+            .show_band(&path, &label, nk, "target/test-output/kagome_zig/")
             .unwrap();
 
         let green = SurfGreen::from_Model(&super_model, 0, 1e-3, None).unwrap();
@@ -1926,7 +1972,16 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
-        green.show_surf_state("tests/kagome_zig", &path, &label, nk, E_min, E_max, E_n, 0);
+        green.show_surf_state(
+            "target/test-output/kagome_zig",
+            &path,
+            &label,
+            nk,
+            E_min,
+            E_max,
+            E_n,
+            0,
+        );
 
         //Starting to calculate the DOS of kagome
         let nk: usize = 51;
@@ -1943,7 +1998,7 @@ mod tests {
         axes.lines(&x, &y, &[Color("black")]);
         let _show_ticks = Vec::<String>::new();
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/kagome/");
+        pdf_name.push_str("target/test-output/kagome/");
         pdf_name.push_str("dos.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
@@ -1966,7 +2021,9 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
-        model.show_band(&path, &label, nk, "tests/SSH/").unwrap();
+        model
+            .show_band(&path, &label, nk, "target/test-output/SSH/")
+            .unwrap();
         let super_model = model.cut_piece(5, 0).unwrap();
 
         let (band, _evec) = super_model.solve_onek(&array![0.0]);
@@ -2000,8 +2057,12 @@ mod tests {
         let path = [[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.0]];
         let path = arr2(&path);
         let label = vec!["G", "X", "M", "G"];
-        model.show_band(&path, &label, nk, "tests/BBH/").unwrap();
-        model.output_hr("tests/BBH/", "wannier90").unwrap();
+        model
+            .show_band(&path, &label, nk, "target/test-output/BBH/")
+            .unwrap();
+        model
+            .output_hr("target/test-output/BBH/", "wannier90")
+            .unwrap();
 
         //算一下wilson loop
         let n = 51;
@@ -2035,7 +2096,7 @@ mod tests {
         ];
         axes.set_y_ticks_custom(show_ticks.into_iter(), &[], &[]);
         let mut pdf_name = String::new();
-        pdf_name.push_str("tests/BBH/wcc.pdf");
+        pdf_name.push_str("target/test-output/BBH/wcc.pdf");
         fg.set_terminal("pdfcairo", &pdf_name);
         fg.show().expect("failed to draw gnuplot figure");
         //算一下边界态
@@ -2046,7 +2107,16 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "X", "G"];
-        green.show_surf_state("tests/BBH", &path, &label, nk, E_min, E_max, E_n, 0);
+        green.show_surf_state(
+            "target/test-output/BBH",
+            &path,
+            &label,
+            nk,
+            E_min,
+            E_max,
+            E_n,
+            0,
+        );
 
         //算一下corner state
         let num = 10;
@@ -2068,10 +2138,11 @@ mod tests {
         let _norb = new_model.norb();
         let size = show_evec;
         let show_str = new_model.atom_position().dot(&model.lat);
-        create_dir_all("tests/BBH/corner").expect("can't creat the file");
-        write_txt_1(band, "tests/BBH/corner/band.txt").expect("write_txt failed");
-        write_txt(size, "tests/BBH/corner/evec.txt").expect("write_txt failed");
-        write_txt(show_str, "tests/BBH/corner/structure.txt").expect("write_txt failed");
+        create_dir_all("target/test-output/BBH/corner").expect("can't creat the file");
+        write_txt_1(band, "target/test-output/BBH/corner/band.txt").expect("write_txt failed");
+        write_txt(size, "target/test-output/BBH/corner/evec.txt").expect("write_txt failed");
+        write_txt(show_str, "target/test-output/BBH/corner/structure.txt")
+            .expect("write_txt failed");
     }
 
     #[test]
@@ -2113,7 +2184,7 @@ mod tests {
 
         // 4. 绘制折叠态下的超胞能带 (Hofstadter 蝴蝶状能带切片)
         magnetic_model
-            .show_band(&path, &label, nk, "tests/graphene_magnetic")
+            .show_band(&path, &label, nk, "target/test-output/graphene_magnetic")
             .unwrap();
 
         // 5. 展开能带 (Unfold) 回到原胞 Brillouin 区
@@ -2128,7 +2199,7 @@ mod tests {
         // (假定 draw_heatmap 接收二维热力矩阵以及保存路径)
         draw_heatmap(
             &a_spectral.reversed_axes(),
-            "./tests/graphene_magnetic/unfold_band.pdf",
+            "target/test-output/graphene_magnetic/unfold_band.pdf",
         );
     }
 
@@ -2222,7 +2293,7 @@ mod tests {
         );
 
         // 将图像渲染为 PDF
-        fg.set_terminal("pdfcairo", "tests/hofstadter_butterfly.pdf");
+        fg.set_terminal("pdfcairo", "target/test-output/hofstadter_butterfly.pdf");
         fg.show().expect("Gnuplot 画图失败");
 
         println!("完美！图像已保存至 tests/hofstadter_butterfly.pdf");
@@ -2242,7 +2313,7 @@ mod tests {
         // E_F = 0.1 slightly above Dirac point → small Fermi pockets around K, K'
         let k_mesh = arr1(&[100, 100]);
         model
-            .show_fermi_surface(&k_mesh, 0.1, "tests/graphene")
+            .show_fermi_surface(&k_mesh, 0.1, "target/test-output/graphene")
             .expect("Fermi surface plot failed");
         println!("Graphene Fermi surface saved to tests/graphene/fermi_surface.pdf");
     }
@@ -2264,7 +2335,7 @@ mod tests {
         // E_F = -1.0 (flat band) — should show a Fermi surface contour
         let k_mesh = arr1(&[80, 80]);
         model
-            .show_fermi_surface(&k_mesh, -1.0, "tests/kagome")
+            .show_fermi_surface(&k_mesh, -1.0, "target/test-output/kagome")
             .expect("Fermi surface plot failed");
         println!("Kagome Fermi surface saved to tests/kagome/fermi_surface.pdf");
     }

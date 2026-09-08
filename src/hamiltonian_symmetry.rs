@@ -3,10 +3,10 @@
 //! Structural symmetry and Hamiltonian symmetry are different statements.  A
 //! structure supplies candidate Seitz operations
 //!
-//! $$
+//! ```math
 //! g = \{W\mid\mathbf w\}\mathcal T^\theta,
 //! \qquad \theta\in\{0,1\},
-//! $$
+//! ```
 //!
 //! while the tight-binding basis must additionally supply a representation of
 //! every candidate operation.  In a localized basis, that representation is
@@ -2253,7 +2253,7 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// The structure is analyzed from [`crate::Atom`] positions first. A
     /// model without atoms is rejected even if it has orbital centers. For
     /// every field-allowed candidate
-    /// $g=\{W|\mathbf w\}\mathcal T^\theta$, `representation` supplies the
+    /// $g=\lbrace W|\mathbf w\rbrace\mathcal T^\theta$, `representation` supplies the
     /// localized action
     ///
     /// $$

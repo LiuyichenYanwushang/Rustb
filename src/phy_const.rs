@@ -15,4 +15,14 @@ pub const mass_charge: f64 = 9.10938215e-31;
 /// Bohr magneton $\mu_B = e\hbar/(2m_e)$, in J/T.
 pub const mu_B: f64 = Element_charge * hbar / mass_charge / 2.0;
 /// Magnetic flux quantum $\Phi_0 = h/(2e)$, in $\text{T}\cdot\text{m}^2$.
-pub const phy_0: f64 = hbar / Element_charge;
+pub const phy_0: f64 = std::f64::consts::PI * hbar / Element_charge;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn superconducting_flux_quantum_has_si_magnitude() {
+        // h/(2e) ~= 2.067833848e-15 Wb. Existing constants use older CODATA
+        // values, so this checks the physical scale without redefining them.
+        assert!((super::phy_0 / 2.067833848e-15 - 1.0).abs() < 1e-6);
+    }
+}

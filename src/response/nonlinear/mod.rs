@@ -2,22 +2,26 @@
 //!
 //! ## Extrinsic NLH — Berry curvature dipole (BCD)
 //!
-//! $$\chi^{\rm ext}_{abc}(\mu,T) =
+//! ```math
+//! \chi^{\rm ext}_{abc}(\mu,T) =
 //!   \sum_n \int_{\rm BZ} \left(-\frac{\partial f}{\partial E_n}\right)
-//!   v^c_n(\mathbf{k})\Omega^{ab}_n(\mathbf{k})d\mathbf{k}$$
+//!   v^c_n(\mathbf{k})\Omega^{ab}_n(\mathbf{k})\,d\mathbf{k}
+//! ```
 //!
-//! The BCD is **TR‑even** ($D_{TR}=D$) — survives in TR‑symmetric, P‑broken systems.
+//! The BCD is **TR‑even** ($D\_{TR}=D$) — survives in TR‑symmetric, P‑broken systems.
 //! Under time reversal: $v^c\to -v^c$, $\Omega^{ab}\to -\Omega^{ab}$, so the
 //! product $v^c\Omega^{ab}$ is invariant.
 //!
 //! ## Intrinsic NLH — Berry connection dipole
 //!
-//! $$\sigma^{ab;c}_{\rm int}(\mu,T) = -\frac{e^3}{\hbar}
+//! ```math
+//! \sigma^{ab;c}_{\rm int}(\mu,T) = -\frac{e^3}{\hbar}
 //!   \sum_n \int_{\rm BZ} (-\partial f/\partial E_n)
-//!   \bigl[2v^c_n G^{ab}_n - \tfrac12(v^a_n G^{bc}_n + v^b_n G^{ac}_n)\bigr]d\mathbf{k}$$
+//!   \bigl[2v^c_n G^{ab}_n - \tfrac12(v^a_n G^{bc}_n + v^b_n G^{ac}_n)\bigr]\,d\mathbf{k}
+//! ```
 //!
-//! where $G^{ij}_n = \operatorname{Re}\sum_{m\ne n} K^{ij}_{nm} / (E_n-E_m)^3$.
-//! The intrinsic NLH is **TR‑odd** ($\sigma_{TR}=-\sigma$) — requires both
+//! where $G^{ij}\_n = \operatorname{Re}\sum\_{m\ne n} K^{ij}\_{nm} / (E\_n-E\_m)^3$.
+//! The intrinsic NLH is **TR‑odd** ($\sigma\_{TR}=-\sigma$) — requires both
 //! $\mathcal P$ and $\mathcal T$ breaking.
 //!
 //! ## API
@@ -25,7 +29,7 @@
 //! | Method | Path | Formula |
 //! |--------|------|---------|
 //! | `extrinsic_nonlinear_hall` | direct sum or energy cut | $\chi^{\rm ext}$ |
-//! | `intrinsic_nonlinear_hall` | direct sum or energy cut | $\sigma_{\rm int}$ |
+//! | `intrinsic_nonlinear_hall` | direct sum or energy cut | $\sigma\_{\rm int}$ |
 
 use ndarray::prelude::*;
 use ndarray_linalg::*;
@@ -46,6 +50,7 @@ use super::config::{
 };
 use super::energy_cut::integrate_dipole_energy_cut_2d;
 use super::helpers::build_spin_matrix;
+use super::kernel::intrinsic_inverse_gap;
 use super::tracking::global_band_track;
 use super::types::VertexKernel;
 
@@ -86,6 +91,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// `(omega_n, band)` where `omega_n` contains $\partial_\gamma\varepsilon_n \Omega_{n,\alpha\beta}$
     /// for each band, and `band` contains the band energies.
+    #[cfg(test)]
     pub(crate) fn berry_curvature_dipole_n_onek(
         &self,
         k_vec: &Array1<f64>,
@@ -180,6 +186,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// `(omega, band)` where `omega` has shape `(nk, nsta)` containing
     /// $\partial_\gamma\varepsilon_n \Omega_{n,\alpha\beta}$ for each k-point and band,
     /// and `band` has the band energies with the same shape.
+    #[cfg(test)]
     pub(crate) fn berry_curvature_dipole_n(
         &self,
         k_vec: &Array2<f64>,
@@ -258,6 +265,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         params: &Parameters<DIM>,
     ) -> Result<NonlinearHallResult> {
         params.validate_rank3()?;
+        self.validate()?;
         validate_broadening(params.eta)?;
         let spin = params.spin;
         if !SPIN && let Some(direction) = spin {
@@ -281,105 +289,126 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let current = params.direction.row(0).to_owned();
         let field_1 = params.direction.row(1).to_owned();
         let field_2 = params.direction.row(2).to_owned();
-        let (first, first_diagnostics) =
-            self.extrinsic_nonlinear_hall_component(params, &current, &field_1, &field_2, spin)?;
-        let (conductivity, diagnostics) = if params.field_symmetry == FieldSymmetry::Symmetrized
-            && field_1 != field_2
-        {
-            let (second, second_diagnostics) = self
-                .extrinsic_nonlinear_hall_component(params, &current, &field_2, &field_1, spin)?;
-            let diagnostics = match (first_diagnostics, second_diagnostics) {
-                (Some(a), Some(b)) => Some(IntegrationDiagnostics {
-                    unsafe_simplex_count: a.unsafe_simplex_count.max(b.unsafe_simplex_count),
+        let k_mesh = mesh_array(&params.kmesh);
+        let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
+        let width = parameters_occupation(params).energy_width()?;
+        if params.integration == Integration::Direct && width == 0.0 {
+            return Err(TbError::InvalidThermodynamicParameter {
+                parameter: "T",
+                message: "direct nonlinear Hall integration requires a finite temperature".into(),
+            });
+        }
+        let determinant = self.lat.det()?;
+        let symmetrized = params.field_symmetry == FieldSymmetry::Symmetrized && field_1 != field_2;
+        let compute = |k: ArrayView1<'_, f64>| {
+            self.compute_velocity_kernel(
+                &k.to_owned(),
+                &current,
+                &field_1,
+                Some(&field_2),
+                Gauge::Atom,
+                spin,
+            )
+        };
+        if params.integration == Integration::Direct {
+            // Reduce each point immediately: direct integration retains only
+            // band energies and one averaged kernel, not all dense matrices.
+            let data: Vec<Result<_>> = k_points
+                .outer_iter()
+                .into_par_iter()
+                .map(|k| {
+                    let vertex = compute(k)?;
+                    let evaluate = |kernel, diagonal| {
+                        let kernel: &Array2<Complex<f64>> = kernel;
+                        // Preserve the direct extrinsic denominator, including
+                        // finite gaps below the simplex Berry-kernel cutoff.
+                        let berry = Array1::from_shape_fn(self.nsta(), |n| {
+                            -2.0 * (0..self.nsta())
+                                .filter(|&m| m != n)
+                                .map(|m| {
+                                    let gap = vertex.band[n] - vertex.band[m];
+                                    kernel[[n, m]] / (gap * gap + params.eta * params.eta)
+                                })
+                                .sum::<Complex<f64>>()
+                                .im
+                        });
+                        berry * diagonal
+                    };
+                    let first = evaluate(&vertex.k_ab, vertex.vdiag.as_ref().unwrap());
+                    let values = if symmetrized {
+                        (first
+                            + evaluate(
+                                vertex.k_ac.as_ref().unwrap(),
+                                vertex.vdiag_b.as_ref().unwrap(),
+                            ))
+                            * 0.5
+                    } else {
+                        first
+                    };
+                    Ok((vertex.band, values))
+                })
+                .collect();
+            let data = data.into_iter().collect::<Result<Vec<_>>>()?;
+            let values: Vec<f64> = params
+                .mu
+                .par_iter()
+                .map(|&mu| {
+                    data.iter()
+                        .flat_map(|(band, kernel)| {
+                            kernel.iter().zip(band).map(move |(&value, &energy)| {
+                                value * fermi_derivative_from_width(energy, mu, width)
+                            })
+                        })
+                        .sum::<f64>()
+                        / data.len() as f64
+                        / determinant
+                })
+                .collect();
+            return Ok(NonlinearHallResult {
+                chemical_potentials: params.mu.clone(),
+                conductivity: Array1::from_vec(values),
+                diagnostics: None,
+            });
+        }
+        let vertices: Vec<Result<_>> = k_points.outer_iter().into_par_iter().map(compute).collect();
+        let mut vertices = vertices.into_iter().collect::<Result<Vec<_>>>()?;
+        global_band_track(&mut vertices, &params.kmesh);
+        // Public owned arrays can still be strided. Energy-cut kernels use
+        // packed slices, so normalize the chemical-potential grid once.
+        let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
+        let integrate = |vertices: &[VertexKernel]| {
+            let (conductivity, unsafe_simplex_count) = integrate_dipole_energy_cut_2d(
+                vertices,
+                &k_mesh,
+                &chemical_potentials,
+                width,
+                params.eta,
+            );
+            (
+                conductivity / determinant,
+                Some(IntegrationDiagnostics {
+                    unsafe_simplex_count,
                 }),
-                (a, b) => a.or(b),
-            };
-            ((first + second) * 0.5, diagnostics)
+            )
+        };
+        let (first, diagnostics) = integrate(&vertices);
+        let conductivity = if symmetrized {
+            // The same eigenbasis already contains K^{ac} and v^b. Exchange
+            // only the two consumed kernels, preserving the tracked band order.
+            for vertex in &mut vertices {
+                std::mem::swap(&mut vertex.k_ab, vertex.k_ac.as_mut().unwrap());
+                std::mem::swap(&mut vertex.vdiag, &mut vertex.vdiag_b);
+            }
+            let (second, _) = integrate(&vertices);
+            (first + second) * 0.5
         } else {
-            (first, first_diagnostics)
+            first
         };
         Ok(NonlinearHallResult {
             chemical_potentials: params.mu.clone(),
             conductivity,
             diagnostics,
         })
-    }
-
-    fn extrinsic_nonlinear_hall_component(
-        &self,
-        params: &Parameters<DIM>,
-        current: &Array1<f64>,
-        field_1: &Array1<f64>,
-        field_2: &Array1<f64>,
-        spin: Option<SpinDirection>,
-    ) -> Result<(Array1<f64>, Option<IntegrationDiagnostics>)> {
-        let k_mesh = mesh_array(&params.kmesh);
-        let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
-        let width = parameters_occupation(params).energy_width()?;
-        let determinant = self.lat.det()?;
-        match params.integration {
-            Integration::Direct => {
-                if width == 0.0 {
-                    return Err(TbError::InvalidThermodynamicParameter {
-                        parameter: "T",
-                        message: "direct nonlinear Hall integration requires a finite temperature"
-                            .into(),
-                    });
-                }
-                let (kernel, energies) = self.berry_curvature_dipole_n(
-                    &k_points, current, field_1, field_2, spin, params.eta,
-                )?;
-                let values: Vec<f64> = params
-                    .mu
-                    .par_iter()
-                    .map(|&mu| {
-                        kernel
-                            .iter()
-                            .zip(&energies)
-                            .map(|(&value, &energy)| {
-                                value * fermi_derivative_from_width(energy, mu, width)
-                            })
-                            .sum::<f64>()
-                            / k_points.nrows() as f64
-                            / determinant
-                    })
-                    .collect();
-                Ok((Array1::from_vec(values), None))
-            }
-            Integration::EnergyCut => {
-                let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
-                let vertices: Vec<Result<VertexKernel>> = (0..k_points.nrows())
-                    .into_par_iter()
-                    .map(|index| {
-                        self.compute_velocity_kernel(
-                            &k_points.row(index).to_owned(),
-                            current,
-                            field_1,
-                            Some(field_2),
-                            Gauge::Atom,
-                            spin,
-                        )
-                    })
-                    .collect();
-                let mut vertices: Vec<VertexKernel> =
-                    vertices.into_iter().collect::<Result<_>>()?;
-                global_band_track(&mut vertices, &params.kmesh);
-                let (conductivity, unsafe_simplex_count) = integrate_dipole_energy_cut_2d(
-                    &vertices,
-                    &k_mesh,
-                    &chemical_potentials,
-                    width,
-                    params.eta,
-                );
-                Ok((
-                    conductivity / determinant,
-                    Some(IntegrationDiagnostics {
-                        unsafe_simplex_count,
-                    }),
-                ))
-            }
-            Integration::Simplex => unreachable!("rejected during validation"),
-        }
     }
 
     /// Computes the Berry connection dipole at a single k-point.
@@ -466,11 +495,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut U0 = Array2::<f64>::zeros((self.nsta(), self.nsta()));
         for i in 0..self.nsta() {
             for j in 0..self.nsta() {
-                if (band[[i]] - band[[j]]).abs() < 1e-5 {
-                    U0[[i, j]] = 0.0;
-                } else {
-                    U0[[i, j]] = 1.0 / (band[[i]] - band[[j]]);
-                }
+                U0[[i, j]] = intrinsic_inverse_gap(band[[i]] - band[[j]]);
             }
         }
 
@@ -648,8 +673,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Evaluate current-first intrinsic nonlinear Hall conductivity.
     ///
     /// Reads `kmesh`, `direction` (rank 3), `mu` and `T` from the parameter
-    /// set; `eta`, `omega`, `spin` and `field_symmetry` are ignored. The
-    /// response is charge-current only. Direct integration requires a finite
+    /// set; `eta`, `omega` and `field_symmetry` are ignored. The response is
+    /// charge-current only; a requested `spin` returns an error. Both paths omit
+    /// interband gaps at or below `1e-10` eV. Direct integration requires a finite
     /// thermal width. Energy-cut mode evaluates the zero-temperature Fermi
     /// surface exactly within the simplex interpolation and also accepts
     /// finite thermal widths.
@@ -658,10 +684,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         params: &Parameters<DIM>,
     ) -> Result<NonlinearHallResult> {
         params.validate_rank3()?;
+        self.validate()?;
         if params.spin.is_some() {
-            eprintln!(
-                "Warning: intrinsic_nonlinear_hall is charge-only; the requested spin direction is ignored."
-            );
+            return Err(TbError::InvalidResponseParameter {
+                parameter: "spin",
+                message: "intrinsic_nonlinear_hall currently supports charge current only".into(),
+            });
         }
         if params.integration == Integration::Simplex {
             return Err(TbError::InvalidResponseParameter {

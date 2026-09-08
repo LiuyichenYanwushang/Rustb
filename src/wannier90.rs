@@ -1,4 +1,3 @@
-#[cfg_attr(doc, katexit::katexit)]
 use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
 use crate::error::{Result, TbError};
 use crate::{HasRMatrix, Model, RMatrixData, find_R};

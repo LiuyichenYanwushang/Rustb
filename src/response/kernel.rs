@@ -30,6 +30,20 @@ use super::types::TrackedSimplex;
 
 // ── Fermi functions ─────────────────────────────────────────────────────
 
+// Shared hard cutoff for the isolated-band intrinsic response. This is an
+// energy-gap tolerance in eV, not lifetime broadening. Both integration paths
+// omit these terms; degenerate subspaces require a separate prescription.
+pub(crate) const INTRINSIC_GAP_TOL: f64 = 1e-10;
+
+#[inline]
+pub(crate) fn intrinsic_inverse_gap(gap: f64) -> f64 {
+    if gap.abs() <= INTRINSIC_GAP_TOL {
+        0.0
+    } else {
+        1.0 / gap
+    }
+}
+
 #[inline]
 pub(crate) fn fermi(e: f64, mu: f64, thermal_width: f64) -> f64 {
     fermi_from_width(e, mu, thermal_width)
@@ -82,7 +96,7 @@ pub(crate) fn eval_berry_kernel(
 /// Evaluate $\Omega_n$ for a single band at one quadrature point.
 ///
 /// Interpolates $E_m(q)$ and $K_{nm}(q)$ at barycentric coords `lam`,
-/// then computes $\Omega_n = -2\,\mathrm{Im}\sum_{m\ne n} K_{nm}/(\Delta_{nm}^2+\eta^2)$.
+/// then computes $\Omega_n = -2\\,\mathrm{Im}\sum_{m\ne n} K_{nm}/(\Delta_{nm}^2+\eta^2)$.
 /// Avoids allocating the full $K$ matrix and computing $\Omega$ for other bands.
 #[allow(dead_code)]
 pub(crate) fn eval_berry_band_at_lam(
@@ -315,11 +329,8 @@ pub(crate) fn eval_intrinsic_G_at_lam(
             continue;
         }
         let de = e_q[n] - e_q[m];
-        let de3 = de * de * de;
-        if de3.abs() < 1e-30 {
-            continue;
-        }
-        g_sum += k_row[m].re / de3;
+        let inv_de3 = intrinsic_inverse_gap(de).powi(3);
+        g_sum += k_row[m].re * inv_de3;
     }
     g_sum
 }
@@ -362,11 +373,8 @@ pub(crate) fn eval_intrinsic_G_at_lam_buf(
             continue;
         }
         let de = e_buf[n] - e_buf[m];
-        let de3 = de * de * de;
-        if de3.abs() < 1e-30 {
-            continue;
-        }
-        g_sum += k_buf[m].re / de3;
+        let inv_de3 = intrinsic_inverse_gap(de).powi(3);
+        g_sum += k_buf[m].re * inv_de3;
     }
     g_sum
 }
@@ -416,13 +424,10 @@ pub(crate) fn eval_intrinsic_G3_at_lam_buf(
             continue;
         }
         let de = en - e_buf[m];
-        let de3 = de * de * de;
-        if de3.abs() < 1e-30 {
-            continue;
-        }
-        g_ab += k_ab_row[m].re / de3;
-        g_bc += k_bc_row[m].re / de3;
-        g_ac += k_ac_row[m].re / de3;
+        let inv_de3 = intrinsic_inverse_gap(de).powi(3);
+        g_ab += k_ab_row[m].re * inv_de3;
+        g_bc += k_bc_row[m].re * inv_de3;
+        g_ac += k_ac_row[m].re * inv_de3;
     }
     (g_ab, g_bc, g_ac)
 }
@@ -514,34 +519,34 @@ pub(crate) fn quadrature_occupied_geometry_simplex<const NV: usize>(
 
 pub(crate) fn quadrature_optical_simplex<const NV: usize>(
     sim: &TrackedSimplex<'_, NV>,
-    omega: f64,
+    frequencies: &Array1<f64>,
     eta: f64,
     mu: f64,
     thermal_width: f64,
-) -> Complex<f64> {
+    total: &mut Array1<Complex<f64>>,
+) {
     let d = NV - 1;
     let nsta = sim.vertices[0].band.len();
     let bands: Vec<&[f64]> = (0..NV)
         .map(|v| sim.vertices[v].band.as_slice().unwrap())
         .collect();
     let kmats: Vec<&Array2<Complex<f64>>> = (0..NV).map(|v| &sim.vertices[v].k_ab).collect();
-    let mut total = Complex::new(0.0, 0.0);
+    let mut accumulate = |lam: &[f64], weight: f64| {
+        let band_q = bary_interp_band_refs(&bands, lam, nsta);
+        let k_ab_q = bary_interp_matrix_refs(&kmats, lam);
+        for (out, &omega) in total.iter_mut().zip(frequencies) {
+            *out += weight
+                * sim.volume
+                * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, thermal_width, nsta);
+        }
+    };
     if d == 2 {
         for iq in 0..3 {
-            let lam = TRI_QUAD_PTS_3[iq].as_slice();
-            let w = TRI_QUAD_WTS_3[iq];
-            let band_q = bary_interp_band_refs(&bands, lam, nsta);
-            let k_ab_q = bary_interp_matrix_refs(&kmats, lam);
-            total += w * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, thermal_width, nsta);
+            accumulate(TRI_QUAD_PTS_3[iq].as_slice(), TRI_QUAD_WTS_3[iq]);
         }
     } else {
         for iq in 0..4 {
-            let lam = TET_QUAD_PTS_4[iq].as_slice();
-            let w = TET_QUAD_WTS_4[iq];
-            let band_q = bary_interp_band_refs(&bands, lam, nsta);
-            let k_ab_q = bary_interp_matrix_refs(&kmats, lam);
-            total += w * eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, thermal_width, nsta);
+            accumulate(TET_QUAD_PTS_4[iq].as_slice(), TET_QUAD_WTS_4[iq]);
         }
     }
-    total * sim.volume
 }

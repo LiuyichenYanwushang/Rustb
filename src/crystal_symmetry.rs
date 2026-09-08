@@ -321,7 +321,7 @@ impl MagneticCrystalSymmetry {
     /// The returned coordinates are in the **canonical database frame**
     /// (cryspglib's fixed data-Hall setting), not in the original model's
     /// reciprocal basis.  The structural
-    /// [`CrystalSymmetry::high_symmetry_kpoints`] additionally returns
+    /// [`CrystalSymmetryDataset::high_symmetry_kpoints`] additionally returns
     /// model-basis coordinates; this magnetic API does not yet, so transform
     /// the coordinates explicitly when the model setting differs from the
     /// database setting.

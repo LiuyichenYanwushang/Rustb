@@ -13,7 +13,7 @@
 //! Cartesian tensor calculation differ only through the direction matrix.
 
 use ndarray::prelude::*;
-use ndarray_linalg::Determinant;
+use ndarray_linalg::{Determinant, Eigh, UPLO};
 use num_complex::Complex;
 use rayon::prelude::*;
 
@@ -26,7 +26,9 @@ use super::config::{
     validate_temperature,
 };
 use super::kernel::{eval_optical_kernel, quadrature_optical_simplex};
-use super::tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
+use super::tracking::{
+    build_tetrahedra_3d_diagavg, build_triangles_2d, global_band_track, global_band_track_with,
+};
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 
 /// Direction pairs requested from an optical calculation.
@@ -78,10 +80,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Reads `kmesh`, `direction` (rank 2, or empty for the full Cartesian
     /// tensor), `mu` (single value), `T`, `eta` and `omega` from the
     /// parameter set; `spin` and `field_symmetry` are ignored.
+    /// A full tensor shares one eigendecomposition and band-tracking pass
+    /// across all components, retaining `DIM` band-velocity matrices per k.
     pub fn optical_conductivity(
         &self,
         params: &Parameters<DIM>,
     ) -> Result<OpticalConductivityResult<DIM>> {
+        self.validate()?;
         validate_chemical_potentials(&params.mu)?;
         if params.mu.len() != 1 {
             return Err(TbError::InvalidResponseParameter {
@@ -128,11 +133,47 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut conductivity =
             Array2::<Complex<f64>>::zeros((direction_pairs.len(), params.omega.len()));
         let mut unsafe_simplex_count = 0usize;
-
-        for (component, directions) in direction_pairs.iter().enumerate() {
-            let direction_a = directions.row(0).to_owned();
-            let direction_b = directions.row(1).to_owned();
-            let vertices: Vec<Result<VertexKernel>> = (0..k_points.nrows())
+        let full_tensor = direction_pairs.len() > 1;
+        let mut velocities = Vec::new();
+        let mut vertices: Vec<VertexKernel> = if full_tensor {
+            let directions = Array2::<f64>::eye(DIM);
+            let data: Vec<Result<_>> = k_points
+                .outer_iter()
+                .into_par_iter()
+                .map(|k| {
+                    let (projected, ham) = self.gen_v_projected(&k, Gauge::Atom, &directions);
+                    let (band, evec) = ham.eigh(UPLO::Lower)?;
+                    // Match compute_velocity_kernel's ndarray-linalg convention.
+                    let ket = evec.mapv(|z| z.conj());
+                    let mut velocity = Array3::zeros((DIM, self.nsta(), self.nsta()));
+                    for (mut out, v) in velocity.outer_iter_mut().zip(projected.outer_iter()) {
+                        out.assign(&evec.t().dot(&v.dot(&ket)));
+                    }
+                    let vertex = VertexKernel {
+                        band,
+                        evec,
+                        k_ab: &velocity.index_axis(Axis(0), 0)
+                            * &velocity.index_axis(Axis(0), 0).t(),
+                        k_bc: None,
+                        k_ac: None,
+                        vdiag: None,
+                        vdiag_a: None,
+                        vdiag_b: None,
+                    };
+                    Ok((vertex, velocity))
+                })
+                .collect();
+            let (vertices, all_velocities): (Vec<_>, Vec<_>) = data
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .unzip();
+            velocities = all_velocities;
+            vertices
+        } else {
+            let direction_a = direction_pairs[0].row(0).to_owned();
+            let direction_b = direction_pairs[0].row(1).to_owned();
+            let vertices: Vec<Result<_>> = (0..k_points.nrows())
                 .into_par_iter()
                 .map(|index| {
                     self.compute_velocity_kernel(
@@ -145,7 +186,34 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     )
                 })
                 .collect();
-            let mut vertices: Vec<VertexKernel> = vertices.into_iter().collect::<Result<_>>()?;
+            vertices.into_iter().collect::<Result<_>>()?
+        };
+        if params.integration == Integration::Simplex {
+            if full_tensor {
+                global_band_track_with(&mut vertices, &params.kmesh, |index, permutation| {
+                    velocities[index] = velocities[index]
+                        .select(Axis(1), permutation)
+                        .select(Axis(2), permutation);
+                });
+            } else {
+                global_band_track(&mut vertices, &params.kmesh);
+            }
+        }
+        // Simplex construction uses energies and kernels after tracking; the
+        // eigenvectors can be released before integrating any frequencies.
+        for vertex in &mut vertices {
+            vertex.evec = Array2::zeros((0, 0));
+        }
+
+        for component in 0..direction_pairs.len() {
+            if full_tensor {
+                let (a, b) = (component / DIM, component % DIM);
+                for (vertex, velocity) in vertices.iter_mut().zip(&velocities) {
+                    vertex.k_ab.assign(
+                        &(&velocity.index_axis(Axis(0), a) * &velocity.index_axis(Axis(0), b).t()),
+                    );
+                }
+            }
 
             match params.integration {
                 Integration::Direct => {
@@ -176,25 +244,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         .assign(&Array1::from_vec(values));
                 }
                 Integration::Simplex => {
-                    global_band_track(&mut vertices, &params.kmesh);
-                    let values: Vec<(Complex<f64>, usize)> = params
-                        .omega
-                        .par_iter()
-                        .map(|&frequency| {
-                            integrate_simplex(
-                                &vertices,
-                                &k_mesh,
-                                frequency,
-                                params.eta,
-                                chemical_potential,
-                                thermal_width,
-                            )
-                        })
-                        .collect();
-                    for (frequency, (value, unsafe_count)) in values.into_iter().enumerate() {
-                        conductivity[[component, frequency]] = value / determinant;
-                        unsafe_simplex_count = unsafe_simplex_count.max(unsafe_count);
-                    }
+                    let (values, unsafe_count) = integrate_simplex(
+                        &vertices,
+                        &k_mesh,
+                        &params.omega,
+                        params.eta,
+                        chemical_potential,
+                        thermal_width,
+                    );
+                    conductivity
+                        .row_mut(component)
+                        .assign(&(values / determinant));
+                    unsafe_simplex_count = unsafe_simplex_count.max(unsafe_count);
                 }
                 Integration::EnergyCut => unreachable!("rejected during validation"),
             }
@@ -216,73 +277,90 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 fn integrate_simplex(
     vertices: &[VertexKernel],
     k_mesh: &Array1<usize>,
-    frequency: f64,
+    frequencies: &Array1<f64>,
     broadening: f64,
     chemical_potential: f64,
     thermal_width: f64,
-) -> (Complex<f64>, usize) {
-    let mut total = Complex::new(0.0, 0.0);
-    let mut unsafe_simplex_count = 0usize;
-    match k_mesh.len() {
-        2 => {
-            let (nx, ny) = (k_mesh[0], k_mesh[1]);
-            for ix in 0..nx {
-                for iy in 0..ny {
-                    for simplex in &build_triangles_2d(
-                        ix,
-                        iy,
-                        nx,
-                        ny,
-                        1.0 / nx as f64,
-                        1.0 / ny as f64,
-                        vertices,
-                    ) {
-                        unsafe_simplex_count += usize::from(simplex.diag.min_gap < SIMPLEX_GAP_TOL);
-                        total += quadrature_optical_simplex(
-                            simplex,
-                            frequency,
-                            broadening,
-                            chemical_potential,
-                            thermal_width,
-                        );
-                    }
-                }
-            }
-        }
-        3 => {
-            let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
-            for ix in 0..nx {
-                for iy in 0..ny {
-                    for iz in 0..nz {
-                        for simplex in &build_tetrahedra_3d(
-                            ix,
-                            iy,
-                            iz,
-                            nx,
-                            ny,
-                            nz,
-                            1.0 / nx as f64,
-                            1.0 / ny as f64,
-                            1.0 / nz as f64,
-                            vertices,
-                        ) {
-                            unsafe_simplex_count +=
-                                usize::from(simplex.diag.min_gap < SIMPLEX_GAP_TOL);
-                            total += quadrature_optical_simplex(
-                                simplex,
-                                frequency,
-                                broadening,
-                                chemical_potential,
-                                thermal_width,
-                            );
+) -> (Array1<Complex<f64>>, usize) {
+    // Fixed spatial chunks bound spectrum buffers and preserve summation order
+    // across Rayon thread counts. Interpolate each quadrature point once for
+    // the whole frequency grid, without storing every quadrature matrix.
+    let cell_count: usize = k_mesh.iter().product();
+    let chunk_count = cell_count.div_ceil(256);
+    let mut result = Array1::zeros(frequencies.len());
+    let mut unsafe_count = 0;
+    // Retain at most 32 partial spectra, independent of mesh size.
+    for first_chunk in (0..chunk_count).step_by(32) {
+        let chunks: Vec<_> = (first_chunk..chunk_count.min(first_chunk + 32))
+            .into_par_iter()
+            .map(|chunk| {
+                let mut total = Array1::<Complex<f64>>::zeros(frequencies.len());
+                let mut unsafe_simplex_count = 0usize;
+                for cell in (chunk * 256)..cell_count.min((chunk + 1).saturating_mul(256)) {
+                    match k_mesh.len() {
+                        2 => {
+                            let (nx, ny) = (k_mesh[0], k_mesh[1]);
+                            let (ix, iy) = (cell / ny, cell % ny);
+                            for simplex in &build_triangles_2d(
+                                ix,
+                                iy,
+                                nx,
+                                ny,
+                                1.0 / nx as f64,
+                                1.0 / ny as f64,
+                                vertices,
+                            ) {
+                                unsafe_simplex_count +=
+                                    usize::from(simplex.diag.min_gap < SIMPLEX_GAP_TOL);
+                                quadrature_optical_simplex(
+                                    simplex,
+                                    frequencies,
+                                    broadening,
+                                    chemical_potential,
+                                    thermal_width,
+                                    &mut total,
+                                );
+                            }
                         }
+                        3 => {
+                            let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
+                            let (ix, iy, iz) = (cell / (ny * nz), (cell / nz) % ny, cell % nz);
+                            for simplex in &build_tetrahedra_3d_diagavg(
+                                ix,
+                                iy,
+                                iz,
+                                nx,
+                                ny,
+                                nz,
+                                1.0 / nx as f64,
+                                1.0 / ny as f64,
+                                1.0 / nz as f64,
+                                vertices,
+                            ) {
+                                unsafe_simplex_count +=
+                                    usize::from(simplex.diag.min_gap < SIMPLEX_GAP_TOL);
+                                quadrature_optical_simplex(
+                                    simplex,
+                                    frequencies,
+                                    broadening,
+                                    chemical_potential,
+                                    thermal_width,
+                                    &mut total,
+                                );
+                            }
+                        }
+                        _ => unreachable!("validated before simplex integration"),
                     }
                 }
-            }
+                (total, unsafe_simplex_count)
+            })
+            .collect();
+        for (values, extra) in chunks {
+            result += &values;
+            unsafe_count += extra;
         }
-        _ => unreachable!("validated before simplex integration"),
     }
-    (total, unsafe_simplex_count)
+    (result, unsafe_count)
 }
 
 #[cfg(test)]
@@ -320,6 +398,175 @@ mod tests {
         let result = model.optical_conductivity(&params).unwrap();
         assert_eq!(result.conductivity.dim(), (4, 2));
         assert_eq!(result.directions.len(), 4);
+    }
+
+    fn assert_tensor_components<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+        model: &Model<SPIN, DIM, R>,
+    ) {
+        let mut params = Parameters::at_mu([5; DIM], Array2::zeros((0, DIM)), 0.3);
+        params.omega = array![-0.7, 0.0, 0.2, 0.8];
+        params.T = array![300.0];
+        params.eta = 0.13;
+        for integration in [Integration::Direct, Integration::Simplex] {
+            params.integration = integration;
+            params.direction = Array2::zeros((0, DIM));
+            let tensor = model.optical_conductivity(&params).unwrap();
+            assert!(tensor.conductivity.iter().any(|z| z.norm() > 1e-8));
+            for (component, directions) in tensor.directions.iter().enumerate() {
+                params.direction = directions.clone();
+                let projected = model.optical_conductivity(&params).unwrap();
+                assert_eq!(tensor.diagnostics, projected.diagnostics);
+                for (&full, &single) in tensor
+                    .conductivity
+                    .row(component)
+                    .iter()
+                    .zip(&projected.conductivity)
+                {
+                    assert!((full - single).norm() < 2e-11 * single.norm().max(1.0));
+                }
+            }
+            // Arbitrary direction projection is bilinear in the two vectors.
+            params.direction = Array2::from_shape_fn((2, DIM), |(row, axis)| {
+                (axis + 1) as f64 * if row == 0 { 0.3 } else { -0.2 }
+            });
+            let projected = model.optical_conductivity(&params).unwrap();
+            for frequency in 0..params.omega.len() {
+                let mut expected = Complex::new(0.0, 0.0);
+                for a in 0..DIM {
+                    for b in 0..DIM {
+                        expected += params.direction[[0, a]]
+                            * params.direction[[1, b]]
+                            * tensor.conductivity[[a * DIM + b, frequency]];
+                    }
+                }
+                assert!(
+                    (projected.conductivity[[0, frequency]] - expected).norm()
+                        < 2e-11 * expected.norm().max(1.0)
+                );
+                let mut single_frequency = params.clone();
+                single_frequency.omega = array![params.omega[frequency]];
+                let single = model.optical_conductivity(&single_frequency).unwrap();
+                assert!(
+                    (single.conductivity[[0, 0]] - projected.conductivity[[0, frequency]]).norm()
+                        < 1e-12
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tensor_reuses_bands_without_changing_components_or_frequency_scans() {
+        assert_tensor_components(&qwz_model(-0.7));
+        let mut spinful = Model::<true, 3, crate::HasRMatrix>::tb_model(
+            array![[1.0, 0.2, 0.1], [0.0, 1.3, 0.2], [0.1, 0.0, 0.9]],
+            array![[0.1, 0.2, 0.3]],
+            None,
+        )
+        .unwrap();
+        spinful.set_onsite(&array![0.8], Some(crate::SpinDirection::Z));
+        for (axis, spin) in [
+            crate::SpinDirection::X,
+            crate::SpinDirection::Y,
+            crate::SpinDirection::Z,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut displacement = Array1::zeros(3);
+            displacement[axis] = 1;
+            spinful.set_hop(
+                Complex::new(0.2, 0.1 * (axis + 1) as f64),
+                0,
+                0,
+                &displacement,
+                Some(spin),
+            );
+        }
+        assert_tensor_components(&spinful);
+    }
+
+    #[test]
+    fn tracking_permutes_both_velocity_band_indices() {
+        let canonical = array![
+            [Complex::new(1.0, 0.0), Complex::new(0.3, 0.7)],
+            [Complex::new(0.3, -0.7), Complex::new(2.0, 0.0)],
+        ];
+        let mut velocities = vec![
+            canonical.clone(),
+            canonical.select(Axis(0), &[1, 0]).select(Axis(1), &[1, 0]),
+        ];
+        let mut vertices: Vec<_> = velocities
+            .iter()
+            .enumerate()
+            .map(|(index, v)| VertexKernel {
+                band: array![1.0, 2.0],
+                evec: if index == 0 {
+                    Array2::eye(2)
+                } else {
+                    Array2::eye(2).select(Axis(1), &[1, 0])
+                },
+                k_ab: v * &v.t(),
+                k_bc: None,
+                k_ac: None,
+                vdiag: None,
+                vdiag_a: None,
+                vdiag_b: None,
+            })
+            .collect();
+        let mut calls = 0;
+        global_band_track_with(&mut vertices, &[2, 1], |index, permutation| {
+            calls += 1;
+            velocities[index] = velocities[index]
+                .select(Axis(0), permutation)
+                .select(Axis(1), permutation);
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(vertices[1].band, array![2.0, 1.0]);
+        assert_eq!(velocities[1], canonical);
+        assert_eq!(vertices[1].k_ab, &canonical * &canonical.t());
+    }
+
+    #[test]
+    fn simplex_spectrum_preserves_constant_integrals_across_chunk_batches() {
+        let vertex = VertexKernel {
+            band: array![-1.0, 1.0],
+            k_ab: array![
+                [Complex::new(0.0, 0.0), Complex::i()],
+                [-Complex::i(), Complex::new(0.0, 0.0)]
+            ],
+            evec: Array2::eye(2),
+            k_bc: None,
+            k_ac: None,
+            vdiag: None,
+            vdiag_a: None,
+            vdiag_b: None,
+        };
+        let frequencies = array![0.3, 1.1];
+        // f_lower=1, f_upper=0: summing both off-diagonal terms gives
+        // 2i / (4 - (omega+i eta)^2), independent of the spatial mesh.
+        let exact: Array1<Complex<f64>> =
+            frequencies.mapv(|omega| 2.0 * Complex::i() / (4.0 - Complex::new(omega, 0.2).powi(2)));
+        for cells in [1, 256, 8193] {
+            let vertices = vec![vertex.clone(); cells];
+            let mut previous: Option<Array1<Complex<f64>>> = None;
+            for threads in [1, 3] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap();
+                let (actual, unsafe_count) = pool.install(|| {
+                    integrate_simplex(&vertices, &array![cells, 1], &frequencies, 0.2, 0.0, 0.0)
+                });
+                assert_eq!(unsafe_count, 0);
+                for (&value, &expected) in actual.iter().zip(&exact) {
+                    assert!((value - expected).norm() < 2e-12);
+                }
+                if let Some(previous) = &previous {
+                    assert_eq!(&actual, previous);
+                }
+                previous = Some(actual);
+            }
+        }
     }
 
     #[test]

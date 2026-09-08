@@ -4,24 +4,32 @@
 //!
 //! The quantum geometric tensor is
 //!
-//! $$G^{ab}_n(\mathbf{k}) = \sum_{m=\not n}
+//! ```math
+//! G^{ab}_n(\mathbf{k}) = \sum_{m\ne n}
 //!   \frac{\langle\partial_a u_n|u_m\rangle\langle u_m|\partial_b u_n\rangle}
-//!        {(E_n-E_m)^2} = g^{ab}_n - \frac{i}{2}\Omega^{ab}_n$$
+//!        {(E_n-E_m)^2} = g^{ab}_n - \frac{i}{2}\Omega^{ab}_n
+//! ```
 //!
 //! In terms of velocity matrix elements $v^\alpha_{nm} = \langle u_n|\partial_\alpha H|u_m\rangle$:
 //!
-//! $$G^{ab}_n(\mathbf{k}) = \sum_{m=\not n} \frac{v^a_{nm} v^b_{mn}}{(E_n-E_m)^2 + \eta^2}$$
+//! ```math
+//! G^{ab}_n(\mathbf{k}) = \sum_{m\ne n} \frac{v^a_{nm} v^b_{mn}}{(E_n-E_m)^2 + \eta^2}
+//! ```
 //!
 //! where $\eta$ is a small regularisation width.  The real and imaginary
 //! parts give the quantum metric $g^{ab}_n$ and Berry curvature $\Omega^{ab}_n$:
 //!
-//! $$g^{ab}_n = \operatorname{Re} G^{ab}_n, \qquad
-//!   \Omega^{ab}_n = -2\operatorname{Im} G^{ab}_n$$
+//! ```math
+//! g^{ab}_n = \operatorname{Re} G^{ab}_n, \qquad
+//! \Omega^{ab}_n = -2\operatorname{Im} G^{ab}_n
+//! ```
 //!
 //! The **anomalous Hall conductivity** (AHC) at $T=0$ is
 //!
-//! $$\sigma^{xy}_{\text{AHC}}(\mu) = -\frac{e^2}{\hbar}\sum_n
-//!   \int_{\text{BZ}} \Theta(\mu-E_n)\Omega^{xy}_n(\mathbf{k})d\mathbf{k}$$
+//! ```math
+//! \sigma^{xy}_{\text{AHC}}(\mu) = -\frac{e^2}{\hbar}\sum_n
+//! \int_{\text{BZ}} \Theta(\mu-E_n)\Omega^{xy}_n(\mathbf{k})\,d\mathbf{k}
+//! ```
 //!
 //! ## API
 //!
@@ -43,7 +51,7 @@ use crate::thermodynamics::Occupation;
 use super::config::{Integration, Parameters, mesh_array, parameters_occupation, validate_sorted};
 use super::energy_cut::{integrate_fermi_cut_2d, integrate_fermi_cut_3d};
 use super::kernel::quadrature_occupied_geometry_simplex;
-use super::tracking::{build_tetrahedra_3d, build_triangles_2d, global_band_track};
+use super::tracking::{build_tetrahedra_3d_diagavg, build_triangles_2d, global_band_track};
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 
 /// Hall conductivity evaluated on the requested chemical-potential grid.
@@ -121,7 +129,7 @@ pub(crate) fn integrate_occupied_geometry(
             for ix in 0..nx {
                 for iy in 0..ny {
                     for iz in 0..nz {
-                        let sims = build_tetrahedra_3d(
+                        let sims = build_tetrahedra_3d_diagavg(
                             ix, iy, iz, nx, ny, nz, inv_nx, inv_ny, inv_nz, all_pts,
                         );
                         for sim in &sims {
@@ -159,6 +167,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// simplex vertices before integrating the occupied region.
     pub fn hall_conductivity(&self, params: &Parameters<DIM>) -> Result<HallConductivityResult> {
         params.validate_rank2()?;
+        self.validate()?;
         let spin = params.spin;
         if !SPIN && let Some(direction) = spin {
             return Err(crate::TbError::SpinNotAllowed(direction));

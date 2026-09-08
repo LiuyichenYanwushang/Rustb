@@ -121,6 +121,17 @@ pub(crate) fn permute_vertex(v: &VertexKernel, p: &[usize]) -> VertexKernel {
 }
 
 pub(crate) fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) {
+    global_band_track_with(all_pts, k_mesh, |_, _| {});
+}
+
+/// Apply the same band-label permutation to additional per-vertex data.
+/// Each callback concerns a previously unvisited vertex, so `p` indexes its
+/// original band order. The seed vertex keeps its original order.
+pub(crate) fn global_band_track_with(
+    all_pts: &mut [VertexKernel],
+    k_mesh: &[usize],
+    mut permute_extra: impl FnMut(usize, &[usize]),
+) {
     let nk = all_pts.len();
     if nk <= 1 {
         return;
@@ -155,6 +166,7 @@ pub(crate) fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) 
                 let ov_avg = ov / n_contrib as f64;
                 let p = greedy_assign(&ov_avg);
                 all_pts[nb] = permute_vertex(&all_pts[nb], &p);
+                permute_extra(nb, &p);
             }
             visited[nb] = true;
             queue.push_back(nb);
@@ -339,76 +351,6 @@ pub(crate) fn build_triangles_2d_diagavg<'a>(
         tri(i00, i10, i11),
         tri(i00, i11, i01), // ↗
     ]
-}
-
-pub(crate) fn build_tetrahedra_3d<'a>(
-    ix: usize,
-    iy: usize,
-    iz: usize,
-    nx: usize,
-    ny: usize,
-    nz: usize,
-    inv_nx: f64,
-    inv_ny: f64,
-    inv_nz: f64,
-    all_pts: &'a [VertexKernel],
-) -> [TrackedSimplex<'a, 4>; 5] {
-    let ixp = (ix + 1) % nx;
-    let iyp = (iy + 1) % ny;
-    let izp = (iz + 1) % nz;
-    let idx3 = |x: usize, y: usize, z: usize| x * ny * nz + y * nz + z;
-    let c = [
-        idx3(ix, iy, iz),
-        idx3(ixp, iy, iz),
-        idx3(ix, iyp, iz),
-        idx3(ixp, iyp, iz),
-        idx3(ix, iy, izp),
-        idx3(ixp, iy, izp),
-        idx3(ix, iyp, izp),
-        idx3(ixp, iyp, izp),
-    ];
-    let frac = |ixv: usize, iyv: usize, izv: usize| -> [f64; 3] {
-        [
-            ixv as f64 * inv_nx,
-            iyv as f64 * inv_ny,
-            izv as f64 * inv_nz,
-        ]
-    };
-    let corners: [[f64; 3]; 8] = [
-        frac(ix, iy, iz),
-        frac(ix + 1, iy, iz),
-        frac(ix, iy + 1, iz),
-        frac(ix + 1, iy + 1, iz),
-        frac(ix, iy, iz + 1),
-        frac(ix + 1, iy, iz + 1),
-        frac(ix, iy + 1, iz + 1),
-        frac(ix + 1, iy + 1, iz + 1),
-    ];
-    let cube_vol = inv_nx * inv_ny * inv_nz;
-
-    let min_gap_of = |vs: &[&VertexKernel]| -> f64 {
-        vs.iter().fold(f64::INFINITY, |mg, v| {
-            let n = v.band.len();
-            (0..n)
-                .flat_map(|i| (i + 1..n).map(move |j| (v.band[[i]] - v.band[[j]]).abs()))
-                .fold(mg, f64::min)
-        })
-    };
-
-    std::array::from_fn(|i| {
-        let &[lv0, lv1, lv2, lv3] = &CUBE_TETS[i];
-        let (g0, g1, g2, g3) = (c[lv0], c[lv1], c[lv2], c[lv3]);
-        TrackedSimplex {
-            vertices: [&all_pts[g0], &all_pts[g1], &all_pts[g2], &all_pts[g3]],
-            coords: [corners[lv0], corners[lv1], corners[lv2], corners[lv3]],
-            volume: cube_vol * TET_VOL_FACTOR[i],
-            diag: SimplexDiagnostics {
-                min_gap: min_gap_of(&[&all_pts[g0], &all_pts[g1], &all_pts[g2], &all_pts[g3]]),
-                min_assignment_overlap: 1.0,
-                tracking_conflict: false,
-            },
-        }
-    })
 }
 
 pub(crate) fn build_tetrahedra_3d_diagavg<'a>(

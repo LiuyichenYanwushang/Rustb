@@ -11,10 +11,95 @@ use num_complex::Complex;
 use rayon::prelude::*;
 use std::f64::consts::PI;
 
+pub(crate) fn apply_atom_gauge(
+    mut matrix: ArrayViewMut2<'_, Complex<f64>>,
+    phases: &Array1<Complex<f64>>,
+) {
+    for (i, mut row) in matrix.outer_iter_mut().enumerate() {
+        let left = phases[i].conj();
+        Zip::from(&mut row)
+            .and(phases)
+            .for_each(|value, &right| *value *= left * right);
+    }
+}
+
+/// Sum R blocks for several coefficient rows without copying the block array.
+/// Used for H, its Cartesian derivatives, and the position matrix Fourier sum.
+pub(crate) fn fourier_sum<S, D>(
+    coefficients: &ArrayView2<'_, Complex<f64>>,
+    blocks: &ArrayBase<S, D>,
+) -> Array2<Complex<f64>>
+where
+    S: Data<Elem = Complex<f64>>,
+    D: Dimension + RemoveAxis,
+{
+    let nr = blocks.len_of(Axis(0));
+    assert_eq!(
+        coefficients.ncols(),
+        nr,
+        "Fourier coefficient/support mismatch"
+    );
+    let width = blocks.shape()[1..]
+        .iter()
+        .try_fold(1usize, |size, &axis| size.checked_mul(axis))
+        .expect("Fourier block size overflow");
+    let mut result = Array2::zeros((coefficients.nrows(), width));
+    if result.is_empty() || nr == 0 {
+        return result;
+    }
+    if coefficients.nrows() > 1
+        && let Some(data) = blocks.as_slice()
+        && let (Ok(m), Ok(n), Ok(k)) = (
+            i32::try_from(width),
+            i32::try_from(coefficients.nrows()),
+            i32::try_from(nr),
+        )
+    {
+        let coefficients = coefficients.as_standard_layout();
+        // SAFETY: C-row-major result = coefficients * blocks is the same
+        // memory as column-major result^T = blocks^T * coefficients^T.
+        // The slices have lengths m*k, k*n, m*n; all dimensions are positive
+        // and fit BLAS integers. Output owns disjoint writable storage.
+        unsafe {
+            blas::zgemm(
+                b'N',
+                b'N',
+                m,
+                n,
+                k,
+                Complex::new(1.0, 0.0),
+                data,
+                m,
+                coefficients.as_slice().unwrap(),
+                k,
+                Complex::new(0.0, 0.0),
+                result.as_slice_mut().unwrap(),
+                m,
+            );
+        }
+    } else {
+        // Preserve the cheap single-row AXPY path and support strided blocks
+        // without materializing a potentially very large contiguous copy.
+        for (weights, mut out) in coefficients.outer_iter().zip(result.outer_iter_mut()) {
+            for (&weight, block) in weights.iter().zip(blocks.axis_iter(Axis(0))) {
+                if let Some(data) = block.as_slice()
+                    && i32::try_from(width).is_ok()
+                {
+                    crate::ndarray_lapack::zaxpy(weight, data, out.as_slice_mut().unwrap());
+                } else {
+                    for (value, &element) in out.iter_mut().zip(block.iter()) {
+                        *value += weight * element;
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     #[allow(non_snake_case)]
     #[inline(always)]
-    #[cfg_attr(doc, katexit::katexit)]
     ///Performs Fourier transform, converting real-space Hamiltonian to reciprocal-space Hamiltonian.
     ///
     ///There are two gauge choices: lattice gauge and atomic gauge, corresponding to `Gauge::Lattice` and `Gauge::Atom`.
@@ -45,106 +130,77 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         kvec: &ArrayBase<S, Ix1>,
         gauge: Gauge,
     ) -> Array2<Complex<f64>> {
-        assert!(
-            kvec.len() == self.dim_r(),
-            "Wrong, the k-vector's length must equal to the dimension of model."
-        );
+        self.gen_ham_batch(&kvec.view().insert_axis(Axis(0)), gauge)
+            .index_axis_move(Axis(0), 0)
+    }
 
+    /// Construct H(k) for a batch of fractional k-points, shape `(nk, DIM)`.
+    ///
+    /// Returns `(nk, nsta, nsta)` in input order. A single GEMM reuses the
+    /// hopping array across the supplied points when its storage is contiguous.
+    /// This method does not create Rayon jobs. Callers choose the batch size
+    /// and BLAS thread policy; the returned matrices occupy `nk * nsta²`
+    /// complex numbers. Both lattice and atom gauges match [`Self::gen_ham`].
+    pub fn gen_ham_batch<S: Data<Elem = f64>>(
+        &self,
+        points: &ArrayBase<S, Ix2>,
+        gauge: Gauge,
+    ) -> Array3<Complex<f64>> {
+        let phases = self.bloch_phases(points);
         let nsta = self.nsta();
-        let mut hamk = Array2::<Complex<f64>>::zeros((nsta, nsta));
-
-        // Precompute phase factors exp(i 2π k·R) for each R vector.
-        // Dimension-dispatched: compile-time constant loop bound for R·k dot.
-        let Us: Vec<Complex<f64>> = match DIM {
-            1 => self
-                .hamR
-                .outer_iter()
-                .map(|r| Complex::new(0.0, 2.0 * PI * r[0] as f64 * kvec[0]).exp())
-                .collect(),
-            2 => self
-                .hamR
-                .outer_iter()
-                .map(|r| {
-                    Complex::new(
-                        0.0,
-                        2.0 * PI * (r[0] as f64 * kvec[0] + r[1] as f64 * kvec[1]),
-                    )
-                    .exp()
-                })
-                .collect(),
-            3 => self
-                .hamR
-                .outer_iter()
-                .map(|r| {
-                    Complex::new(
-                        0.0,
-                        2.0 * PI
-                            * (r[0] as f64 * kvec[0]
-                                + r[1] as f64 * kvec[1]
-                                + r[2] as f64 * kvec[2]),
-                    )
-                    .exp()
-                })
-                .collect(),
-            _ => unreachable!(),
-        };
-
-        let hamk_slice = hamk.as_slice_mut().unwrap();
-        for (iR, &u) in Us.iter().enumerate() {
-            let hm = self.ham.index_axis(Axis(0), iR);
-            crate::ndarray_lapack::zaxpy(u, hm.as_slice().unwrap(), hamk_slice);
-        }
-
-        match gauge {
-            Gauge::Lattice => hamk,
-            Gauge::Atom => {
-                // Dimension-dispatched τ·k phase factors
-                let orb_phase: Vec<Complex<f64>> = match DIM {
-                    1 => self
-                        .orb
-                        .outer_iter()
-                        .map(|tau| Complex::new(0.0, 2.0 * PI * tau[0] * kvec[0]).exp())
-                        .collect(),
-                    2 => self
-                        .orb
-                        .outer_iter()
-                        .map(|tau| {
-                            Complex::new(0.0, 2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1]))
-                                .exp()
-                        })
-                        .collect(),
-                    3 => self
-                        .orb
-                        .outer_iter()
-                        .map(|tau| {
-                            Complex::new(
-                                0.0,
-                                2.0 * PI * (tau[0] * kvec[0] + tau[1] * kvec[1] + tau[2] * kvec[2]),
-                            )
-                            .exp()
-                        })
-                        .collect(),
-                    _ => unreachable!(),
-                };
-                let norb = self.norb();
-                let orb_phase = Array1::from_vec(orb_phase);
-                // Build gauge phase vector: for spinful, duplicate orbital phases
-                let mut U0 = Array1::<Complex<f64>>::zeros(if SPIN { 2 * norb } else { norb });
-                U0.slice_mut(s![..norb]).assign(&orb_phase);
-                if SPIN {
-                    U0.slice_mut(s![norb..]).assign(&orb_phase);
-                }
-                // Gauge transform: H'[m,n] = conj(U0[m]) * H[m,n] * U0[n]
-                for m in 0..nsta {
-                    let mut row = hamk.slice_mut(s![m, ..]);
-                    let conj_pm = U0[m].conj();
-                    Zip::from(&mut row)
-                        .and(&U0)
-                        .for_each(|h, &pn| *h *= conj_pm * pn);
-                }
-                hamk
+        let mut hams = fourier_sum(&phases.view(), &self.ham)
+            .into_shape_with_order((points.nrows(), nsta, nsta))
+            .unwrap();
+        if matches!(gauge, Gauge::Atom) {
+            for (k, ham) in points.outer_iter().zip(hams.outer_iter_mut()) {
+                apply_atom_gauge(ham, &self.orbital_phases(&k));
             }
         }
+        hams
+    }
+
+    pub(crate) fn bloch_phases<S: Data<Elem = f64>>(
+        &self,
+        points: &ArrayBase<S, Ix2>,
+    ) -> Array2<Complex<f64>> {
+        assert_eq!(
+            points.ncols(),
+            DIM,
+            "k-point dimension must match the model"
+        );
+        assert_eq!(
+            self.hamR.ncols(),
+            DIM,
+            "hopping translation dimension must match the model"
+        );
+        assert_eq!(
+            self.ham.dim(),
+            (self.hamR.nrows(), self.nsta(), self.nsta()),
+            "hopping shape must match the model"
+        );
+        Array2::from_shape_fn((points.nrows(), self.hamR.nrows()), |(ik, ir)| {
+            let dot = (0..DIM)
+                .map(|axis| self.hamR[[ir, axis]] as f64 * points[[ik, axis]])
+                .sum::<f64>();
+            Complex::new(0.0, 2.0 * PI * dot).exp()
+        })
+    }
+
+    pub(crate) fn orbital_phases<S: Data<Elem = f64>>(
+        &self,
+        k: &ArrayBase<S, Ix1>,
+    ) -> Array1<Complex<f64>> {
+        let mut phases = Array1::zeros(self.nsta());
+        for i in 0..self.norb() {
+            let dot = (0..DIM)
+                .map(|axis| self.orb[[i, axis]] * k[axis])
+                .sum::<f64>();
+            phases[i] = Complex::new(0.0, 2.0 * PI * dot).exp();
+            if SPIN {
+                phases[i + self.norb()] = phases[i];
+            }
+        }
+        phases
     }
 
     /// Computes the density of states $\rho(E)$ using Gaussian smearing.
@@ -155,7 +211,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// The delta function is approximated by a Gaussian of width $\sigma$:
     ///
-    /// $$\delta(x) \approx \frac{1}{\sqrt{2\pi}\,\sigma}\, e^{-x^2 / (2\sigma^2)}$$
+    /// ```math
+    /// \delta(x) \approx \frac{1}{\sqrt{2\pi}\,\sigma}\, e^{-x^2 / (2\sigma^2)}
+    /// ```
     ///
     /// # Algorithm
     ///
@@ -184,7 +242,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         E_n: usize,
         sigma: f64,
     ) -> Result<(Array1<f64>, Array1<f64>)> {
-        if E_min >= E_max {
+        self.validate()?;
+        if !E_min.is_finite() || !E_max.is_finite() || E_min >= E_max {
             return Err(TbError::InvalidEnergyRange {
                 min: E_min,
                 max: E_max,
