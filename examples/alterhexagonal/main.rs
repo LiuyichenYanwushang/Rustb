@@ -32,12 +32,21 @@ fn main() {
         [1.0 / 2.0, 1.0 / 2.0]
     ];
     let label = vec!["G", "K", "M", "K'", "G", "M"];
-    model.show_band(&path, &label, nk, "examples/alterhexagonal");
+    model
+        .show_band(&path, &label, nk, "target/example-output/alterhexagonal")
+        .expect("example output failed");
 
     let edge_model = model.cut_piece(100, 0).unwrap();
     let path = array![[0.0, 0.0], [0.0, 1.0 / 2.0], [0.0, 1.0]];
     let label = vec!["G", "M", "G"];
-    edge_model.show_band(&path, &label, nk, "examples/alterhexagonal/edge_band");
+    edge_model
+        .show_band(
+            &path,
+            &label,
+            nk,
+            "target/example-output/alterhexagonal/edge_band",
+        )
+        .expect("example output failed");
 
     //画一下贝利曲率的分布
     let dir_1 = arr1(&[1.0, 0.0]);
@@ -76,7 +85,7 @@ fn main() {
                 }
             }
             //println!("{}",mu);
-            //plot!(E,dos,"examples/alterhexagonal/dos.pdf");
+            //plot!(E,dos,"target/example-output/alterhexagonal/dos.pdf");
 
             let hall_params = Parameters::at_mu(
                 [kmesh[0], kmesh[1]],
@@ -97,7 +106,10 @@ fn main() {
             use_conductivity[[i, j]] = conductivity.unwrap() / 2.0 / PI;
         }
     }
-    draw_heatmap(&use_conductivity, "./examples/alterhexagonal/heat_map1.pdf");
+    draw_heatmap(
+        &use_conductivity,
+        "target/example-output/alterhexagonal/heat_map1.pdf",
+    );
 }
 
 fn gen_model(

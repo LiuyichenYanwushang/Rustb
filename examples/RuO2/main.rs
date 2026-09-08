@@ -38,7 +38,9 @@ fn main() {
     let nk: usize = 1001;
     let path = array![[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5], [0.0, 0.0]];
     let label = vec!["G", "X", "M", "Y", "G"];
-    model.show_band(&path, &label, nk, "examples/RuO2");
+    model
+        .show_band(&path, &label, nk, "target/example-output/RuO2")
+        .expect("example output failed");
 
     //---------------计算新的---------------------
     let k = array![0.25, 0.25] / 2.0;
@@ -79,9 +81,9 @@ fn main() {
     axes.lines(&x, &y, &[Color("black"), LineStyle(Solid)]);
     axes.set_aspect_ratio(Fix(1.0));
     let mut pdf_name = String::new();
-    pdf_name.push_str("./examples/RuO2/spin_current.pdf");
+    pdf_name.push_str("target/example-output/RuO2/spin_current.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
     //---------------------画出来布里渊区内的分布----------------------------------
     let nk = 501;
     let k_mesh = arr1(&[nk, nk]);
@@ -108,7 +110,7 @@ fn main() {
             };
             a
         }),
-        "./examples/RuO2/spin_current_BZ.pdf",
+        "target/example-output/RuO2/spin_current_BZ.pdf",
     );
     let cond_xy = conductivity_all(&model, &k_mesh, &dir_1, &dir_2, mu, spin, eta);
     println!("{}", cond_xy);

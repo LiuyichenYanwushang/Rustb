@@ -1,5 +1,14 @@
 # Build cache (cargo target directory)
 /target/
 
-# Generated test outputs (plots, band data, surface DOS, hr exports)
-/tests/
+# Generated numerical/plot outputs (test source files remain trackable)
+**/BAND.dat
+*.surf_*
+/examples/**/*.pdf
+/examples/**/out/
+/tests/**/*.pdf
+/tests/**/*.dat
+/tests/**/*.txt
+/tests/**/KLABELS
+/tests/**/print.py
+/target-pkg/

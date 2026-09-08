@@ -110,7 +110,7 @@ fn main() {
     let label = vec!["G", "X", "M", "G"];
     let nk = 1001;
     model
-        .show_band(&path, &label, nk, "examples/Bi2F2_new/band")
+        .show_band(&path, &label, nk, "target/example-output/Bi2F2_new/band")
         .unwrap();
 
     //-----算一下wilson loop 的结果-----------------------
@@ -125,7 +125,7 @@ fn main() {
         &occ,
         n,
         n,
-        "examples/Bi2F2_new/wcc.pdf",
+        "target/example-output/Bi2F2_new/wcc.pdf",
     );
 
     /*
@@ -137,13 +137,13 @@ fn main() {
     let path=[[-0.5,-0.5],[0.0,0.0],[0.5,0.5]];
     let path=arr2(&path);
     let label=vec!["X","{/symbol G}","X"];
-    green.show_surf_state("examples/Bi2F2_new/surf",&path,&label,nk,E_min,E_max,E_n,0);
+    green.show_surf_state("target/example-output/Bi2F2_new/surf",&path,&label,nk,E_min,E_max,E_n,0);
 
     let super_model=model.cut_piece(50,0);
     let path=[[0.0,-0.5,0.0],[0.0,0.0,0.0],[0.0,0.5,0.0]];
     let path=arr2(&path);
     let label=vec!["M","G","M"];
-    super_model.show_band(&path,&label,nk,"examples/Bi2F2_new/super_band");
+    super_model.show_band(&path,&label,nk,"target/example-output/Bi2F2_new/super_band");
 
     let J=-0.05;
     let m = 0.05;
@@ -154,15 +154,15 @@ fn main() {
     let path=array![[0.0,0.0,0.0],[0.5,0.0,0.0],[0.5,0.5,0.0],[0.0,0.5,0.0],[0.0,0.0,0.0],[0.5,0.5,0.0]];
     let label=vec!["G","X","M","Y","G","M"];
     let nk=1001;
-    model_xy.show_band(&path,&label,nk,"examples/Bi2F2_new/xy/band");
+    model_xy.show_band(&path,&label,nk,"target/example-output/Bi2F2_new/xy/band");
 
-    show_alter(&model_xy,"examples/Bi2F2_new/xy/alter");
+    show_alter(&model_xy,"target/example-output/Bi2F2_new/xy/alter");
 
     let n=1001;
     let dir_1=arr1(&[1.0,0.0,0.0]);
     let dir_2=arr1(&[0.0,1.0,0.0]);
     let occ=vec![0,1,2,3];
-    show_wilson_loop(&model_xy,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/xy/wcc.pdf");
+    show_wilson_loop(&model_xy,&dir_1,&dir_2,&occ,n,n,"target/example-output/Bi2F2_new/xy/wcc.pdf");
 
     let nk:usize=501;
     let green=SurfGreen::from_Model(&model_xy,0,1e-3,None);
@@ -172,10 +172,10 @@ fn main() {
     let path=[[-0.5,-0.0],[0.0,0.0],[0.5,0.0]];
     let path=arr2(&path);
     let label=vec!["X","G","X"];
-    green.show_surf_state("examples/Bi2F2_new/xy/surf",&path,&label,nk,E_min,E_max,E_n,0);
+    green.show_surf_state("target/example-output/Bi2F2_new/xy/surf",&path,&label,nk,E_min,E_max,E_n,0);
 
     let num=42;
-    let name="examples/Bi2F2_new/xy";
+    let name="target/example-output/Bi2F2_new/xy";
     //cut(&model_xy,num,1,name);
     //cut(&model_xy,num,2,name);
 
@@ -186,15 +186,15 @@ fn main() {
     let path=array![[0.0,0.0,0.0],[0.5,0.0,0.0],[0.5,0.5,0.0],[0.0,0.5,0.0],[0.0,0.0,0.0],[0.5,0.5,0.0]];
     let label=vec!["G","X","M","Y","G","M"];
     let nk=1001;
-    model_xy.show_band(&path,&label,nk,"examples/Bi2F2_new/bar_xy/band");
+    model_xy.show_band(&path,&label,nk,"target/example-output/Bi2F2_new/bar_xy/band");
 
-    show_alter(&model_xy,"examples/Bi2F2_new/bar_xy/alter");
+    show_alter(&model_xy,"target/example-output/Bi2F2_new/bar_xy/alter");
 
     let n=1001;
     let dir_1=arr1(&[1.0,0.0,0.0]);
     let dir_2=arr1(&[0.0,1.0,0.0]);
     let occ=vec![0,1,2,3];
-    show_wilson_loop(&model_xy,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/bar_xy/wcc.pdf");
+    show_wilson_loop(&model_xy,&dir_1,&dir_2,&occ,n,n,"target/example-output/Bi2F2_new/bar_xy/wcc.pdf");
 
     let nk:usize=501;
     let green=SurfGreen::from_Model(&model_xy,0,1e-3,None);
@@ -204,10 +204,10 @@ fn main() {
     let path=[[-0.5,-0.0],[0.0,0.0],[0.5,0.0]];
     let path=arr2(&path);
     let label=vec!["X","G","X"];
-    green.show_surf_state("examples/Bi2F2_new/bar_xy/surf",&path,&label,nk,E_min,E_max,E_n,0);
+    green.show_surf_state("target/example-output/Bi2F2_new/bar_xy/surf",&path,&label,nk,E_min,E_max,E_n,0);
 
     let num=42;
-    let name="examples/Bi2F2_new/bar_xy";
+    let name="target/example-output/Bi2F2_new/bar_xy";
     //cut(&model_xy,num,1,name);
     //cut(&model_xy,num,2,name);
 
@@ -219,15 +219,15 @@ fn main() {
     let path=array![[0.0,0.0,0.0],[0.5,0.0,0.0],[0.5,0.5,0.0],[0.0,0.5,0.0],[0.0,0.0,0.0],[0.5,0.5,0.0]];
     let label=vec!["G","X","M","Y","G","M"];
     let nk=1001;
-    model_z.show_band(&path,&label,nk,"examples/Bi2F2_new/z_new/band");
+    model_z.show_band(&path,&label,nk,"target/example-output/Bi2F2_new/z_new/band");
 
-    show_alter(&model_z,"examples/Bi2F2_new/z_new/alter");
+    show_alter(&model_z,"target/example-output/Bi2F2_new/z_new/alter");
 
     let n=1001;
     let dir_1=arr1(&[1.0,0.0,0.0]);
     let dir_2=arr1(&[0.0,1.0,0.0]);
     let occ=vec![0,1,2,3];
-    show_wilson_loop(&model_z,&dir_1,&dir_2,&occ,n,n,"examples/Bi2F2_new/z_new/wcc.pdf");
+    show_wilson_loop(&model_z,&dir_1,&dir_2,&occ,n,n,"target/example-output/Bi2F2_new/z_new/wcc.pdf");
 
     let nk:usize=501;
     let green=SurfGreen::from_Model(&model_z,0,1e-3,None);
@@ -237,10 +237,10 @@ fn main() {
     let path=[[-0.5,-0.0],[0.0,0.0],[0.5,0.0]];
     let path=arr2(&path);
     let label=vec!["X","G","X"];
-    green.show_surf_state("examples/Bi2F2_new/z_new/surf",&path,&label,nk,E_min,E_max,E_n,0);
+    green.show_surf_state("target/example-output/Bi2F2_new/z_new/surf",&path,&label,nk,E_min,E_max,E_n,0);
 
     let num=30;
-    let name="examples/Bi2F2_new/z_new";
+    let name="target/example-output/Bi2F2_new/z_new";
     //cut(&model_z,num,1,name);
     //cut(&model_z,num,2,name);
     */
@@ -382,7 +382,7 @@ fn show_wilson_loop(
     //axes.set_margins(&[MarginLeft(0.1),MarginBottom(0.2),MarginRight(0.0)]);
     axes.set_aspect_ratio(Fix(0.8));
     fg.set_terminal("pdfcairo", name);
-    fg.show();
+    fg.show().expect("example output failed");
 }
 
 fn calculate_M(model: &Model<true>) {
@@ -564,15 +564,15 @@ fn cut(model: &Model<true>, num: usize, cut_type: usize, name: &str) {
     let mut band_name = String::new();
     band_name.push_str(&dir_name);
     band_name.push_str("/band.txt");
-    write_txt_1(band, &band_name);
+    write_txt_1(band, &band_name).expect("example output failed");
     let mut size_name = String::new();
     size_name.push_str(&dir_name);
     size_name.push_str("/evec.txt");
-    write_txt(size, &size_name);
+    write_txt(size, &size_name).expect("example output failed");
     let mut structure_name = String::new();
     structure_name.push_str(&dir_name);
     structure_name.push_str("/structure.txt");
-    write_txt(show_str, &structure_name);
+    write_txt(show_str, &structure_name).expect("example output failed");
 }
 
 fn show_alter(model: &Model<true>, name: &str) {
@@ -605,7 +605,7 @@ fn show_alter(model: &Model<true>, name: &str) {
     create_dir_all(&pdf_name).expect("can't creat the file");
     pdf_name.push_str("/plot.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 }
 
 fn calculate_parity(model: &Model<true>) {

@@ -27,7 +27,14 @@ fn main() {
     let label = vec!["M", "G", "M"];
     let nk = 1001;
     let model = gen_model(w, vx, vy, m);
-    model.show_band(&path, &label, nk, "./examples/Intrinsic_nonlinear/result/");
+    model
+        .show_band(
+            &path,
+            &label,
+            nk,
+            "target/example-output/Intrinsic_nonlinear/result/",
+        )
+        .expect("example band output failed");
 
     //开始计算非线性霍尔电导
     let nk: usize = 1000;
@@ -51,8 +58,11 @@ fn main() {
     axes.lines(&x, &y, &[Color("black")]);
     //axes.set_y_range(Fix(-0.3),Fix(0.3));
     axes.set_x_range(Fix(E_min), Fix(E_max));
-    fg.set_terminal("pdfcairo", "nonlinear_in.pdf");
-    fg.show();
+    fg.set_terminal(
+        "pdfcairo",
+        "target/example-output/Intrinsic_nonlinear/result/nonlinear_in.pdf",
+    );
+    fg.show().expect("example plot output failed");
 }
 
 ///$$H=w\sin(k_x)+v_x \sin(k_x)\tau_x+v_y\sin(k_y)\tau_y\sigma_x+\Delta\tau_z$$

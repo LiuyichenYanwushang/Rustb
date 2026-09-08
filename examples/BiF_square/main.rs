@@ -88,7 +88,9 @@ fn main() {
     ];
     let label = vec!["G", "X", "M", "G"];
     let nk = 1001;
-    model.show_band(&path, &label, nk, "examples/BiF_square/band");
+    model
+        .show_band(&path, &label, nk, "target/example-output/BiF_square/band")
+        .expect("example output failed");
     //
 
     //首先算一下wilson loop
@@ -119,9 +121,9 @@ fn main() {
     ];
     axes.set_x_ticks_custom(show_ticks.into_iter(), &[], &[]);
     let mut pdf_name = String::new();
-    pdf_name.push_str("examples/BiF_square/wcc.pdf");
+    pdf_name.push_str("target/example-output/BiF_square/wcc.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 
     //接下来开始加入 altermagnetism 项
     //首先, 我们设定磁矩为 J, 加在 onsite 项上, 看能否得到altermagnetism
@@ -171,11 +173,11 @@ fn main() {
     axes.set_x_ticks_custom(show_ticks.into_iter(), &[], &[]);
     let knode = knode.to_vec();
     let mut pdf_name = String::new();
-    pdf_name.push_str("examples/BiF_square/alter");
+    pdf_name.push_str("target/example-output/BiF_square/alter");
     create_dir_all(&pdf_name).expect("can't creat the file");
     pdf_name.push_str("/plot.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 
     let nk: usize = 301;
     let eta: f64 = 0.001;
@@ -214,7 +216,7 @@ fn main() {
     let path = arr2(&path);
     let label = vec!["M", "G", "M"];
     green.show_surf_state(
-        "examples/BiF_square/surf",
+        "target/example-output/BiF_square/surf",
         &path,
         &label,
         nk,
@@ -228,7 +230,14 @@ fn main() {
     let path = [[0.0, -0.5, 0.0], [0.0, 0.0, 0.0], [0.0, 0.5, 0.0]];
     let path = arr2(&path);
     let label = vec!["M", "G", "M"];
-    super_model.show_band(&path, &label, nk, "examples/BiF_square/super_band");
+    super_model
+        .show_band(
+            &path,
+            &label,
+            nk,
+            "target/example-output/BiF_square/super_band",
+        )
+        .expect("example output failed");
 
     //画一下贝利曲率的分布
     let nk: usize = 1000;
@@ -244,7 +253,7 @@ fn main() {
     let data = berry_curv.into_shape((nk, nk)).unwrap();
     draw_heatmap(
         &data,
-        "examples/BiF_square/surf/berry_curvature_distribution.pdf",
+        "target/example-output/BiF_square/surf/berry_curvature_distribution.pdf",
     );
 
     let path = array![
@@ -277,9 +286,9 @@ fn main() {
     let mut name = String::new();
     let k_node = k_node.to_vec();
     let mut pdf_name = name.clone();
-    pdf_name.push_str("examples/BiF_square/berry_curv.pdf");
+    pdf_name.push_str("target/example-output/BiF_square/berry_curv.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
     //开始计算角态
     let show_str = model.atom_position().clone().dot(&model.lat);
     let show_str = show_str.slice(s![.., 0..2]).to_owned();
@@ -319,10 +328,16 @@ fn main() {
     let show_str = show_str.slice(s![.., 0..2]).to_owned();
     let show_size = size.row(new_model.norb()).to_owned();
 
-    create_dir_all("examples/BiF_square/corner").expect("can't creat the file");
-    write_txt_1(band, "examples/BiF_square/corner/band.txt");
-    write_txt(size, "examples/BiF_square/corner/evec.txt");
-    write_txt(show_str, "examples/BiF_square/corner/structure.txt");
+    create_dir_all("target/example-output/BiF_square/corner").expect("can't creat the file");
+    write_txt_1(band, "target/example-output/BiF_square/corner/band.txt")
+        .expect("example output failed");
+    write_txt(size, "target/example-output/BiF_square/corner/evec.txt")
+        .expect("example output failed");
+    write_txt(
+        show_str,
+        "target/example-output/BiF_square/corner/structure.txt",
+    )
+    .expect("example output failed");
 }
 
 fn write_txt(data: Array2<f64>, output: &str) -> std::io::Result<()> {

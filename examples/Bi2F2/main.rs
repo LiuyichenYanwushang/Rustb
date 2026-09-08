@@ -79,14 +79,24 @@ fn main() {
     ];
     let label = vec!["G", "X", "M", "G"];
     let nk = 1001;
-    model.show_band(&path, &label, nk, "examples/Bi2F2/band");
+    model
+        .show_band(&path, &label, nk, "target/example-output/Bi2F2/band")
+        .expect("example output failed");
 
     //-----算一下wilson loop 的结果-----------------------
     let n = 301;
     let dir_1 = arr1(&[1.0, 0.0, 0.0]);
     let dir_2 = arr1(&[0.0, 1.0, 0.0]);
     let occ = vec![0, 1, 2, 3];
-    show_wilson_loop(&model, &dir_1, &dir_2, &occ, n, n, "examples/Bi2F2/wcc.pdf");
+    show_wilson_loop(
+        &model,
+        &dir_1,
+        &dir_2,
+        &occ,
+        n,
+        n,
+        "target/example-output/Bi2F2/wcc.pdf",
+    );
 
     let nk: usize = 501;
     let green = SurfGreen::from_Model(&model, 0, 1e-3, None).unwrap();
@@ -97,7 +107,7 @@ fn main() {
     let path = arr2(&path);
     let label = vec!["X", "{/symbol G}", "X"];
     green.show_surf_state(
-        "examples/Bi2F2/surf",
+        "target/example-output/Bi2F2/surf",
         &path,
         &label,
         nk,
@@ -111,7 +121,9 @@ fn main() {
     let path = [[0.0, -0.5, 0.0], [0.0, 0.0, 0.0], [0.0, 0.5, 0.0]];
     let path = arr2(&path);
     let label = vec!["M", "G", "M"];
-    super_model.show_band(&path, &label, nk, "examples/Bi2F2/super_band");
+    super_model
+        .show_band(&path, &label, nk, "target/example-output/Bi2F2/super_band")
+        .expect("example output failed");
 
     //接下来我们计算altermagnetism 下的结果
 
@@ -122,7 +134,7 @@ fn main() {
     let t6 = 0.0;
     let model_xy = add_altermagnetism_1(model.clone(), J, true);
     //let model_xy=add_altermagnetism_3(model,J,t3,t4,t5,t6,true);
-    show_alter(&model_xy, "examples/Bi2F2/xy/alter");
+    show_alter(&model_xy, "target/example-output/Bi2F2/xy/alter");
 
     let path = array![
         [0.0, 0.0, 0.0],
@@ -132,7 +144,9 @@ fn main() {
     ];
     let label = vec!["G", "X", "M", "G"];
     let nk = 1001;
-    model_xy.show_band(&path, &label, nk, "examples/Bi2F2/xy/band");
+    model_xy
+        .show_band(&path, &label, nk, "target/example-output/Bi2F2/xy/band")
+        .expect("example output failed");
 
     let nk: usize = 501;
     let green = SurfGreen::from_Model(&model_xy, 0, 1e-3, None).unwrap();
@@ -143,7 +157,7 @@ fn main() {
     let path = arr2(&path);
     let label = vec!["X", "G", "X"];
     green.show_surf_state(
-        "examples/Bi2F2/xy/surf",
+        "target/example-output/Bi2F2/xy/surf",
         &path,
         &label,
         nk,
@@ -154,7 +168,7 @@ fn main() {
     );
 
     let num = 20;
-    let name = "examples/Bi2F2/xy";
+    let name = "target/example-output/Bi2F2/xy";
 
     let start = Instant::now();
     cut(&model_xy, num, 1, name);
@@ -177,7 +191,7 @@ fn main() {
     let t6 = 0.0;
     let model_xy = add_altermagnetism_1(model.clone(), J, false);
     //let model_xy=add_altermagnetism_3(model,J,t3,t4,t5,t6,false);
-    show_alter(&model_xy, "examples/Bi2F2/bar_xy/alter");
+    show_alter(&model_xy, "target/example-output/Bi2F2/bar_xy/alter");
 
     let path = array![
         [0.0, 0.0, 0.0],
@@ -187,7 +201,9 @@ fn main() {
     ];
     let label = vec!["G", "X", "M", "G"];
     let nk = 1001;
-    model_xy.show_band(&path, &label, nk, "examples/Bi2F2/bar_xy/band");
+    model_xy
+        .show_band(&path, &label, nk, "target/example-output/Bi2F2/bar_xy/band")
+        .expect("example output failed");
 
     let nk: usize = 501;
     let green = SurfGreen::from_Model(&model_xy, 0, 1e-3, None).unwrap();
@@ -198,7 +214,7 @@ fn main() {
     let path = arr2(&path);
     let label = vec!["X", "G", "X"];
     green.show_surf_state(
-        "examples/Bi2F2/bar_xy/surf",
+        "target/example-output/Bi2F2/bar_xy/surf",
         &path,
         &label,
         nk,
@@ -209,7 +225,7 @@ fn main() {
     );
 
     let num = 20;
-    let name = "examples/Bi2F2/bar_xy";
+    let name = "target/example-output/Bi2F2/bar_xy";
     let start = Instant::now();
     cut(&model_xy, num, 1, name);
     let end = Instant::now(); // 结束计时
@@ -533,7 +549,7 @@ fn show_wilson_loop(
     //axes.set_margins(&[MarginLeft(0.1),MarginBottom(0.2),MarginRight(0.0)]);
     axes.set_aspect_ratio(Fix(0.8));
     fg.set_terminal("pdfcairo", name);
-    fg.show();
+    fg.show().expect("example output failed");
 }
 
 fn calculate_M(model: &Model<true>) {
@@ -713,15 +729,15 @@ fn cut(model: &Model<true>, num: usize, cut_type: usize, name: &str) {
     let mut band_name = String::new();
     band_name.push_str(&dir_name);
     band_name.push_str("/band.txt");
-    write_txt_1(band, &band_name);
+    write_txt_1(band, &band_name).expect("example output failed");
     let mut size_name = String::new();
     size_name.push_str(&dir_name);
     size_name.push_str("/evec.txt");
-    write_txt(size, &size_name);
+    write_txt(size, &size_name).expect("example output failed");
     let mut structure_name = String::new();
     structure_name.push_str(&dir_name);
     structure_name.push_str("/structure.txt");
-    write_txt(show_str, &structure_name);
+    write_txt(show_str, &structure_name).expect("example output failed");
 }
 
 fn show_alter(model: &Model<true>, name: &str) {
@@ -753,5 +769,5 @@ fn show_alter(model: &Model<true>, name: &str) {
     create_dir_all(&pdf_name).expect("can't creat the file");
     pdf_name.push_str("/plot.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 }

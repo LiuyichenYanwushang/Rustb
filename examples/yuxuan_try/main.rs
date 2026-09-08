@@ -84,7 +84,9 @@ fn main() {
         [0.0, 0.0]
     ];
     let label = vec!["G", "K", "M", "K'", "G"];
-    model.show_band(&path, &label, nk, "examples/yuxuan_try");
+    model
+        .show_band(&path, &label, nk, "target/example-output/yuxuan_try")
+        .expect("example output failed");
 
     //画一下贝利曲率的分布
     let T = 100.0;
@@ -109,7 +111,7 @@ fn main() {
             };
             a
         }),
-        "./examples/yuxuan_try/heat_map.pdf",
+        "target/example-output/yuxuan_try/heat_map.pdf",
     );
     let hall_params = Parameters::rank2([nk, nk], [1.0, 0.0], [0.0, 1.0], array![0.0]);
     let conductivity = model

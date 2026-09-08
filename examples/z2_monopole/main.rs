@@ -84,7 +84,14 @@ fn main() {
     let path = arr2(&path);
     let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
     let (eval, evec) = model.solve_all_parallel(&k_vec);
-    model.show_band(&path, &label, nk, "./examples/z2_monopole/result/");
+    model
+        .show_band(
+            &path,
+            &label,
+            nk,
+            "target/example-output/z2_monopole/result/",
+        )
+        .expect("example output failed");
     println!(
         "ham0={}",
         model.gen_ham(&array![0.0, 0.0, 0.0], Gauge::Atom)

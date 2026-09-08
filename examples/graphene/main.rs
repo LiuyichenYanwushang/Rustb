@@ -44,6 +44,8 @@ fn main() {
     ];
     let nk = 2001;
     let label = vec!["G", "K", "K'", "G"];
-    let name = "./examples/graphene/";
-    model.show_band(&path, &label, nk, name);
+    let name = "target/example-output/graphene/";
+    model
+        .show_band(&path, &label, nk, name)
+        .expect("example output failed");
 }

@@ -17,7 +17,9 @@ fn main() {
     let label = vec!["M", "G", "M"];
     let nk = 1001;
     let model = gen_model(t, v, ap, eta, m);
-    model.show_band(&path, &label, nk, "examples/WTe2_kp/result/");
+    model
+        .show_band(&path, &label, nk, "target/example-output/WTe2_kp/result/")
+        .expect("example output failed");
 
     //开始计算非线性霍尔电导
     let dir_1 = arr1(&[0.0, 1.0]);
@@ -50,9 +52,9 @@ fn main() {
     axes.set_x_range(Fix(E_min), Fix(E_max));
     let mut show_ticks = Vec::<String>::new();
     let mut pdf_name = String::new();
-    pdf_name.push_str("examples/WTe2_kp/result/nonlinear_ex.pdf");
+    pdf_name.push_str("target/example-output/WTe2_kp/result/nonlinear_ex.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 
     let nk: usize = 500;
     let kmesh = arr1(&[nk, nk]);
@@ -86,9 +88,9 @@ fn main() {
     axes.set_x_range(Fix(0.0), Fix(2.0 * v));
     let mut show_ticks = Vec::<String>::new();
     let mut pdf_name = String::new();
-    pdf_name.push_str("./WTe2_kp/result/nonlinear_t.pdf");
+    pdf_name.push_str("target/example-output/WTe2_kp/result/nonlinear_t.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 }
 
 fn gen_model(t: f64, v: f64, ap: f64, eta: f64, m: f64) -> Model<false, 2> {

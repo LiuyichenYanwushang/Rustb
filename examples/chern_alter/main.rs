@@ -32,7 +32,9 @@ fn main() {
     let nk: usize = 1001;
     let path = array![[0.0, 0.0], [0.0, 0.5], [0.5, 0.5], [0.0, 0.5], [0.0, 0.0]];
     let label = vec!["G", "X", "M", "Y'", "G"];
-    model.show_band(&path, &label, nk, "examples/chern_alter");
+    model
+        .show_band(&path, &label, nk, "target/example-output/chern_alter")
+        .expect("example output failed");
 
     //画一下贝利曲率的分布
     let T = 100.0;
@@ -57,7 +59,7 @@ fn main() {
             };
             a
         }),
-        "./examples/chern_alter/heat_map.pdf",
+        "target/example-output/chern_alter/heat_map.pdf",
     );
     let hall_params = Parameters::rank2([nk, nk], [1.0, 0.0], [0.0, 1.0], array![0.0]);
     let conductivity = model
@@ -89,9 +91,9 @@ fn main() {
     //axes.set_y_range(Fix(-10.0),Fix(10.0));
     axes.set_x_range(Fix(E_min), Fix(E_max));
     let mut pdf_name = String::new();
-    pdf_name.push_str("./examples/chern_alter/nonlinear_ex.pdf");
+    pdf_name.push_str("target/example-output/chern_alter/nonlinear_ex.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 
     let E_min = -1.0;
     let E_max = 1.0;
@@ -113,7 +115,7 @@ fn main() {
     //axes.set_y_range(Fix(-10.0),Fix(10.0));
     axes.set_x_range(Fix(E_min), Fix(E_max));
     let mut pdf_name = String::new();
-    pdf_name.push_str("./examples/chern_alter/nonlinear_in.pdf");
+    pdf_name.push_str("target/example-output/chern_alter/nonlinear_in.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 }

@@ -106,7 +106,9 @@ fn main() {
             }
         }
     }
-    new_model.show_band(&path, &label, nk, "./examples/alter_twist");
+    new_model
+        .show_band(&path, &label, nk, "target/example-output/alter_twist")
+        .expect("example output failed");
 
     let (evec, eval) = new_model.solve_onek(&array![0.0, 0.0, 0.0]);
     println!("{}", evec);
@@ -177,7 +179,7 @@ fn main() {
     let (k_vec, k_dist, k_node) = model_up.k_path(&path, nk).unwrap();
     let band_up = model_up.solve_band_all_parallel(&k_vec);
     let band_dn = model_dn.solve_band_all_parallel(&k_vec);
-    let name = String::from_str("./examples/alter_twist/band_alter").unwrap();
+    let name = String::from_str("target/example-output/alter_twist/band_alter").unwrap();
     create_dir_all(name.clone()).expect("can't creat the file");
     let mut fg = Figure::new();
     let x: Vec<f64> = k_dist.to_vec();
@@ -205,7 +207,7 @@ fn main() {
     let mut pdf_name = name.clone();
     pdf_name.push_str("/plot.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 
     //-------------开始计算霍尔电导--------------------
 
@@ -252,9 +254,9 @@ fn main() {
     axes.lines(&x, &y, &[Color("black"), LineStyle(Solid)]);
     axes.set_aspect_ratio(Fix(1.0));
     let mut pdf_name = String::new();
-    pdf_name.push_str("./examples/alter_twist/plot_xx.pdf");
+    pdf_name.push_str("target/example-output/alter_twist/plot_xx.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 
     let mut fg = Figure::new();
     let x: Vec<f64> = theta
@@ -271,9 +273,9 @@ fn main() {
     axes.lines(&x, &y, &[Color("black"), LineStyle(Solid)]);
     axes.set_aspect_ratio(Fix(1.0));
     let mut pdf_name = String::new();
-    pdf_name.push_str("./examples/alter_twist/plot_xy.pdf");
+    pdf_name.push_str("target/example-output/alter_twist/plot_xy.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 
     let result: Vec<_> = result_x
         .iter()
@@ -295,9 +297,9 @@ fn main() {
     axes.lines(&x, &y, &[Color("black"), LineStyle(Solid)]);
     axes.set_aspect_ratio(Fix(1.0));
     let mut pdf_name = String::new();
-    pdf_name.push_str("./examples/alter_twist/plot_odd.pdf");
+    pdf_name.push_str("target/example-output/alter_twist/plot_odd.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 
     let result: Vec<_> = result_x
         .iter()
@@ -319,9 +321,9 @@ fn main() {
     axes.lines(&x, &y, &[Color("black"), LineStyle(Solid)]);
     axes.set_aspect_ratio(Fix(1.0));
     let mut pdf_name = String::new();
-    pdf_name.push_str("./examples/alter_twist/plot_all.pdf");
+    pdf_name.push_str("target/example-output/alter_twist/plot_all.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 
     let result: Vec<_> = result_x
         .iter()
@@ -343,12 +345,12 @@ fn main() {
     axes.lines(&x, &y, &[Color("black"), LineStyle(Solid)]);
     axes.set_aspect_ratio(Fix(1.0));
     let mut pdf_name = String::new();
-    pdf_name.push_str("./examples/alter_twist/plot_ratio.pdf");
+    pdf_name.push_str("target/example-output/alter_twist/plot_ratio.pdf");
     fg.set_terminal("pdfcairo", &pdf_name);
-    fg.show();
+    fg.show().expect("example output failed");
 
     let mut name = String::new();
-    name.push_str("./examples/alter_twist/data.txt");
+    name.push_str("target/example-output/alter_twist/data.txt");
     let mut file = File::create(name).expect("Unable to data.dat");
     let mut writer = BufWriter::new(file);
     for i in 0..n_theta {
