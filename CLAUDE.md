@@ -21,15 +21,15 @@ Rustb is a Rust library for tight-binding model calculations in condensed matter
 - **Repo**: https://github.com/LiuyichenYanwushang/Rustb
 - **Error handling**: Uses `thiserror` for `TbError` enum.
 - **Docs**: `katexit` renders LaTeX in rustdoc; `docs-header.html` for custom CSS.
-- **Version**: 0.7.3.
+- **Version**: 0.7.3. crates.io publishes 0.7.0 and 0.7.1 (2026-08-15 UTC); 0.7.2 and 0.7.3 are not on the registry.
 - **SKILLS.md**: Practical usage guide with code examples for the entire crate. When adding or changing any public API, update that file as well.
 
 > **Note**: README.md and SKILLS.md both use the current const-generic API.
 
 ## 0.7.x Refactor Summary
 
-Version 0.7 is the next release after the crates.io version 0.6.7 and
-deliberately breaks the previous response API. The central design rule is that
+The 0.7 line, first published as 0.7.0, follows the crates.io 0.6.7 release
+and deliberately breaks the previous response API. The central design rule is that
 physics workflows end in an ordinary
 `Model<SPIN, DIM, R>` whenever that is physically meaningful. Solver-specific
 wrappers hold input data and iteration policy; they do not create parallel
@@ -169,9 +169,9 @@ directly with `--features <backend>` (or edit the alias).
 ## BLAS/LAPACK Backend
 
 Rustb has no default BLAS/LAPACK backend; every build, test, and doc command
-must select exactly one backend feature. Version 0.7.2 removed the previous
-`openblas-system` default, so code upgrading from 0.7.1 must add a backend
-feature explicitly.
+must select exactly one backend feature. The previous `openblas-system`
+default was removed after 0.7.1, so code upgrading from 0.7.1 must add a
+backend feature explicitly.
 
 | Feature | Backend |
 |---------|---------|
@@ -330,7 +330,7 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
   return one named `*Result` structure. Directions are rows of an
   `Array2<f64>` matrix, so dimension mismatches are rejected at runtime with
   structured errors.
-- `T` (kelvin; `T[0] == 0.0` = zero temperature) replaces `Occupation` at the
+- `T` (kelvin, a scalar; `0.0` = zero temperature) replaces `Occupation` at the
   response boundary. The `Occupation` enum itself remains for the Hubbard
   mean-field solver and spin-moment observables.
 - Direct and simplex/energy-cut algorithms are selected by the shared

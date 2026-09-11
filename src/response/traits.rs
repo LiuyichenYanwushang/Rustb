@@ -90,7 +90,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
                 message: "occupied_berry_curvature_at expects a single chemical potential".into(),
             });
         }
-        validate_temperature(&params.T)?;
+        validate_temperature(params.T)?;
         let occupation = parameters_occupation(params);
         let chemical_potential = params.mu[0];
         let bands = self.berry_curvature_at(k, params)?;
@@ -123,7 +123,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
                 message: "occupied_berry_curvature_on expects a single chemical potential".into(),
             });
         }
-        validate_temperature(&params.T)?;
+        validate_temperature(params.T)?;
         validate_direction_matrix(&params.direction, 2, DIM)?;
         validate_broadening(params.eta)?;
         if !SPIN && let Some(direction) = params.spin {

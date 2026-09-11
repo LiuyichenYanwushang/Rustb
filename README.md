@@ -21,9 +21,9 @@ the released 0.7.1 API.
 ## Installation
 
 Rustb has no default BLAS/LAPACK backend. Callers must enable exactly one of
-the mutually exclusive backend features. This changed in 0.7.2: versions up to
-0.7.1 defaulted to `openblas-system`, so upgrading callers must add a backend
-feature explicitly. For system OpenBLAS, use:
+the mutually exclusive backend features. The `openblas-system` default was
+removed after 0.7.1, so upgrading callers must add a backend feature
+explicitly. For system OpenBLAS, use:
 
 ```toml
 [dependencies]

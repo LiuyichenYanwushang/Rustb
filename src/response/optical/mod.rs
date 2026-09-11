@@ -118,7 +118,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 message: "all values must be finite".into(),
             });
         }
-        validate_temperature(&params.T)?;
+        validate_temperature(params.T)?;
         validate_broadening(params.eta)?;
         crate::response::config::validate_k_mesh(&params.kmesh)?;
         match params.integration {
@@ -396,7 +396,7 @@ mod tests {
                 .unwrap();
         model.set_hop(1.0, 0, 1, &array![0, 0], None);
         let mut params = Parameters::at_mu([3, 4], Array2::zeros((0, 2)), 0.0);
-        params.T = array![0.0];
+        params.T = 0.0;
         params.eta = 0.2;
         params.omega = array![0.0, 0.3, -0.3, 2.0];
         for handedness in [1.0, -1.0] {
@@ -434,7 +434,7 @@ mod tests {
         model.set_hop(-0.5, 0, 1, &array![0, 1], None);
         model.set_hop(0.5, 0, 1, &array![0, -1], None);
         let mut params = Parameters::at_mu([1, 1], Array2::zeros((0, 2)), 0.0);
-        params.T = array![0.0];
+        params.T = 0.0;
         params.eta = 0.2;
         params.omega = array![0.0, 0.3, -0.3, 2.0];
         let result = model.optical_conductivity(&params).unwrap();
@@ -455,7 +455,7 @@ mod tests {
                 .unwrap();
         model.set_hop(1.0, 0, 1, &array![0, 0], None);
         let mut params = Parameters::rank2([1, 1], [1.0, 0.0], [1.0, 0.0], array![0.0]);
-        params.T = array![0.0];
+        params.T = 0.0;
         params.eta = 0.0;
         for integration in [Integration::Direct, Integration::Simplex] {
             params.integration = integration;
@@ -523,7 +523,7 @@ mod tests {
     ) {
         let mut params = Parameters::at_mu([5; DIM], Array2::zeros((0, DIM)), 0.3);
         params.omega = array![-0.7, 0.0, 0.2, 0.8];
-        params.T = array![300.0];
+        params.T = 300.0;
         params.eta = 0.13;
         for integration in [Integration::Direct, Integration::Simplex] {
             params.integration = integration;

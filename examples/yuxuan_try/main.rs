@@ -97,7 +97,7 @@ fn main() {
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
     let mut berry_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
-    berry_params.T = array![T];
+    berry_params.T = T;
     let berry_curv = model
         .occupied_berry_curvature_on(&kvec, &berry_params)
         .unwrap();

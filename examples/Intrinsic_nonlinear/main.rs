@@ -44,7 +44,7 @@ fn main() {
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 30.0;
     let mut params = Parameters::rank3([nk, nk], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], mu.clone());
-    params.T = array![T];
+    params.T = T;
     let sigma = model
         .intrinsic_nonlinear_hall(&params)
         .unwrap()

@@ -45,7 +45,7 @@ fn main() {
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
     let mut berry_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
-    berry_params.T = array![T];
+    berry_params.T = T;
     let berry_curv = model
         .occupied_berry_curvature_on(&kvec, &berry_params)
         .unwrap();
@@ -75,7 +75,7 @@ fn main() {
     let mu = Array1::linspace(E_min, E_max, E_n);
     let mut extrinsic_params =
         Parameters::rank3([nk, nk], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], mu.clone());
-    extrinsic_params.T = array![T];
+    extrinsic_params.T = T;
     extrinsic_params.eta = 1e-5;
     extrinsic_params.field_symmetry = FieldSymmetry::Ordered;
     let sigma = model
@@ -101,7 +101,7 @@ fn main() {
     let mu = Array1::linspace(E_min, E_max, E_n);
     let mut intrinsic_params =
         Parameters::rank3([nk, nk], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], mu.clone());
-    intrinsic_params.T = array![T];
+    intrinsic_params.T = T;
     let sigma = model
         .intrinsic_nonlinear_hall(&intrinsic_params)
         .unwrap()

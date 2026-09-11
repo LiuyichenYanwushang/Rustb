@@ -52,7 +52,6 @@ fn main() {
     let dir_1 = arr1(&[1.0, 0.0]);
     let dir_2 = arr1(&[0.0, 1.0]);
     let dir_3 = arr1(&[0.0, 1.0]);
-    let T = 0.0;
     //画一下贝利曲率的分布
     let nk: usize = 1000;
     let kmesh = arr1(&[nk, nk]);

@@ -50,6 +50,13 @@
 
 ### API changes
 
+- `Parameters<DIM>::T` is a scalar `f64` in kelvin, replacing `Array1<f64>`.
+  Every physics reader already consumed only `T[0]`; validation was the one
+  place that inspected the rest. The array type invited a temperature sweep
+  that no algorithm ever performed, so a sweep is a caller-side loop.
+- Remove `Parameters::with_spin`, `with_frequency`, and `with_integration`;
+  assign the public fields directly. `with_temperature` is kept because the
+  module doctest and the documented examples use it.
 - `FloquetEffectiveOptions.harmonic_max` is `isize`; negative cutoffs are rejected.
   `floquet_effective_q_model` takes `(drive, options, wavevector_cartesian)` and
   no longer takes a Sambe truncation.

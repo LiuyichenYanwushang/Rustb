@@ -39,11 +39,12 @@ pub enum FieldSymmetry {
 /// the remaining fields are silently ignored.
 #[derive(Clone, Debug)]
 pub struct Parameters<const DIM: usize> {
-    /// Temperature in kelvin. `T[0] == 0.0` selects the exact zero-temperature
-    /// step function; `T[0] > 0.0` selects Fermi-Dirac occupation at that
-    /// temperature. Only `T[0]` is currently used.
+    /// Temperature in kelvin. `T == 0.0` selects the exact zero-temperature
+    /// step function; `T > 0.0` selects Fermi-Dirac occupation at that
+    /// temperature. No method scans a temperature series; sweep by calling the
+    /// method once per temperature.
     #[allow(non_snake_case)]
-    pub T: Array1<f64>,
+    pub T: f64,
     /// Chemical potential(s) in eV. Methods that expect a single chemical
     /// potential (optical conductivity) use `mu[0]` and require one element.
     pub mu: Array1<f64>,
@@ -74,7 +75,7 @@ impl<const DIM: usize> Parameters<DIM> {
     /// `1e-3` eV broadening, DC frequency and direct integration.
     pub fn new(kmesh: [usize; DIM], direction: Array2<f64>, mu: Array1<f64>) -> Self {
         Self {
-            T: array![0.0],
+            T: 0.0,
             mu,
             eta: 1e-3,
             kmesh,
@@ -115,25 +116,7 @@ impl<const DIM: usize> Parameters<DIM> {
 
     /// Set the temperature in kelvin.
     pub fn with_temperature(mut self, kelvin: f64) -> Self {
-        self.T = array![kelvin];
-        self
-    }
-
-    /// Select the spin-current polarization.
-    pub fn with_spin(mut self, spin: SpinDirection) -> Self {
-        self.spin = Some(spin);
-        self
-    }
-
-    /// Set a single frequency in eV.
-    pub fn with_frequency(mut self, omega: f64) -> Self {
-        self.omega = array![omega];
-        self
-    }
-
-    /// Select the Brillouin-zone integration algorithm.
-    pub fn with_integration(mut self, integration: Integration) -> Self {
-        self.integration = integration;
+        self.T = kelvin;
         self
     }
 
@@ -143,7 +126,7 @@ impl<const DIM: usize> Parameters<DIM> {
         validate_direction_matrix(&self.direction, 2, DIM)?;
         validate_chemical_potentials(&self.mu)?;
         validate_broadening(self.eta)?;
-        validate_temperature(&self.T)
+        validate_temperature(self.T)
     }
 
     /// Validate the fields read by every rank-three response method.
@@ -154,7 +137,7 @@ impl<const DIM: usize> Parameters<DIM> {
         validate_k_mesh(&self.kmesh)?;
         validate_direction_matrix(&self.direction, 3, DIM)?;
         validate_chemical_potentials(&self.mu)?;
-        validate_temperature(&self.T)
+        validate_temperature(self.T)
     }
 }
 
@@ -171,29 +154,20 @@ pub(crate) fn direction_matrix<const N: usize, const DIM: usize>(
 
 /// Convert the temperature convention into the internal occupation semantics.
 pub(crate) fn parameters_occupation<const DIM: usize>(params: &Parameters<DIM>) -> Occupation {
-    if params.T[0] <= 0.0 {
+    if params.T <= 0.0 {
         Occupation::ZeroTemperature
     } else {
         Occupation::FermiDirac {
-            temperature_kelvin: params.T[0],
+            temperature_kelvin: params.T,
         }
     }
 }
 
-pub(crate) fn validate_temperature(values: &Array1<f64>) -> Result<()> {
-    if values.is_empty() {
+pub(crate) fn validate_temperature(temperature: f64) -> Result<()> {
+    if !temperature.is_finite() || temperature < 0.0 {
         return Err(TbError::InvalidResponseParameter {
             parameter: "T",
-            message: "must contain at least one value".into(),
-        });
-    }
-    if values
-        .iter()
-        .any(|value| !value.is_finite() || *value < 0.0)
-    {
-        return Err(TbError::InvalidResponseParameter {
-            parameter: "T",
-            message: "all values must be finite and non-negative".into(),
+            message: "must be finite and non-negative".into(),
         });
     }
     Ok(())
@@ -332,5 +306,40 @@ mod tests {
         assert!(rank3.validate_rank3().is_ok());
         // A rank-2 validation must reject the rank-3 direction matrix.
         assert!(rank3.validate_rank2().is_err());
+    }
+
+    #[test]
+    fn temperature_selects_the_matching_occupation() {
+        let zero = Parameters::rank2([4, 4], [1.0, 0.0], [0.0, 1.0], array![0.0]);
+        assert_eq!(zero.T, 0.0);
+        assert!(matches!(
+            parameters_occupation(&zero),
+            Occupation::ZeroTemperature
+        ));
+
+        let finite = zero.with_temperature(300.0);
+        assert!(matches!(
+            parameters_occupation(&finite),
+            Occupation::FermiDirac { temperature_kelvin } if temperature_kelvin == 300.0
+        ));
+        assert!(finite.validate_rank2().is_ok());
+    }
+
+    #[test]
+    fn invalid_temperatures_are_rejected() {
+        for invalid in [-1.0, f64::NAN, f64::INFINITY] {
+            // Validation checks the k-mesh and the direction rank before the
+            // temperature, so each rank needs parameters with matching rows.
+            let rank2 = Parameters::rank2([4, 4], [1.0, 0.0], [0.0, 1.0], array![0.0])
+                .with_temperature(invalid);
+            let rank3 = Parameters::rank3([4, 4], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], array![0.0])
+                .with_temperature(invalid);
+            for rejected in [rank2.validate_rank2(), rank3.validate_rank3()] {
+                assert!(matches!(
+                    rejected,
+                    Err(TbError::InvalidResponseParameter { parameter: "T", .. })
+                ));
+            }
+        }
     }
 }

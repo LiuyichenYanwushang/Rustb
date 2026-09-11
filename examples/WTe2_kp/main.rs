@@ -33,7 +33,7 @@ fn main() {
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 5.0;
     let mut response = Parameters::rank3([nk, nk], [0.0, 1.0], [1.0, 0.0], [1.0, 0.0], mu.clone());
-    response.T = array![T];
+    response.T = T;
     response.eta = 1e-5;
     response.field_symmetry = FieldSymmetry::Ordered;
     let sigma = model
@@ -70,7 +70,7 @@ fn main() {
         let model = gen_model(*t0, v, ap, eta, m);
         let mut response =
             Parameters::rank3([nk, nk], [0.0, 1.0], [1.0, 0.0], [1.0, 0.0], mu.clone());
-        response.T = array![T];
+        response.T = T;
         response.eta = 1e-5;
         response.field_symmetry = FieldSymmetry::Ordered;
         let sigma = model

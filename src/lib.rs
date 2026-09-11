@@ -378,7 +378,7 @@ mod tests {
         temperature_kelvin: f64,
     ) -> Parameters<DIM> {
         let mut params = Parameters::new(k_mesh, direction, chemical_potentials.clone());
-        params.T = array![temperature_kelvin];
+        params.T = temperature_kelvin;
         params
     }
 
@@ -467,7 +467,7 @@ mod tests {
             fixed_direction(direction_b),
             array![chemical_potential],
         );
-        params.T = array![temperature_kelvin];
+        params.T = temperature_kelvin;
         params.spin = spin;
         params.eta = broadening;
         model
@@ -512,11 +512,7 @@ mod tests {
             fixed_direction(field_2),
             chemical_potentials.clone(),
         );
-        params.T = array![nonlinear_temperature(
-            temperature_kelvin,
-            k_mesh,
-            integration
-        )];
+        params.T = nonlinear_temperature(temperature_kelvin, k_mesh, integration);
         params.integration = integration;
         Ok(model.intrinsic_nonlinear_hall(&params)?.conductivity)
     }
@@ -543,11 +539,7 @@ mod tests {
             fixed_direction(field_2),
             chemical_potentials.clone(),
         );
-        params.T = array![nonlinear_temperature(
-            temperature_kelvin,
-            k_mesh,
-            integration
-        )];
+        params.T = nonlinear_temperature(temperature_kelvin, k_mesh, integration);
         params.omega = array![frequency];
         params.spin = spin;
         params.eta = broadening;
@@ -2404,7 +2396,7 @@ mod tests {
             fixed_direction(&field_2),
             chemical_potentials.clone(),
         );
-        params.T = array![100.0];
+        params.T = 100.0;
         let public = model
             .intrinsic_nonlinear_hall(&params)
             .unwrap()

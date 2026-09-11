@@ -374,8 +374,8 @@ structure, `Parameters<DIM>`:
 
 | Field | Meaning | Ignored by |
 |-------|---------|-----------|
-| `T` | Temperature in kelvin (`T[0] == 0.0` = zero temperature) | `berry_curvature_at` |
-| `mu` | Chemical potential(s) in eV (single value = 1-element array) | `berry_curvature_at` |
+| `T` | Temperature in kelvin, a scalar (`0.0` = zero temperature) | `berry_curvature_at`, `quantum_geometry_at`, `quantum_geometry_on` |
+| `mu` | Chemical potential(s) in eV (single value = 1-element array) | `berry_curvature_at`, `quantum_geometry_at`, `quantum_geometry_on` |
 | `eta` | Denominator broadening in eV | `intrinsic_nonlinear_hall` |
 | `kmesh` | Uniform k-mesh `[usize; DIM]` | per-k-point trait methods |
 | `omega` | Frequency(ies) in eV; only `optical_conductivity` scans all supplied frequencies | hall, quantum geometry, extrinsic/intrinsic nonlinear Hall |
@@ -388,8 +388,8 @@ Unused fields are ignored except for `intrinsic_nonlinear_hall`'s `spin`:
 it must be `None`; `Some(_)` returns `InvalidResponseParameter`.
 
 Build parameters with `Parameters::new`, `at_mu`, `rank2`, or `rank3`, then
-tune fields directly or via the builder helpers `with_temperature`,
-`with_spin`, `with_frequency`, and `with_integration`.
+tune the public fields directly. `T` additionally has a convenience setter,
+`with_temperature`.
 
 ### Velocity operators
 
@@ -429,13 +429,14 @@ individually; no block-diagonal Hamiltonian mixing different k-points is built.
 step function, `T > 0` is a Fermi-Dirac distribution at that temperature.
 
 ```rust
-let zero_temperature = array![0.0];
-let physical_temperature = array![30.0];
+let zero_temperature = 0.0;
+let physical_temperature = 30.0;
 ```
 
 Use a finite temperature for direct Fermi-surface calculations that contain
 `-df/dE`. Energy-cut algorithms can represent the exact zero-temperature
-delta function.
+delta function. `T` is one scalar per calculation, not a series: sweep it by
+calling the method once per temperature.
 
 ### Berry curvature
 
@@ -448,7 +449,7 @@ let occupied = model.occupied_berry_curvature_at(&k, &berry_params)?;
 ```
 
 `bands.berry_curvature` and `bands.energies` contain one value per band.
-The occupied variants read `params.mu[0]` and `params.T[0]`. For a spin Hall
+The occupied variants read `params.mu[0]` and `params.T`. For a spin Hall
 kernel, set `berry_params.spin = Some(SpinDirection::Z)`.
 
 ### Hall conductivity
@@ -503,7 +504,7 @@ permutations; `FieldSymmetry::Ordered` returns one raw ordered kernel. Direct
 and energy-cut calculations share one eigendecomposition per k-point between
 the two field orderings; energy-cut also shares one band-tracking pass. Direct
 integration requires a finite temperature. Energy-cut integration accepts
-`T[0] == 0.0` (exact zero-temperature limit). The extrinsic response is DC
+`T == 0.0` (exact zero-temperature limit). The extrinsic response is DC
 only: `omega` is ignored.
 
 ### Quantum geometry

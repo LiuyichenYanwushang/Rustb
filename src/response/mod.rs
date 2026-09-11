@@ -80,8 +80,7 @@
 //! hall.integration = Integration::EnergyCut;
 //! let hall_result = model.hall_conductivity(&hall)?;
 //!
-//! let mut optical = Parameters::rank2([101, 101], [1.0, 0.0], [0.0, 1.0], Array1::zeros(1))
-//!     .with_frequency(0.0);
+//! let mut optical = Parameters::rank2([101, 101], [1.0, 0.0], [0.0, 1.0], Array1::zeros(1));
 //! optical.omega = Array1::linspace(0.0, 4.0, 401);
 //! optical.integration = Integration::Simplex;
 //! let optical_result = model.optical_conductivity(&optical)?;
@@ -164,7 +163,7 @@ mod regression_tests {
         params.integration = Integration::EnergyCut;
         let ec = model.hall_conductivity(&params).unwrap().conductivity;
         params.integration = Integration::Simplex;
-        params.T = array![500.0];
+        params.T = 500.0;
         let geometry = model.quantum_geometry(&params).unwrap().berry_curvature;
         params.mu = array![-2.4];
         params.omega = array![0.0, 0.7, 2.0];
@@ -206,7 +205,7 @@ mod regression_tests {
         let mut params = Parameters::rank2(reference_mesh, a, b, array![-1.7, -1.3, 0.0, 1.3, 1.7]);
         params.eta = 0.05;
         let zero = model.hall_conductivity(&params).unwrap().conductivity;
-        params.T = array![600.0];
+        params.T = 600.0;
         let reference = model.hall_conductivity(&params).unwrap().conductivity;
         assert!((&zero - &reference).iter().any(|x| x.abs() > 1e-4));
         params.kmesh = mesh;
@@ -326,7 +325,7 @@ mod regression_tests {
                 (Integration::EnergyCut, 400.0),
             ] {
                 params.integration = integration;
-                params.T = array![temperature];
+                params.T = temperature;
                 params.direction = original_directions.clone();
                 params.field_symmetry = FieldSymmetry::Ordered;
                 let first = model.extrinsic_nonlinear_hall(&params).unwrap();
@@ -337,6 +336,8 @@ mod regression_tests {
                     scaled_model.ham *= num_complex::Complex::new(scale, 0.0);
                     let mut scaled_params = params.clone();
                     scaled_params.mu *= scale;
+                    // The thermal energy k_B T must shrink with the
+                    // Hamiltonian for the homogeneity check below to hold.
                     scaled_params.T *= scale;
                     scaled_params.eta *= scale;
                     let scaled = scaled_model
@@ -486,6 +487,51 @@ mod regression_tests {
             assert!(matches!(
                 base.dos(&array![2, 2], lower, upper, 3, 0.1),
                 Err(crate::TbError::InvalidEnergyRange { .. })
+            ));
+        }
+    }
+
+    // Every entry point that reads `T` validates it at its own boundary. A
+    // negative or non-finite temperature must be rejected there instead of
+    // silently collapsing to the exact zero-temperature occupation.
+    #[test]
+    fn response_entry_points_reject_invalid_temperature() {
+        let model = Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
+        let k = array![0.0, 0.0];
+        let k_points = array![[0.0, 0.0], [0.5, 0.5]];
+        for invalid in [-1.0, f64::NAN, f64::INFINITY] {
+            let mut rank2 = Parameters::rank2([2, 2], [1.0, 0.0], [0.0, 1.0], array![0.0]);
+            rank2.T = invalid;
+            let mut rank3 =
+                Parameters::rank3([2, 2], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], array![0.0]);
+            rank3.T = invalid;
+            for rejected in [
+                model.hall_conductivity(&rank2).map(|_| ()),
+                model.quantum_geometry(&rank2).map(|_| ()),
+                model.optical_conductivity(&rank2).map(|_| ()),
+                model.extrinsic_nonlinear_hall(&rank3).map(|_| ()),
+                model.intrinsic_nonlinear_hall(&rank3).map(|_| ()),
+                model.occupied_berry_curvature_at(&k, &rank2).map(|_| ()),
+                model
+                    .occupied_berry_curvature_on(&k_points, &rank2)
+                    .map(|_| ()),
+            ] {
+                assert!(matches!(
+                    rejected,
+                    Err(crate::TbError::InvalidResponseParameter { parameter: "T", .. })
+                ));
+            }
+        }
+        // A legitimate zero-temperature request stays rejected on the direct
+        // Fermi-surface path, which samples -df/dE at k-points.
+        let cold = Parameters::rank3([2, 2], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], array![0.0]);
+        for rejected in [
+            model.extrinsic_nonlinear_hall(&cold),
+            model.intrinsic_nonlinear_hall(&cold),
+        ] {
+            assert!(matches!(
+                rejected,
+                Err(crate::TbError::InvalidThermodynamicParameter { .. })
             ));
         }
     }
