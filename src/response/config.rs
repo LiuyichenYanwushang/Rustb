@@ -269,27 +269,24 @@ impl ResolvedConditions {
         }
     }
 
-    /// Reject a sampled frequency for a response that does not read it.
+    /// Require an explicitly fixed zero frequency for a DC response.
     ///
-    /// A DC response is independent of `omega_ev`, so accepting the axis would
-    /// return copies of one value mislabelled as a frequency dependence.
-    pub(crate) fn reject_sampled_frequency(&self) -> Result<()> {
-        if matches!(self.axis, ResponseAxis::Frequency(_)) {
+    /// Nonzero fixed frequencies and frequency scans would mislabel a static
+    /// result as a frequency-dependent response. Both signed zeros are valid.
+    pub(crate) fn require_dc(&self) -> Result<()> {
+        if matches!(self.axis, ResponseAxis::Frequency(_)) || self.omega_ev != 0.0 {
             return Err(TbError::InvalidResponseParameter {
                 parameter: "omega_ev",
-                message:
-                    "this response is independent of frequency; sample t_kelvin or mu_ev instead"
-                        .into(),
+                message: "this DC response requires omega_ev = Sampling::Fixed(0.0); sample t_kelvin or mu_ev instead".into(),
             });
         }
         Ok(())
     }
 
-    /// Reject a sampled axis for a method that does not integrate over the
-    /// Brillouin zone.
-    pub(crate) fn require_fixed(&self) -> Result<()> {
+    /// Require one fixed DC state for a per-k-point Berry/geometry method.
+    pub(crate) fn require_fixed_dc(&self) -> Result<()> {
         if self.axis.is_fixed() {
-            return Ok(());
+            return self.require_dc();
         }
         Err(TbError::InvalidResponseParameter {
             parameter: "conditions",
@@ -297,16 +294,16 @@ impl ResolvedConditions {
         })
     }
 
-    /// Every sampled temperature must be strictly positive. Direct
+    /// Every sample must have a positive representable thermal energy. Direct
     /// Fermi-surface integration samples `-df/dE`, which cannot represent the
     /// zero-temperature step; the whole call is rejected instead of switching
     /// algorithm at an individual sample.
     pub(crate) fn require_positive_temperature(&self) -> Result<()> {
         for index in 0..self.len() {
-            if self.point(index).0 <= 0.0 {
+            if self.occupation(index).energy_width()? == 0.0 {
                 return Err(TbError::InvalidThermodynamicParameter {
                     parameter: "t_kelvin",
-                    message: "direct Fermi-surface integration requires a strictly positive temperature on every sample; use Integration::EnergyCut for the exact zero-temperature Fermi surface".into(),
+                    message: "direct Fermi-surface integration requires a positive representable thermal energy k_B T at every sample; use Integration::EnergyCut for the exact zero-temperature Fermi surface".into(),
                 });
             }
         }
@@ -320,7 +317,8 @@ impl ResolvedConditions {
 pub struct ResponseOptions {
     /// Brillouin-zone integration algorithm.
     pub integration: Integration,
-    /// Spin-current polarization; `None` selects the charge current.
+    /// Spin-current polarization; `None` selects the charge current. Optical,
+    /// quantum-geometry and intrinsic nonlinear Hall methods require `None`.
     pub spin: Option<SpinDirection>,
     /// Ordering convention of the two external-field indices. Read only by
     /// `extrinsic_nonlinear_hall`.
@@ -351,7 +349,8 @@ pub struct Parameters<const DIM: usize> {
     pub direction: Array2<f64>,
     /// Brillouin-zone integration algorithm.
     pub integration: Integration,
-    /// Spin-current polarization. `None` selects the charge current.
+    /// Spin-current polarization. `None` selects the charge current. Optical,
+    /// quantum-geometry and intrinsic nonlinear Hall methods require `None`.
     pub spin: Option<SpinDirection>,
     /// Ordering convention for the two field indices of the extrinsic
     /// nonlinear Hall response. Ignored by all other methods.
@@ -440,6 +439,18 @@ impl<const DIM: usize> Parameters<DIM> {
             validate_temperature(resolved.point(index).0)?;
         }
         Ok(resolved)
+    }
+
+    /// Reject a spin-current request for a method that only computes charge
+    /// response, even when the model itself is spinful.
+    pub(crate) fn require_charge_current(&self) -> Result<()> {
+        if self.spin.is_some() {
+            return Err(TbError::InvalidResponseParameter {
+                parameter: "spin",
+                message: "this response supports charge current only; spin must be None".into(),
+            });
+        }
+        Ok(())
     }
 
     /// The explicitly requested denominator broadening.
@@ -916,10 +927,10 @@ mod tests {
         }
         .resolve()
         .unwrap();
-        assert!(sampled.require_fixed().is_err());
+        assert!(sampled.require_fixed_dc().is_err());
 
         let fixed = Conditions::fixed(300.0, 0.0, 0.0).resolve().unwrap();
-        assert!(fixed.require_fixed().is_ok());
+        assert!(fixed.require_fixed_dc().is_ok());
         assert!(fixed.require_positive_temperature().is_ok());
         assert!(
             Conditions::fixed(0.0, 0.0, 0.0)

@@ -439,6 +439,12 @@ eigenstates, velocity kernels and band tracking are computed once no matter how
 many samples are requested. Nothing is defaulted: `integration`, `spin`,
 `field_symmetry` and `eta_ev` are always stated.
 
+DC responses and per-k-point Berry/geometry methods require
+`omega_ev: Sampling::Fixed(0.0)`. Optical and quantum-geometry methods, like
+intrinsic nonlinear Hall, require `spin: None`. Reusing the k-mesh preparation
+removes repeated diagonalization; weighting and integration still run for each
+sample.
+
 ```rust
 let mu = Array1::linspace(-1.0, 1.0, 201);
 let conditions = Conditions {

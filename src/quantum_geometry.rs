@@ -68,13 +68,15 @@ pub struct QuantumGeometryResult {
 /// Reusable band-resolved quantum-geometry kernels.
 ///
 /// Neither method integrates over the Brillouin zone, so the sampled axis of
-/// `Parameters::conditions` must be fixed; a sampled axis is rejected.
+/// `Parameters::conditions` must be fixed, with `omega_ev = 0`.
+/// These charge-response methods require `spin: None`.
 pub trait QuantumGeometry<const DIM: usize>: Velocity {
     /// Evaluate every band at one k-point.
     ///
-    /// Reads the fixed `conditions`, `direction` (rank 2) and `eta_ev` from
-    /// the parameter set. The other fields do not affect the result, but every
-    /// field is still validated.
+    /// Reads `direction` (rank 2) and `eta_ev`. Conditions must specify one
+    /// fixed DC state and `spin` must be `None`; `kmesh` is validated even
+    /// though the supplied k-point is used. `integration` and `field_symmetry`
+    /// do not affect this band-resolved result.
     fn quantum_geometry_at<S: Data<Elem = f64>>(
         &self,
         k: &ArrayBase<S, Ix1>,
@@ -105,7 +107,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry<DIM>
             });
         }
         let resolved = params.validate_rank2()?;
-        resolved.require_fixed()?;
+        resolved.require_fixed_dc()?;
+        params.require_charge_current()?;
         let eta = params.broadening()?;
         self.quantum_geometry_at_impl(k, &params.direction, eta)
     }
@@ -125,7 +128,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry<DIM>
         }
         // Validate once up front, then reuse the unvalidated kernel per k-point.
         let resolved = params.validate_rank2()?;
-        resolved.require_fixed()?;
+        resolved.require_fixed_dc()?;
+        params.require_charge_current()?;
         let eta = params.broadening()?;
         self.quantum_geometry_map_impl(k_points, &params.direction, eta)
     }
@@ -214,18 +218,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Integrate occupation-weighted quantum geometry over the Brillouin zone.
     ///
     /// Reads `conditions` (at most one axis sampled), `kmesh`,
-    /// `direction` (rank 2), `eta_ev` and `integration`; `spin` and
-    /// `field_symmetry` are ignored and
-    /// `omega_ev` must be `Sampling::Fixed` because the response is DC (a
-    /// sampled frequency is rejected). Both algorithms use Cartesian
-    /// reciprocal-space normalization and
-    /// prepare eigenstates, velocity kernels and band tracking once, so the cost
-    /// of a sampled axis is independent of the number of samples. Simplex mode
-    /// additionally reports the number of small-gap simplices encountered during
-    /// band tracking.
+    /// `direction` (rank 2), `eta_ev` and `integration`; `spin` must be `None`
+    /// and `field_symmetry` is ignored. `omega_ev` must be
+    /// `Sampling::Fixed(0.0)` because the response is DC. Both algorithms use
+    /// Cartesian reciprocal-space normalization and prepare eigenstates,
+    /// velocity kernels and band tracking once. Weighting and integration still
+    /// run for each sample; temperature scans repeat simplex quadrature on the
+    /// shared vertices. Simplex mode additionally reports the number of
+    /// small-gap simplices.
     pub fn quantum_geometry(&self, params: &Parameters<DIM>) -> Result<QuantumGeometryResult> {
         let resolved = params.validate_rank2()?;
-        resolved.reject_sampled_frequency()?;
+        resolved.require_dc()?;
+        params.require_charge_current()?;
         self.validate()?;
         if params.integration == Integration::EnergyCut {
             return Err(TbError::InvalidResponseParameter {

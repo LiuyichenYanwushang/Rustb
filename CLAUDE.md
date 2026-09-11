@@ -90,10 +90,17 @@ model hierarchies with duplicated band, geometry, or response methods.
   computed once regardless of the sample count. Sampling several axes is
   rejected before any k-mesh work. A Cartesian product of axes would need a new
   entry point returning a multi-dimensional result.
+  Weighting and integration costs still grow with the number of samples;
+  temperature scans repeat cuts/convolutions or quadrature on shared vertices.
 - Results carry `axis: ResponseAxis` rather than a copied chemical-potential
   grid. Per-k-point methods require every axis `Fixed` and reject a sampled
   axis instead of ignoring it, and `eta_ev` is required by every entry point
   that broadens a denominator.
+- DC responses and per-k-point Berry/geometry methods require
+  `omega_ev: Sampling::Fixed(0.0)`. Optical, quantum geometry and intrinsic
+  nonlinear Hall require `spin: None`; unsupported spin requests return errors.
+  Direct nonlinear Hall requires a positive representable `k_B T` at every
+  sample, rejecting zero or underflowed widths before k-mesh preparation.
 - The supported entry points are `hall_conductivity`, `quantum_geometry`,
   `optical_conductivity`, `extrinsic_nonlinear_hall`, and
   `intrinsic_nonlinear_hall`. Algorithm choice belongs in the shared

@@ -166,15 +166,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Reads `conditions` (at most one axis sampled), `kmesh`,
     /// `direction` (rank 2), `eta_ev`, `spin` and `integration`;
     /// `field_symmetry` is ignored and
-    /// `omega_ev` must be `Sampling::Fixed` because the response is DC (a
-    /// sampled frequency is rejected). The returned array has one value per sample of the sampled
-    /// axis. Eigenstates, velocity kernels and band tracking are prepared once
-    /// and reused by every sample, so the cost of a sampled axis is independent
-    /// of the number of samples for direct integration. Energy-cut integration
-    /// requires an ascending sampled chemical potential.
+    /// `omega_ev` must be `Sampling::Fixed(0.0)` because the response is DC.
+    /// The returned array has one value per sample of the sampled axis.
+    /// Eigenstates, velocity kernels and band tracking are prepared once;
+    /// weighting and integration still run for each sample. Temperature scans
+    /// repeat the energy cuts and convolution on shared vertices. Energy-cut
+    /// integration requires an ascending sampled chemical potential.
     pub fn hall_conductivity(&self, params: &Parameters<DIM>) -> Result<HallConductivityResult> {
         let resolved = params.validate_rank2()?;
-        resolved.reject_sampled_frequency()?;
+        resolved.require_dc()?;
         self.validate()?;
         let spin = params.spin;
         if !SPIN && let Some(direction) = spin {

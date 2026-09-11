@@ -251,16 +251,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Reads `conditions` (at most one axis sampled), `kmesh`,
     /// `direction` (rank 3), `eta_ev`, `spin`, `integration` and
     /// `field_symmetry`. This is a DC
-    /// response, so `omega_ev` must be `Sampling::Fixed` and a sampled
-    /// frequency is rejected. Eigenstates, velocity kernels and band
+    /// response, so `omega_ev` must be `Sampling::Fixed(0.0)`.
+    /// Eigenstates, velocity kernels and band
     /// tracking are prepared once and reused by every sample of the sampled
     /// axis.
     ///
     /// Direct integration samples `-df/dE` on k-points, so every sample must
-    /// be strictly positive; a sampled temperature that reaches zero rejects the
-    /// whole call before any k-mesh work instead of switching algorithm at that
-    /// sample. Energy-cut integration supports the exact zero-temperature
-    /// limit.
+    /// have a positive representable thermal energy `k_B T`. Zero or
+    /// underflowed widths reject the whole call before any k-mesh work.
+    /// Energy-cut integration supports the exact zero-temperature limit.
     ///
     /// Direction rows are `(current, field_1, field_2)`. In the internal
     /// kernel this maps to `Ω^{current, field_1} v^{field_2}`: `current` and
@@ -276,7 +275,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         params: &Parameters<DIM>,
     ) -> Result<NonlinearHallResult> {
         let resolved = params.validate_rank3()?;
-        resolved.reject_sampled_frequency()?;
+        resolved.require_dc()?;
         self.validate()?;
         let eta = params.broadening()?;
         let spin = params.spin;
@@ -709,13 +708,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Reads `conditions` (at most one axis sampled), `kmesh`,
     /// `direction` (rank 3) and `integration`; `eta_ev` and
     /// `field_symmetry` are ignored, and
-    /// `omega_ev` must be `Sampling::Fixed` because the response is DC.
+    /// `omega_ev` must be `Sampling::Fixed(0.0)` because the response is DC.
     /// The response is charge-current only; a requested `spin` returns an error.
     /// Both paths omit interband gaps at or below `1e-10` eV.
     ///
-    /// Direct integration samples `-df/dE` on k-points, so every sample must be
-    /// strictly positive; a sampled temperature that reaches zero rejects the
-    /// whole call before any k-mesh work. Energy-cut mode evaluates the
+    /// Direct integration samples `-df/dE` on k-points, so every sample must
+    /// have a positive representable thermal energy `k_B T`. Zero or
+    /// underflowed widths reject the whole call before any k-mesh work.
+    /// Energy-cut mode evaluates the
     /// zero-temperature Fermi surface exactly within the simplex interpolation
     /// and also accepts finite thermal widths. Eigenstates, velocity kernels and
     /// band tracking are prepared once and reused by every sample.
@@ -724,14 +724,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         params: &Parameters<DIM>,
     ) -> Result<NonlinearHallResult> {
         let resolved = params.validate_rank3()?;
-        resolved.reject_sampled_frequency()?;
+        resolved.require_dc()?;
         self.validate()?;
-        if params.spin.is_some() {
-            return Err(TbError::InvalidResponseParameter {
-                parameter: "spin",
-                message: "intrinsic_nonlinear_hall currently supports charge current only".into(),
-            });
-        }
+        params.require_charge_current()?;
         if params.integration == Integration::Simplex {
             return Err(TbError::InvalidResponseParameter {
                 parameter: "integration",

@@ -1102,40 +1102,48 @@ mod regression_tests {
         assert_eq!(tensor_tracking, 1);
     }
 
-    /// A sampled temperature that reaches zero rejects the whole direct call,
-    /// before any k-mesh work, instead of switching algorithm per sample.
+    /// Reject an unrepresentable thermal width before preparing any k-point,
+    /// including when it occurs after a valid sample in a temperature scan.
     #[test]
-    fn a_zero_temperature_sample_rejects_the_whole_direct_call() {
+    fn zero_or_underflowed_thermal_width_rejects_the_whole_direct_call() {
         use crate::response::config::counters;
         let model = sampled_axis_model();
-        let params = Parameters::rank3(
-            Conditions {
-                t_kelvin: Sampling::Values(array![0.0, 200.0]),
-                mu_ev: Sampling::Fixed(0.0),
-                omega_ev: Sampling::Fixed(0.0),
-            },
-            [5, 6],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            [1.0, 1.0],
-            options(Integration::Direct, Some(0.07)),
-        );
-        for rejected in [
-            model.extrinsic_nonlinear_hall(&params),
-            model.intrinsic_nonlinear_hall(&params),
-        ] {
-            assert!(matches!(
-                rejected,
-                Err(crate::TbError::InvalidThermodynamicParameter {
-                    parameter: "t_kelvin",
-                    ..
-                })
-            ));
+        for temperature in [0.0, 1e-320] {
+            for t_kelvin in [
+                Sampling::Fixed(temperature),
+                Sampling::Values(array![300.0, temperature]),
+            ] {
+                let params = Parameters::rank3(
+                    Conditions {
+                        t_kelvin,
+                        mu_ev: Sampling::Fixed(-0.5),
+                        omega_ev: Sampling::Fixed(0.0),
+                    },
+                    [3, 4],
+                    [1.0, 0.0],
+                    [0.0, 1.0],
+                    [1.0, 1.0],
+                    options(Integration::Direct, Some(0.07)),
+                );
+                for evaluate in [
+                    Model::extrinsic_nonlinear_hall,
+                    Model::intrinsic_nonlinear_hall,
+                ] {
+                    let (eigen, tracking, result) = counters::measure(|| evaluate(&model, &params));
+                    assert!(
+                        matches!(
+                            result,
+                            Err(crate::TbError::InvalidThermodynamicParameter {
+                                parameter: "t_kelvin",
+                                ..
+                            })
+                        ),
+                        "temperature {temperature}: {result:?}"
+                    );
+                    assert_eq!((eigen, tracking), (0, 0));
+                }
+            }
         }
-        let (eigen, tracking, _) =
-            counters::measure(|| model.intrinsic_nonlinear_hall(&params).is_err());
-        assert_eq!(eigen, 0, "rejection must precede the k-mesh preparation");
-        assert_eq!(tracking, 0, "rejection must precede band tracking");
     }
 
     /// The temperature axis is newly sampleable, so every entry point that
@@ -1402,5 +1410,120 @@ mod regression_tests {
         let scanned = model.optical_conductivity(&optical).unwrap();
         assert!(matches!(scanned.axis, ResponseAxis::Frequency(_)));
         assert_eq!(scanned.conductivity.ncols(), 3);
+    }
+
+    fn assert_parameter_rejected_before_preparation(
+        parameter: &'static str,
+        evaluate: impl FnOnce() -> crate::Result<()> + Send,
+    ) {
+        let (eigen, tracking, result) = super::config::counters::measure(evaluate);
+        assert!(
+            matches!(
+                result,
+                Err(crate::TbError::InvalidResponseParameter { parameter: found, .. })
+                    if found == parameter
+            ),
+            "expected rejection of {parameter}: {result:?}"
+        );
+        assert_eq!((eigen, tracking), (0, 0));
+    }
+
+    #[test]
+    fn dc_responses_reject_fixed_nonzero_frequencies() {
+        let model = sampled_axis_model();
+        let k = array![0.2, 0.3];
+        let k_points = array![[0.2, 0.3]];
+        for omega in [-0.7, 0.7, 1e-320] {
+            let rank2 = Parameters::rank2(
+                Conditions::fixed(300.0, -0.5, omega),
+                [3, 4],
+                [1.0, 0.0],
+                [0.0, 1.0],
+                options(Integration::Direct, Some(0.07)),
+            );
+            let rank3 = Parameters::rank3(
+                rank2.conditions.clone(),
+                rank2.kmesh,
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [1.0, 1.0],
+                options(Integration::Direct, Some(0.07)),
+            );
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model.hall_conductivity(&rank2).map(|_| ())
+            });
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model.quantum_geometry(&rank2).map(|_| ())
+            });
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model.extrinsic_nonlinear_hall(&rank3).map(|_| ())
+            });
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model.intrinsic_nonlinear_hall(&rank3).map(|_| ())
+            });
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model.berry_curvature_at(&k, &rank2).map(|_| ())
+            });
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model.occupied_berry_curvature_at(&k, &rank2).map(|_| ())
+            });
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model
+                    .occupied_berry_curvature_on(&k_points, &rank2)
+                    .map(|_| ())
+            });
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model.quantum_geometry_at(&k, &rank2).map(|_| ())
+            });
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model.quantum_geometry_on(&k_points, &rank2).map(|_| ())
+            });
+            // The same fixed nonzero frequency is physical for optical response.
+            assert!(model.optical_conductivity(&rank2).is_ok());
+        }
+    }
+
+    #[test]
+    fn charge_only_responses_reject_spin_requests() {
+        fn check<const SPIN: bool>() {
+            let model =
+                Model::<SPIN, 2>::tb_model(Array2::eye(2), Array2::zeros((2, 2)), None).unwrap();
+            let k = array![0.2, 0.3];
+            let k_points = array![[0.2, 0.3]];
+            for integration in [Integration::Direct, Integration::Simplex] {
+                for spin in [
+                    crate::SpinDirection::X,
+                    crate::SpinDirection::Y,
+                    crate::SpinDirection::Z,
+                ] {
+                    let mut params = Parameters::rank2(
+                        Conditions::fixed(300.0, -0.5, 0.0),
+                        [3, 4],
+                        [1.0, 0.0],
+                        [0.0, 1.0],
+                        options(integration, Some(0.07)),
+                    );
+                    params.spin = Some(spin);
+                    assert_parameter_rejected_before_preparation("spin", || {
+                        model.optical_conductivity(&params).map(|_| ())
+                    });
+                    assert_parameter_rejected_before_preparation("spin", || {
+                        model.quantum_geometry(&params).map(|_| ())
+                    });
+                    assert_parameter_rejected_before_preparation("spin", || {
+                        model.quantum_geometry_at(&k, &params).map(|_| ())
+                    });
+                    assert_parameter_rejected_before_preparation("spin", || {
+                        model.quantum_geometry_on(&k_points, &params).map(|_| ())
+                    });
+                    params.direction = Array2::zeros((0, 2));
+                    assert_parameter_rejected_before_preparation("spin", || {
+                        model.optical_conductivity(&params).map(|_| ())
+                    });
+                }
+            }
+        }
+        check::<false>();
+        check::<true>();
     }
 }

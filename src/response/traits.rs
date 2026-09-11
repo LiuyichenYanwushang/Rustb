@@ -26,14 +26,14 @@ pub struct BandBerryCurvature {
 /// Berry-curvature methods shared by tight-binding-like model types.
 ///
 /// None of these methods integrates over the Brillouin zone, so the sampled
-/// axis of `Parameters::conditions` must be fixed; a sampled axis is rejected.
+/// axis of `Parameters::conditions` must be fixed, with `omega_ev = 0`.
 pub trait BerryCurvature<const DIM: usize>: Velocity {
     /// Evaluate the charge or spin Berry curvature of every band at one k-point.
     ///
-    /// Reads the fixed `conditions`, `direction` (rank 2), `spin` and
-    /// `eta_ev` from the parameter set. `kmesh`, `integration` and
-    /// `field_symmetry` do not affect the result, but every field is still
-    /// validated.
+    /// Reads `direction` (rank 2), `spin` and `eta_ev`. Conditions must specify
+    /// one fixed DC state; `kmesh` is validated even though the supplied
+    /// k-point is used. `integration` and `field_symmetry` do not affect this
+    /// band-resolved result.
     fn berry_curvature_at<S: Data<Elem = f64>>(
         &self,
         k: &ArrayBase<S, Ix1>,
@@ -72,7 +72,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
             });
         }
         let resolved = params.validate_rank2()?;
-        resolved.require_fixed()?;
+        resolved.require_fixed_dc()?;
         let eta = params.broadening()?;
         let spin = params.spin;
         if !SPIN && let Some(direction) = spin {
@@ -87,7 +87,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
         params: &Parameters<DIM>,
     ) -> Result<f64> {
         let resolved = params.validate_rank2()?;
-        resolved.require_fixed()?;
+        resolved.require_fixed_dc()?;
         let (_, chemical_potential, _) = resolved.point(0);
         let occupation = resolved.occupation(0);
         let bands = self.berry_curvature_at(k, params)?;
@@ -114,7 +114,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
         }
         // Validate once up front, then reuse the unvalidated kernel per k-point.
         let resolved = params.validate_rank2()?;
-        resolved.require_fixed()?;
+        resolved.require_fixed_dc()?;
         let eta = params.broadening()?;
         let spin = params.spin;
         if !SPIN && let Some(direction) = spin {

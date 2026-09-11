@@ -89,7 +89,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Reads `conditions` (at most one axis sampled; this is the only entry
     /// point that may sample `omega_ev`), `kmesh`, `direction` (rank 2, or
     /// empty for the full Cartesian tensor), `eta_ev` and `integration`;
-    /// `spin` and `field_symmetry` are ignored. The columns of
+    /// `spin` must be `None`, and `field_symmetry` is ignored. The columns of
     /// `conductivity` follow the sampled axis. Eigenstates,
     /// velocity kernels and band tracking are prepared once and reused by every
     /// sample.
@@ -106,6 +106,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ) -> Result<OpticalConductivityResult<DIM>> {
         self.validate()?;
         let resolved = params.validate_common()?;
+        params.require_charge_current()?;
         match params.integration {
             Integration::Direct | Integration::Simplex => {}
             Integration::EnergyCut => {

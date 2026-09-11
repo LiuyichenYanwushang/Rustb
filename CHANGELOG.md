@@ -4,6 +4,8 @@
 
 ### Safety and numerical fixes
 
+- Direct nonlinear Hall rejects temperatures whose thermal energy `k_B T`
+  underflows to zero, including inside scans, before preparing the k-mesh.
 - Correct the interband optical Kubo kernel: retain both longitudinal absorption
   and the antisymmetric Hall response, with `e²/hbar` omitted. Unbroadened poles
   return errors instead of silently vanishing; Drude terms remain excluded.
@@ -64,8 +66,11 @@
   longer implement `Default`, and `eta_ev` is `Option<f64>`: every entry point
   that broadens a denominator requires it, while `intrinsic_nonlinear_hall`
   ignores it.
-- A sampled `omega_ev` is rejected by the four frequency-independent entry
-  points; `optical_conductivity` is the only response that may sample it.
+- The four DC entry points and per-k-point Berry/geometry methods require
+  `omega_ev: Sampling::Fixed(0.0)`; nonzero fixed frequencies and sampled
+  frequencies return structured errors. Optical response accepts both.
+- Optical and quantum-geometry methods reject `spin: Some(_)`, consistent with
+  intrinsic nonlinear Hall, instead of silently returning charge results.
 - Response validation parameters are renamed: `T` becomes `t_kelvin`, `mu`
   becomes `mu_ev`, and a missing `eta_ev` is reported as
   `InvalidResponseParameter { parameter: "eta_ev" }`.

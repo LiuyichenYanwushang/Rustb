@@ -377,11 +377,11 @@ exactly one of its three physical axes:
 |-------|---------|
 | `conditions.t_kelvin` | Temperature in kelvin; `Sampling::Fixed(0.0)` is the exact zero-temperature step function |
 | `conditions.mu_ev` | Chemical potential in eV |
-| `conditions.omega_ev` | Photon / perturbation frequency in eV |
+| `conditions.omega_ev` | Photon / perturbation frequency in eV; DC and per-k-point Berry/geometry methods require `Sampling::Fixed(0.0)` |
 | `kmesh` | Uniform k-mesh `[usize; DIM]` |
 | `direction` | `Array2<f64>` shape `(rank, DIM)` — rank 2 for Hall / geometry / optical, rank 3 `(current, field_1, field_2)` for nonlinear; an **empty** matrix requests the full optical tensor |
 | `integration` | `Integration::Direct` / `Simplex` / `EnergyCut` |
-| `spin` | `None` = charge current, `Some(dir)` = spin current |
+| `spin` | `None` = charge current; `Some(dir)` requests spin current for Hall/Berry and extrinsic NLH. Optical, quantum geometry and intrinsic NLH reject `Some` |
 | `field_symmetry` | `FieldSymmetry::Ordered` / `Symmetrized`; read by `extrinsic_nonlinear_hall` only |
 | `eta_ev` | `Some(broadening in eV)` wherever a denominator is broadened; `None` is rejected there and ignored by `intrinsic_nonlinear_hall` |
 
@@ -389,7 +389,9 @@ Each axis is either `Sampling::Fixed(value)` or `Sampling::Values(series)`.
 **At most one axis may be `Values`**: that axis is evaluated from one shared
 k-mesh preparation, so eigenstates, velocity kernels and band tracking are
 computed once however many samples you ask for. Sampling two axes at once is
-rejected before any k-mesh work.
+rejected before any k-mesh work. Total cost is preparation plus the evaluations
+at each sample; temperature scans still repeat the energy cuts, convolutions
+or simplex quadrature on the shared vertex data.
 
 Nothing is defaulted. `Integration` and `FieldSymmetry` implement no
 `Default`, and `eta_ev` must be stated wherever it is read:
@@ -465,9 +467,10 @@ let physical_temperature = Sampling::Fixed(30.0);
 let temperature_series = Sampling::Values(Array1::linspace(0.0, 300.0, 31));
 ```
 
-Use a strictly positive temperature for direct Fermi-surface calculations that
-contain `-df/dE`: a `Values` series that reaches `0.0` is rejected as a whole
-when `integration` is `Direct`, rather than switching algorithm at that sample.
+Direct Fermi-surface calculations containing `-df/dE` require a positive
+representable thermal energy `k_B T`. A zero temperature or one whose thermal
+energy underflows to zero rejects the whole `Direct` call, including when it
+occurs inside a `Values` series.
 Energy-cut algorithms represent the exact zero-temperature delta function.
 
 ### Berry curvature
@@ -494,8 +497,9 @@ let occupied = model.occupied_berry_curvature_at(&k, &berry_params)?;
 `bands.berry_curvature` and `bands.energies` contain one value per band. The
 occupied variants sum with the occupation selected by the fixed temperature and
 chemical potential. For a spin Hall kernel pass `spin: Some(SpinDirection::Z)`.
-These per-k-point methods evaluate one state, so all three axes must be
-`Fixed`; a sampled axis returns `InvalidResponseParameter`.
+These per-k-point methods evaluate one DC state, so all three axes must be
+`Fixed` and `omega_ev` must be zero. A sampled axis or a nonzero frequency
+returns `InvalidResponseParameter`.
 
 ### Hall conductivity
 
@@ -577,11 +581,11 @@ let extrinsic_result = model.extrinsic_nonlinear_hall(&Parameters::rank3(
 one eigendecomposition per k-point between the two field orderings, and the
 energy-cut path shares one band-tracking pass. `intrinsic_nonlinear_hall` reads
 neither `eta_ev` nor `field_symmetry` and rejects a spin current;
-`extrinsic_nonlinear_hall` is DC only: it requires `omega_ev` to be `Sampling::Fixed` and rejects a sampled frequency.
+both nonlinear Hall entry points require `omega_ev: Sampling::Fixed(0.0)`.
 
-Direct integration samples `-df/dE` on k-points, so **every** sample must be
-strictly positive: a `Values` series reaching `0.0` rejects the whole call,
-before any k-mesh work, instead of switching algorithm at that sample. Use
+Direct integration samples `-df/dE` on k-points, so **every** sample must have
+a positive representable thermal energy `k_B T`. Zero or underflowed thermal
+widths reject the whole call before any k-mesh work. Use
 `Integration::EnergyCut` for the exact zero-temperature Fermi surface.
 
 ### Quantum geometry
@@ -652,7 +656,8 @@ let sigma = result.conductivity; // (components, samples)
 ```
 
 This is the only entry point that may sample `omega_ev` — the four
-frequency-independent entry points reject a sampled frequency. It may equally
+DC entry points require `Sampling::Fixed(0.0)`. Optical response requires
+`spin: None`; requesting spin current returns an error. It may equally
 sample `t_kelvin` or `mu_ev`, in which case the frequency stays fixed and the
 columns follow that axis. A two-row direction matrix computes one projected component;
 an **empty** direction matrix computes every ordered Cartesian component
