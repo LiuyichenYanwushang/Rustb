@@ -136,6 +136,8 @@ pub(crate) fn global_band_track_with(
     if nk <= 1 {
         return;
     }
+    #[cfg(test)]
+    super::config::counters::count_band_tracking();
     let _dim = k_mesh.len();
     let mut visited = vec![false; nk];
     let mut queue = std::collections::VecDeque::new();

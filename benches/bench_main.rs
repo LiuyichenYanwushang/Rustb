@@ -306,7 +306,18 @@ fn bench_batch_construction(c: &mut Criterion) {
 fn bench_occupied_berry_curvature_at(c: &mut Criterion) {
     let mut group = c.benchmark_group("occupied_berry_curvature_at");
     let kvec = arr1(&[0.3, 0.5]);
-    let charge_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
+    let charge_params = Parameters::rank2(
+        Conditions::fixed(0.0, 0.0, 0.0),
+        [1, 1],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        ResponseOptions {
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(1e-3),
+        },
+    );
 
     for (name, build) in SPINLESS_CURV.iter() {
         let m = build();
@@ -346,7 +357,18 @@ fn bench_hall_conductivity(c: &mut Criterion) {
     let mut group = c.benchmark_group("hall_conductivity");
     let model = build_small();
     let nk = 21;
-    let params = Parameters::rank2([nk, nk], [1.0, 0.0], [0.0, 1.0], array![0.0]);
+    let params = Parameters::rank2(
+        Conditions::fixed(0.0, 0.0, 0.0),
+        [nk, nk],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        ResponseOptions {
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(1e-3),
+        },
+    );
 
     group.bench_function("small_21x21", |b| {
         b.iter(|| model.hall_conductivity(black_box(&params)).unwrap())
@@ -483,9 +505,22 @@ fn bench_ahc_ec_2d(c: &mut Criterion) {
 
     for &nk in &[31, 51] {
         let mu = Array1::linspace(-3.0, 3.0, 51);
-        let mut params = Parameters::rank2([nk, nk], [1.0, 0.0], [0.0, 1.0], mu);
-        params.eta = eta;
-        params.integration = Integration::EnergyCut;
+        let params = Parameters::rank2(
+            Conditions {
+                t_kelvin: Sampling::Fixed(0.0),
+                mu_ev: Sampling::Values(mu),
+                omega_ev: Sampling::Fixed(0.0),
+            },
+            [nk, nk],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            ResponseOptions {
+                integration: Integration::EnergyCut,
+                spin: None,
+                field_symmetry: FieldSymmetry::Symmetrized,
+                eta_ev: Some(eta),
+            },
+        );
         group.bench_function(BenchmarkId::new("nk", nk), |b| {
             b.iter(|| {
                 let r = black_box(model.hall_conductivity(black_box(&params)).unwrap());
@@ -501,8 +536,23 @@ fn bench_intrinsic_ec_2d(c: &mut Criterion) {
     let model = build_haldane_2d();
     for &nk in &[21, 31] {
         let mu = Array1::linspace(-3.0, 3.0, 31);
-        let mut params = Parameters::rank3([nk, nk], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0], mu);
-        params.integration = Integration::EnergyCut;
+        let params = Parameters::rank3(
+            Conditions {
+                t_kelvin: Sampling::Fixed(0.0),
+                mu_ev: Sampling::Values(mu),
+                omega_ev: Sampling::Fixed(0.0),
+            },
+            [nk, nk],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            ResponseOptions {
+                integration: Integration::EnergyCut,
+                spin: None,
+                field_symmetry: FieldSymmetry::Symmetrized,
+                eta_ev: Some(1e-3),
+            },
+        );
         group.bench_function(BenchmarkId::new("nk", nk), |b| {
             b.iter(|| {
                 let r = black_box(model.intrinsic_nonlinear_hall(black_box(&params)).unwrap());

@@ -76,6 +76,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
 
         let (v_proj, hamk) = self.gen_v_projected(k_vec, gauge, &directions);
+        #[cfg(test)]
+        super::config::counters::count_eigen_decomposition();
         let (band, evec) = hamk.eigh(UPLO::Lower)?;
         // Convention: U^T · v · U^*
         let ut = evec.t();

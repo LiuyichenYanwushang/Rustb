@@ -44,8 +44,18 @@ fn main() {
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let mut berry_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
-    berry_params.T = T;
+    let berry_params = Parameters::rank2(
+        Conditions::fixed(T, 0.0, 0.0),
+        [1, 1],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        ResponseOptions {
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(1e-3),
+        },
+    );
     let berry_curv = model
         .occupied_berry_curvature_on(&kvec, &berry_params)
         .unwrap();
@@ -61,7 +71,18 @@ fn main() {
         }),
         "target/example-output/chern_alter/heat_map.pdf",
     );
-    let hall_params = Parameters::rank2([nk, nk], [1.0, 0.0], [0.0, 1.0], array![0.0]);
+    let hall_params = Parameters::rank2(
+        Conditions::fixed(0.0, 0.0, 0.0),
+        [nk, nk],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        ResponseOptions {
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(1e-3),
+        },
+    );
     let conductivity = model
         .hall_conductivity(&hall_params)
         .unwrap()
@@ -73,11 +94,23 @@ fn main() {
     let E_max = 1.0;
     let E_n = 2000;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let mut extrinsic_params =
-        Parameters::rank3([nk, nk], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], mu.clone());
-    extrinsic_params.T = T;
-    extrinsic_params.eta = 1e-5;
-    extrinsic_params.field_symmetry = FieldSymmetry::Ordered;
+    let extrinsic_params = Parameters::rank3(
+        Conditions {
+            t_kelvin: Sampling::Fixed(T),
+            mu_ev: Sampling::Values(mu.clone()),
+            omega_ev: Sampling::Fixed(0.0),
+        },
+        [nk, nk],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [0.0, 1.0],
+        ResponseOptions {
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Ordered,
+            eta_ev: Some(1e-5),
+        },
+    );
     let sigma = model
         .extrinsic_nonlinear_hall(&extrinsic_params)
         .unwrap()
@@ -99,9 +132,23 @@ fn main() {
     let E_max = 1.0;
     let E_n = 2000;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let mut intrinsic_params =
-        Parameters::rank3([nk, nk], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], mu.clone());
-    intrinsic_params.T = T;
+    let intrinsic_params = Parameters::rank3(
+        Conditions {
+            t_kelvin: Sampling::Fixed(T),
+            mu_ev: Sampling::Values(mu.clone()),
+            omega_ev: Sampling::Fixed(0.0),
+        },
+        [nk, nk],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [0.0, 1.0],
+        ResponseOptions {
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(1e-3),
+        },
+    );
     let sigma = model
         .intrinsic_nonlinear_hall(&intrinsic_params)
         .unwrap()

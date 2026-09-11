@@ -9,12 +9,9 @@ use rayon::prelude::*;
 use crate::error::{Result, TbError};
 use crate::math::anti_comm;
 use crate::velocity::Velocity;
-use crate::{Gauge, Model, RMatrixData};
+use crate::{Gauge, Model, RMatrixData, SpinDirection};
 
-use super::config::{
-    Parameters, parameters_occupation, validate_broadening, validate_chemical_potentials,
-    validate_direction_matrix, validate_temperature,
-};
+use super::config::Parameters;
 use super::helpers::build_spin_matrix;
 
 /// Berry curvature and energies of every band at one k-point.
@@ -27,11 +24,16 @@ pub struct BandBerryCurvature {
 }
 
 /// Berry-curvature methods shared by tight-binding-like model types.
+///
+/// None of these methods integrates over the Brillouin zone, so the sampled
+/// axis of `Parameters::conditions` must be fixed; a sampled axis is rejected.
 pub trait BerryCurvature<const DIM: usize>: Velocity {
     /// Evaluate the charge or spin Berry curvature of every band at one k-point.
     ///
-    /// Reads `direction` (rank 2), `spin` and `eta` from the parameter set;
-    /// all other fields are ignored.
+    /// Reads the fixed `conditions`, `direction` (rank 2), `spin` and
+    /// `eta_ev` from the parameter set. `kmesh`, `integration` and
+    /// `field_symmetry` do not affect the result, but every field is still
+    /// validated.
     fn berry_curvature_at<S: Data<Elem = f64>>(
         &self,
         k: &ArrayBase<S, Ix1>,
@@ -39,7 +41,7 @@ pub trait BerryCurvature<const DIM: usize>: Velocity {
     ) -> Result<BandBerryCurvature>;
 
     /// Sum band Berry curvatures with the electronic occupation selected by
-    /// `params.T` at the chemical potential `params.mu[0]`.
+    /// the fixed temperature and chemical potential.
     fn occupied_berry_curvature_at<S: Data<Elem = f64>>(
         &self,
         k: &ArrayBase<S, Ix1>,
@@ -69,13 +71,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
                 actual: k.len(),
             });
         }
-        validate_direction_matrix(&params.direction, 2, DIM)?;
-        validate_broadening(params.eta)?;
+        let resolved = params.validate_rank2()?;
+        resolved.require_fixed()?;
+        let eta = params.broadening()?;
         let spin = params.spin;
         if !SPIN && let Some(direction) = spin {
             return Err(TbError::SpinNotAllowed(direction));
         }
-        self.berry_curvature_at_impl(k, params)
+        self.berry_curvature_at_impl(k, &params.direction, spin, eta)
     }
 
     fn occupied_berry_curvature_at<S: Data<Elem = f64>>(
@@ -83,16 +86,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
         k: &ArrayBase<S, Ix1>,
         params: &Parameters<DIM>,
     ) -> Result<f64> {
-        validate_chemical_potentials(&params.mu)?;
-        if params.mu.len() != 1 {
-            return Err(TbError::InvalidResponseParameter {
-                parameter: "mu",
-                message: "occupied_berry_curvature_at expects a single chemical potential".into(),
-            });
-        }
-        validate_temperature(params.T)?;
-        let occupation = parameters_occupation(params);
-        let chemical_potential = params.mu[0];
+        let resolved = params.validate_rank2()?;
+        resolved.require_fixed()?;
+        let (_, chemical_potential, _) = resolved.point(0);
+        let occupation = resolved.occupation(0);
         let bands = self.berry_curvature_at(k, params)?;
         Ok(bands
             .berry_curvature
@@ -116,26 +113,20 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
             });
         }
         // Validate once up front, then reuse the unvalidated kernel per k-point.
-        validate_chemical_potentials(&params.mu)?;
-        if params.mu.len() != 1 {
-            return Err(TbError::InvalidResponseParameter {
-                parameter: "mu",
-                message: "occupied_berry_curvature_on expects a single chemical potential".into(),
-            });
-        }
-        validate_temperature(params.T)?;
-        validate_direction_matrix(&params.direction, 2, DIM)?;
-        validate_broadening(params.eta)?;
-        if !SPIN && let Some(direction) = params.spin {
+        let resolved = params.validate_rank2()?;
+        resolved.require_fixed()?;
+        let eta = params.broadening()?;
+        let spin = params.spin;
+        if !SPIN && let Some(direction) = spin {
             return Err(TbError::SpinNotAllowed(direction));
         }
-        let occupation = parameters_occupation(params);
-        let chemical_potential = params.mu[0];
+        let (_, chemical_potential, _) = resolved.point(0);
+        let occupation = resolved.occupation(0);
         let values: Vec<Result<f64>> = k_points
             .axis_iter(Axis(0))
             .into_par_iter()
             .map(|k| {
-                let bands = self.berry_curvature_at_impl(&k, params)?;
+                let bands = self.berry_curvature_at_impl(&k, &params.direction, spin, eta)?;
                 Ok(bands
                     .berry_curvature
                     .iter()
@@ -155,18 +146,20 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Band-resolved Berry-curvature kernel without input validation.
     ///
-    /// Callers must have already validated `direction` (rank 2), `spin`
-    /// against the model and `eta`. The high-level entry points validate
-    /// once and then call this per k-point; the public trait methods are
-    /// independent boundaries and validate before delegating here.
+    /// Callers must have already validated the direction rank, `spin` against
+    /// the model and `eta`. The high-level entry points validate once and then
+    /// call this per k-point; the public trait methods are independent
+    /// boundaries and validate before delegating here.
     pub(crate) fn berry_curvature_at_impl<S: Data<Elem = f64>>(
         &self,
         k: &ArrayBase<S, Ix1>,
-        params: &Parameters<DIM>,
+        direction: &Array2<f64>,
+        spin: Option<SpinDirection>,
+        eta: f64,
     ) -> Result<BandBerryCurvature> {
-        let spin = params.spin;
-        let (projected_velocity, hamiltonian) =
-            self.gen_v_projected(k, Gauge::Atom, &params.direction);
+        let (projected_velocity, hamiltonian) = self.gen_v_projected(k, Gauge::Atom, direction);
+        #[cfg(test)]
+        super::config::counters::count_eigen_decomposition();
         let (energies, eigenvectors) = hamiltonian.eigh(UPLO::Lower)?;
 
         let current: Array2<Complex<f64>> = if SPIN && spin.is_some() {
@@ -181,7 +174,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let current_band = bra.dot(&current.dot(&ket));
         let velocity_band = bra.dot(&second_velocity.dot(&ket));
         let kernel = current_band * velocity_band.reversed_axes();
-        let eta_squared = params.eta * params.eta;
+        let eta_squared = eta * eta;
         let mut berry_curvature = Array1::<f64>::zeros(self.nsta());
 
         for band in 0..self.nsta() {

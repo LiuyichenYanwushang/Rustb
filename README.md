@@ -431,28 +431,67 @@ let model_with_r: Model<false, 3, HasRMatrix> =
 ## Response calculations
 
 Every high-level response method shares a single configuration type,
-`Parameters<DIM>`, with fields `T` (kelvin; `0.0` = zero temperature), `mu`
-(eV), `eta` (broadening), `kmesh`, `omega` (eV), `spin`
-(`None` = charge current), `direction` (`Array2<f64>`, shape `(rank, DIM)`),
-`integration` (`Integration::Direct`/`Simplex`/`EnergyCut`), and
-`field_symmetry` (extrinsic NLH only). Methods ignore the fields they do not
-need, and each returns a named result structure:
+`Parameters<DIM>`. It fixes a thermodynamic point — `conditions.t_kelvin`,
+`conditions.mu_ev`, `conditions.omega_ev` — and may sample **exactly one** of
+those three axes. Each axis is either `Sampling::Fixed(value)` or
+`Sampling::Values(series)`; a sampled axis reuses one k-mesh preparation, so
+eigenstates, velocity kernels and band tracking are computed once no matter how
+many samples are requested. Nothing is defaulted: `integration`, `spin`,
+`field_symmetry` and `eta_ev` are always stated.
 
 ```rust
 let mu = Array1::linspace(-1.0, 1.0, 201);
+let conditions = Conditions {
+    t_kelvin: Sampling::Fixed(20.0),
+    mu_ev: Sampling::Values(mu),
+    omega_ev: Sampling::Fixed(0.0),
+};
 
-let mut hall = Parameters::rank2([101, 101], [1.0, 0.0], [0.0, 1.0], mu.clone())
-    .with_temperature(20.0);
-hall.integration = Integration::EnergyCut;
+let hall = Parameters::rank2(
+    conditions.clone(),
+    [101, 101],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    ResponseOptions {
+        integration: Integration::EnergyCut,
+        spin: None,
+        field_symmetry: FieldSymmetry::Symmetrized,
+        eta_ev: Some(1e-3),
+    },
+);
 let hall_result = model.hall_conductivity(&hall)?;
 
-let mut geometry = Parameters::rank2([101, 101], [1.0, 0.0], [0.0, 1.0], mu.clone());
-geometry.integration = Integration::Simplex;
+let geometry = Parameters::rank2(
+    conditions,
+    [101, 101],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    ResponseOptions {
+        integration: Integration::Simplex,
+        spin: None,
+        field_symmetry: FieldSymmetry::Symmetrized,
+        eta_ev: Some(1e-3),
+    },
+);
 let geometry_result = model.quantum_geometry(&geometry)?;
 
-let mut optical = Parameters::rank2([101, 101], [1.0, 0.0], [0.0, 1.0], array![0.0]);
-optical.omega = Array1::linspace(0.0, 4.0, 401);
-optical.integration = Integration::Simplex;
+// fixed T and mu, sweeping omega
+let optical = Parameters::rank2(
+    Conditions {
+        t_kelvin: Sampling::Fixed(20.0),
+        mu_ev: Sampling::Fixed(0.0),
+        omega_ev: Sampling::Values(Array1::linspace(0.0, 4.0, 401)),
+    },
+    [101, 101],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    ResponseOptions {
+        integration: Integration::Simplex,
+        spin: None,
+        field_symmetry: FieldSymmetry::Symmetrized,
+        eta_ev: Some(1e-2),
+    },
+);
 let optical_result = model.optical_conductivity(&optical)?;
 ```
 
@@ -461,21 +500,31 @@ of the direction matrix is the current, rows 1-2 the fields:
 
 ```rust
 let params = Parameters::rank3(
+    Conditions {
+        t_kelvin: Sampling::Fixed(30.0),
+        mu_ev: Sampling::Values(mu),
+        omega_ev: Sampling::Fixed(0.0),
+    },
     [101, 101],
     [1.0, 0.0], // current
     [1.0, 0.0], // first field
     [0.0, 1.0], // second field
-    mu,
-)
-.with_temperature(30.0);
+    ResponseOptions {
+        integration: Integration::EnergyCut,
+        spin: None,
+        field_symmetry: FieldSymmetry::Symmetrized,
+        eta_ev: Some(1e-3),
+    },
+);
 let nonlinear_result = model.intrinsic_nonlinear_hall(&params)?;
 ```
 
 Results use named fields such as `conductivity`, `metric`,
-`berry_curvature`, `frequencies`, and `diagnostics`; response methods no
-longer return positional tuples. Direct integration supports 1D–3D where the
-quantity is defined. Simplex and energy-cut paths support their documented 2D
-or 3D subsets.
+`berry_curvature` and `diagnostics`, together with `axis: ResponseAxis`
+(`Fixed`, or `Temperature`/`ChemicalPotential`/`Frequency` carrying the
+sampled values). Direct integration supports 1D–3D where the quantity is
+defined. Simplex and energy-cut paths support their documented 2D or 3D
+subsets.
 
 ## Hubbard mean field
 

@@ -369,27 +369,57 @@ For custom non-collinear seeds, use
 
 ## 4. Velocity, response, and quantum geometry
 
-Every high-level response calculation shares **one** const-generic parameter
-structure, `Parameters<DIM>`:
+Every high-level response calculation shares **one** const-generic input
+structure, `Parameters<DIM>`. It fixes a thermodynamic point and may sample
+exactly one of its three physical axes:
 
-| Field | Meaning | Ignored by |
-|-------|---------|-----------|
-| `T` | Temperature in kelvin, a scalar (`0.0` = zero temperature) | `berry_curvature_at`, `quantum_geometry_at`, `quantum_geometry_on` |
-| `mu` | Chemical potential(s) in eV (single value = 1-element array) | `berry_curvature_at`, `quantum_geometry_at`, `quantum_geometry_on` |
-| `eta` | Denominator broadening in eV | `intrinsic_nonlinear_hall` |
-| `kmesh` | Uniform k-mesh `[usize; DIM]` | per-k-point trait methods |
-| `omega` | Frequency(ies) in eV; only `optical_conductivity` scans all supplied frequencies | hall, quantum geometry, extrinsic/intrinsic nonlinear Hall |
-| `spin` | `None` = charge current, `Some(dir)` = spin current | quantum geometry, optical |
-| `direction` | `Array2<f64>` with shape `(rank, DIM)` — rank 2 for Hall / geometry / optical, rank 3 `(current, field_1, field_2)` for nonlinear | — |
-| `integration` | `Integration::Direct` / `Simplex` / `EnergyCut` | per-k-point trait methods |
-| `field_symmetry` | `FieldSymmetry` for extrinsic NLH only | all other methods |
+| Field | Meaning |
+|-------|---------|
+| `conditions.t_kelvin` | Temperature in kelvin; `Sampling::Fixed(0.0)` is the exact zero-temperature step function |
+| `conditions.mu_ev` | Chemical potential in eV |
+| `conditions.omega_ev` | Photon / perturbation frequency in eV |
+| `kmesh` | Uniform k-mesh `[usize; DIM]` |
+| `direction` | `Array2<f64>` shape `(rank, DIM)` — rank 2 for Hall / geometry / optical, rank 3 `(current, field_1, field_2)` for nonlinear; an **empty** matrix requests the full optical tensor |
+| `integration` | `Integration::Direct` / `Simplex` / `EnergyCut` |
+| `spin` | `None` = charge current, `Some(dir)` = spin current |
+| `field_symmetry` | `FieldSymmetry::Ordered` / `Symmetrized`; read by `extrinsic_nonlinear_hall` only |
+| `eta_ev` | `Some(broadening in eV)` wherever a denominator is broadened; `None` is rejected there and ignored by `intrinsic_nonlinear_hall` |
 
-Unused fields are ignored except for `intrinsic_nonlinear_hall`'s `spin`:
-it must be `None`; `Some(_)` returns `InvalidResponseParameter`.
+Each axis is either `Sampling::Fixed(value)` or `Sampling::Values(series)`.
+**At most one axis may be `Values`**: that axis is evaluated from one shared
+k-mesh preparation, so eigenstates, velocity kernels and band tracking are
+computed once however many samples you ask for. Sampling two axes at once is
+rejected before any k-mesh work.
 
-Build parameters with `Parameters::new`, `at_mu`, `rank2`, or `rank3`, then
-tune the public fields directly. `T` additionally has a convenience setter,
-`with_temperature`.
+Nothing is defaulted. `Integration` and `FieldSymmetry` implement no
+`Default`, and `eta_ev` must be stated wherever it is read:
+
+```rust
+let mu = Array1::linspace(-1.0, 1.0, 101);
+
+// fixed T and omega, sweeping mu
+let hall = Parameters::rank2(
+    Conditions {
+        t_kelvin: Sampling::Fixed(30.0),
+        mu_ev: Sampling::Values(mu),
+        omega_ev: Sampling::Fixed(0.0),
+    },
+    [51, 51],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    ResponseOptions {
+        integration: Integration::Direct,
+        spin: None,
+        field_symmetry: FieldSymmetry::Symmetrized,
+        eta_ev: Some(1e-3),
+    },
+);
+```
+
+`Conditions::fixed(t_kelvin, mu_ev, omega_ev)` pins all three axes at once.
+Results carry `axis: ResponseAxis` — `Fixed`, or `Temperature` /
+`ChemicalPotential` / `Frequency` with the sampled values — and
+`single()` returns a scalar only for `Fixed`.
 
 ### Velocity operators
 
@@ -425,50 +455,80 @@ individually; no block-diagonal Hamiltonian mixing different k-points is built.
 
 ### Temperature and occupation
 
-`T` selects the electronic occupation: `0.0` is the exact zero-temperature
-step function, `T > 0` is a Fermi-Dirac distribution at that temperature.
+The temperature axis selects the electronic occupation: `0.0` is the exact
+zero-temperature step function, a positive value is a Fermi-Dirac
+distribution at that temperature.
 
 ```rust
-let zero_temperature = 0.0;
-let physical_temperature = 30.0;
+let zero_temperature = Sampling::Fixed(0.0);
+let physical_temperature = Sampling::Fixed(30.0);
+let temperature_series = Sampling::Values(Array1::linspace(0.0, 300.0, 31));
 ```
 
-Use a finite temperature for direct Fermi-surface calculations that contain
-`-df/dE`. Energy-cut algorithms can represent the exact zero-temperature
-delta function. `T` is one scalar per calculation, not a series: sweep it by
-calling the method once per temperature.
+Use a strictly positive temperature for direct Fermi-surface calculations that
+contain `-df/dE`: a `Values` series that reaches `0.0` is rejected as a whole
+when `integration` is `Direct`, rather than switching algorithm at that sample.
+Energy-cut algorithms represent the exact zero-temperature delta function.
 
 ### Berry curvature
 
 ```rust
-let berry_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
+let berry_params = Parameters::rank2(
+    Conditions::fixed(300.0, 0.0, 0.0),
+    [1, 1],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    ResponseOptions {
+        integration: Integration::Direct,
+        spin: None,
+        field_symmetry: FieldSymmetry::Symmetrized,
+        eta_ev: Some(1e-3),
+    },
+);
 let k = arr1(&[0.2, 0.3]);
 
 let bands = model.berry_curvature_at(&k, &berry_params)?;
 let occupied = model.occupied_berry_curvature_at(&k, &berry_params)?;
 ```
 
-`bands.berry_curvature` and `bands.energies` contain one value per band.
-The occupied variants read `params.mu[0]` and `params.T`. For a spin Hall
-kernel, set `berry_params.spin = Some(SpinDirection::Z)`.
+`bands.berry_curvature` and `bands.energies` contain one value per band. The
+occupied variants sum with the occupation selected by the fixed temperature and
+chemical potential. For a spin Hall kernel pass `spin: Some(SpinDirection::Z)`.
+These per-k-point methods evaluate one state, so all three axes must be
+`Fixed`; a sampled axis returns `InvalidResponseParameter`.
 
 ### Hall conductivity
 
 ```rust
 let mu = Array1::linspace(-2.0, 2.0, 101);
-let mut params = Parameters::rank2([51, 51], [1.0, 0.0], [0.0, 1.0], mu)
-    .with_temperature(30.0);
-params.eta = 1e-3;
-params.integration = Integration::EnergyCut;
+let params = Parameters::rank2(
+    Conditions {
+        t_kelvin: Sampling::Fixed(30.0),
+        mu_ev: Sampling::Values(mu),
+        omega_ev: Sampling::Fixed(0.0),
+    },
+    [51, 51],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    ResponseOptions {
+        integration: Integration::EnergyCut,
+        spin: None,
+        field_symmetry: FieldSymmetry::Symmetrized,
+        eta_ev: Some(1e-3),
+    },
+);
 
 let result = model.hall_conductivity(&params)?;
-let sigma_vs_mu = result.conductivity;
+let sigma_vs_mu = result.conductivity; // one entry per sampled mu
 ```
 
-Use `Parameters::at_mu` and `result.single()` for a scalar chemical
-potential. `Integration::Direct` performs a uniform k-point sum;
-`EnergyCut` uses band-tracked simplex integration. For a spin Hall
-calculation set `params.spin = Some(SpinDirection::Z)`.
+`result.axis` is `ResponseAxis::ChemicalPotential(mu)`, and `single()` returns
+the scalar of a `Conditions::fixed` calculation. `Integration::Direct` performs
+a uniform k-point sum, `EnergyCut` a band-tracked cut; both prepare the k-mesh
+once and then weight every sample, and `EnergyCut` requires the sampled chemical
+potentials to ascend. For a spin Hall calculation pass
+`spin: Some(SpinDirection::Z)`. Sampling the temperature instead is the same
+call with the `Values` series moved to `t_kelvin`.
 
 ### Nonlinear Hall response
 
@@ -477,52 +537,83 @@ matrix is the current, rows 1-2 the fields:
 
 ```rust
 let mu = Array1::linspace(-1.0, 1.0, 101);
+let conditions = Conditions {
+    t_kelvin: Sampling::Fixed(30.0),
+    mu_ev: Sampling::Values(mu),
+    omega_ev: Sampling::Fixed(0.0),
+};
 
-let mut intrinsic = Parameters::rank3(
+let intrinsic_result = model.intrinsic_nonlinear_hall(&Parameters::rank3(
+    conditions.clone(),
     [51, 51],
     [1.0, 0.0], // current
     [1.0, 0.0], // field 1
     [0.0, 1.0], // field 2
-    mu.clone(),
-)
-.with_temperature(30.0);
-let intrinsic_result = model.intrinsic_nonlinear_hall(&intrinsic)?;
+    ResponseOptions {
+        integration: Integration::Direct,
+        spin: None,
+        field_symmetry: FieldSymmetry::Symmetrized,
+        eta_ev: None,
+    },
+))?;
 
-let mut extrinsic = Parameters::rank3(
+let extrinsic_result = model.extrinsic_nonlinear_hall(&Parameters::rank3(
+    conditions,
     [51, 51],
-    [1.0, 0.0], // current
-    [1.0, 0.0], // field 1
-    [0.0, 1.0], // field 2
-    mu,
-)
-.with_temperature(30.0);
-let extrinsic_result = model.extrinsic_nonlinear_hall(&extrinsic)?;
+    [1.0, 0.0],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    ResponseOptions {
+        integration: Integration::EnergyCut,
+        spin: None,
+        field_symmetry: FieldSymmetry::Ordered,
+        eta_ev: Some(1e-3),
+    },
+))?;
 ```
 
-`FieldSymmetry::Symmetrized` (the default) averages the two external-field
-permutations; `FieldSymmetry::Ordered` returns one raw ordered kernel. Direct
-and energy-cut calculations share one eigendecomposition per k-point between
-the two field orderings; energy-cut also shares one band-tracking pass. Direct
-integration requires a finite temperature. Energy-cut integration accepts
-`T == 0.0` (exact zero-temperature limit). The extrinsic response is DC
-only: `omega` is ignored.
+`FieldSymmetry::Symmetrized` averages the two external-field permutations,
+`FieldSymmetry::Ordered` returns one raw ordered kernel. Both entry points share
+one eigendecomposition per k-point between the two field orderings, and the
+energy-cut path shares one band-tracking pass. `intrinsic_nonlinear_hall` reads
+neither `eta_ev` nor `field_symmetry` and rejects a spin current;
+`extrinsic_nonlinear_hall` is DC only: it requires `omega_ev` to be `Sampling::Fixed` and rejects a sampled frequency.
+
+Direct integration samples `-df/dE` on k-points, so **every** sample must be
+strictly positive: a `Values` series reaching `0.0` rejects the whole call,
+before any k-mesh work, instead of switching algorithm at that sample. Use
+`Integration::EnergyCut` for the exact zero-temperature Fermi surface.
 
 ### Quantum geometry
 
 ```rust
 let mu = Array1::linspace(-1.0, 1.0, 101);
-let mut params = Parameters::rank2([51, 51], [1.0, 0.0], [0.0, 1.0], mu);
-params.eta = 1e-3;
-params.integration = Integration::Simplex;
+let params = Parameters::rank2(
+    Conditions {
+        t_kelvin: Sampling::Fixed(0.0),
+        mu_ev: Sampling::Values(mu),
+        omega_ev: Sampling::Fixed(0.0),
+    },
+    [51, 51],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    ResponseOptions {
+        integration: Integration::Simplex,
+        spin: None,
+        field_symmetry: FieldSymmetry::Symmetrized,
+        eta_ev: Some(1e-3),
+    },
+);
 
 let result = model.quantum_geometry(&params)?;
-let metric = result.metric;
+let metric = result.metric; // one entry per sample
 let berry_curvature = result.berry_curvature;
 ```
 
 For reusable band-resolved data, use the `QuantumGeometry` trait methods
-`quantum_geometry_at` and `quantum_geometry_on`, which read `direction` and
-`eta` from the same `Parameters` value.
+`quantum_geometry_at` and `quantum_geometry_on`. They evaluate one state, so
+they require all three axes `Fixed` and return `InvalidResponseParameter`
+otherwise.
 
 ### Optical conductivity
 
@@ -539,20 +630,34 @@ frequency scans interpolate energies and kernels once per quadrature point
 and reuse them across the full frequency list.
 
 ```rust
-let mut params = Parameters::rank2([51, 51], [1.0, 0.0], [0.0, 1.0], array![0.0])
-    .with_temperature(30.0);
-params.omega = Array1::linspace(0.0, 4.0, 401);
-params.eta = 1e-2;
-params.integration = Integration::Simplex;
+let params = Parameters::rank2(
+    Conditions {
+        t_kelvin: Sampling::Fixed(30.0),
+        mu_ev: Sampling::Fixed(0.0),
+        omega_ev: Sampling::Values(Array1::linspace(0.0, 4.0, 401)),
+    },
+    [51, 51],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    ResponseOptions {
+        integration: Integration::Simplex,
+        spin: None,
+        field_symmetry: FieldSymmetry::Symmetrized,
+        eta_ev: Some(1e-2),
+    },
+);
 
 let result = model.optical_conductivity(&params)?;
-let sigma = result.conductivity;
+let sigma = result.conductivity; // (components, samples)
 ```
 
-`params.mu` must contain a single chemical potential. A two-row direction
-matrix computes one projected component; an **empty** direction matrix
-computes every ordered Cartesian component `(0,0), (0,1), ..., (DIM-1,DIM-1)`
-— rows of `conductivity` correspond to entries in `result.directions`.
+This is the only entry point that may sample `omega_ev` — the four
+frequency-independent entry points reject a sampled frequency. It may equally
+sample `t_kelvin` or `mu_ev`, in which case the frequency stays fixed and the
+columns follow that axis. A two-row direction matrix computes one projected component;
+an **empty** direction matrix computes every ordered Cartesian component
+`(0,0), (0,1), ..., (DIM-1,DIM-1)` — rows of `conductivity` correspond to
+entries in `result.directions`.
 
 ## 5. Wilson loops and topology
 

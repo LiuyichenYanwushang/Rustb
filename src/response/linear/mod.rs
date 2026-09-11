@@ -38,6 +38,7 @@
 //! | `BerryCurvature::berry_curvature_at` | one k-point | band-resolved $\Omega_n^{ab}$ |
 //! | `Model::hall_conductivity` | direct sum or energy cut | $\sigma_{\text{AHC}}(\mu)$ |
 
+use ndarray::array;
 use ndarray::prelude::*;
 use ndarray_linalg::*;
 use rayon::prelude::*;
@@ -48,25 +49,28 @@ use crate::RMatrixData;
 use crate::error::Result;
 use crate::thermodynamics::Occupation;
 
-use super::config::{Integration, Parameters, mesh_array, parameters_occupation, validate_sorted};
+use super::config::{
+    Integration, Parameters, ResponseAxis, mesh_array, occupation_for, validate_sorted,
+};
 use super::energy_cut::{integrate_fermi_cut_2d, integrate_fermi_cut_3d};
 use super::kernel::quadrature_occupied_geometry_simplex;
 use super::tracking::{build_tetrahedra_3d_diagavg, build_triangles_2d, global_band_track};
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 
-/// Hall conductivity evaluated on the requested chemical-potential grid.
+/// Hall conductivity on the sampled axis, or at the fixed conditions.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HallConductivityResult {
-    /// Chemical potentials copied from the input configuration.
-    pub chemical_potentials: Array1<f64>,
-    /// Hall response at every chemical potential.
+    /// The axis the result is indexed by; [`ResponseAxis::Fixed`] for a single
+    /// evaluation at the fixed conditions.
+    pub axis: ResponseAxis,
+    /// Hall response at every sample of that axis.
     pub conductivity: Array1<f64>,
 }
 
 impl HallConductivityResult {
-    /// Return the scalar value produced by [`Parameters::at_mu`].
+    /// The scalar value of a single-point calculation.
     pub fn single(&self) -> Option<f64> {
-        (self.conductivity.len() == 1).then(|| self.conductivity[0])
+        self.axis.is_fixed().then(|| self.conductivity[0])
     }
 }
 
@@ -159,14 +163,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Evaluate charge or spin Hall conductivity using the unified
     /// [`Parameters`] configuration.
     ///
-    /// Reads `kmesh`, `direction` (rank 2), `mu`, `T`, `eta` and `spin` from
-    /// the parameter set; `omega` and `field_symmetry` are ignored. The
-    /// returned array has one value per chemical potential. Direct
-    /// integration reuses the band-resolved Berry curvature for the entire
-    /// chemical-potential grid; energy-cut integration tracks bands between
-    /// simplex vertices before integrating the occupied region.
+    /// Reads `conditions` (at most one axis sampled), `kmesh`,
+    /// `direction` (rank 2), `eta_ev`, `spin` and `integration`;
+    /// `field_symmetry` is ignored and
+    /// `omega_ev` must be `Sampling::Fixed` because the response is DC (a
+    /// sampled frequency is rejected). The returned array has one value per sample of the sampled
+    /// axis. Eigenstates, velocity kernels and band tracking are prepared once
+    /// and reused by every sample, so the cost of a sampled axis is independent
+    /// of the number of samples for direct integration. Energy-cut integration
+    /// requires an ascending sampled chemical potential.
     pub fn hall_conductivity(&self, params: &Parameters<DIM>) -> Result<HallConductivityResult> {
-        params.validate_rank2()?;
+        let resolved = params.validate_rank2()?;
+        resolved.reject_sampled_frequency()?;
         self.validate()?;
         let spin = params.spin;
         if !SPIN && let Some(direction) = spin {
@@ -183,8 +191,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 });
             }
         }
+        let eta = params.broadening()?;
         if params.integration == Integration::EnergyCut {
-            validate_sorted(&params.mu, "mu")?;
+            validate_sorted(&resolved.chemical_potentials(), "mu_ev")?;
             if DIM != 2 && DIM != 3 {
                 return Err(crate::TbError::InvalidDimension {
                     dim: DIM,
@@ -195,25 +204,28 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let k_mesh = mesh_array(&params.kmesh);
         let determinant = self.lat.det()?;
-        let dir_a = params.direction.row(0).to_owned();
-        let dir_b = params.direction.row(1).to_owned();
-        let occupation = parameters_occupation(params);
+        let direction = &params.direction;
+        let dir_a = direction.row(0).to_owned();
+        let dir_b = direction.row(1).to_owned();
+        let samples = resolved.len();
         let conductivity = match params.integration {
             Integration::Direct => {
                 let kvec: Array2<f64> = crate::kpoints::gen_kmesh(&k_mesh)?;
                 let nk = kvec.nrows();
                 // Validation already happened at the entry point; reuse the
-                // unvalidated kernel instead of re-validating per k-point.
-                let band_data: Vec<Result<_>> = kvec
-                    .axis_iter(Axis(0))
+                // unvalidated kernel instead of re-validating per k-point. The
+                // preparation is independent of the sampled axis.
+                let band_data: Vec<_> = (0..nk)
                     .into_par_iter()
-                    .map(|k| self.berry_curvature_at_impl(&k, params))
-                    .collect();
-                let band_data = band_data.into_iter().collect::<Result<Vec<_>>>()?;
-                let values: Vec<f64> = params
-                    .mu
-                    .par_iter()
-                    .map(|&mu| {
+                    .map(|ik| {
+                        self.berry_curvature_at_impl(&kvec.row(ik).to_owned(), direction, spin, eta)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let values: Vec<f64> = (0..samples)
+                    .into_par_iter()
+                    .map(|index| {
+                        let (t_kelvin, mu, _) = resolved.point(index);
+                        let occupation = occupation_for(t_kelvin);
                         let sum: f64 = band_data
                             .iter()
                             .map(|bands| {
@@ -233,7 +245,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 Array1::from_vec(values)
             }
             Integration::EnergyCut => {
-                let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
                 let kvec = crate::kpoints::gen_kmesh(&k_mesh)?;
                 let all_pts: Vec<Result<VertexKernel>> = (0..kvec.nrows())
                     .into_par_iter()
@@ -249,28 +260,48 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     })
                     .collect();
                 let mut all_pts: Vec<VertexKernel> = all_pts.into_iter().collect::<Result<_>>()?;
+                // Tracked once; every sample reuses the labelled vertices.
                 global_band_track(&mut all_pts, &params.kmesh);
-                let width = occupation.energy_width()?;
-                let sigma = match DIM {
-                    2 => integrate_fermi_cut_2d(
-                        &all_pts,
-                        &k_mesh,
-                        &chemical_potentials,
-                        width,
-                        params.eta,
-                    ),
-                    3 => integrate_fermi_cut_3d(
-                        &all_pts,
-                        &k_mesh,
-                        &chemical_potentials,
-                        width,
-                        params.eta,
-                    ),
+                let integrate =
+                    |chemical_potentials: &Array1<f64>, width: f64| -> Result<Array1<f64>> {
+                        Ok(match DIM {
+                            2 => integrate_fermi_cut_2d(
+                                &all_pts,
+                                &k_mesh,
+                                chemical_potentials,
+                                width,
+                                eta,
+                            ),
+                            3 => integrate_fermi_cut_3d(
+                                &all_pts,
+                                &k_mesh,
+                                chemical_potentials,
+                                width,
+                                eta,
+                            ),
+                            _ => {
+                                return Err(crate::TbError::InvalidDimension {
+                                    dim: DIM,
+                                    supported: vec![2, 3],
+                                });
+                            }
+                        })
+                    };
+                let sigma = match &resolved.axis {
+                    ResponseAxis::ChemicalPotential(values) => {
+                        let occupation = resolved.occupation(0);
+                        integrate(values, occupation.energy_width()?)?
+                    }
+                    // Temperature samples redo the cut and convolution, while
+                    // every vertex kernel stays shared.
                     _ => {
-                        return Err(crate::TbError::InvalidDimension {
-                            dim: DIM,
-                            supported: vec![2, 3],
-                        });
+                        let mut sigma = Array1::<f64>::zeros(samples);
+                        for (index, value) in sigma.iter_mut().enumerate() {
+                            let (t_kelvin, mu, _) = resolved.point(index);
+                            let width = occupation_for(t_kelvin).energy_width()?;
+                            *value = integrate(&array![mu], width)?[0];
+                        }
+                        sigma
                     }
                 };
                 sigma / determinant
@@ -279,7 +310,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
 
         Ok(HallConductivityResult {
-            chemical_potentials: params.mu.clone(),
+            axis: resolved.axis,
             conductivity,
         })
     }

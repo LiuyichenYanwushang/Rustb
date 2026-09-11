@@ -20,6 +20,7 @@
 //! [`OpticalConductivityResult`] output. A component calculation and a full
 //! Cartesian tensor calculation differ only through the direction matrix.
 
+use ndarray::array;
 use ndarray::prelude::*;
 use ndarray_linalg::{Determinant, Eigh, UPLO};
 use num_complex::Complex;
@@ -29,9 +30,8 @@ use crate::error::{Result, TbError};
 use crate::{Gauge, Model, RMatrixData};
 
 use super::config::{
-    Integration, IntegrationDiagnostics, Parameters, mesh_array, parameters_occupation,
-    validate_broadening, validate_chemical_potentials, validate_direction_matrix,
-    validate_temperature,
+    Integration, IntegrationDiagnostics, Parameters, ResponseAxis, mesh_array, occupation_for,
+    validate_direction_matrix,
 };
 use super::kernel::{eval_optical_kernel, quadrature_optical_simplex};
 use super::tracking::{
@@ -64,12 +64,13 @@ fn direction_pairs<const DIM: usize>(params: &Parameters<DIM>) -> Result<Vec<Arr
 /// Optical conductivity for one or more tensor components.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpticalConductivityResult<const DIM: usize> {
-    /// Frequencies corresponding to the columns of `conductivity`.
-    pub frequencies: Array1<f64>,
+    /// The axis the columns of `conductivity` are indexed by;
+    /// [`ResponseAxis::Fixed`] for a single evaluation at the fixed conditions.
+    pub axis: ResponseAxis,
     /// Direction matrix (shape `(2, DIM)`) corresponding to every row of
     /// `conductivity`.
     pub directions: Vec<Array2<f64>>,
-    /// Complex conductivity with shape `(number_of_components, frequencies)`.
+    /// Complex conductivity with shape `(number_of_components, samples)`.
     pub conductivity: Array2<Complex<f64>>,
     /// Present only for simplex integration.
     pub diagnostics: Option<IntegrationDiagnostics>,
@@ -85,42 +86,26 @@ impl<const DIM: usize> OpticalConductivityResult<DIM> {
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Compute a projected component or the full Cartesian optical tensor.
     ///
-    /// Reads `kmesh`, `direction` (rank 2, or empty for the full Cartesian
-    /// tensor), `mu` (single value), `T`, `eta` and `omega` from the
-    /// parameter set; `spin` and `field_symmetry` are ignored.
+    /// Reads `conditions` (at most one axis sampled; this is the only entry
+    /// point that may sample `omega_ev`), `kmesh`, `direction` (rank 2, or
+    /// empty for the full Cartesian tensor), `eta_ev` and `integration`;
+    /// `spin` and `field_symmetry` are ignored. The columns of
+    /// `conductivity` follow the sampled axis. Eigenstates,
+    /// velocity kernels and band tracking are prepared once and reused by every
+    /// sample.
+    ///
     /// A full tensor shares one eigendecomposition and band-tracking pass
     /// across all components, retaining `DIM` band-velocity matrices per k.
     ///
     /// Returns the interband conductivity with `e²/hbar` omitted; no Drude
-    /// term is included. Positive `eta` resolves optical resonances. A pole at
-    /// `eta = 0`, or nonfinite numerical output, returns an error.
+    /// term is included. Positive `eta_ev` resolves optical resonances. A pole
+    /// at `eta_ev = 0`, or nonfinite numerical output, returns an error.
     pub fn optical_conductivity(
         &self,
         params: &Parameters<DIM>,
     ) -> Result<OpticalConductivityResult<DIM>> {
         self.validate()?;
-        validate_chemical_potentials(&params.mu)?;
-        if params.mu.len() != 1 {
-            return Err(TbError::InvalidResponseParameter {
-                parameter: "mu",
-                message: "optical_conductivity expects a single chemical potential".into(),
-            });
-        }
-        if params.omega.is_empty() {
-            return Err(TbError::InvalidResponseParameter {
-                parameter: "omega",
-                message: "must contain at least one value".into(),
-            });
-        }
-        if params.omega.iter().any(|frequency| !frequency.is_finite()) {
-            return Err(TbError::InvalidResponseParameter {
-                parameter: "omega",
-                message: "all values must be finite".into(),
-            });
-        }
-        validate_temperature(params.T)?;
-        validate_broadening(params.eta)?;
-        crate::response::config::validate_k_mesh(&params.kmesh)?;
+        let resolved = params.validate_common()?;
         match params.integration {
             Integration::Direct | Integration::Simplex => {}
             Integration::EnergyCut => {
@@ -136,14 +121,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 supported: vec![2, 3],
             });
         }
+        let eta = params.broadening()?;
+        let samples = resolved.len();
+        let widths: Vec<f64> = (0..samples)
+            .map(|index| occupation_for(resolved.point(index).0).energy_width())
+            .collect::<Result<Vec<_>>>()?;
         let direction_pairs = direction_pairs(params)?;
         let k_mesh = mesh_array(&params.kmesh);
         let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
-        let thermal_width = parameters_occupation(params).energy_width()?;
-        let chemical_potential = params.mu[0];
         let determinant = self.lat.det()?.abs();
-        let mut conductivity =
-            Array2::<Complex<f64>>::zeros((direction_pairs.len(), params.omega.len()));
+        let mut conductivity = Array2::<Complex<f64>>::zeros((direction_pairs.len(), samples));
         let mut unsafe_simplex_count = 0usize;
         let full_tensor = direction_pairs.len() > 1;
         let mut velocities = Vec::new();
@@ -154,6 +141,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .into_par_iter()
                 .map(|k| {
                     let (projected, ham) = self.gen_v_projected(&k, Gauge::Atom, &directions);
+                    #[cfg(test)]
+                    super::config::counters::count_eigen_decomposition();
                     let (band, evec) = ham.eigh(UPLO::Lower)?;
                     // Match compute_velocity_kernel's ndarray-linalg convention.
                     let ket = evec.mapv(|z| z.conj());
@@ -229,10 +218,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
             match params.integration {
                 Integration::Direct => {
-                    let values: Vec<Complex<f64>> = params
-                        .omega
-                        .par_iter()
-                        .map(|&frequency| {
+                    let values: Vec<Complex<f64>> = (0..samples)
+                        .into_par_iter()
+                        .map(|index| {
+                            let (_, mu, frequency) = resolved.point(index);
                             vertices
                                 .iter()
                                 .map(|vertex| {
@@ -240,9 +229,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                         vertex.band.as_slice().unwrap(),
                                         &vertex.k_ab,
                                         frequency,
-                                        params.eta,
-                                        chemical_potential,
-                                        thermal_width,
+                                        eta,
+                                        mu,
+                                        widths[index],
                                         self.nsta(),
                                     )
                                 })
@@ -256,18 +245,44 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         .assign(&Array1::from_vec(values));
                 }
                 Integration::Simplex => {
-                    let (values, unsafe_count) = integrate_simplex(
-                        &vertices,
-                        &k_mesh,
-                        &params.omega,
-                        params.eta,
-                        chemical_potential,
-                        thermal_width,
-                    );
+                    let values = match &resolved.axis {
+                        ResponseAxis::Frequency(frequencies) => {
+                            let (_, mu, _) = resolved.point(0);
+                            let (values, unsafe_count) = integrate_simplex(
+                                &vertices,
+                                &k_mesh,
+                                frequencies,
+                                eta,
+                                mu,
+                                widths[0],
+                            );
+                            unsafe_simplex_count = unsafe_simplex_count.max(unsafe_count);
+                            values
+                        }
+                        // A sampled temperature or chemical potential keeps one
+                        // frequency and redoes the quadrature on the shared
+                        // simplex decomposition.
+                        _ => {
+                            let mut values = Array1::<Complex<f64>>::zeros(samples);
+                            for index in 0..samples {
+                                let (_, mu, frequency) = resolved.point(index);
+                                let (sample, unsafe_count) = integrate_simplex(
+                                    &vertices,
+                                    &k_mesh,
+                                    &array![frequency],
+                                    eta,
+                                    mu,
+                                    widths[index],
+                                );
+                                values[index] = sample[0];
+                                unsafe_simplex_count = unsafe_simplex_count.max(unsafe_count);
+                            }
+                            values
+                        }
+                    };
                     conductivity
                         .row_mut(component)
                         .assign(&(values / determinant));
-                    unsafe_simplex_count = unsafe_simplex_count.max(unsafe_count);
                 }
                 Integration::EnergyCut => unreachable!("rejected during validation"),
             }
@@ -282,7 +297,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             ));
         }
         Ok(OpticalConductivityResult {
-            frequencies: params.omega.clone(),
+            axis: resolved.axis,
             directions: direction_pairs,
             conductivity,
             diagnostics: (params.integration == Integration::Simplex).then_some(
@@ -386,6 +401,7 @@ fn integrate_simplex(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::response::config::{Conditions, FieldSymmetry, ResponseOptions, Sampling};
     use ndarray::array;
 
     #[test]
@@ -395,17 +411,28 @@ mod tests {
             Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0], [0.5, 0.0]], None)
                 .unwrap();
         model.set_hop(1.0, 0, 1, &array![0, 0], None);
-        let mut params = Parameters::at_mu([3, 4], Array2::zeros((0, 2)), 0.0);
-        params.T = 0.0;
-        params.eta = 0.2;
-        params.omega = array![0.0, 0.3, -0.3, 2.0];
+        let omegas = array![0.0, 0.3, -0.3, 2.0];
+        let eta = 0.2;
+        let mut params = Parameters::<2> {
+            conditions: Conditions {
+                t_kelvin: Sampling::Fixed(0.0),
+                mu_ev: Sampling::Fixed(0.0),
+                omega_ev: Sampling::Values(omegas.clone()),
+            },
+            kmesh: [3, 4],
+            direction: Array2::zeros((0, 2)),
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(eta),
+        };
         for handedness in [1.0, -1.0] {
             model.lat[[0, 0]] = handedness;
             for integration in [Integration::Direct, Integration::Simplex] {
                 params.integration = integration;
                 let result = model.optical_conductivity(&params).unwrap();
-                for (index, &omega) in params.omega.iter().enumerate() {
-                    let z = Complex::new(omega, params.eta);
+                for (index, &omega) in omegas.iter().enumerate() {
+                    let z = Complex::new(omega, eta);
                     let expected = Complex::new(0.0, -0.25) * z / (4.0 - z * z);
                     assert!(expected.re > 0.0);
                     assert!((result.conductivity[[0, index]] - expected).norm() < 1e-12);
@@ -433,13 +460,24 @@ mod tests {
         model.set_hop(Complex::new(0.0, 0.5), 0, 1, &array![-1, 0], None);
         model.set_hop(-0.5, 0, 1, &array![0, 1], None);
         model.set_hop(0.5, 0, 1, &array![0, -1], None);
-        let mut params = Parameters::at_mu([1, 1], Array2::zeros((0, 2)), 0.0);
-        params.T = 0.0;
-        params.eta = 0.2;
-        params.omega = array![0.0, 0.3, -0.3, 2.0];
+        let omegas = array![0.0, 0.3, -0.3, 2.0];
+        let eta = 0.2;
+        let params = Parameters::<2> {
+            conditions: Conditions {
+                t_kelvin: Sampling::Fixed(0.0),
+                mu_ev: Sampling::Fixed(0.0),
+                omega_ev: Sampling::Values(omegas.clone()),
+            },
+            kmesh: [1, 1],
+            direction: Array2::zeros((0, 2)),
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(eta),
+        };
         let result = model.optical_conductivity(&params).unwrap();
-        for (index, &omega) in params.omega.iter().enumerate() {
-            let z = Complex::new(omega, params.eta);
+        for (index, &omega) in omegas.iter().enumerate() {
+            let z = Complex::new(omega, eta);
             let diagonal = Complex::new(0.0, -1.0) * z / (4.0 - z * z);
             let hall = -2.0 / (4.0 - z * z);
             for (component, expected) in [diagonal, hall, -hall, diagonal].into_iter().enumerate() {
@@ -454,16 +492,29 @@ mod tests {
             Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0], [0.5, 0.0]], None)
                 .unwrap();
         model.set_hop(1.0, 0, 1, &array![0, 0], None);
-        let mut params = Parameters::rank2([1, 1], [1.0, 0.0], [1.0, 0.0], array![0.0]);
-        params.T = 0.0;
-        params.eta = 0.0;
+        let mut params = Parameters::rank2(
+            Conditions {
+                t_kelvin: Sampling::Fixed(0.0),
+                mu_ev: Sampling::Fixed(0.0),
+                omega_ev: Sampling::Values(array![0.3]),
+            },
+            [1, 1],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            ResponseOptions {
+                integration: Integration::Direct,
+                spin: None,
+                field_symmetry: FieldSymmetry::Symmetrized,
+                eta_ev: Some(0.0),
+            },
+        );
         for integration in [Integration::Direct, Integration::Simplex] {
             params.integration = integration;
-            params.omega = array![0.3];
+            params.conditions.omega_ev = Sampling::Values(array![0.3]);
             let regular = model.optical_conductivity(&params).unwrap();
             let expected = Complex::new(0.0, -0.25 * 0.3 / (4.0 - 0.3 * 0.3));
             assert!((regular.conductivity[[0, 0]] - expected).norm() < 1e-12);
-            params.omega = array![2.0];
+            params.conditions.omega_ev = Sampling::Values(array![2.0]);
             assert!(model.optical_conductivity(&params).is_err());
         }
     }
@@ -511,8 +562,19 @@ mod tests {
             Model::<false, 2>::tb_model(array![[1.0, 0.0], [0.0, 1.0]], array![[0.0, 0.0]], None)
                 .unwrap();
         // An empty direction matrix selects the full Cartesian tensor.
-        let mut params = Parameters::at_mu([2, 2], Array2::zeros((0, 2)), 0.0);
-        params.omega = array![0.1, 0.2];
+        let params = Parameters::<2> {
+            conditions: Conditions {
+                t_kelvin: Sampling::Fixed(0.0),
+                mu_ev: Sampling::Fixed(0.0),
+                omega_ev: Sampling::Values(array![0.1, 0.2]),
+            },
+            kmesh: [2, 2],
+            direction: Array2::zeros((0, 2)),
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(1e-3),
+        };
         let result = model.optical_conductivity(&params).unwrap();
         assert_eq!(result.conductivity.dim(), (4, 2));
         assert_eq!(result.directions.len(), 4);
@@ -521,10 +583,20 @@ mod tests {
     fn assert_tensor_components<const SPIN: bool, const DIM: usize, R: RMatrixData>(
         model: &Model<SPIN, DIM, R>,
     ) {
-        let mut params = Parameters::at_mu([5; DIM], Array2::zeros((0, DIM)), 0.3);
-        params.omega = array![-0.7, 0.0, 0.2, 0.8];
-        params.T = 300.0;
-        params.eta = 0.13;
+        let omegas = array![-0.7, 0.0, 0.2, 0.8];
+        let mut params = Parameters::<DIM> {
+            conditions: Conditions {
+                t_kelvin: Sampling::Fixed(300.0),
+                mu_ev: Sampling::Fixed(0.3),
+                omega_ev: Sampling::Values(omegas.clone()),
+            },
+            kmesh: [5; DIM],
+            direction: Array2::zeros((0, DIM)),
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(0.13),
+        };
         for integration in [Integration::Direct, Integration::Simplex] {
             params.integration = integration;
             params.direction = Array2::zeros((0, DIM));
@@ -548,7 +620,7 @@ mod tests {
                 (axis + 1) as f64 * if row == 0 { 0.3 } else { -0.2 }
             });
             let projected = model.optical_conductivity(&params).unwrap();
-            for frequency in 0..params.omega.len() {
+            for frequency in 0..omegas.len() {
                 let mut expected = Complex::new(0.0, 0.0);
                 for a in 0..DIM {
                     for b in 0..DIM {
@@ -562,7 +634,7 @@ mod tests {
                         < 2e-11 * expected.norm().max(1.0)
                 );
                 let mut single_frequency = params.clone();
-                single_frequency.omega = array![params.omega[frequency]];
+                single_frequency.conditions.omega_ev = Sampling::Values(array![omegas[frequency]]);
                 let single = model.optical_conductivity(&single_frequency).unwrap();
                 assert!(
                     (single.conductivity[[0, 0]] - projected.conductivity[[0, frequency]]).norm()
@@ -690,9 +762,22 @@ mod tests {
     #[test]
     fn direct_and_simplex_evaluate_the_same_optical_kernel() {
         let model = qwz_model(-1.0);
-        let mut params = Parameters::rank2([31, 31], [1.0, 0.0], [1.0, 0.0], array![0.0]);
-        params.omega = array![0.2, 0.8];
-        params.eta = 0.1;
+        let mut params = Parameters::rank2(
+            Conditions {
+                t_kelvin: Sampling::Fixed(0.0),
+                mu_ev: Sampling::Fixed(0.0),
+                omega_ev: Sampling::Values(array![0.2, 0.8]),
+            },
+            [31, 31],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            ResponseOptions {
+                integration: Integration::Direct,
+                spin: None,
+                field_symmetry: FieldSymmetry::Symmetrized,
+                eta_ev: Some(0.1),
+            },
+        );
         let direct = model.optical_conductivity(&params).unwrap();
 
         params.integration = Integration::Simplex;

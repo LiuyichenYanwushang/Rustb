@@ -80,11 +80,20 @@ model hierarchies with duplicated band, geometry, or response methods.
 ### Unified response APIs
 
 - Every high-level response calculation takes one shared `Parameters<DIM>`
-  structure and returns one named `*Result` structure. Fields: `T` (kelvin,
-  `0.0` = zero temperature), `mu` (eV), `eta` (broadening), `kmesh`,
-  `omega` (eV), `spin` (`None` = charge current), `direction`
-  (`Array2<f64>`, shape `(rank, DIM)`), `integration`, `field_symmetry`.
-  Methods read only the fields they need and ignore the rest.
+  structure and returns one named `*Result` structure. It holds `conditions`
+  (`t_kelvin`, `mu_ev`, `omega_ev`, each `Sampling::Fixed` or
+  `Sampling::Values`), `kmesh`, `direction` (`Array2<f64>`, shape
+  `(rank, DIM)`), `integration`, `spin` (`None` = charge current),
+  `field_symmetry` and `eta_ev: Option<f64>`. Nothing is defaulted.
+- At most one axis may be `Sampling::Values`; it is evaluated from one shared
+  k-mesh preparation, so eigenstates, velocity kernels and band tracking are
+  computed once regardless of the sample count. Sampling several axes is
+  rejected before any k-mesh work. A Cartesian product of axes would need a new
+  entry point returning a multi-dimensional result.
+- Results carry `axis: ResponseAxis` rather than a copied chemical-potential
+  grid. Per-k-point methods require every axis `Fixed` and reject a sampled
+  axis instead of ignoring it, and `eta_ev` is required by every entry point
+  that broadens a denominator.
 - The supported entry points are `hall_conductivity`, `quantum_geometry`,
   `optical_conductivity`, `extrinsic_nonlinear_hall`, and
   `intrinsic_nonlinear_hall`. Algorithm choice belongs in the shared
@@ -93,8 +102,9 @@ model hierarchies with duplicated band, geometry, or response methods.
 - `direction` replaces the old `DirectionPair`/`NonlinearHallDirections`/
   `OpticalDirections`: rank-2 responses use 2 rows, rank-3 responses use
   `(current, field_1, field_2)`. `spin` replaces `CurrentOperator`,
-  `T` replaces `Occupation` at the response boundary, and `FieldSymmetry`
-  (kept as a field) selects ordered or symmetrized nonlinear field indices.
+  `conditions.t_kelvin` replaces `Occupation` at the response boundary, and
+  `FieldSymmetry` (kept as a field) selects ordered or symmetrized nonlinear
+  field indices.
 - Direct, simplex, and energy-cut paths share the same gauge-invariant response
   kernels and Cartesian reciprocal-space normalization. Optical conductivity
   returns the full ordered `DIM x DIM` Cartesian tensor when `direction` is an
@@ -330,9 +340,12 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
   return one named `*Result` structure. Directions are rows of an
   `Array2<f64>` matrix, so dimension mismatches are rejected at runtime with
   structured errors.
-- `T` (kelvin, a scalar; `0.0` = zero temperature) replaces `Occupation` at the
-  response boundary. The `Occupation` enum itself remains for the Hubbard
-  mean-field solver and spin-moment observables.
+- `conditions.t_kelvin` (a `Sampling` axis in kelvin; `Fixed(0.0)` is zero
+  temperature) replaces `Occupation` at the response boundary. The `Occupation` enum itself remains
+  for the Hubbard mean-field solver and spin-moment observables.
+- The nonlinear Hall entry points reject the whole call when any sample reaches
+  0 K with `Integration::Direct`, before any k-mesh work; the algorithm is
+  never switched at an individual sample.
 - Direct and simplex/energy-cut algorithms are selected by the shared
   `Integration` enum rather than separate method names.
 - `compute_velocity_kernel`, `VertexKernel`, raw energy-cut integrators, and

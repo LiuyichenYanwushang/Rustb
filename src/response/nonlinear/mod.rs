@@ -31,6 +31,7 @@
 //! | `extrinsic_nonlinear_hall` | direct sum or energy cut | $\chi^{\rm ext}$ |
 //! | `intrinsic_nonlinear_hall` | direct sum or energy cut | $\sigma\_{\rm int}$ |
 
+use ndarray::array;
 use ndarray::prelude::*;
 use ndarray_linalg::*;
 use num_complex::Complex;
@@ -45,8 +46,8 @@ use crate::math::anti_comm;
 use crate::thermodynamics::fermi_derivative_from_width;
 
 use super::config::{
-    FieldSymmetry, Integration, IntegrationDiagnostics, Parameters, mesh_array,
-    parameters_occupation, validate_broadening, validate_sorted,
+    FieldSymmetry, Integration, IntegrationDiagnostics, Parameters, ResponseAxis, mesh_array,
+    occupation_for, validate_sorted,
 };
 use super::energy_cut::integrate_dipole_energy_cut_2d;
 use super::helpers::build_spin_matrix;
@@ -54,12 +55,13 @@ use super::kernel::intrinsic_inverse_gap;
 use super::tracking::global_band_track;
 use super::types::VertexKernel;
 
-/// Conductivity evaluated on a chemical-potential grid.
+/// Nonlinear Hall conductivity on the sampled axis, or at the fixed conditions.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NonlinearHallResult {
-    /// Chemical potentials copied from the input configuration.
-    pub chemical_potentials: Array1<f64>,
-    /// Nonlinear Hall response at every chemical potential.
+    /// The axis the result is indexed by; [`ResponseAxis::Fixed`] for a single
+    /// evaluation at the fixed conditions.
+    pub axis: ResponseAxis,
+    /// Nonlinear Hall response at every sample of that axis.
     pub conductivity: Array1<f64>,
     /// Algorithm diagnostics when exposed by the selected energy-cut path.
     pub diagnostics: Option<IntegrationDiagnostics>,
@@ -131,6 +133,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let v: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
         let v0: Array2<Complex<f64>> = v_proj.slice(s![2, .., ..]).to_owned();
 
+        #[cfg(test)]
+        super::config::counters::count_eigen_decomposition();
         let (band, evec) = hamk.eigh(UPLO::Lower)?;
         let evec_conj = evec.t();
         let evec = evec.map(|x| x.conj());
@@ -244,11 +248,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Evaluate the Berry-curvature-dipole nonlinear Hall response.
     ///
-    /// Reads `kmesh`, `direction` (rank 3), `mu`, `T`, `eta` and `spin` from
-    /// the parameter set. This is a DC response: `omega` is ignored.
-    /// Direct integration requires a finite thermal width because `-df/dE`
-    /// is sampled on k-points. Energy-cut integration supports the exact
-    /// zero-temperature limit.
+    /// Reads `conditions` (at most one axis sampled), `kmesh`,
+    /// `direction` (rank 3), `eta_ev`, `spin`, `integration` and
+    /// `field_symmetry`. This is a DC
+    /// response, so `omega_ev` must be `Sampling::Fixed` and a sampled
+    /// frequency is rejected. Eigenstates, velocity kernels and band
+    /// tracking are prepared once and reused by every sample of the sampled
+    /// axis.
+    ///
+    /// Direct integration samples `-df/dE` on k-points, so every sample must
+    /// be strictly positive; a sampled temperature that reaches zero rejects the
+    /// whole call before any k-mesh work instead of switching algorithm at that
+    /// sample. Energy-cut integration supports the exact zero-temperature
+    /// limit.
     ///
     /// Direction rows are `(current, field_1, field_2)`. In the internal
     /// kernel this maps to `Ω^{current, field_1} v^{field_2}`: `current` and
@@ -257,16 +269,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// the two orderings of `field_1`/`field_2`.
     ///
     /// The two field indices are combined according to `params.field_symmetry`:
-    /// [`FieldSymmetry::Symmetrized`] (the default) averages the two field
-    /// permutations, [`FieldSymmetry::Ordered`] returns the raw ordered
-    /// kernel.
+    /// [`FieldSymmetry::Symmetrized`] averages the two field permutations,
+    /// [`FieldSymmetry::Ordered`] returns the raw ordered kernel.
     pub fn extrinsic_nonlinear_hall(
         &self,
         params: &Parameters<DIM>,
     ) -> Result<NonlinearHallResult> {
-        params.validate_rank3()?;
+        let resolved = params.validate_rank3()?;
+        resolved.reject_sampled_frequency()?;
         self.validate()?;
-        validate_broadening(params.eta)?;
+        let eta = params.broadening()?;
         let spin = params.spin;
         if !SPIN && let Some(direction) = spin {
             return Err(TbError::SpinNotAllowed(direction));
@@ -278,26 +290,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             });
         }
         if params.integration == Integration::EnergyCut {
-            validate_sorted(&params.mu, "mu")?;
+            validate_sorted(&resolved.chemical_potentials(), "mu_ev")?;
             if DIM != 2 {
                 return Err(TbError::InvalidDimension {
                     dim: DIM,
                     supported: vec![2],
                 });
             }
+        } else {
+            // Reject the whole call, before any k-mesh work, if any sample
+            // reaches the zero-temperature step.
+            resolved.require_positive_temperature()?;
         }
+        let samples = resolved.len();
+        let widths: Vec<f64> = (0..samples)
+            .map(|index| occupation_for(resolved.point(index).0).energy_width())
+            .collect::<Result<Vec<_>>>()?;
         let current = params.direction.row(0).to_owned();
         let field_1 = params.direction.row(1).to_owned();
         let field_2 = params.direction.row(2).to_owned();
         let k_mesh = mesh_array(&params.kmesh);
         let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
-        let width = parameters_occupation(params).energy_width()?;
-        if params.integration == Integration::Direct && width == 0.0 {
-            return Err(TbError::InvalidThermodynamicParameter {
-                parameter: "T",
-                message: "direct nonlinear Hall integration requires a finite temperature".into(),
-            });
-        }
         let determinant = self.lat.det()?;
         let symmetrized = params.field_symmetry == FieldSymmetry::Symmetrized && field_1 != field_2;
         let compute = |k: ArrayView1<'_, f64>| {
@@ -327,7 +340,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                 .filter(|&m| m != n)
                                 .map(|m| {
                                     let gap = vertex.band[n] - vertex.band[m];
-                                    kernel[[n, m]] / (gap * gap + params.eta * params.eta)
+                                    kernel[[n, m]] / (gap * gap + eta * eta)
                                 })
                                 .sum::<Complex<f64>>()
                                 .im
@@ -349,10 +362,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 })
                 .collect();
             let data = data.into_iter().collect::<Result<Vec<_>>>()?;
-            let values: Vec<f64> = params
-                .mu
-                .par_iter()
-                .map(|&mu| {
+            let values: Vec<f64> = (0..samples)
+                .into_par_iter()
+                .map(|index| {
+                    let (_, mu, _) = resolved.point(index);
+                    let width = widths[index];
                     data.iter()
                         .flat_map(|(band, kernel)| {
                             kernel.iter().zip(band).map(move |(&value, &energy)| {
@@ -365,33 +379,51 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 })
                 .collect();
             return Ok(NonlinearHallResult {
-                chemical_potentials: params.mu.clone(),
+                axis: resolved.axis,
                 conductivity: Array1::from_vec(values),
                 diagnostics: None,
             });
         }
         let vertices: Vec<Result<_>> = k_points.outer_iter().into_par_iter().map(compute).collect();
         let mut vertices = vertices.into_iter().collect::<Result<Vec<_>>>()?;
+        // Tracked once; every sample reuses the labelled vertices.
         global_band_track(&mut vertices, &params.kmesh);
-        // Public owned arrays can still be strided. Energy-cut kernels use
-        // packed slices, so normalize the chemical-potential grid once.
-        let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
-        let integrate = |vertices: &[VertexKernel]| {
-            let (conductivity, unsafe_simplex_count) = integrate_dipole_energy_cut_2d(
-                vertices,
-                &k_mesh,
-                &chemical_potentials,
-                width,
-                params.eta,
-            );
+        let integrate = |vertices: &[VertexKernel],
+                         chemical_potentials: &Array1<f64>,
+                         width: f64| {
+            let (conductivity, unsafe_simplex_count) =
+                integrate_dipole_energy_cut_2d(vertices, &k_mesh, chemical_potentials, width, eta);
             (
                 conductivity / determinant,
-                Some(IntegrationDiagnostics {
+                IntegrationDiagnostics {
                     unsafe_simplex_count,
-                }),
+                },
             )
         };
-        let (first, diagnostics) = integrate(&vertices);
+        let scan =
+            |vertices: &mut [VertexKernel]| -> Result<(Array1<f64>, IntegrationDiagnostics)> {
+                match &resolved.axis {
+                    ResponseAxis::ChemicalPotential(values) => {
+                        Ok(integrate(vertices, values, widths[0]))
+                    }
+                    // Temperature samples redo the cut and the convolution on the
+                    // shared vertices.
+                    _ => {
+                        let mut conductivity = Array1::<f64>::zeros(samples);
+                        let mut diagnostics = IntegrationDiagnostics::default();
+                        for index in 0..samples {
+                            let (_, mu, _) = resolved.point(index);
+                            let (value, sample) = integrate(vertices, &array![mu], widths[index]);
+                            conductivity[index] = value[0];
+                            diagnostics.unsafe_simplex_count = diagnostics
+                                .unsafe_simplex_count
+                                .max(sample.unsafe_simplex_count);
+                        }
+                        Ok((conductivity, diagnostics))
+                    }
+                }
+            };
+        let (first, diagnostics) = scan(&mut vertices)?;
         let conductivity = if symmetrized {
             // The same eigenbasis already contains K^{ac} and v^b. Exchange
             // only the two consumed kernels, preserving the tracked band order.
@@ -399,15 +431,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 std::mem::swap(&mut vertex.k_ab, vertex.k_ac.as_mut().unwrap());
                 std::mem::swap(&mut vertex.vdiag, &mut vertex.vdiag_b);
             }
-            let (second, _) = integrate(&vertices);
+            let (second, _) = scan(&mut vertices)?;
             (first + second) * 0.5
         } else {
             first
         };
         Ok(NonlinearHallResult {
-            chemical_potentials: params.mu.clone(),
+            axis: resolved.axis,
             conductivity,
-            diagnostics,
+            diagnostics: Some(diagnostics),
         })
     }
 
@@ -480,6 +512,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // v_proj[1] = Σ_d dir_b[d] * v_raw[d]  →  v^b
         // v_proj[2] = Σ_d dir_c[d] * v_raw[d]  →  v^c
 
+        #[cfg(test)]
+        super::config::counters::count_eigen_decomposition();
         let (band, evec) = hamk.eigh(UPLO::Lower)?;
         let ut = evec.t();
         let uc = evec.map(|x| x.conj());
@@ -672,18 +706,25 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Evaluate current-first intrinsic nonlinear Hall conductivity.
     ///
-    /// Reads `kmesh`, `direction` (rank 3), `mu` and `T` from the parameter
-    /// set; `eta`, `omega` and `field_symmetry` are ignored. The response is
-    /// charge-current only; a requested `spin` returns an error. Both paths omit
-    /// interband gaps at or below `1e-10` eV. Direct integration requires a finite
-    /// thermal width. Energy-cut mode evaluates the zero-temperature Fermi
-    /// surface exactly within the simplex interpolation and also accepts
-    /// finite thermal widths.
+    /// Reads `conditions` (at most one axis sampled), `kmesh`,
+    /// `direction` (rank 3) and `integration`; `eta_ev` and
+    /// `field_symmetry` are ignored, and
+    /// `omega_ev` must be `Sampling::Fixed` because the response is DC.
+    /// The response is charge-current only; a requested `spin` returns an error.
+    /// Both paths omit interband gaps at or below `1e-10` eV.
+    ///
+    /// Direct integration samples `-df/dE` on k-points, so every sample must be
+    /// strictly positive; a sampled temperature that reaches zero rejects the
+    /// whole call before any k-mesh work. Energy-cut mode evaluates the
+    /// zero-temperature Fermi surface exactly within the simplex interpolation
+    /// and also accepts finite thermal widths. Eigenstates, velocity kernels and
+    /// band tracking are prepared once and reused by every sample.
     pub fn intrinsic_nonlinear_hall(
         &self,
         params: &Parameters<DIM>,
     ) -> Result<NonlinearHallResult> {
-        params.validate_rank3()?;
+        let resolved = params.validate_rank3()?;
+        resolved.reject_sampled_frequency()?;
         self.validate()?;
         if params.spin.is_some() {
             return Err(TbError::InvalidResponseParameter {
@@ -698,17 +739,24 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             });
         }
         if params.integration == Integration::EnergyCut {
-            validate_sorted(&params.mu, "mu")?;
+            validate_sorted(&resolved.chemical_potentials(), "mu_ev")?;
             if DIM != 2 && DIM != 3 {
                 return Err(TbError::InvalidDimension {
                     dim: DIM,
                     supported: vec![2, 3],
                 });
             }
+        } else {
+            // Reject the whole call, before any k-mesh work, if any sample
+            // reaches the zero-temperature step.
+            resolved.require_positive_temperature()?;
         }
+        let samples = resolved.len();
+        let widths: Vec<f64> = (0..samples)
+            .map(|index| occupation_for(resolved.point(index).0).energy_width())
+            .collect::<Result<Vec<_>>>()?;
         let k_mesh = mesh_array(&params.kmesh);
         let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
-        let width = parameters_occupation(params).energy_width()?;
         let determinant = self.lat.det()?;
         let current = params.direction.row(0).to_owned();
         let field_1 = params.direction.row(1).to_owned();
@@ -716,19 +764,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let conductivity = match params.integration {
             Integration::Direct => {
-                if width == 0.0 {
-                    return Err(TbError::InvalidThermodynamicParameter {
-                        parameter: "T",
-                        message: "direct nonlinear Hall integration requires a finite temperature"
-                            .into(),
-                    });
-                }
                 let (kernel, energies, _) =
                     self.berry_connection_dipole(&k_points, &field_1, &field_2, &current, None)?;
-                let values: Vec<f64> = params
-                    .mu
-                    .par_iter()
-                    .map(|&mu| {
+                let values: Vec<f64> = (0..samples)
+                    .into_par_iter()
+                    .map(|index| {
+                        let (_, mu, _) = resolved.point(index);
+                        let width = widths[index];
                         kernel
                             .iter()
                             .zip(&energies)
@@ -743,7 +785,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 Array1::from_vec(values)
             }
             Integration::EnergyCut => {
-                let chemical_potentials = Array1::from_iter(params.mu.iter().copied());
                 let vertices: Vec<Result<VertexKernel>> = (0..k_points.nrows())
                     .into_par_iter()
                     .map(|index| {
@@ -759,29 +800,45 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .collect();
                 let mut vertices: Vec<VertexKernel> =
                     vertices.into_iter().collect::<Result<_>>()?;
+                // Tracked once; every sample reuses the labelled vertices.
                 global_band_track(&mut vertices, &params.kmesh);
-                let values = match DIM {
-                    2 => super::energy_cut::integrate_intrinsic_cut_2d(
-                        &vertices,
-                        &k_mesh,
-                        &chemical_potentials,
-                        width,
-                    ),
-                    3 => super::energy_cut::integrate_intrinsic_cut_3d(
-                        &vertices,
-                        &k_mesh,
-                        &chemical_potentials,
-                        width,
-                    ),
-                    _ => unreachable!("validated before energy-cut integration"),
+                let integrate = |chemical_potentials: &Array1<f64>, width: f64| -> Array1<f64> {
+                    let values = match DIM {
+                        2 => super::energy_cut::integrate_intrinsic_cut_2d(
+                            &vertices,
+                            &k_mesh,
+                            chemical_potentials,
+                            width,
+                        ),
+                        3 => super::energy_cut::integrate_intrinsic_cut_3d(
+                            &vertices,
+                            &k_mesh,
+                            chemical_potentials,
+                            width,
+                        ),
+                        _ => unreachable!("validated before energy-cut integration"),
+                    };
+                    values / determinant
                 };
-                values / determinant
+                match &resolved.axis {
+                    ResponseAxis::ChemicalPotential(values) => integrate(values, widths[0]),
+                    // Temperature samples redo the cut and the convolution on
+                    // the shared vertices.
+                    _ => {
+                        let mut conductivity = Array1::<f64>::zeros(samples);
+                        for index in 0..samples {
+                            let (_, mu, _) = resolved.point(index);
+                            conductivity[index] = integrate(&array![mu], widths[index])[0];
+                        }
+                        conductivity
+                    }
+                }
             }
             Integration::Simplex => unreachable!("rejected during validation"),
         };
 
         Ok(NonlinearHallResult {
-            chemical_potentials: params.mu.clone(),
+            axis: resolved.axis,
             conductivity,
             diagnostics: None,
         })

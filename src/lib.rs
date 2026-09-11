@@ -340,7 +340,6 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::response::config::direction_matrix;
     use crate::solve_ham::Solve;
     use gnuplot::{AxesCommon, Color, Figure, Fix, Font, Major, PointSymbol, Rotate, TextOffset};
 
@@ -371,15 +370,28 @@ mod tests {
             .expect("k-mesh must match the model dimension")
     }
 
-    fn parameters_at_direction<const DIM: usize>(
-        k_mesh: [usize; DIM],
-        direction: Array2<f64>,
-        chemical_potentials: &Array1<f64>,
-        temperature_kelvin: f64,
-    ) -> Parameters<DIM> {
-        let mut params = Parameters::new(k_mesh, direction, chemical_potentials.clone());
-        params.T = temperature_kelvin;
-        params
+    /// Explicit response options with the charge-current, symmetrized-field
+    /// convention the old parameter defaults used.
+    fn response_options(
+        integration: Integration,
+        spin: Option<SpinDirection>,
+        eta_ev: Option<f64>,
+    ) -> ResponseOptions {
+        ResponseOptions {
+            integration,
+            spin,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev,
+        }
+    }
+
+    /// Conditions that sample the chemical-potential axis at fixed temperature.
+    fn mu_conditions(chemical_potentials: &Array1<f64>, temperature_kelvin: f64) -> Conditions {
+        Conditions {
+            t_kelvin: Sampling::Fixed(temperature_kelvin),
+            mu_ev: Sampling::Values(chemical_potentials.clone()),
+            omega_ev: Sampling::Fixed(0.0),
+        }
     }
 
     fn hall_values<const SPIN: bool, const DIM: usize, R: RMatrixData>(
@@ -393,18 +405,13 @@ mod tests {
         broadening: f64,
         integration: Integration,
     ) -> Result<Array1<f64>> {
-        let mut params = parameters_at_direction(
+        let params = Parameters::rank2(
+            mu_conditions(chemical_potentials, temperature_kelvin),
             fixed_k_mesh(k_mesh),
-            direction_matrix::<2, DIM>(&[
-                fixed_direction(direction_a),
-                fixed_direction(direction_b),
-            ]),
-            chemical_potentials,
-            temperature_kelvin,
+            fixed_direction(direction_a),
+            fixed_direction(direction_b),
+            response_options(integration, spin, Some(broadening)),
         );
-        params.spin = spin;
-        params.eta = broadening;
-        params.integration = integration;
         Ok(model.hall_conductivity(&params)?.conductivity)
     }
 
@@ -439,14 +446,13 @@ mod tests {
         spin: Option<SpinDirection>,
         broadening: f64,
     ) -> BandBerryCurvature {
-        let mut params = Parameters::rank2(
+        let params = Parameters::rank2(
+            Conditions::fixed(0.0, 0.0, 0.0),
             [1; DIM],
             fixed_direction(direction_a),
             fixed_direction(direction_b),
-            array![0.0],
+            response_options(Integration::Direct, spin, Some(broadening)),
         );
-        params.spin = spin;
-        params.eta = broadening;
         model.berry_curvature_at(k, &params).unwrap()
     }
 
@@ -461,15 +467,13 @@ mod tests {
         spin: Option<SpinDirection>,
         broadening: f64,
     ) -> Array1<f64> {
-        let mut params = Parameters::rank2(
+        let params = Parameters::rank2(
+            Conditions::fixed(temperature_kelvin, chemical_potential, 0.0),
             [1; DIM],
             fixed_direction(direction_a),
             fixed_direction(direction_b),
-            array![chemical_potential],
+            response_options(Integration::Direct, spin, Some(broadening)),
         );
-        params.T = temperature_kelvin;
-        params.spin = spin;
-        params.eta = broadening;
         model
             .occupied_berry_curvature_on(k_points, &params)
             .unwrap()
@@ -505,15 +509,17 @@ mod tests {
         temperature_kelvin: f64,
         integration: Integration,
     ) -> Result<Array1<f64>> {
-        let mut params = Parameters::rank3(
+        let params = Parameters::rank3(
+            mu_conditions(
+                chemical_potentials,
+                nonlinear_temperature(temperature_kelvin, k_mesh, integration),
+            ),
             fixed_k_mesh(k_mesh),
             fixed_direction(current),
             fixed_direction(field_1),
             fixed_direction(field_2),
-            chemical_potentials.clone(),
+            response_options(integration, None, None),
         );
-        params.T = nonlinear_temperature(temperature_kelvin, k_mesh, integration);
-        params.integration = integration;
         Ok(model.intrinsic_nonlinear_hall(&params)?.conductivity)
     }
 
@@ -532,19 +538,27 @@ mod tests {
         integration: Integration,
         field_symmetry: FieldSymmetry,
     ) -> Result<Array1<f64>> {
-        let mut params = Parameters::rank3(
+        let params = Parameters::rank3(
+            Conditions {
+                t_kelvin: Sampling::Fixed(nonlinear_temperature(
+                    temperature_kelvin,
+                    k_mesh,
+                    integration,
+                )),
+                mu_ev: Sampling::Values(chemical_potentials.clone()),
+                omega_ev: Sampling::Fixed(frequency),
+            },
             fixed_k_mesh(k_mesh),
             fixed_direction(current),
             fixed_direction(field_1),
             fixed_direction(field_2),
-            chemical_potentials.clone(),
+            ResponseOptions {
+                integration,
+                spin,
+                field_symmetry,
+                eta_ev: Some(broadening),
+            },
         );
-        params.T = nonlinear_temperature(temperature_kelvin, k_mesh, integration);
-        params.omega = array![frequency];
-        params.spin = spin;
-        params.eta = broadening;
-        params.integration = integration;
-        params.field_symmetry = field_symmetry;
         Ok(model.extrinsic_nonlinear_hall(&params)?.conductivity)
     }
 
@@ -2389,14 +2403,14 @@ mod tests {
         let field_2 = array![0.0, 0.0, 1.0];
         let k_mesh = array![12, 12, 12];
         let chemical_potentials = Array1::linspace(-1.0, 1.0, 21);
-        let mut params = Parameters::rank3(
+        let params = Parameters::rank3(
+            mu_conditions(&chemical_potentials, 100.0),
             [12, 12, 12],
             fixed_direction(&current),
             fixed_direction(&field_1),
             fixed_direction(&field_2),
-            chemical_potentials.clone(),
+            response_options(Integration::Direct, None, None),
         );
-        params.T = 100.0;
         let public = model
             .intrinsic_nonlinear_hall(&params)
             .unwrap()
@@ -2469,11 +2483,12 @@ mod tests {
         );
 
         let zero_temperature = Parameters::rank3(
+            mu_conditions(&mu1, 0.0),
             [4, 4, 4],
             fixed_direction(&dx),
             fixed_direction(&dy),
             fixed_direction(&dz),
-            mu1,
+            response_options(Integration::Direct, None, None),
         );
         assert!(model.intrinsic_nonlinear_hall(&zero_temperature).is_err());
     }

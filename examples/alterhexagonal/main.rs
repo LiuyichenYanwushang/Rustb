@@ -86,10 +86,17 @@ fn main() {
             //println!("{}",mu);
             //plot!(E,dos,"target/example-output/alterhexagonal/dos.pdf");
 
-            let hall_params = Parameters::at_mu(
+            let hall_params = Parameters::rank2(
+                Conditions::fixed(0.0, mu, 0.0),
                 [kmesh[0], kmesh[1]],
-                Array2::from_shape_vec((2, 2), vec![1.0, 0.0, 0.0, 1.0]).unwrap(),
-                mu,
+                [1.0, 0.0],
+                [0.0, 1.0],
+                ResponseOptions {
+                    integration: Integration::Direct,
+                    spin: None,
+                    field_symmetry: FieldSymmetry::Symmetrized,
+                    eta_ev: Some(1e-3),
+                },
             );
             let conductivity = model
                 .hall_conductivity(&hall_params)

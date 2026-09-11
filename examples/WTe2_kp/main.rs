@@ -32,10 +32,23 @@ fn main() {
     let E_n = 2000;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 5.0;
-    let mut response = Parameters::rank3([nk, nk], [0.0, 1.0], [1.0, 0.0], [1.0, 0.0], mu.clone());
-    response.T = T;
-    response.eta = 1e-5;
-    response.field_symmetry = FieldSymmetry::Ordered;
+    let response = Parameters::rank3(
+        Conditions {
+            t_kelvin: Sampling::Fixed(T),
+            mu_ev: Sampling::Values(mu.clone()),
+            omega_ev: Sampling::Fixed(0.0),
+        },
+        [nk, nk],
+        [0.0, 1.0],
+        [1.0, 0.0],
+        [1.0, 0.0],
+        ResponseOptions {
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Ordered,
+            eta_ev: Some(1e-5),
+        },
+    );
     let sigma = model
         .extrinsic_nonlinear_hall(&response)
         .unwrap()
@@ -68,11 +81,23 @@ fn main() {
     let mut omega = Array1::<f64>::zeros(E_n);
     for (i, t0) in t.iter().enumerate() {
         let model = gen_model(*t0, v, ap, eta, m);
-        let mut response =
-            Parameters::rank3([nk, nk], [0.0, 1.0], [1.0, 0.0], [1.0, 0.0], mu.clone());
-        response.T = T;
-        response.eta = 1e-5;
-        response.field_symmetry = FieldSymmetry::Ordered;
+        let response = Parameters::rank3(
+            Conditions {
+                t_kelvin: Sampling::Fixed(T),
+                mu_ev: Sampling::Values(mu.clone()),
+                omega_ev: Sampling::Fixed(0.0),
+            },
+            [nk, nk],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            ResponseOptions {
+                integration: Integration::Direct,
+                spin: None,
+                field_symmetry: FieldSymmetry::Ordered,
+                eta_ev: Some(1e-5),
+            },
+        );
         let sigma = model
             .extrinsic_nonlinear_hall(&response)
             .unwrap()

@@ -96,8 +96,18 @@ fn main() {
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let mut berry_params = Parameters::rank2([1, 1], [1.0, 0.0], [0.0, 1.0], array![0.0]);
-    berry_params.T = T;
+    let berry_params = Parameters::rank2(
+        Conditions::fixed(T, 0.0, 0.0),
+        [1, 1],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        ResponseOptions {
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(1e-3),
+        },
+    );
     let berry_curv = model
         .occupied_berry_curvature_on(&kvec, &berry_params)
         .unwrap();
@@ -113,7 +123,18 @@ fn main() {
         }),
         "target/example-output/yuxuan_try/heat_map.pdf",
     );
-    let hall_params = Parameters::rank2([nk, nk], [1.0, 0.0], [0.0, 1.0], array![0.0]);
+    let hall_params = Parameters::rank2(
+        Conditions::fixed(0.0, 0.0, 0.0),
+        [nk, nk],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        ResponseOptions {
+            integration: Integration::Direct,
+            spin: None,
+            field_symmetry: FieldSymmetry::Symmetrized,
+            eta_ev: Some(1e-3),
+        },
+    );
     let conductivity = model
         .hall_conductivity(&hall_params)
         .unwrap()

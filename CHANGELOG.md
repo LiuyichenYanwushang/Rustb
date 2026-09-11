@@ -50,13 +50,38 @@
 
 ### API changes
 
-- `Parameters<DIM>::T` is a scalar `f64` in kelvin, replacing `Array1<f64>`.
-  Every physics reader already consumed only `T[0]`; validation was the one
-  place that inspected the rest. The array type invited a temperature sweep
-  that no algorithm ever performed, so a sweep is a caller-side loop.
-- Remove `Parameters::with_spin`, `with_frequency`, and `with_integration`;
-  assign the public fields directly. `with_temperature` is kept because the
-  module doctest and the documented examples use it.
+- Response input is explicit now. `Parameters<DIM>` holds `conditions`
+  (`t_kelvin`, `mu_ev`, `omega_ev`, each `Sampling::Fixed(value)` or
+  `Sampling::Values(series)`), `kmesh`, `direction`, `integration`, `spin`,
+  `field_symmetry` and `eta_ev`. At most one axis may be `Values`; that axis
+  is evaluated from one shared k-mesh preparation, so eigenstates, velocity
+  kernels and band tracking are computed once instead of once per sample.
+  Sampling several axes is rejected before any k-mesh work.
+- Remove the whole `Parameters` constructor surface — `new`, `at_mu`,
+  `with_temperature`, `with_spin`, `with_frequency`, `with_integration` —
+  and construct with `Parameters::rank2`/`rank3` plus an explicit
+  `Conditions` and `ResponseOptions`. `Integration` and `FieldSymmetry` no
+  longer implement `Default`, and `eta_ev` is `Option<f64>`: every entry point
+  that broadens a denominator requires it, while `intrinsic_nonlinear_hall`
+  ignores it.
+- A sampled `omega_ev` is rejected by the four frequency-independent entry
+  points; `optical_conductivity` is the only response that may sample it.
+- Response validation parameters are renamed: `T` becomes `t_kelvin`, `mu`
+  becomes `mu_ev`, and a missing `eta_ev` is reported as
+  `InvalidResponseParameter { parameter: "eta_ev" }`.
+- Results carry `axis: ResponseAxis` (`Fixed`, or `Temperature` /
+  `ChemicalPotential` / `Frequency` with the sampled values) instead of a
+  copied `chemical_potentials` / `frequencies` grid; `single()` returns a
+  scalar only for `Fixed`. `optical_conductivity` may sample `t_kelvin` or
+  `mu_ev` as well as `omega_ev`.
+- Per-k-point methods (`berry_curvature_at`, `occupied_berry_curvature_at`,
+  `occupied_berry_curvature_on`, `quantum_geometry_at`, `quantum_geometry_on`)
+  require every axis `Fixed` and reject a sampled
+  axis instead of silently ignoring fields. They validate every field, including
+  the k-mesh they do not read.
+- The nonlinear Hall entry points reject the whole call when any sample reaches
+  zero temperature with `Integration::Direct`, before any k-mesh work, instead
+  of switching algorithm at an individual sample.
 - `FloquetEffectiveOptions.harmonic_max` is `isize`; negative cutoffs are rejected.
   `floquet_effective_q_model` takes `(drive, options, wavevector_cartesian)` and
   no longer takes a Sambe truncation.
