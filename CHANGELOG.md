@@ -4,8 +4,9 @@
 
 ### Safety and numerical fixes
 
-- Direct nonlinear Hall rejects temperatures whose thermal energy `k_B T`
-  underflows to zero, including inside scans, before preparing the k-mesh.
+- Direct nonlinear Hall rejects zero thermal widths and overflowing peak
+  derivatives `0.25 / (k_B T)`, including inside scans, before preparing the
+  k-mesh. Subnormal widths with finite peak derivatives remain valid.
 - Correct the interband optical Kubo kernel: retain both longitudinal absorption
   and the antisymmetric Hall response, with `e²/hbar` omitted. Unbroadened poles
   return errors instead of silently vanishing; Drude terms remain excluded.

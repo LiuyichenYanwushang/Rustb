@@ -1102,13 +1102,17 @@ mod regression_tests {
         assert_eq!(tensor_tracking, 1);
     }
 
-    /// Reject an unrepresentable thermal width before preparing any k-point,
+    /// Reject an unrepresentable Fermi-window peak before preparing any k-point,
     /// including when it occurs after a valid sample in a temperature scan.
     #[test]
-    fn zero_or_underflowed_thermal_width_rejects_the_whole_direct_call() {
+    fn unrepresentable_fermi_window_rejects_the_whole_direct_call() {
         use crate::response::config::counters;
-        let model = sampled_axis_model();
-        for temperature in [0.0, 1e-320] {
+        // No hoppings: every response kernel is zero. At E=mu=0 an infinite
+        // Fermi window would nevertheless produce 0 * infinity = NaN.
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), Array2::zeros((2, 2)), None).unwrap();
+        model.ham[[0, 1, 1]].re = 1.0;
+        for temperature in [0.0, 1e-320, 3e-320, 1e-310] {
             for t_kelvin in [
                 Sampling::Fixed(temperature),
                 Sampling::Values(array![300.0, temperature]),
@@ -1116,7 +1120,7 @@ mod regression_tests {
                 let params = Parameters::rank3(
                     Conditions {
                         t_kelvin,
-                        mu_ev: Sampling::Fixed(-0.5),
+                        mu_ev: Sampling::Fixed(0.0),
                         omega_ev: Sampling::Fixed(0.0),
                     },
                     [3, 4],
@@ -1142,6 +1146,49 @@ mod regression_tests {
                     );
                     assert_eq!((eigen, tracking), (0, 0));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn finite_fermi_windows_allow_subnormal_thermal_widths() {
+        let temperature = 3e-305;
+        let width = crate::Occupation::FermiDirac {
+            temperature_kelvin: temperature,
+        }
+        .energy_width()
+        .unwrap();
+        assert!(width.is_subnormal());
+        assert!((1.0 / width).is_infinite());
+
+        // A k-independent, gapped Hamiltonian has zero velocity, including at
+        // a chemical potential equal to one band's energy.
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), Array2::zeros((2, 2)), None).unwrap();
+        model.ham[[0, 1, 1]].re = 1.0;
+        for t_kelvin in [
+            Sampling::Fixed(temperature),
+            Sampling::Values(array![temperature, 300.0]),
+        ] {
+            let params = Parameters::rank3(
+                Conditions {
+                    t_kelvin,
+                    mu_ev: Sampling::Fixed(0.0),
+                    omega_ev: Sampling::Fixed(0.0),
+                },
+                [2, 2],
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [1.0, 1.0],
+                options(Integration::Direct, Some(0.07)),
+            );
+            for evaluate in [
+                Model::extrinsic_nonlinear_hall,
+                Model::intrinsic_nonlinear_hall,
+            ] {
+                let result = evaluate(&model, &params).unwrap();
+                assert_eq!(result.conductivity.len(), params.conditions.t_kelvin.len());
+                assert!(result.conductivity.iter().all(|&value| value == 0.0));
             }
         }
     }

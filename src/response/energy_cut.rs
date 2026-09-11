@@ -35,7 +35,8 @@
 //! ## Thermal convolution
 //!
 //! $T>0$ integrals use 1D convolution of the $T=0$ result with the thermal
-//! window $w(x) = e^x/(1+e^x)^2$, avoiding per‑$T$ recomputation.
+//! window $w(x) = e^x/(1+e^x)^2$. Vertex preparation is shared; cuts and
+//! thermal integration are evaluated separately for each temperature.
 
 use ndarray::prelude::*;
 use num_complex::Complex;

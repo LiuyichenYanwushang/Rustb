@@ -99,8 +99,9 @@ model hierarchies with duplicated band, geometry, or response methods.
 - DC responses and per-k-point Berry/geometry methods require
   `omega_ev: Sampling::Fixed(0.0)`. Optical, quantum geometry and intrinsic
   nonlinear Hall require `spin: None`; unsupported spin requests return errors.
-  Direct nonlinear Hall requires a positive representable `k_B T` at every
-  sample, rejecting zero or underflowed widths before k-mesh preparation.
+  Direct nonlinear Hall requires a finite Fermi-window peak `0.25 / (k_B T)`
+  at every sample, rejecting zero widths or overflowing peaks before k-mesh
+  preparation. Subnormal widths with finite peaks remain valid.
 - The supported entry points are `hall_conductivity`, `quantum_geometry`,
   `optical_conductivity`, `extrinsic_nonlinear_hall`, and
   `intrinsic_nonlinear_hall`. Algorithm choice belongs in the shared

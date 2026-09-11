@@ -294,16 +294,17 @@ impl ResolvedConditions {
         })
     }
 
-    /// Every sample must have a positive representable thermal energy. Direct
-    /// Fermi-surface integration samples `-df/dE`, which cannot represent the
-    /// zero-temperature step; the whole call is rejected instead of switching
-    /// algorithm at an individual sample.
+    /// Every sample must have a finite Fermi-window peak. Direct Fermi-surface
+    /// integration samples `-df/dE`, whose maximum is `0.25 / (k_B T)`.
+    /// Reject the whole call if this overflows, including zero thermal width.
     pub(crate) fn require_positive_temperature(&self) -> Result<()> {
         for index in 0..self.len() {
-            if self.occupation(index).energy_width()? == 0.0 {
+            let width = self.occupation(index).energy_width()?;
+            // Some subnormal widths still have a finite peak and remain valid.
+            if !(0.25 / width).is_finite() {
                 return Err(TbError::InvalidThermodynamicParameter {
                     parameter: "t_kelvin",
-                    message: "direct Fermi-surface integration requires a positive representable thermal energy k_B T at every sample; use Integration::EnergyCut for the exact zero-temperature Fermi surface".into(),
+                    message: "direct Fermi-surface integration requires a positive thermal energy k_B T with a finite Fermi-window peak 0.25 / (k_B T) at every sample; use Integration::EnergyCut for the exact zero-temperature Fermi surface".into(),
                 });
             }
         }

@@ -257,8 +257,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// axis.
     ///
     /// Direct integration samples `-df/dE` on k-points, so every sample must
-    /// have a positive representable thermal energy `k_B T`. Zero or
-    /// underflowed widths reject the whole call before any k-mesh work.
+    /// have a positive thermal energy `k_B T` with a finite Fermi-window peak
+    /// `0.25 / (k_B T)`. Zero widths or overflowing peaks reject the whole call
+    /// before any k-mesh work; subnormal widths with finite peaks are accepted.
     /// Energy-cut integration supports the exact zero-temperature limit.
     ///
     /// Direction rows are `(current, field_1, field_2)`. In the internal
@@ -298,7 +299,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         } else {
             // Reject the whole call, before any k-mesh work, if any sample
-            // reaches the zero-temperature step.
+            // has zero thermal width or an overflowing Fermi-window peak.
             resolved.require_positive_temperature()?;
         }
         let samples = resolved.len();
@@ -713,8 +714,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Both paths omit interband gaps at or below `1e-10` eV.
     ///
     /// Direct integration samples `-df/dE` on k-points, so every sample must
-    /// have a positive representable thermal energy `k_B T`. Zero or
-    /// underflowed widths reject the whole call before any k-mesh work.
+    /// have a positive thermal energy `k_B T` with a finite Fermi-window peak
+    /// `0.25 / (k_B T)`. Zero widths or overflowing peaks reject the whole call
+    /// before any k-mesh work; subnormal widths with finite peaks are accepted.
     /// Energy-cut mode evaluates the
     /// zero-temperature Fermi surface exactly within the simplex interpolation
     /// and also accepts finite thermal widths. Eigenstates, velocity kernels and
@@ -743,7 +745,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         } else {
             // Reject the whole call, before any k-mesh work, if any sample
-            // reaches the zero-temperature step.
+            // has zero thermal width or an overflowing Fermi-window peak.
             resolved.require_positive_temperature()?;
         }
         let samples = resolved.len();

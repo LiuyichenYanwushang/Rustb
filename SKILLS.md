@@ -468,9 +468,10 @@ let temperature_series = Sampling::Values(Array1::linspace(0.0, 300.0, 31));
 ```
 
 Direct Fermi-surface calculations containing `-df/dE` require a positive
-representable thermal energy `k_B T`. A zero temperature or one whose thermal
-energy underflows to zero rejects the whole `Direct` call, including when it
-occurs inside a `Values` series.
+thermal energy `k_B T` with a finite peak derivative `0.25 / (k_B T)`. Zero
+widths or overflowing peaks reject the whole `Direct` call, including when
+they occur inside a `Values` series. Subnormal widths with finite peaks remain
+valid.
 Energy-cut algorithms represent the exact zero-temperature delta function.
 
 ### Berry curvature
@@ -584,8 +585,8 @@ neither `eta_ev` nor `field_symmetry` and rejects a spin current;
 both nonlinear Hall entry points require `omega_ev: Sampling::Fixed(0.0)`.
 
 Direct integration samples `-df/dE` on k-points, so **every** sample must have
-a positive representable thermal energy `k_B T`. Zero or underflowed thermal
-widths reject the whole call before any k-mesh work. Use
+a finite peak derivative `0.25 / (k_B T)`. Zero widths or overflowing peaks
+reject the whole call before any k-mesh work. Use
 `Integration::EnergyCut` for the exact zero-temperature Fermi surface.
 
 ### Quantum geometry
