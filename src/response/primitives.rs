@@ -13,6 +13,7 @@ use crate::RMatrixData;
 use crate::SpinDirection;
 use crate::error::{Result, TbError};
 use crate::math::anti_comm;
+use crate::model::build_spin_matrix_for_norb;
 
 use super::types::VertexKernel;
 
@@ -86,7 +87,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             let v_raw = v_proj.slice(s![d, .., ..]).to_owned();
             if spin_dress && SPIN {
                 if let Some(direction) = spin {
-                    let x = self.build_spin_matrix(direction)?;
+                    let x = build_spin_matrix_for_norb(self.norb(), direction);
                     let s = anti_comm(&x, &v_raw) * 0.5;
                     Ok(ut.dot(&s.dot(&uc)))
                 } else {

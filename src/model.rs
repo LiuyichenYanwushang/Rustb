@@ -481,43 +481,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         R::HAS_RMATRIX
     }
 
-    /// Build the spin current operator `σ_⊗I/(2)` in the model state basis.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TbError::SpinNotAllowed`] when called on a spinless model.
-    pub fn build_spin_matrix(
-        &self,
-        spin: SpinDirection,
-    ) -> Result<Array2<Complex<f64>>> {
-        if !SPIN {
-            return Err(TbError::SpinNotAllowed(spin));
-        }
-
-        let nsta = self.nsta();
-        let mut matrix = Array2::<Complex<f64>>::zeros((nsta, nsta));
-        let half = Complex::new(0.5, 0.0);
-        let i_half = Complex::new(0.0, 0.5);
-        let norb = self.norb();
-        for i in 0..norb {
-            match spin {
-                SpinDirection::X => {
-                    matrix[[i, i + norb]] = half;
-                    matrix[[i + norb, i]] = half;
-                }
-                SpinDirection::Y => {
-                    matrix[[i, i + norb]] = -i_half;
-                    matrix[[i + norb, i]] = i_half;
-                }
-                SpinDirection::Z => {
-                    matrix[[i, i]] = half;
-                    matrix[[i + norb, i + norb]] = -half;
-                }
-            }
-        }
-        Ok(matrix)
-    }
-
     #[inline(always)]
     pub fn atom_position(&self) -> Array2<f64> {
         let mut atom_position = Array2::zeros((self.natom(), DIM));
@@ -782,6 +745,44 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     pub fn nsta(&self) -> usize {
         if SPIN { 2 * self.norb() } else { self.norb() }
     }
+}
+
+impl<const DIM: usize, R: RMatrixData> Model<true, DIM, R> {
+    /// Build the spin current operator `σ_⊗I/(2)` in the model state basis.
+    pub fn build_spin_matrix(&self, spin: SpinDirection) -> Array2<Complex<f64>> {
+        build_spin_matrix_for_norb(self.norb(), spin)
+    }
+}
+
+/// Construct a spin-current matrix for internal response kernels.
+///
+/// This helper is intentionally crate-private; the public API is restricted to
+/// `Model<true, ...>::build_spin_matrix`, so spinless models cannot request one.
+pub(crate) fn build_spin_matrix_for_norb(norb: usize, spin: SpinDirection) -> Array2<Complex<f64>> {
+    let nsta = 2 * norb;
+    let mut matrix = Array2::<Complex<f64>>::zeros((nsta, nsta));
+    let half = Complex::new(0.5, 0.0);
+    let i_half = Complex::new(0.0, 0.5);
+    for i in 0..norb {
+        match spin {
+            SpinDirection::X => {
+                matrix[[i, i + norb]] = half;
+                matrix[[i + norb, i]] = half;
+            }
+            SpinDirection::Y => {
+                matrix[[i, i + norb]] = -i_half;
+                matrix[[i + norb, i]] = i_half;
+            }
+            SpinDirection::Z => {
+                matrix[[i, i]] = half;
+                matrix[[i + norb, i + norb]] = -half;
+            }
+        }
+    }
+    matrix
+}
+
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// 构造局域原子轨道角动量矩阵，数值以 ℏ 为单位，即返回 `L / ℏ`。
     ///
     /// 返回形状始终为 `(3, nsta, nsta)`，第一轴依次是 `Lx, Ly, Lz`，

@@ -8,6 +8,7 @@ use rayon::prelude::*;
 
 use crate::error::{Result, TbError};
 use crate::math::anti_comm;
+use crate::model::build_spin_matrix_for_norb;
 use crate::velocity::Velocity;
 use crate::{Gauge, Model, RMatrixData, SpinDirection};
 
@@ -55,9 +56,7 @@ pub trait BerryCurvature<const DIM: usize>: Velocity {
     ) -> Result<Array1<f64>>;
 }
 
-impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
-    for Model<SPIN, DIM, R>
-{
+impl<const DIM: usize, R: RMatrixData> BerryCurvature<DIM> for Model<false, DIM, R> {
     fn berry_curvature_at<S: Data<Elem = f64>>(
         &self,
         k: &ArrayBase<S, Ix1>,
@@ -74,10 +73,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
         resolved.require_fixed_dc()?;
         let eta = params.broadening()?;
         let spin = params.spin;
-        if !SPIN && let Some(direction) = spin {
+        if let Some(direction) = spin {
             return Err(TbError::SpinNotAllowed(direction));
         }
-        self.berry_curvature_at_impl(k, &params.direction, spin, eta)
+        self.berry_curvature_at_impl_spinless(k, &params.direction, spin, eta)
     }
 
     fn occupied_berry_curvature_at<S: Data<Elem = f64>>(
@@ -116,7 +115,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
         resolved.require_fixed_dc()?;
         let eta = params.broadening()?;
         let spin = params.spin;
-        if !SPIN && let Some(direction) = spin {
+        if let Some(direction) = spin {
             return Err(TbError::SpinNotAllowed(direction));
         }
         let (_, chemical_potential, _) = resolved.point(0);
@@ -125,7 +124,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
             .axis_iter(Axis(0))
             .into_par_iter()
             .map(|k| {
-                let bands = self.berry_curvature_at_impl(&k, &params.direction, spin, eta)?;
+                let bands =
+                    self.berry_curvature_at_impl_spinless(&k, &params.direction, spin, eta)?;
                 Ok(bands
                     .berry_curvature
                     .iter()
@@ -139,6 +139,135 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> BerryCurvature<DIM>
         Ok(Array1::from_vec(
             values.into_iter().collect::<Result<Vec<_>>>()?,
         ))
+    }
+}
+
+impl<const DIM: usize, R: RMatrixData> BerryCurvature<DIM> for Model<true, DIM, R> {
+    fn berry_curvature_at<S: Data<Elem = f64>>(
+        &self,
+        k: &ArrayBase<S, Ix1>,
+        params: &Parameters<DIM>,
+    ) -> Result<BandBerryCurvature> {
+        self.validate()?;
+        if k.len() != DIM {
+            return Err(TbError::KVectorLengthMismatch {
+                expected: DIM,
+                actual: k.len(),
+            });
+        }
+        let resolved = params.validate_rank2()?;
+        resolved.require_fixed_dc()?;
+        let eta = params.broadening()?;
+        self.berry_curvature_at_impl(k, &params.direction, params.spin, eta)
+    }
+
+    fn occupied_berry_curvature_at<S: Data<Elem = f64>>(
+        &self,
+        k: &ArrayBase<S, Ix1>,
+        params: &Parameters<DIM>,
+    ) -> Result<f64> {
+        let resolved = params.validate_rank2()?;
+        resolved.require_fixed_dc()?;
+        let (_, chemical_potential, _) = resolved.point(0);
+        let occupation = resolved.occupation(0);
+        let bands = self.berry_curvature_at(k, params)?;
+        Ok(bands
+            .berry_curvature
+            .iter()
+            .zip(&bands.energies)
+            .map(|(&berry, &energy)| berry * occupation.value_unchecked(energy, chemical_potential))
+            .sum())
+    }
+
+    fn occupied_berry_curvature_on<S: Data<Elem = f64> + Sync>(
+        &self,
+        k_points: &ArrayBase<S, Ix2>,
+        params: &Parameters<DIM>,
+    ) -> Result<Array1<f64>> {
+        self.validate()?;
+        if k_points.ncols() != DIM {
+            return Err(TbError::DimensionMismatch {
+                context: "Berry-curvature k-points".into(),
+                expected: DIM,
+                found: k_points.ncols(),
+            });
+        }
+        // Validate once up front, then reuse the unvalidated kernel per k-point.
+        let resolved = params.validate_rank2()?;
+        resolved.require_fixed_dc()?;
+        let eta = params.broadening()?;
+        let (_, chemical_potential, _) = resolved.point(0);
+        let occupation = resolved.occupation(0);
+        let values: Vec<Result<f64>> = k_points
+            .axis_iter(Axis(0))
+            .into_par_iter()
+            .map(|k| {
+                let bands =
+                    self.berry_curvature_at_impl(&k, &params.direction, params.spin, eta)?;
+                Ok(bands
+                    .berry_curvature
+                    .iter()
+                    .zip(&bands.energies)
+                    .map(|(&berry, &energy)| {
+                        berry * occupation.value_unchecked(energy, chemical_potential)
+                    })
+                    .sum())
+            })
+            .collect();
+        Ok(Array1::from_vec(
+            values.into_iter().collect::<Result<Vec<_>>>()?,
+        ))
+    }
+}
+
+impl<const DIM: usize, R: RMatrixData> Model<false, DIM, R> {
+    /// Band-resolved Berry-curvature kernel without input validation.
+    ///
+    /// Callers must have already validated the direction rank, `spin` against
+    /// the model and `eta`. The high-level entry points validate once and then
+    /// call this per k-point; the public trait methods are independent
+    /// boundaries and validate before delegating here.
+    pub(crate) fn berry_curvature_at_impl_spinless<S: Data<Elem = f64>>(
+        &self,
+        k: &ArrayBase<S, Ix1>,
+        direction: &Array2<f64>,
+        spin: Option<SpinDirection>,
+        eta: f64,
+    ) -> Result<BandBerryCurvature> {
+        let (projected_velocity, hamiltonian) = self.gen_v_projected(k, Gauge::Atom, direction);
+        #[cfg(test)]
+        super::config::counters::count_eigen_decomposition();
+        let (energies, eigenvectors) = hamiltonian.eigh(UPLO::Lower)?;
+
+        let current: Array2<Complex<f64>> = if let Some(direction) = spin {
+            return Err(TbError::SpinNotAllowed(direction));
+        } else {
+            projected_velocity.index_axis(Axis(0), 0).to_owned()
+        };
+        let second_velocity = projected_velocity.index_axis(Axis(0), 1);
+        let bra = eigenvectors.t();
+        let ket = eigenvectors.mapv(|value| value.conj());
+        let current_band = bra.dot(&current.dot(&ket));
+        let velocity_band = bra.dot(&second_velocity.dot(&ket));
+        let kernel = current_band * velocity_band.reversed_axes();
+        let eta_squared = eta * eta;
+        let mut berry_curvature = Array1::<f64>::zeros(self.nsta());
+
+        for band in 0..self.nsta() {
+            let mut value = 0.0;
+            for other in 0..self.nsta() {
+                if band == other {
+                    continue;
+                }
+                let difference = energies[band] - energies[other];
+                value += -2.0 * kernel[[band, other]].im / (difference * difference + eta_squared);
+            }
+            berry_curvature[band] = value;
+        }
+        Ok(BandBerryCurvature {
+            berry_curvature,
+            energies,
+        })
     }
 }
 
@@ -161,13 +290,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         super::config::counters::count_eigen_decomposition();
         let (energies, eigenvectors) = hamiltonian.eigh(UPLO::Lower)?;
 
-        let current: Array2<Complex<f64>> = if SPIN {
-            if let Some(direction) = spin {
-                let spin_matrix = self.build_spin_matrix(direction)?;
-                anti_comm(&spin_matrix, &projected_velocity.index_axis(Axis(0), 0)) * 0.5
-            } else {
-                projected_velocity.index_axis(Axis(0), 0).to_owned()
-            }
+        let current: Array2<Complex<f64>> = if let Some(direction) = spin {
+            let spin_matrix = build_spin_matrix_for_norb(self.norb(), direction);
+            anti_comm(&spin_matrix, &projected_velocity.index_axis(Axis(0), 0)) * 0.5
         } else {
             projected_velocity.index_axis(Axis(0), 0).to_owned()
         };

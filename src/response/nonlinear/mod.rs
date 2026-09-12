@@ -43,6 +43,7 @@ use crate::RMatrixData;
 use crate::SpinDirection;
 use crate::error::{Result, TbError};
 use crate::math::anti_comm;
+use crate::model::build_spin_matrix_for_norb;
 use crate::thermodynamics::fermi_derivative_from_width;
 
 use super::config::{
@@ -122,7 +123,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // v_proj[2] = Σ_d dir_3[d] * v_raw[d]        → v0
         let J: Array2<Complex<f64>> = if SPIN {
             if let Some(direction) = spin {
-                let X = self.build_spin_matrix(direction)?;
+                let X = build_spin_matrix_for_norb(self.norb(), direction);
                 anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5
             } else {
                 v_proj.slice(s![0, .., ..]).to_owned()
@@ -548,7 +549,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             } else {
                 unreachable!("spin checked above");
             };
-            let X = self.build_spin_matrix(direction)?;
+            let X = build_spin_matrix_for_norb(self.norb(), direction);
             let s_1_raw = anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5;
             let s_2_raw = anti_comm(&X, &v_proj.slice(s![1, .., ..])) * 0.5;
             let s_3_raw = anti_comm(&X, &v_proj.slice(s![2, .., ..])) * 0.5;

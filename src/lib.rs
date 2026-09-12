@@ -445,7 +445,10 @@ mod tests {
         direction_b: &Array1<f64>,
         spin: Option<SpinDirection>,
         broadening: f64,
-    ) -> BandBerryCurvature {
+    ) -> BandBerryCurvature
+    where
+        Model<SPIN, DIM, R>: BerryCurvature<DIM>,
+    {
         let params = Parameters::rank2(
             Conditions::fixed(0.0, 0.0, 0.0),
             [1; DIM],
@@ -466,7 +469,10 @@ mod tests {
         temperature_kelvin: f64,
         spin: Option<SpinDirection>,
         broadening: f64,
-    ) -> Array1<f64> {
+    ) -> Array1<f64>
+    where
+        Model<SPIN, DIM, R>: BerryCurvature<DIM>,
+    {
         let params = Parameters::rank2(
             Conditions::fixed(temperature_kelvin, chemical_potential, 0.0),
             [1; DIM],
