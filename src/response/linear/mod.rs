@@ -41,12 +41,14 @@
 use ndarray::array;
 use ndarray::prelude::*;
 use ndarray_linalg::*;
+use num_complex::Complex;
 use rayon::prelude::*;
 
 use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
-use crate::error::Result;
+use crate::SpinDirection;
+use crate::error::{Result, TbError};
 use crate::thermodynamics::Occupation;
 
 use super::config::{
@@ -65,6 +67,147 @@ pub struct HallConductivityResult {
     pub axis: ResponseAxis,
     /// Hall response at every sample of that axis.
     pub conductivity: Array1<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::response::{BerryCurvature, Conditions, FieldSymmetry, ResponseOptions};
+    use crate::{HasRMatrix, NoRMatrix};
+
+    #[test]
+    fn spin_hall_and_berry_match_independent_spinless_sectors() {
+        fn check<R: RMatrixData>() {
+            // Two QWZ sectors with separated band energies. The direct sum
+            // is assembled without the spin-matrix builder under test.
+            let mut up =
+                Model::<false, 2, R>::tb_model(Array2::eye(2), Array2::zeros((2, 2)), None)
+                    .unwrap();
+            up.set_onsite(&array![-1.0, 1.0], None);
+            let x = array![1, 0];
+            let y = array![0, 1];
+            up.add_hop(Complex::new(0.0, -0.5), 0, 1, &x, None);
+            up.add_hop(Complex::new(0.0, 0.5), 0, 1, &(-&x), None);
+            up.add_hop(-0.5, 0, 1, &y, None);
+            up.add_hop(0.5, 0, 1, &(-&y), None);
+            for r in [x, y] {
+                up.add_hop(0.5, 0, 0, &r, None);
+                up.add_hop(-0.5, 1, 1, &r, None);
+            }
+            if R::HAS_RMATRIX {
+                // Nonzero Hermitian position elements exercise the velocity
+                // commutator, rather than merely the HasRMatrix type tag.
+                for (axis, value) in [Complex::new(0.04, 0.07), Complex::new(-0.02, 0.03)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    up.rmatrix.as_array4_mut()[[0, axis, 0, 1]] = value;
+                    up.rmatrix.as_array4_mut()[[0, axis, 1, 0]] = value.conj();
+                }
+            }
+            let mut down = up.clone();
+            down.ham *= Complex::new(1.6, 0.0);
+            down.add_onsite(&array![0.23, 0.23], None);
+            let mut spinful =
+                Model::<true, 2, R>::tb_model(up.lat.clone(), up.orb.clone(), None).unwrap();
+            spinful.hamR = up.hamR.clone();
+            spinful.ham = Array3::zeros((up.hamR.nrows(), 4, 4));
+            spinful.ham.slice_mut(s![.., ..2, ..2]).assign(&up.ham);
+            spinful.ham.slice_mut(s![.., 2.., 2..]).assign(&down.ham);
+            if R::HAS_RMATRIX {
+                let mut position = Array4::zeros((up.hamR.nrows(), 2, 4, 4));
+                position
+                    .slice_mut(s![.., .., ..2, ..2])
+                    .assign(up.rmatrix.as_array4());
+                position
+                    .slice_mut(s![.., .., 2.., 2..])
+                    .assign(down.rmatrix.as_array4());
+                spinful.rmatrix = R::from_array(position);
+            }
+            let mut params = Parameters::rank2(
+                Conditions::fixed(0.0, -1.4, 0.0),
+                [11, 13],
+                [1.0, 0.0],
+                [0.0, 1.0],
+                ResponseOptions {
+                    integration: Integration::Direct,
+                    spin: None,
+                    field_symmetry: FieldSymmetry::Ordered,
+                    eta_ev: Some(0.05),
+                },
+            );
+            for integration in [Integration::Direct, Integration::EnergyCut] {
+                params.integration = integration;
+                params.spin = None;
+                let up_response = up.hall_conductivity(&params).unwrap().single().unwrap();
+                let down_response = down.hall_conductivity(&params).unwrap().single().unwrap();
+                let charge = spinful
+                    .hall_conductivity(&params)
+                    .unwrap()
+                    .single()
+                    .unwrap();
+                params.spin = Some(SpinDirection::Z);
+                let spin = spinful
+                    .hall_conductivity(&params)
+                    .unwrap()
+                    .single()
+                    .unwrap();
+                assert!((up_response + down_response).abs() > 1e-3);
+                assert!((up_response - down_response).abs() > 1e-3);
+                assert!((charge - (up_response + down_response)).abs() < 1e-10);
+                assert!((spin - 0.5 * (up_response - down_response)).abs() < 1e-10);
+                assert!(matches!(
+                    up.hall_conductivity(&params),
+                    Err(TbError::SpinNotAllowed(SpinDirection::Z))
+                ));
+            }
+
+            let points = array![[0.19, 0.31], [0.37, 0.23]];
+            for k in points.rows() {
+                params.spin = None;
+                let up_bands = up.berry_curvature_at(&k, &params).unwrap();
+                let down_bands = down.berry_curvature_at(&k, &params).unwrap();
+                let charge = spinful.berry_curvature_at(&k, &params).unwrap();
+                params.spin = Some(SpinDirection::Z);
+                let spin = spinful.berry_curvature_at(&k, &params).unwrap();
+                let mut expected: Vec<_> = [(&up_bands, 0.5), (&down_bands, -0.5)]
+                    .into_iter()
+                    .flat_map(|(bands, factor)| {
+                        bands
+                            .energies
+                            .iter()
+                            .zip(&bands.berry_curvature)
+                            .map(move |(&energy, &berry)| (energy, berry, factor * berry))
+                    })
+                    .collect();
+                expected.sort_by(|a, b| a.0.total_cmp(&b.0));
+                assert!(expected.windows(2).all(|pair| pair[1].0 - pair[0].0 > 0.1));
+                for (band, &(energy, berry, spin_berry)) in expected.iter().enumerate() {
+                    assert!((charge.energies[band] - energy).abs() < 1e-12);
+                    assert!((charge.berry_curvature[band] - berry).abs() < 1e-10);
+                    assert!((spin.berry_curvature[band] - spin_berry).abs() < 1e-10);
+                }
+                assert!(matches!(
+                    up.berry_curvature_at(&k, &params),
+                    Err(TbError::SpinNotAllowed(SpinDirection::Z))
+                ));
+            }
+            params.spin = None;
+            let up_values = up.occupied_berry_curvature_on(&points, &params).unwrap();
+            let down_values = down.occupied_berry_curvature_on(&points, &params).unwrap();
+            params.spin = Some(SpinDirection::Z);
+            let values = spinful
+                .occupied_berry_curvature_on(&points, &params)
+                .unwrap();
+            assert!(
+                (&values - &((&up_values - &down_values) * 0.5))
+                    .iter()
+                    .all(|error| error.abs() < 1e-10)
+            );
+        }
+        check::<NoRMatrix>();
+        check::<HasRMatrix>();
+    }
 }
 
 impl HallConductivityResult {
@@ -159,7 +302,7 @@ pub(crate) fn integrate_occupied_geometry(
     (total_g, total_o, unsafe_count)
 }
 
-impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+impl<const DIM: usize, R: RMatrixData> Model<true, DIM, R> {
     /// Evaluate charge or spin Hall conductivity using the unified
     /// [`Parameters`] configuration.
     ///
@@ -173,6 +316,34 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// repeat the energy cuts and convolution on shared vertices. Energy-cut
     /// integration requires an ascending sampled chemical potential.
     pub fn hall_conductivity(&self, params: &Parameters<DIM>) -> Result<HallConductivityResult> {
+        self.hall_conductivity_impl(params, |direction| Ok(self.build_spin_matrix(direction)))
+    }
+}
+
+impl<const DIM: usize, R: RMatrixData> Model<false, DIM, R> {
+    /// Evaluate charge Hall conductivity using the unified [`Parameters`]
+    /// configuration. A nonempty `spin` request returns [`TbError::SpinNotAllowed`].
+    ///
+    /// Reads `conditions` (at most one axis sampled), `kmesh`,
+    /// `direction` (rank 2), `eta_ev` and `integration`;
+    /// `field_symmetry` is ignored and
+    /// `omega_ev` must be `Sampling::Fixed(0.0)` because the response is DC.
+    /// The returned array has one value per sample of the sampled axis.
+    /// Eigenstates, velocity kernels and band tracking are prepared once;
+    /// weighting and integration still run for each sample. Temperature scans
+    /// repeat the energy cuts and convolution on shared vertices. Energy-cut
+    /// integration requires an ascending sampled chemical potential.
+    pub fn hall_conductivity(&self, params: &Parameters<DIM>) -> Result<HallConductivityResult> {
+        self.hall_conductivity_impl(params, |direction| Err(TbError::SpinNotAllowed(direction)))
+    }
+}
+
+impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    fn hall_conductivity_impl(
+        &self,
+        params: &Parameters<DIM>,
+        build_spin: impl FnOnce(SpinDirection) -> Result<Array2<Complex<f64>>>,
+    ) -> Result<HallConductivityResult> {
         let resolved = params.validate_rank2()?;
         resolved.require_dc()?;
         self.validate()?;
@@ -201,6 +372,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 });
             }
         }
+        let spin = spin.map(build_spin).transpose()?;
 
         let k_mesh = mesh_array(&params.kmesh);
         let determinant = self.lat.det()?;
@@ -218,7 +390,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 let band_data: Vec<_> = (0..nk)
                     .into_par_iter()
                     .map(|ik| {
-                        self.berry_curvature_at_impl(&kvec.row(ik).to_owned(), direction, spin, eta)
+                        self.berry_curvature_at_impl(
+                            &kvec.row(ik).to_owned(),
+                            direction,
+                            spin.as_ref(),
+                            eta,
+                        )
                     })
                     .collect::<Result<Vec<_>>>()?;
                 let values: Vec<f64> = (0..samples)
@@ -255,7 +432,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             &dir_b,
                             None,
                             Gauge::Atom,
-                            spin,
+                            spin.as_ref(),
                         )
                     })
                     .collect();

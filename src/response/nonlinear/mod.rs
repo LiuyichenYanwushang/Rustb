@@ -43,7 +43,6 @@ use crate::RMatrixData;
 use crate::SpinDirection;
 use crate::error::{Result, TbError};
 use crate::math::anti_comm;
-use crate::model::build_spin_matrix_for_norb;
 use crate::thermodynamics::fermi_derivative_from_width;
 
 use super::config::{
@@ -67,6 +66,76 @@ pub struct NonlinearHallResult {
     pub diagnostics: Option<IntegrationDiagnostics>,
 }
 
+impl<const DIM: usize, R: RMatrixData> Model<true, DIM, R> {
+    /// Evaluate the Berry-curvature-dipole nonlinear Hall response.
+    ///
+    /// Reads `conditions` (at most one axis sampled), `kmesh`,
+    /// `direction` (rank 3), `eta_ev`, `spin`, `integration` and
+    /// `field_symmetry`. This is a DC
+    /// response, so `omega_ev` must be `Sampling::Fixed(0.0)`.
+    /// Eigenstates, velocity kernels and band
+    /// tracking are prepared once and reused by every sample of the sampled
+    /// axis. `spin: None` selects charge current; a spin direction selects
+    /// the corresponding spin current.
+    ///
+    /// Direct integration samples `-df/dE` on k-points, so every sample must
+    /// have a positive thermal energy `k_B T` with a finite Fermi-window peak
+    /// `0.25 / (k_B T)`. Zero widths or overflowing peaks reject the whole call
+    /// before any k-mesh work; subnormal widths with finite peaks are accepted.
+    /// Energy-cut integration supports the exact zero-temperature limit.
+    ///
+    /// Direction rows are `(current, field_1, field_2)`. In the internal
+    /// kernel this maps to `Ω^{current, field_1} v^{field_2}`: `current` and
+    /// `field_1` are the two Berry-curvature indices and `field_2` is the
+    /// Fermi-surface velocity index. `FieldSymmetry::Symmetrized` averages
+    /// the two orderings of `field_1`/`field_2`.
+    ///
+    /// The two field indices are combined according to `params.field_symmetry`:
+    /// [`FieldSymmetry::Symmetrized`] averages the two field permutations,
+    /// [`FieldSymmetry::Ordered`] returns the raw ordered kernel.
+    pub fn extrinsic_nonlinear_hall(
+        &self,
+        params: &Parameters<DIM>,
+    ) -> Result<NonlinearHallResult> {
+        self.extrinsic_nonlinear_hall_impl(params, |spin| Ok(self.build_spin_matrix(spin)))
+    }
+}
+
+impl<const DIM: usize, R: RMatrixData> Model<false, DIM, R> {
+    /// Evaluate the Berry-curvature-dipole nonlinear Hall response.
+    ///
+    /// Reads `conditions` (at most one axis sampled), `kmesh`,
+    /// `direction` (rank 3), `eta_ev`, `spin`, `integration` and
+    /// `field_symmetry`. This is a DC
+    /// response, so `omega_ev` must be `Sampling::Fixed(0.0)`.
+    /// Eigenstates, velocity kernels and band
+    /// tracking are prepared once and reused by every sample of the sampled
+    /// axis. Spinless models require `spin: None`; a requested spin current
+    /// returns [`TbError::SpinNotAllowed`].
+    ///
+    /// Direct integration samples `-df/dE` on k-points, so every sample must
+    /// have a positive thermal energy `k_B T` with a finite Fermi-window peak
+    /// `0.25 / (k_B T)`. Zero widths or overflowing peaks reject the whole call
+    /// before any k-mesh work; subnormal widths with finite peaks are accepted.
+    /// Energy-cut integration supports the exact zero-temperature limit.
+    ///
+    /// Direction rows are `(current, field_1, field_2)`. In the internal
+    /// kernel this maps to `Ω^{current, field_1} v^{field_2}`: `current` and
+    /// `field_1` are the two Berry-curvature indices and `field_2` is the
+    /// Fermi-surface velocity index. `FieldSymmetry::Symmetrized` averages
+    /// the two orderings of `field_1`/`field_2`.
+    ///
+    /// The two field indices are combined according to `params.field_symmetry`:
+    /// [`FieldSymmetry::Symmetrized`] averages the two field permutations,
+    /// [`FieldSymmetry::Ordered`] returns the raw ordered kernel.
+    pub fn extrinsic_nonlinear_hall(
+        &self,
+        params: &Parameters<DIM>,
+    ) -> Result<NonlinearHallResult> {
+        self.extrinsic_nonlinear_hall_impl(params, |spin| Err(TbError::SpinNotAllowed(spin)))
+    }
+}
+
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Computes the unsymmetrized Berry-curvature-dipole kernel for each band at a
     /// single k-point.
@@ -86,7 +155,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `current_dir` - First Berry-curvature index $\alpha$ of $\Omega_{n,\alpha\beta}$.
     /// * `dir_2` - Second Berry-curvature index $\beta$.
     /// * `dir_3` - Velocity / Fermi-surface index $\gamma$.
-    /// * `spin` - `Option<SpinDirection>`; `None` = charge current.
+    /// * `spin_matrix` - Prebuilt spin matrix for this model; `None` = charge current.
     /// * `eta` - Broadening parameter $\eta$.
     ///
     /// # Returns
@@ -100,7 +169,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         dir_3: &Array1<f64>,
-        spin: Option<SpinDirection>,
+        spin_matrix: Option<&Array2<Complex<f64>>>,
         eta: f64,
     ) -> Result<(Array1<f64>, Array1<f64>)> {
         if k_vec.len() != self.dim_r() {
@@ -121,17 +190,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // v_proj[0] = Σ_d current_dir[d] * v_raw[d]  → J
         // v_proj[1] = Σ_d dir_2[d] * v_raw[d]        → v
         // v_proj[2] = Σ_d dir_3[d] * v_raw[d]        → v0
-        let J: Array2<Complex<f64>> = if SPIN {
-            if let Some(direction) = spin {
-                let X = build_spin_matrix_for_norb(self.norb(), direction);
-                anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5
-            } else {
-                v_proj.slice(s![0, .., ..]).to_owned()
-            }
+        let J: Array2<Complex<f64>> = if let Some(matrix) = spin_matrix {
+            anti_comm(matrix, &v_proj.slice(s![0, .., ..])) * 0.5
         } else {
-            if let Some(direction) = spin {
-                return Err(TbError::SpinNotAllowed(direction));
-            }
             v_proj.slice(s![0, .., ..]).to_owned()
         };
         let v: Array2<Complex<f64>> = v_proj.slice(s![1, .., ..]).to_owned();
@@ -173,7 +234,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Computes the Berry curvature dipole for each band at multiple k-points in parallel.
     ///
-    /// This is a parallelized version of [`berry_curvature_dipole_n_onek`] for computing
+    /// This is a parallelized version of [`Self::berry_curvature_dipole_n_onek`] for computing
     /// the Berry curvature dipole over a k-point set.
     ///
     /// The extrinsic nonlinear Hall conductivity is related to this quantity via:
@@ -186,7 +247,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `k_vec` - Array of k-points, shape `(nk, dim_r)`.
     /// * `current_dir`, `dir_2` - Direction vectors for the Berry curvature indices $\alpha, \beta$.
     /// * `dir_3` - Direction vector for the energy derivative index $\gamma$.
-    /// * `spin` - `Option<SpinDirection>`; `None` = charge current.
+    /// * `spin_matrix` - Prebuilt spin matrix shared by all k-points; `None` = charge current.
     /// * `eta` - Broadening parameter.
     ///
     /// # Returns
@@ -201,7 +262,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         current_dir: &Array1<f64>,
         dir_2: &Array1<f64>,
         dir_3: &Array1<f64>,
-        spin: Option<SpinDirection>,
+        spin_matrix: Option<&Array2<Complex<f64>>>,
         eta: f64,
     ) -> Result<(Array2<f64>, Array2<f64>)> {
         for (name, dir) in [
@@ -234,7 +295,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     current_dir,
                     dir_2,
                     dir_3,
-                    spin,
+                    spin_matrix,
                     eta,
                 )
             })
@@ -250,34 +311,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok((omega, band))
     }
 
-    /// Evaluate the Berry-curvature-dipole nonlinear Hall response.
-    ///
-    /// Reads `conditions` (at most one axis sampled), `kmesh`,
-    /// `direction` (rank 3), `eta_ev`, `spin`, `integration` and
-    /// `field_symmetry`. This is a DC
-    /// response, so `omega_ev` must be `Sampling::Fixed(0.0)`.
-    /// Eigenstates, velocity kernels and band
-    /// tracking are prepared once and reused by every sample of the sampled
-    /// axis.
-    ///
-    /// Direct integration samples `-df/dE` on k-points, so every sample must
-    /// have a positive thermal energy `k_B T` with a finite Fermi-window peak
-    /// `0.25 / (k_B T)`. Zero widths or overflowing peaks reject the whole call
-    /// before any k-mesh work; subnormal widths with finite peaks are accepted.
-    /// Energy-cut integration supports the exact zero-temperature limit.
-    ///
-    /// Direction rows are `(current, field_1, field_2)`. In the internal
-    /// kernel this maps to `Ω^{current, field_1} v^{field_2}`: `current` and
-    /// `field_1` are the two Berry-curvature indices and `field_2` is the
-    /// Fermi-surface velocity index. `FieldSymmetry::Symmetrized` averages
-    /// the two orderings of `field_1`/`field_2`.
-    ///
-    /// The two field indices are combined according to `params.field_symmetry`:
-    /// [`FieldSymmetry::Symmetrized`] averages the two field permutations,
-    /// [`FieldSymmetry::Ordered`] returns the raw ordered kernel.
-    pub fn extrinsic_nonlinear_hall(
+    /// Shared validation and integration for the concrete spinful/spinless entry points.
+    fn extrinsic_nonlinear_hall_impl(
         &self,
         params: &Parameters<DIM>,
+        build_spin: impl FnOnce(SpinDirection) -> Result<Array2<Complex<f64>>>,
     ) -> Result<NonlinearHallResult> {
         let resolved = params.validate_rank3()?;
         resolved.require_dc()?;
@@ -310,6 +348,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let widths: Vec<f64> = (0..samples)
             .map(|index| occupation_for(resolved.point(index).0).energy_width())
             .collect::<Result<Vec<_>>>()?;
+        let spin_matrix = spin.map(build_spin).transpose()?;
         let current = params.direction.row(0).to_owned();
         let field_1 = params.direction.row(1).to_owned();
         let field_2 = params.direction.row(2).to_owned();
@@ -324,7 +363,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 &field_1,
                 Some(&field_2),
                 Gauge::Atom,
-                spin,
+                spin_matrix.as_ref(),
             )
         };
         if params.integration == Integration::Direct {
@@ -449,7 +488,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Computes the Berry connection dipole at a single k-point.
     ///
-    /// For spinless models, this computes the charge intrinsic NLH kernel
+    /// Without a spin matrix, this computes the charge intrinsic NLH kernel
     /// `-Q^{ab;c}` with the argument order `(a, b, c)`.
     ///
     /// ```text
@@ -458,23 +497,23 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// G^{ij}_n = Re sum_{m != n} v^i_nm v^j_mn / (E_n - E_m)^3
     /// ```
     ///
-    /// For spinful models (when `spin.is_some()`), this additionally computes
+    /// With a supplied spin matrix, this additionally computes
     /// $\partial_{h_i} G_{jk}$, the derivative with respect to the spin field.
     ///
     /// # Arguments
     ///
     /// * `k_vec` - k-point coordinates.
-    /// * `current_dir` - Direction vector for the first field index `a`.
-    /// * `dir_2` - Direction vector for the second field index `b`.
-    /// * `dir_3` - Direction vector for the current/output index `c`.
-    /// * `spin` - `Option<SpinDirection>`; `None` = charge current.
+    /// * `dir_a` - Direction vector for the first field index `a`.
+    /// * `dir_b` - Direction vector for the second field index `b`.
+    /// * `dir_c` - Direction vector for the current/output index `c`.
+    /// * `spin_matrix` - Prebuilt spin matrix for this model; `None` = charge current.
     ///
     /// # Returns
     ///
     /// `(omega, band, partial_G)` where:
     /// - `omega`: `-Q^{ab;c}` per band for the charge branch.
     /// - `band`: Band energies.
-    /// - `partial_G`: $\partial_{h} G$ per band (only `Some` for spinful models, `None` for spinless).
+    /// - `partial_G`: $\partial_{h} G$ per band (only `Some` when a spin matrix is supplied).
     /// Compute Berry connection dipole integrand at one k-point.
     ///
     /// The three direction vectors `(dir_a, dir_b, dir_c)` are treated as
@@ -495,7 +534,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         dir_a: &Array1<f64>,
         dir_b: &Array1<f64>,
         dir_c: &Array1<f64>,
-        spin: Option<SpinDirection>,
+        spin_matrix: Option<&Array2<Complex<f64>>>,
     ) -> Result<(Array1<f64>, Array1<f64>, Option<Array1<f64>>)> {
         if k_vec.len() != self.dim_r() {
             return Err(TbError::KVectorLengthMismatch {
@@ -541,18 +580,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let partial_ve_2 = v_2.diag().map(|x| x.re);
         let partial_ve_3 = v_3.diag().map(|x| x.re);
 
-        // Only enter spin branch when model is spinful AND spin requested
-        if SPIN && spin.is_some() {
+        if let Some(matrix) = spin_matrix {
             // Anti-commute on projected raw matrices (once each, not per-direction)
-            let direction = if let Some(direction) = spin {
-                direction
-            } else {
-                unreachable!("spin checked above");
-            };
-            let X = build_spin_matrix_for_norb(self.norb(), direction);
-            let s_1_raw = anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5;
-            let s_2_raw = anti_comm(&X, &v_proj.slice(s![1, .., ..])) * 0.5;
-            let s_3_raw = anti_comm(&X, &v_proj.slice(s![2, .., ..])) * 0.5;
+            let s_1_raw = anti_comm(matrix, &v_proj.slice(s![0, .., ..])) * 0.5;
+            let s_2_raw = anti_comm(matrix, &v_proj.slice(s![1, .., ..])) * 0.5;
+            let s_3_raw = anti_comm(matrix, &v_proj.slice(s![2, .., ..])) * 0.5;
             // Transform to eigenbasis
             let s_1 = to_band(&s_1_raw);
             let s_2 = to_band(&s_2_raw);
@@ -649,17 +681,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
     }
 
-    /// Parallel version of [`berry_connection_dipole_onek`].
+    /// Parallel version of [`Self::berry_connection_dipole_onek`].
     ///
     /// The three direction vectors `(dir_a, dir_b, dir_c)` are passed directly
     /// to the one‑k‑point kernel — see its docstring for the index convention.
+    /// The prebuilt `spin_matrix`, when supplied, is shared by all k-points.
     pub(crate) fn berry_connection_dipole(
         &self,
         k_vec: &Array2<f64>,
         dir_a: &Array1<f64>,
         dir_b: &Array1<f64>,
         dir_c: &Array1<f64>,
-        spin: Option<SpinDirection>,
+        spin_matrix: Option<&Array2<Complex<f64>>>,
     ) -> Result<(Array2<f64>, Array2<f64>, Option<Array2<f64>>)> {
         for (name, dir) in [("dir_a", dir_a), ("dir_b", dir_b), ("dir_c", dir_c)] {
             if dir.len() != self.dim_r() {
@@ -682,7 +715,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let results: Vec<Result<_>> = k_vec
             .axis_iter(Axis(0))
             .into_par_iter()
-            .map(|x| self.berry_connection_dipole_onek(&x.to_owned(), dir_a, dir_b, dir_c, spin))
+            .map(|x| {
+                self.berry_connection_dipole_onek(&x.to_owned(), dir_a, dir_b, dir_c, spin_matrix)
+            })
             .collect();
         let results: Vec<_> = results.into_iter().collect::<Result<_>>()?;
 

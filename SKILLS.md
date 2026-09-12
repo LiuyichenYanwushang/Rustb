@@ -71,6 +71,25 @@ let mut spinful = Model::<true, 2>::tb_model(
 spinful.add_hop(0.1, 0, 0, &array![1, 0], SpinDirection::Z);
 ```
 
+### Spin operators
+
+Spinful models provide the dimensionless operator `S_a / ℏ` directly:
+
+```rust
+let sx = spinful.build_spin_matrix(SpinDirection::X);
+let sy = spinful.build_spin_matrix(SpinDirection::Y);
+let sz = spinful.build_spin_matrix(SpinDirection::Z);
+assert_eq!(sz.dim(), (spinful.nsta(), spinful.nsta()));
+```
+
+The return type is `Array2<Complex<f64>>`; the argument is a `SpinDirection`,
+with no `Option` or `Result`. The matrix is `σ_a ⊗ I_norb / 2` in the basis
+`(all ↑ orbitals, all ↓ orbitals)`: `Sy` has `-i/2` in its upper-right
+orbital diagonal and `+i/2` in the lower-left. This method is available only
+on `Model<true, DIM, R>`, for either position-matrix storage type, without
+requiring atoms or projections. A spin current additionally combines this
+operator with velocity as `{S_a / ℏ, v} / 2`.
+
 ### Orbital projections
 
 `orb_angular` requires orbital projections and an explicit owning atom for
@@ -384,6 +403,12 @@ exactly one of its three physical axes:
 | `spin` | `None` = charge current; `Some(dir)` requests spin current for Hall/Berry and extrinsic NLH. Optical, quantum geometry and intrinsic NLH reject `Some` |
 | `field_symmetry` | `FieldSymmetry::Ordered` / `Symmetrized`; read by `extrinsic_nonlinear_hall` only |
 | `eta_ev` | `Some(broadening in eV)` wherever a denominator is broadened; `None` is rejected there and ignored by `intrinsic_nonlinear_hall` |
+
+`hall_conductivity` and `extrinsic_nonlinear_hall` have separate inherent
+implementations for `Model<false, DIM, R>` and `Model<true, DIM, R>`.
+Wrappers generic over `const SPIN: bool` must specialize these calls or supply
+their own trait bound for dispatch. Generic Berry-curvature callers can use
+the existing bound `Model<SPIN, DIM, R>: BerryCurvature<DIM>`.
 
 Each axis is either `Sampling::Fixed(value)` or `Sampling::Values(series)`.
 **At most one axis may be `Values`**: that axis is evaluated from one shared

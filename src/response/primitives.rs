@@ -10,10 +10,8 @@ use num_complex::Complex;
 use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
-use crate::SpinDirection;
 use crate::error::{Result, TbError};
 use crate::math::anti_comm;
-use crate::model::build_spin_matrix_for_norb;
 
 use super::types::VertexKernel;
 
@@ -29,7 +27,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// * `dir_a`, `dir_b` — direction pair for `K^{ab}`.
     /// * `dir_c` — optional diagonal velocity direction (for dipoles).
     /// * `gauge` — `Atom` or `Lattice`.
-    /// * `spin` — optional spin direction for spin‑current evaluation.
+    /// * `spin_matrix` — optional model-basis `S / ℏ`, constructed once by
+    ///   the spinful caller and shared across its k-points.
     pub(crate) fn compute_velocity_kernel(
         &self,
         k_vec: &Array1<f64>,
@@ -37,7 +36,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         dir_b: &Array1<f64>,
         dir_c: Option<&Array1<f64>>,
         gauge: Gauge,
-        spin: Option<SpinDirection>,
+        spin_matrix: Option<&Array2<Complex<f64>>>,
     ) -> Result<VertexKernel> {
         let nsta = self.nsta();
 
@@ -83,24 +82,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let ut = evec.t();
         let uc = evec.map(|x| x.conj());
 
-        let to_band = |d: usize, spin_dress: bool| -> Result<Array2<Complex<f64>>> {
+        let to_band = |d: usize, spin_dress: bool| -> Array2<Complex<f64>> {
             let v_raw = v_proj.slice(s![d, .., ..]).to_owned();
-            if spin_dress && SPIN {
-                if let Some(direction) = spin {
-                    let x = build_spin_matrix_for_norb(self.norb(), direction);
-                    let s = anti_comm(&x, &v_raw) * 0.5;
-                    Ok(ut.dot(&s.dot(&uc)))
-                } else {
-                    Ok(ut.dot(&v_raw.dot(&uc)))
-                }
+            if spin_dress && let Some(spin_matrix) = spin_matrix {
+                let current = anti_comm(spin_matrix, &v_raw) * 0.5;
+                ut.dot(&current.dot(&uc))
             } else {
-                Ok(ut.dot(&v_raw.dot(&uc)))
+                ut.dot(&v_raw.dot(&uc))
             }
         };
 
         // dir_a gets spin‑dressed for Berry curvature; dir_b does not
-        let va = to_band(0, true)?;
-        let vb = to_band(1, false)?;
+        let va = to_band(0, true);
+        let vb = to_band(1, false);
 
         let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
         for n in 0..nsta {
@@ -110,7 +104,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
 
         let (vdiag, k_bc, k_ac, vdiag_a, vdiag_b) = if let Some(_dc) = dir_c {
-            let vc = to_band(2, false)?;
+            let vc = to_band(2, false);
             let mut bc = Array2::<Complex<f64>>::zeros((nsta, nsta));
             let mut ac = Array2::<Complex<f64>>::zeros((nsta, nsta));
             for n in 0..nsta {

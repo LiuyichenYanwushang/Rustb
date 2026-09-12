@@ -748,38 +748,54 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 }
 
 impl<const DIM: usize, R: RMatrixData> Model<true, DIM, R> {
-    /// Build the spin current operator `σ_⊗I/(2)` in the model state basis.
+    /// Build `S_a / ℏ = σ_a ⊗ I_norb / 2` in the model basis.
+    ///
+    /// Returns an `(nsta, nsta)` matrix in spin-major order
+    /// `(all ↑ orbitals, all ↓ orbitals)`. This is the spin operator;
+    /// the corresponding spin current is `{S_a / ℏ, v} / 2`.
+    /// No eigenstates or atomic projections are needed.
+    ///
+    /// ```
+    /// use ndarray::{array, Array2};
+    /// use num_complex::Complex;
+    /// use Rustb::{Model, SpinDirection};
+    /// let model = Model::<true, 1>::tb_model(array![[1.0]], array![[0.0]], None)?;
+    /// let sz: Array2<Complex<f64>> = model.build_spin_matrix(SpinDirection::Z);
+    /// assert_eq!(sz.diag(), array![Complex::new(0.5, 0.0), Complex::new(-0.5, 0.0)]);
+    /// # Ok::<(), Rustb::TbError>(())
+    /// ```
+    ///
+    /// Spinless models do not have this method:
+    ///
+    /// ```compile_fail,E0599
+    /// use Rustb::{Model, SpinDirection};
+    /// fn spinless(model: &Model<false, 2>) {
+    ///     model.build_spin_matrix(SpinDirection::Z);
+    /// }
+    /// ```
     pub fn build_spin_matrix(&self, spin: SpinDirection) -> Array2<Complex<f64>> {
-        build_spin_matrix_for_norb(self.norb(), spin)
-    }
-}
-
-/// Construct a spin-current matrix for internal response kernels.
-///
-/// This helper is intentionally crate-private; the public API is restricted to
-/// `Model<true, ...>::build_spin_matrix`, so spinless models cannot request one.
-pub(crate) fn build_spin_matrix_for_norb(norb: usize, spin: SpinDirection) -> Array2<Complex<f64>> {
-    let nsta = 2 * norb;
-    let mut matrix = Array2::<Complex<f64>>::zeros((nsta, nsta));
-    let half = Complex::new(0.5, 0.0);
-    let i_half = Complex::new(0.0, 0.5);
-    for i in 0..norb {
-        match spin {
-            SpinDirection::X => {
-                matrix[[i, i + norb]] = half;
-                matrix[[i + norb, i]] = half;
-            }
-            SpinDirection::Y => {
-                matrix[[i, i + norb]] = -i_half;
-                matrix[[i + norb, i]] = i_half;
-            }
-            SpinDirection::Z => {
-                matrix[[i, i]] = half;
-                matrix[[i + norb, i + norb]] = -half;
+        let norb = self.norb();
+        let mut matrix = Array2::<Complex<f64>>::zeros((self.nsta(), self.nsta()));
+        let half = Complex::new(0.5, 0.0);
+        let i_half = Complex::new(0.0, 0.5);
+        for i in 0..norb {
+            match spin {
+                SpinDirection::X => {
+                    matrix[[i, i + norb]] = half;
+                    matrix[[i + norb, i]] = half;
+                }
+                SpinDirection::Y => {
+                    matrix[[i, i + norb]] = -i_half;
+                    matrix[[i + norb, i]] = i_half;
+                }
+                SpinDirection::Z => {
+                    matrix[[i, i]] = half;
+                    matrix[[i + norb, i + norb]] = -half;
+                }
             }
         }
+        matrix
     }
-    matrix
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
@@ -931,6 +947,62 @@ mod angular_momentum_tests {
                 .zip(expected.iter())
                 .all(|(a, b)| (a - b).norm() < 1e-12)
         );
+    }
+
+    #[test]
+    fn spin_matrices_have_spin_major_half_spin_eigenstates() {
+        fn check<R: RMatrixData>() {
+            let model =
+                Model::<true, 1, R>::tb_model(array![[1.0]], array![[0.1], [0.7]], None).unwrap();
+            let zero = Complex::new(0.0, 0.0);
+            let one = Complex::new(1.0, 0.0);
+            let c = Complex::new(std::f64::consts::FRAC_1_SQRT_2, 0.0);
+            let ic = Complex::<f64>::i() * c;
+            // Independent analytic spinors: |±x>, |±y>, and |±z>.
+            for (direction, positive, negative) in [
+                (SpinDirection::X, [c, c], [c, -c]),
+                (SpinDirection::Y, [c, ic], [c, -ic]),
+                (SpinDirection::Z, [one, zero], [zero, one]),
+            ] {
+                let spin = model.build_spin_matrix(direction);
+                assert_eq!(spin.dim(), (4, 4));
+                for orbital in 0..2 {
+                    for (eigenvalue, spinor) in [(0.5, positive), (-0.5, negative)] {
+                        let mut ket = Array1::zeros(4);
+                        ket[orbital] = spinor[0];
+                        ket[orbital + 2] = spinor[1];
+                        let residual = spin.dot(&ket) - ket.mapv(|value| value * eigenvalue);
+                        assert!(
+                            residual.iter().all(|value| value.norm() < 1e-14),
+                            "{direction:?}, orbital {orbital}, eigenvalue {eigenvalue}: {residual:?}"
+                        );
+                    }
+                }
+            }
+        }
+        check::<NoRMatrix>();
+        check::<HasRMatrix>();
+    }
+
+    #[test]
+    fn spin_matrices_obey_hermiticity_commutators_and_casimir() {
+        fn check<R: RMatrixData>() {
+            let model =
+                Model::<true, 3, R>::tb_model(Array2::eye(3), Array2::zeros((3, 3)), None).unwrap();
+            let spin = [SpinDirection::X, SpinDirection::Y, SpinDirection::Z]
+                .map(|direction| model.build_spin_matrix(direction));
+            let mut casimir = Array2::<Complex<f64>>::zeros((6, 6));
+            for d in 0..3 {
+                let (a, b, c) = (&spin[d], &spin[(d + 1) % 3], &spin[(d + 2) % 3]);
+                assert_matrix_close(a.view(), a.t().mapv(|value| value.conj()).view());
+                assert_matrix_close((a.dot(b) - b.dot(a)).view(), (Complex::i() * c).view());
+                casimir += &a.dot(a);
+            }
+            let expected = Array2::<Complex<f64>>::eye(6) * Complex::new(0.75, 0.0);
+            assert_matrix_close(casimir.view(), expected.view());
+        }
+        check::<NoRMatrix>();
+        check::<HasRMatrix>();
     }
 
     // Independent Cartesian oracle: L = -i r × grad acting on (px, py, pz).

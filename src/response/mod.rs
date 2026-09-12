@@ -355,7 +355,9 @@ mod regression_tests {
         }
     }
 
-    fn check_extrinsic_field_permutations<const SPIN: bool>() {
+    fn check_extrinsic_field_permutations<const SPIN: bool>(
+        calculate: impl Fn(&Model<SPIN, 2>, &Parameters<2>) -> crate::Result<NonlinearHallResult>,
+    ) {
         use crate::thermodynamics::fermi_derivative_from_width;
         let mut model = Model::<SPIN, 2>::tb_model(
             Array2::eye(2),
@@ -395,6 +397,19 @@ mod regression_tests {
         let mut nonzero = false;
         for spin in spins {
             params.spin = spin;
+            // Independent spin-1/2 matrices for the one-orbital spinful model.
+            // Keep this oracle separate from Model::build_spin_matrix.
+            let spin_matrix = spin.map(|axis| {
+                use num_complex::Complex;
+                let zero = Complex::new(0.0, 0.0);
+                let half = Complex::new(0.5, 0.0);
+                let i_half = Complex::new(0.0, 0.5);
+                match axis {
+                    crate::SpinDirection::X => array![[zero, half], [half, zero]],
+                    crate::SpinDirection::Y => array![[zero, -i_half], [i_half, zero]],
+                    crate::SpinDirection::Z => array![[half, zero], [zero, -half]],
+                }
+            });
             for (integration, temperature) in [
                 (Integration::Direct, 400.0),
                 (Integration::EnergyCut, 0.0),
@@ -404,7 +419,7 @@ mod regression_tests {
                 params.conditions.t_kelvin = Sampling::Fixed(temperature);
                 params.direction = original_directions.clone();
                 params.field_symmetry = FieldSymmetry::Ordered;
-                let first = model.extrinsic_nonlinear_hall(&params).unwrap();
+                let first = calculate(&model, &params).unwrap();
                 nonzero |= first.conductivity.iter().any(|x| x.abs() > 1e-5);
                 if integration == Integration::Direct {
                     let scale = 1e-16;
@@ -420,9 +435,7 @@ mod regression_tests {
                         *t_kelvin *= scale;
                     }
                     scaled_params.eta_ev = scaled_params.eta_ev.map(|eta| eta * scale);
-                    let scaled = scaled_model
-                        .extrinsic_nonlinear_hall(&scaled_params)
-                        .unwrap();
+                    let scaled = calculate(&scaled_model, &scaled_params).unwrap();
                     assert!(
                         (&scaled.conductivity - &first.conductivity)
                             .iter()
@@ -438,7 +451,7 @@ mod regression_tests {
                             &params.direction.row(0).to_owned(),
                             &params.direction.row(1).to_owned(),
                             &params.direction.row(2).to_owned(),
-                            spin,
+                            spin_matrix.as_ref(),
                             params.eta_ev.expect("the direct path broadens"),
                         )
                         .unwrap();
@@ -476,11 +489,11 @@ mod regression_tests {
                     .direction
                     .row_mut(2)
                     .assign(&original_directions.row(1));
-                let second = model.extrinsic_nonlinear_hall(&params).unwrap();
+                let second = calculate(&model, &params).unwrap();
                 params.field_symmetry = FieldSymmetry::Symmetrized;
-                let swapped = model.extrinsic_nonlinear_hall(&params).unwrap();
+                let swapped = calculate(&model, &params).unwrap();
                 params.direction = original_directions.clone();
-                let symmetrized = model.extrinsic_nonlinear_hall(&params).unwrap();
+                let symmetrized = calculate(&model, &params).unwrap();
                 assert_eq!(symmetrized.diagnostics, first.diagnostics);
                 let expected = (&first.conductivity + &second.conductivity) * 0.5;
                 for ((&actual, &swapped), &expected) in symmetrized
@@ -496,9 +509,9 @@ mod regression_tests {
                     .direction
                     .row_mut(2)
                     .assign(&original_directions.row(1));
-                let equal_fields = model.extrinsic_nonlinear_hall(&params).unwrap();
+                let equal_fields = calculate(&model, &params).unwrap();
                 params.field_symmetry = FieldSymmetry::Ordered;
-                let ordered = model.extrinsic_nonlinear_hall(&params).unwrap();
+                let ordered = calculate(&model, &params).unwrap();
                 let mut strided_params = params.clone();
                 strided_params.conditions.mu_ev = Sampling::Values(
                     array![-1.3, 99.0, -0.5, 99.0, 0.0, 99.0, 0.6, 99.0, 1.4]
@@ -513,7 +526,7 @@ mod regression_tests {
                         .as_slice()
                         .is_none()
                 );
-                let strided = model.extrinsic_nonlinear_hall(&strided_params).unwrap();
+                let strided = calculate(&model, &strided_params).unwrap();
                 assert!(
                     (&strided.conductivity - &ordered.conductivity)
                         .iter()
@@ -531,8 +544,12 @@ mod regression_tests {
 
     #[test]
     fn extrinsic_symmetrization_reuses_the_ordered_charge_and_spin_kernels() {
-        check_extrinsic_field_permutations::<false>();
-        check_extrinsic_field_permutations::<true>();
+        check_extrinsic_field_permutations::<false>(|model, params| {
+            model.extrinsic_nonlinear_hall(params)
+        });
+        check_extrinsic_field_permutations::<true>(|model, params| {
+            model.extrinsic_nonlinear_hall(params)
+        });
     }
 
     #[test]
@@ -1129,8 +1146,8 @@ mod regression_tests {
                     options(Integration::Direct, Some(0.07)),
                 );
                 for evaluate in [
-                    Model::extrinsic_nonlinear_hall,
-                    Model::intrinsic_nonlinear_hall,
+                    Model::<false, 2>::extrinsic_nonlinear_hall,
+                    Model::<false, 2>::intrinsic_nonlinear_hall,
                 ] {
                     let (eigen, tracking, result) = counters::measure(|| evaluate(&model, &params));
                     assert!(
@@ -1182,8 +1199,8 @@ mod regression_tests {
                 options(Integration::Direct, Some(0.07)),
             );
             for evaluate in [
-                Model::extrinsic_nonlinear_hall,
-                Model::intrinsic_nonlinear_hall,
+                Model::<false, 2>::extrinsic_nonlinear_hall,
+                Model::<false, 2>::intrinsic_nonlinear_hall,
             ] {
                 let result = evaluate(&model, &params).unwrap();
                 assert_eq!(result.conductivity.len(), params.conditions.t_kelvin.len());

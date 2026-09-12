@@ -394,8 +394,8 @@ mod tests {
         }
     }
 
-    fn hall_values<const SPIN: bool, const DIM: usize, R: RMatrixData>(
-        model: &Model<SPIN, DIM, R>,
+    fn hall_values<const DIM: usize>(
+        calculate: impl FnOnce(&Parameters<DIM>) -> Result<HallConductivityResult>,
         k_mesh: &Array1<usize>,
         direction_a: &Array1<f64>,
         direction_b: &Array1<f64>,
@@ -412,11 +412,11 @@ mod tests {
             fixed_direction(direction_b),
             response_options(integration, spin, Some(broadening)),
         );
-        Ok(model.hall_conductivity(&params)?.conductivity)
+        Ok(calculate(&params)?.conductivity)
     }
 
-    fn hall_value<const SPIN: bool, const DIM: usize, R: RMatrixData>(
-        model: &Model<SPIN, DIM, R>,
+    fn hall_value<const DIM: usize>(
+        calculate: impl FnOnce(&Parameters<DIM>) -> Result<HallConductivityResult>,
         k_mesh: &Array1<usize>,
         direction_a: &Array1<f64>,
         direction_b: &Array1<f64>,
@@ -426,7 +426,7 @@ mod tests {
         broadening: f64,
     ) -> Result<f64> {
         Ok(hall_values(
-            model,
+            calculate,
             k_mesh,
             direction_a,
             direction_b,
@@ -530,8 +530,8 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn extrinsic_nonlinear_values<const SPIN: bool, const DIM: usize, R: RMatrixData>(
-        model: &Model<SPIN, DIM, R>,
+    fn extrinsic_nonlinear_values<const DIM: usize>(
+        calculate: impl FnOnce(&Parameters<DIM>) -> Result<NonlinearHallResult>,
         k_mesh: &Array1<usize>,
         current: &Array1<f64>,
         field_1: &Array1<f64>,
@@ -565,7 +565,7 @@ mod tests {
                 eta_ev: Some(broadening),
             },
         );
-        Ok(model.extrinsic_nonlinear_hall(&params)?.conductivity)
+        Ok(calculate(&params)?.conductivity)
     }
 
     fn write_txt(data: Array2<f64>, output: &str) -> std::io::Result<()> {
@@ -866,9 +866,19 @@ mod tests {
         // 单化学势构造器与一般化学势网格应给出相同结果。
         let kmesh = array![100, 100];
         let mu = -1.0;
-        let a1 = hall_value(&model, &kmesh, &dir_2, &dir_1, mu, T, spin, eta).unwrap();
+        let a1 = hall_value(
+            |p| model.hall_conductivity(p),
+            &kmesh,
+            &dir_2,
+            &dir_1,
+            mu,
+            T,
+            spin,
+            eta,
+        )
+        .unwrap();
         let a2 = hall_values(
-            &model,
+            |p| model.hall_conductivity(p),
             &kmesh,
             &dir_2,
             &dir_1,
@@ -990,7 +1000,17 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
 
         let start = Instant::now(); // 开始计时
-        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
+        let conductivity = hall_value(
+            |p| model.hall_conductivity(p),
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            mu,
+            T,
+            spin,
+            eta,
+        )
+        .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("quantom_Hall_effect={}", conductivity * (2.0 * PI));
@@ -1003,7 +1023,7 @@ mod tests {
         let mu = Array1::linspace(-2.0, 2.0, 101);
         let start = Instant::now(); // 开始计时
         let conductivity_mu = hall_values(
-            &model,
+            |p| model.hall_conductivity(p),
             &kmesh,
             &dir_1,
             &dir_2,
@@ -1024,14 +1044,34 @@ mod tests {
             conductivity
         );
         println!("function_a took {} seconds", duration.as_secs_f64()); // 输出执行时间
-        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, -2.0, T, spin, eta).unwrap();
+        let conductivity = hall_value(
+            |p| model.hall_conductivity(p),
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            -2.0,
+            T,
+            spin,
+            eta,
+        )
+        .unwrap();
         assert!(
             (conductivity_mu[[0]] - conductivity).abs() < 1e-3,
             "Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",
             conductivity_mu[[0]],
             conductivity
         );
-        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, 2.0, T, spin, eta).unwrap();
+        let conductivity = hall_value(
+            |p| model.hall_conductivity(p),
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            2.0,
+            T,
+            spin,
+            eta,
+        )
+        .unwrap();
         assert!(
             (conductivity_mu[[100]] - conductivity).abs() < 1e-3,
             "Wrong!, the Hall conductivity is wrong!, Hall_mu's result is {}, but Hall conductivity is {}",
@@ -1055,7 +1095,17 @@ mod tests {
         let nk: usize = 31;
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
-        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
+        let conductivity = hall_value(
+            |p| model.hall_conductivity(p),
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            mu,
+            T,
+            spin,
+            eta,
+        )
+        .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("霍尔电导率{}", conductivity * (2.0 * PI));
@@ -1093,7 +1143,7 @@ mod tests {
         let kvec: Array2<f64> = gen_kmesh(&kmesh).unwrap();
         let _nk: usize = kvec.len_of(Axis(0));
         let (omega, band) = model
-            .berry_curvature_dipole_n(&kvec, &dir_1, &dir_2, &dir_3, spin, eta)
+            .berry_curvature_dipole_n(&kvec, &dir_1, &dir_2, &dir_3, None, eta)
             .unwrap();
         let omega = omega.into_raw_vec_and_offset().0;
         let omega = Array1::from(omega);
@@ -1381,7 +1431,16 @@ mod tests {
         let spin = None;
         let kmesh = arr1(&[nk, nk]);
         let (_eval, _evec) = model.solve_onek(&arr1(&[0.3, 0.5]));
-        let _conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta);
+        let _conductivity = hall_value(
+            |p| model.hall_conductivity(p),
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            mu,
+            T,
+            spin,
+            eta,
+        );
         //println!("{}",conductivity/(2.0*PI));
         //开始计算边缘态, 首先是zigsag态
         let nk: usize = 501;
@@ -1428,7 +1487,7 @@ mod tests {
         let mu = Array1::linspace(E_min, E_max, E_n);
         let T = 300.0;
         let sigma = extrinsic_nonlinear_values(
-            &model,
+            |p| model.extrinsic_nonlinear_hall(p),
             &kmesh,
             &dir_1,
             &dir_2,
@@ -1625,7 +1684,17 @@ mod tests {
         let spin = Some(SpinDirection::Z);
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
-        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
+        let conductivity = hall_value(
+            |p| model.hall_conductivity(p),
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            mu,
+            T,
+            spin,
+            eta,
+        )
+        .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}", conductivity * (2.0 * PI));
@@ -1633,7 +1702,17 @@ mod tests {
         let nk: usize = 21;
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
-        let conductivity = hall_value(&model, &kmesh, &dir_1, &dir_2, mu, T, spin, eta).unwrap();
+        let conductivity = hall_value(
+            |p| model.hall_conductivity(p),
+            &kmesh,
+            &dir_1,
+            &dir_2,
+            mu,
+            T,
+            spin,
+            eta,
+        )
+        .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("{}", conductivity * (2.0 * PI));
@@ -1870,7 +1949,7 @@ mod tests {
         let mu = Array1::linspace(E_min, E_max, E_n);
         let T = 30.0;
         let sigma = extrinsic_nonlinear_values(
-            &model,
+            |p| model.extrinsic_nonlinear_hall(p),
             &kmesh,
             &dir_1,
             &dir_2,
@@ -2720,7 +2799,7 @@ mod tests {
         for &nk in &[31, 51, 71, 101] {
             let kmesh = arr1(&[nk, nk]);
             let direct = hall_values(
-                &model,
+                |p| model.hall_conductivity(p),
                 &kmesh,
                 &dx,
                 &dy,
@@ -2732,7 +2811,7 @@ mod tests {
             )
             .unwrap();
             let ec = hall_values(
-                &model,
+                |p| model.hall_conductivity(p),
                 &kmesh,
                 &dx,
                 &dy,
@@ -2763,7 +2842,7 @@ mod tests {
         let kmesh = arr1(&[51, 51]);
 
         let d_dir = hall_values(
-            &model,
+            |p| model.hall_conductivity(p),
             &kmesh,
             &dx,
             &dy,
@@ -2775,7 +2854,7 @@ mod tests {
         )
         .unwrap();
         let d_ec = hall_values(
-            &model,
+            |p| model.hall_conductivity(p),
             &kmesh,
             &dx,
             &dy,
@@ -2787,7 +2866,7 @@ mod tests {
         )
         .unwrap();
         let tr_dir = hall_values(
-            &model_tr,
+            |p| model_tr.hall_conductivity(p),
             &kmesh,
             &dx,
             &dy,
@@ -2799,7 +2878,7 @@ mod tests {
         )
         .unwrap();
         let tr_ec = hall_values(
-            &model_tr,
+            |p| model_tr.hall_conductivity(p),
             &kmesh,
             &dx,
             &dy,
@@ -2842,7 +2921,7 @@ mod tests {
         let kmesh = arr1(&[31, 31]);
 
         let d_dir = extrinsic_nonlinear_values(
-            &model,
+            |p| model.extrinsic_nonlinear_hall(p),
             &kmesh,
             &dx,
             &dy,
@@ -2857,7 +2936,7 @@ mod tests {
         )
         .unwrap();
         let d_tr = extrinsic_nonlinear_values(
-            &model_tr,
+            |p| model_tr.extrinsic_nonlinear_hall(p),
             &kmesh,
             &dx,
             &dy,
@@ -3254,7 +3333,7 @@ mod tests {
         for &nk in &[8, 10] {
             let kmesh = arr1(&[nk, nk, nk]);
             let direct = hall_values(
-                &model,
+                |p| model.hall_conductivity(p),
                 &kmesh,
                 &dx,
                 &dy,
@@ -3266,7 +3345,7 @@ mod tests {
             )
             .unwrap();
             let ec = hall_values(
-                &model,
+                |p| model.hall_conductivity(p),
                 &kmesh,
                 &dx,
                 &dy,
@@ -3322,7 +3401,7 @@ mod tests {
         for &nk in &[10, 14] {
             let kmesh = arr1(&[nk, nk, 4]); // fewer kz points (Ω is kz-independent)
             let direct = hall_values(
-                &model,
+                |p| model.hall_conductivity(p),
                 &kmesh,
                 &dx,
                 &dy,
@@ -3334,7 +3413,7 @@ mod tests {
             )
             .unwrap();
             let ec = hall_values(
-                &model,
+                |p| model.hall_conductivity(p),
                 &kmesh,
                 &dx,
                 &dy,

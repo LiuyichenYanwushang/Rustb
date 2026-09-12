@@ -50,6 +50,18 @@ the form `impl<const SPIN: bool, const DIM: usize, R: RMatrixData>`.
 Prefer `TbError`/`Result` over panics in library code. Keep module names
 lowercase except for existing compatibility files such as `SKmodel.rs`.
 
+### 如无必要，勿增实体
+
+Prefer direct implementations and modest duplication when they make the code
+clearer. Do not add a trait, helper, wrapper, configuration type, or dependency
+merely to remove a few repeated lines or accommodate hypothetical future uses.
+Every new abstraction must solve a concrete problem in the current task and
+justify its additional API and maintenance cost. In particular, explicit
+`Model<true, ..>` and `Model<false, ..>` implementations are acceptable; do not
+introduce a type-dispatch hierarchy solely to avoid writing both. This principle
+does not justify dropping necessary validation, error handling, or regression
+tests.
+
 ## Testing Guidelines
 
 Place focused unit tests near the implementation in `#[cfg(test)] mod tests`,

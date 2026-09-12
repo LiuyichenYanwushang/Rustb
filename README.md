@@ -108,6 +108,11 @@ model.set_onsite(&arr1(&[0.5, -0.5]), None);
 model.add_hop(0.2, 0, 0, &array![1, 0], SpinDirection::Z);
 ```
 
+`model.build_spin_matrix(SpinDirection::Z)` returns the spin operator
+`S_z / ℏ = σ_z ⊗ I_norb / 2` as an `Array2<Complex<f64>>`, ordered as all
+spin-up orbitals followed by all spin-down orbitals. This method is available
+on spinful models with either position-matrix storage type.
+
 ## Model types
 
 ```text
@@ -444,6 +449,10 @@ DC responses and per-k-point Berry/geometry methods require
 intrinsic nonlinear Hall, require `spin: None`. Reusing the k-mesh preparation
 removes repeated diagonalization; weighting and integration still run for each
 sample.
+
+Hall and extrinsic nonlinear Hall have separate implementations for spinless
+and spinful models. Wrappers generic over `const SPIN: bool` must specialize
+their calls or supply their own trait bound for dispatch.
 
 ```rust
 let mu = Array1::linspace(-1.0, 1.0, 201);

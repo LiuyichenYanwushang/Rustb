@@ -53,6 +53,15 @@
 
 ### API changes
 
+- `Model<true, DIM, R>::build_spin_matrix(SpinDirection)` returns
+  `Array2<Complex<f64>>` directly: `S_a / ℏ = σ_a ⊗ I_norb / 2` in
+  spin-major order, for either position-matrix storage type. The spin-current
+  operator is `{S_a / ℏ, v} / 2`.
+- Hall and extrinsic nonlinear Hall use separate inherent implementations for
+  `Model<false, DIM, R>` and `Model<true, DIM, R>`. Callers generic over
+  `const SPIN: bool` must specialize or supply their own trait bound for
+  dispatch. Generic Berry callers need the bound
+  `Model<SPIN, DIM, R>: BerryCurvature<DIM>`.
 - Response input is explicit now. `Parameters<DIM>` holds `conditions`
   (`t_kelvin`, `mu_ev`, `omega_ev`, each `Sampling::Fixed(value)` or
   `Sampling::Values(series)`), `kmesh`, `direction`, `integration`, `spin`,
