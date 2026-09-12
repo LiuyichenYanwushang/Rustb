@@ -12,7 +12,6 @@ use crate::velocity::Velocity;
 use crate::{Gauge, Model, RMatrixData, SpinDirection};
 
 use super::config::Parameters;
-use super::helpers::build_spin_matrix;
 
 /// Berry curvature and energies of every band at one k-point.
 #[derive(Clone, Debug, PartialEq)]
@@ -162,9 +161,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         super::config::counters::count_eigen_decomposition();
         let (energies, eigenvectors) = hamiltonian.eigh(UPLO::Lower)?;
 
-        let current: Array2<Complex<f64>> = if SPIN && spin.is_some() {
-            let spin_matrix = build_spin_matrix(self.norb(), spin);
-            anti_comm(&spin_matrix, &projected_velocity.index_axis(Axis(0), 0)) * 0.5
+        let current: Array2<Complex<f64>> = if SPIN {
+            if let Some(direction) = spin {
+                let spin_matrix = self.build_spin_matrix(direction)?;
+                anti_comm(&spin_matrix, &projected_velocity.index_axis(Axis(0), 0)) * 0.5
+            } else {
+                projected_velocity.index_axis(Axis(0), 0).to_owned()
+            }
         } else {
             projected_velocity.index_axis(Axis(0), 0).to_owned()
         };

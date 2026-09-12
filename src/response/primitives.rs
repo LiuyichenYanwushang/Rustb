@@ -14,7 +14,6 @@ use crate::SpinDirection;
 use crate::error::{Result, TbError};
 use crate::math::anti_comm;
 
-use super::helpers::build_spin_matrix;
 use super::types::VertexKernel;
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
@@ -83,20 +82,24 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let ut = evec.t();
         let uc = evec.map(|x| x.conj());
 
-        let to_band = |d: usize, spin_dress: bool| -> Array2<Complex<f64>> {
+        let to_band = |d: usize, spin_dress: bool| -> Result<Array2<Complex<f64>>> {
             let v_raw = v_proj.slice(s![d, .., ..]).to_owned();
-            if spin_dress && SPIN && spin.is_some() {
-                let x = build_spin_matrix(self.norb(), spin);
-                let s = anti_comm(&x, &v_raw) * 0.5;
-                ut.dot(&s.dot(&uc))
+            if spin_dress && SPIN {
+                if let Some(direction) = spin {
+                    let x = self.build_spin_matrix(direction)?;
+                    let s = anti_comm(&x, &v_raw) * 0.5;
+                    Ok(ut.dot(&s.dot(&uc)))
+                } else {
+                    Ok(ut.dot(&v_raw.dot(&uc)))
+                }
             } else {
-                ut.dot(&v_raw.dot(&uc))
+                Ok(ut.dot(&v_raw.dot(&uc)))
             }
         };
 
         // dir_a gets spin‑dressed for Berry curvature; dir_b does not
-        let va = to_band(0, true);
-        let vb = to_band(1, false);
+        let va = to_band(0, true)?;
+        let vb = to_band(1, false)?;
 
         let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
         for n in 0..nsta {
@@ -106,7 +109,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
 
         let (vdiag, k_bc, k_ac, vdiag_a, vdiag_b) = if let Some(_dc) = dir_c {
-            let vc = to_band(2, false);
+            let vc = to_band(2, false)?;
             let mut bc = Array2::<Complex<f64>>::zeros((nsta, nsta));
             let mut ac = Array2::<Complex<f64>>::zeros((nsta, nsta));
             for n in 0..nsta {

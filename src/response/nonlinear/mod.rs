@@ -50,7 +50,6 @@ use super::config::{
     occupation_for, validate_sorted,
 };
 use super::energy_cut::integrate_dipole_energy_cut_2d;
-use super::helpers::build_spin_matrix;
 use super::kernel::intrinsic_inverse_gap;
 use super::tracking::global_band_track;
 use super::types::VertexKernel;
@@ -122,8 +121,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // v_proj[1] = Σ_d dir_2[d] * v_raw[d]        → v
         // v_proj[2] = Σ_d dir_3[d] * v_raw[d]        → v0
         let J: Array2<Complex<f64>> = if SPIN {
-            let X = build_spin_matrix(self.norb(), spin);
-            anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5
+            if let Some(direction) = spin {
+                let X = self.build_spin_matrix(direction)?;
+                anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5
+            } else {
+                v_proj.slice(s![0, .., ..]).to_owned()
+            }
         } else {
             if let Some(direction) = spin {
                 return Err(TbError::SpinNotAllowed(direction));
@@ -540,7 +543,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // Only enter spin branch when model is spinful AND spin requested
         if SPIN && spin.is_some() {
             // Anti-commute on projected raw matrices (once each, not per-direction)
-            let X = build_spin_matrix(self.norb(), spin);
+            let direction = if let Some(direction) = spin {
+                direction
+            } else {
+                unreachable!("spin checked above");
+            };
+            let X = self.build_spin_matrix(direction)?;
             let s_1_raw = anti_comm(&X, &v_proj.slice(s![0, .., ..])) * 0.5;
             let s_2_raw = anti_comm(&X, &v_proj.slice(s![1, .., ..])) * 0.5;
             let s_3_raw = anti_comm(&X, &v_proj.slice(s![2, .., ..])) * 0.5;

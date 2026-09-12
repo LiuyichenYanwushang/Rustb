@@ -480,6 +480,44 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     pub fn has_rmatrix(&self) -> bool {
         R::HAS_RMATRIX
     }
+
+    /// Build the spin current operator `σ_⊗I/(2)` in the model state basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TbError::SpinNotAllowed`] when called on a spinless model.
+    pub fn build_spin_matrix(
+        &self,
+        spin: SpinDirection,
+    ) -> Result<Array2<Complex<f64>>> {
+        if !SPIN {
+            return Err(TbError::SpinNotAllowed(spin));
+        }
+
+        let nsta = self.nsta();
+        let mut matrix = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        let half = Complex::new(0.5, 0.0);
+        let i_half = Complex::new(0.0, 0.5);
+        let norb = self.norb();
+        for i in 0..norb {
+            match spin {
+                SpinDirection::X => {
+                    matrix[[i, i + norb]] = half;
+                    matrix[[i + norb, i]] = half;
+                }
+                SpinDirection::Y => {
+                    matrix[[i, i + norb]] = -i_half;
+                    matrix[[i + norb, i]] = i_half;
+                }
+                SpinDirection::Z => {
+                    matrix[[i, i]] = half;
+                    matrix[[i + norb, i + norb]] = -half;
+                }
+            }
+        }
+        Ok(matrix)
+    }
+
     #[inline(always)]
     pub fn atom_position(&self) -> Array2<f64> {
         let mut atom_position = Array2::zeros((self.natom(), DIM));

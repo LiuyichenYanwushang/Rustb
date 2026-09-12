@@ -117,7 +117,6 @@
 //! ```
 
 pub mod config;
-mod helpers;
 pub mod linear;
 pub mod nonlinear;
 pub mod optical;
