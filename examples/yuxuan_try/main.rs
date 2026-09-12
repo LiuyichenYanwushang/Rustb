@@ -96,20 +96,15 @@ fn main() {
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let berry_params = Parameters::rank2(
-        Conditions::fixed(T, 0.0, 0.0),
-        [1, 1],
-        [1.0, 0.0],
-        [0.0, 1.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(1e-3),
-        },
-    );
+    let berry_conditions = Conditions::fixed(T, 0.0, 0.0);
     let berry_curv = model
-        .occupied_berry_curvature_on(&kvec, &berry_params)
+        .occupied_berry_curvature_on(
+            &kvec,
+            &berry_conditions,
+            [[1.0, 0.0], [0.0, 1.0]],
+            1e-3,
+            None,
+        )
         .unwrap();
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
@@ -123,20 +118,13 @@ fn main() {
         }),
         "target/example-output/yuxuan_try/heat_map.pdf",
     );
-    let hall_params = Parameters::rank2(
-        Conditions::fixed(0.0, 0.0, 0.0),
-        [nk, nk],
-        [1.0, 0.0],
-        [0.0, 1.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(1e-3),
-        },
-    );
+    let hall_params = Parameters {
+        conditions: Conditions::fixed(0.0, 0.0, 0.0),
+        kmesh: [nk, nk],
+        integration: Integration::Direct,
+    };
     let conductivity = model
-        .hall_conductivity(&hall_params)
+        .hall_conductivity(&hall_params, [[1.0, 0.0], [0.0, 1.0]], 1e-3, None)
         .unwrap()
         .single()
         .unwrap();

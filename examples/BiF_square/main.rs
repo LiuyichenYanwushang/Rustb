@@ -183,20 +183,13 @@ fn main() {
     let eta: f64 = 0.001;
     let mu: f64 = 0.0;
     let start = Instant::now(); // 开始计时
-    let hall_params = Parameters::rank2(
-        Conditions::fixed(0.0, mu, 0.0),
-        [nk, nk, 1],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(eta),
-        },
-    );
+    let hall_params = Parameters {
+        conditions: Conditions::fixed(0.0, mu, 0.0),
+        kmesh: [nk, nk, 1],
+        integration: Integration::Direct,
+    };
     let conductivity = model
-        .hall_conductivity(&hall_params)
+        .hall_conductivity(&hall_params, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], eta, None)
         .unwrap()
         .single()
         .unwrap();
@@ -209,23 +202,19 @@ fn main() {
     ); // 输出执行时间
 
     let mu = Array1::<f64>::linspace(-1.0, 1.0, 1001);
-    let hall_params = Parameters::rank2(
-        Conditions {
+    let hall_params = Parameters {
+        conditions: Conditions {
             t_kelvin: Sampling::Fixed(0.0),
             mu_ev: Sampling::Values(mu.clone()),
             omega_ev: Sampling::Fixed(0.0),
         },
-        [nk, nk, 1],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(eta),
-        },
-    );
-    let conductivity = model.hall_conductivity(&hall_params).unwrap().conductivity;
+        kmesh: [nk, nk, 1],
+        integration: Integration::Direct,
+    };
+    let conductivity = model
+        .hall_conductivity(&hall_params, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], eta, None)
+        .unwrap()
+        .conductivity;
 
     let mu: f64 = 0.0;
 
@@ -266,20 +255,10 @@ fn main() {
     let kmesh = arr1(&[nk, nk, 1]);
     let kvec = gen_kmesh(&kmesh).unwrap();
     //let kvec=kvec-0.5;
-    let berry_params = Parameters::rank2(
-        Conditions::fixed(0.0, mu, 0.0),
-        [1, 1, 1],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(eta),
-        },
-    );
+    let berry_conditions = Conditions::fixed(0.0, mu, 0.0);
+    let berry_directions = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     let berry_curv = model
-        .occupied_berry_curvature_on(&kvec, &berry_params)
+        .occupied_berry_curvature_on(&kvec, &berry_conditions, berry_directions, eta, None)
         .unwrap();
     let data = berry_curv.into_shape((nk, nk)).unwrap();
     draw_heatmap(
@@ -296,7 +275,7 @@ fn main() {
     let label = vec!["G", "X", "M", "G"];
     let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
     let berry_curv = model
-        .occupied_berry_curvature_on(&kvec, &berry_params)
+        .occupied_berry_curvature_on(&kvec, &berry_conditions, berry_directions, eta, None)
         .unwrap();
 
     let mut fg = Figure::new();

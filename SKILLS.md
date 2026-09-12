@@ -297,9 +297,10 @@ many samples as nodes. Its distances retain the reciprocal convention
 without `2*pi`. Mesh and plane generators reject zero and overflowing sizes.
 `phy_0` is the superconducting flux quantum `h/(2e)` in webers.
 
-Intrinsic nonlinear Hall calculations reject a nonempty `params.spin`
-because that API currently computes charge current. Direct and energy-cut
-intrinsic kernels both omit gaps <= `1e-10` eV. Finite-temperature Hall
+Intrinsic nonlinear Hall is charge-current only: its signature takes neither a
+`spin` nor an `eta_ev` argument, so those requests cannot be expressed at all.
+Direct and energy-cut intrinsic kernels both omit gaps <= `1e-10` eV.
+Finite-temperature Hall
 energy-cut convolution samples only the requested Fermi windows, so its
 sample count does not grow as `1/T`.
 
@@ -388,27 +389,37 @@ For custom non-collinear seeds, use
 
 ## 4. Velocity, response, and quantum geometry
 
-Every high-level response calculation shares **one** const-generic input
-structure, `Parameters<DIM>`. It fixes a thermodynamic point and may sample
-exactly one of its three physical axes:
+Brillouin-zone responses share **one** small grid configuration,
+`Parameters<DIM>`:
 
 | Field | Meaning |
 |-------|---------|
 | `conditions.t_kelvin` | Temperature in kelvin; `Sampling::Fixed(0.0)` is the exact zero-temperature step function |
 | `conditions.mu_ev` | Chemical potential in eV |
-| `conditions.omega_ev` | Photon / perturbation frequency in eV; DC and per-k-point Berry/geometry methods require `Sampling::Fixed(0.0)` |
+| `conditions.omega_ev` | Photon / perturbation frequency in eV; DC entry points require `Sampling::Fixed(0.0)`, while the occupation-weighted per-k helpers require a fully fixed DC point. The band-resolved per-k methods take no `Conditions` at all |
 | `kmesh` | Uniform k-mesh `[usize; DIM]` |
-| `direction` | `Array2<f64>` shape `(rank, DIM)` — rank 2 for Hall / geometry / optical, rank 3 `(current, field_1, field_2)` for nonlinear; an **empty** matrix requests the full optical tensor |
 | `integration` | `Integration::Direct` / `Simplex` / `EnergyCut` |
-| `spin` | `None` = charge current; `Some(dir)` requests spin current for Hall/Berry and extrinsic NLH. Optical, quantum geometry and intrinsic NLH reject `Some` |
-| `field_symmetry` | `FieldSymmetry::Ordered` / `Symmetrized`; read by `extrinsic_nonlinear_hall` only |
-| `eta_ev` | `Some(broadening in eV)` wherever a denominator is broadened; `None` is rejected there and ignored by `intrinsic_nonlinear_hall` |
 
-`hall_conductivity` and `extrinsic_nonlinear_hall` have separate inherent
-implementations for `Model<false, DIM, R>` and `Model<true, DIM, R>`.
-Wrappers generic over `const SPIN: bool` must specialize these calls or supply
-their own trait bound for dispatch. Generic Berry-curvature callers can use
-the existing bound `Model<SPIN, DIM, R>: BerryCurvature<DIM>`.
+Everything a single method chooses is an argument of that method, never a field
+of the shared structure. Nothing is defaulted: `Integration` and
+`FieldSymmetry` implement no `Default`, and `eta_ev` is a plain `f64` wherever
+a denominator is broadened.
+
+| Method-specific argument | Type | Where it appears |
+|--------------------------|------|------------------|
+| directions | `[[f64; DIM]; 2]` (rank 2) or `[[f64; DIM]; 3]` (rank 3, `(current, field_1, field_2)`) | every Brillouin-zone entry point |
+| `eta_ev` | `f64` | every entry point that broadens a denominator; absent from `intrinsic_nonlinear_hall` |
+| `spin` | `Option<SpinDirection>` | `hall_conductivity`, `extrinsic_nonlinear_hall`, `berry_curvature_at`, `occupied_berry_curvature_at/_on` |
+| `field_symmetry` | `FieldSymmetry` | `extrinsic_nonlinear_hall` only |
+
+Because a method only accepts the arguments it reads, requesting a spin current
+from a charge-only method is a **compile error** rather than a runtime
+rejection. `Hall` and `extrinsic_nonlinear_hall` have separate inherent
+implementations for `Model<false, DIM, R>` and `Model<true, DIM, R>`; the
+spinless one returns `TbError::SpinNotAllowed` for `spin: Some(_)`. Wrappers
+generic over `const SPIN: bool` must specialize these calls or supply their own
+trait bound for dispatch. Generic Berry-curvature callers can use the existing
+bound `Model<SPIN, DIM, R>: BerryCurvature<DIM>`.
 
 Each axis is either `Sampling::Fixed(value)` or `Sampling::Values(series)`.
 **At most one axis may be `Values`**: that axis is evaluated from one shared
@@ -418,29 +429,24 @@ rejected before any k-mesh work. Total cost is preparation plus the evaluations
 at each sample; temperature scans still repeat the energy cuts, convolutions
 or simplex quadrature on the shared vertex data.
 
-Nothing is defaulted. `Integration` and `FieldSymmetry` implement no
-`Default`, and `eta_ev` must be stated wherever it is read:
-
 ```rust
 let mu = Array1::linspace(-1.0, 1.0, 101);
 
 // fixed T and omega, sweeping mu
-let hall = Parameters::rank2(
-    Conditions {
+let hall = Parameters {
+    conditions: Conditions {
         t_kelvin: Sampling::Fixed(30.0),
         mu_ev: Sampling::Values(mu),
         omega_ev: Sampling::Fixed(0.0),
     },
-    [51, 51],
-    [1.0, 0.0],
-    [0.0, 1.0],
-    ResponseOptions {
-        integration: Integration::Direct,
-        spin: None,
-        field_symmetry: FieldSymmetry::Symmetrized,
-        eta_ev: Some(1e-3),
-    },
-);
+    kmesh: [51, 51],
+    integration: Integration::Direct,
+};
+
+// Directions, broadening and spin current are method arguments.
+let hall_result = model.hall_conductivity(&hall, [[1.0, 0.0], [0.0, 1.0]], 1e-3, None)?;
+
+// The simple cubic lattice of this section is 3D; a 2D model uses [[f64; 2]; 2].
 ```
 
 `Conditions::fixed(t_kelvin, mu_ev, omega_ev)` pins all three axes at once.
@@ -502,68 +508,60 @@ Energy-cut algorithms represent the exact zero-temperature delta function.
 ### Berry curvature
 
 ```rust
-let berry_params = Parameters::rank2(
-    Conditions::fixed(300.0, 0.0, 0.0),
-    [1, 1],
-    [1.0, 0.0],
-    [0.0, 1.0],
-    ResponseOptions {
-        integration: Integration::Direct,
-        spin: None,
-        field_symmetry: FieldSymmetry::Symmetrized,
-        eta_ev: Some(1e-3),
-    },
-);
 let k = arr1(&[0.2, 0.3]);
+let directions = [[1.0, 0.0], [0.0, 1.0]];
 
-let bands = model.berry_curvature_at(&k, &berry_params)?;
-let occupied = model.occupied_berry_curvature_at(&k, &berry_params)?;
+// Band-resolved: no temperature, chemical potential, k-mesh or integration.
+let bands = model.berry_curvature_at(&k, directions, 1e-3, None)?;
+
+// Occupation-weighted: one fixed DC Conditions, still no k-mesh.
+let conditions = Conditions::fixed(300.0, 0.0, 0.0);
+let occupied = model.occupied_berry_curvature_at(&k, &conditions, directions, 1e-3, None)?;
 ```
 
 `bands.berry_curvature` and `bands.energies` contain one value per band. The
 occupied variants sum with the occupation selected by the fixed temperature and
-chemical potential. For a spin Hall kernel pass `spin: Some(SpinDirection::Z)`.
-These per-k-point methods evaluate one DC state, so all three axes must be
-`Fixed` and `omega_ev` must be zero. A sampled axis or a nonzero frequency
-returns `InvalidResponseParameter`.
+chemical potential. For a spin Hall kernel pass the last argument as
+`Some(SpinDirection::Z)`. These per-k-point methods evaluate one DC state, so
+every axis of the `Conditions` must be `Fixed` and `omega_ev` must be zero. A
+sampled axis or a nonzero frequency returns `InvalidResponseParameter`. The
+band-resolved form takes no `Conditions` at all, so it cannot be given a swept
+one.
 
 ### Hall conductivity
 
 ```rust
 let mu = Array1::linspace(-2.0, 2.0, 101);
-let params = Parameters::rank2(
-    Conditions {
+let params = Parameters {
+    conditions: Conditions {
         t_kelvin: Sampling::Fixed(30.0),
         mu_ev: Sampling::Values(mu),
         omega_ev: Sampling::Fixed(0.0),
     },
-    [51, 51],
-    [1.0, 0.0],
-    [0.0, 1.0],
-    ResponseOptions {
-        integration: Integration::EnergyCut,
-        spin: None,
-        field_symmetry: FieldSymmetry::Symmetrized,
-        eta_ev: Some(1e-3),
-    },
-);
+    kmesh: [51, 51],
+    integration: Integration::EnergyCut,
+};
 
-let result = model.hall_conductivity(&params)?;
+let directions = [[1.0, 0.0], [0.0, 1.0]];
+let result = model.hall_conductivity(&params, directions, 1e-3, None)?;
 let sigma_vs_mu = result.conductivity; // one entry per sampled mu
+
+// A spin Hall kernel states the spin current explicitly; a spinless model
+// returns TbError::SpinNotAllowed instead.
+let spin_hall = model.hall_conductivity(&params, directions, 1e-3, Some(SpinDirection::Z))?;
 ```
 
 `result.axis` is `ResponseAxis::ChemicalPotential(mu)`, and `single()` returns
 the scalar of a `Conditions::fixed` calculation. `Integration::Direct` performs
 a uniform k-point sum, `EnergyCut` a band-tracked cut; both prepare the k-mesh
 once and then weight every sample, and `EnergyCut` requires the sampled chemical
-potentials to ascend. For a spin Hall calculation pass
-`spin: Some(SpinDirection::Z)`. Sampling the temperature instead is the same
-call with the `Values` series moved to `t_kelvin`.
+potentials to ascend. Sampling the temperature instead is the same call with the
+`Values` series moved to `t_kelvin`.
 
 ### Nonlinear Hall response
 
-All public rank-three directions are current-first — row 0 of the direction
-matrix is the current, rows 1-2 the fields:
+All public rank-three directions are current-first — the three rows are
+`(current, field_1, field_2)`:
 
 ```rust
 let mu = Array1::linspace(-1.0, 1.0, 101);
@@ -572,42 +570,45 @@ let conditions = Conditions {
     mu_ev: Sampling::Values(mu),
     omega_ev: Sampling::Fixed(0.0),
 };
-
-let intrinsic_result = model.intrinsic_nonlinear_hall(&Parameters::rank3(
-    conditions.clone(),
-    [51, 51],
+let directions = [
     [1.0, 0.0], // current
     [1.0, 0.0], // field 1
     [0.0, 1.0], // field 2
-    ResponseOptions {
-        integration: Integration::Direct,
-        spin: None,
-        field_symmetry: FieldSymmetry::Symmetrized,
-        eta_ev: None,
-    },
-))?;
+];
 
-let extrinsic_result = model.extrinsic_nonlinear_hall(&Parameters::rank3(
-    conditions,
-    [51, 51],
-    [1.0, 0.0],
-    [1.0, 0.0],
-    [0.0, 1.0],
-    ResponseOptions {
-        integration: Integration::EnergyCut,
-        spin: None,
-        field_symmetry: FieldSymmetry::Ordered,
-        eta_ev: Some(1e-3),
+// The intrinsic response is charge-only: no spin, no eta_ev argument exists.
+let intrinsic_result = model.intrinsic_nonlinear_hall(
+    &Parameters {
+        conditions: conditions.clone(),
+        kmesh: [51, 51],
+        integration: Integration::Direct,
     },
-))?;
+    directions,
+)?;
+
+// The extrinsic response states its broadening, spin current and field
+// ordering explicitly.
+let extrinsic_result = model.extrinsic_nonlinear_hall(
+    &Parameters {
+        conditions,
+        kmesh: [51, 51],
+        integration: Integration::EnergyCut,
+    },
+    directions,
+    1e-3,
+    None,
+    FieldSymmetry::Ordered,
+)?;
 ```
 
 `FieldSymmetry::Symmetrized` averages the two external-field permutations,
 `FieldSymmetry::Ordered` returns one raw ordered kernel. Both entry points share
 one eigendecomposition per k-point between the two field orderings, and the
-energy-cut path shares one band-tracking pass. `intrinsic_nonlinear_hall` reads
-neither `eta_ev` nor `field_symmetry` and rejects a spin current;
-both nonlinear Hall entry points require `omega_ev: Sampling::Fixed(0.0)`.
+energy-cut path shares one band-tracking pass. `intrinsic_nonlinear_hall` takes
+neither `eta_ev` nor `field_symmetry` and has no spin-current argument at all,
+so those requests are compile errors. Both entry points require
+`omega_ev: Sampling::Fixed(0.0)`. `NonlinearHallResult::single()` mirrors
+`HallConductivityResult::single()`.
 
 Direct integration samples `-df/dE` on k-points, so **every** sample must have
 a finite peak derivative `0.25 / (k_B T)`. Zero widths or overflowing peaks
@@ -618,32 +619,26 @@ reject the whole call before any k-mesh work. Use
 
 ```rust
 let mu = Array1::linspace(-1.0, 1.0, 101);
-let params = Parameters::rank2(
-    Conditions {
+let params = Parameters {
+    conditions: Conditions {
         t_kelvin: Sampling::Fixed(0.0),
         mu_ev: Sampling::Values(mu),
         omega_ev: Sampling::Fixed(0.0),
     },
-    [51, 51],
-    [1.0, 0.0],
-    [0.0, 1.0],
-    ResponseOptions {
-        integration: Integration::Simplex,
-        spin: None,
-        field_symmetry: FieldSymmetry::Symmetrized,
-        eta_ev: Some(1e-3),
-    },
-);
+    kmesh: [51, 51],
+    integration: Integration::Simplex,
+};
 
-let result = model.quantum_geometry(&params)?;
+let directions = [[1.0, 0.0], [0.0, 1.0]];
+let result = model.quantum_geometry(&params, directions, 1e-3)?;
 let metric = result.metric; // one entry per sample
 let berry_curvature = result.berry_curvature;
 ```
 
 For reusable band-resolved data, use the `QuantumGeometry` trait methods
-`quantum_geometry_at` and `quantum_geometry_on`. They evaluate one state, so
-they require all three axes `Fixed` and return `InvalidResponseParameter`
-otherwise.
+`quantum_geometry_at` and `quantum_geometry_on`. They take only a k-point (or
+list), the two directions and `eta_ev` — no `Conditions`, no k-mesh — so a
+swept state cannot be passed to them at all.
 
 ### Optical conductivity
 
@@ -660,35 +655,32 @@ frequency scans interpolate energies and kernels once per quadrature point
 and reuse them across the full frequency list.
 
 ```rust
-let params = Parameters::rank2(
-    Conditions {
+let params = Parameters {
+    conditions: Conditions {
         t_kelvin: Sampling::Fixed(30.0),
         mu_ev: Sampling::Fixed(0.0),
         omega_ev: Sampling::Values(Array1::linspace(0.0, 4.0, 401)),
     },
-    [51, 51],
-    [1.0, 0.0],
-    [0.0, 1.0],
-    ResponseOptions {
-        integration: Integration::Simplex,
-        spin: None,
-        field_symmetry: FieldSymmetry::Symmetrized,
-        eta_ev: Some(1e-2),
-    },
-);
+    kmesh: [51, 51],
+    integration: Integration::Simplex,
+};
 
-let result = model.optical_conductivity(&params)?;
+// One projected component.
+let result = model.optical_conductivity(&params, [[1.0, 0.0], [0.0, 1.0]], 1e-2)?;
 let sigma = result.conductivity; // (components, samples)
+
+// The full ordered Cartesian tensor has its own entry point.
+let tensor = model.optical_conductivity_tensor(&params, 1e-2)?;
 ```
 
 This is the only entry point that may sample `omega_ev` — the four
-DC entry points require `Sampling::Fixed(0.0)`. Optical response requires
-`spin: None`; requesting spin current returns an error. It may equally
+DC entry points require `Sampling::Fixed(0.0)`. Optical response is
+charge-only, so there is no `spin` argument to misstate. It may equally
 sample `t_kelvin` or `mu_ev`, in which case the frequency stays fixed and the
-columns follow that axis. A two-row direction matrix computes one projected component;
-an **empty** direction matrix computes every ordered Cartesian component
-`(0,0), (0,1), ..., (DIM-1,DIM-1)` — rows of `conductivity` correspond to
-entries in `result.directions`.
+columns follow that axis. The full-tensor entry point returns every ordered
+Cartesian component `(0,0), (0,1), ..., (DIM-1,DIM-1)` as the rows of
+`conductivity`, sharing one diagonalization and band-tracking pass; no empty
+or sentinel direction matrix is involved.
 
 ## 5. Wilson loops and topology
 

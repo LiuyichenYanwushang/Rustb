@@ -134,12 +134,23 @@ model hierarchies with duplicated band, geometry, or response methods.
 
 ### Unified response APIs
 
-- Every high-level response calculation takes one shared `Parameters<DIM>`
-  structure and returns one named `*Result` structure. It holds `conditions`
-  (`t_kelvin`, `mu_ev`, `omega_ev`, each `Sampling::Fixed` or
-  `Sampling::Values`), `kmesh`, `direction` (`Array2<f64>`, shape
-  `(rank, DIM)`), `integration`, `spin` (`None` = charge current),
-  `field_symmetry` and `eta_ev: Option<f64>`. Nothing is defaulted.
+- Every Brillouin-zone response takes one shared `Parameters<DIM>` structure
+  and returns one named `*Result` structure. `Parameters` holds exactly the
+  three fields those methods genuinely share: `conditions` (`t_kelvin`,
+  `mu_ev`, `omega_ev`, each `Sampling::Fixed` or `Sampling::Values`), `kmesh`
+  and `integration`. Nothing is defaulted.
+- Choices a single method reads are parameters of that method, never fields of
+  the shared structure: `directions` (`[[f64; DIM]; 2]`, or
+  `[[f64; DIM]; 3]` in `(current, field_1, field_2)` order), `eta_ev: f64`,
+  `spin: Option<SpinDirection>` and `field_symmetry`. A caller therefore never
+  states a value the method ignores, and a request the method cannot honor
+  (a spin current for a charge-only response) is a compile error rather than a
+  runtime rejection. `eta_ev` is required wherever a denominator is broadened
+  and absent from `intrinsic_nonlinear_hall`, which broadens none.
+- `Parameters::rank2`/`rank3`, `ResponseOptions`, and the empty-`direction`
+  sentinel for the full optical tensor do not exist. A full Cartesian optical
+  tensor is requested through `optical_conductivity_tensor`, which shares its
+  diagonalization and band tracking with the component entry point.
 - At most one axis may be `Sampling::Values`; it is evaluated from one shared
   k-mesh preparation, so eigenstates, velocity kernels and band tracking are
   computed once regardless of the sample count. Sampling several axes is
@@ -148,30 +159,39 @@ model hierarchies with duplicated band, geometry, or response methods.
   Weighting and integration costs still grow with the number of samples;
   temperature scans repeat cuts/convolutions or quadrature on shared vertices.
 - Results carry `axis: ResponseAxis` rather than a copied chemical-potential
-  grid. Per-k-point methods require every axis `Fixed` and reject a sampled
-  axis instead of ignoring it, and `eta_ev` is required by every entry point
-  that broadens a denominator.
-- DC responses and per-k-point Berry/geometry methods require
-  `omega_ev: Sampling::Fixed(0.0)`. Optical, quantum geometry and intrinsic
-  nonlinear Hall require `spin: None`; unsupported spin requests return errors.
-  Direct nonlinear Hall requires a finite Fermi-window peak `0.25 / (k_B T)`
-  at every sample, rejecting zero widths or overflowing peaks before k-mesh
-  preparation. Subnormal widths with finite peaks remain valid.
+  grid. The occupation-weighted per-k helpers
+  (`occupied_berry_curvature_at`/`_on`) require every axis `Fixed` and reject a
+  sampled axis instead of ignoring it; the band-resolved per-k methods take no
+  thermodynamic state at all, so nothing can be sampled into them. `eta_ev` is
+  an explicit argument of every entry point that broadens a denominator, and is
+  absent from `intrinsic_nonlinear_hall`, which broadens none.
+- DC responses require `omega_ev: Sampling::Fixed(0.0)`. Optical conductivity,
+  quantum geometry and intrinsic nonlinear Hall have no `spin` argument, so a
+  spin-current request for them is a compile error rather than a runtime
+  rejection; `hall_conductivity`, `extrinsic_nonlinear_hall` and the Berry
+  helpers take `spin: Option<SpinDirection>` and a spinless model returns
+  `TbError::SpinNotAllowed`. Direct nonlinear Hall requires a finite
+  Fermi-window peak `0.25 / (k_B T)` at every sample, rejecting zero widths or
+  overflowing peaks before k-mesh preparation. Subnormal widths with finite
+  peaks remain valid.
 - The supported entry points are `hall_conductivity`, `quantum_geometry`,
-  `optical_conductivity`, `extrinsic_nonlinear_hall`, and
-  `intrinsic_nonlinear_hall`. Algorithm choice belongs in the shared
-  `Integration` enum (`Direct`/`Simplex`/`EnergyCut`) instead of being encoded
-  in alternate method names.
-- `direction` replaces the old `DirectionPair`/`NonlinearHallDirections`/
-  `OpticalDirections`: rank-2 responses use 2 rows, rank-3 responses use
-  `(current, field_1, field_2)`. `spin` replaces `CurrentOperator`,
-  `conditions.t_kelvin` replaces `Occupation` at the response boundary, and
-  `FieldSymmetry` (kept as a field) selects ordered or symmetrized nonlinear
-  field indices.
+  `optical_conductivity`, `optical_conductivity_tensor`,
+  `extrinsic_nonlinear_hall`, and `intrinsic_nonlinear_hall`. Algorithm choice
+  belongs in the shared `Integration` enum (`Direct`/`Simplex`/`EnergyCut`)
+  instead of being encoded in alternate method names.
+- Direction arrays replace the old `DirectionPair`/`NonlinearHallDirections`/
+  `OpticalDirections`: rank-2 responses take two rows, rank-3 responses take
+  three in `(current, field_1, field_2)` order. The row count is part of the
+  parameter type, so a wrong rank no longer compiles. `spin` replaces
+  `CurrentOperator`, `conditions.t_kelvin` replaces `Occupation` at the
+  response boundary, and `FieldSymmetry` (an explicit argument of
+  `extrinsic_nonlinear_hall`) selects ordered or symmetrized nonlinear field
+  indices.
 - Direct, simplex, and energy-cut paths share the same gauge-invariant response
-  kernels and Cartesian reciprocal-space normalization. Optical conductivity
-  returns the full ordered `DIM x DIM` Cartesian tensor when `direction` is an
-  empty matrix, or one projected component for a 2-row direction.
+  kernels and Cartesian reciprocal-space normalization. `optical_conductivity`
+  returns one projected component from a 2-row direction array;
+  `optical_conductivity_tensor` returns the full ordered `DIM x DIM` Cartesian
+  tensor from the same shared preparation.
 - Raw `VertexKernel`, band tracking, simplex construction, quadrature, and
   energy-cut helpers are crate-private numerical machinery. Do not expose them
   as compatibility APIs; extend the parameter/result layer instead.
@@ -399,10 +419,16 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 
 ### Response API conventions
 
-- High-level response methods take one shared `Parameters<DIM>` structure and
-  return one named `*Result` structure. Directions are rows of an
-  `Array2<f64>` matrix, so dimension mismatches are rejected at runtime with
-  structured errors.
+- Brillouin-zone response methods take one shared `Parameters<DIM>` structure
+  and return one named `*Result` structure. Directions are fixed-size arrays
+  (`[[f64; DIM]; 2]` or `[[f64; DIM]; 3]`), so their rank and dimension are
+  compile-time constraints; component finiteness and a zero-row rejection are
+  still validated at runtime with structured errors.
+- Band-resolved per-k methods take no thermodynamic state at all
+  (`berry_curvature_at`, `quantum_geometry_at`, `quantum_geometry_on`); only
+  the occupation-weighted helpers take a fixed DC `Conditions`
+  (`occupied_berry_curvature_at`/`_on`), and none of them takes a k-mesh or an
+  integration algorithm.
 - `conditions.t_kelvin` (a `Sampling` axis in kelvin; `Fixed(0.0)` is zero
   temperature) replaces `Occupation` at the response boundary. The `Occupation` enum itself remains
   for the Hubbard mean-field solver and spin-moment observables.

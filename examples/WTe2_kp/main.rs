@@ -32,25 +32,23 @@ fn main() {
     let E_n = 2000;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 5.0;
-    let response = Parameters::rank3(
-        Conditions {
+    let response = Parameters {
+        conditions: Conditions {
             t_kelvin: Sampling::Fixed(T),
             mu_ev: Sampling::Values(mu.clone()),
             omega_ev: Sampling::Fixed(0.0),
         },
-        [nk, nk],
-        [0.0, 1.0],
-        [1.0, 0.0],
-        [1.0, 0.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Ordered,
-            eta_ev: Some(1e-5),
-        },
-    );
+        kmesh: [nk, nk],
+        integration: Integration::Direct,
+    };
     let sigma = model
-        .extrinsic_nonlinear_hall(&response)
+        .extrinsic_nonlinear_hall(
+            &response,
+            [[0.0, 1.0], [1.0, 0.0], [1.0, 0.0]],
+            1e-5,
+            None,
+            FieldSymmetry::Ordered,
+        )
         .unwrap()
         .conductivity;
     let sigma = sigma / (2.0 * PI).powi(2);
@@ -81,25 +79,23 @@ fn main() {
     let mut omega = Array1::<f64>::zeros(E_n);
     for (i, t0) in t.iter().enumerate() {
         let model = gen_model(*t0, v, ap, eta, m);
-        let response = Parameters::rank3(
-            Conditions {
+        let response = Parameters {
+            conditions: Conditions {
                 t_kelvin: Sampling::Fixed(T),
                 mu_ev: Sampling::Values(mu.clone()),
                 omega_ev: Sampling::Fixed(0.0),
             },
-            [nk, nk],
-            [0.0, 1.0],
-            [1.0, 0.0],
-            [1.0, 0.0],
-            ResponseOptions {
-                integration: Integration::Direct,
-                spin: None,
-                field_symmetry: FieldSymmetry::Ordered,
-                eta_ev: Some(1e-5),
-            },
-        );
+            kmesh: [nk, nk],
+            integration: Integration::Direct,
+        };
         let sigma = model
-            .extrinsic_nonlinear_hall(&response)
+            .extrinsic_nonlinear_hall(
+                &response,
+                [[0.0, 1.0], [1.0, 0.0], [1.0, 0.0]],
+                1e-5,
+                None,
+                FieldSymmetry::Ordered,
+            )
             .unwrap()
             .conductivity;
         omega[[i]] = sigma.iter().fold(f64::NAN, |a, &b| a.min(b)) * model.lat.det().unwrap();

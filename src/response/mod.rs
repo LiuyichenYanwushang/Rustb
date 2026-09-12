@@ -76,41 +76,28 @@
 //! let chemical_potentials = Array1::linspace(-1.0, 1.0, 201);
 //! let omegas = Array1::linspace(0.0, 4.0, 401);
 //!
-//! let hall = Parameters::rank2(
-//!     Conditions {
+//! let hall = Parameters {
+//!     conditions: Conditions {
 //!         t_kelvin: Sampling::Fixed(20.0),
 //!         mu_ev: Sampling::Values(chemical_potentials),
 //!         omega_ev: Sampling::Fixed(0.0),
 //!     },
-//!     [101, 101],
-//!     [1.0, 0.0],
-//!     [0.0, 1.0],
-//!     ResponseOptions {
-//!         integration: Integration::EnergyCut,
-//!         spin: None,
-//!         field_symmetry: FieldSymmetry::Symmetrized,
-//!         eta_ev: Some(1e-3),
-//!     },
-//! );
-//! let hall_result = model.hall_conductivity(&hall)?;
+//!     kmesh: [101, 101],
+//!     integration: Integration::EnergyCut,
+//! };
+//! // Projection directions and the broadening are method arguments.
+//! let hall_result = model.hall_conductivity(&hall, [[1.0, 0.0], [0.0, 1.0]], 1e-3, None)?;
 //!
-//! let optical = Parameters::rank2(
-//!     Conditions {
+//! let optical = Parameters {
+//!     conditions: Conditions {
 //!         t_kelvin: Sampling::Fixed(0.0),
 //!         mu_ev: Sampling::Fixed(0.0),
 //!         omega_ev: Sampling::Values(omegas),
 //!     },
-//!     [101, 101],
-//!     [1.0, 0.0],
-//!     [0.0, 1.0],
-//!     ResponseOptions {
-//!         integration: Integration::Simplex,
-//!         spin: None,
-//!         field_symmetry: FieldSymmetry::Symmetrized,
-//!         eta_ev: Some(1e-3),
-//!     },
-//! );
-//! let optical_result = model.optical_conductivity(&optical)?;
+//!     kmesh: [101, 101],
+//!     integration: Integration::Simplex,
+//! };
+//! let optical_result = model.optical_conductivity(&optical, [[1.0, 0.0], [0.0, 1.0]], 1e-3)?;
 //! # let _ = (hall_result, optical_result);
 //! # Ok(())
 //! # }
@@ -132,7 +119,7 @@ mod types;
 // Stable high-level response API.
 pub use config::{
     Conditions, FieldSymmetry, Integration, IntegrationDiagnostics, Parameters, ResponseAxis,
-    ResponseOptions, Sampling,
+    Sampling,
 };
 pub use linear::HallConductivityResult;
 pub use nonlinear::NonlinearHallResult;
@@ -153,14 +140,31 @@ mod regression_tests {
     use crate::{Model, QuantumGeometry};
     use ndarray::prelude::*;
 
-    /// Explicit options shared by the regression parameter sets.
-    fn options(integration: Integration, eta_ev: Option<f64>) -> ResponseOptions {
-        ResponseOptions {
-            integration,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev,
+    /// Broadening shared by the regression parameter sets.
+    const ETA_EV: f64 = 0.07;
+
+    /// The two rank-two projection directions of a `DIM`-dimensional model.
+    fn dirs2<const DIM: usize>() -> [[f64; DIM]; 2] {
+        let mut first = [0.0; DIM];
+        first[0] = 1.0;
+        let mut second = [0.0; DIM];
+        second[if DIM > 1 { 1 } else { 0 }] = 1.0;
+        [first, second]
+    }
+
+    /// The three rank-three projection directions `(current, field_1, field_2)`.
+    ///
+    /// The field directions are deliberately mixed so that the regression
+    /// responses are nonzero and no two rows coincide: `current = e_0`,
+    /// `field_1 = e_1`, `field_2 = e_0 + e_1` (in one dimension, where only a
+    /// single axis exists, all three rows collapse onto it as they must).
+    fn dirs3<const DIM: usize>() -> [[f64; DIM]; 3] {
+        let [current, field_1] = dirs2::<DIM>();
+        let mut field_2 = [0.0; DIM];
+        for axis in 0..DIM {
+            field_2[axis] = current[axis] + field_1[axis];
         }
+        [current, field_1, field_2]
     }
 
     /// Conditions that sample the chemical-potential axis at fixed temperature.
@@ -170,18 +174,6 @@ mod regression_tests {
             mu_ev: Sampling::Values(chemical_potentials.clone()),
             omega_ev: Sampling::Fixed(0.0),
         }
-    }
-
-    /// The single-state (per-k) entry points require every axis pinned; those
-    /// kernels do not read the sampled coordinate, so take its first value.
-    fn fixed_axes<const DIM: usize>(params: &Parameters<DIM>) -> Parameters<DIM> {
-        let mut fixed = params.clone();
-        fixed.conditions = Conditions::fixed(
-            params.conditions.t_kelvin.value_at(0),
-            params.conditions.mu_ev.value_at(0),
-            params.conditions.omega_ev.value_at(0),
-        );
-        fixed
     }
 
     // Real hoppings enforce spinless time reversal. Mixed-axis harmonics
@@ -208,30 +200,48 @@ mod regression_tests {
     #[test]
     fn three_dimensional_integrals_preserve_time_reversal() {
         let model = time_reversal_model();
-        let mut params = Parameters::rank2(
-            mu_conditions(&array![-3.0, -2.4, -1.8, -1.4], 0.0),
-            [5, 6, 7],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            options(Integration::Direct, Some(0.05)),
-        );
+        let mut params = Parameters {
+            conditions: mu_conditions(&array![-3.0, -2.4, -1.8, -1.4], 0.0),
+            kmesh: [5, 6, 7],
+            integration: Integration::Direct,
+        };
+        // This test only compares time-reversal residuals; keep HEAD's 0.05.
+        let time_reversal_eta = 0.05;
         // The per-k kernels evaluate one state, so they take all three axes
         // pinned instead of the sampled chemical potential.
         let local = model
-            .quantum_geometry_at(&array![0.13, 0.21, 0.17], &fixed_axes(&params))
+            .quantum_geometry_at(&array![0.13, 0.21, 0.17], dirs2(), 0.05)
             .unwrap();
         assert!(local.berry_curvature.iter().any(|x| x.abs() > 1e-4));
-        let direct = model.hall_conductivity(&params).unwrap().conductivity;
+        let direct = model
+            .hall_conductivity(&params, dirs2(), time_reversal_eta, None)
+            .unwrap()
+            .conductivity;
         params.integration = Integration::EnergyCut;
-        let ec = model.hall_conductivity(&params).unwrap().conductivity;
+        let ec = model
+            .hall_conductivity(&params, dirs2(), time_reversal_eta, None)
+            .unwrap()
+            .conductivity;
         params.integration = Integration::Simplex;
         params.conditions.t_kelvin = Sampling::Fixed(500.0);
-        let geometry = model.quantum_geometry(&params).unwrap().berry_curvature;
+        let geometry = model
+            .quantum_geometry(&params, dirs2(), time_reversal_eta)
+            .unwrap()
+            .berry_curvature;
         params.conditions.mu_ev = Sampling::Fixed(-2.4);
         params.conditions.omega_ev = Sampling::Values(array![0.0, 0.7, 2.0]);
-        let xy = model.optical_conductivity(&params).unwrap().conductivity;
-        params.direction = array![[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
-        let yx = model.optical_conductivity(&params).unwrap().conductivity;
+        let xy = model
+            .optical_conductivity(&params, dirs2(), time_reversal_eta)
+            .unwrap()
+            .conductivity;
+        let yx = model
+            .optical_conductivity(
+                &params,
+                [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+                time_reversal_eta,
+            )
+            .unwrap()
+            .conductivity;
         let optical = (&xy - &yx).iter().map(|z| z.norm()).fold(0.0_f64, f64::max);
         let direct = direct.iter().map(|x| x.abs()).fold(0.0_f64, f64::max);
         let ec = ec.iter().map(|x| x.abs()).fold(0.0_f64, f64::max);
@@ -260,24 +270,27 @@ mod regression_tests {
             model.add_hop(0.5, 0, 0, &r, None);
             model.add_hop(-0.5, 1, 1, &r, None);
         }
-        let mut a = [0.0; DIM];
-        a[0] = 1.0;
-        let mut b = [0.0; DIM];
-        b[1] = 1.0;
-        let mut params = Parameters::rank2(
-            mu_conditions(&array![-1.7, -1.3, 0.0, 1.3, 1.7], 0.0),
-            reference_mesh,
-            a,
-            b,
-            options(Integration::Direct, Some(0.05)),
-        );
-        let zero = model.hall_conductivity(&params).unwrap().conductivity;
+        let mut params = Parameters {
+            conditions: mu_conditions(&array![-1.7, -1.3, 0.0, 1.3, 1.7], 0.0),
+            kmesh: reference_mesh,
+            integration: Integration::Direct,
+        };
+        let zero = model
+            .hall_conductivity(&params, dirs2(), ETA_EV, None)
+            .unwrap()
+            .conductivity;
         params.conditions.t_kelvin = Sampling::Fixed(600.0);
-        let reference = model.hall_conductivity(&params).unwrap().conductivity;
+        let reference = model
+            .hall_conductivity(&params, dirs2(), ETA_EV, None)
+            .unwrap()
+            .conductivity;
         assert!((&zero - &reference).iter().any(|x| x.abs() > 1e-4));
         params.kmesh = mesh;
         params.integration = Integration::EnergyCut;
-        let ec = model.hall_conductivity(&params).unwrap().conductivity;
+        let ec = model
+            .hall_conductivity(&params, dirs2(), ETA_EV, None)
+            .unwrap()
+            .conductivity;
         let error = (&ec - &reference)
             .iter()
             .map(|x| x.abs())
@@ -306,9 +319,7 @@ mod regression_tests {
             array![0.0, 0.0, 1.0],
         );
         let k = array![0.13, 0.21, 0.17];
-        let (direct, energies, _) = model
-            .berry_connection_dipole_onek(&k, &a, &b, &c, None)
-            .unwrap();
+        let (direct, energies) = model.berry_connection_dipole_onek(&k, &a, &b, &c).unwrap();
         assert!((1e-10..1e-5).contains(&(energies[1] - energies[0])));
         assert!(direct.iter().any(|x| x.abs() > 1e-6));
         let vertex = model
@@ -329,35 +340,93 @@ mod regression_tests {
         assert_eq!(kernel::intrinsic_inverse_gap(-1e-10), 0.0);
     }
 
+    /// The scalar accessors must not panic on a constructible empty result and
+    /// must distinguish a `Fixed` point from a one-element sampled series.
     #[test]
-    fn intrinsic_spin_request_returns_a_structured_error() {
-        let model = Model::<true, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
-        let mut params = Parameters::rank3(
-            Conditions::fixed(0.0, 0.0, 0.0),
-            [2, 2],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            [1.0, 0.0],
-            ResponseOptions {
-                spin: Some(crate::SpinDirection::Z),
-                ..options(Integration::Direct, Some(1e-3))
-            },
+    fn single_returns_a_scalar_only_for_a_fixed_point() {
+        let fixed = HallConductivityResult {
+            axis: ResponseAxis::Fixed,
+            conductivity: array![1.5],
+        };
+        assert_eq!(fixed.single(), Some(1.5));
+        let scanned = HallConductivityResult {
+            axis: ResponseAxis::ChemicalPotential(array![0.0]),
+            conductivity: array![1.5],
+        };
+        assert_eq!(
+            scanned.single(),
+            None,
+            "a one-element series is still a scan"
         );
-        for integration in [Integration::Direct, Integration::EnergyCut] {
-            params.integration = integration;
-            assert!(matches!(
-                model.intrinsic_nonlinear_hall(&params),
-                Err(crate::TbError::InvalidResponseParameter {
-                    parameter: "spin",
-                    ..
-                })
-            ));
-        }
+        let empty = HallConductivityResult {
+            axis: ResponseAxis::Fixed,
+            conductivity: Array1::zeros(0),
+        };
+        assert_eq!(empty.single(), None, "an empty result has no scalar");
+
+        let fixed = NonlinearHallResult {
+            axis: ResponseAxis::Fixed,
+            conductivity: array![2.5],
+            diagnostics: None,
+        };
+        assert_eq!(fixed.single(), Some(2.5));
+        let scanned = NonlinearHallResult {
+            axis: ResponseAxis::ChemicalPotential(array![0.0]),
+            conductivity: array![2.5],
+            diagnostics: None,
+        };
+        assert_eq!(
+            scanned.single(),
+            None,
+            "a one-element series is still a scan"
+        );
+        let empty = NonlinearHallResult {
+            axis: ResponseAxis::Fixed,
+            conductivity: Array1::zeros(0),
+            diagnostics: None,
+        };
+        assert_eq!(empty.single(), None, "an empty result has no scalar");
     }
 
-    fn check_extrinsic_field_permutations<const SPIN: bool>(
-        calculate: impl Fn(&Model<SPIN, 2>, &Parameters<2>) -> crate::Result<NonlinearHallResult>,
-    ) {
+    /// The spinless extrinsic entry point keeps its runtime rejection: `spin`
+    /// is a real argument there (the spinful model supports spin currents), so
+    /// a spinless model must refuse it before any k-mesh work.
+    #[test]
+    fn spinless_extrinsic_rejects_a_spin_current_before_preparation() {
+        use crate::response::config::counters;
+        let model =
+            Model::<false, 2>::tb_model(Array2::eye(2), Array2::zeros((2, 2)), None).unwrap();
+        let params = Parameters {
+            conditions: mu_conditions(&array![-1.0, 0.0, 1.0], 0.0),
+            kmesh: [5, 6],
+            integration: Integration::Direct,
+        };
+        let (eigen, tracking, result) = counters::measure(|| {
+            model.extrinsic_nonlinear_hall(
+                &params,
+                dirs3(),
+                ETA_EV,
+                Some(crate::SpinDirection::Z),
+                FieldSymmetry::Symmetrized,
+            )
+        });
+        assert!(matches!(
+            result,
+            Err(crate::TbError::SpinNotAllowed(crate::SpinDirection::Z))
+        ));
+        assert_eq!((eigen, tracking), (0, 0));
+    }
+
+    type ExtrinsicActor<const SPIN: bool> = fn(
+        &Model<SPIN, 2>,
+        &Parameters<2>,
+        [[f64; 2]; 3],
+        f64,
+        Option<crate::SpinDirection>,
+        FieldSymmetry,
+    ) -> crate::Result<NonlinearHallResult>;
+
+    fn check_extrinsic_field_permutations<const SPIN: bool>(calculate: ExtrinsicActor<SPIN>) {
         use crate::thermodynamics::fermi_derivative_from_width;
         let mut model = Model::<SPIN, 2>::tb_model(
             Array2::eye(2),
@@ -375,14 +444,14 @@ mod regression_tests {
             model.add_element(amplitude, 0, 1, &r).unwrap();
             model.add_element(amplitude * 0.2, 0, 0, &r).unwrap();
         }
-        let mut params = Parameters::rank3(
-            mu_conditions(&array![-1.3, -0.5, 0.0, 0.6, 1.4], 0.0),
-            [9, 10],
-            [1.0, 0.3],
-            [0.1, 1.0],
-            [1.0, -0.2],
-            options(Integration::Direct, Some(0.07)),
-        );
+        let mut params = Parameters {
+            conditions: mu_conditions(&array![-1.3, -0.5, 0.0, 0.6, 1.4], 0.0),
+            kmesh: [9, 10],
+            integration: Integration::Direct,
+        };
+        // `(current, field_1, field_2)`; swapping field_1 and field_2 must leave
+        // the symmetrized kernel unchanged.
+        let base_directions = [[1.0, 0.3], [0.1, 1.0], [1.0, -0.2]];
         let spins = if SPIN {
             vec![
                 None,
@@ -393,10 +462,8 @@ mod regression_tests {
         } else {
             vec![None]
         };
-        let original_directions = params.direction.clone();
         let mut nonzero = false;
         for spin in spins {
-            params.spin = spin;
             // Independent spin-1/2 matrices for the one-orbital spinful model.
             // Keep this oracle separate from Model::build_spin_matrix.
             let spin_matrix = spin.map(|axis| {
@@ -417,9 +484,9 @@ mod regression_tests {
             ] {
                 params.integration = integration;
                 params.conditions.t_kelvin = Sampling::Fixed(temperature);
-                params.direction = original_directions.clone();
-                params.field_symmetry = FieldSymmetry::Ordered;
-                let first = calculate(&model, &params).unwrap();
+                let directions = base_directions;
+                let ordered = FieldSymmetry::Ordered;
+                let first = calculate(&model, &params, directions, ETA_EV, spin, ordered).unwrap();
                 nonzero |= first.conductivity.iter().any(|x| x.abs() > 1e-5);
                 if integration == Integration::Direct {
                     let scale = 1e-16;
@@ -434,8 +501,15 @@ mod regression_tests {
                     if let Sampling::Fixed(t_kelvin) = &mut scaled_params.conditions.t_kelvin {
                         *t_kelvin *= scale;
                     }
-                    scaled_params.eta_ev = scaled_params.eta_ev.map(|eta| eta * scale);
-                    let scaled = calculate(&scaled_model, &scaled_params).unwrap();
+                    let scaled = calculate(
+                        &scaled_model,
+                        &scaled_params,
+                        directions,
+                        ETA_EV * scale,
+                        spin,
+                        ordered,
+                    )
+                    .unwrap();
                     assert!(
                         (&scaled.conductivity - &first.conductivity)
                             .iter()
@@ -448,11 +522,11 @@ mod regression_tests {
                     let (kernel, energies) = model
                         .berry_curvature_dipole_n(
                             &mesh,
-                            &params.direction.row(0).to_owned(),
-                            &params.direction.row(1).to_owned(),
-                            &params.direction.row(2).to_owned(),
+                            &Array1::from_vec(directions[0].to_vec()),
+                            &Array1::from_vec(directions[1].to_vec()),
+                            &Array1::from_vec(directions[2].to_vec()),
                             spin_matrix.as_ref(),
-                            params.eta_ev.expect("the direct path broadens"),
+                            ETA_EV,
                         )
                         .unwrap();
                     let width =
@@ -481,19 +555,29 @@ mod regression_tests {
                         assert!((reference - first.conductivity[index]).abs() < 1e-12);
                     }
                 }
-                params
-                    .direction
-                    .row_mut(1)
-                    .assign(&original_directions.row(2));
-                params
-                    .direction
-                    .row_mut(2)
-                    .assign(&original_directions.row(1));
-                let second = calculate(&model, &params).unwrap();
-                params.field_symmetry = FieldSymmetry::Symmetrized;
-                let swapped = calculate(&model, &params).unwrap();
-                params.direction = original_directions.clone();
-                let symmetrized = calculate(&model, &params).unwrap();
+                let mut swapped_directions = base_directions;
+                swapped_directions.swap(1, 2);
+                let second =
+                    calculate(&model, &params, swapped_directions, ETA_EV, spin, ordered).unwrap();
+                let symmetrized_field = FieldSymmetry::Symmetrized;
+                let swapped = calculate(
+                    &model,
+                    &params,
+                    swapped_directions,
+                    ETA_EV,
+                    spin,
+                    symmetrized_field,
+                )
+                .unwrap();
+                let symmetrized = calculate(
+                    &model,
+                    &params,
+                    base_directions,
+                    ETA_EV,
+                    spin,
+                    symmetrized_field,
+                )
+                .unwrap();
                 assert_eq!(symmetrized.diagnostics, first.diagnostics);
                 let expected = (&first.conductivity + &second.conductivity) * 0.5;
                 for ((&actual, &swapped), &expected) in symmetrized
@@ -505,35 +589,25 @@ mod regression_tests {
                     assert!((actual - expected).abs() < 1e-11);
                     assert!((actual - swapped).abs() < 1e-11);
                 }
-                params
-                    .direction
-                    .row_mut(2)
-                    .assign(&original_directions.row(1));
-                let equal_fields = calculate(&model, &params).unwrap();
-                params.field_symmetry = FieldSymmetry::Ordered;
-                let ordered = calculate(&model, &params).unwrap();
-                let mut strided_params = params.clone();
-                strided_params.conditions.mu_ev = Sampling::Values(
-                    array![-1.3, 99.0, -0.5, 99.0, 0.0, 99.0, 0.6, 99.0, 1.4]
-                        .slice_move(ndarray::s![..;2]),
-                );
+                // Every direction row identical: exchanging the two field
+                // indices is then a no-op, so the two conventions must agree
+                // exactly. This is the one configuration where that holds; the
+                // base configuration is cross-checked against the independent
+                // pre-refactor per-k oracle above.
+                let equal_directions = [base_directions[1]; 3];
+                let equal_ordered =
+                    calculate(&model, &params, equal_directions, ETA_EV, spin, ordered).unwrap();
+                let equal_symmetrized = calculate(
+                    &model,
+                    &params,
+                    equal_directions,
+                    ETA_EV,
+                    spin,
+                    symmetrized_field,
+                )
+                .unwrap();
                 assert!(
-                    strided_params
-                        .conditions
-                        .mu_ev
-                        .values()
-                        .expect("the chemical-potential axis is sampled")
-                        .as_slice()
-                        .is_none()
-                );
-                let strided = calculate(&model, &strided_params).unwrap();
-                assert!(
-                    (&strided.conductivity - &ordered.conductivity)
-                        .iter()
-                        .all(|x| x.abs() < 1e-11)
-                );
-                assert!(
-                    (&equal_fields.conductivity - &ordered.conductivity)
+                    (&equal_symmetrized.conductivity - &equal_ordered.conductivity)
                         .iter()
                         .all(|x| x.abs() < 1e-11)
                 );
@@ -544,32 +618,32 @@ mod regression_tests {
 
     #[test]
     fn extrinsic_symmetrization_reuses_the_ordered_charge_and_spin_kernels() {
-        check_extrinsic_field_permutations::<false>(|model, params| {
-            model.extrinsic_nonlinear_hall(params)
-        });
-        check_extrinsic_field_permutations::<true>(|model, params| {
-            model.extrinsic_nonlinear_hall(params)
-        });
+        check_extrinsic_field_permutations::<false>(
+            |model, params, directions, eta_ev, spin, field_symmetry| {
+                model.extrinsic_nonlinear_hall(params, directions, eta_ev, spin, field_symmetry)
+            },
+        );
+        check_extrinsic_field_permutations::<true>(
+            |model, params, directions, eta_ev, spin, field_symmetry| {
+                model.extrinsic_nonlinear_hall(params, directions, eta_ev, spin, field_symmetry)
+            },
+        );
     }
 
     #[test]
     fn response_entry_points_reject_invalid_model_data() {
         let base = Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
-        let rank2 = Parameters::rank2(
-            Conditions::fixed(0.0, 0.0, 0.0),
-            [2, 2],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            options(Integration::Direct, Some(1e-3)),
-        );
-        let rank3 = Parameters::rank3(
-            Conditions::fixed(0.0, 0.0, 0.0),
-            [2, 2],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            [1.0, 0.0],
-            options(Integration::Direct, Some(1e-3)),
-        );
+        let conditions = Conditions::fixed(0.0, 0.0, 0.0);
+        let rank2 = Parameters {
+            conditions: Conditions::fixed(0.0, 0.0, 0.0),
+            kmesh: [2, 2],
+            integration: Integration::Direct,
+        };
+        let rank3 = Parameters {
+            conditions: Conditions::fixed(0.0, 0.0, 0.0),
+            kmesh: [2, 2],
+            integration: Integration::Direct,
+        };
         for invalid in 0..3 {
             let mut model = base.clone();
             match invalid {
@@ -578,35 +652,53 @@ mod regression_tests {
                 _ => model.ham = ndarray::Array3::zeros((1, 2, 2)),
             }
             assert!(matches!(
-                model.hall_conductivity(&rank2),
+                model.hall_conductivity(&rank2, dirs2(), ETA_EV, None),
                 Err(crate::TbError::InvalidModelInvariant { .. })
             ));
             assert!(matches!(
-                model.quantum_geometry(&rank2),
+                model.quantum_geometry(&rank2, dirs2(), ETA_EV),
                 Err(crate::TbError::InvalidModelInvariant { .. })
             ));
             assert!(matches!(
-                model.berry_curvature_at(&array![0.0, 0.0], &rank2),
+                model.berry_curvature_at(&array![0.0, 0.0], dirs2(), ETA_EV, None,),
                 Err(crate::TbError::InvalidModelInvariant { .. })
             ));
             assert!(matches!(
-                model.occupied_berry_curvature_at(&array![0.0, 0.0], &rank2),
+                model.occupied_berry_curvature_at(
+                    &array![0.0, 0.0],
+                    &conditions,
+                    dirs2(),
+                    ETA_EV,
+                    None,
+                ),
                 Err(crate::TbError::InvalidModelInvariant { .. })
             ));
             assert!(matches!(
-                model.occupied_berry_curvature_on(&Array2::zeros((0, 2)), &rank2),
+                model.occupied_berry_curvature_on(
+                    &Array2::zeros((0, 2)),
+                    &conditions,
+                    dirs2(),
+                    ETA_EV,
+                    None,
+                ),
                 Err(crate::TbError::InvalidModelInvariant { .. })
             ));
             assert!(matches!(
-                model.optical_conductivity(&rank2),
+                model.optical_conductivity(&rank2, dirs2(), ETA_EV),
                 Err(crate::TbError::InvalidModelInvariant { .. })
             ));
             assert!(matches!(
-                model.extrinsic_nonlinear_hall(&rank3),
+                model.extrinsic_nonlinear_hall(
+                    &rank3,
+                    dirs3(),
+                    ETA_EV,
+                    None,
+                    FieldSymmetry::Symmetrized
+                ),
                 Err(crate::TbError::InvalidModelInvariant { .. })
             ));
             assert!(matches!(
-                model.intrinsic_nonlinear_hall(&rank3),
+                model.intrinsic_nonlinear_hall(&rank3, dirs3()),
                 Err(crate::TbError::InvalidModelInvariant { .. })
             ));
             assert!(matches!(
@@ -631,32 +723,47 @@ mod regression_tests {
         let k = array![0.0, 0.0];
         let k_points = array![[0.0, 0.0], [0.5, 0.5]];
         for invalid in [-1.0, f64::NAN, f64::INFINITY] {
-            let mut rank2 = Parameters::rank2(
-                Conditions::fixed(0.0, 0.0, 0.0),
-                [2, 2],
-                [1.0, 0.0],
-                [0.0, 1.0],
-                options(Integration::Direct, Some(1e-3)),
-            );
+            let mut rank2 = Parameters {
+                conditions: Conditions::fixed(0.0, 0.0, 0.0),
+                kmesh: [2, 2],
+                integration: Integration::Direct,
+            };
             rank2.conditions.t_kelvin = Sampling::Fixed(invalid);
-            let mut rank3 = Parameters::rank3(
-                Conditions::fixed(0.0, 0.0, 0.0),
-                [2, 2],
-                [1.0, 0.0],
-                [0.0, 1.0],
-                [1.0, 1.0],
-                options(Integration::Direct, Some(1e-3)),
-            );
+            let mut rank3 = Parameters {
+                conditions: Conditions::fixed(0.0, 0.0, 0.0),
+                kmesh: [2, 2],
+                integration: Integration::Direct,
+            };
             rank3.conditions.t_kelvin = Sampling::Fixed(invalid);
             for rejected in [
-                model.hall_conductivity(&rank2).map(|_| ()),
-                model.quantum_geometry(&rank2).map(|_| ()),
-                model.optical_conductivity(&rank2).map(|_| ()),
-                model.extrinsic_nonlinear_hall(&rank3).map(|_| ()),
-                model.intrinsic_nonlinear_hall(&rank3).map(|_| ()),
-                model.occupied_berry_curvature_at(&k, &rank2).map(|_| ()),
                 model
-                    .occupied_berry_curvature_on(&k_points, &rank2)
+                    .hall_conductivity(&rank2, dirs2(), ETA_EV, None)
+                    .map(|_| ()),
+                model.quantum_geometry(&rank2, dirs2(), ETA_EV).map(|_| ()),
+                model
+                    .optical_conductivity(&rank2, dirs2(), ETA_EV)
+                    .map(|_| ()),
+                model
+                    .extrinsic_nonlinear_hall(
+                        &rank3,
+                        dirs3(),
+                        ETA_EV,
+                        None,
+                        FieldSymmetry::Symmetrized,
+                    )
+                    .map(|_| ()),
+                model.intrinsic_nonlinear_hall(&rank3, dirs3()).map(|_| ()),
+                model
+                    .occupied_berry_curvature_at(&k, &rank2.conditions, dirs2(), ETA_EV, None)
+                    .map(|_| ()),
+                model
+                    .occupied_berry_curvature_on(
+                        &k_points,
+                        &rank2.conditions,
+                        dirs2(),
+                        ETA_EV,
+                        None,
+                    )
                     .map(|_| ()),
             ] {
                 assert!(matches!(
@@ -670,17 +777,20 @@ mod regression_tests {
         }
         // A legitimate zero-temperature request stays rejected on the direct
         // Fermi-surface path, which samples -df/dE at k-points.
-        let cold = Parameters::rank3(
-            Conditions::fixed(0.0, 0.0, 0.0),
-            [2, 2],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            [1.0, 1.0],
-            options(Integration::Direct, Some(1e-3)),
-        );
+        let cold = Parameters {
+            conditions: Conditions::fixed(0.0, 0.0, 0.0),
+            kmesh: [2, 2],
+            integration: Integration::Direct,
+        };
         for rejected in [
-            model.extrinsic_nonlinear_hall(&cold),
-            model.intrinsic_nonlinear_hall(&cold),
+            model.extrinsic_nonlinear_hall(
+                &cold,
+                dirs3(),
+                ETA_EV,
+                None,
+                FieldSymmetry::Symmetrized,
+            ),
+            model.intrinsic_nonlinear_hall(&cold, dirs3()),
         ] {
             assert!(matches!(
                 rejected,
@@ -734,19 +844,18 @@ mod regression_tests {
     #[test]
     fn a_sampled_axis_reproduces_single_point_calls() {
         let model = sampled_axis_model();
-        let (a, b) = ([1.0, 0.0], [0.0, 1.0]);
         let mesh = [7, 8];
         let chemical_potentials = array![-1.2, -0.4, 0.3, 1.1];
 
         for integration in [Integration::Direct, Integration::EnergyCut] {
-            let scan = Parameters::rank2(
-                mu_conditions(&chemical_potentials, 200.0),
-                mesh,
-                a,
-                b,
-                options(integration, Some(0.07)),
-            );
-            let scanned = model.hall_conductivity(&scan).unwrap();
+            let scan = Parameters {
+                conditions: mu_conditions(&chemical_potentials, 200.0),
+                kmesh: mesh,
+                integration,
+            };
+            let scanned = model
+                .hall_conductivity(&scan, dirs2(), ETA_EV, None)
+                .unwrap();
             assert!(matches!(scanned.axis, ResponseAxis::ChemicalPotential(_)));
             assert_eq!(scanned.conductivity.len(), chemical_potentials.len());
             assert_axis_matters(
@@ -754,14 +863,14 @@ mod regression_tests {
                 "hall chemical-potential scan",
             );
             for (index, &mu) in chemical_potentials.iter().enumerate() {
-                let single = Parameters::rank2(
-                    Conditions::fixed(200.0, mu, 0.0),
-                    mesh,
-                    a,
-                    b,
-                    options(integration, Some(0.07)),
-                );
-                let expected = model.hall_conductivity(&single).unwrap();
+                let single = Parameters {
+                    conditions: Conditions::fixed(200.0, mu, 0.0),
+                    kmesh: mesh,
+                    integration,
+                };
+                let expected = model
+                    .hall_conductivity(&single, dirs2(), ETA_EV, None)
+                    .unwrap();
                 assert!(expected.axis.is_fixed());
                 assert_close(
                     scanned.conductivity[index],
@@ -772,27 +881,23 @@ mod regression_tests {
         }
 
         for integration in [Integration::Direct, Integration::Simplex] {
-            let scan = Parameters::rank2(
-                mu_conditions(&chemical_potentials, 0.0),
-                mesh,
-                a,
-                b,
-                options(integration, Some(0.07)),
-            );
-            let scanned = model.quantum_geometry(&scan).unwrap();
+            let scan = Parameters {
+                conditions: mu_conditions(&chemical_potentials, 0.0),
+                kmesh: mesh,
+                integration,
+            };
+            let scanned = model.quantum_geometry(&scan, dirs2(), ETA_EV).unwrap();
             assert_axis_matters(
                 scanned.metric.iter().copied(),
                 "quantum-geometry chemical-potential scan",
             );
             for (index, &mu) in chemical_potentials.iter().enumerate() {
-                let single = Parameters::rank2(
-                    Conditions::fixed(0.0, mu, 0.0),
-                    mesh,
-                    a,
-                    b,
-                    options(integration, Some(0.07)),
-                );
-                let expected = model.quantum_geometry(&single).unwrap();
+                let single = Parameters {
+                    conditions: Conditions::fixed(0.0, mu, 0.0),
+                    kmesh: mesh,
+                    integration,
+                };
+                let expected = model.quantum_geometry(&single, dirs2(), ETA_EV).unwrap();
                 assert_close(scanned.metric[index], expected.metric[0], "quantum metric");
                 assert_close(
                     scanned.berry_curvature[index],
@@ -802,18 +907,20 @@ mod regression_tests {
             }
         }
 
-        let (current, field_1, field_2) = ([1.0, 0.0], [0.0, 1.0], [1.0, 1.0]);
         for integration in [Integration::Direct, Integration::EnergyCut] {
-            let scan = Parameters::rank3(
-                mu_conditions(&chemical_potentials, 200.0),
-                mesh,
-                current,
-                field_1,
-                field_2,
-                options(integration, Some(0.07)),
-            );
-            let extrinsic = model.extrinsic_nonlinear_hall(&scan).unwrap().conductivity;
-            let intrinsic = model.intrinsic_nonlinear_hall(&scan).unwrap().conductivity;
+            let scan = Parameters {
+                conditions: mu_conditions(&chemical_potentials, 200.0),
+                kmesh: mesh,
+                integration,
+            };
+            let extrinsic = model
+                .extrinsic_nonlinear_hall(&scan, dirs3(), ETA_EV, None, FieldSymmetry::Symmetrized)
+                .unwrap()
+                .conductivity;
+            let intrinsic = model
+                .intrinsic_nonlinear_hall(&scan, dirs3())
+                .unwrap()
+                .conductivity;
             assert_axis_matters(
                 extrinsic.iter().copied(),
                 "extrinsic nonlinear Hall chemical-potential scan",
@@ -823,22 +930,27 @@ mod regression_tests {
                 "intrinsic nonlinear Hall chemical-potential scan",
             );
             for (index, &mu) in chemical_potentials.iter().enumerate() {
-                let single = Parameters::rank3(
-                    Conditions::fixed(200.0, mu, 0.0),
-                    mesh,
-                    current,
-                    field_1,
-                    field_2,
-                    options(integration, Some(0.07)),
-                );
-                let expected = model.extrinsic_nonlinear_hall(&single).unwrap();
+                let single = Parameters {
+                    conditions: Conditions::fixed(200.0, mu, 0.0),
+                    kmesh: mesh,
+                    integration,
+                };
+                let expected = model
+                    .extrinsic_nonlinear_hall(
+                        &single,
+                        dirs3(),
+                        ETA_EV,
+                        None,
+                        FieldSymmetry::Symmetrized,
+                    )
+                    .unwrap();
                 assert!(expected.axis.is_fixed());
                 assert_close(
                     extrinsic[index],
                     expected.conductivity[0],
                     "extrinsic nonlinear Hall",
                 );
-                let expected = model.intrinsic_nonlinear_hall(&single).unwrap();
+                let expected = model.intrinsic_nonlinear_hall(&single, dirs3()).unwrap();
                 assert_close(
                     intrinsic[index],
                     expected.conductivity[0],
@@ -852,7 +964,6 @@ mod regression_tests {
     #[test]
     fn a_sampled_temperature_or_frequency_reproduces_single_point_calls() {
         let model = sampled_axis_model();
-        let (a, b) = ([1.0, 0.0], [0.0, 1.0]);
         let mesh = [7, 8];
         // A wide window is needed for the occupation, and therefore the Hall
         // response, to actually change: k_B * 6000 K is about 0.5 eV.
@@ -861,34 +972,36 @@ mod regression_tests {
         for integration in [Integration::Direct, Integration::EnergyCut] {
             // A chemical potential inside the band makes the occupation, and
             // therefore the Hall response, actually depend on temperature.
-            let scan = Parameters::rank2(
-                Conditions {
+            let scan = Parameters {
+                conditions: Conditions {
                     t_kelvin: Sampling::Values(temperatures.clone()),
                     mu_ev: Sampling::Fixed(-0.5),
                     omega_ev: Sampling::Fixed(0.0),
                 },
-                mesh,
-                a,
-                b,
-                options(integration, Some(0.07)),
-            );
-            let scanned = model.hall_conductivity(&scan).unwrap();
+                kmesh: mesh,
+                integration,
+            };
+            let scanned = model
+                .hall_conductivity(&scan, dirs2(), ETA_EV, None)
+                .unwrap();
             assert!(matches!(scanned.axis, ResponseAxis::Temperature(_)));
             assert_axis_matters(
                 scanned.conductivity.iter().copied(),
                 "hall temperature scan",
             );
             for (index, &t_kelvin) in temperatures.iter().enumerate() {
-                let single = Parameters::rank2(
-                    Conditions::fixed(t_kelvin, -0.5, 0.0),
-                    mesh,
-                    a,
-                    b,
-                    options(integration, Some(0.07)),
-                );
+                let single = Parameters {
+                    conditions: Conditions::fixed(t_kelvin, -0.5, 0.0),
+                    kmesh: mesh,
+                    integration,
+                };
                 assert_close(
                     scanned.conductivity[index],
-                    model.hall_conductivity(&single).unwrap().single().unwrap(),
+                    model
+                        .hall_conductivity(&single, dirs2(), ETA_EV, None)
+                        .unwrap()
+                        .single()
+                        .unwrap(),
                     "temperature scan",
                 );
             }
@@ -896,18 +1009,16 @@ mod regression_tests {
 
         let frequencies = array![0.0, 0.7, 1.9];
         for integration in [Integration::Direct, Integration::Simplex] {
-            let scan = Parameters::rank2(
-                Conditions {
+            let scan = Parameters {
+                conditions: Conditions {
                     t_kelvin: Sampling::Fixed(300.0),
                     mu_ev: Sampling::Fixed(0.0),
                     omega_ev: Sampling::Values(frequencies.clone()),
                 },
-                mesh,
-                a,
-                b,
-                options(integration, Some(0.07)),
-            );
-            let scanned = model.optical_conductivity(&scan).unwrap();
+                kmesh: mesh,
+                integration,
+            };
+            let scanned = model.optical_conductivity(&scan, dirs2(), ETA_EV).unwrap();
             assert!(matches!(scanned.axis, ResponseAxis::Frequency(_)));
             assert_eq!(scanned.conductivity.ncols(), frequencies.len());
             assert_axis_matters(
@@ -915,14 +1026,14 @@ mod regression_tests {
                 "optical frequency scan",
             );
             for (index, &omega) in frequencies.iter().enumerate() {
-                let single = Parameters::rank2(
-                    Conditions::fixed(300.0, 0.0, omega),
-                    mesh,
-                    a,
-                    b,
-                    options(integration, Some(0.07)),
-                );
-                let expected = model.optical_conductivity(&single).unwrap();
+                let single = Parameters {
+                    conditions: Conditions::fixed(300.0, 0.0, omega),
+                    kmesh: mesh,
+                    integration,
+                };
+                let expected = model
+                    .optical_conductivity(&single, dirs2(), ETA_EV)
+                    .unwrap();
                 for component in 0..scanned.conductivity.nrows() {
                     let left = scanned.conductivity[[component, index]];
                     let right = expected.conductivity[[component, 0]];
@@ -943,65 +1054,69 @@ mod regression_tests {
     fn a_sampled_axis_shares_the_k_mesh_preparation() {
         use crate::response::config::counters;
         let model = sampled_axis_model();
-        let (a, b) = ([1.0, 0.0], [0.0, 1.0]);
         let mesh = [6, 7];
         let prepared = mesh[0] * mesh[1];
 
-        let single = Parameters::rank2(
-            Conditions::fixed(0.0, 0.0, 0.0),
-            mesh,
-            a,
-            b,
-            options(Integration::Direct, Some(0.07)),
-        );
-        let (single_eigen, single_tracking, _) =
-            counters::measure(|| model.hall_conductivity(&single).unwrap());
+        let single = Parameters {
+            conditions: Conditions::fixed(0.0, 0.0, 0.0),
+            kmesh: mesh,
+            integration: Integration::Direct,
+        };
+        let (single_eigen, single_tracking, _) = counters::measure(|| {
+            model
+                .hall_conductivity(&single, dirs2(), ETA_EV, None)
+                .unwrap()
+        });
         assert_eq!(
             single_eigen, prepared,
             "the measurement lost the k-mesh preparation"
         );
         assert_eq!(single_tracking, 0, "direct integration tracks no bands");
 
-        let scan = Parameters::rank2(
-            mu_conditions(&Array1::linspace(-1.5, 1.5, 16), 0.0),
-            mesh,
-            a,
-            b,
-            options(Integration::Direct, Some(0.07)),
-        );
-        let (scan_eigen, _, _) = counters::measure(|| model.hall_conductivity(&scan).unwrap());
+        let scan = Parameters {
+            conditions: mu_conditions(&Array1::linspace(-1.5, 1.5, 16), 0.0),
+            kmesh: mesh,
+            integration: Integration::Direct,
+        };
+        let (scan_eigen, _, _) = counters::measure(|| {
+            model
+                .hall_conductivity(&scan, dirs2(), ETA_EV, None)
+                .unwrap()
+        });
         assert_eq!(
             scan_eigen, single_eigen,
             "16 chemical potentials must not repeat the k-mesh preparation"
         );
 
-        let temperature_scan = Parameters::rank2(
-            Conditions {
+        let temperature_scan = Parameters {
+            conditions: Conditions {
                 t_kelvin: Sampling::Values(Array1::linspace(50.0, 400.0, 16)),
                 mu_ev: Sampling::Fixed(0.0),
                 omega_ev: Sampling::Fixed(0.0),
             },
-            mesh,
-            a,
-            b,
-            options(Integration::Direct, Some(0.07)),
-        );
-        let (temperature_eigen, _, _) =
-            counters::measure(|| model.hall_conductivity(&temperature_scan).unwrap());
+            kmesh: mesh,
+            integration: Integration::Direct,
+        };
+        let (temperature_eigen, _, _) = counters::measure(|| {
+            model
+                .hall_conductivity(&temperature_scan, dirs2(), ETA_EV, None)
+                .unwrap()
+        });
         assert_eq!(
             temperature_eigen, single_eigen,
             "16 temperatures must not repeat the k-mesh preparation"
         );
 
-        let cut = Parameters::rank2(
-            mu_conditions(&Array1::linspace(-1.5, 1.5, 16), 0.0),
-            mesh,
-            a,
-            b,
-            options(Integration::EnergyCut, Some(0.07)),
-        );
-        let (cut_eigen, cut_tracking, _) =
-            counters::measure(|| model.hall_conductivity(&cut).unwrap());
+        let cut = Parameters {
+            conditions: mu_conditions(&Array1::linspace(-1.5, 1.5, 16), 0.0),
+            kmesh: mesh,
+            integration: Integration::EnergyCut,
+        };
+        let (cut_eigen, cut_tracking, _) = counters::measure(|| {
+            model
+                .hall_conductivity(&cut, dirs2(), ETA_EV, None)
+                .unwrap()
+        });
         assert_eq!(
             cut_eigen, prepared,
             "energy-cut integration must prepare the vertices once"
@@ -1013,92 +1128,97 @@ mod regression_tests {
 
         // The same contract must hold for the other four entry points and for
         // the full-Cartesian optical tensor.
-        let (current, field_1, field_2) = ([1.0, 0.0], [0.0, 1.0], [1.0, 1.0]);
         let sampled_mu = Array1::linspace(-1.5, 1.5, 16);
 
-        let geometry = Parameters::rank2(
-            mu_conditions(&sampled_mu, 0.0),
-            mesh,
-            a,
-            b,
-            options(Integration::Direct, Some(0.07)),
-        );
+        let geometry = Parameters {
+            conditions: mu_conditions(&sampled_mu, 0.0),
+            kmesh: mesh,
+            integration: Integration::Direct,
+        };
         let (geometry_eigen, geometry_tracking, _) =
-            counters::measure(|| model.quantum_geometry(&geometry).unwrap());
+            counters::measure(|| model.quantum_geometry(&geometry, dirs2(), ETA_EV).unwrap());
         assert_eq!(geometry_eigen, prepared, "quantum geometry prepares once");
         assert_eq!(geometry_tracking, 0);
 
-        let geometry_simplex = Parameters::rank2(
-            mu_conditions(&sampled_mu, 0.0),
-            mesh,
-            a,
-            b,
-            options(Integration::Simplex, Some(0.07)),
-        );
-        let (geometry_simplex_eigen, geometry_simplex_tracking, _) =
-            counters::measure(|| model.quantum_geometry(&geometry_simplex).unwrap());
+        let geometry_simplex = Parameters {
+            conditions: mu_conditions(&sampled_mu, 0.0),
+            kmesh: mesh,
+            integration: Integration::Simplex,
+        };
+        let (geometry_simplex_eigen, geometry_simplex_tracking, _) = counters::measure(|| {
+            model
+                .quantum_geometry(&geometry_simplex, dirs2(), ETA_EV)
+                .unwrap()
+        });
         assert_eq!(geometry_simplex_eigen, prepared);
         assert_eq!(geometry_simplex_tracking, 1);
 
-        let extrinsic_cut = Parameters::rank3(
-            mu_conditions(&sampled_mu, 0.0),
-            mesh,
-            current,
-            field_1,
-            field_2,
-            options(Integration::EnergyCut, Some(0.07)),
-        );
-        let (extrinsic_eigen, extrinsic_tracking, _) =
-            counters::measure(|| model.extrinsic_nonlinear_hall(&extrinsic_cut).unwrap());
+        let extrinsic_cut = Parameters {
+            conditions: mu_conditions(&sampled_mu, 0.0),
+            kmesh: mesh,
+            integration: Integration::EnergyCut,
+        };
+        let (extrinsic_eigen, extrinsic_tracking, _) = counters::measure(|| {
+            model
+                .extrinsic_nonlinear_hall(
+                    &extrinsic_cut,
+                    dirs3(),
+                    ETA_EV,
+                    None,
+                    FieldSymmetry::Symmetrized,
+                )
+                .unwrap()
+        });
         assert_eq!(extrinsic_eigen, prepared);
         assert_eq!(
             extrinsic_tracking, 1,
             "the symmetrized second pass must reuse the tracked vertices"
         );
 
-        let intrinsic_direct = Parameters::rank3(
-            mu_conditions(&sampled_mu, 200.0),
-            mesh,
-            current,
-            field_1,
-            field_2,
-            options(Integration::Direct, Some(0.07)),
-        );
-        let (intrinsic_eigen, intrinsic_tracking, _) =
-            counters::measure(|| model.intrinsic_nonlinear_hall(&intrinsic_direct).unwrap());
+        let intrinsic_direct = Parameters {
+            conditions: mu_conditions(&sampled_mu, 200.0),
+            kmesh: mesh,
+            integration: Integration::Direct,
+        };
+        let (intrinsic_eigen, intrinsic_tracking, _) = counters::measure(|| {
+            model
+                .intrinsic_nonlinear_hall(&intrinsic_direct, dirs3())
+                .unwrap()
+        });
         assert_eq!(intrinsic_eigen, prepared);
         assert_eq!(intrinsic_tracking, 0);
 
-        let intrinsic_cut = Parameters::rank3(
-            mu_conditions(&sampled_mu, 0.0),
-            mesh,
-            current,
-            field_1,
-            field_2,
-            options(Integration::EnergyCut, Some(0.07)),
-        );
-        let (intrinsic_cut_eigen, intrinsic_cut_tracking, _) =
-            counters::measure(|| model.intrinsic_nonlinear_hall(&intrinsic_cut).unwrap());
+        let intrinsic_cut = Parameters {
+            conditions: mu_conditions(&sampled_mu, 0.0),
+            kmesh: mesh,
+            integration: Integration::EnergyCut,
+        };
+        let (intrinsic_cut_eigen, intrinsic_cut_tracking, _) = counters::measure(|| {
+            model
+                .intrinsic_nonlinear_hall(&intrinsic_cut, dirs3())
+                .unwrap()
+        });
         assert_eq!(intrinsic_cut_eigen, prepared);
         assert_eq!(intrinsic_cut_tracking, 1);
 
-        let optical_scan = Parameters::rank2(
-            Conditions {
+        let optical_scan = Parameters {
+            conditions: Conditions {
                 t_kelvin: Sampling::Fixed(200.0),
                 mu_ev: Sampling::Fixed(-0.5),
                 omega_ev: Sampling::Values(Array1::linspace(0.0, 2.0, 16)),
             },
-            mesh,
-            a,
-            b,
-            options(Integration::Direct, Some(0.07)),
-        );
-        let (optical_eigen, _, _) =
-            counters::measure(|| model.optical_conductivity(&optical_scan).unwrap());
+            kmesh: mesh,
+            integration: Integration::Direct,
+        };
+        let (optical_eigen, _, _) = counters::measure(|| {
+            model
+                .optical_conductivity(&optical_scan, dirs2(), ETA_EV)
+                .unwrap()
+        });
         assert_eq!(optical_eigen, prepared, "optical prepares once per k-point");
 
-        // An empty direction matrix selects the full Cartesian tensor, where a
-        // component loop wraps the sample loop.
+        // The full Cartesian tensor has its own entry point; one component loop
+        // wraps the sample loop, and the preparation is still shared.
         let optical_tensor = Parameters::<2> {
             conditions: Conditions {
                 t_kelvin: Sampling::Fixed(200.0),
@@ -1106,14 +1226,13 @@ mod regression_tests {
                 omega_ev: Sampling::Values(Array1::linspace(0.0, 2.0, 16)),
             },
             kmesh: mesh,
-            direction: Array2::zeros((0, 2)),
             integration: Integration::Simplex,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(0.07),
         };
-        let (tensor_eigen, tensor_tracking, _) =
-            counters::measure(|| model.optical_conductivity(&optical_tensor).unwrap());
+        let (tensor_eigen, tensor_tracking, _) = counters::measure(|| {
+            model
+                .optical_conductivity_tensor(&optical_tensor, ETA_EV)
+                .unwrap()
+        });
         assert_eq!(tensor_eigen, prepared);
         assert_eq!(tensor_tracking, 1);
     }
@@ -1133,21 +1252,28 @@ mod regression_tests {
                 Sampling::Fixed(temperature),
                 Sampling::Values(array![300.0, temperature]),
             ] {
-                let params = Parameters::rank3(
-                    Conditions {
+                let params = Parameters {
+                    conditions: Conditions {
                         t_kelvin,
                         mu_ev: Sampling::Fixed(0.0),
                         omega_ev: Sampling::Fixed(0.0),
                     },
-                    [3, 4],
-                    [1.0, 0.0],
-                    [0.0, 1.0],
-                    [1.0, 1.0],
-                    options(Integration::Direct, Some(0.07)),
-                );
+                    kmesh: [3, 4],
+                    integration: Integration::Direct,
+                };
                 for evaluate in [
-                    Model::<false, 2>::extrinsic_nonlinear_hall,
-                    Model::<false, 2>::intrinsic_nonlinear_hall,
+                    |model: &Model<false, 2>, params: &Parameters<2>| {
+                        model.extrinsic_nonlinear_hall(
+                            params,
+                            dirs3(),
+                            ETA_EV,
+                            None,
+                            FieldSymmetry::Symmetrized,
+                        )
+                    },
+                    |model: &Model<false, 2>, params: &Parameters<2>| {
+                        model.intrinsic_nonlinear_hall(params, dirs3())
+                    },
                 ] {
                     let (eigen, tracking, result) = counters::measure(|| evaluate(&model, &params));
                     assert!(
@@ -1186,21 +1312,28 @@ mod regression_tests {
             Sampling::Fixed(temperature),
             Sampling::Values(array![temperature, 300.0]),
         ] {
-            let params = Parameters::rank3(
-                Conditions {
+            let params = Parameters {
+                conditions: Conditions {
                     t_kelvin,
                     mu_ev: Sampling::Fixed(0.0),
                     omega_ev: Sampling::Fixed(0.0),
                 },
-                [2, 2],
-                [1.0, 0.0],
-                [0.0, 1.0],
-                [1.0, 1.0],
-                options(Integration::Direct, Some(0.07)),
-            );
+                kmesh: [2, 2],
+                integration: Integration::Direct,
+            };
             for evaluate in [
-                Model::<false, 2>::extrinsic_nonlinear_hall,
-                Model::<false, 2>::intrinsic_nonlinear_hall,
+                |model: &Model<false, 2>, params: &Parameters<2>| {
+                    model.extrinsic_nonlinear_hall(
+                        params,
+                        dirs3(),
+                        ETA_EV,
+                        None,
+                        FieldSymmetry::Symmetrized,
+                    )
+                },
+                |model: &Model<false, 2>, params: &Parameters<2>| {
+                    model.intrinsic_nonlinear_hall(params, dirs3())
+                },
             ] {
                 let result = evaluate(&model, &params).unwrap();
                 assert_eq!(result.conductivity.len(), params.conditions.t_kelvin.len());
@@ -1215,8 +1348,6 @@ mod regression_tests {
     #[test]
     fn a_temperature_scan_reproduces_single_point_calls() {
         let model = sampled_axis_model();
-        let (a, b) = ([1.0, 0.0], [0.0, 1.0]);
-        let (current, field_1, field_2) = ([1.0, 0.0], [0.0, 1.0], [1.0, 1.0]);
         let mesh = [7, 8];
         let positive_temperatures = array![500.0, 2000.0, 6000.0];
         let temperatures_with_zero = array![0.0, 2000.0, 6000.0];
@@ -1229,28 +1360,24 @@ mod regression_tests {
         };
 
         for integration in [Integration::Direct, Integration::Simplex] {
-            let scan = Parameters::rank2(
-                sampled(&positive_temperatures),
-                mesh,
-                a,
-                b,
-                options(integration, Some(0.07)),
-            );
-            let scanned = model.quantum_geometry(&scan).unwrap();
+            let scan = Parameters {
+                conditions: sampled(&positive_temperatures),
+                kmesh: mesh,
+                integration,
+            };
+            let scanned = model.quantum_geometry(&scan, dirs2(), ETA_EV).unwrap();
             assert!(matches!(scanned.axis, ResponseAxis::Temperature(_)));
             assert_axis_matters(
                 scanned.metric.iter().copied(),
                 "quantum-geometry temperature scan",
             );
             for (index, &t_kelvin) in positive_temperatures.iter().enumerate() {
-                let single = Parameters::rank2(
-                    Conditions::fixed(t_kelvin, -0.5, 0.0),
-                    mesh,
-                    a,
-                    b,
-                    options(integration, Some(0.07)),
-                );
-                let expected = model.quantum_geometry(&single).unwrap();
+                let single = Parameters {
+                    conditions: Conditions::fixed(t_kelvin, -0.5, 0.0),
+                    kmesh: mesh,
+                    integration,
+                };
+                let expected = model.quantum_geometry(&single, dirs2(), ETA_EV).unwrap();
                 assert_close(
                     scanned.metric[index],
                     expected.metric[0],
@@ -1270,16 +1397,19 @@ mod regression_tests {
             } else {
                 &temperatures_with_zero
             };
-            let scan = Parameters::rank3(
-                sampled(temperatures),
-                mesh,
-                current,
-                field_1,
-                field_2,
-                options(integration, Some(0.07)),
-            );
-            let extrinsic = model.extrinsic_nonlinear_hall(&scan).unwrap().conductivity;
-            let intrinsic = model.intrinsic_nonlinear_hall(&scan).unwrap().conductivity;
+            let scan = Parameters {
+                conditions: sampled(temperatures),
+                kmesh: mesh,
+                integration,
+            };
+            let extrinsic = model
+                .extrinsic_nonlinear_hall(&scan, dirs3(), ETA_EV, None, FieldSymmetry::Symmetrized)
+                .unwrap()
+                .conductivity;
+            let intrinsic = model
+                .intrinsic_nonlinear_hall(&scan, dirs3())
+                .unwrap()
+                .conductivity;
             assert_axis_matters(
                 extrinsic.iter().copied(),
                 "extrinsic nonlinear Hall temperature scan",
@@ -1289,18 +1419,21 @@ mod regression_tests {
                 "intrinsic nonlinear Hall temperature scan",
             );
             for (index, &t_kelvin) in temperatures.iter().enumerate() {
-                let single = Parameters::rank3(
-                    Conditions::fixed(t_kelvin, -0.5, 0.0),
-                    mesh,
-                    current,
-                    field_1,
-                    field_2,
-                    options(integration, Some(0.07)),
-                );
+                let single = Parameters {
+                    conditions: Conditions::fixed(t_kelvin, -0.5, 0.0),
+                    kmesh: mesh,
+                    integration,
+                };
                 assert_close(
                     extrinsic[index],
                     model
-                        .extrinsic_nonlinear_hall(&single)
+                        .extrinsic_nonlinear_hall(
+                            &single,
+                            dirs3(),
+                            ETA_EV,
+                            None,
+                            FieldSymmetry::Symmetrized,
+                        )
                         .unwrap()
                         .conductivity[0],
                     "temperature extrinsic nonlinear Hall",
@@ -1308,7 +1441,7 @@ mod regression_tests {
                 assert_close(
                     intrinsic[index],
                     model
-                        .intrinsic_nonlinear_hall(&single)
+                        .intrinsic_nonlinear_hall(&single, dirs3())
                         .unwrap()
                         .conductivity[0],
                     "temperature intrinsic nonlinear Hall",
@@ -1320,48 +1453,46 @@ mod regression_tests {
         // one axis may be sampled.
         let omega = 0.7;
         for integration in [Integration::Direct, Integration::Simplex] {
-            let scan = Parameters::rank2(
-                Conditions {
+            let scan = Parameters {
+                conditions: Conditions {
                     t_kelvin: Sampling::Values(positive_temperatures.clone()),
                     mu_ev: Sampling::Fixed(-0.3),
                     omega_ev: Sampling::Fixed(omega),
                 },
-                mesh,
-                a,
-                b,
-                options(integration, Some(0.07)),
-            );
-            let scanned = model.optical_conductivity(&scan).unwrap();
+                kmesh: mesh,
+                integration,
+            };
+            let scanned = model.optical_conductivity(&scan, dirs2(), ETA_EV).unwrap();
             assert_axis_matters(
                 scanned.conductivity.iter().map(|value| value.norm()),
                 "optical temperature scan",
             );
             let sampled_chemical_potentials = array![-1.0, 0.0, 0.5];
-            let mu_scan = Parameters::rank2(
-                Conditions {
+            let mu_scan = Parameters {
+                conditions: Conditions {
                     t_kelvin: Sampling::Fixed(200.0),
                     mu_ev: Sampling::Values(sampled_chemical_potentials.clone()),
                     omega_ev: Sampling::Fixed(omega),
                 },
-                mesh,
-                a,
-                b,
-                options(integration, Some(0.07)),
-            );
-            let scanned_mu = model.optical_conductivity(&mu_scan).unwrap();
+                kmesh: mesh,
+                integration,
+            };
+            let scanned_mu = model
+                .optical_conductivity(&mu_scan, dirs2(), ETA_EV)
+                .unwrap();
             assert_axis_matters(
                 scanned_mu.conductivity.iter().map(|value| value.norm()),
                 "optical chemical-potential scan",
             );
             for (index, &t_kelvin) in positive_temperatures.iter().enumerate() {
-                let single = Parameters::rank2(
-                    Conditions::fixed(t_kelvin, -0.3, omega),
-                    mesh,
-                    a,
-                    b,
-                    options(integration, Some(0.07)),
-                );
-                let expected = model.optical_conductivity(&single).unwrap();
+                let single = Parameters {
+                    conditions: Conditions::fixed(t_kelvin, -0.3, omega),
+                    kmesh: mesh,
+                    integration,
+                };
+                let expected = model
+                    .optical_conductivity(&single, dirs2(), ETA_EV)
+                    .unwrap();
                 for component in 0..scanned.conductivity.nrows() {
                     let left = scanned.conductivity[[component, index]];
                     let right = expected.conductivity[[component, 0]];
@@ -1372,14 +1503,14 @@ mod regression_tests {
                 }
             }
             for (index, &mu) in sampled_chemical_potentials.iter().enumerate() {
-                let single = Parameters::rank2(
-                    Conditions::fixed(200.0, mu, omega),
-                    mesh,
-                    a,
-                    b,
-                    options(integration, Some(0.07)),
-                );
-                let expected = model.optical_conductivity(&single).unwrap();
+                let single = Parameters {
+                    conditions: Conditions::fixed(200.0, mu, omega),
+                    kmesh: mesh,
+                    integration,
+                };
+                let expected = model
+                    .optical_conductivity(&single, dirs2(), ETA_EV)
+                    .unwrap();
                 for component in 0..scanned_mu.conductivity.nrows() {
                     let left = scanned_mu.conductivity[[component, index]];
                     let right = expected.conductivity[[component, 0]];
@@ -1399,34 +1530,31 @@ mod regression_tests {
     fn dc_responses_reject_a_sampled_frequency() {
         use crate::response::config::counters;
         let model = sampled_axis_model();
-        let (a, b) = ([1.0, 0.0], [0.0, 1.0]);
-        let (current, field_1, field_2) = ([1.0, 0.0], [0.0, 1.0], [1.0, 1.0]);
         let mesh = [5, 6];
         let conditions = Conditions {
             t_kelvin: Sampling::Fixed(200.0),
             mu_ev: Sampling::Fixed(-0.5),
             omega_ev: Sampling::Values(array![0.0, 0.7, 1.4]),
         };
-        let rank2 = Parameters::rank2(
-            conditions.clone(),
-            mesh,
-            a,
-            b,
-            options(Integration::Direct, Some(0.07)),
-        );
-        let rank3 = Parameters::rank3(
-            conditions.clone(),
-            mesh,
-            current,
-            field_1,
-            field_2,
-            options(Integration::EnergyCut, Some(0.07)),
-        );
+        let rank2 = Parameters {
+            conditions: conditions.clone(),
+            kmesh: mesh,
+            integration: Integration::Direct,
+        };
+        let rank3 = Parameters {
+            conditions: conditions.clone(),
+            kmesh: mesh,
+            integration: Integration::EnergyCut,
+        };
         for rejected in [
-            model.hall_conductivity(&rank2).map(|_| ()),
-            model.quantum_geometry(&rank2).map(|_| ()),
-            model.extrinsic_nonlinear_hall(&rank3).map(|_| ()),
-            model.intrinsic_nonlinear_hall(&rank3).map(|_| ()),
+            model
+                .hall_conductivity(&rank2, dirs2(), ETA_EV, None)
+                .map(|_| ()),
+            model.quantum_geometry(&rank2, dirs2(), ETA_EV).map(|_| ()),
+            model
+                .extrinsic_nonlinear_hall(&rank3, dirs3(), ETA_EV, None, FieldSymmetry::Symmetrized)
+                .map(|_| ()),
+            model.intrinsic_nonlinear_hall(&rank3, dirs3()).map(|_| ()),
         ] {
             assert!(matches!(
                 rejected,
@@ -1439,19 +1567,33 @@ mod regression_tests {
         for (label, measured) in [
             (
                 "hall_conductivity",
-                counters::measure(|| model.hall_conductivity(&rank2).map(|_| ())),
+                counters::measure(|| {
+                    model
+                        .hall_conductivity(&rank2, dirs2(), ETA_EV, None)
+                        .map(|_| ())
+                }),
             ),
             (
                 "quantum_geometry",
-                counters::measure(|| model.quantum_geometry(&rank2).map(|_| ())),
+                counters::measure(|| model.quantum_geometry(&rank2, dirs2(), ETA_EV).map(|_| ())),
             ),
             (
                 "extrinsic_nonlinear_hall",
-                counters::measure(|| model.extrinsic_nonlinear_hall(&rank3).map(|_| ())),
+                counters::measure(|| {
+                    model
+                        .extrinsic_nonlinear_hall(
+                            &rank3,
+                            dirs3(),
+                            ETA_EV,
+                            None,
+                            FieldSymmetry::Symmetrized,
+                        )
+                        .map(|_| ())
+                }),
             ),
             (
                 "intrinsic_nonlinear_hall",
-                counters::measure(|| model.intrinsic_nonlinear_hall(&rank3).map(|_| ())),
+                counters::measure(|| model.intrinsic_nonlinear_hall(&rank3, dirs3()).map(|_| ())),
             ),
         ] {
             let (eigen, tracking, _) = measured;
@@ -1463,14 +1605,14 @@ mod regression_tests {
         }
 
         // The physical frequency axis must keep working.
-        let optical = Parameters::rank2(
+        let optical = Parameters {
             conditions,
-            mesh,
-            a,
-            b,
-            options(Integration::Simplex, Some(0.07)),
-        );
-        let scanned = model.optical_conductivity(&optical).unwrap();
+            kmesh: mesh,
+            integration: Integration::Simplex,
+        };
+        let scanned = model
+            .optical_conductivity(&optical, dirs2(), ETA_EV)
+            .unwrap();
         assert!(matches!(scanned.axis, ResponseAxis::Frequency(_)));
         assert_eq!(scanned.conductivity.ncols(), 3);
     }
@@ -1497,94 +1639,90 @@ mod regression_tests {
         let k = array![0.2, 0.3];
         let k_points = array![[0.2, 0.3]];
         for omega in [-0.7, 0.7, 1e-320] {
-            let rank2 = Parameters::rank2(
-                Conditions::fixed(300.0, -0.5, omega),
-                [3, 4],
-                [1.0, 0.0],
-                [0.0, 1.0],
-                options(Integration::Direct, Some(0.07)),
-            );
-            let rank3 = Parameters::rank3(
-                rank2.conditions.clone(),
-                rank2.kmesh,
-                [1.0, 0.0],
-                [0.0, 1.0],
-                [1.0, 1.0],
-                options(Integration::Direct, Some(0.07)),
-            );
-            assert_parameter_rejected_before_preparation("omega_ev", || {
-                model.hall_conductivity(&rank2).map(|_| ())
-            });
-            assert_parameter_rejected_before_preparation("omega_ev", || {
-                model.quantum_geometry(&rank2).map(|_| ())
-            });
-            assert_parameter_rejected_before_preparation("omega_ev", || {
-                model.extrinsic_nonlinear_hall(&rank3).map(|_| ())
-            });
-            assert_parameter_rejected_before_preparation("omega_ev", || {
-                model.intrinsic_nonlinear_hall(&rank3).map(|_| ())
-            });
-            assert_parameter_rejected_before_preparation("omega_ev", || {
-                model.berry_curvature_at(&k, &rank2).map(|_| ())
-            });
-            assert_parameter_rejected_before_preparation("omega_ev", || {
-                model.occupied_berry_curvature_at(&k, &rank2).map(|_| ())
-            });
+            let rank2 = Parameters {
+                conditions: Conditions::fixed(300.0, -0.5, omega),
+                kmesh: [3, 4],
+                integration: Integration::Direct,
+            };
+            let rank3 = Parameters {
+                conditions: rank2.conditions.clone(),
+                kmesh: rank2.kmesh,
+                integration: Integration::Direct,
+            };
             assert_parameter_rejected_before_preparation("omega_ev", || {
                 model
-                    .occupied_berry_curvature_on(&k_points, &rank2)
+                    .hall_conductivity(&rank2, dirs2(), ETA_EV, None)
                     .map(|_| ())
             });
             assert_parameter_rejected_before_preparation("omega_ev", || {
-                model.quantum_geometry_at(&k, &rank2).map(|_| ())
+                model.quantum_geometry(&rank2, dirs2(), ETA_EV).map(|_| ())
             });
             assert_parameter_rejected_before_preparation("omega_ev", || {
-                model.quantum_geometry_on(&k_points, &rank2).map(|_| ())
+                model
+                    .extrinsic_nonlinear_hall(
+                        &rank3,
+                        dirs3(),
+                        ETA_EV,
+                        None,
+                        FieldSymmetry::Symmetrized,
+                    )
+                    .map(|_| ())
+            });
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model.intrinsic_nonlinear_hall(&rank3, dirs3()).map(|_| ())
+            });
+            // The band-resolved per-k kernels take no thermodynamic state, so a
+            // nonzero frequency cannot reach them at all; only the
+            // occupation-weighted helpers still read the fixed DC point.
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model
+                    .occupied_berry_curvature_at(&k, &rank2.conditions, dirs2(), ETA_EV, None)
+                    .map(|_| ())
+            });
+            assert_parameter_rejected_before_preparation("omega_ev", || {
+                model
+                    .occupied_berry_curvature_on(
+                        &k_points,
+                        &rank2.conditions,
+                        dirs2(),
+                        ETA_EV,
+                        None,
+                    )
+                    .map(|_| ())
             });
             // The same fixed nonzero frequency is physical for optical response.
-            assert!(model.optical_conductivity(&rank2).is_ok());
+            assert!(model.optical_conductivity(&rank2, dirs2(), ETA_EV).is_ok());
         }
     }
 
+    /// A spin current for a charge-only response is no longer expressible: the
+    /// optical, quantum-geometry and intrinsic nonlinear Hall signatures take no
+    /// `spin` argument, so these requests are compile errors rather than
+    /// runtime rejections. The reachable runtime part of the old contract — the
+    /// spinless model's rejection in `hall_conductivity` — is covered by
+    /// `spin_hall_and_berry_match_independent_spinless_sectors`.
     #[test]
-    fn charge_only_responses_reject_spin_requests() {
+    fn charge_only_responses_have_no_spin_argument() {
         fn check<const SPIN: bool>() {
             let model =
                 Model::<SPIN, 2>::tb_model(Array2::eye(2), Array2::zeros((2, 2)), None).unwrap();
-            let k = array![0.2, 0.3];
-            let k_points = array![[0.2, 0.3]];
-            for integration in [Integration::Direct, Integration::Simplex] {
-                for spin in [
-                    crate::SpinDirection::X,
-                    crate::SpinDirection::Y,
-                    crate::SpinDirection::Z,
-                ] {
-                    let mut params = Parameters::rank2(
-                        Conditions::fixed(300.0, -0.5, 0.0),
-                        [3, 4],
-                        [1.0, 0.0],
-                        [0.0, 1.0],
-                        options(integration, Some(0.07)),
-                    );
-                    params.spin = Some(spin);
-                    assert_parameter_rejected_before_preparation("spin", || {
-                        model.optical_conductivity(&params).map(|_| ())
-                    });
-                    assert_parameter_rejected_before_preparation("spin", || {
-                        model.quantum_geometry(&params).map(|_| ())
-                    });
-                    assert_parameter_rejected_before_preparation("spin", || {
-                        model.quantum_geometry_at(&k, &params).map(|_| ())
-                    });
-                    assert_parameter_rejected_before_preparation("spin", || {
-                        model.quantum_geometry_on(&k_points, &params).map(|_| ())
-                    });
-                    params.direction = Array2::zeros((0, 2));
-                    assert_parameter_rejected_before_preparation("spin", || {
-                        model.optical_conductivity(&params).map(|_| ())
-                    });
-                }
-            }
+            let params = Parameters {
+                conditions: Conditions::fixed(300.0, -0.5, 0.0),
+                kmesh: [3, 4],
+                integration: Integration::Direct,
+            };
+            assert!(model.optical_conductivity(&params, dirs2(), ETA_EV).is_ok());
+            assert!(model.quantum_geometry(&params, dirs2(), ETA_EV).is_ok());
+            assert!(
+                model
+                    .quantum_geometry_at(&array![0.2, 0.3], dirs2(), ETA_EV)
+                    .is_ok()
+            );
+            assert!(
+                model
+                    .quantum_geometry_on(&array![[0.2, 0.3]], dirs2(), ETA_EV)
+                    .is_ok()
+            );
         }
         check::<false>();
         check::<true>();

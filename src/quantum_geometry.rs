@@ -21,7 +21,8 @@ use rayon::prelude::*;
 
 use crate::error::{Result, TbError};
 use crate::response::config::{
-    Integration, IntegrationDiagnostics, Parameters, ResponseAxis, mesh_array, occupation_for,
+    Integration, IntegrationDiagnostics, Parameters, ResponseAxis, direction_matrix, mesh_array,
+    occupation_for, validate_broadening, validate_direction_values,
 };
 use crate::response::linear::integrate_occupied_geometry;
 use crate::response::{VertexKernel, global_band_track};
@@ -67,27 +68,25 @@ pub struct QuantumGeometryResult {
 
 /// Reusable band-resolved quantum-geometry kernels.
 ///
-/// Neither method integrates over the Brillouin zone, so the sampled axis of
-/// `Parameters::conditions` must be fixed, with `omega_ev = 0`.
-/// These charge-response methods require `spin: None`.
+/// Neither method integrates over the Brillouin zone, so neither takes a
+/// thermodynamic state or a k-mesh: they depend only on the supplied k-points,
+/// the two projection directions and the broadening. They are charge-response
+/// methods, so no spin current can be requested.
 pub trait QuantumGeometry<const DIM: usize>: Velocity {
     /// Evaluate every band at one k-point.
-    ///
-    /// Reads `direction` (rank 2) and `eta_ev`. Conditions must specify one
-    /// fixed DC state and `spin` must be `None`; `kmesh` is validated even
-    /// though the supplied k-point is used. `integration` and `field_symmetry`
-    /// do not affect this band-resolved result.
     fn quantum_geometry_at<S: Data<Elem = f64>>(
         &self,
         k: &ArrayBase<S, Ix1>,
-        params: &Parameters<DIM>,
+        directions: [[f64; DIM]; 2],
+        eta_ev: f64,
     ) -> Result<BandQuantumGeometry>;
 
     /// Evaluate every band on a list of k-points in parallel.
     fn quantum_geometry_on<S: Data<Elem = f64> + Sync>(
         &self,
         k_points: &ArrayBase<S, Ix2>,
-        params: &Parameters<DIM>,
+        directions: [[f64; DIM]; 2],
+        eta_ev: f64,
     ) -> Result<QuantumGeometryMap>;
 }
 
@@ -97,7 +96,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry<DIM>
     fn quantum_geometry_at<S: Data<Elem = f64>>(
         &self,
         k: &ArrayBase<S, Ix1>,
-        params: &Parameters<DIM>,
+        directions: [[f64; DIM]; 2],
+        eta_ev: f64,
     ) -> Result<BandQuantumGeometry> {
         self.validate()?;
         if k.len() != DIM {
@@ -106,17 +106,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry<DIM>
                 actual: k.len(),
             });
         }
-        let resolved = params.validate_rank2()?;
-        resolved.require_fixed_dc()?;
-        params.require_charge_current()?;
-        let eta = params.broadening()?;
-        self.quantum_geometry_at_impl(k, &params.direction, eta)
+        validate_direction_values(&directions)?;
+        validate_broadening(eta_ev)?;
+        let direction = direction_matrix(&directions);
+        self.quantum_geometry_at_impl(k, &direction, eta_ev)
     }
 
     fn quantum_geometry_on<S: Data<Elem = f64> + Sync>(
         &self,
         k_points: &ArrayBase<S, Ix2>,
-        params: &Parameters<DIM>,
+        directions: [[f64; DIM]; 2],
+        eta_ev: f64,
     ) -> Result<QuantumGeometryMap> {
         self.validate()?;
         if k_points.ncols() != DIM {
@@ -127,11 +127,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> QuantumGeometry<DIM>
             });
         }
         // Validate once up front, then reuse the unvalidated kernel per k-point.
-        let resolved = params.validate_rank2()?;
-        resolved.require_fixed_dc()?;
-        params.require_charge_current()?;
-        let eta = params.broadening()?;
-        self.quantum_geometry_map_impl(k_points, &params.direction, eta)
+        validate_direction_values(&directions)?;
+        validate_broadening(eta_ev)?;
+        let direction = direction_matrix(&directions);
+        self.quantum_geometry_map_impl(k_points, &direction, eta_ev)
     }
 }
 
@@ -226,11 +225,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// run for each sample; temperature scans repeat simplex quadrature on the
     /// shared vertices. Simplex mode additionally reports the number of
     /// small-gap simplices.
-    pub fn quantum_geometry(&self, params: &Parameters<DIM>) -> Result<QuantumGeometryResult> {
-        let resolved = params.validate_rank2()?;
+    pub fn quantum_geometry(
+        &self,
+        params: &Parameters<DIM>,
+        directions: [[f64; DIM]; 2],
+        eta_ev: f64,
+    ) -> Result<QuantumGeometryResult> {
+        let resolved = params.validate_grid_response()?;
         resolved.require_dc()?;
-        params.require_charge_current()?;
         self.validate()?;
+        validate_direction_values(&directions)?;
+        validate_broadening(eta_ev)?;
+        let direction = direction_matrix(&directions);
         if params.integration == Integration::EnergyCut {
             return Err(TbError::InvalidResponseParameter {
                 parameter: "integration",
@@ -244,7 +250,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 supported: vec![2, 3],
             });
         }
-        let eta = params.broadening()?;
+        let eta = eta_ev;
         let k_mesh = mesh_array(&params.kmesh);
         let determinant = self.lat.det()?;
         let samples = resolved.len();
@@ -252,7 +258,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let (metric, berry_curvature, diagnostics) = match params.integration {
             Integration::Direct => {
                 let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
-                let geometry = self.quantum_geometry_map_impl(&k_points, &params.direction, eta)?;
+                let geometry = self.quantum_geometry_map_impl(&k_points, &direction, eta)?;
                 let normalization = 1.0 / k_points.nrows() as f64 / determinant;
                 let values: Vec<(f64, f64)> = (0..samples)
                     .into_par_iter()
@@ -277,8 +283,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
             Integration::Simplex => {
                 let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
-                let direction_a = params.direction.row(0).to_owned();
-                let direction_b = params.direction.row(1).to_owned();
+                let direction_a = direction.row(0).to_owned();
+                let direction_b = direction.row(1).to_owned();
                 let vertices: Vec<Result<VertexKernel>> = (0..k_points.nrows())
                     .into_par_iter()
                     .map(|index| {
@@ -343,7 +349,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::response::config::{Conditions, FieldSymmetry, ResponseOptions};
+    use crate::response::config::Conditions;
     use ndarray::array;
 
     fn massive_dirac_model() -> Model<false, 2> {
@@ -379,20 +385,8 @@ mod tests {
     #[test]
     fn named_band_result_has_real_components() {
         let model = massive_dirac_model();
-        let params = Parameters::rank2(
-            Conditions::fixed(0.0, 0.0, 0.0),
-            [1, 1],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            ResponseOptions {
-                integration: Integration::Direct,
-                spin: None,
-                field_symmetry: FieldSymmetry::Symmetrized,
-                eta_ev: Some(1e-3),
-            },
-        );
         let geometry = model
-            .quantum_geometry_at(&array![0.0, 0.0], &params)
+            .quantum_geometry_at(&array![0.0, 0.0], [[1.0, 0.0], [0.0, 1.0]], 1e-3)
             .unwrap();
         assert_eq!(geometry.metric.len(), model.nsta());
         assert_eq!(geometry.berry_curvature.len(), model.nsta());
@@ -402,22 +396,16 @@ mod tests {
     #[test]
     fn direct_and_simplex_integrate_the_same_geometry() {
         let model = qwz_model(-1.0);
-        let mut params = Parameters::rank2(
-            Conditions::fixed(0.0, 0.0, 0.0),
-            [31, 31],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            ResponseOptions {
-                integration: Integration::Direct,
-                spin: None,
-                field_symmetry: FieldSymmetry::Symmetrized,
-                eta_ev: Some(0.1),
-            },
-        );
-        let direct = model.quantum_geometry(&params).unwrap();
+        let mut params = Parameters::<2> {
+            conditions: Conditions::fixed(0.0, 0.0, 0.0),
+            kmesh: [31, 31],
+            integration: Integration::Direct,
+        };
+        let directions = [[1.0, 0.0], [0.0, 1.0]];
+        let direct = model.quantum_geometry(&params, directions, 0.1).unwrap();
 
         params.integration = Integration::Simplex;
-        let simplex = model.quantum_geometry(&params).unwrap();
+        let simplex = model.quantum_geometry(&params, directions, 0.1).unwrap();
         assert!(simplex.diagnostics.is_some());
         assert!((direct.metric[0] - simplex.metric[0]).abs() < 5e-3);
         assert!((direct.berry_curvature[0] - simplex.berry_curvature[0]).abs() < 5e-3);

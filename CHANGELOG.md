@@ -62,38 +62,71 @@
   `const SPIN: bool` must specialize or supply their own trait bound for
   dispatch. Generic Berry callers need the bound
   `Model<SPIN, DIM, R>: BerryCurvature<DIM>`.
-- Response input is explicit now. `Parameters<DIM>` holds `conditions`
-  (`t_kelvin`, `mu_ev`, `omega_ev`, each `Sampling::Fixed(value)` or
-  `Sampling::Values(series)`), `kmesh`, `direction`, `integration`, `spin`,
-  `field_symmetry` and `eta_ev`. At most one axis may be `Values`; that axis
-  is evaluated from one shared k-mesh preparation, so eigenstates, velocity
-  kernels and band tracking are computed once instead of once per sample.
-  Sampling several axes is rejected before any k-mesh work.
-- Remove the whole `Parameters` constructor surface — `new`, `at_mu`,
-  `with_temperature`, `with_spin`, `with_frequency`, `with_integration` —
-  and construct with `Parameters::rank2`/`rank3` plus an explicit
-  `Conditions` and `ResponseOptions`. `Integration` and `FieldSymmetry` no
-  longer implement `Default`, and `eta_ev` is `Option<f64>`: every entry point
-  that broadens a denominator requires it, while `intrinsic_nonlinear_hall`
-  ignores it.
+- Response input is explicit now. `Parameters<DIM>` holds exactly the three
+  fields every Brillouin-zone response shares: `conditions` (`t_kelvin`,
+  `mu_ev`, `omega_ev`, each `Sampling::Fixed(value)` or
+  `Sampling::Values(series)`), `kmesh` and `integration`. At most one axis may
+  be `Values`; that axis is evaluated from one shared k-mesh preparation, so
+  eigenstates, velocity kernels and band tracking are computed once instead of
+  once per sample. Sampling several axes is rejected before any k-mesh work.
+- `Parameters` no longer carries per-method choices. `direction`, `spin`,
+  `field_symmetry` and `eta_ev` moved into the entry-point signatures, so a
+  caller never states a value the method ignores. `ResponseOptions`,
+  `Parameters::rank2`/`rank3`, and the empty-`direction` sentinel for the full
+  optical tensor are removed; a full Cartesian optical tensor is requested
+  through the new `optical_conductivity_tensor`, which shares one
+  diagonalization and band-tracking pass with the component entry point.
+- Directions are now fixed-size arrays: `[[f64; DIM]; 2]` for rank-two
+  responses and `[[f64; DIM]; 3]` in `(current, field_1, field_2)` order for
+  rank-three responses. Rank and dimension are compile-time constraints, so a
+  wrong number of direction rows no longer compiles; component finiteness and
+  the zero-row rejection are still runtime errors. `eta_ev` is a plain `f64`
+  and is absent from `intrinsic_nonlinear_hall`, which broadens no denominator.
+  `Integration` and `FieldSymmetry` still implement no `Default`.
+- `hall_conductivity` and `extrinsic_nonlinear_hall` take `spin:
+  Option<SpinDirection>` directly and keep the previous rejection behaviour: a
+  spinless model returns `TbError::SpinNotAllowed` for `spin: Some(_)`.
+- Band-resolved per-k methods take no thermodynamic state at all:
+  `berry_curvature_at`, `quantum_geometry_at` and `quantum_geometry_on` now
+  take only the k-point(s), the directions and `eta_ev`. The
+  occupation-weighted helpers `occupied_berry_curvature_at`/`_on` take one
+  fixed DC `&Conditions` and still reject a sampled axis or nonzero frequency.
+  None of these methods takes a k-mesh or an integration algorithm any more.
+- `OpticalConductivityResult` no longer carries a `<DIM>` generic, since its
+  fields never used it. `NonlinearHallResult` gains `single()`, matching
+  `HallConductivityResult::single()`: it returns the scalar of a `Fixed`
+  calculation and `None` for any sampled axis, including a one-element series.
 - The four DC entry points and per-k-point Berry/geometry methods require
   `omega_ev: Sampling::Fixed(0.0)`; nonzero fixed frequencies and sampled
   frequencies return structured errors. Optical response accepts both.
-- Optical and quantum-geometry methods reject `spin: Some(_)`, consistent with
-  intrinsic nonlinear Hall, instead of silently returning charge results.
-- Response validation parameters are renamed: `T` becomes `t_kelvin`, `mu`
-  becomes `mu_ev`, and a missing `eta_ev` is reported as
+- Optical and quantum-geometry methods, like intrinsic nonlinear Hall, no
+  longer accept a spin request at all: their signatures carry no `spin`
+  argument, so the old runtime rejection became a compile error. Hall,
+  extrinsic nonlinear Hall and the Berry helpers keep
+  `spin: Option<SpinDirection>`, and a spinless model still returns
+  `TbError::SpinNotAllowed`.
+- Response validation parameters are renamed: `T` becomes `t_kelvin` and `mu`
+  becomes `mu_ev`. `eta_ev` is a required `f64` argument wherever a denominator
+  is broadened, so there is no "missing `eta_ev`" state; a negative or
+  non-finite value is reported as
   `InvalidResponseParameter { parameter: "eta_ev" }`.
 - Results carry `axis: ResponseAxis` (`Fixed`, or `Temperature` /
   `ChemicalPotential` / `Frequency` with the sampled values) instead of a
   copied `chemical_potentials` / `frequencies` grid; `single()` returns a
   scalar only for `Fixed`. `optical_conductivity` may sample `t_kelvin` or
   `mu_ev` as well as `omega_ev`.
-- Per-k-point methods (`berry_curvature_at`, `occupied_berry_curvature_at`,
-  `occupied_berry_curvature_on`, `quantum_geometry_at`, `quantum_geometry_on`)
-  require every axis `Fixed` and reject a sampled
-  axis instead of silently ignoring fields. They validate every field, including
-  the k-mesh they do not read.
+- Validation is centralised in `Conditions::resolve`, so for a call that is
+  invalid in two ways at once the reported parameter can differ from before:
+  a negative `t_kelvin` sample combined with two sampled axes now reports
+  `t_kelvin` rather than the second sampled axis. The error variant, the
+  rejection itself, and the guarantee that it happens before any k-mesh work
+  are unchanged.
+- The occupation-weighted per-k helpers (`occupied_berry_curvature_at`,
+  `occupied_berry_curvature_on`) take one fixed DC `Conditions`, require every
+  axis `Fixed`, and reject a sampled axis instead of silently ignoring it. The
+  band-resolved per-k methods (`berry_curvature_at`, `quantum_geometry_at`,
+  `quantum_geometry_on`) take no thermodynamic state and no k-mesh at all, so
+  they can no longer validate fields they never read.
 - The nonlinear Hall entry points reject the whole call when any sample reaches
   zero temperature with `Integration::Direct`, before any k-mesh work, instead
   of switching algorithm at an individual sample.

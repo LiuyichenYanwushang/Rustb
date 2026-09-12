@@ -44,20 +44,15 @@ fn main() {
     let kvec = PI * model.lat.dot(&(kvec.reversed_axes()));
     //let kvec=model.lat.dot(&(kvec.reversed_axes()));
     let kvec = kvec.reversed_axes();
-    let berry_params = Parameters::rank2(
-        Conditions::fixed(T, 0.0, 0.0),
-        [1, 1],
-        [1.0, 0.0],
-        [0.0, 1.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(1e-3),
-        },
-    );
+    let berry_conditions = Conditions::fixed(T, 0.0, 0.0);
     let berry_curv = model
-        .occupied_berry_curvature_on(&kvec, &berry_params)
+        .occupied_berry_curvature_on(
+            &kvec,
+            &berry_conditions,
+            [[1.0, 0.0], [0.0, 1.0]],
+            1e-3,
+            None,
+        )
         .unwrap();
     let data = berry_curv.clone().into_shape((nk, nk)).unwrap();
     draw_heatmap(
@@ -71,20 +66,13 @@ fn main() {
         }),
         "target/example-output/chern_alter/heat_map.pdf",
     );
-    let hall_params = Parameters::rank2(
-        Conditions::fixed(0.0, 0.0, 0.0),
-        [nk, nk],
-        [1.0, 0.0],
-        [0.0, 1.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(1e-3),
-        },
-    );
+    let hall_params = Parameters {
+        conditions: Conditions::fixed(0.0, 0.0, 0.0),
+        kmesh: [nk, nk],
+        integration: Integration::Direct,
+    };
     let conductivity = model
-        .hall_conductivity(&hall_params)
+        .hall_conductivity(&hall_params, [[1.0, 0.0], [0.0, 1.0]], 1e-3, None)
         .unwrap()
         .single()
         .unwrap();
@@ -94,25 +82,23 @@ fn main() {
     let E_max = 1.0;
     let E_n = 2000;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let extrinsic_params = Parameters::rank3(
-        Conditions {
+    let extrinsic_params = Parameters {
+        conditions: Conditions {
             t_kelvin: Sampling::Fixed(T),
             mu_ev: Sampling::Values(mu.clone()),
             omega_ev: Sampling::Fixed(0.0),
         },
-        [nk, nk],
-        [1.0, 0.0],
-        [0.0, 1.0],
-        [0.0, 1.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Ordered,
-            eta_ev: Some(1e-5),
-        },
-    );
+        kmesh: [nk, nk],
+        integration: Integration::Direct,
+    };
     let sigma = model
-        .extrinsic_nonlinear_hall(&extrinsic_params)
+        .extrinsic_nonlinear_hall(
+            &extrinsic_params,
+            [[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]],
+            1e-5,
+            None,
+            FieldSymmetry::Ordered,
+        )
         .unwrap()
         .conductivity;
     //开始绘制非线性电导
@@ -132,25 +118,17 @@ fn main() {
     let E_max = 1.0;
     let E_n = 2000;
     let mu = Array1::linspace(E_min, E_max, E_n);
-    let intrinsic_params = Parameters::rank3(
-        Conditions {
+    let intrinsic_params = Parameters {
+        conditions: Conditions {
             t_kelvin: Sampling::Fixed(T),
             mu_ev: Sampling::Values(mu.clone()),
             omega_ev: Sampling::Fixed(0.0),
         },
-        [nk, nk],
-        [1.0, 0.0],
-        [0.0, 1.0],
-        [0.0, 1.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(1e-3),
-        },
-    );
+        kmesh: [nk, nk],
+        integration: Integration::Direct,
+    };
     let sigma = model
-        .intrinsic_nonlinear_hall(&intrinsic_params)
+        .intrinsic_nonlinear_hall(&intrinsic_params, [[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]])
         .unwrap()
         .conductivity;
     //开始绘制非线性电导

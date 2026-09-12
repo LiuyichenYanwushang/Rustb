@@ -43,25 +43,17 @@ fn main() {
     let E_n = 2000;
     let mu = Array1::linspace(E_min, E_max, E_n);
     let T = 30.0;
-    let params = Parameters::rank3(
-        Conditions {
+    let params = Parameters {
+        conditions: Conditions {
             t_kelvin: Sampling::Fixed(T),
             mu_ev: Sampling::Values(mu.clone()),
             omega_ev: Sampling::Fixed(0.0),
         },
-        [nk, nk],
-        [1.0, 0.0],
-        [0.0, 1.0],
-        [0.0, 1.0],
-        ResponseOptions {
-            integration: Integration::Direct,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(1e-3),
-        },
-    );
+        kmesh: [nk, nk],
+        integration: Integration::Direct,
+    };
     let sigma = model
-        .intrinsic_nonlinear_hall(&params)
+        .intrinsic_nonlinear_hall(&params, [[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]])
         .unwrap()
         .conductivity;
 

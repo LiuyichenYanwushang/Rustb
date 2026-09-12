@@ -52,7 +52,8 @@ use crate::error::{Result, TbError};
 use crate::thermodynamics::Occupation;
 
 use super::config::{
-    Integration, Parameters, ResponseAxis, mesh_array, occupation_for, validate_sorted,
+    Integration, Parameters, ResponseAxis, direction_matrix, mesh_array, occupation_for,
+    validate_broadening, validate_direction_values, validate_sorted,
 };
 use super::energy_cut::{integrate_fermi_cut_2d, integrate_fermi_cut_3d};
 use super::kernel::quadrature_occupied_geometry_simplex;
@@ -72,7 +73,7 @@ pub struct HallConductivityResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::response::{BerryCurvature, Conditions, FieldSymmetry, ResponseOptions};
+    use crate::response::{BerryCurvature, Conditions};
     use crate::{HasRMatrix, NoRMatrix};
 
     #[test]
@@ -124,31 +125,32 @@ mod tests {
                     .assign(down.rmatrix.as_array4());
                 spinful.rmatrix = R::from_array(position);
             }
-            let mut params = Parameters::rank2(
-                Conditions::fixed(0.0, -1.4, 0.0),
-                [11, 13],
-                [1.0, 0.0],
-                [0.0, 1.0],
-                ResponseOptions {
-                    integration: Integration::Direct,
-                    spin: None,
-                    field_symmetry: FieldSymmetry::Ordered,
-                    eta_ev: Some(0.05),
-                },
-            );
+            let mut params = Parameters::<2> {
+                conditions: Conditions::fixed(0.0, -1.4, 0.0),
+                kmesh: [11, 13],
+                integration: Integration::Direct,
+            };
+            let directions = [[1.0, 0.0], [0.0, 1.0]];
+            let eta_ev = 0.05;
             for integration in [Integration::Direct, Integration::EnergyCut] {
                 params.integration = integration;
-                params.spin = None;
-                let up_response = up.hall_conductivity(&params).unwrap().single().unwrap();
-                let down_response = down.hall_conductivity(&params).unwrap().single().unwrap();
-                let charge = spinful
-                    .hall_conductivity(&params)
+                let up_response = up
+                    .hall_conductivity(&params, directions, eta_ev, None)
                     .unwrap()
                     .single()
                     .unwrap();
-                params.spin = Some(SpinDirection::Z);
+                let down_response = down
+                    .hall_conductivity(&params, directions, eta_ev, None)
+                    .unwrap()
+                    .single()
+                    .unwrap();
+                let charge = spinful
+                    .hall_conductivity(&params, directions, eta_ev, None)
+                    .unwrap()
+                    .single()
+                    .unwrap();
                 let spin = spinful
-                    .hall_conductivity(&params)
+                    .hall_conductivity(&params, directions, eta_ev, Some(SpinDirection::Z))
                     .unwrap()
                     .single()
                     .unwrap();
@@ -157,19 +159,23 @@ mod tests {
                 assert!((charge - (up_response + down_response)).abs() < 1e-10);
                 assert!((spin - 0.5 * (up_response - down_response)).abs() < 1e-10);
                 assert!(matches!(
-                    up.hall_conductivity(&params),
+                    up.hall_conductivity(&params, directions, eta_ev, Some(SpinDirection::Z)),
                     Err(TbError::SpinNotAllowed(SpinDirection::Z))
                 ));
             }
 
             let points = array![[0.19, 0.31], [0.37, 0.23]];
             for k in points.rows() {
-                params.spin = None;
-                let up_bands = up.berry_curvature_at(&k, &params).unwrap();
-                let down_bands = down.berry_curvature_at(&k, &params).unwrap();
-                let charge = spinful.berry_curvature_at(&k, &params).unwrap();
-                params.spin = Some(SpinDirection::Z);
-                let spin = spinful.berry_curvature_at(&k, &params).unwrap();
+                let up_bands = up.berry_curvature_at(&k, directions, eta_ev, None).unwrap();
+                let down_bands = down
+                    .berry_curvature_at(&k, directions, eta_ev, None)
+                    .unwrap();
+                let charge = spinful
+                    .berry_curvature_at(&k, directions, eta_ev, None)
+                    .unwrap();
+                let spin = spinful
+                    .berry_curvature_at(&k, directions, eta_ev, Some(SpinDirection::Z))
+                    .unwrap();
                 let mut expected: Vec<_> = [(&up_bands, 0.5), (&down_bands, -0.5)]
                     .into_iter()
                     .flat_map(|(bands, factor)| {
@@ -188,16 +194,25 @@ mod tests {
                     assert!((spin.berry_curvature[band] - spin_berry).abs() < 1e-10);
                 }
                 assert!(matches!(
-                    up.berry_curvature_at(&k, &params),
+                    up.berry_curvature_at(&k, directions, eta_ev, Some(SpinDirection::Z)),
                     Err(TbError::SpinNotAllowed(SpinDirection::Z))
                 ));
             }
-            params.spin = None;
-            let up_values = up.occupied_berry_curvature_on(&points, &params).unwrap();
-            let down_values = down.occupied_berry_curvature_on(&points, &params).unwrap();
-            params.spin = Some(SpinDirection::Z);
+            let conditions = Conditions::fixed(0.0, -1.4, 0.0);
+            let up_values = up
+                .occupied_berry_curvature_on(&points, &conditions, directions, eta_ev, None)
+                .unwrap();
+            let down_values = down
+                .occupied_berry_curvature_on(&points, &conditions, directions, eta_ev, None)
+                .unwrap();
             let values = spinful
-                .occupied_berry_curvature_on(&points, &params)
+                .occupied_berry_curvature_on(
+                    &points,
+                    &conditions,
+                    directions,
+                    eta_ev,
+                    Some(SpinDirection::Z),
+                )
                 .unwrap();
             assert!(
                 (&values - &((&up_values - &down_values) * 0.5))
@@ -212,8 +227,15 @@ mod tests {
 
 impl HallConductivityResult {
     /// The scalar value of a single-point calculation.
+    ///
+    /// `None` for a sampled axis, including a one-element series, and for an
+    /// empty result: the fields are public, so an empty `Fixed` result is
+    /// constructible even though no entry point produces one.
     pub fn single(&self) -> Option<f64> {
-        self.axis.is_fixed().then(|| self.conductivity[0])
+        self.conductivity
+            .first()
+            .copied()
+            .filter(|_| self.axis.is_fixed())
     }
 }
 
@@ -303,38 +325,52 @@ pub(crate) fn integrate_occupied_geometry(
 }
 
 impl<const DIM: usize, R: RMatrixData> Model<true, DIM, R> {
-    /// Evaluate charge or spin Hall conductivity using the unified
-    /// [`Parameters`] configuration.
+    /// Evaluate charge or spin Hall conductivity.
     ///
-    /// Reads `conditions` (at most one axis sampled), `kmesh`,
-    /// `direction` (rank 2), `eta_ev`, `spin` and `integration`;
-    /// `field_symmetry` is ignored and
-    /// `omega_ev` must be `Sampling::Fixed(0.0)` because the response is DC.
-    /// The returned array has one value per sample of the sampled axis.
-    /// Eigenstates, velocity kernels and band tracking are prepared once;
-    /// weighting and integration still run for each sample. Temperature scans
-    /// repeat the energy cuts and convolution on shared vertices. Energy-cut
-    /// integration requires an ascending sampled chemical potential.
-    pub fn hall_conductivity(&self, params: &Parameters<DIM>) -> Result<HallConductivityResult> {
-        self.hall_conductivity_impl(params, |direction| Ok(self.build_spin_matrix(direction)))
+    /// `directions[0]` and `directions[1]` are the two tensor indices and
+    /// `eta_ev` broadens the Berry-curvature denominator; `spin` selects the
+    /// spin current (`None` = charge current) and is converted into one model
+    /// spin matrix shared by every k-point. `params` carries the thermodynamic
+    /// `conditions` (at most one axis sampled), the `kmesh` and `integration`.
+    ///
+    /// `conditions.omega_ev` must be `Sampling::Fixed(0.0)` because the
+    /// response is DC. The returned array has one value per sample of the
+    /// sampled axis. Eigenstates, velocity kernels and band tracking are
+    /// prepared once; weighting and integration still run for each sample.
+    /// Temperature scans repeat the energy cuts and convolution on shared
+    /// vertices. Energy-cut integration requires an ascending sampled chemical
+    /// potential.
+    pub fn hall_conductivity(
+        &self,
+        params: &Parameters<DIM>,
+        directions: [[f64; DIM]; 2],
+        eta_ev: f64,
+        spin: Option<SpinDirection>,
+    ) -> Result<HallConductivityResult> {
+        self.hall_conductivity_impl(params, directions, eta_ev, spin, |direction| {
+            Ok(self.build_spin_matrix(direction))
+        })
     }
 }
 
 impl<const DIM: usize, R: RMatrixData> Model<false, DIM, R> {
-    /// Evaluate charge Hall conductivity using the unified [`Parameters`]
-    /// configuration. A nonempty `spin` request returns [`TbError::SpinNotAllowed`].
+    /// Evaluate charge Hall conductivity.
     ///
-    /// Reads `conditions` (at most one axis sampled), `kmesh`,
-    /// `direction` (rank 2), `eta_ev` and `integration`;
-    /// `field_symmetry` is ignored and
-    /// `omega_ev` must be `Sampling::Fixed(0.0)` because the response is DC.
-    /// The returned array has one value per sample of the sampled axis.
-    /// Eigenstates, velocity kernels and band tracking are prepared once;
-    /// weighting and integration still run for each sample. Temperature scans
-    /// repeat the energy cuts and convolution on shared vertices. Energy-cut
-    /// integration requires an ascending sampled chemical potential.
-    pub fn hall_conductivity(&self, params: &Parameters<DIM>) -> Result<HallConductivityResult> {
-        self.hall_conductivity_impl(params, |direction| Err(TbError::SpinNotAllowed(direction)))
+    /// Identical to the spinful entry point except that a nonempty `spin`
+    /// request returns [`TbError::SpinNotAllowed`]: a model without spin has no
+    /// spin current. See
+    /// [`Model::<true, DIM, R>::hall_conductivity`] for the remaining argument
+    /// contract.
+    pub fn hall_conductivity(
+        &self,
+        params: &Parameters<DIM>,
+        directions: [[f64; DIM]; 2],
+        eta_ev: f64,
+        spin: Option<SpinDirection>,
+    ) -> Result<HallConductivityResult> {
+        self.hall_conductivity_impl(params, directions, eta_ev, spin, |direction| {
+            Err(TbError::SpinNotAllowed(direction))
+        })
     }
 }
 
@@ -342,19 +378,21 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     fn hall_conductivity_impl(
         &self,
         params: &Parameters<DIM>,
+        directions: [[f64; DIM]; 2],
+        eta_ev: f64,
+        spin: Option<SpinDirection>,
         build_spin: impl FnOnce(SpinDirection) -> Result<Array2<Complex<f64>>>,
     ) -> Result<HallConductivityResult> {
-        let resolved = params.validate_rank2()?;
+        let resolved = params.validate_grid_response()?;
         resolved.require_dc()?;
         self.validate()?;
-        let spin = params.spin;
         if !SPIN && let Some(direction) = spin {
-            return Err(crate::TbError::SpinNotAllowed(direction));
+            return Err(TbError::SpinNotAllowed(direction));
         }
         match params.integration {
             Integration::Direct | Integration::EnergyCut => {}
             Integration::Simplex => {
-                return Err(crate::TbError::InvalidResponseParameter {
+                return Err(TbError::InvalidResponseParameter {
                     parameter: "integration",
                     message:
                         "hall_conductivity supports Integration::Direct or EnergyCut, not Simplex"
@@ -362,11 +400,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 });
             }
         }
-        let eta = params.broadening()?;
+        validate_direction_values(&directions)?;
+        validate_broadening(eta_ev)?;
+        let eta = eta_ev;
         if params.integration == Integration::EnergyCut {
             validate_sorted(&resolved.chemical_potentials(), "mu_ev")?;
             if DIM != 2 && DIM != 3 {
-                return Err(crate::TbError::InvalidDimension {
+                return Err(TbError::InvalidDimension {
                     dim: DIM,
                     supported: vec![2, 3],
                 });
@@ -376,7 +416,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         let k_mesh = mesh_array(&params.kmesh);
         let determinant = self.lat.det()?;
-        let direction = &params.direction;
+        let direction = direction_matrix(&directions);
+        let direction = &direction;
         let dir_a = direction.row(0).to_owned();
         let dir_b = direction.row(1).to_owned();
         let samples = resolved.len();

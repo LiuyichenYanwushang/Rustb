@@ -370,21 +370,6 @@ mod tests {
             .expect("k-mesh must match the model dimension")
     }
 
-    /// Explicit response options with the charge-current, symmetrized-field
-    /// convention the old parameter defaults used.
-    fn response_options(
-        integration: Integration,
-        spin: Option<SpinDirection>,
-        eta_ev: Option<f64>,
-    ) -> ResponseOptions {
-        ResponseOptions {
-            integration,
-            spin,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev,
-        }
-    }
-
     /// Conditions that sample the chemical-potential axis at fixed temperature.
     fn mu_conditions(chemical_potentials: &Array1<f64>, temperature_kelvin: f64) -> Conditions {
         Conditions {
@@ -395,36 +380,33 @@ mod tests {
     }
 
     fn hall_values<const DIM: usize>(
-        calculate: impl FnOnce(&Parameters<DIM>) -> Result<HallConductivityResult>,
+        calculate: impl FnOnce(&Parameters<DIM>, [[f64; DIM]; 2]) -> Result<HallConductivityResult>,
         k_mesh: &Array1<usize>,
         direction_a: &Array1<f64>,
         direction_b: &Array1<f64>,
         chemical_potentials: &Array1<f64>,
         temperature_kelvin: f64,
-        spin: Option<SpinDirection>,
-        broadening: f64,
         integration: Integration,
     ) -> Result<Array1<f64>> {
-        let params = Parameters::rank2(
-            mu_conditions(chemical_potentials, temperature_kelvin),
-            fixed_k_mesh(k_mesh),
-            fixed_direction(direction_a),
-            fixed_direction(direction_b),
-            response_options(integration, spin, Some(broadening)),
-        );
-        Ok(calculate(&params)?.conductivity)
+        let params = Parameters {
+            conditions: mu_conditions(chemical_potentials, temperature_kelvin),
+            kmesh: fixed_k_mesh(k_mesh),
+            integration,
+        };
+        let directions = [fixed_direction(direction_a), fixed_direction(direction_b)];
+        Ok(calculate(&params, directions)?.conductivity)
     }
 
     fn hall_value<const DIM: usize>(
-        calculate: impl FnOnce(&Parameters<DIM>) -> Result<HallConductivityResult>,
+        calculate: impl FnOnce(&Parameters<DIM>, [[f64; DIM]; 2]) -> Result<HallConductivityResult>,
         k_mesh: &Array1<usize>,
         direction_a: &Array1<f64>,
         direction_b: &Array1<f64>,
         chemical_potential: f64,
         temperature_kelvin: f64,
-        spin: Option<SpinDirection>,
-        broadening: f64,
     ) -> Result<f64> {
+        // HEAD pinned this wrapper to the direct sum; energy-cut comparisons
+        // call `hall_values` with an explicit `Integration::EnergyCut`.
         Ok(hall_values(
             calculate,
             k_mesh,
@@ -432,8 +414,6 @@ mod tests {
             direction_b,
             &array![chemical_potential],
             temperature_kelvin,
-            spin,
-            broadening,
             Integration::Direct,
         )?[0])
     }
@@ -449,14 +429,10 @@ mod tests {
     where
         Model<SPIN, DIM, R>: BerryCurvature<DIM>,
     {
-        let params = Parameters::rank2(
-            Conditions::fixed(0.0, 0.0, 0.0),
-            [1; DIM],
-            fixed_direction(direction_a),
-            fixed_direction(direction_b),
-            response_options(Integration::Direct, spin, Some(broadening)),
-        );
-        model.berry_curvature_at(k, &params).unwrap()
+        let directions = [fixed_direction(direction_a), fixed_direction(direction_b)];
+        model
+            .berry_curvature_at(k, directions, broadening, spin)
+            .unwrap()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -473,15 +449,10 @@ mod tests {
     where
         Model<SPIN, DIM, R>: BerryCurvature<DIM>,
     {
-        let params = Parameters::rank2(
-            Conditions::fixed(temperature_kelvin, chemical_potential, 0.0),
-            [1; DIM],
-            fixed_direction(direction_a),
-            fixed_direction(direction_b),
-            response_options(Integration::Direct, spin, Some(broadening)),
-        );
+        let conditions = Conditions::fixed(temperature_kelvin, chemical_potential, 0.0);
+        let directions = [fixed_direction(direction_a), fixed_direction(direction_b)];
         model
-            .occupied_berry_curvature_on(k_points, &params)
+            .occupied_berry_curvature_on(k_points, &conditions, directions, broadening, spin)
             .unwrap()
     }
 
@@ -515,23 +486,33 @@ mod tests {
         temperature_kelvin: f64,
         integration: Integration,
     ) -> Result<Array1<f64>> {
-        let params = Parameters::rank3(
-            mu_conditions(
+        let params = Parameters {
+            conditions: mu_conditions(
                 chemical_potentials,
                 nonlinear_temperature(temperature_kelvin, k_mesh, integration),
             ),
-            fixed_k_mesh(k_mesh),
+            kmesh: fixed_k_mesh(k_mesh),
+            integration,
+        };
+        let directions = [
             fixed_direction(current),
             fixed_direction(field_1),
             fixed_direction(field_2),
-            response_options(integration, None, None),
-        );
-        Ok(model.intrinsic_nonlinear_hall(&params)?.conductivity)
+        ];
+        Ok(model
+            .intrinsic_nonlinear_hall(&params, directions)?
+            .conductivity)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn extrinsic_nonlinear_values<const DIM: usize>(
-        calculate: impl FnOnce(&Parameters<DIM>) -> Result<NonlinearHallResult>,
+        calculate: impl FnOnce(
+            &Parameters<DIM>,
+            [[f64; DIM]; 3],
+            f64,
+            Option<SpinDirection>,
+            FieldSymmetry,
+        ) -> Result<NonlinearHallResult>,
         k_mesh: &Array1<usize>,
         current: &Array1<f64>,
         field_1: &Array1<f64>,
@@ -544,8 +525,8 @@ mod tests {
         integration: Integration,
         field_symmetry: FieldSymmetry,
     ) -> Result<Array1<f64>> {
-        let params = Parameters::rank3(
-            Conditions {
+        let params = Parameters {
+            conditions: Conditions {
                 t_kelvin: Sampling::Fixed(nonlinear_temperature(
                     temperature_kelvin,
                     k_mesh,
@@ -554,18 +535,15 @@ mod tests {
                 mu_ev: Sampling::Values(chemical_potentials.clone()),
                 omega_ev: Sampling::Fixed(frequency),
             },
-            fixed_k_mesh(k_mesh),
+            kmesh: fixed_k_mesh(k_mesh),
+            integration,
+        };
+        let directions = [
             fixed_direction(current),
             fixed_direction(field_1),
             fixed_direction(field_2),
-            ResponseOptions {
-                integration,
-                spin,
-                field_symmetry,
-                eta_ev: Some(broadening),
-            },
-        );
-        Ok(calculate(&params)?.conductivity)
+        ];
+        Ok(calculate(&params, directions, broadening, spin, field_symmetry)?.conductivity)
     }
 
     fn write_txt(data: Array2<f64>, output: &str) -> std::io::Result<()> {
@@ -867,25 +845,21 @@ mod tests {
         let kmesh = array![100, 100];
         let mu = -1.0;
         let a1 = hall_value(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
             &dir_2,
             &dir_1,
             mu,
             T,
-            spin,
-            eta,
         )
         .unwrap();
         let a2 = hall_values(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
             &dir_2,
             &dir_1,
             &array![mu],
             T,
-            spin,
-            eta,
             Integration::Direct,
         )
         .unwrap()[0];
@@ -1001,14 +975,12 @@ mod tests {
 
         let start = Instant::now(); // 开始计时
         let conductivity = hall_value(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
             &dir_1,
             &dir_2,
             mu,
             T,
-            spin,
-            eta,
         )
         .unwrap();
         let end = Instant::now(); // 结束计时
@@ -1023,14 +995,12 @@ mod tests {
         let mu = Array1::linspace(-2.0, 2.0, 101);
         let start = Instant::now(); // 开始计时
         let conductivity_mu = hall_values(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
             &dir_1,
             &dir_2,
             &mu,
             T,
-            spin,
-            eta,
             Integration::Direct,
         )
         .unwrap();
@@ -1045,14 +1015,12 @@ mod tests {
         );
         println!("function_a took {} seconds", duration.as_secs_f64()); // 输出执行时间
         let conductivity = hall_value(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
             &dir_1,
             &dir_2,
             -2.0,
             T,
-            spin,
-            eta,
         )
         .unwrap();
         assert!(
@@ -1062,14 +1030,12 @@ mod tests {
             conductivity
         );
         let conductivity = hall_value(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
             &dir_1,
             &dir_2,
             2.0,
             T,
-            spin,
-            eta,
         )
         .unwrap();
         assert!(
@@ -1096,14 +1062,12 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
         let conductivity = hall_value(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
             &dir_1,
             &dir_2,
             mu,
             T,
-            spin,
-            eta,
         )
         .unwrap();
         let end = Instant::now(); // 结束计时
@@ -1432,14 +1396,12 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
         let (_eval, _evec) = model.solve_onek(&arr1(&[0.3, 0.5]));
         let _conductivity = hall_value(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
             &dir_1,
             &dir_2,
             mu,
             T,
-            spin,
-            eta,
         );
         //println!("{}",conductivity/(2.0*PI));
         //开始计算边缘态, 首先是zigsag态
@@ -1483,18 +1445,19 @@ mod tests {
         let dir_1 = arr1(&[1.0, 0.0]);
         let dir_2 = arr1(&[0.0, 1.0]);
         let dir_3 = arr1(&[1.0, 0.0]);
-        let og = 0.0;
         let mu = Array1::linspace(E_min, E_max, E_n);
         let T = 300.0;
         let sigma = extrinsic_nonlinear_values(
-            |p| model.extrinsic_nonlinear_hall(p),
+            |p, directions, broadening, spin, field_symmetry| {
+                model.extrinsic_nonlinear_hall(p, directions, broadening, spin, field_symmetry)
+            },
             &kmesh,
             &dir_1,
             &dir_2,
             &dir_3,
             &mu,
             T,
-            og,
+            0.0,
             None,
             1e-5,
             Integration::Direct,
@@ -1685,14 +1648,12 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
         let conductivity = hall_value(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
             &dir_1,
             &dir_2,
             mu,
             T,
-            spin,
-            eta,
         )
         .unwrap();
         let end = Instant::now(); // 结束计时
@@ -1703,14 +1664,12 @@ mod tests {
         let kmesh = arr1(&[nk, nk]);
         let start = Instant::now(); // 开始计时
         let conductivity = hall_value(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
             &dir_1,
             &dir_2,
             mu,
             T,
-            spin,
-            eta,
         )
         .unwrap();
         let end = Instant::now(); // 结束计时
@@ -1945,18 +1904,19 @@ mod tests {
         let E_min = -3.0;
         let E_max = 3.0;
         let E_n = 1000;
-        let og = 0.0;
         let mu = Array1::linspace(E_min, E_max, E_n);
         let T = 30.0;
         let sigma = extrinsic_nonlinear_values(
-            |p| model.extrinsic_nonlinear_hall(p),
+            |p, directions, broadening, spin, field_symmetry| {
+                model.extrinsic_nonlinear_hall(p, directions, broadening, spin, field_symmetry)
+            },
             &kmesh,
             &dir_1,
             &dir_2,
             &dir_3,
             &mu,
             T,
-            og,
+            0.0,
             None,
             1e-5,
             Integration::Direct,
@@ -2488,22 +2448,26 @@ mod tests {
         let field_2 = array![0.0, 0.0, 1.0];
         let k_mesh = array![12, 12, 12];
         let chemical_potentials = Array1::linspace(-1.0, 1.0, 21);
-        let params = Parameters::rank3(
-            mu_conditions(&chemical_potentials, 100.0),
-            [12, 12, 12],
-            fixed_direction(&current),
-            fixed_direction(&field_1),
-            fixed_direction(&field_2),
-            response_options(Integration::Direct, None, None),
-        );
+        let params = Parameters {
+            conditions: mu_conditions(&chemical_potentials, 100.0),
+            kmesh: [12, 12, 12],
+            integration: Integration::Direct,
+        };
         let public = model
-            .intrinsic_nonlinear_hall(&params)
+            .intrinsic_nonlinear_hall(
+                &params,
+                [
+                    fixed_direction(&current),
+                    fixed_direction(&field_1),
+                    fixed_direction(&field_2),
+                ],
+            )
             .unwrap()
             .conductivity;
 
         let k_points = gen_kmesh(&k_mesh).unwrap();
-        let (kernel, energies, _) = model
-            .berry_connection_dipole(&k_points, &field_1, &field_2, &current, None)
+        let (kernel, energies) = model
+            .berry_connection_dipole(&k_points, &field_1, &field_2, &current)
             .unwrap();
         let occupation = Occupation::FermiDirac {
             temperature_kelvin: 100.0,
@@ -2567,15 +2531,23 @@ mod tests {
             .is_ok()
         );
 
-        let zero_temperature = Parameters::rank3(
-            mu_conditions(&mu1, 0.0),
-            [4, 4, 4],
-            fixed_direction(&dx),
-            fixed_direction(&dy),
-            fixed_direction(&dz),
-            response_options(Integration::Direct, None, None),
+        let zero_temperature = Parameters {
+            conditions: mu_conditions(&mu1, 0.0),
+            kmesh: [4, 4, 4],
+            integration: Integration::Direct,
+        };
+        assert!(
+            model
+                .intrinsic_nonlinear_hall(
+                    &zero_temperature,
+                    [
+                        fixed_direction(&dx),
+                        fixed_direction(&dy),
+                        fixed_direction(&dz),
+                    ],
+                )
+                .is_err()
         );
-        assert!(model.intrinsic_nonlinear_hall(&zero_temperature).is_err());
     }
 
     /// 2. Intrinsic NLH: H-wave up/dn T‑odd via direct sum.
@@ -2799,26 +2771,22 @@ mod tests {
         for &nk in &[31, 51, 71, 101] {
             let kmesh = arr1(&[nk, nk]);
             let direct = hall_values(
-                |p| model.hall_conductivity(p),
+                |p, directions| model.hall_conductivity(p, directions, eta, None),
                 &kmesh,
                 &dx,
                 &dy,
                 &mu,
                 0.0,
-                None,
-                eta,
                 Integration::Direct,
             )
             .unwrap();
             let ec = hall_values(
-                |p| model.hall_conductivity(p),
+                |p, directions| model.hall_conductivity(p, directions, eta, None),
                 &kmesh,
                 &dx,
                 &dy,
                 &mu,
                 0.0,
-                None,
-                eta,
                 Integration::EnergyCut,
             )
             .unwrap();
@@ -2842,50 +2810,42 @@ mod tests {
         let kmesh = arr1(&[51, 51]);
 
         let d_dir = hall_values(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, None),
             &kmesh,
             &dx,
             &dy,
             &mu,
             0.0,
-            None,
-            eta,
             Integration::Direct,
         )
         .unwrap();
         let d_ec = hall_values(
-            |p| model.hall_conductivity(p),
+            |p, directions| model.hall_conductivity(p, directions, eta, None),
             &kmesh,
             &dx,
             &dy,
             &mu,
             0.0,
-            None,
-            eta,
             Integration::EnergyCut,
         )
         .unwrap();
         let tr_dir = hall_values(
-            |p| model_tr.hall_conductivity(p),
+            |p, directions| model_tr.hall_conductivity(p, directions, eta, None),
             &kmesh,
             &dx,
             &dy,
             &mu,
             0.0,
-            None,
-            eta,
             Integration::Direct,
         )
         .unwrap();
         let tr_ec = hall_values(
-            |p| model_tr.hall_conductivity(p),
+            |p, directions| model_tr.hall_conductivity(p, directions, eta, None),
             &kmesh,
             &dx,
             &dy,
             &mu,
             0.0,
-            None,
-            eta,
             Integration::EnergyCut,
         )
         .unwrap();
@@ -2921,7 +2881,9 @@ mod tests {
         let kmesh = arr1(&[31, 31]);
 
         let d_dir = extrinsic_nonlinear_values(
-            |p| model.extrinsic_nonlinear_hall(p),
+            |p, directions, broadening, spin, field_symmetry| {
+                model.extrinsic_nonlinear_hall(p, directions, broadening, spin, field_symmetry)
+            },
             &kmesh,
             &dx,
             &dy,
@@ -2936,7 +2898,9 @@ mod tests {
         )
         .unwrap();
         let d_tr = extrinsic_nonlinear_values(
-            |p| model_tr.extrinsic_nonlinear_hall(p),
+            |p, directions, broadening, spin, field_symmetry| {
+                model_tr.extrinsic_nonlinear_hall(p, directions, broadening, spin, field_symmetry)
+            },
             &kmesh,
             &dx,
             &dy,
@@ -3333,26 +3297,22 @@ mod tests {
         for &nk in &[8, 10] {
             let kmesh = arr1(&[nk, nk, nk]);
             let direct = hall_values(
-                |p| model.hall_conductivity(p),
+                |p, directions| model.hall_conductivity(p, directions, eta, None),
                 &kmesh,
                 &dx,
                 &dy,
                 &mu,
                 0.0,
-                None,
-                eta,
                 Integration::Direct,
             )
             .unwrap();
             let ec = hall_values(
-                |p| model.hall_conductivity(p),
+                |p, directions| model.hall_conductivity(p, directions, eta, None),
                 &kmesh,
                 &dx,
                 &dy,
                 &mu,
                 0.0,
-                None,
-                eta,
                 Integration::EnergyCut,
             )
             .unwrap();
@@ -3401,26 +3361,22 @@ mod tests {
         for &nk in &[10, 14] {
             let kmesh = arr1(&[nk, nk, 4]); // fewer kz points (Ω is kz-independent)
             let direct = hall_values(
-                |p| model.hall_conductivity(p),
+                |p, directions| model.hall_conductivity(p, directions, eta, None),
                 &kmesh,
                 &dx,
                 &dy,
                 &mu,
                 0.0,
-                None,
-                eta,
                 Integration::Direct,
             )
             .unwrap();
             let ec = hall_values(
-                |p| model.hall_conductivity(p),
+                |p, directions| model.hall_conductivity(p, directions, eta, None),
                 &kmesh,
                 &dx,
                 &dy,
                 &mu,
                 0.0,
-                None,
-                eta,
                 Integration::EnergyCut,
             )
             .unwrap();

@@ -435,103 +435,130 @@ let model_with_r: Model<false, 3, HasRMatrix> =
 
 ## Response calculations
 
-Every high-level response method shares a single configuration type,
-`Parameters<DIM>`. It fixes a thermodynamic point — `conditions.t_kelvin`,
-`conditions.mu_ev`, `conditions.omega_ev` — and may sample **exactly one** of
-those three axes. Each axis is either `Sampling::Fixed(value)` or
-`Sampling::Values(series)`; a sampled axis reuses one k-mesh preparation, so
-eigenstates, velocity kernels and band tracking are computed once no matter how
-many samples are requested. Nothing is defaulted: `integration`, `spin`,
-`field_symmetry` and `eta_ev` are always stated.
-
-DC responses and per-k-point Berry/geometry methods require
-`omega_ev: Sampling::Fixed(0.0)`. Optical and quantum-geometry methods, like
-intrinsic nonlinear Hall, require `spin: None`. Reusing the k-mesh preparation
-removes repeated diagonalization; weighting and integration still run for each
-sample.
-
-Hall and extrinsic nonlinear Hall have separate implementations for spinless
-and spinful models. Wrappers generic over `const SPIN: bool` must specialize
-their calls or supply their own trait bound for dispatch.
+The Brillouin-zone responses share one small grid configuration,
+`Parameters<DIM>`, holding exactly three fields:
 
 ```rust
+pub struct Parameters<const DIM: usize> {
+    pub conditions: Conditions,      // T, mu, omega; at most one sampled
+    pub kmesh: [usize; DIM],         // uniform k-mesh
+    pub integration: Integration,    // Direct / Simplex / EnergyCut
+}
+```
+
+Everything a single method chooses is an argument of that method — the
+projection directions, `eta_ev`, and (where a spin current exists) `spin` and
+`field_symmetry`. A caller therefore never states a value the method ignores.
+Nothing is defaulted: every argument is required.
+
+`conditions` fixes a thermodynamic point and may sample **exactly one** of its
+three axes. Each axis is either `Sampling::Fixed(value)` or
+`Sampling::Values(series)`; a sampled axis reuses one k-mesh preparation, so
+eigenstates, velocity kernels and band tracking are computed once no matter how
+many samples are requested.
+
+Directions are fixed-size arrays whose length is checked at compile time:
+`[[f64; DIM]; 2]` for rank-two responses and `[[f64; DIM]; 3]` for rank-three
+responses.
+
+DC responses require `omega_ev: Sampling::Fixed(0.0)`. Optical,
+quantum-geometry and intrinsic nonlinear Hall are charge-only: no `spin`
+argument exists for them. Hall and extrinsic nonlinear Hall have separate
+implementations for spinless and spinful models; a spinless model returns
+`TbError::SpinNotAllowed` for `spin: Some(_)`. Wrappers generic over
+`const SPIN: bool` must specialize their calls.
+
+```rust
+// Fixed T and mu, sweeping the chemical potential through the Hall response.
 let mu = Array1::linspace(-1.0, 1.0, 201);
-let conditions = Conditions {
-    t_kelvin: Sampling::Fixed(20.0),
-    mu_ev: Sampling::Values(mu),
-    omega_ev: Sampling::Fixed(0.0),
+let hall = Parameters {
+    conditions: Conditions {
+        t_kelvin: Sampling::Fixed(20.0),
+        mu_ev: Sampling::Values(mu),
+        omega_ev: Sampling::Fixed(0.0),
+    },
+    kmesh: [101, 101],
+    integration: Integration::EnergyCut,
 };
+let hall_result = model.hall_conductivity(&hall, [[1.0, 0.0], [0.0, 1.0]], 1e-3, None)?;
 
-let hall = Parameters::rank2(
-    conditions.clone(),
-    [101, 101],
-    [1.0, 0.0],
-    [0.0, 1.0],
-    ResponseOptions {
-        integration: Integration::EnergyCut,
-        spin: None,
-        field_symmetry: FieldSymmetry::Symmetrized,
-        eta_ev: Some(1e-3),
+// Same grid, quantum geometry instead: there is no spin argument at all, so
+// the call cannot misstate one. The trailing value is the denominator width.
+let geometry = Parameters {
+    conditions: Conditions {
+        t_kelvin: Sampling::Fixed(20.0),
+        mu_ev: Sampling::Fixed(0.0),
+        omega_ev: Sampling::Fixed(0.0),
     },
-);
-let hall_result = model.hall_conductivity(&hall)?;
+    kmesh: [101, 101],
+    integration: Integration::Simplex,
+};
+let geometry_result = model.quantum_geometry(&geometry, [[1.0, 0.0], [0.0, 1.0]], 1e-3)?;
 
-let geometry = Parameters::rank2(
-    conditions,
-    [101, 101],
-    [1.0, 0.0],
-    [0.0, 1.0],
-    ResponseOptions {
-        integration: Integration::Simplex,
-        spin: None,
-        field_symmetry: FieldSymmetry::Symmetrized,
-        eta_ev: Some(1e-3),
-    },
-);
-let geometry_result = model.quantum_geometry(&geometry)?;
-
-// fixed T and mu, sweeping omega
-let optical = Parameters::rank2(
-    Conditions {
+// Fixed T and mu, sweeping the photon frequency. The full ordered Cartesian
+// tensor has its own entry point; no sentinel direction matrix is involved.
+let optical = Parameters {
+    conditions: Conditions {
         t_kelvin: Sampling::Fixed(20.0),
         mu_ev: Sampling::Fixed(0.0),
         omega_ev: Sampling::Values(Array1::linspace(0.0, 4.0, 401)),
     },
-    [101, 101],
-    [1.0, 0.0],
-    [0.0, 1.0],
-    ResponseOptions {
-        integration: Integration::Simplex,
-        spin: None,
-        field_symmetry: FieldSymmetry::Symmetrized,
-        eta_ev: Some(1e-2),
-    },
-);
-let optical_result = model.optical_conductivity(&optical)?;
+    kmesh: [101, 101],
+    integration: Integration::Simplex,
+};
+let one_component = model.optical_conductivity(&optical, [[1.0, 0.0], [0.0, 1.0]], 1e-2)?;
+let full_tensor = model.optical_conductivity_tensor(&optical, 1e-2)?;
 ```
 
-For nonlinear Hall calculations, all tensor indices are current-first — row 0
-of the direction matrix is the current, rows 1-2 the fields:
+For nonlinear Hall calculations, all tensor indices are current-first — the
+three direction rows are `(current, field_1, field_2)`:
 
 ```rust
-let params = Parameters::rank3(
-    Conditions {
+let params = Parameters {
+    conditions: Conditions {
         t_kelvin: Sampling::Fixed(30.0),
         mu_ev: Sampling::Values(mu),
         omega_ev: Sampling::Fixed(0.0),
     },
-    [101, 101],
-    [1.0, 0.0], // current
-    [1.0, 0.0], // first field
-    [0.0, 1.0], // second field
-    ResponseOptions {
-        integration: Integration::EnergyCut,
-        spin: None,
-        field_symmetry: FieldSymmetry::Symmetrized,
-        eta_ev: Some(1e-3),
-    },
-);
-let nonlinear_result = model.intrinsic_nonlinear_hall(&params)?;
+    kmesh: [101, 101],
+    integration: Integration::EnergyCut,
+};
+let intrinsic = model.intrinsic_nonlinear_hall(
+    &params,
+    [
+        [1.0, 0.0], // current
+        [1.0, 0.0], // first field
+        [0.0, 1.0], // second field
+    ],
+)?;
+
+// The extrinsic response takes one spin current and one field-ordering
+// convention, both stated explicitly.
+let extrinsic = model.extrinsic_nonlinear_hall(
+    &params,
+    [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+    1e-3,
+    None,
+    FieldSymmetry::Symmetrized,
+)?;
+```
+
+Band-resolved methods take no thermodynamic state at all when they do not need
+one. Only the occupation-weighted helpers take a `Conditions`, and never a
+k-mesh or an integration algorithm:
+
+```rust
+// No temperature, chemical potential or k-mesh is involved.
+let bands = model.berry_curvature_at(&k, [[1.0, 0.0], [0.0, 1.0]], 1e-3, None)?;
+
+// Occupation weighting states the one fixed DC point it uses.
+let occupied = model.occupied_berry_curvature_on(
+    &k_points,
+    &Conditions::fixed(300.0, 0.0, 0.0),
+    [[1.0, 0.0], [0.0, 1.0]],
+    1e-3,
+    None,
+)?;
 ```
 
 Results use named fields such as `conductivity`, `metric`,

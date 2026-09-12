@@ -10,7 +10,6 @@
 use ndarray::array;
 use ndarray::{Array1, Array2, ArrayView1};
 
-use crate::SpinDirection;
 use crate::error::{Result, TbError};
 use crate::thermodynamics::Occupation;
 
@@ -146,6 +145,12 @@ impl Conditions {
         self.t_kelvin.validate("t_kelvin")?;
         self.mu_ev.validate("mu_ev")?;
         self.omega_ev.validate("omega_ev")?;
+        // Only the temperature axis is a temperature: a chemical potential and a
+        // photon frequency are legitimately negative. Every axis already had its
+        // finiteness checked above.
+        for index in 0..self.t_kelvin.len() {
+            validate_temperature(self.t_kelvin.value_at(index))?;
+        }
         let mut sampled: Vec<(&'static str, ResponseAxis)> = Vec::new();
         if let Sampling::Values(values) = &self.t_kelvin {
             sampled.push(("t_kelvin", ResponseAxis::Temperature(pack(values))));
@@ -312,159 +317,41 @@ impl ResolvedConditions {
     }
 }
 
-/// Explicit response options. Every field is stated by the caller; nothing is
-/// defaulted.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ResponseOptions {
-    /// Brillouin-zone integration algorithm.
-    pub integration: Integration,
-    /// Spin-current polarization; `None` selects the charge current. Optical,
-    /// quantum-geometry and intrinsic nonlinear Hall methods require `None`.
-    pub spin: Option<SpinDirection>,
-    /// Ordering convention of the two external-field indices. Read only by
-    /// `extrinsic_nonlinear_hall`.
-    pub field_symmetry: FieldSymmetry,
-    /// Non-negative energy-denominator broadening in eV. Required by every
-    /// entry point that broadens a denominator; `intrinsic_nonlinear_hall`
-    /// does not read it.
-    pub eta_ev: Option<f64>,
-}
-
-/// Fully specified input of a response calculation.
+/// Fully specified Brillouin-zone input of a response calculation.
 ///
 /// One structure is shared by `hall_conductivity`, `quantum_geometry`,
-/// `optical_conductivity`, `extrinsic_nonlinear_hall` and
-/// `intrinsic_nonlinear_hall`. Every field is required; no constructor fills
-/// a physical choice silently.
+/// `optical_conductivity`, `optical_conductivity_tensor`,
+/// `extrinsic_nonlinear_hall` and `intrinsic_nonlinear_hall`. It holds only
+/// what those methods genuinely share: the thermodynamic conditions, the
+/// k-mesh and the integration algorithm. Every field is required; no
+/// constructor fills a physical choice silently.
+///
+/// Choices read by a single method are function parameters of that method —
+/// the projection directions, `eta_ev`, `spin` and `field_symmetry` — so a
+/// caller never states a value the method ignores.
 #[derive(Clone, Debug)]
 pub struct Parameters<const DIM: usize> {
     /// The three physical axes; at most one is sampled.
     pub conditions: Conditions,
     /// Number of uniform samples along each reciprocal-lattice direction.
     pub kmesh: [usize; DIM],
-    /// Direction matrix with shape `(rank, DIM)`:
-    /// - `rank = 2` for rank-two tensors (Hall, quantum geometry, optical
-    ///   component): row 0 = first tensor index, row 1 = second tensor index.
-    /// - `rank = 3` for rank-three tensors (nonlinear Hall):
-    ///   row 0 = current direction, rows 1-2 = field directions.
-    pub direction: Array2<f64>,
-    /// Brillouin-zone integration algorithm.
+    /// Brillouin-zone integration algorithm. The accepted algorithms are
+    /// stated by each entry point: Hall and both nonlinear Hall responses
+    /// accept `Direct`/`EnergyCut`, while optical conductivity and quantum
+    /// geometry accept `Direct`/`Simplex`.
     pub integration: Integration,
-    /// Spin-current polarization. `None` selects the charge current. Optical,
-    /// quantum-geometry and intrinsic nonlinear Hall methods require `None`.
-    pub spin: Option<SpinDirection>,
-    /// Ordering convention for the two field indices of the extrinsic
-    /// nonlinear Hall response. Ignored by all other methods.
-    pub field_symmetry: FieldSymmetry,
-    /// Denominator broadening in eV, or `None` for a response that needs none.
-    pub eta_ev: Option<f64>,
 }
 
 impl<const DIM: usize> Parameters<DIM> {
-    /// Rank-two response from two direction vectors.
-    pub fn rank2(
-        conditions: Conditions,
-        kmesh: [usize; DIM],
-        direction_a: [f64; DIM],
-        direction_b: [f64; DIM],
-        options: ResponseOptions,
-    ) -> Self {
-        Self::from_direction(
-            conditions,
-            kmesh,
-            direction_matrix(&[direction_a, direction_b]),
-            options,
-        )
-    }
-
-    /// Rank-three response from a current and two field vectors. Row 0 is the
-    /// current, rows 1-2 the fields.
-    pub fn rank3(
-        conditions: Conditions,
-        kmesh: [usize; DIM],
-        current: [f64; DIM],
-        field_1: [f64; DIM],
-        field_2: [f64; DIM],
-        options: ResponseOptions,
-    ) -> Self {
-        Self::from_direction(
-            conditions,
-            kmesh,
-            direction_matrix(&[current, field_1, field_2]),
-            options,
-        )
-    }
-
-    fn from_direction(
-        conditions: Conditions,
-        kmesh: [usize; DIM],
-        direction: Array2<f64>,
-        options: ResponseOptions,
-    ) -> Self {
-        Self {
-            conditions,
-            kmesh,
-            direction,
-            integration: options.integration,
-            spin: options.spin,
-            field_symmetry: options.field_symmetry,
-            eta_ev: options.eta_ev,
-        }
-    }
-
-    /// Validate the fields every response reads regardless of tensor rank and
-    /// resolve the axes. Used by entry points whose direction matrix may be
-    /// empty, such as the full optical tensor.
-    pub(crate) fn validate_common(&self) -> Result<ResolvedConditions> {
-        validate_k_mesh(&self.kmesh)?;
-        self.resolve_conditions()
-    }
-
-    /// Validate the fields every rank-two response reads and resolve the axes.
-    pub(crate) fn validate_rank2(&self) -> Result<ResolvedConditions> {
-        validate_k_mesh(&self.kmesh)?;
-        validate_direction_matrix(&self.direction, 2, DIM)?;
-        self.resolve_conditions()
-    }
-
-    /// Validate the fields every rank-three response reads and resolve the axes.
-    pub(crate) fn validate_rank3(&self) -> Result<ResolvedConditions> {
-        validate_k_mesh(&self.kmesh)?;
-        validate_direction_matrix(&self.direction, 3, DIM)?;
-        self.resolve_conditions()
-    }
-
-    fn resolve_conditions(&self) -> Result<ResolvedConditions> {
-        let resolved = self.conditions.resolve()?;
-        for index in 0..resolved.len() {
-            validate_temperature(resolved.point(index).0)?;
-        }
-        Ok(resolved)
-    }
-
-    /// Reject a spin-current request for a method that only computes charge
-    /// response, even when the model itself is spinful.
-    pub(crate) fn require_charge_current(&self) -> Result<()> {
-        if self.spin.is_some() {
-            return Err(TbError::InvalidResponseParameter {
-                parameter: "spin",
-                message: "this response supports charge current only; spin must be None".into(),
-            });
-        }
-        Ok(())
-    }
-
-    /// The explicitly requested denominator broadening.
+    /// Validate the fields every Brillouin-zone response reads and resolve the
+    /// axes.
     ///
-    /// A method that broadens a denominator must ask for it; leaving
-    /// `eta_ev` unset there is an error rather than a silent value.
-    pub(crate) fn broadening(&self) -> Result<f64> {
-        let eta = self.eta_ev.ok_or(TbError::InvalidResponseParameter {
-            parameter: "eta_ev",
-            message: "this response broadens a denominator and requires an explicit eta_ev".into(),
-        })?;
-        validate_broadening(eta)?;
-        Ok(eta)
+    /// Projection directions are method parameters and are validated by the
+    /// entry point that receives them; this call validates the k-mesh and the
+    /// thermodynamic conditions only.
+    pub(crate) fn validate_grid_response(&self) -> Result<ResolvedConditions> {
+        validate_k_mesh(&self.kmesh)?;
+        self.conditions.resolve()
     }
 }
 
@@ -500,26 +387,10 @@ pub(crate) fn validate_temperature(temperature: f64) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_direction_matrix(
-    direction: &Array2<f64>,
-    rank: usize,
-    dim: usize,
+pub(crate) fn validate_direction_values<const N: usize, const DIM: usize>(
+    directions: &[[f64; DIM]; N],
 ) -> Result<()> {
-    if direction.nrows() != rank {
-        return Err(TbError::DimensionMismatch {
-            context: "direction".into(),
-            expected: rank,
-            found: direction.nrows(),
-        });
-    }
-    if direction.ncols() != dim {
-        return Err(TbError::DimensionMismatch {
-            context: "direction".into(),
-            expected: dim,
-            found: direction.ncols(),
-        });
-    }
-    for row in direction.rows() {
+    for row in directions {
         if row.iter().any(|value| !value.is_finite()) {
             return Err(TbError::InvalidResponseParameter {
                 parameter: "direction",
@@ -569,7 +440,7 @@ pub(crate) fn mesh_array<const DIM: usize>(k_mesh: &[usize; DIM]) -> Array1<usiz
 pub(crate) fn validate_broadening(broadening: f64) -> Result<()> {
     if !broadening.is_finite() || broadening < 0.0 {
         return Err(TbError::InvalidResponseParameter {
-            parameter: "broadening",
+            parameter: "eta_ev",
             message: "must be finite and non-negative".into(),
         });
     }
@@ -637,15 +508,6 @@ mod tests {
     use super::*;
     use ndarray::{array, s};
 
-    fn options(integration: Integration) -> ResponseOptions {
-        ResponseOptions {
-            integration,
-            spin: None,
-            field_symmetry: FieldSymmetry::Symmetrized,
-            eta_ev: Some(1e-3),
-        }
-    }
-
     #[test]
     fn sorted_validation_handles_strided_arrays() {
         let descending = array![0.0, 1.0, 2.0].slice_move(s![..;-1]);
@@ -653,38 +515,52 @@ mod tests {
     }
 
     #[test]
-    fn direction_matrix_builds_rows_and_rank3_validation() {
-        let matrix = direction_matrix::<3, 2>(&[[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]);
-        assert_eq!(matrix.dim(), (3, 2));
-        assert!(validate_direction_matrix(&matrix, 3, 2).is_ok());
-        assert!(validate_direction_matrix(&matrix, 2, 2).is_err());
+    fn direction_components_must_be_finite_and_nonzero() {
+        // Rank and width are compile-time properties now, so these two value
+        // checks are the whole runtime direction validation.
+        assert!(validate_direction_values(&[[1.0, 0.0], [0.0, 1.0]]).is_ok());
+        for malformed in [
+            [[f64::NAN, 0.0], [0.0, 1.0]],
+            [[f64::INFINITY, 0.0], [0.0, 1.0]],
+            [[f64::NEG_INFINITY, 0.0], [0.0, 1.0]],
+            [[0.0, 0.0], [0.0, 1.0]],
+            [[1.0, 0.0], [0.0, 0.0]],
+        ] {
+            assert!(
+                matches!(
+                    validate_direction_values(&malformed),
+                    Err(TbError::InvalidResponseParameter {
+                        parameter: "direction",
+                        ..
+                    })
+                ),
+                "{malformed:?} must be rejected"
+            );
+        }
+        // One dimension has only one axis, which is still a legal direction.
+        assert!(validate_direction_values(&[[1.0], [1.0]]).is_ok());
     }
 
     #[test]
-    fn parameters_rank2_rank3_construct_direction_rows() {
-        let conditions = Conditions::fixed(300.0, 0.0, 0.0);
-        let rank2 = Parameters::rank2(
-            conditions.clone(),
-            [4, 4],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            options(Integration::Direct),
-        );
-        assert_eq!(rank2.direction.dim(), (2, 2));
-        assert!(rank2.validate_rank2().is_ok());
+    fn parameter_structure_holds_only_shared_grid_input() {
+        let parameters = Parameters::<2> {
+            conditions: Conditions::fixed(300.0, 0.0, 0.0),
+            kmesh: [4, 4],
+            integration: Integration::Direct,
+        };
+        let resolved = parameters.validate_grid_response().unwrap();
+        assert!(resolved.axis.is_fixed());
+        assert_eq!(resolved.point(0), (300.0, 0.0, 0.0));
 
-        let rank3 = Parameters::rank3(
-            conditions,
-            [4, 4],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            [1.0, 1.0],
-            options(Integration::EnergyCut),
-        );
-        assert_eq!(rank3.direction.dim(), (3, 2));
-        assert!(rank3.validate_rank3().is_ok());
-        // A rank-2 validation must reject the rank-3 direction matrix.
-        assert!(rank3.validate_rank2().is_err());
+        let invalid = Parameters::<2> {
+            conditions: Conditions::fixed(300.0, 0.0, 0.0),
+            kmesh: [0, 4],
+            integration: Integration::Direct,
+        };
+        assert!(matches!(
+            invalid.validate_grid_response(),
+            Err(TbError::InvalidKmeshDimensions(_))
+        ));
     }
 
     #[test]
@@ -854,26 +730,24 @@ mod tests {
     #[test]
     fn invalid_temperatures_are_rejected_for_fixed_and_sampled_axes() {
         for invalid in [-1.0, f64::NAN, f64::INFINITY] {
-            let rank2 = Parameters::rank2(
-                Conditions::fixed(invalid, 0.0, 0.0),
-                [4, 4],
-                [1.0, 0.0],
-                [0.0, 1.0],
-                options(Integration::Direct),
-            );
-            let rank3 = Parameters::rank3(
-                Conditions {
+            let fixed = Parameters::<2> {
+                conditions: Conditions::fixed(invalid, 0.0, 0.0),
+                kmesh: [4, 4],
+                integration: Integration::Direct,
+            };
+            let sampled = Parameters::<2> {
+                conditions: Conditions {
                     t_kelvin: Sampling::Values(array![50.0, invalid]),
                     mu_ev: Sampling::Fixed(0.0),
                     omega_ev: Sampling::Fixed(0.0),
                 },
-                [4, 4],
-                [1.0, 0.0],
-                [0.0, 1.0],
-                [1.0, 1.0],
-                options(Integration::EnergyCut),
-            );
-            for rejected in [rank2.validate_rank2(), rank3.validate_rank3()] {
+                kmesh: [4, 4],
+                integration: Integration::EnergyCut,
+            };
+            for rejected in [
+                fixed.validate_grid_response(),
+                sampled.validate_grid_response(),
+            ] {
                 assert!(matches!(
                     rejected,
                     Err(TbError::InvalidResponseParameter {
@@ -886,37 +760,18 @@ mod tests {
     }
 
     #[test]
-    fn broadening_is_required_only_where_a_method_reads_it() {
-        let missing = Parameters::rank2(
-            Conditions::fixed(0.0, 0.0, 0.0),
-            [4, 4],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            ResponseOptions {
-                integration: Integration::Direct,
-                spin: None,
-                field_symmetry: FieldSymmetry::Symmetrized,
-                eta_ev: None,
-            },
-        );
-        assert!(missing.validate_rank2().is_ok());
-        assert!(matches!(
-            missing.broadening(),
-            Err(TbError::InvalidResponseParameter {
-                parameter: "eta_ev",
-                ..
-            })
-        ));
-
-        for invalid in [-1.0, f64::NAN] {
-            let mut params = missing.clone();
-            params.eta_ev = Some(invalid);
-            assert!(params.broadening().is_err());
+    fn broadening_is_validated_where_a_method_receives_it() {
+        for invalid in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(matches!(
+                validate_broadening(invalid),
+                Err(TbError::InvalidResponseParameter {
+                    parameter: "eta_ev",
+                    ..
+                })
+            ));
         }
-
-        let mut valid = missing;
-        valid.eta_ev = Some(2.5e-2);
-        assert_eq!(valid.broadening().unwrap(), 2.5e-2);
+        assert!(validate_broadening(0.0).is_ok());
+        assert!(validate_broadening(2.5e-2).is_ok());
     }
 
     #[test]
