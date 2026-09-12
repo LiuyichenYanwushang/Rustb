@@ -5,7 +5,7 @@ edition = "2024"
 
 categories = ["science"]
 description = "A package for calculating band, angle state, linear and nonlinear conductivities based on tight-binding models"
-exclude = ["target/", "target-pkg/", ".github/", "crate/", "tests/", "benches/*.txt", "CLAUDE.md", "AGENTS.md", "*_PLAN.md", ".claude/", ".codex/", ".agents/", ".cargo/", ".gitignore"]
+exclude = ["target/", "target-pkg/", ".github/", "crate/", "tests/", "benches/*.txt", "AGENTS.md", "*_PLAN.md", ".claude/", ".codex/", ".agents/", ".cargo/", ".gitignore"]
 keywords = ["tight-binding","physics","Rustb"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"

@@ -562,7 +562,7 @@ and BLAS backends must not be enabled together.
 ## 6. Delivery and acceptance
 
 Each milestone is separately reviewable and must update its unit tests,
-rustdoc, README, SKILLS, and CLAUDE notes with the public API. Existing generated
+rustdoc, README, SKILLS, and AGENTS notes with the public API. Existing generated
 PDF outputs are user-owned and are never included in these changes.
 
 The current delivery is accepted when milestones A–E, F1, and F2 compile and
