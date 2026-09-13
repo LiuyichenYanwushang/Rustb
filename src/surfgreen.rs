@@ -190,51 +190,7 @@ impl Kpath for SurfGreen {
         nk: usize,
     ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
         //! Generate a k-path from high-symmetry points for band structure plotting.
-        if self.dim_r == 0 {
-            return Err(TbError::ZeroDimKPathError);
-        }
-        let n_node: usize = path.len_of(Axis(0));
-        if self.dim_r != path.len_of(Axis(1)) {
-            return Err(TbError::PathLengthMismatch {
-                expected: self.dim_r,
-                actual: path.len_of(Axis(1)),
-            });
-        }
-        let k_metric = (self.lat.dot(&self.lat.t())).inv().unwrap();
-        let mut k_node = Array1::<f64>::zeros(n_node);
-        for n in 1..n_node {
-            let dk = &path.row(n) - &path.row(n - 1);
-            let a = k_metric.dot(&dk);
-            let dklen = dk.dot(&a).sqrt();
-            k_node[[n]] = k_node[[n - 1]] + dklen;
-        }
-        let mut node_index: Vec<usize> = vec![0];
-        for n in 1..n_node - 1 {
-            let frac = k_node[[n]] / k_node[[n_node - 1]];
-            let a = (frac * ((nk - 1) as f64).round()) as usize;
-            node_index.push(a)
-        }
-        node_index.push(nk - 1);
-        let mut k_dist = Array1::<f64>::zeros(nk);
-        let mut k_vec = Array2::<f64>::zeros((nk, self.dim_r));
-        //k_vec.slice_mut(s![0,..]).assign(&path.slice(s![0,..]));
-        k_vec.row_mut(0).assign(&path.row(0));
-        for n in 1..n_node {
-            let n_i = node_index[n - 1];
-            let n_f = node_index[n];
-            let kd_i = k_node[[n - 1]];
-            let kd_f = k_node[[n]];
-            let k_i = path.row(n - 1);
-            let k_f = path.row(n);
-            for j in n_i..n_f + 1 {
-                let frac: f64 = ((j - n_i) as f64) / ((n_f - n_i) as f64);
-                k_dist[[j]] = kd_i + frac * (kd_f - kd_i);
-                k_vec
-                    .row_mut(j)
-                    .assign(&((1.0 - frac) * &k_i + frac * &k_f));
-            }
-        }
-        Ok((k_vec, k_dist, k_node))
+        interpolate_k_path(&self.lat, self.dim_r, path, nk)
     }
 }
 
@@ -1058,5 +1014,130 @@ impl SurfGreen {
         fg.set_terminal("pdfcairo", &pdfname);
         fg.show().expect("Unable to draw heatmap");
         let _ = fg;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn surface_for_k_path() -> SurfGreen {
+        let mut model = Model::<false, 3>::tb_model(
+            array![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 2.0]],
+            array![[0.0, 0.0, 0.0]],
+            None,
+        )
+        .unwrap();
+        model.set_hop(1.0, 0, 0, &array![0, 0, 1], None);
+        SurfGreen::from_Model(&model, 2, 1e-3, None).unwrap()
+    }
+
+    #[test]
+    fn k_path_retains_short_first_and_last_segments() {
+        let surface = surface_for_k_path();
+        let path = array![
+            [0.25, 0.25],
+            [0.250000001, 0.250000001],
+            [1.0, 1.0],
+            [1.000000001, 1.000000001]
+        ];
+        for nk in [4, 11] {
+            let (points, distances, nodes) = surface.k_path(&path, nk).unwrap();
+            assert_eq!(points.dim(), (nk, 2));
+            assert!(points.iter().chain(distances.iter()).all(|x| x.is_finite()));
+            assert!(distances.windows(2).into_iter().all(|w| w[1] > w[0]));
+            assert_eq!(points.row(0), path.row(0));
+            assert_eq!(points.row(nk - 1), path.row(3));
+            for (i, node) in path.rows().into_iter().enumerate() {
+                let index = points.rows().into_iter().position(|p| p == node).unwrap();
+                assert_eq!(distances[index], nodes[i]);
+                // Along (t, t), this surface's reciprocal metric gives |dt|.
+                assert!((nodes[i] - (node[0] - 0.25)).abs() < 1e-14);
+            }
+            if nk == 4 {
+                assert_eq!(points, path);
+            }
+        }
+    }
+
+    #[test]
+    fn k_path_uses_reduced_lattice_metric_and_rounded_node_allocation() {
+        let surface = surface_for_k_path();
+        assert_eq!(surface.lat, array![[1.0, 0.0], [1.0, 1.0]]);
+        // (lat * lat^T)^-1 = [[2, -1], [-1, 1]], without a 2*pi factor.
+        // The two segment lengths are 1 and 2. Five intervals put the middle
+        // node at round(5/3) = 2, then split the second segment in thirds.
+        let path = array![[0.0, 0.0], [1.0, 1.0], [1.0, 3.0]];
+        let (points, distances, nodes) = surface.k_path(&path, 6).unwrap();
+        let expected_points = array![
+            [0.0, 0.0],
+            [0.5, 0.5],
+            [1.0, 1.0],
+            [1.0, 5.0 / 3.0],
+            [1.0, 7.0 / 3.0],
+            [1.0, 3.0]
+        ];
+        let expected_distances = array![0.0, 0.5, 1.0, 5.0 / 3.0, 7.0 / 3.0, 3.0];
+        assert_eq!(points.dim(), expected_points.dim());
+        assert_eq!(distances.len(), expected_distances.len());
+        assert_eq!(nodes.len(), 3);
+        for (actual, expected) in points.iter().zip(expected_points.iter()) {
+            assert!((actual - expected).abs() < 1e-14);
+        }
+        for (actual, expected) in distances.iter().zip(expected_distances.iter()) {
+            assert!((actual - expected).abs() < 1e-14);
+        }
+        for (actual, expected) in nodes.iter().zip([0.0, 1.0, 3.0]) {
+            assert!((actual - expected).abs() < 1e-14);
+        }
+    }
+
+    #[test]
+    fn k_path_rejects_empty_single_repeated_and_nonfinite_nodes() {
+        let surface = surface_for_k_path();
+        for path in [
+            Array2::zeros((0, 2)),
+            array![[0.0, 0.0]],
+            array![[0.0, 0.0], [0.0, 0.0], [1.0, 1.0]],
+            array![[0.0, 0.0], [f64::NAN, 1.0]],
+            array![[0.0, 0.0], [1.0, f64::INFINITY]],
+            array![[0.0, 0.0], [f64::NEG_INFINITY, 1.0]],
+        ] {
+            assert!(surface.k_path(&path, 5).is_err(), "path: {path:?}");
+        }
+    }
+
+    #[test]
+    fn k_path_rejects_undersampling() {
+        let surface = surface_for_k_path();
+        let path = array![[0.0, 0.0], [1.0, 1.0], [1.0, 3.0]];
+        for nk in [0, 1, 2] {
+            assert!(surface.k_path(&path, nk).is_err(), "nk: {nk}");
+        }
+    }
+
+    #[test]
+    fn k_path_rejects_singular_mutated_lattice() {
+        let mut surface = surface_for_k_path();
+        surface.lat = array![[1.0, 1.0], [2.0, 2.0]];
+        assert!(matches!(
+            surface.k_path(&array![[0.0, 0.0], [1.0, 1.0]], 3),
+            Err(TbError::Linalg(_))
+        ));
+    }
+
+    #[test]
+    fn k_path_rejects_nonfinite_and_malformed_mutated_lattice() {
+        let mut surface = surface_for_k_path();
+        let path = array![[0.0, 0.0], [1.0, 1.0]];
+        for lat in [
+            array![[f64::NAN, 0.0], [0.0, 1.0]],
+            array![[1.0, 0.0], [0.0, f64::INFINITY]],
+            array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            Array2::eye(3),
+        ] {
+            surface.lat = lat;
+            assert!(surface.k_path(&path, 3).is_err(), "lat: {:?}", surface.lat);
+        }
     }
 }

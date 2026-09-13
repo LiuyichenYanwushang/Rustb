@@ -99,6 +99,11 @@ fn main() -> Result<()> {
 }
 ```
 
+`Model::k_path`, `SurfGreen::k_path`, and `unfold` preserve every path node,
+including short segments, and require at least as many samples as nodes.
+Unfolding paths use primitive-cell reciprocal coordinates; k-path distances
+omit the `2*pi` factor. Invalid paths return an error.
+
 For a spinful model, use `Model::<true, DIM>`. Spin-independent terms take
 `None`; Pauli-matrix terms take `SpinDirection::X`, `Y`, or `Z`:
 

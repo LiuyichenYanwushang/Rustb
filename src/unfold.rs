@@ -124,6 +124,12 @@ pub trait Unfold {
     /// Representative centers are matched within a fixed fractional-coordinate
     /// tolerance of `1e-8`.
     ///
+    /// `path` uses fractional reciprocal coordinates of the primitive lattice
+    /// `U.inv() * self.lat`. Sampling uses the same validation and rounded,
+    /// clamped node indices as [`crate::Kpath::k_path`], with this primitive
+    /// lattice's reciprocal metric. Coordinates must be finite, consecutive
+    /// nodes must be distinct, and `nk >= path.nrows() >= 2`.
+    ///
     /// First, define the supercell Brillouin-zone Hamiltonian $H_{\\bm K}$ and its
     /// Green's function $$G(\og,\bm K)=(\og+i\eta-H_{\bm K})^{-1}$$
     ///
@@ -220,47 +226,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
             return Err(TbError::InvalidAtomConfiguration);
         }
         //我们先根据path计算一下k点
-        let (kvec, _kdist, _knode) = {
-            let n_node: usize = path.len_of(Axis(0));
-            let k_metric = (&unfold_lat.dot(&unfold_lat.t()))
-                .inv()
-                .map_err(TbError::Linalg)?;
-            let mut k_node = Array1::<f64>::zeros(n_node);
-            for n in 1..n_node {
-                //let dk=path.slice(s![n,..]).to_owned()-path.slice(s![n-1,..]).to_owned();
-                let dk = path.row(n).to_owned() - path.slice(s![n - 1, ..]).to_owned();
-                let a = k_metric.dot(&dk);
-                let dklen = dk.dot(&a).sqrt();
-                k_node[[n]] = k_node[[n - 1]] + dklen;
-            }
-            let mut node_index: Vec<usize> = vec![0];
-            for n in 1..n_node - 1 {
-                let frac = k_node[[n]] / k_node[[n_node - 1]];
-                let a = (frac * ((nk - 1) as f64).round()) as usize;
-                node_index.push(a)
-            }
-            node_index.push(nk - 1);
-            let mut k_dist = Array1::<f64>::zeros(nk);
-            let mut k_vec = Array2::<f64>::zeros((nk, self.dim_r()));
-            //k_vec.slice_mut(s![0,..]).assign(&path.slice(s![0,..]));
-            k_vec.row_mut(0).assign(&path.row(0));
-            for n in 1..n_node {
-                let n_i = node_index[n - 1];
-                let n_f = node_index[n];
-                let kd_i = k_node[[n - 1]];
-                let kd_f = k_node[[n]];
-                let k_i = path.row(n - 1);
-                let k_f = path.row(n);
-                for j in n_i..n_f + 1 {
-                    let frac: f64 = ((j - n_i) as f64) / ((n_f - n_i) as f64);
-                    k_dist[[j]] = kd_i + frac * (kd_f - kd_i);
-                    k_vec
-                        .row_mut(j)
-                        .assign(&((1.0 - frac) * k_i.to_owned() + frac * k_f.to_owned()));
-                }
-            }
-            (k_vec, k_dist, k_node)
-        };
+        let (kvec, _kdist, _knode) = crate::kpath::interpolate_k_path(unfold_lat, DIM, path, nk)?;
 
         //我们先unfold一下k点
         let fold_k = &kvec.dot(&U.t()); // fold_k 是要求解的本征值和本征态
@@ -468,6 +434,113 @@ mod tests {
     use num_complex::Complex;
 
     use std::time::Instant;
+
+    #[test]
+    fn unfold_uses_primitive_metric_and_preserves_short_path_nodes() {
+        let mut primitive =
+            Model::<false, 2>::tb_model(array![[2.0, 0.0], [1.0, 1.0]], array![[0.0, 0.0]], None)
+                .unwrap();
+        primitive.set_onsite(&array![0.11], None);
+        primitive.set_hop(0.37, 0, 0, &array![1, 0], None);
+        primitive.set_hop(-0.19, 0, 0, &array![0, 1], None);
+        let u = array![[2.0, 1.0], [0.0, 1.0]];
+        let supercell = primitive.make_supercell(&u).unwrap();
+        let path = array![[0.1, 0.1], [0.1001, 0.1], [0.5, 0.1], [0.5, 0.4]];
+
+        // The primitive reciprocal metric is [[1/2, -1/2], [-1/2, 1]].
+        // The cumulative lengths are 0, 0.0001/sqrt(2), 0.4/sqrt(2),
+        // and 0.4/sqrt(2) + 0.3. With nine samples, rounding and reserving
+        // every segment gives node indices [0, 1, 4, 8]. Flooring instead
+        // gives [0, 0, 3, 8]; using the supercell metric gives [0, 1, 2, 8].
+        // This grid is deliberately independent of k_path/interpolate_k_path.
+        let samples = [
+            [0.1, 0.1],
+            [0.1001, 0.1],
+            [0.2334, 0.1],
+            [0.3667, 0.1],
+            [0.5, 0.1],
+            [0.5, 0.175],
+            [0.5, 0.25],
+            [0.5, 0.325],
+            [0.5, 0.4],
+        ];
+        let energies = [-0.9, -0.4, 0.1, 0.6, 1.1];
+        let eta = 0.08;
+        let spectrum = supercell
+            .unfold(
+                &u,
+                &path,
+                samples.len(),
+                -0.9,
+                1.1,
+                energies.len(),
+                eta,
+                1e-8,
+            )
+            .unwrap();
+        assert_eq!(spectrum.dim(), (energies.len(), samples.len()));
+        for (ik, &[kx, ky]) in samples.iter().enumerate() {
+            let band = 0.11 + 0.74 * (2.0 * PI * kx).cos() - 0.38 * (2.0 * PI * ky).cos();
+            for (ie, &energy) in energies.iter().enumerate() {
+                // The existing unfolding convention sums the amplitudes of
+                // two equivalent copies without dividing their weight by two.
+                let expected = 2.0 * eta / (PI * ((energy - band).powi(2) + eta * eta));
+                let actual = spectrum[[ie, ik]];
+                assert!(
+                    (actual - expected).abs() < 1e-10 * (1.0 + expected.abs()),
+                    "sample {ik}, energy {energy}: expected {expected}, got {actual}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unfold_rejects_invalid_path_coordinates_and_sampling() {
+        let primitive =
+            Model::<false, 2>::tb_model(array![[2.0, 0.0], [1.0, 1.0]], array![[0.0, 0.0]], None)
+                .unwrap();
+        let u = array![[2.0, 1.0], [0.0, 1.0]];
+        let supercell = primitive.make_supercell(&u).unwrap();
+        for columns in [0, 1, 3] {
+            let result = supercell.unfold(
+                &u,
+                &Array2::zeros((2, columns)),
+                4,
+                -1.0,
+                1.0,
+                2,
+                0.08,
+                1e-8,
+            );
+            assert!(matches!(
+                result,
+                Err(TbError::PathLengthMismatch { expected: 2, actual }) if actual == columns
+            ));
+        }
+        for path in [
+            Array2::zeros((0, 2)),
+            array![[0.0, 0.0]],
+            array![[0.0, 0.0], [0.0, 0.0], [0.5, 0.0]],
+            array![[0.0, 0.0], [0.5, 0.0], [0.5, 0.0]],
+            array![[0.0, 0.0], [f64::NAN, 0.0]],
+            array![[0.0, 0.0], [0.5, f64::INFINITY]],
+            array![[0.0, 0.0], [f64::NEG_INFINITY, 0.0]],
+        ] {
+            let result = supercell.unfold(&u, &path, 4, -1.0, 1.0, 2, 0.08, 1e-8);
+            assert!(
+                matches!(result, Err(TbError::Other(_))),
+                "expected path validation before diagonalization, got {result:?} for {path:?}"
+            );
+        }
+        let path = array![[0.0, 0.0], [0.2, 0.0], [0.5, 0.0]];
+        for nk in [0, 1, 2] {
+            let result = supercell.unfold(&u, &path, nk, -1.0, 1.0, 2, 0.08, 1e-8);
+            assert!(
+                matches!(result, Err(TbError::Other(_))),
+                "expected sampling validation before diagonalization, got {result:?} for nk={nk}"
+            );
+        }
+    }
 
     #[test]
     fn periodic_orbital_matcher_finds_a_complete_non_greedy_assignment() {

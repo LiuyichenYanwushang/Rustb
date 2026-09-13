@@ -292,9 +292,11 @@ This isolated-band formula rejects gaps <= `1e-10` eV, non-Hermitian
 operators, and invalid inputs. Band matrix elements transform covariantly
 under band rephasing. In 2D only Lz is nonzero.
 
-`k_path` requires at least two distinct consecutive nodes and at least as
-many samples as nodes. Its distances retain the reciprocal convention
-without `2*pi`. Mesh and plane generators reject zero and overflowing sizes.
+`k_path` on both `Model` and `SurfGreen` requires at least two finite nodes,
+distinct consecutive nodes, and at least as many samples as nodes. It retains
+every node, including nodes bordering very short segments. Distances use the
+object's reciprocal-lattice metric without `2*pi`; malformed or singular
+lattices return an error. Mesh and plane generators reject zero and overflowing sizes.
 `phy_0` is the superconducting flux quantum `h/(2e)` in webers.
 
 Intrinsic nonlinear Hall is charge-current only: its signature takes neither a
@@ -910,6 +912,11 @@ let spectral_weight = supercell.unfold(
     1e-5,
 )?;
 ```
+
+The unfolding path uses primitive-cell fractional reciprocal coordinates.
+It follows the same node-preserving sampling rules as `k_path`, with distances
+computed from the primitive lattice `transform⁻¹ · supercell.lat`; `nk` must
+be at least the number of path nodes.
 
 ## 10. Conventions and build notes
 

@@ -383,6 +383,10 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 ### Conventions
 
 - **k-points**: Fractional reciprocal coordinates; phase = `exp(2πi k·R)`.
+- **k-paths**: Model, surface, and unfolding callers share validation and
+  node-preserving interpolation in `kpath.rs`. Distances omit `2π`. Unfolding
+  uses the primitive lattice `U⁻¹ · lat` before mapping samples by `k · Uᵀ`;
+  do not substitute the supercell metric or duplicate the sampler.
 - **Orbital positions**: Fractional coords (rows of `orb`).
 - **Lattice vectors**: Stored as rows of `Model::lat`; Cartesian row
   coordinates are `fractional.dot(lat)`.

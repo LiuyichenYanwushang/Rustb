@@ -4,6 +4,11 @@
 
 ### Safety and numerical fixes
 
+- Model, surface, and unfolding k-paths share validation and node-preserving
+  sampling. Surface and unfolding paths now round and reserve segment intervals
+  like `Model::k_path`, so their interior sample locations can change. Invalid
+  paths return errors; unfolding retains the primitive-cell reciprocal metric
+  and k-path distances retain the convention without `2*pi`.
 - Direct nonlinear Hall rejects zero thermal widths and overflowing peak
   derivatives `0.25 / (k_B T)`, including inside scans, before preparing the
   k-mesh. Subnormal widths with finite peak derivatives remain valid.
