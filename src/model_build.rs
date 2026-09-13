@@ -1892,45 +1892,6 @@ pub(crate) fn set_rmatrix_diagonal_with_displacement<const DIM: usize>(
     }
 }
 
-/// Fold supercell orbital positions into `[0, 1)` and compensate every hopping
-/// block so the physical link `(R + τ_j − τ_i)·L` is unchanged.
-///
-/// A supercell image places atom and orbital at the same shifted position, but
-/// only the atom is tested against `[0, 1)`; an orbital displaced from its
-/// parent atom can land outside the cell.  Folding orbital `s` by an integer
-/// vector `n_s` must therefore move the hopping block `H_ij(R)` to
-/// `R + n_j − n_i` (and the position-matrix block identically), which keeps the
-/// Peierls link displacement and the `[r, H]` commutator invariant.
-///
-/// [`Model::validate`] guarantees every orbital sits within
-/// [`ORBITAL_ATOM_POSITION_TOLERANCE`] of its parent atom (modulo a lattice
-/// vector), so after folding the orbital remains attached to its atom; pure
-/// orbital-only models already store in-cell positions and this function is a
-/// no-op for them.
-// Kept as a documented reference implementation of covariant position folding;
-// current supercell construction uses the row-coset path instead.
-#[allow(dead_code)]
-fn fold_supercell_positions_covariantly<const DIM: usize>(
-    orb: &mut Array2<f64>,
-    ham: &mut Array3<Complex<f64>>,
-    ham_r: &mut Array2<isize>,
-    rmatrix: &mut Array4<Complex<f64>>,
-    spin: bool,
-) {
-    let _nsta = ham.dim().1;
-    let norb = orb.nrows();
-    // Component-wise floor brings each coordinate into [0, 1).
-    let mut fold = Array2::<isize>::zeros((norb, DIM));
-    for s in 0..norb {
-        for axis in 0..DIM {
-            let n = orb[[s, axis]].floor() as isize;
-            fold[[s, axis]] = n;
-            orb[[s, axis]] -= n as f64;
-        }
-    }
-    relabel_hamiltonian_by_orbital_fold::<DIM>(ham, ham_r, rmatrix, &fold, spin);
-}
-
 /// Apply an orbital gauge fold `τ_s → τ_s − n_s` to the Hamiltonian blocks.
 ///
 /// The caller has already subtracted `n_s` from the orbital positions; this
