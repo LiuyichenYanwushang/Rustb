@@ -1,14 +1,7 @@
-#![allow(warnings)]
 use Rustb::*;
 use gnuplot::{AxesCommon, Color, Figure, Fix};
-use ndarray::linalg::kron;
-use ndarray::parallel::prelude::IntoParallelRefIterator;
-use ndarray::parallel::prelude::ParallelIterator;
 use ndarray::*;
-use ndarray_linalg::*;
 use num_complex::Complex;
-use std::f64::consts::PI;
-use std::ops::AddAssign;
 ///主要参考这篇文章 10.1103/PhysRevLett.127.277202
 ///
 ///kp模型为

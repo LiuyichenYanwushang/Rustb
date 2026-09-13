@@ -1,14 +1,12 @@
-#![allow(warnings)]
 use Rustb::*;
 use gnuplot::AxesCommon;
-use gnuplot::{Auto, Caption, Color, Figure, Fix, LineStyle, Solid};
+use gnuplot::{Color, Figure, Fix, LineStyle, Solid};
 use ndarray::linalg::kron;
 use ndarray::*;
 use ndarray_linalg::*;
 use num_complex::Complex;
 use rayon::prelude::*;
 use std::f64::consts::PI;
-use std::ops::AddAssign;
 use std::ops::MulAssign;
 fn main() {
     //!来自 PHYSICAL REVIEW X 12, 031042 (2022) 的 RuO2 模型

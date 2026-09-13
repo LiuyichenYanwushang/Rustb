@@ -9,6 +9,7 @@
 **/BAND.dat
 *.surf_*
 /examples/**/*.pdf
+/examples/**/print.py
 /examples/**/out/
 /tests/**/*.pdf
 /tests/**/*.dat

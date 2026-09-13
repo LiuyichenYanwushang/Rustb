@@ -8,12 +8,12 @@
 //! | Function | Denominator | Returns |
 //! |----------|-------------|---------|
 //! | `eval_berry_kernel` | $\Delta_{nm}^2 + \eta^2$ | $(g_n, \Omega_n)$ per band (all bands) |
-//! | `eval_berry_band_at_lam` | $\Delta_{nm}^2 + \eta^2$ | $\Omega_n$ (single band at barycentrics) |
-//! | `eval_berry_complex_at_lam` | $\Delta_{nm}^2 + \eta^2$ | $(g_n, \Omega_n)$ (single band) |
+//! | `eval_berry_band_at_lam_buf` | $\Delta_{nm}^2 + \eta^2$ | $\Omega_n$ (single band at barycentrics) |
+//! | `eval_berry_complex_at_lam_buf` | $\Delta_{nm}^2 + \eta^2$ | $(g_n, \Omega_n)$ (single band) |
 //! | `eval_intrinsic_G_at_lam` | $\Delta_{nm}^3$ | $G^{ij}_n$ (single band, no $\eta$) |
 //! | `eval_optical_kernel` | $\Delta_{nm}(\Delta_{nm}+\omega+i\eta)$ | $\sum_{nm} -i(f_n-f_m)K_{nm}/{\rm denom}$ |
 //!
-//! The single‑band functions (`_at_lam`) interpolate only the $n$‑th row
+//! The single‑band functions interpolate only the $n$‑th row
 //! of $K$ and avoid allocating the full $nsta\times nsta$ matrix.
 //!
 //! The single‑simplex quadrature helpers (`quadrature_berry_simplex`
@@ -50,7 +50,6 @@ pub(crate) fn fermi(e: f64, mu: f64, thermal_width: f64) -> f64 {
 }
 
 #[inline]
-#[allow(dead_code)]
 pub(crate) fn fermi_deriv(e: f64, mu: f64, thermal_width: f64) -> f64 {
     if thermal_width == 0.0 {
         0.0
@@ -97,57 +96,7 @@ pub(crate) fn eval_berry_kernel(
 ///
 /// Interpolates $E_m(q)$ and $K_{nm}(q)$ at barycentric coords `lam`,
 /// then computes $\Omega_n = -2\\,\mathrm{Im}\sum_{m\ne n} K_{nm}/(\Delta_{nm}^2+\eta^2)$.
-/// Avoids allocating the full $K$ matrix and computing $\Omega$ for other bands.
-#[allow(dead_code)]
-pub(crate) fn eval_berry_band_at_lam(
-    n: usize,
-    bands: &[Vec<f64>],
-    kmats: &[Array2<Complex<f64>>],
-    lam: &[f64],
-    eta: f64,
-    nsta: usize,
-) -> f64 {
-    // Interpolate E_m for all bands
-    let mut e_q = vec![0.0; nsta];
-    for v in 0..bands.len() {
-        let lv = lam[v];
-        if lv == 0.0 {
-            continue;
-        }
-        for m in 0..nsta {
-            e_q[m] += bands[v][m] * lv;
-        }
-    }
-
-    // Interpolate K_{nm} for row n only
-    let mut k_row = vec![Complex::new(0.0, 0.0); nsta];
-    for v in 0..kmats.len() {
-        let lv = lam[v];
-        if lv == 0.0 {
-            continue;
-        }
-        for m in 0..nsta {
-            k_row[m] += kmats[v][[n, m]] * lv;
-        }
-    }
-
-    let eta2 = eta * eta;
-    let mut g_sum = Complex::new(0.0, 0.0);
-    for m in 0..nsta {
-        if m == n {
-            continue;
-        }
-        let de = e_q[n] - e_q[m];
-        let denom = de * de + eta2;
-        if denom < 1e-30 {
-            continue;
-        }
-        g_sum += k_row[m] / denom;
-    }
-    -2.0 * g_sum.im
-}
-
-/// Pre‑allocated buffer version: avoids Vec allocation on every call.
+/// Reuses caller-provided buffers and computes only the requested band.
 #[inline]
 pub(crate) fn eval_berry_band_at_lam_buf(
     n: usize,
@@ -197,53 +146,7 @@ pub(crate) fn eval_berry_band_at_lam_buf(
 
 /// Evaluate $G_n = \Sigma_{m\ne n} K_{nm} / (\Delta_{nm}^2 + \eta^2)$
 /// for a single band at barycentrics, returning `(metric_n, berry_n)`.
-/// Interpolates only $E_m$ and the $n$-th row of $K$.
-#[allow(dead_code)]
-pub(crate) fn eval_berry_complex_at_lam(
-    n: usize,
-    bands: &[Vec<f64>],
-    kmats: &[Array2<Complex<f64>>],
-    lam: &[f64],
-    eta: f64,
-    nsta: usize,
-) -> (f64, f64) {
-    let mut e_q = vec![0.0; nsta];
-    for v in 0..bands.len() {
-        let lv = lam[v];
-        if lv == 0.0 {
-            continue;
-        }
-        for m in 0..nsta {
-            e_q[m] += bands[v][m] * lv;
-        }
-    }
-    let mut k_row = vec![Complex::new(0.0, 0.0); nsta];
-    for v in 0..kmats.len() {
-        let lv = lam[v];
-        if lv == 0.0 {
-            continue;
-        }
-        for m in 0..nsta {
-            k_row[m] += kmats[v][[n, m]] * lv;
-        }
-    }
-    let eta2 = eta * eta;
-    let mut g_sum = Complex::new(0.0, 0.0);
-    for m in 0..nsta {
-        if m == n {
-            continue;
-        }
-        let de = e_q[n] - e_q[m];
-        let denom = de * de + eta2;
-        if denom < 1e-30 {
-            continue;
-        }
-        g_sum += k_row[m] / denom;
-    }
-    (g_sum.re, -2.0 * g_sum.im)
-}
-
-/// Pre‑allocated buffer version of [`eval_berry_complex_at_lam`].
+/// Interpolates only $E_m$ and the $n$-th row of $K$ into caller-provided buffers.
 #[inline]
 pub(crate) fn eval_berry_complex_at_lam_buf(
     n: usize,
@@ -335,55 +238,10 @@ pub(crate) fn eval_intrinsic_G_at_lam(
     g_sum
 }
 
-/// Pre‑allocated buffer version of [`eval_intrinsic_G_at_lam`].
-#[inline]
-#[allow(dead_code)]
-pub(crate) fn eval_intrinsic_G_at_lam_buf(
-    n: usize,
-    bands: &[&[f64]],
-    kmats: &[&Array2<Complex<f64>>],
-    lam: &[f64],
-    nsta: usize,
-    e_buf: &mut [f64],
-    k_buf: &mut [Complex<f64>],
-) -> f64 {
-    e_buf[..nsta].fill(0.0);
-    k_buf[..nsta].fill(Complex::new(0.0, 0.0));
-    for v in 0..bands.len() {
-        let lv = lam[v];
-        if lv == 0.0 {
-            continue;
-        }
-        for m in 0..nsta {
-            e_buf[m] += bands[v][m] * lv;
-        }
-    }
-    for v in 0..kmats.len() {
-        let lv = lam[v];
-        if lv == 0.0 {
-            continue;
-        }
-        for m in 0..nsta {
-            k_buf[m] += kmats[v][[n, m]] * lv;
-        }
-    }
-    let mut g_sum = 0.0f64;
-    for m in 0..nsta {
-        if m == n {
-            continue;
-        }
-        let de = e_buf[n] - e_buf[m];
-        let inv_de3 = intrinsic_inverse_gap(de).powi(3);
-        g_sum += k_buf[m].re * inv_de3;
-    }
-    g_sum
-}
-
 /// Evaluate $G^{ab}_n$, $G^{bc}_n$, $G^{ac}_n$ in one fused pass.
 ///
 /// Interpolates $E_m$ once, then computes the three G components
-/// reusing the same energy interpolation.  Saves 2 redundant energy
-/// interpolations vs three separate `eval_intrinsic_G_at_lam_buf` calls.
+/// reusing the same energy interpolation and caller-provided buffers.
 #[inline]
 pub(crate) fn eval_intrinsic_G3_at_lam_buf(
     n: usize,

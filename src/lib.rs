@@ -347,7 +347,6 @@ mod tests {
     use ndarray_linalg::*;
     use ndarray_linalg::{Eigh, UPLO};
     use num_complex::Complex;
-    use rayon::prelude::*;
     use std::f64::consts::PI;
     use std::fs::File;
     use std::fs::create_dir_all;
@@ -867,60 +866,6 @@ mod tests {
             (a2 - a1).abs() < 1e-5,
             "single- and multi-chemical-potential Hall results differ"
         )
-    }
-    #[test]
-    fn gen_v_speed_test() {
-        println!("开始测试各个函数的运行速度, 用次近邻的石墨烯模型");
-        let li: Complex<f64> = 1.0 * Complex::i();
-        let t = 2.0 + 0.0 * li;
-        let t2 = -1.0 + 0.0 * li;
-        let delta = 0.7;
-        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
-        let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
-        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
-        model.set_onsite(&arr1(&[-delta, delta]), None);
-        let R0: Array2<isize> = arr2(&[[0, 0], [-1, 0], [0, -1]]);
-        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
-            let R = R.to_owned();
-            model.add_hop(t, 0, 1, &R, None);
-        }
-        let R0: Array2<isize> = arr2(&[[1, 0], [-1, 1], [0, -1]]);
-        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
-            let R = R.to_owned();
-            model.add_hop(t2 * li, 0, 0, &R, None);
-        }
-        let R0: Array2<isize> = arr2(&[[-1, 0], [1, -1], [0, 1]]);
-        for (_i, R) in R0.axis_iter(Axis(0)).enumerate() {
-            let R = R.to_owned();
-            model.add_hop(t2 * li, 1, 1, &R, None);
-        }
-        println!("{:?}", model.atom_list());
-        let U = array![[3.0, 0.0], [0.0, 3.0]];
-        let model = model.make_supercell(&U).unwrap();
-
-        let nk = 101;
-        let k_mesh = array![nk, nk];
-        let kvec = gen_kmesh(&k_mesh).unwrap();
-
-        {
-            println!("开始计算 gen_v 的耗时速度, 为了平均, 我们单线程求解gen_v");
-            let start = Instant::now(); // 开始计时
-            let _A: Vec<_> = kvec
-                .outer_iter()
-                .into_par_iter()
-                .map(|x| {
-                    let (a, _) = model.gen_v(&x.to_owned(), Gauge::Atom);
-                    a
-                })
-                .collect();
-            let end = Instant::now(); // 结束计时
-            let duration = end.duration_since(start); // 计算执行时间
-            println!(
-                "run gen_v {} times took {} seconds",
-                kvec.nrows(),
-                duration.as_secs_f64()
-            ); // 输出执行时间
-        }
     }
     #[test]
     fn Haldan_model() {

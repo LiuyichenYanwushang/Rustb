@@ -1,18 +1,11 @@
-#![allow(warnings)]
 use Rustb::*;
 use gnuplot::Major;
-use gnuplot::{
-    Axes2D, AxesCommon, Color, Figure, Fix, Font, LineStyle, MarginBottom, MarginLeft, MarginRight,
-    Rotate, Solid, TextOffset,
-};
+use gnuplot::{AxesCommon, Color, Figure, Fix, Font, Rotate, TextOffset};
 use ndarray::linalg::kron;
 use ndarray::*;
-use ndarray_linalg::*;
 use num_complex::Complex;
-use std::cmp::Ordering;
 use std::f64::consts::PI;
 use std::fs::create_dir_all;
-use std::ops::AddAssign;
 use std::time::Instant;
 fn main() {
     let li: Complex<f64> = 1.0 * Complex::i();

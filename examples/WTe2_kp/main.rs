@@ -1,12 +1,9 @@
-#![allow(warnings)]
 use Rustb::*;
 use gnuplot::{AxesCommon, Color, Figure, Fix};
-use ndarray::linalg::kron;
 use ndarray::*;
 use ndarray_linalg::*;
 use num_complex::Complex;
 use std::f64::consts::PI;
-use std::ops::AddAssign;
 fn main() {
     let t = 1.0;
     let v = 1.0;

@@ -1,12 +1,6 @@
-#![allow(warnings)]
 use Rustb::*;
-use gnuplot::{AxesCommon, Color, Figure, Fix};
-use ndarray::linalg::kron;
 use ndarray::*;
-use ndarray_linalg::*;
 use num_complex::Complex;
-use std::f64::consts::PI;
-use std::ops::AddAssign;
 fn main() {
     let li: Complex<f64> = 1.0 * Complex::i();
     let t1 = -2.85 + 0.0 * li;

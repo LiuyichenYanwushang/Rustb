@@ -1,22 +1,17 @@
-#![allow(warnings)]
 use Rustb::*;
 use gnuplot::AxesCommon;
-use gnuplot::{Auto, Caption, Color, Dash, Figure, Fix, LineStyle, Major, Solid};
+use gnuplot::{Color, Figure, Fix, LineStyle, Major, Solid};
 use ndarray::linalg::kron;
-use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::*;
 use num_complex::Complex;
 use rayon::prelude::*;
-use std::arch::x86_64::*;
 use std::f64::consts::PI;
 use std::fs::File;
 use std::fs::create_dir_all;
 use std::io::{BufWriter, Write};
-use std::ops::AddAssign;
 use std::ops::MulAssign;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
 fn main() {
     let li = Complex::i();
     let zero_energy: f64 = 0.;
