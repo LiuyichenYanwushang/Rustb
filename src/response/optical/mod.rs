@@ -17,8 +17,10 @@
 //! `hall_conductivity` (which retains a signed-determinant convention).
 //!
 //! The algorithms share one [`Parameters`] input and one named
-//! [`OpticalConductivityResult`] output. A component calculation and a full
-//! Cartesian tensor calculation differ only through the direction matrix.
+//! [`OpticalConductivityResult`] output. [`Model::optical_conductivity`]
+//! computes one projected component; [`Model::optical_conductivity_tensor`]
+//! computes the full Cartesian tensor. Both entry points share the same
+//! preparation and integration implementation.
 
 use ndarray::array;
 use ndarray::prelude::*;
@@ -62,13 +64,15 @@ impl OpticalConductivityResult {
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
-    /// Compute a projected component or the full Cartesian optical tensor.
+    /// Compute one projected component of the optical conductivity.
+    ///
+    /// Use [`Self::optical_conductivity_tensor`] for the full Cartesian tensor.
     ///
     /// `directions[0]` and `directions[1]` are the two tensor indices and
     /// `eta_ev` broadens the denominators; the response is charge-only. The
     /// columns of `conductivity` follow the sampled axis. `params` carries the
-    /// thermodynamic `conditions` (at most one axis sampled; this is the only
-    /// entry point that may sample `omega_ev`), the `kmesh` and `integration`.
+    /// thermodynamic `conditions` (at most one axis sampled, which may be
+    /// `omega_ev`), the `kmesh` and `integration`.
     /// Eigenstates, velocity kernels and band tracking are prepared once and
     /// reused by every sample.
     ///

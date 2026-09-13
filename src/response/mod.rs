@@ -589,14 +589,18 @@ mod regression_tests {
                     assert!((actual - expected).abs() < 1e-11);
                     assert!((actual - swapped).abs() < 1e-11);
                 }
-                // Every direction row identical: exchanging the two field
-                // indices is then a no-op, so the two conventions must agree
-                // exactly. This is the one configuration where that holds; the
-                // base configuration is cross-checked against the independent
-                // pre-refactor per-k oracle above.
-                let equal_directions = [base_directions[1]; 3];
+                // Equal field directions make their exchange a no-op. Keep
+                // the current distinct so the charge Berry curvature does not
+                // vanish merely because its two directions coincide.
+                let equal_directions = [base_directions[0], base_directions[1], base_directions[1]];
                 let equal_ordered =
                     calculate(&model, &params, equal_directions, ETA_EV, spin, ordered).unwrap();
+                if spin.is_none() {
+                    assert!(
+                        equal_ordered.conductivity.iter().any(|x| x.abs() > 1e-5),
+                        "equal-field charge response must be nonzero: SPIN={SPIN}, {integration:?}, T={temperature}"
+                    );
+                }
                 let equal_symmetrized = calculate(
                     &model,
                     &params,
@@ -608,6 +612,29 @@ mod regression_tests {
                 .unwrap();
                 assert!(
                     (&equal_symmetrized.conductivity - &equal_ordered.conductivity)
+                        .iter()
+                        .all(|x| x.abs() < 1e-11)
+                );
+
+                // Exercise packing through the public entry point for charge
+                // and spin currents on both direct and energy-cut paths.
+                let mut strided_params = params.clone();
+                let strided_mu = array![-1.3, 99.0, -0.5, 99.0, 0.0, 99.0, 0.6, 99.0, 1.4]
+                    .slice_move(ndarray::s![..;2]);
+                assert!(strided_mu.as_slice().is_none());
+                strided_params.conditions.mu_ev = Sampling::Values(strided_mu);
+                let strided = calculate(
+                    &model,
+                    &strided_params,
+                    equal_directions,
+                    ETA_EV,
+                    spin,
+                    ordered,
+                )
+                .unwrap();
+                assert_eq!(strided.axis, equal_ordered.axis);
+                assert!(
+                    (&strided.conductivity - &equal_ordered.conductivity)
                         .iter()
                         .all(|x| x.abs() < 1e-11)
                 );

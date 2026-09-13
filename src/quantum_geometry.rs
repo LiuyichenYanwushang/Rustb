@@ -216,9 +216,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Integrate occupation-weighted quantum geometry over the Brillouin zone.
     ///
-    /// Reads `conditions` (at most one axis sampled), `kmesh`,
-    /// `direction` (rank 2), `eta_ev` and `integration`; `spin` must be `None`
-    /// and `field_symmetry` is ignored. `omega_ev` must be
+    /// Reads `conditions` (at most one axis sampled), `kmesh` and `integration`
+    /// from `params`. The rank-2 `directions` and broadening `eta_ev` are explicit
+    /// arguments. This is a charge-only response. `conditions.omega_ev` must be
     /// `Sampling::Fixed(0.0)` because the response is DC. Both algorithms use
     /// Cartesian reciprocal-space normalization and prepare eigenstates,
     /// velocity kernels and band tracking once. Weighting and integration still

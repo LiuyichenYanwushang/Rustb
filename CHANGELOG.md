@@ -87,8 +87,9 @@
   Option<SpinDirection>` directly and keep the previous rejection behaviour: a
   spinless model returns `TbError::SpinNotAllowed` for `spin: Some(_)`.
 - Band-resolved per-k methods take no thermodynamic state at all:
-  `berry_curvature_at`, `quantum_geometry_at` and `quantum_geometry_on` now
-  take only the k-point(s), the directions and `eta_ev`. The
+  `quantum_geometry_at` and `quantum_geometry_on` now take only the
+  k-point(s), the directions and `eta_ev`; `berry_curvature_at` additionally
+  takes `spin: Option<SpinDirection>`. The
   occupation-weighted helpers `occupied_berry_curvature_at`/`_on` take one
   fixed DC `&Conditions` and still reject a sampled axis or nonzero frequency.
   None of these methods takes a k-mesh or an integration algorithm any more.
@@ -96,7 +97,8 @@
   fields never used it. `NonlinearHallResult` gains `single()`, matching
   `HallConductivityResult::single()`: it returns the scalar of a `Fixed`
   calculation and `None` for any sampled axis, including a one-element series.
-- The four DC entry points and per-k-point Berry/geometry methods require
+- The four Brillouin-zone DC entry points and
+  `occupied_berry_curvature_at`/`_on` require
   `omega_ev: Sampling::Fixed(0.0)`; nonzero fixed frequencies and sampled
   frequencies return structured errors. Optical response accepts both.
 - Optical and quantum-geometry methods, like intrinsic nonlinear Hall, no
