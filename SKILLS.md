@@ -226,8 +226,7 @@ separately (for example `MKL_NUM_THREADS=1` with outer Rayon parallelism).
 All eight `Solve` methods return `Result`. Use `?` to propagate invalid-model,
 k-point, generated-Hamiltonian, and eigensolver errors. A batch validates the
 model once, even when it contains zero k-points. Hermiticity remains the caller's
-responsibility. Legacy `Berry` Wilson-loop methods still have infallible
-signatures and panic if their internal solve fails.
+responsibility. `Berry` Wilson-loop methods also propagate these errors.
 
 `solve_band_range_onek(&k, (low, high), tolerance)?` selects energies in
 `(low, high]`; `solve_range_onek` also returns row-ket eigenvectors. Bounds and
@@ -700,10 +699,14 @@ or sentinel direction matrix is involved.
 ## 5. Wilson loops and topology
 
 Closed loops must end at a point differing from the first point by an integer
-reciprocal lattice vector.
+reciprocal lattice vector within `1e-9` per coordinate. All five `Berry` methods
+return `Result` and accept `&[usize]` for the band selection: array slices and
+borrowed `Vec`s both work. Select at least one distinct, in-range band; loops
+need at least two finite k-points of the model's dimension. The selected band
+subspace must be isolated, with sufficiently fine sampling; no gap is certified.
 
 ```rust
-let occupied = vec![0usize];
+let occupied = [0usize];
 let loop_k = arr2(&[
     [0.0, 0.0],
     [0.25, 0.0],
@@ -712,8 +715,8 @@ let loop_k = arr2(&[
     [1.0, 0.0],
 ]);
 
-let phases = model.berry_loop(&loop_k, &occupied);
-let total_phase = model.berry_loop_det(&loop_k, &occupied);
+let phases = model.berry_loop(&loop_k, &occupied)?;
+let total_phase = model.berry_loop_det(&loop_k, &occupied)?;
 
 let centres = model.wannier_centre(
     &occupied,
@@ -722,10 +725,25 @@ let centres = model.wannier_centre(
     &arr1(&[0.0, 1.0]),
     101,
     101,
-);
+)?;
 ```
 
-`berry_flux` takes the same origin and two directions plus `nk1` and `nk2`.
+`berry_loop` uses SVD-unitarized links and returns unsorted eigenphases;
+`berry_loop_det` returns the phase of the raw determinant product. Both use
+`-arg(W)` in **radians**. Detected singular overlaps, zero/nonfinite determinants
+(including underflow), and solver/SVD failures return errors.
+
+`berry_phase(&occupied, &loops)?` takes `(n_loop, n_k, DIM)` coordinates and
+returns `(n_occ, n_loop)`, sorting each column independently without tracking
+phase branches. An empty outer batch returns `(n_occ, 0)` after validation.
+`wannier_centre` has the same axis order, `(n_occ, nk1)`, and units; divide by
+`2*pi` for centres in lattice units. It includes endpoints along both directions,
+requires `nk1, nk2 >= 2`, and `dir_2` must close modulo a reciprocal vector.
+
+`berry_flux` takes the same origin and two directions plus `nk1, nk2 >= 1`.
+Its shape is `(nk1, nk2, n_occ)` in radians, with plaquette orientation
+start → +dir_1 → +dir_1+dir_2 → +dir_2 → start. All generated grids reject
+overflowing allocation sizes and propagate individual loop errors.
 
 ## 6. Supercells, cuts, and surfaces
 

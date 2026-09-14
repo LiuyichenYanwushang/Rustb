@@ -58,15 +58,25 @@
 
 ### API changes
 
+- **Breaking:** all five `Berry` Wilson-loop methods return `Result` and take
+  band selections as `&[usize]`. Empty, duplicate or out-of-range selections,
+  malformed/nonfinite/unclosed loops, invalid grid counts and overflowing array
+  sizes return errors. Solver and linear algebra errors propagate through the
+  parallel loop/flux/Wannier APIs. Detected singular SVD overlaps and zero or
+  nonfinite raw determinants (including underflow) return errors instead of
+  undefined phases. No spectral-gap tolerance is added.
+  Shared preparation preserves endpoint sewing and the two Wilson algorithms;
+  Wannier sampling reuses the batch phase evaluator. Documentation now matches
+  the existing radians convention and `(n_occ, n_loop)` batch/Wannier axes;
+  numerical signs, units and axis order have not changed.
 - **Breaking:** all eight `Solve` methods return `Result`; callers must handle
   errors or propagate with `?`. Invalid models, wrong-dimensional/nonfinite
   k-points, nonfinite generated Hamiltonians, and eigensolver failures return
   errors. Serial and parallel batches validate the model once, including empty
   batches. Numerical gauges, ordering, and row-ket output conventions are
   unchanged. The two energy-window methods consistently document `(low, high]`
-  and absolute tolerance in model energy units. Existing fallible callers
-  propagate solver errors; legacy infallible `Berry` methods keep their panic
-  boundary, now documented explicitly.
+  and absolute tolerance in model energy units. Callers propagate solver errors,
+  including the `Berry` methods migrated above.
 - `Model<true, DIM, R>::build_spin_matrix(SpinDirection)` returns
   `Array2<Complex<f64>>` directly: `S_a / ℏ = σ_a ⊗ I_norb / 2` in
   spin-major order, for either position-matrix storage type. The spin-current

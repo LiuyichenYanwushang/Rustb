@@ -838,7 +838,7 @@ mod tests {
             .row_mut(7)
             .assign(&(&k_vec + dk * &dir_1 - dk * &dir_2));
         k_list.row_mut(8).assign(&(&k_vec + dk * &dir_1));
-        let result2 = model.berry_loop(&k_list, &vec![0]);
+        let result2 = model.berry_loop(&k_list, &[0]).unwrap();
         let result2 = result2[[0]] / (dk.powi(2)) / 4.0 / (2.0 * PI) * 3_f64.sqrt() / 2.0;
         println!("result2={},result1={}", result2, result1);
         assert!(
@@ -1103,7 +1103,9 @@ mod tests {
         let dir_1 = arr1(&[1.0, 0.0]);
         let dir_2 = arr1(&[0.0, 1.0]);
         let occ = vec![0];
-        let wcc = model.wannier_centre(&occ, &array![0.0, 0.0], &dir_1, &dir_2, 101, 101);
+        let wcc = model
+            .wannier_centre(&occ, &array![0.0, 0.0], &dir_1, &dir_2, 101, 101)
+            .unwrap();
         let nocc = occ.len();
 
         let mut fg = Figure::new();
@@ -1172,6 +1174,7 @@ mod tests {
                 101,
                 101,
             )
+            .unwrap()
             .sum()
             / PI
             / 2.0;
@@ -1534,7 +1537,9 @@ mod tests {
         let dir_1 = arr1(&[1.0, 0.0]);
         let dir_2 = arr1(&[0.0, 1.0]);
         let occ = vec![0, 1];
-        let wcc = model.wannier_centre(&occ, &array![0.0, 0.0], &dir_1, &dir_2, n, n);
+        let wcc = model
+            .wannier_centre(&occ, &array![0.0, 0.0], &dir_1, &dir_2, n, n)
+            .unwrap();
         let nocc = occ.len();
         let mut fg = Figure::new();
         let x: Vec<f64> = Array1::<f64>::linspace(0.0, 1.0, n).to_vec();
@@ -1699,7 +1704,9 @@ mod tests {
         let dir_1 = arr1(&[1.0, 0.0]);
         let dir_2 = arr1(&[0.0, 1.0]);
         let occ = vec![0, 1];
-        let wcc = model.wannier_centre(&occ, &array![0.0, 0.0], &dir_1, &dir_2, n, n);
+        let wcc = model
+            .wannier_centre(&occ, &array![0.0, 0.0], &dir_1, &dir_2, n, n)
+            .unwrap();
         let nocc = occ.len();
         let mut fg = Figure::new();
         let x: Vec<f64> = Array1::<f64>::linspace(0.0, 1.0, n).to_vec();
@@ -2072,7 +2079,9 @@ mod tests {
         let dir_1 = arr1(&[1.0, 0.0]);
         let dir_2 = arr1(&[0.0, 1.0]);
         let occ = vec![0, 1];
-        let wcc = model.wannier_centre(&occ, &array![0.0, 0.0], &dir_1, &dir_2, n, n);
+        let wcc = model
+            .wannier_centre(&occ, &array![0.0, 0.0], &dir_1, &dir_2, n, n)
+            .unwrap();
         let nocc = occ.len();
         let mut fg = Figure::new();
         let x: Vec<f64> = Array1::<f64>::linspace(0.0, 1.0, n).to_vec();

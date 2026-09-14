@@ -95,7 +95,9 @@ fn main() {
     let dir_1 = arr1(&[1.0, 0.0, 0.0]);
     let dir_2 = arr1(&[0.0, 1.0, 0.0]);
     let occ = vec![0, 1, 2, 3];
-    let wcc = model.wannier_centre(&occ, &array![0.0, 0.0, 0.0], &dir_1, &dir_2, n, n);
+    let wcc = model
+        .wannier_centre(&occ, &array![0.0, 0.0, 0.0], &dir_1, &dir_2, n, n)
+        .unwrap();
     let nocc = occ.len();
 
     let mut fg = Figure::new();

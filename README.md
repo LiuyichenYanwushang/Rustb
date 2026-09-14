@@ -110,6 +110,12 @@ Single-point and batched methods report invalid models, invalid k-points and
 eigensolver failures through errors. Energy-window methods select `(low, high]`,
 with bounds and absolute convergence tolerance in the model's energy units.
 
+The five `Berry` Wilson-loop methods also return `Result` and accept occupied
+bands as slices, for example `model.berry_loop(&loop_k, &[0])?`. Returned phases
+are in radians; batch and Wannier arrays have shape `(n_occ, n_loop)` with
+independently sorted columns. Divide by `2*pi` for centres in lattice units.
+Invalid band selections, loops and grids, and linear algebra failures return errors.
+
 For a spinful model, use `Model::<true, DIM>`. Spin-independent terms take
 `None`; Pauli-matrix terms take `SpinDirection::X`, `Y`, or `Z`:
 

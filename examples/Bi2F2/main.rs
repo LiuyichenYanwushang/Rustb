@@ -485,7 +485,9 @@ fn show_wilson_loop(
     n2: usize,
     name: &str,
 ) {
-    let wcc = model.wannier_centre(occ, &array![0.0, 0.0, 0.0], dir_1, dir_2, n1, n2);
+    let wcc = model
+        .wannier_centre(occ, &array![0.0, 0.0, 0.0], dir_1, dir_2, n1, n2)
+        .unwrap();
     let nocc = occ.len();
     let mut fg = Figure::new();
     let x: Vec<f64> = Array1::<f64>::linspace(0.0, 1.0, n2).to_vec();
@@ -637,6 +639,7 @@ fn calculate_C(model: &Model<true>, n: usize) -> f64 {
     let occ = vec![0, 1, 2, 3];
     let C = model
         .berry_flux(&occ, &array![0.0, 0.0, 0.0], &dir_1, &dir_2, n, n)
+        .unwrap()
         .sum()
         / 2.0
         / PI
