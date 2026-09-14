@@ -224,13 +224,13 @@ remain; idle workers' shares are never redistributed. For example, total
 allowances of 256 GiB and 1.5 TiB with 64 workers give 4 GiB and 24 GiB per
 worker, respectively. These are illustrative inputs, not measured machine RAM.
 
-On Linux, available memory is the minimum of host `MemAvailable` and each
-finite cgroup v1/v2 limit minus its current usage, including the process's
-named cgroup, its ancestors and any exposed controller-root limit. A fully
+Memory detection targets Linux, taking the minimum of host `MemAvailable`
+and each finite cgroup v1/v2 limit minus its current usage, including the
+process's named cgroup, its ancestors and any exposed controller-root limit. A fully
 readable unlimited hierarchy uses host availability; a physical controller
 root need not expose a limit. An unreadable named ancestor or missing usage
-for a finite limit makes detection unknown. Unknown detection and non-Linux
-targets use a total allowance of 128 MiB. The local process count is the
+for a finite limit makes detection unknown. Unavailable memory data or unknown
+hierarchies use a total allowance of 128 MiB. The local process count is the
 largest positive count reported by `SLURM_NTASKS_PER_NODE`,
 `OMPI_COMM_WORLD_LOCAL_SIZE`, `MV2_COMM_WORLD_LOCAL_SIZE` or `MPI_LOCALNRANKS`,
 defaulting to one; no MPI dependency is required.

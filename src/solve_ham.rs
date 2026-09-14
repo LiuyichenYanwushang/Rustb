@@ -25,7 +25,6 @@ const FOURIER_BUDGET_FALLBACK: usize = 128 * 1024 * 1024;
 // Parse a cgroup memory limit: bytes, or any unlimited spelling. The v2 `max`
 // token and the v1 `PAGE_COUNTER_MAX * PAGE_SIZE` value (about 2^63) mean
 // unlimited (u64::MAX), distinct from an unreadable or malformed value (None).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_cgroup_limit(text: &str) -> Option<u64> {
     if text.trim() == "max" {
         return Some(u64::MAX);
@@ -39,7 +38,6 @@ fn parse_cgroup_limit(text: &str) -> Option<u64> {
 }
 
 // Parse `MemAvailable` from /proc/meminfo, which is reported in kB.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_meminfo_available(text: &str) -> Option<u64> {
     let line = text
         .lines()
@@ -61,7 +59,6 @@ fn positive_env(name: &str) -> Option<u64> {
 
 // cgroup directories named by /proc/self/cgroup: the unified v2 line, or the v1
 // line that owns the memory controller.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_self_cgroup(text: &str) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
     for line in text.lines() {
@@ -81,7 +78,6 @@ fn parse_self_cgroup(text: &str) -> Vec<String> {
 }
 
 // "/a/b" -> ["/", "/a", "/a/b"]: a cgroup limit applies to every descendant.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn cgroup_ancestors(path: &str) -> Vec<String> {
     let mut prefixes = vec![String::from("/")];
     let mut current = String::new();
@@ -93,9 +89,8 @@ fn cgroup_ancestors(path: &str) -> Vec<String> {
     prefixes
 }
 
-// Read once; the injected reader keeps parser/hierarchy tests independent of
+// Read Linux memory data; the injected reader keeps tests independent of
 // mutable host state without changing process-wide environment variables.
-#[cfg(target_os = "linux")]
 fn detected_memory_ceiling() -> Option<u64> {
     detected_memory_ceiling_with(|path| std::fs::read_to_string(path).ok())
 }
@@ -103,7 +98,6 @@ fn detected_memory_ceiling() -> Option<u64> {
 // Each finite ancestor contributes its remaining allowance, not its total
 // limit. A fully readable unlimited hierarchy can use MemAvailable. An
 // unlimited root alone cannot establish that an inaccessible child is unlimited.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn detected_memory_ceiling_with(read: impl Fn(&str) -> Option<String>) -> Option<u64> {
     let mut directories = vec![String::from("/")];
     let mut named_cgroup = false;
@@ -168,12 +162,6 @@ fn detected_memory_ceiling_with(read: impl Fn(&str) -> Option<String>) -> Option
     }
 }
 
-// No portable memory query: keep the historical fixed budget.
-#[cfg(not(target_os = "linux"))]
-fn detected_memory_ceiling() -> Option<u64> {
-    None
-}
-
 // Resolve one budget from an explicit override (bytes), the detected ceiling and
 // the number of co-resident processes. No policy cap/floor applies to detected
 // memory. Keep at least one byte and respect the target's addressable size.
@@ -208,7 +196,6 @@ fn local_process_count(read: impl Fn(&str) -> Option<u64>) -> u64 {
     .filter_map(read)
     .max()
     .unwrap_or(1)
-    .max(1)
 }
 
 // Budget for Bloch phase matrices and H(k) batches, resolved once per process:
@@ -349,9 +336,9 @@ pub trait Solve {
     /// `U` is the process's available-memory allowance: the minimum of Linux
     /// `MemAvailable` and readable cgroup `limit - usage`, divided by the largest
     /// reported launcher-local process count (default one). Fully readable
-    /// unlimited cgroups use host availability. Unknown named hierarchies and
-    /// non-Linux targets fall back to a total `U` of 128 MiB. There is no fixed
-    /// capacity cap or detected-memory floor.
+    /// unlimited cgroups use host availability. Detection targets Linux;
+    /// unavailable memory data or unknown named hierarchies fall back to a
+    /// total `U` of 128 MiB. There is no fixed cap or detected-memory floor.
     ///
     /// `U` is cached once per process; `N` is taken from each call's thread pool.
     /// Set `RUSTB_FOURIER_MEMORY_MIB` before the first solve to override total
@@ -1263,7 +1250,6 @@ mod tests {
         // Cache stability must not reread MemAvailable or mutate shared env.
         let budget = fourier_memory_budget();
         assert!(budget > 0);
-        assert_eq!(fourier_memory_budget(), budget);
         assert_eq!(fourier_memory_budget(), budget);
     }
 

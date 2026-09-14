@@ -170,9 +170,9 @@
   Each worker gets `U / N`, where `N` is the configured Rayon pool size,
   fixed throughout the call even when fewer jobs remain. Serial solvers use
   one share, including inside an outer parallel loop.
-  Linux detection uses host `MemAvailable` and cgroup v1/v2 remaining
-  allowances (`limit - usage`) along the process hierarchy. Unknown detection
-  and non-Linux targets retain a total 128 MiB fallback. Launcher counts use
+  Detection targets Linux using host `MemAvailable` and cgroup v1/v2 remaining
+  allowances (`limit - usage`) along the process hierarchy. Unavailable or
+  unknown memory data retain a total 128 MiB fallback. Launcher counts use
   the largest positive Slurm/Open MPI/MVAPICH2/Intel MPI value, defaulting to
   one without an MPI dependency. `RUSTB_FOURIER_MEMORY_MIB` overrides total
   `U`; pin it and the Rayon pool size for repeatable batching. This is a soft
