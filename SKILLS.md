@@ -209,82 +209,54 @@ Call it on bounded subsets when the complete H(k) array would be too large.
 
 Both serial and parallel band/eigenvector solvers use this shared batch
 constructor. Parallel jobs receive contiguous k-point ranges and process them
-in bounded batches. The default policy balances the known point/thread counts
-under one budget for Bloch phase matrices and Hamiltonian batches; it has no
-fixed 16-point cap. That budget is not a constant:
+in batches sized from a total per-process Fourier buffer allowance `U`:
 
 ```
-budget = clamp(ceiling / (8 * per-node processes), 128 MiB, 1 GiB)
-ceiling = min(readable cgroup memory limit, host MemAvailable)
+U = detected available memory / local process count
+per-worker share = U / N
 ```
 
-`ceiling` is the smallest readable cgroup limit (the controller root, which
-covers container cgroup namespaces, plus every ancestor of the process's own
-cgroup, which covers systemd scopes/slices and launcher step cgroups) together
-with the host's `MemAvailable`. A process in a *named* cgroup — `/proc/self/cgroup`
-resolving to something other than `/` — whose limit is unreadable anywhere on that
-ladder gets the historical 128 MiB instead of the host number, because guessing
-there is what turns a limited job into an OOM kill; the ancestor minimum is still
-only an upper bound if a deeper limit is hidden. A process in the root cgroup
-(bare metal, or a host where `/proc/self/cgroup` itself is unreadable) falls back
-to `MemAvailable`, which is the honest bound there. Detection is Linux-only, and
-so is the `MemAvailable` fallback; other targets always keep 128 MiB. One case
-stays genuinely invisible: a container that hides its cgroup limit *and*
-namespaces `/proc/self/cgroup` down to `/` leaves only the host's `MemAvailable`,
-which is also what a bare-metal host or a VM reports. Pin
-`RUSTB_FOURIER_MEMORY_MIB` for those. `per-node processes` is the rank count a
-launcher reports (`SLURM_NTASKS_PER_NODE`, `OMPI_COMM_WORLD_LOCAL_SIZE`,
-`MV2_COMM_WORLD_LOCAL_SIZE`, `MPI_LOCALNRANKS` for SLURM, Open MPI, MVAPICH2 and
-Intel MPI), so co-resident ranks divide one share instead of each claiming the
-host's memory; without such a variable, or with a non-numeric value, the divisor
-assumes at most eight equal claimants.
+`N` is the current Rayon pool size for both serial and parallel solvers. A
+serial solver uses one share, including inside an outer parallel loop; it
+does not claim the whole process allowance. The share is fixed for the entire
+call, including when there are fewer k-points than workers or only tail jobs
+remain; idle workers' shares are never redistributed. For example, total
+allowances of 256 GiB and 1.5 TiB with 64 workers give 4 GiB and 24 GiB per
+worker, respectively. These are illustrative inputs, not measured machine RAM.
 
-Consequences worth knowing:
+On Linux, available memory is the minimum of host `MemAvailable` and each
+finite cgroup v1/v2 limit minus its current usage, including the process's
+named cgroup, its ancestors and any exposed controller-root limit. A fully
+readable unlimited hierarchy uses host availability; a physical controller
+root need not expose a limit. An unreadable named ancestor or missing usage
+for a finite limit makes detection unknown. Unknown detection and non-Linux
+targets use a total allowance of 128 MiB. The local process count is the
+largest positive count reported by `SLURM_NTASKS_PER_NODE`,
+`OMPI_COMM_WORLD_LOCAL_SIZE`, `MV2_COMM_WORLD_LOCAL_SIZE` or `MPI_LOCALNRANKS`,
+defaulting to one; no MPI dependency is required.
 
-- With one process per node, a detected ceiling of 8 GiB or more reaches the
-  1 GiB ceiling, eight times the previous fixed budget — measured, a 62 GiB
-  8-core workstation detects a 60 GiB ceiling and resolves to 1 GiB. `p`
-  co-resident processes need a ceiling of `8 * p` GiB to reach that ceiling
-  (8 GiB shared by 8 ranks resolves to the floor). A ceiling at or below `p` GiB
-  sits on the floor, so one process per node inside a container limited to 2 GiB
-  resolves to 256 MiB however large the host is; a host with less than 2 GiB
-  available binds first, because the ceiling is the smaller of the two.
-- The 128 MiB floor is unconditional: it applies on every detection path, it is
-  what a non-Linux target or an all-unreadable ladder in a named cgroup gets, and
-  `p` co-resident processes may each hold it (64 ranks inside a 1 GiB container
-  are permitted 64 × 128 MiB). Only `RUSTB_FOURIER_MEMORY_MIB` goes below it.
-- The larger budget is what keeps a multi-point batch on a large node. A batch
-  of one point drops the Fourier sum onto its `zaxpy` path, which re-reads the
-  whole hopping array for every k point. A very large basis can still land
-  there: `batch_size >= 2` needs `bytes_per_k <= budget / (2 * workers)`, so at
-  128 threads and 1 GiB a basis of about 512 orbitals with 2000 hopping vectors
-  still gets one point per batch.
-- Set `RUSTB_FOURIER_MEMORY_MIB` before the first solve to pin the budget
-  instead. The value is read once per process: a positive number of MiB is used
-  literally and bypasses both clamps (it can exceed the detected ceiling or fall
-  below the floor; on a 32-bit target a value the platform cannot represent
-  saturates to the 1 GiB ceiling), while zero, malformed and overflowing values
-  are ignored and detection is used. This is the right answer for MPI ranks and
-  `--mem-per-cpu` allocations whenever the launcher exports no rank count, and
-  for reproducible last bits, since a one-point batch sums with `zaxpy` instead
-  of `zgemm`. Pin `RAYON_NUM_THREADS` too for that purpose: the batch also
-  divides by the worker count, so the thread count alone can move it.
-- The serial solvers share the policy with a single worker: `threads = 1` makes
-  the batch the whole point count that fits the budget, so `solve_band_all` and
-  `solve_all` on a large host now hold up to 1 GiB of Fourier buffers where the
-  fixed constant allowed 128 MiB. Serial callers who chose that path for memory
-  reasons should set `RUSTB_FOURIER_MEMORY_MIB`.
-- The budget bounds the Fourier buffers only. Output arrays, orbital phases and
-  one LAPACK copy of each H(k) per worker are additional: the process peak is
-  roughly the budget plus `workers * nsta^2` complex numbers, and for
-  `solve_all_parallel` the returned `nk * nsta^2` eigenvector array is unbounded
-  and usually dominates for a large basis.
+`U` is resolved once per process, with no 128 MiB floor or 1 GiB cap. Set
+`RUSTB_FOURIER_MEMORY_MIB` before the first solve to override the **total** `U`
+with a positive integer number of MiB; the override is not divided by the
+local process count. Zero, malformed and overflowing values use detection.
+Both paths retain at least one byte and cap at the target's `isize::MAX`.
+Pin this variable and the Rayon pool size (normally `RAYON_NUM_THREADS`) for
+repeatable batching across runs: the machine snapshot can vary, and one-point
+`zaxpy` versus multi-point `zgemm` sums can differ in their last bits. Set the
+override when launcher counts or container memory limits are hidden.
+
+The share sizes Bloch phase and Hamiltonian buffers, with no fixed point cap.
+Every batch permits at least one k-point: a large Hamiltonian is not rejected
+solely because it exceeds the share or even total `U`. Concurrency is reduced
+when needed to keep such points within `U` where possible. This is a soft
+Fourier buffer scheduling target, not a hard per-thread or process memory cap.
+LAPACK buffers, orbital phases and returned arrays are additional; the
+`nk * nsta^2` eigenvector output of `solve_all_parallel` can dominate memory.
 
 Batching is internal to the existing solver methods and requires no options.
-When points are fewer than workers, jobs can contain a single point; the policy
-does not guarantee an optimal batch size on every machine. Rayon chooses which
-workers run the jobs; they are not pinned to CPU cores. Configure BLAS threading
-separately (for example `MKL_NUM_THREADS=1` with outer Rayon parallelism).
+Rayon chooses which workers run the jobs; they are not pinned to CPU cores.
+Configure BLAS threading separately (for example `MKL_NUM_THREADS=1` with outer
+Rayon parallelism).
 
 ### Eigenvalue ordering and eigenvector axes
 

@@ -15,22 +15,27 @@ use std::sync::OnceLock;
 // orbital phases and LAPACK workspace are additional; process even one oversized k-point.
 //
 // A fixed budget shrinks the per-GEMM batch on large nodes, because the batch is
-// `budget / (workers * bytes_per_k)`. The budget is therefore derived once per
-// process from the cgroup limit and the host's available memory, keeping a floor
-// and a ceiling, and split between the processes sharing the node. It bounds the
+// `budget / (configured_threads * bytes_per_k)`. The budget is derived once per
+// process from cgroup headroom and the host's available memory, and split between
+// the processes sharing the node. It bounds the
 // Fourier buffers only: the process peak is roughly the budget plus one LAPACK
 // copy of H(k) per worker plus the returned arrays.
-const FOURIER_BUDGET_MIN: usize = 128 * 1024 * 1024;
-const FOURIER_BUDGET_MAX: usize = 1024 * 1024 * 1024;
-const FOURIER_BUDGET_DIVISOR: u64 = 8;
+const FOURIER_BUDGET_FALLBACK: usize = 128 * 1024 * 1024;
 
 // Parse a cgroup memory limit: bytes, or any unlimited spelling. The v2 `max`
-// token and the v1 `PAGE_COUNTER_MAX * PAGE_SIZE` value (about 2^63) both fail
-// to describe a real limit.
+// token and the v1 `PAGE_COUNTER_MAX * PAGE_SIZE` value (about 2^63) mean
+// unlimited (u64::MAX), distinct from an unreadable or malformed value (None).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_cgroup_limit(text: &str) -> Option<u64> {
+    if text.trim() == "max" {
+        return Some(u64::MAX);
+    }
     let bytes: u64 = text.trim().parse().ok()?;
-    (bytes < (1u64 << 62)).then_some(bytes)
+    Some(if bytes < (1u64 << 62) {
+        bytes
+    } else {
+        u64::MAX
+    })
 }
 
 // Parse `MemAvailable` from /proc/meminfo, which is reported in kB.
@@ -88,64 +93,78 @@ fn cgroup_ancestors(path: &str) -> Vec<String> {
     prefixes
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn read_cgroup_limit(path: &str) -> Option<u64> {
-    parse_cgroup_limit(&std::fs::read_to_string(path).ok()?)
-}
-
-// Memory ceiling for this process: the smallest readable cgroup limit and the
-// host's available memory, whichever is smaller. The controller root covers
-// container cgroup namespaces; the ancestors of this process's own cgroup cover
-// systemd scopes/slices and launcher step cgroups. A process that visibly sits in
-// a named cgroup whose limit cannot be read reports `None` instead of borrowing
-// the host number: guessing is what turns a limited job into an OOM kill. Bare
-// metal and the root cgroup do fall back to `MemAvailable`.
+// Read once; the injected reader keeps parser/hierarchy tests independent of
+// mutable host state without changing process-wide environment variables.
 #[cfg(target_os = "linux")]
 fn detected_memory_ceiling() -> Option<u64> {
-    let mut paths = vec![
-        String::from("/sys/fs/cgroup/memory.max"), // cgroup v2 controller root
-        String::from("/sys/fs/cgroup/memory/memory.limit_in_bytes"), // cgroup v1 root
-    ];
+    detected_memory_ceiling_with(|path| std::fs::read_to_string(path).ok())
+}
+
+// Each finite ancestor contributes its remaining allowance, not its total
+// limit. A fully readable unlimited hierarchy can use MemAvailable. An
+// unlimited root alone cannot establish that an inaccessible child is unlimited.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn detected_memory_ceiling_with(read: impl Fn(&str) -> Option<String>) -> Option<u64> {
+    let mut directories = vec![String::from("/")];
     let mut named_cgroup = false;
-    if let Ok(text) = std::fs::read_to_string("/proc/self/cgroup") {
+    if let Some(text) = read("/proc/self/cgroup") {
         for path in parse_self_cgroup(&text) {
             named_cgroup |= path != "/";
             for ancestor in cgroup_ancestors(&path) {
-                paths.push(format!("/sys/fs/cgroup{ancestor}/memory.max"));
-                paths.push(format!(
-                    "/sys/fs/cgroup/memory{ancestor}/memory.limit_in_bytes"
-                ));
+                if !directories.contains(&ancestor) {
+                    directories.push(ancestor);
+                }
             }
         }
     }
-    let limit = paths
-        .iter()
-        .filter_map(|path| read_cgroup_limit(path))
+    let mut complete = true;
+    let mut missing_usage = false;
+    let mut headroom: Option<u64> = None;
+    for directory in directories {
+        let directory = directory.trim_end_matches('/');
+        let remaining = [
+            (
+                format!("/sys/fs/cgroup{directory}"),
+                "memory.max",
+                "memory.current",
+            ),
+            (
+                format!("/sys/fs/cgroup/memory{directory}"),
+                "memory.limit_in_bytes",
+                "memory.usage_in_bytes",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(base, limit_file, usage_file)| {
+            let limit = parse_cgroup_limit(&read(&format!("{base}/{limit_file}"))?)?;
+            if limit == u64::MAX {
+                return Some(limit);
+            }
+            match read(&format!("{base}/{usage_file}"))
+                .and_then(|text| text.trim().parse::<u64>().ok())
+            {
+                Some(used) => Some(limit.saturating_sub(used)),
+                None => {
+                    missing_usage = true;
+                    None
+                }
+            }
+        })
         .min();
-    let available = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|text| parse_meminfo_available(&text));
-    ceiling_from_limits(limit, named_cgroup, available)
-}
-
-// Combine the readable cgroup limit with the host's available memory. A process
-// that visibly sits in a named cgroup whose limit could not be read at any level
-// of the ladder reports `None` rather than borrowing the host number: guessing
-// there is what turns a limited job into an OOM kill. Bare metal and the root
-// cgroup do fall back to the host.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn ceiling_from_limits(
-    cgroup: Option<u64>,
-    named_cgroup: bool,
-    available: Option<u64>,
-) -> Option<u64> {
-    if cgroup.is_none() && named_cgroup {
+        // Physical cgroup-v2 roots have no memory.max/current files. A
+        // namespace root may expose them; use those bounds when present.
+        complete &= directory.is_empty() || remaining.is_some();
+        if let Some(remaining) = remaining {
+            headroom = Some(headroom.map_or(remaining, |known| known.min(remaining)));
+        }
+    }
+    let available = read("/proc/meminfo").and_then(|text| parse_meminfo_available(&text));
+    if missing_usage || (named_cgroup && !complete) {
         return None;
     }
-    match (cgroup, available) {
-        (Some(limit), Some(available)) => Some(limit.min(available)),
-        (Some(limit), None) => Some(limit),
-        (None, available) => available,
+    match headroom {
+        Some(u64::MAX) | None => available,
+        Some(remaining) => Some(available.map_or(remaining, |host| host.min(remaining))),
     }
 }
 
@@ -156,30 +175,29 @@ fn detected_memory_ceiling() -> Option<u64> {
 }
 
 // Resolve one budget from an explicit override (bytes), the detected ceiling and
-// the number of co-resident processes. An override is taken literally and
-// bypasses both clamps; detection is divided and clamped.
+// the number of co-resident processes. No policy cap/floor applies to detected
+// memory. Keep at least one byte and respect the target's addressable size.
 fn resolve_fourier_budget(
     override_bytes: Option<u64>,
     detected: Option<u64>,
     local_processes: u64,
 ) -> usize {
-    if let Some(bytes) = override_bytes.filter(|bytes| *bytes > 0) {
-        return usize::try_from(bytes).unwrap_or(FOURIER_BUDGET_MAX);
-    }
-    let Some(ceiling) = detected else {
-        return FOURIER_BUDGET_MIN;
-    };
-    let divisor = FOURIER_BUDGET_DIVISOR.saturating_mul(local_processes.max(1));
-    let share = (ceiling / divisor).clamp(FOURIER_BUDGET_MIN as u64, FOURIER_BUDGET_MAX as u64);
-    usize::try_from(share).unwrap_or(FOURIER_BUDGET_MIN)
+    let bytes = override_bytes
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or_else(|| {
+            detected.map_or(FOURIER_BUDGET_FALLBACK as u64, |ceiling| {
+                ceiling / local_processes.max(1)
+            })
+        });
+    bytes.clamp(1, isize::MAX as u64) as usize
 }
 
 // Per-node process count exported by common launchers: SLURM, Open MPI,
 // MVAPICH2 and Intel MPI. Every rank measures the same node, so the share has to
 // be divided between them rather than granted once per rank. A launcher that
-// reports nothing, or reports a non-numeric value, leaves the divisor's default
-// of eight equal claimants; the environment override is the general answer.
-fn local_process_count() -> u64 {
+// reports nothing leaves the default of one process; threads are not ranks.
+// Conflicting launchers use the largest count, so Slurm cannot hide MPI ranks.
+fn local_process_count(read: impl Fn(&str) -> Option<u64>) -> u64 {
     [
         "SLURM_NTASKS_PER_NODE",
         "OMPI_COMM_WORLD_LOCAL_SIZE",
@@ -187,8 +205,10 @@ fn local_process_count() -> u64 {
         "MPI_LOCALNRANKS",
     ]
     .into_iter()
-    .find_map(positive_env)
+    .filter_map(read)
+    .max()
     .unwrap_or(1)
+    .max(1)
 }
 
 // Budget for Bloch phase matrices and H(k) batches, resolved once per process:
@@ -207,13 +227,15 @@ fn fourier_memory_budget() -> usize {
         resolve_fourier_budget(
             override_bytes,
             detected_memory_ceiling(),
-            local_process_count(),
+            local_process_count(positive_env),
         )
     })
 }
 
-// Return (k-points per coarse job, k-points per GEMM). Each coarse job streams
-// its assigned range in bounded batches; Rayon can schedule jobs dynamically.
+// Return (k-points per coarse job, k-points per GEMM). Each worker gets budget/N
+// for configured N, even when fewer jobs exist or only the tail remains. Never
+// redistribute idle workers' shares. One oversized point is still attempted;
+// reduce concurrency when necessary to fit those points in the total budget.
 fn batch_plan(
     nk: usize,
     nr: usize,
@@ -232,7 +254,8 @@ fn batch_plan(
     let live_points = (budget / bytes_per_k.max(1)).max(1);
     let workers = threads.max(1).min(nk).min(live_points);
     let job_size = nk.div_ceil(workers);
-    Ok((job_size, job_size.min(live_points / workers)))
+    let batch_size = (budget / threads.max(1) / bytes_per_k.max(1)).max(1);
+    Ok((job_size, job_size.min(batch_size)))
 }
 
 // Finite model data can still overflow during the Fourier sum or gauge transform.
@@ -311,8 +334,8 @@ pub trait Solve {
     /// 返回形状 `(nk, nsta)`，`bands[[ik, n]]` 对应输入第 `ik` 个 k 点的
     /// 第 `n` 小能量。每个 k 点独立升序排序，不进行跨 k 点的能带追踪。
     /// Batches use the same construction and adaptive memory budget as
-    /// [`Solve::solve_band_all_parallel`] with a single worker, so a serial call
-    /// on a large host can hold the whole budget in one batch.
+    /// [`Solve::solve_band_all_parallel`]. A serial call uses one worker's share
+    /// from the current Rayon pool, including inside an outer parallel loop.
     /// Errors follow the shared [`Solve`] contract.
     fn solve_band_all<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix2>) -> Result<Array2<f64>>;
     /// Solve energy bands in parallel, using bounded batches of Fourier sums.
@@ -320,33 +343,28 @@ pub trait Solve {
     /// H(k) matrices before building its next batch. Returns eigenvalues in
     /// input k-point order. Configure BLAS threading separately from Rayon.
     ///
-    /// The batch budget adapts to the machine:
-    /// `clamp(ceiling / (8 * per-node processes), 128 MiB, 1 GiB)` with `ceiling`
-    /// the smaller of the readable cgroup memory limit and the host's
-    /// `MemAvailable`. It is resolved once per process, so one run batches
-    /// identically end to end, but hosts with different visible memory need not.
-    /// With one process per node, a detected ceiling of 8 GiB or more reaches the
-    /// 1 GiB ceiling — eight times the previous fixed value — while `p`
-    /// co-resident processes need `8 * p` GiB, and a ceiling at or below
-    /// `p` GiB sits on the 128 MiB floor. A very large basis still falls back to
-    /// a single-point batch (`batch_size >= 2` needs
-    /// `bytes_per_k <= budget / (2 * workers)`). Detection is Linux-only; a
-    /// process in a named cgroup whose limit is unreadable at every level of the
-    /// ladder keeps the historical 128 MiB instead of borrowing the host number,
-    /// while a root-cgroup or bare-metal process falls back to `MemAvailable`,
-    /// and other targets always keep 128 MiB. A container that hides its limit
-    /// *and* namespaces `/proc/self/cgroup` down to `/` still leaves only the
-    /// host number, so pin the variable there. Set `RUSTB_FOURIER_MEMORY_MIB`
-    /// before the first solve to pin the budget: a positive value is used
-    /// literally and bypasses both clamps (saturating to the 1 GiB ceiling where
-    /// the target cannot represent it), while zero, malformed and overflowing
-    /// values are ignored. The 128 MiB floor is unconditional; only the override
-    /// goes below it, and each co-resident process keeps that floor even when the
-    /// share would be smaller. Output arrays, orbital phases and one LAPACK copy
-    /// of H(k) per worker are additional to the budget, so the process peak is
-    /// roughly the budget plus `workers * nsta²` complex numbers plus the
-    /// returned arrays. Pin `RAYON_NUM_THREADS` as well when identical last bits
-    /// matter, since the batch also divides by the worker count.
+    /// Each worker's Fourier buffer target is `U / N`, where `N` is the current
+    /// Rayon pool size, fixed throughout the call. Serial solvers use one share.
+    /// Idle workers' shares are never redistributed, including at the tail.
+    /// `U` is the process's available-memory allowance: the minimum of Linux
+    /// `MemAvailable` and readable cgroup `limit - usage`, divided by the largest
+    /// reported launcher-local process count (default one). Fully readable
+    /// unlimited cgroups use host availability. Unknown named hierarchies and
+    /// non-Linux targets fall back to a total `U` of 128 MiB. There is no fixed
+    /// capacity cap or detected-memory floor.
+    ///
+    /// `U` is cached once per process; `N` is taken from each call's thread pool.
+    /// Set `RUSTB_FOURIER_MEMORY_MIB` before the first solve to override total
+    /// `U`, not the per-worker share. Positive MiB values are used up to the
+    /// target's addressable size; zero, malformed or overflowing values are
+    /// ignored. Pin both this override and `RAYON_NUM_THREADS` for repeatable
+    /// batching across runs. Hidden container limits require an explicit budget.
+    ///
+    /// This is a scheduling target, not a hard memory limit. One oversized
+    /// k-point is still attempted, with fewer concurrent jobs if needed; models
+    /// are not rejected solely for exceeding the target. Returned arrays,
+    /// orbital phases and LAPACK workspace are additional, so allocating the
+    /// Fourier buffers does not guarantee the complete solve fits in memory.
     /// Shape and energy ordering are identical to [`Solve::solve_band_all`].
     fn solve_band_all_parallel<S: Data<Elem = f64>>(
         &self,
@@ -542,7 +560,7 @@ pub trait Solve {
     /// `RUSTB_FOURIER_MEMORY_MIB` budget; the returned eigenvectors are an
     /// additional `nk * nsta²` allocation outside that budget and usually dominate
     /// the peak for a large basis. The serial [`Solve::solve_all`] shares the same
-    /// budget with a single worker.
+    /// policy and uses one worker's fixed share from the current Rayon pool.
     fn solve_all_parallel<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix2>,
@@ -642,18 +660,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         parallel: bool,
     ) -> Result<Array2<f64>> {
         self.validate_solver_input(points.view())?;
-        let threads = if parallel {
-            rayon::current_num_threads()
-        } else {
-            1
-        };
-        let (job_size, batch_size) = batch_plan(
-            points.nrows(),
-            self.hamR.nrows(),
-            self.nsta(),
-            threads,
-            fourier_memory_budget(),
-        )?;
+        let (job_size, batch_size) = self.solver_batch_plan(points.nrows(), parallel)?;
         let mut bands = Array2::zeros((points.nrows(), self.nsta()));
         let solve =
             |(points, mut energies): (ArrayView2<'_, f64>, ArrayViewMut2<'_, f64>)| -> Result<()> {
@@ -694,18 +701,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         parallel: bool,
     ) -> Result<(Array2<f64>, Array3<Complex<f64>>)> {
         self.validate_solver_input(points.view())?;
-        let threads = if parallel {
-            rayon::current_num_threads()
-        } else {
-            1
-        };
-        let (job_size, batch_size) = batch_plan(
-            points.nrows(),
-            self.hamR.nrows(),
-            self.nsta(),
-            threads,
-            fourier_memory_budget(),
-        )?;
+        let (job_size, batch_size) = self.solver_batch_plan(points.nrows(), parallel)?;
         let mut bands = Array2::zeros((points.nrows(), self.nsta()));
         let mut vectors = Array3::zeros((points.nrows(), self.nsta(), self.nsta()));
         let solve = |((points, mut energies), mut vectors): (
@@ -754,6 +750,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .try_for_each(solve)?;
         }
         Ok((bands, vectors))
+    }
+
+    // Serial solves may run inside an outer Rayon loop (e.g. Berry loops).
+    // They receive one U/N share, not an entire process allowance each.
+    fn solver_batch_plan(&self, nk: usize, parallel: bool) -> Result<(usize, usize)> {
+        let configured_threads = rayon::current_num_threads();
+        let total = fourier_memory_budget();
+        let (threads, budget) = if parallel {
+            (configured_threads, total)
+        } else {
+            (1, (total / configured_threads).max(1))
+        };
+        batch_plan(nk, self.hamR.nrows(), self.nsta(), threads, budget)
     }
 }
 
@@ -959,7 +968,7 @@ mod tests {
 
     #[test]
     fn batch_plan_bounds_memory_and_job_count() {
-        for budget in [FOURIER_BUDGET_MIN, FOURIER_BUDGET_MAX, 7, 1] {
+        for budget in [FOURIER_BUDGET_FALLBACK, 1 << 30, 7, 1] {
             for nk in [0, 1, 128, 129, 4096, 29791] {
                 for threads in [1, 3, 8, 256] {
                     // (0, 0) only pins "no panic without buffers": its per-point
@@ -975,40 +984,80 @@ mod tests {
                                 || (jobs <= 1 && batch_size == 1 && budget < per_k)
                         );
                         assert!(batch_size > 0 && job_size > 0);
+                        assert!(batch_size * per_k <= budget / threads || batch_size == 1);
                     }
                 }
             }
         }
         // Automatic batches are not capped at the previous hard-coded 16.
-        assert!(batch_plan(4096, 841, 200, 8, FOURIER_BUDGET_MAX).unwrap().1 > 16);
-        assert!(batch_plan(1, 1, usize::MAX, 1, FOURIER_BUDGET_MIN).is_err());
+        assert!(batch_plan(4096, 841, 200, 8, 1 << 30).unwrap().1 > 16);
+        assert!(batch_plan(1, 1, usize::MAX, 1, FOURIER_BUDGET_FALLBACK).is_err());
     }
 
     #[test]
-    fn a_bigger_budget_restores_a_multi_point_batch() {
-        // The purpose of adapting the budget: at 128 threads a 200-orbital model
-        // with 841 hopping vectors gets a single-point batch at the old fixed
-        // budget, which drops the Fourier sum onto its one-pass-per-k zaxpy path,
-        // and a multi-point batch at the ceiling.
+    #[cfg(target_pointer_width = "64")]
+    fn worker_shares_scale_with_memory_and_configured_threads() {
+        // Planning only: 4096^2 complex numbers are 256 MiB per point.
+        // No large matrices are allocated. The node examples are fixed inputs.
+        let small = resolve_fourier_budget(None, Some(256 << 30), 1);
+        let large = resolve_fourier_budget(None, Some(1536 << 30), 1);
+        assert_eq!(small / 64, 4 << 30);
+        assert_eq!(large / 64, 24 << 30);
+        for (threads, small_batch, large_batch) in
+            [(64, 16, 96), (96, 10, 64), (128, 8, 48), (256, 4, 24)]
+        {
+            assert_eq!(
+                batch_plan(65536, 0, 4096, threads, small).unwrap().1,
+                small_batch
+            );
+            assert_eq!(
+                batch_plan(65536, 0, 4096, threads, large).unwrap().1,
+                large_batch
+            );
+            // Fewer points never increase the per-worker share. A tail uses
+            // the original plan; only the final chunk's length shrinks.
+            for nk in [1, 2, threads - 1, threads + 1, 65537] {
+                let (job, batch) = batch_plan(nk, 0, 4096, threads, small).unwrap();
+                assert!(batch <= small_batch);
+                assert!(nk.div_ceil(job) <= threads);
+            }
+        }
+        // A point beyond even the total allowance still runs alone; the
+        // planner does not impose a model-size rejection at the fallback.
         assert_eq!(
-            batch_plan(4096, 841, 200, 128, FOURIER_BUDGET_MIN)
-                .unwrap()
-                .1,
-            1
-        );
-        assert!(
-            batch_plan(4096, 841, 200, 128, FOURIER_BUDGET_MAX)
-                .unwrap()
-                .1
-                > 1
+            batch_plan(100, 0, 4096, 64, FOURIER_BUDGET_FALLBACK).unwrap(),
+            (100, 1)
         );
     }
 
     #[test]
-    fn memory_ceiling_parsers_ignore_unlimited_and_convert_kib() {
+    fn serial_and_parallel_plans_use_the_calling_pools_worker_share() {
+        let model = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+        let total = fourier_memory_budget();
+        // Plan only; this ensures job length does not truncate the batch.
+        let nk = usize::MAX / 16;
+        for threads in [1, 3] {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    let expected = (total / threads / 32).max(1); // H plus one Bloch phase
+                    let (serial_job, serial_batch) = model.solver_batch_plan(nk, false).unwrap();
+                    let (_, parallel_batch) = model.solver_batch_plan(nk, true).unwrap();
+                    assert_eq!(serial_job, nk);
+                    assert_eq!(serial_batch, expected);
+                    assert_eq!(parallel_batch, expected);
+                    assert_eq!(fourier_memory_budget(), total);
+                });
+        }
+    }
+
+    #[test]
+    fn memory_ceiling_parsers_distinguish_unlimited_and_convert_kib() {
         assert_eq!(parse_cgroup_limit("1073741824\n"), Some(1 << 30));
-        assert_eq!(parse_cgroup_limit("max\n"), None); // cgroup v2 unlimited
-        assert_eq!(parse_cgroup_limit("9223372036854771712\n"), None); // cgroup v1 unlimited
+        assert_eq!(parse_cgroup_limit("max\n"), Some(u64::MAX));
+        assert_eq!(parse_cgroup_limit("9223372036854771712\n"), Some(u64::MAX));
         assert_eq!(parse_cgroup_limit(""), None);
         assert_eq!(parse_cgroup_limit("not a number\n"), None);
 
@@ -1049,87 +1098,173 @@ mod tests {
     }
 
     #[test]
-    fn invisible_cgroup_limits_do_not_borrow_the_host_number() {
-        // Named cgroup, unreadable limit: unknown, not the host's memory.
-        assert_eq!(ceiling_from_limits(None, true, Some(64 << 30)), None);
-        // Bare metal or the root cgroup: the host number is the honest ceiling.
-        assert_eq!(
-            ceiling_from_limits(None, false, Some(64 << 30)),
-            Some(64 << 30)
-        );
-        assert_eq!(ceiling_from_limits(None, false, None), None);
-        // A readable limit wins whenever it is the smaller of the two.
-        assert_eq!(
-            ceiling_from_limits(Some(2 << 30), true, Some(64 << 30)),
-            Some(2 << 30)
-        );
-        assert_eq!(
-            ceiling_from_limits(Some(64 << 30), true, Some(2 << 30)),
-            Some(2 << 30)
-        );
-        assert_eq!(
-            ceiling_from_limits(Some(2 << 30), true, None),
-            Some(2 << 30)
-        );
+    fn cgroup_memory_ceiling_uses_visible_remaining_allowance() {
+        let mut files = std::collections::BTreeMap::from([
+            ("/proc/self/cgroup", "0::/job/step\n"),
+            ("/proc/meminfo", "MemAvailable: 16 kB\n"),
+            ("/sys/fs/cgroup/memory.max", "max\n"),
+            ("/sys/fs/cgroup/job/memory.max", "max\n"),
+            ("/sys/fs/cgroup/job/step/memory.max", "max\n"),
+        ]);
+        let detect = |files: &std::collections::BTreeMap<&str, &str>| {
+            detected_memory_ceiling_with(|path| files.get(path).map(|text| text.to_string()))
+        };
+        // Only a fully readable unlimited hierarchy can borrow MemAvailable.
+        assert_eq!(detect(&files), Some(16 * 1024));
+        // The physical v2 root has no memory.max or memory.current files.
+        files.remove("/sys/fs/cgroup/memory.max");
+        assert_eq!(detect(&files), Some(16 * 1024));
+        files.insert("/sys/fs/cgroup/memory.max", "max");
+        files.remove("/sys/fs/cgroup/job/step/memory.max");
+        assert_eq!(detect(&files), None);
+        files.insert("/sys/fs/cgroup/job/step/memory.max", "malformed");
+        assert_eq!(detect(&files), None);
+        files.insert("/sys/fs/cgroup/job/step/memory.max", "max");
+
+        // The finite parent constrains the unlimited child by its headroom.
+        files.insert("/sys/fs/cgroup/job/memory.max", "32768");
+        files.insert("/sys/fs/cgroup/job/memory.current", "24576");
+        assert_eq!(detect(&files), Some(8192));
+        // An inaccessible child may impose a tighter bound than its parent.
+        files.remove("/sys/fs/cgroup/job/step/memory.max");
+        assert_eq!(detect(&files), None);
+        files.insert("/sys/fs/cgroup/job/step/memory.max", "max");
+        files.insert("/proc/meminfo", "MemAvailable: 4 kB\n");
+        assert_eq!(detect(&files), Some(4096));
+        files.remove("/proc/meminfo");
+        assert_eq!(detect(&files), Some(8192));
+
+        files.insert("/sys/fs/cgroup/job/step/memory.max", "4096");
+        files.insert("/sys/fs/cgroup/job/step/memory.current", "1024");
+        assert_eq!(detect(&files), Some(3072));
+        files.insert("/sys/fs/cgroup/job/memory.current", "32769");
+        assert_eq!(detect(&files), Some(0));
+
+        files.insert("/sys/fs/cgroup/job/step/memory.max", "max");
+        files.insert("/proc/meminfo", "MemAvailable: 16 kB\n");
+        files.remove("/sys/fs/cgroup/job/memory.current");
+        assert_eq!(detect(&files), None);
+        // A readable child must not erase a tighter parent with unknown usage.
+        files.insert("/sys/fs/cgroup/job/memory.max", "2048");
+        files.insert("/sys/fs/cgroup/job/step/memory.max", "4096");
+        assert_eq!(detect(&files), None);
     }
 
     #[test]
-    fn fourier_budget_claims_a_fraction_of_the_detected_ceiling() {
-        // A ceiling inside the clamp window pins the divisor itself, not just the
-        // saturated endpoints: 3 GiB / 8.
-        assert_eq!(resolve_fourier_budget(None, Some(3 << 30), 1), 384 << 20);
-        // Every rank on the node claims its own share of the same ceiling.
-        assert_eq!(resolve_fourier_budget(None, Some(32 << 30), 16), 256 << 20);
-        // Large host or container: one process still claims only a share.
-        assert_eq!(
-            resolve_fourier_budget(None, Some(64 << 30), 1),
-            FOURIER_BUDGET_MAX
-        );
-        assert_eq!(
-            resolve_fourier_budget(None, Some((FOURIER_BUDGET_MIN as u64) * 8), 1),
-            FOURIER_BUDGET_MIN
-        );
-        // Small container: never below the historical budget.
-        assert_eq!(
-            resolve_fourier_budget(None, Some(512 << 20), 1),
-            FOURIER_BUDGET_MIN
-        );
-        // Unknown ceiling (unreadable limit, non-Linux) keeps the historical
-        // budget, and the clamp never panics on a degenerate process count.
-        assert_eq!(resolve_fourier_budget(None, None, 1), FOURIER_BUDGET_MIN);
-        assert_eq!(
-            resolve_fourier_budget(None, Some(64 << 30), 0),
-            FOURIER_BUDGET_MAX
-        );
-        // An explicit override is taken literally, including below the floor.
-        assert_eq!(
-            resolve_fourier_budget(Some(2 << 30), Some(512 << 20), 1),
-            2 << 30
-        );
-        // Zero is not an override: it would otherwise switch Rayon off entirely.
-        assert_eq!(resolve_fourier_budget(Some(0), Some(3 << 30), 1), 384 << 20);
-
-        // The process budget is wired to detection, the launcher rank count and
-        // the environment override: recomputing the same inputs must reproduce
-        // it. (The override path itself is covered through
-        // `resolve_fourier_budget`; `std::env::set_var` is unsafe and would race
-        // with the process-wide cache.)
-        let budget = fourier_memory_budget();
-        if std::env::var("RUSTB_FOURIER_MEMORY_MIB").is_err() {
-            let recomputed =
-                resolve_fourier_budget(None, detected_memory_ceiling(), local_process_count());
-            // MemAvailable moves under load, so an interior budget is not
-            // byte-identical to a recomputation; requiring the same clamp
-            // endpoint still rejects a call site that ignores detection, except
-            // on a host where detection itself lands on that endpoint.
-            assert!(
-                (budget != FOURIER_BUDGET_MIN || recomputed == FOURIER_BUDGET_MIN)
-                    && (budget != FOURIER_BUDGET_MAX || recomputed == FOURIER_BUDGET_MAX),
-                "{budget} vs recomputed {recomputed}"
+    fn cgroup_v1_memory_ceiling_requires_usage_for_finite_limits() {
+        for (usage, expected) in [
+            (Some("4096\n"), Some(12288)),
+            (None, None),
+            (Some("malformed\n"), None),
+        ] {
+            assert_eq!(
+                detected_memory_ceiling_with(|path| {
+                    match path {
+                        "/proc/self/cgroup" => Some("11:memory:/job\n"),
+                        "/proc/meminfo" => Some("MemAvailable: 16 kB\n"),
+                        "/sys/fs/cgroup/memory/memory.limit_in_bytes" => {
+                            Some("9223372036854771712\n")
+                        }
+                        "/sys/fs/cgroup/memory/job/memory.limit_in_bytes" => Some("16384\n"),
+                        "/sys/fs/cgroup/memory/job/memory.usage_in_bytes" => usage,
+                        _ => None,
+                    }
+                    .map(str::to_owned)
+                }),
+                expected
             );
-            assert!((FOURIER_BUDGET_MIN..=FOURIER_BUDGET_MAX).contains(&budget));
         }
+    }
+
+    #[test]
+    fn unknown_root_cgroup_can_use_host_available_memory() {
+        for membership in [None, Some("0::/\n")] {
+            assert_eq!(
+                detected_memory_ceiling_with(|path| {
+                    match path {
+                        "/proc/self/cgroup" => membership,
+                        "/proc/meminfo" => Some("MemAvailable: 16 kB\n"),
+                        _ => None,
+                    }
+                    .map(str::to_owned)
+                }),
+                Some(16 * 1024)
+            );
+        }
+        assert_eq!(detected_memory_ceiling_with(|_| None), None);
+    }
+
+    #[test]
+    fn finite_root_cgroup_with_unknown_usage_cannot_use_host_memory() {
+        for usage in [None, Some("malformed\n")] {
+            assert_eq!(
+                detected_memory_ceiling_with(|path| {
+                    match path {
+                        "/proc/self/cgroup" => Some("0::/\n"),
+                        "/proc/meminfo" => Some("MemAvailable: 16 kB\n"),
+                        "/sys/fs/cgroup/memory.max" => Some("4096\n"),
+                        "/sys/fs/cgroup/memory.current" => usage,
+                        _ => None,
+                    }
+                    .map(str::to_owned)
+                }),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn local_process_count_uses_largest_launcher_count() {
+        for (counts, expected) in [
+            ([None, None, None, None], 1),
+            ([Some(1), Some(16), None, None], 16),
+            ([Some(16), Some(1), None, None], 16),
+            ([Some(1), Some(2), Some(8), Some(4)], 8),
+            ([Some(1), Some(2), Some(4), Some(8)], 8),
+        ] {
+            assert_eq!(
+                local_process_count(|name| match name {
+                    "SLURM_NTASKS_PER_NODE" => counts[0],
+                    "OMPI_COMM_WORLD_LOCAL_SIZE" => counts[1],
+                    "MV2_COMM_WORLD_LOCAL_SIZE" => counts[2],
+                    "MPI_LOCALNRANKS" => counts[3],
+                    _ => None,
+                }),
+                expected,
+                "launcher counts: {counts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fourier_budget_preserves_available_memory_and_explicit_overrides() {
+        assert_eq!(resolve_fourier_budget(None, Some(1 << 30), 1), 1 << 30);
+        assert_eq!(resolve_fourier_budget(None, Some(32 << 30), 32), 1 << 30);
+        // Detected low memory is not inflated to the historical fallback.
+        assert_eq!(resolve_fourier_budget(None, Some(64 << 20), 1), 64 << 20);
+        assert_eq!(
+            resolve_fourier_budget(None, None, 1),
+            FOURIER_BUDGET_FALLBACK
+        );
+        assert_eq!(resolve_fourier_budget(None, Some(512 << 20), 0), 512 << 20);
+        assert_eq!(resolve_fourier_budget(None, Some(0), 1), 1);
+        assert_eq!(resolve_fourier_budget(None, Some(64 << 20), u64::MAX), 1);
+        assert_eq!(resolve_fourier_budget(Some(7), None, 16), 7);
+        assert_eq!(
+            resolve_fourier_budget(Some(512 << 20), Some(64 << 20), 16),
+            512 << 20
+        );
+        assert_eq!(resolve_fourier_budget(Some(0), Some(64 << 20), 1), 64 << 20);
+        assert_eq!(
+            resolve_fourier_budget(Some(u64::MAX), None, 1),
+            isize::MAX as usize
+        );
+
+        // Cache stability must not reread MemAvailable or mutate shared env.
+        let budget = fourier_memory_budget();
         assert!(budget > 0);
+        assert_eq!(fourier_memory_budget(), budget);
+        assert_eq!(fourier_memory_budget(), budget);
     }
 
     // Direct scalar sums, independent of the new GEMM and phase helpers.

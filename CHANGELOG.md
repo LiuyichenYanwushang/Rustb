@@ -165,20 +165,20 @@
   band solvers. Stored position matrices must span every `hamR` row, consistent
   with `Model::validate`; omitted blocks must be explicitly zero-padded.
 - Band and eigenvector solvers, serial and parallel, size their Fourier batch
-  budget from the machine instead of a fixed 128 MiB:
-  `clamp(min(cgroup limit, host MemAvailable) / (8 * per-node processes),
-  128 MiB, 1 GiB)`, resolved once per process. Detection reads the process's own
-  cgroup and its ancestors plus the controller root and is Linux-only: a process
-  in a named cgroup whose limit is unreadable at every level of the ladder keeps
-  the historical 128 MiB instead of the host number, a root-cgroup or bare-metal
-  process falls back to `MemAvailable`, and other targets always keep 128 MiB.
-  With one process per node, a detected ceiling of 8 GiB or more uses the 1 GiB
-  ceiling, which keeps more k-points in each Fourier batch; `p` co-resident
-  processes need a ceiling of `8 * p` GiB to reach it, and the 128 MiB floor is
-  unconditional. `RUSTB_FOURIER_MEMORY_MIB` pins the budget before the first
-  solve and bypasses both clamps. A fixed budget shrank the per-GEMM batch on
-  large nodes, because the batch is `budget / (workers * bytes_per_k)`, and a
-  one-point batch re-reads the hopping array for every k point.
+  buffers from a per-process allowance `U = available memory / local process
+  count`, resolved once with no fixed divisor, 128 MiB floor or 1 GiB cap.
+  Each worker gets `U / N`, where `N` is the configured Rayon pool size,
+  fixed throughout the call even when fewer jobs remain. Serial solvers use
+  one share, including inside an outer parallel loop.
+  Linux detection uses host `MemAvailable` and cgroup v1/v2 remaining
+  allowances (`limit - usage`) along the process hierarchy. Unknown detection
+  and non-Linux targets retain a total 128 MiB fallback. Launcher counts use
+  the largest positive Slurm/Open MPI/MVAPICH2/Intel MPI value, defaulting to
+  one without an MPI dependency. `RUSTB_FOURIER_MEMORY_MIB` overrides total
+  `U`; pin it and the Rayon pool size for repeatable batching. This is a soft
+  Fourier buffer target: one oversized k-point is still attempted, reducing
+  concurrency when possible, while LAPACK buffers and returned arrays are
+  additional. Public solver signatures are unchanged.
 
 ### Build and repository changes
 
