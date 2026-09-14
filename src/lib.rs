@@ -715,8 +715,13 @@ mod tests {
             let R = R.to_owned();
             model.set_hop(t, 0, 1, &R, None);
         }
-        assert_eq!(model.solve_band_onek(&array![0.0, 0.0]), array![-3.0, 3.0]);
-        let result = model.solve_band_onek(&array![1.0 / 3.0, 2.0 / 3.0]);
+        assert_eq!(
+            model.solve_band_onek(&array![0.0, 0.0]).unwrap(),
+            array![-3.0, 3.0]
+        );
+        let result = model
+            .solve_band_onek(&array![1.0 / 3.0, 2.0 / 3.0])
+            .unwrap();
         assert!(
             are_arrays_close(&result, &array![0.0, 0.0], 1e-5),
             "wrong!, the solve_band_onek get wrong result! please check it!"
@@ -758,7 +763,7 @@ mod tests {
         );
 
         let kvec = array![1.0 / 3.0, 1.0 / 3.0];
-        let (band, evec) = model.solve_onek(&kvec);
+        let (band, evec) = model.solve_onek(&kvec).unwrap();
         let ham = model.gen_ham(&kvec, Gauge::Atom);
         let evec_conj = evec.map(|x| x.conj());
         let evec = evec.t();
@@ -902,7 +907,7 @@ mod tests {
         ];
         let path = arr2(&path);
         let (k_vec, _k_dist, _k_node) = model.k_path(&path, nk).unwrap();
-        let (_eval, _evec) = model.solve_all_parallel(&k_vec);
+        let (_eval, _evec) = model.solve_all_parallel(&k_vec).unwrap();
         let label = vec!["G", "K", "M", "K'", "G"];
         model
             .show_band(&path, &label, nk, "target/test-output/Haldan")
@@ -1313,7 +1318,7 @@ mod tests {
         let path = [[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.5, 0.5], [0.0, 0.0]];
         let path = arr2(&path);
         let (k_vec, _k_dist, _k_node) = model.k_path(&path, nk).unwrap();
-        let (_eval, _evec) = model.solve_all_parallel(&k_vec);
+        let (_eval, _evec) = model.solve_all_parallel(&k_vec).unwrap();
         let label = vec!["G", "K", "M", "G"];
         model
             .show_band(&path, &label, nk, "target/test-output/graphene")
@@ -1322,8 +1327,8 @@ mod tests {
         // 开始计算两个本征态
         let k1 = array![1.0 / 3.0 - 0.002, 2.0 / 3.0];
         let k2 = array![1.0 / 3.0 + 0.001, 2.0 / 3.0];
-        let (eval1, evec1) = model.solve_onek(&k1);
-        let (eval2, evec2) = model.solve_onek(&k2);
+        let (eval1, evec1) = model.solve_onek(&k1).unwrap();
+        let (eval2, evec2) = model.solve_onek(&k2).unwrap();
         let evec1 = evec1.reversed_axes();
         let evec2 = evec2.mapv(|x| x.conj());
         println!("{},{}", eval1, eval2);
@@ -1339,7 +1344,7 @@ mod tests {
         let dir_2 = arr1(&[0.0, 1.0]);
         let spin = None;
         let kmesh = arr1(&[nk, nk]);
-        let (_eval, _evec) = model.solve_onek(&arr1(&[0.3, 0.5]));
+        let (_eval, _evec) = model.solve_onek(&arr1(&[0.3, 0.5])).unwrap();
         let _conductivity = hall_value(
             |p, directions| model.hall_conductivity(p, directions, eta, spin),
             &kmesh,
@@ -1359,7 +1364,7 @@ mod tests {
         //let path=[[0.0,0.0],[0.5,0.0],[0.5,0.5],[0.0,0.5],[0.0,0.0]];
         let path = arr2(&path);
         let (k_vec, _k_dist, _k_node) = super_model.k_path(&path, nk).unwrap();
-        let (_eval, _evec) = super_model.solve_all_parallel(&k_vec);
+        let (_eval, _evec) = super_model.solve_all_parallel(&k_vec).unwrap();
         //let label=vec!["G","X","M","Y","G"];
         let label = vec!["G", "M", "G"];
         zig_model
@@ -1490,7 +1495,7 @@ mod tests {
         ];
         let path = arr2(&path);
         let (k_vec, _k_dist, _k_node) = model.k_path(&path, nk).unwrap();
-        let (_eval, _evec) = model.solve_all_parallel(&k_vec);
+        let (_eval, _evec) = model.solve_all_parallel(&k_vec).unwrap();
         let label = vec!["G", "K", "M", "K'", "G"];
         model
             .show_band(&path, &label, nk, "target/test-output/kane")
@@ -1757,7 +1762,9 @@ mod tests {
         let new_model = model.cut_dot(num, 6, None).unwrap();
         let _s = 0;
         let start = Instant::now();
-        let (band, evec) = new_model.solve_range_onek(&arr1(&[0.0, 0.0]), (-0.3, 0.3), 1e-5);
+        let (band, evec) = new_model
+            .solve_range_onek(&arr1(&[0.0, 0.0]), (-0.3, 0.3), 1e-5)
+            .unwrap();
         let end = Instant::now(); // 结束计时
         let duration = end.duration_since(start); // 计算执行时间
         println!("solve_band_all took {} seconds", duration.as_secs_f64()); // 输出执行时间
@@ -1955,7 +1962,7 @@ mod tests {
         let path = [[0.0, 0.0], [0.0, 0.5], [0.0, 1.0]];
         let path = arr2(&path);
         let (k_vec, _k_dist, _k_node) = super_model.k_path(&path, nk).unwrap();
-        let (_eval, _evec) = super_model.solve_all_parallel(&k_vec);
+        let (_eval, _evec) = super_model.solve_all_parallel(&k_vec).unwrap();
         let label = vec!["G", "M", "G"];
         zig_model
             .show_band(&path, &label, nk, "target/test-output/kagome_zig/")
@@ -2022,7 +2029,7 @@ mod tests {
             .unwrap();
         let super_model = model.cut_piece(5, 0).unwrap();
 
-        let (band, _evec) = super_model.solve_onek(&array![0.0]);
+        let (band, _evec) = super_model.solve_onek(&array![0.0]).unwrap();
         println!("{}", band);
     }
     #[test]
@@ -2120,7 +2127,7 @@ mod tests {
         let new_model = model_1.cut_piece(2 * num, 1).unwrap();
         let _s = 0;
         let start = Instant::now();
-        let (band, evec) = new_model.solve_onek(&arr1(&[0.0, 0.0]));
+        let (band, evec) = new_model.solve_onek(&arr1(&[0.0, 0.0])).unwrap();
         println!(
             "band shape is {:?}, evec shape is {:?}",
             band.shape(),

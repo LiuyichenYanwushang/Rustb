@@ -543,7 +543,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
             });
         }
         let (k_vec, k_dist, k_node) = self.k_path(&path, nk)?;
-        let eval = self.solve_band_all_parallel(&k_vec);
+        let eval = self.solve_band_all_parallel(&k_vec)?;
         create_dir_all(name).map_err(|e| TbError::DirectoryCreation {
             path: name.to_string(),
             message: e.to_string(),

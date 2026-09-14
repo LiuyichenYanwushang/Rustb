@@ -2,6 +2,7 @@
 use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
+use crate::error::{Result, TbError};
 use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
 use ndarray::prelude::*;
 use ndarray::*;
@@ -15,24 +16,35 @@ const FOURIER_MEMORY_BUDGET: usize = 128 * 1024 * 1024;
 
 // Return (k-points per coarse job, k-points per GEMM). Each coarse job streams
 // its assigned range in bounded batches; Rayon can schedule jobs dynamically.
-fn batch_plan(nk: usize, nr: usize, nsta: usize, threads: usize) -> (usize, usize) {
+fn batch_plan(nk: usize, nr: usize, nsta: usize, threads: usize) -> Result<(usize, usize)> {
     if nk == 0 {
-        return (1, 1);
+        return Ok((1, 1));
     }
     let bytes_per_k = nsta
         .checked_mul(nsta)
         .and_then(|width| width.checked_add(nr))
         .and_then(|width| width.checked_mul(size_of::<Complex<f64>>()))
-        .expect("batch buffer size overflow");
+        .ok_or_else(|| TbError::Other("batch buffer size overflow".into()))?;
     let live_points = (FOURIER_MEMORY_BUDGET / bytes_per_k.max(1)).max(1);
     let workers = threads.max(1).min(nk).min(live_points);
     let job_size = nk.div_ceil(workers);
-    (job_size, job_size.min(live_points / workers))
+    Ok((job_size, job_size.min(live_points / workers)))
 }
 
+// Finite model data can still overflow during the Fourier sum or gauge transform.
+fn check_finite_hamiltonian<S: Data<Elem = Complex<f64>>>(ham: &ArrayBase<S, Ix2>) -> Result<()> {
+    if ham.iter().any(|z| !z.re.is_finite() || !z.im.is_finite()) {
+        return Err(TbError::Other(
+            "H(k) contains nonfinite matrix elements".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[inline(always)]
 fn diagonalize_with_vectors<S: Data<Elem = Complex<f64>>>(
     ham: &ArrayBase<S, Ix2>,
-) -> (Array1<f64>, Array2<Complex<f64>>) {
+) -> Result<(Array1<f64>, Array2<Complex<f64>>)> {
     // 布局/共轭约定（此处所有调用者均传入 gen_ham[_batch] 生成的 C 布局 H）：
     // 本次核对的 ndarray-linalg 0.18.1 的 eigh_inplace 对 C 布局只做 swap_axes(0, 1)，
     // 并没有共轭数据，所以 LAPACK 实际读到 H^T = H*（H 必须是 Hermitian）。
@@ -46,45 +58,65 @@ fn diagonalize_with_vectors<S: Data<Elem = Complex<f64>>>(
     // 这是当前依赖和输入布局对应的补偿，不适用于任意 F 布局的 eigh 结果。
     // 升级 ndarray-linalg/lax 或改变 H 的布局时，必须重跑复数 H 的残差检查；
     // H 与 H* 的能量相同，仅比较本征值不足以发现这个错误。
-    let (energies, vectors) = ham
-        .eigh(UPLO::Lower)
-        .expect("Hermitian eigendecomposition failed");
-    (
+    check_finite_hamiltonian(ham)?;
+    let (energies, vectors) = ham.eigh(UPLO::Lower)?;
+    Ok((
         energies,
         conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>>(&vectors),
-    )
+    ))
 }
 
 /// Solve the tight-binding Hamiltonian H(k).
 ///
 /// 本征值按能量升序排列；Rustb 返回的本征矢以“能带为行、基底分量为列”。
 /// 完整的数组轴、共轭、规范及基底变换约定见 [`Solve::solve_onek`] 和
-/// [`Solve::solve_all`]，不能直接套用原始 `ndarray_linalg::Eigh::eigh` 的返回约定。
+/// [`Solve::solve_all`]。
+///
+/// All methods return errors for invalid models, incorrectly sized or nonfinite
+/// k-points, nonfinite generated Hamiltonians, and eigensolver failures.
+/// Models must pass [`Model::validate`] and have Hermitian H(k); Hermiticity
+/// remains the caller's responsibility. Batched methods validate the model once
+/// per call and preserve input k-point order, including for empty batches.
 pub trait Solve {
     /// Solve energy bands at a single k-point.
     ///
     /// 返回长度为 `nsta` 的实数数组，按能量非递减排列：`E[0] <= E[1] <= ...`。
     /// 这是所有态的统一能量排序，不是轨道顺序、自旋分块顺序或按能量绝对值排序。
-    fn solve_band_onek<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> Array1<f64>;
-    /// Solve energy bands at a single k-point with a range
+    /// Errors follow the shared [`Solve`] contract.
+    fn solve_band_onek<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>)
+    -> Result<Array1<f64>>;
+    /// Solve only energies in the half-open energy window `(low, high]`.
+    ///
+    /// `energy_window` bounds use the model's energy units (usually eV).
+    /// `tolerance` is LAPACK's absolute energy convergence tolerance in those
+    /// same units; nonpositive values select LAPACK's default tolerance.
+    /// Returns ascending energies, or an empty array if no band is selected.
+    ///
+    /// # Errors
+    /// In addition to the shared [`Solve`] errors, rejects nonfinite or unordered
+    /// window bounds and a nonfinite tolerance. See [`Self::solve_range_onek`]
+    /// for the counterpart that also returns eigenvectors.
     fn solve_band_range_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-        range: (f64, f64),
-        epsilon: f64,
-    ) -> Array1<f64>;
+        energy_window: (f64, f64),
+        tolerance: f64,
+    ) -> Result<Array1<f64>>;
     /// Solve energy bands at all given k-points.
     ///
     /// 返回形状 `(nk, nsta)`，`bands[[ik, n]]` 对应输入第 `ik` 个 k 点的
     /// 第 `n` 小能量。每个 k 点独立升序排序，不进行跨 k 点的能带追踪。
-    fn solve_band_all<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix2>) -> Array2<f64>;
+    /// Errors follow the shared [`Solve`] contract.
+    fn solve_band_all<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix2>) -> Result<Array2<f64>>;
     /// Solve energy bands in parallel, using bounded batches of Fourier sums.
     /// Each job processes a contiguous k-point range and diagonalizes individual
     /// H(k) matrices before building its next batch. Returns eigenvalues in
     /// input k-point order. Configure BLAS threading separately from Rayon.
     /// Shape and energy ordering are identical to [`Solve::solve_band_all`].
-    fn solve_band_all_parallel<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix2>)
-    -> Array2<f64>;
+    fn solve_band_all_parallel<S: Data<Elem = f64>>(
+        &self,
+        kvec: &ArrayBase<S, Ix2>,
+    ) -> Result<Array2<f64>>;
     /// Solve energies and eigenvectors at one k-point in [`Gauge::Atom`].
     ///
     /// # 本征值排序与本征矢的轴
@@ -97,9 +129,7 @@ pub trait Solve {
     /// | `evec` | `(N, N)`，`evec[[n, alpha]]` | 第 `n` 个本征态在第 `alpha` 个基底态上的 ket 系数 |
     ///
     /// `energies[0] <= energies[1] <= ... <= energies[N-1]`，允许相等。
-    /// 内部 `.eigh(UPLO::Lower)` 的 `Lower` 指读取哪个三角，**与本征值升降序无关**。
-    /// 排序由底层 [LAPACK ZHEEV](https://www.netlib.org/lapack/explore-html/d8/d1c/group__heev_gadbb2b87ce42e51fdaac3228a857a58c8.html)
-    /// 保证。要求模型的完整 H 为 Hermitian；求解器只使用一个三角，不会验证另一侧是否一致。
+    /// 要求模型的完整 H 为 Hermitian；求解器只使用一个三角，不会验证另一侧是否一致。
     /// 同一索引 `n` 始终配对 `energies[n]` 与 `evec.row(n)`；**一个本征矢是一行，
     /// 不是一列**。不要单独重排能量而不同时重排本征矢的行。
     ///
@@ -129,16 +159,6 @@ pub trait Solve {
     /// `ndarray` 的 `.t()` 只转置、不共轭；`mapv(|z| z.conj())` 只共轭、不转置；
     /// `ndarray_linalg::conjugate()` 则同时共轭和转置，三者不能互换。
     ///
-    /// # 与直接调用 ndarray-linalg 的区别
-    ///
-    /// 本次核对的 `ndarray-linalg 0.18.1` 对 Rustb 的 C 布局复数 H 调用 `.eigh()`
-    /// 时，内部交换轴，实际求解的是 `H^T = H*`。原始返回矩阵 U 按列存放 `H*`
-    /// 的本征矢，因此原始 U 的算符变换为 `U^T O U*`。
-    /// 本方法已经用共轭转置将它转换为 `C = U†`，再按上述 Rustb 约定返回。
-    /// **不要把原始 U 的变换公式或“本征矢在列”的习惯套到这里。**
-    /// 此说明针对当前依赖及 C 布局调用路径；F 布局直接调用或依赖升级应重新核对。
-    /// `H` 与 `H*` 本征值相同，单看能量正确、或只测实数模型，都不足以检查本征矢约定。
-    ///
     /// # 相位、简并与能带连续性
     ///
     /// 各本征矢已归一化，但整体复相位任意。简并子空间内可以返回任意正交基，
@@ -147,6 +167,9 @@ pub trait Solve {
     /// 不应要求本征矢逐元素一致。需要连续本征矢或数值 k 导数时，应自行处理相位/
     /// 子空间对齐；Berry 相位和 Wilson loop 也可以用规范不变的重叠方法计算，
     /// 不要求先将每个态的相位调成连续。
+    ///
+    /// # Errors
+    /// Returns the shared [`Solve`] errors.
     ///
     /// # Example: 检查复数 Hamiltonian 的返回约定
     ///
@@ -164,7 +187,7 @@ pub trait Solve {
     /// model.add_hop(0.17, 0, 0, &array![1], None); // 使能量随 k 改变
     /// let k = array![0.23];
     /// let h = model.gen_ham(&k, Gauge::Atom);
-    /// let (energies, evec) = model.solve_onek(&k);
+    /// let (energies, evec) = model.solve_onek(&k)?;
     ///
     /// for n in 0..energies.len() {
     ///     if n > 0 { assert!(energies[n - 1] <= energies[n]); }
@@ -179,27 +202,31 @@ pub trait Solve {
     /// let overlap = bra.dot(&evec.t());
     /// let identity = Array2::<Complex<f64>>::eye(model.nsta());
     /// assert!(overlap.iter().zip(&identity).all(|(a, b)| (a - b).norm() < 1e-12));
+    /// # Ok::<(), Rustb::error::TbError>(())
     /// ```
     fn solve_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-    ) -> (Array1<f64>, Array2<Complex<f64>>);
-    /// Solve eigenvalues in the half-open energy window `(range.0, range.1]`.
+    ) -> Result<(Array1<f64>, Array2<Complex<f64>>)>;
+    /// Solve energies and eigenvectors in the half-open energy window `(low, high]`.
     ///
     /// Returns ascending energies and row ket coefficients with shape
     /// `(number_of_selected_bands, nsta)`, in the same gauge as [`Self::solve_onek`].
-    /// `epsilon` is LAPACK's absolute convergence tolerance; nonpositive values
-    /// select its default tolerance.
+    /// `energy_window` and `tolerance` use the model's energy units (usually eV).
+    /// `tolerance` is LAPACK's absolute convergence tolerance; nonpositive values
+    /// select its default. No selected bands gives empty energies and a
+    /// `(0, nsta)` eigenvector matrix. See [`Self::solve_band_range_onek`] for
+    /// the energy-only counterpart.
     ///
-    /// # Panics
-    /// Panics for a k-vector with the wrong dimension, nonfinite or unordered
-    /// range bounds, a nonfinite tolerance, or an eigensolver failure.
+    /// # Errors
+    /// In addition to the shared [`Solve`] errors, rejects nonfinite or unordered
+    /// window bounds and a nonfinite tolerance.
     fn solve_range_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-        range: (f64, f64),
-        epsilon: f64,
-    ) -> (Array1<f64>, Array2<Complex<f64>>);
+        energy_window: (f64, f64),
+        tolerance: f64,
+    ) -> Result<(Array1<f64>, Array2<Complex<f64>>)>;
     /// Solve energies and eigenvectors for all input k-points, serially.
     ///
     /// # 数组排列与逐点排序
@@ -247,13 +274,13 @@ pub trait Solve {
     /// # model.add_hop(Complex::new(-0.2, 0.5), 1, 2, &array![1], None);
     /// # model.add_hop(0.17, 0, 0, &array![1], None);
     /// let points = array![[0.31], [0.07], [0.22]]; // 保留这个输入顺序
-    /// let (energies, evec) = model.solve_all(&points);
+    /// let (energies, evec) = model.solve_all(&points)?;
     /// assert_eq!(energies.dim(), (3, model.nsta()));
     /// assert_eq!(evec.dim(), (3, model.nsta(), model.nsta()));
     /// for ik in 0..points.nrows() {
     ///     let k = points.row(ik);
     ///     let h = model.gen_ham(&k, Gauge::Atom);
-    ///     let (one_energy, _) = model.solve_onek(&k);
+    ///     let (one_energy, _) = model.solve_onek(&k)?;
     ///     for n in 0..model.nsta() {
     ///         assert!((energies[[ik, n]] - one_energy[n]).abs() < 1e-12);
     ///         let ket = evec.slice(s![ik, n, ..]);
@@ -261,13 +288,14 @@ pub trait Solve {
     ///         assert!(residual.iter().all(|z| z.norm() < 1e-12));
     ///     }
     /// }
-    /// let (parallel_energy, _) = model.solve_all_parallel(&points);
+    /// let (parallel_energy, _) = model.solve_all_parallel(&points)?;
     /// assert!(parallel_energy.iter().zip(&energies).all(|(a, b)| (a - b).abs() < 1e-12));
+    /// # Ok::<(), Rustb::error::TbError>(())
     /// ```
     fn solve_all<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix2>,
-    ) -> (Array2<f64>, Array3<Complex<f64>>);
+    ) -> Result<(Array2<f64>, Array3<Complex<f64>>)>;
     /// Parallel counterpart of [`Solve::solve_all`], with the same return convention.
     ///
     /// `energies[[ik, n]]` 配对 `evec[[ik, n, alpha]]`，能量在每个 k 点内升序，
@@ -277,51 +305,41 @@ pub trait Solve {
     fn solve_all_parallel<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix2>,
-    ) -> (Array2<f64>, Array3<Complex<f64>>);
+    ) -> Result<(Array2<f64>, Array3<Complex<f64>>)>;
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Solve for Model<SPIN, DIM, R> {
     #[allow(non_snake_case)]
     #[inline(always)]
-    fn solve_band_onek<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix1>) -> Array1<f64> {
-        assert_eq!(
-            kvec.len(),
-            self.dim_r(),
-            "Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",
-            kvec.len(),
-            self.dim_r()
-        );
+    fn solve_band_onek<S: Data<Elem = f64>>(
+        &self,
+        kvec: &ArrayBase<S, Ix1>,
+    ) -> Result<Array1<f64>> {
+        self.validate_solver_input(kvec.view().insert_axis(Axis(0)))?;
         let hamk = self.gen_ham(kvec, Gauge::Atom);
-        let eval = eigvalsh_v(&hamk, UPLO::Upper).expect("Hermitian eigendecomposition failed");
-        eval
+        check_finite_hamiltonian(&hamk)?;
+        eigvalsh_v(&hamk, UPLO::Upper)
     }
 
     fn solve_band_range_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-        range: (f64, f64),
-        epsilon: f64,
-    ) -> Array1<f64> {
-        assert_eq!(
-            kvec.len(),
-            self.dim_r(),
-            "Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",
-            kvec.len(),
-            self.dim_r()
-        );
+        energy_window: (f64, f64),
+        tolerance: f64,
+    ) -> Result<Array1<f64>> {
+        self.validate_solver_input(kvec.view().insert_axis(Axis(0)))?;
         let hamk = self.gen_ham(&kvec, Gauge::Atom);
-        let eval = eigvalsh_r(&hamk, range, epsilon, UPLO::Upper)
-            .expect("Hermitian range eigendecomposition failed");
-        eval
+        check_finite_hamiltonian(&hamk)?;
+        eigvalsh_r(&hamk, energy_window, tolerance, UPLO::Upper)
     }
-    fn solve_band_all<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix2>) -> Array2<f64> {
+    fn solve_band_all<S: Data<Elem = f64>>(&self, kvec: &ArrayBase<S, Ix2>) -> Result<Array2<f64>> {
         self.solve_band_batches(kvec, false)
     }
     #[allow(non_snake_case)]
     fn solve_band_all_parallel<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix2>,
-    ) -> Array2<f64> {
+    ) -> Result<Array2<f64>> {
         self.solve_band_batches(kvec, true)
     }
     #[allow(non_snake_case)]
@@ -329,80 +347,82 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Solve for Model<SPIN, D
     fn solve_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-    ) -> (Array1<f64>, Array2<Complex<f64>>) {
-        assert_eq!(
-            kvec.len(),
-            self.dim_r(),
-            "Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",
-            kvec.len(),
-            self.dim_r()
-        );
+    ) -> Result<(Array1<f64>, Array2<Complex<f64>>)> {
+        self.validate_solver_input(kvec.view().insert_axis(Axis(0)))?;
         let hamk = self.gen_ham(&kvec, Gauge::Atom);
         diagonalize_with_vectors(&hamk)
     }
     fn solve_range_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-        range: (f64, f64),
-        epsilon: f64,
-    ) -> (Array1<f64>, Array2<Complex<f64>>) {
-        assert_eq!(
-            kvec.len(),
-            self.dim_r(),
-            "Wrong, the k-vector's length:k_len={} must equal to the dimension of model:{}.",
-            kvec.len(),
-            self.dim_r()
-        );
+        energy_window: (f64, f64),
+        tolerance: f64,
+    ) -> Result<(Array1<f64>, Array2<Complex<f64>>)> {
+        self.validate_solver_input(kvec.view().insert_axis(Axis(0)))?;
         let hamk = self.gen_ham(&kvec, Gauge::Atom);
-        let (eval, evec) = eigh_r(&hamk, range, epsilon, UPLO::Upper)
-            .expect("Hermitian range eigendecomposition failed");
-        (eval, evec)
+        check_finite_hamiltonian(&hamk)?;
+        eigh_r(&hamk, energy_window, tolerance, UPLO::Upper)
     }
 
     #[allow(non_snake_case)]
     fn solve_all<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix2>,
-    ) -> (Array2<f64>, Array3<Complex<f64>>) {
+    ) -> Result<(Array2<f64>, Array3<Complex<f64>>)> {
         self.solve_eigenvector_batches(kvec, false)
     }
     #[allow(non_snake_case)]
     fn solve_all_parallel<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix2>,
-    ) -> (Array2<f64>, Array3<Complex<f64>>) {
+    ) -> Result<(Array2<f64>, Array3<Complex<f64>>)> {
         self.solve_eigenvector_batches(kvec, true)
     }
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    fn validate_solver_input(&self, points: ArrayView2<'_, f64>) -> Result<()> {
+        if points.ncols() != DIM {
+            return Err(TbError::DimensionMismatch {
+                context: "solver k-point dimension".into(),
+                expected: DIM,
+                found: points.ncols(),
+            });
+        }
+        if points.iter().any(|value| !value.is_finite()) {
+            return Err(TbError::Other("solver k-points must be finite".into()));
+        }
+        self.validate()
+    }
+
     fn solve_band_batches<S: Data<Elem = f64>>(
         &self,
         points: &ArrayBase<S, Ix2>,
         parallel: bool,
-    ) -> Array2<f64> {
+    ) -> Result<Array2<f64>> {
+        self.validate_solver_input(points.view())?;
         let threads = if parallel {
             rayon::current_num_threads()
         } else {
             1
         };
         let (job_size, batch_size) =
-            batch_plan(points.nrows(), self.hamR.nrows(), self.nsta(), threads);
+            batch_plan(points.nrows(), self.hamR.nrows(), self.nsta(), threads)?;
         let mut bands = Array2::zeros((points.nrows(), self.nsta()));
-        let solve = |(points, mut energies): (ArrayView2<'_, f64>, ArrayViewMut2<'_, f64>)| {
-            for (batch, mut output) in points
-                .axis_chunks_iter(Axis(0), batch_size)
-                .zip(energies.axis_chunks_iter_mut(Axis(0), batch_size))
-            {
-                let hams = self.gen_ham_batch(&batch, Gauge::Lattice);
-                for (ham, mut row) in hams.outer_iter().zip(output.outer_iter_mut()) {
-                    row.assign(
-                        &eigvalsh_v(&ham, UPLO::Upper)
-                            .expect("Hermitian eigendecomposition failed"),
-                    );
+        let solve =
+            |(points, mut energies): (ArrayView2<'_, f64>, ArrayViewMut2<'_, f64>)| -> Result<()> {
+                for (batch, mut output) in points
+                    .axis_chunks_iter(Axis(0), batch_size)
+                    .zip(energies.axis_chunks_iter_mut(Axis(0), batch_size))
+                {
+                    let hams = self.gen_ham_batch(&batch, Gauge::Lattice);
+                    for (ham, mut row) in hams.outer_iter().zip(output.outer_iter_mut()) {
+                        check_finite_hamiltonian(&ham)?;
+                        row.assign(&eigvalsh_v(&ham, UPLO::Upper)?);
+                    }
                 }
-            }
-        };
+                Ok(())
+            };
         if parallel {
             points
                 .axis_chunks_iter(Axis(0), job_size)
@@ -412,34 +432,36 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         .axis_chunks_iter_mut(Axis(0), job_size)
                         .into_par_iter(),
                 )
-                .for_each(solve);
+                .try_for_each(solve)?;
         } else {
             points
                 .axis_chunks_iter(Axis(0), job_size)
                 .zip(bands.axis_chunks_iter_mut(Axis(0), job_size))
-                .for_each(solve);
+                .try_for_each(solve)?;
         }
-        bands
+        Ok(bands)
     }
 
     fn solve_eigenvector_batches<S: Data<Elem = f64>>(
         &self,
         points: &ArrayBase<S, Ix2>,
         parallel: bool,
-    ) -> (Array2<f64>, Array3<Complex<f64>>) {
+    ) -> Result<(Array2<f64>, Array3<Complex<f64>>)> {
+        self.validate_solver_input(points.view())?;
         let threads = if parallel {
             rayon::current_num_threads()
         } else {
             1
         };
         let (job_size, batch_size) =
-            batch_plan(points.nrows(), self.hamR.nrows(), self.nsta(), threads);
+            batch_plan(points.nrows(), self.hamR.nrows(), self.nsta(), threads)?;
         let mut bands = Array2::zeros((points.nrows(), self.nsta()));
         let mut vectors = Array3::zeros((points.nrows(), self.nsta(), self.nsta()));
         let solve = |((points, mut energies), mut vectors): (
             (ArrayView2<'_, f64>, ArrayViewMut2<'_, f64>),
             ArrayViewMut3<'_, Complex<f64>>,
-        )| {
+        )|
+         -> Result<()> {
             for ((batch, mut output), mut states) in points
                 .axis_chunks_iter(Axis(0), batch_size)
                 .zip(energies.axis_chunks_iter_mut(Axis(0), batch_size))
@@ -451,11 +473,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .zip(output.outer_iter_mut())
                     .zip(states.outer_iter_mut())
                 {
-                    let (energies, eigenvectors) = diagonalize_with_vectors(&ham);
+                    let (energies, eigenvectors) = diagonalize_with_vectors(&ham)?;
                     row.assign(&energies);
                     state.assign(&eigenvectors);
                 }
             }
+            Ok(())
         };
         if parallel {
             points
@@ -471,15 +494,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         .axis_chunks_iter_mut(Axis(0), job_size)
                         .into_par_iter(),
                 )
-                .for_each(solve);
+                .try_for_each(solve)?;
         } else {
             points
                 .axis_chunks_iter(Axis(0), job_size)
                 .zip(bands.axis_chunks_iter_mut(Axis(0), job_size))
                 .zip(vectors.axis_chunks_iter_mut(Axis(0), job_size))
-                .for_each(solve);
+                .try_for_each(solve)?;
         }
-        (bands, vectors)
+        Ok((bands, vectors))
     }
 }
 
@@ -489,14 +512,192 @@ mod tests {
     use crate::{HasRMatrix, Velocity};
     use std::f64::consts::TAU;
 
+    fn solve_at_every_entry(model: &Model<false, 1>, k: &Array1<f64>) -> [Result<()>; 8] {
+        let points = k.view().insert_axis(Axis(0));
+        [
+            model.solve_band_onek(k).map(|_| ()),
+            model.solve_band_range_onek(k, (-1.0, 1.0), 0.0).map(|_| ()),
+            model.solve_onek(k).map(|_| ()),
+            model.solve_range_onek(k, (-1.0, 1.0), 0.0).map(|_| ()),
+            model.solve_band_all(&points).map(|_| ()),
+            model.solve_band_all_parallel(&points).map(|_| ()),
+            model.solve_all(&points).map(|_| ()),
+            model.solve_all_parallel(&points).map(|_| ()),
+        ]
+    }
+
+    #[test]
+    fn solvers_return_errors_for_invalid_points_and_models() {
+        let mut model = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+        for k in [array![], array![0.0, 0.0]] {
+            for result in solve_at_every_entry(&model, &k) {
+                assert!(matches!(result, Err(TbError::DimensionMismatch {
+                    expected: 1, found, ..
+                }) if found == k.len()));
+            }
+        }
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for result in solve_at_every_entry(&model, &array![value]) {
+                assert!(
+                    matches!(result, Err(TbError::Other(message)) if message.contains("k-points must be finite"))
+                );
+            }
+        }
+        model.ham = Array3::zeros((2, 1, 1));
+        for result in solve_at_every_entry(&model, &array![0.0]) {
+            assert!(matches!(
+                result,
+                Err(TbError::InvalidModelInvariant {
+                    invariant: "hamiltonian_shape",
+                    ..
+                })
+            ));
+        }
+        model.ham = Array3::from_elem((1, 1, 1), Complex::new(f64::NAN, 0.0));
+        for result in solve_at_every_entry(&model, &array![0.0]) {
+            assert!(matches!(
+                result,
+                Err(TbError::InvalidModelInvariant {
+                    invariant: "finite_hamiltonian",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn empty_solver_batches_keep_shapes_and_validate_inputs() {
+        let model = complex_model::<true, 2>();
+        let points = Array2::<f64>::zeros((0, 2));
+        for bands in [
+            model.solve_band_all(&points),
+            model.solve_band_all_parallel(&points),
+        ] {
+            assert_eq!(bands.unwrap().dim(), (0, model.nsta()));
+        }
+        for result in [model.solve_all(&points), model.solve_all_parallel(&points)] {
+            let (energies, vectors) = result.unwrap();
+            assert_eq!(energies.dim(), (0, model.nsta()));
+            assert_eq!(vectors.dim(), (0, model.nsta(), model.nsta()));
+        }
+        let wrong_shape = Array2::<f64>::zeros((0, 3));
+        for result in [
+            model.solve_band_all(&wrong_shape).map(|_| ()),
+            model.solve_band_all_parallel(&wrong_shape).map(|_| ()),
+            model.solve_all(&wrong_shape).map(|_| ()),
+            model.solve_all_parallel(&wrong_shape).map(|_| ()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(TbError::DimensionMismatch {
+                    expected: 2,
+                    found: 3,
+                    ..
+                })
+            ));
+        }
+        let mut invalid_model = model;
+        invalid_model.ham = Array3::zeros((1, 4, 4));
+        for result in [
+            invalid_model.solve_band_all(&points).map(|_| ()),
+            invalid_model.solve_band_all_parallel(&points).map(|_| ()),
+            invalid_model.solve_all(&points).map(|_| ()),
+            invalid_model.solve_all_parallel(&points).map(|_| ()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(TbError::InvalidModelInvariant {
+                    invariant: "hamiltonian_shape",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn range_solvers_use_energy_window_and_tolerance_contract() {
+        let mut model =
+            Model::<false, 1>::tb_model(array![[1.0]], array![[0.0], [0.0], [0.0]], None).unwrap();
+        model.set_onsite(&array![-1.0, 0.0, 2.0], None);
+        let k = array![0.0];
+        for tolerance in [-1.0, 0.0, 1e-12] {
+            assert_eq!(
+                model
+                    .solve_band_range_onek(&k, (-1.0, 2.0), tolerance)
+                    .unwrap(),
+                array![0.0, 2.0]
+            );
+            let (energies, vectors) = model.solve_range_onek(&k, (-1.0, 2.0), tolerance).unwrap();
+            assert_eq!(energies, array![0.0, 2.0]);
+            assert_eq!(vectors.dim(), (2, 3));
+            assert!(
+                model
+                    .solve_band_range_onek(&k, (3.0, 4.0), tolerance)
+                    .unwrap()
+                    .is_empty()
+            );
+            let (empty, vectors) = model.solve_range_onek(&k, (3.0, 4.0), tolerance).unwrap();
+            assert!(empty.is_empty());
+            assert_eq!(vectors.dim(), (0, 3));
+        }
+        for (window, tolerance) in [
+            ((1.0, 1.0), 0.0),
+            ((2.0, -1.0), 0.0),
+            ((f64::NAN, 2.0), 0.0),
+            ((-1.0, f64::INFINITY), 0.0),
+            ((-1.0, 2.0), f64::NAN),
+            ((-1.0, 2.0), f64::INFINITY),
+        ] {
+            assert!(matches!(
+                model.solve_band_range_onek(&k, window, tolerance),
+                Err(TbError::Other(_))
+            ));
+            assert!(matches!(
+                model.solve_range_onek(&k, window, tolerance),
+                Err(TbError::Other(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn solvers_propagate_fourier_overflow_from_worker_jobs() {
+        let mut model = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+        model.set_hop(1e308, 0, 0, &array![1], None);
+        model.validate().unwrap(); // finite R blocks; H(0) = 2e308 overflows
+        for result in solve_at_every_entry(&model, &array![0.0]) {
+            assert!(
+                matches!(result, Err(TbError::Other(message)) if message.contains("H(k) contains nonfinite"))
+            );
+        }
+        let points = array![[0.25], [0.25], [0.25], [0.0], [0.25]];
+        for threads in [1, 3] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for result in pool.install(|| {
+                [
+                    model.solve_band_all(&points).map(|_| ()),
+                    model.solve_band_all_parallel(&points).map(|_| ()),
+                    model.solve_all(&points).map(|_| ()),
+                    model.solve_all_parallel(&points).map(|_| ()),
+                ]
+            }) {
+                assert!(
+                    matches!(result, Err(TbError::Other(message)) if message.contains("H(k) contains nonfinite"))
+                );
+            }
+        }
+    }
+
     #[test]
     fn range_solver_preserves_complex_ket_convention() {
         let model = complex_model::<true, 3>();
         let k = array![0.17, 0.31, 0.07];
         let ham = model.gen_ham(&k, Gauge::Atom);
-        let full = model.solve_band_onek(&k);
+        let full = model.solve_band_onek(&k).unwrap();
         let lower = (full[0] + full[1]) * 0.5;
-        let (energies, vectors) = model.solve_range_onek(&k, (lower, 10.0), 0.0);
+        let (energies, vectors) = model.solve_range_onek(&k, (lower, 10.0), 0.0).unwrap();
         assert_eq!(energies.len(), model.nsta() - 1);
         for (n, ket) in vectors.outer_iter().enumerate() {
             assert!((energies[n] - full[n + 1]).abs() < 1e-12);
@@ -511,7 +712,7 @@ mod tests {
             for threads in [1, 3, 8, 256] {
                 for (nr, nsta) in [(0, 0), (7, 4), (841, 200), (1, 4096)] {
                     let per_k = (nr + nsta * nsta) * size_of::<Complex<f64>>();
-                    let (job_size, batch_size) = batch_plan(nk, nr, nsta, threads);
+                    let (job_size, batch_size) = batch_plan(nk, nr, nsta, threads).unwrap();
                     let jobs = nk.div_ceil(job_size);
                     assert!(jobs <= threads);
                     assert!(
@@ -523,7 +724,8 @@ mod tests {
             }
         }
         // Automatic batches are not capped at the previous hard-coded 16.
-        assert!(batch_plan(4096, 841, 200, 8).1 > 16);
+        assert!(batch_plan(4096, 841, 200, 8).unwrap().1 > 16);
+        assert!(batch_plan(1, 1, usize::MAX, 1).is_err());
     }
 
     // Direct scalar sums, independent of the new GEMM and phase helpers.
@@ -739,8 +941,8 @@ mod tests {
             .num_threads(3)
             .build()
             .unwrap();
-        let (bands, vectors) = pool.install(|| model.solve_all_parallel(&points));
-        let (serial_bands, _) = model.solve_all(&points);
+        let (bands, vectors) = pool.install(|| model.solve_all_parallel(&points)).unwrap();
+        let (serial_bands, _) = model.solve_all(&points).unwrap();
         assert!(
             bands
                 .iter()
@@ -808,10 +1010,12 @@ mod tests {
                 let points = storage.slice(s![..;2, ..;2]);
                 let mut expected = Array2::zeros((nk, model.nsta()));
                 for (k, mut row) in points.outer_iter().zip(expected.outer_iter_mut()) {
-                    row.assign(&model.solve_band_onek(&k));
+                    row.assign(&model.solve_band_onek(&k).unwrap());
                 }
-                let serial = model.solve_band_all(&points);
-                let actual = pool.install(|| model.solve_band_all_parallel(&points));
+                let serial = model.solve_band_all(&points).unwrap();
+                let actual = pool
+                    .install(|| model.solve_band_all_parallel(&points))
+                    .unwrap();
                 assert_eq!(actual.dim(), (nk, model.nsta()));
                 for result in [&serial, &actual] {
                     for (actual, expected) in result.iter().zip(expected.iter()) {
@@ -845,7 +1049,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "hopping shape must match the model")]
     fn batched_bands_reject_mismatched_hopping_shape_before_blas() {
         let mut model = complex_model::<false, 3>();
         model.ham = Array3::zeros((1, model.nsta(), model.nsta()));
@@ -853,6 +1056,12 @@ mod tests {
             .num_threads(1)
             .build()
             .unwrap();
-        pool.install(|| model.solve_band_all_parallel(&Array2::zeros((17, 3))));
+        assert!(matches!(
+            pool.install(|| model.solve_band_all_parallel(&Array2::zeros((17, 3)))),
+            Err(TbError::InvalidModelInvariant {
+                invariant: "hamiltonian_shape",
+                ..
+            })
+        ));
     }
 }

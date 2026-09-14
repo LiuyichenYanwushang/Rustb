@@ -35,7 +35,7 @@ fn main() -> Result<()> {
     for ik in 0..=8 {
         let kx = 0.5 * ik as f64 / 8.0;
         let k = arr1(&[kx, 0.0, 0.0]);
-        let band = floquet_model.solve_band_onek(&k);
+        let band = floquet_model.solve_band_onek(&k)?;
         println!(
             "{kx:8.5}  {}",
             band.iter()

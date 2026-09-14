@@ -993,7 +993,7 @@ mod tests {
         };
 
         let model = hubbard.solve_hartree_fock(&params).unwrap();
-        let bands = model.solve_band_onek(&array![0.0]);
+        let bands = model.solve_band_onek(&array![0.0]).unwrap();
         assert!((bands[0] + 1.0).abs() < 1e-9);
         assert!((bands[1] - 1.0).abs() < 1e-9);
 
@@ -1020,7 +1020,7 @@ mod tests {
         };
 
         let model = hubbard.solve_hartree_fock(&params).unwrap();
-        let bands = model.solve_band_onek(&array![0.0]);
+        let bands = model.solve_band_onek(&array![0.0]).unwrap();
         assert!((bands[0] + 1.0).abs() < 1e-9);
         assert!((bands[1] - 1.0).abs() < 1e-9);
 
@@ -1052,8 +1052,8 @@ mod tests {
 
         let model = hubbard.solve_hartree_fock(&params).unwrap();
         let k_points = uniform_k_mesh(&[64]).unwrap();
-        let bare_bands = bare.solve_band_all_parallel(&k_points);
-        let shifted_bands = model.solve_band_all_parallel(&k_points);
+        let bare_bands = bare.solve_band_all_parallel(&k_points).unwrap();
+        let shifted_bands = model.solve_band_all_parallel(&k_points).unwrap();
         let difference = &bare_bands - &shifted_bands;
         assert!(
             difference
@@ -1081,7 +1081,7 @@ mod tests {
         );
 
         let model = hubbard.solve_hartree_fock(&params).unwrap();
-        let bands = model.solve_band_onek(&array![0.0]);
+        let bands = model.solve_band_onek(&array![0.0]).unwrap();
         assert!(bands.iter().all(|&energy| (energy + 0.25).abs() < 1e-12));
     }
 

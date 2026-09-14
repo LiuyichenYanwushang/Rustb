@@ -263,7 +263,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         let kvec: Array2<f64> = gen_kmesh(&k_mesh)?;
         let nk = kvec.len_of(Axis(0));
-        let eigenvalues = self.solve_band_all_parallel(&kvec);
+        let eigenvalues = self.solve_band_all_parallel(&kvec)?;
         let E = Array1::linspace(E_min, E_max, E_n);
         let _dim: usize = k_mesh.len();
         let centre = eigenvalues.into_raw_vec_and_offset().0.into_par_iter();

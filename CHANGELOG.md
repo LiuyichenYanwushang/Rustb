@@ -58,6 +58,15 @@
 
 ### API changes
 
+- **Breaking:** all eight `Solve` methods return `Result`; callers must handle
+  errors or propagate with `?`. Invalid models, wrong-dimensional/nonfinite
+  k-points, nonfinite generated Hamiltonians, and eigensolver failures return
+  errors. Serial and parallel batches validate the model once, including empty
+  batches. Numerical gauges, ordering, and row-ket output conventions are
+  unchanged. The two energy-window methods consistently document `(low, high]`
+  and absolute tolerance in model energy units. Existing fallible callers
+  propagate solver errors; legacy infallible `Berry` methods keep their panic
+  boundary, now documented explicitly.
 - `Model<true, DIM, R>::build_spin_matrix(SpinDirection)` returns
   `Array2<Complex<f64>>` directly: `S_a / ℏ = σ_a ⊗ I_norb / 2` in
   spin-major order, for either position-matrix storage type. The spin-current

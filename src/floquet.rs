@@ -232,7 +232,7 @@
 //!     let k = arr1(&[0.25, 0.0, 0.0]);
 //!
 //!     let floquet_model = model.floquet_model(&drive, &trunc)?;
-//!     let unfolded = floquet_model.solve_band_onek(&k);
+//!     let unfolded = floquet_model.solve_band_onek(&k)?;
 //!     let quasienergies = model.floquet_quasienergy_onek(&k, &drive, &trunc, Gauge::Lattice)?;
 //!     println!("unfolded Sambe bands = {unfolded:?}");
 //!     println!("folded quasienergies = {quasienergies:?}");
@@ -5838,11 +5838,13 @@ mod tests {
             let first = model
                 .floquet_effective_model(&drive, Some(&base_options.clone().with_order(1)))
                 .unwrap()
-                .solve_band_onek(&kvec);
+                .solve_band_onek(&kvec)
+                .unwrap();
             let second = model
                 .floquet_effective_model(&drive, Some(&base_options.clone().with_order(2)))
                 .unwrap()
-                .solve_band_onek(&kvec);
+                .solve_band_onek(&kvec)
+                .unwrap();
             let first_error = first
                 .iter()
                 .zip(exact.iter())
@@ -6719,7 +6721,7 @@ mod tests {
         let bands = model
             .floquet_band_onek(&k, &drive, &trunc, Gauge::Atom)
             .unwrap();
-        let e0 = model.solve_band_onek(&k)[0];
+        let e0 = model.solve_band_onek(&k).unwrap()[0];
         let mut expected = vec![e0 - 0.7, e0, e0 + 0.7];
         expected.sort_by(|a, b| a.partial_cmp(b).unwrap());
 

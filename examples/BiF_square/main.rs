@@ -146,7 +146,7 @@ fn main() {
 
     let path = array![[0.5, 0.0, 0.0], [0.0, 0.5, 0.0]];
     let (kvec, kdist, knode) = model.k_path(&path, nk).unwrap();
-    let (eval, evec): (Array2<f64>, Array3<Complex<f64>>) = model.solve_all(&kvec);
+    let (eval, evec): (Array2<f64>, Array3<Complex<f64>>) = model.solve_all(&kvec).unwrap();
     let label = vec!["X", "Y"];
     let nk = 1001;
     let evec: Array3<f64> = evec.map(|x| x.norm_sqr());
@@ -316,7 +316,7 @@ fn main() {
     */
 
     let mut s = 0;
-    let (band, evec) = new_model.solve_onek(&arr1(&[0.0, 0.0, 0.0]));
+    let (band, evec) = new_model.solve_onek(&arr1(&[0.0, 0.0, 0.0])).unwrap();
     let show_evec = evec.to_owned().map(|x| x.norm_sqr());
     let mut size = Array2::<f64>::zeros((new_model.nsta(), new_model.natom()));
     let norb = new_model.norb();

@@ -460,7 +460,7 @@ impl<const SPIN: bool, R: RMatrixData> BxsfExport for Model<SPIN, 3, R> {
 
         // 2. Generate k‑mesh and solve band energies
         let kvec: Array2<f64> = gen_kmesh(&arr1(&[nx, ny, nz]))?;
-        let eval = self.solve_band_all_parallel(&kvec);
+        let eval = self.solve_band_all_parallel(&kvec)?;
         let nsta = self.nsta();
 
         // 3. Build output path (auto-append .bxsf)
@@ -660,8 +660,8 @@ pub fn write_spin_frmsf<const SPIN: bool, R: RMatrixData>(
 
     let b = up_model.rec_lat()?;
     let kvec: Array2<f64> = gen_kmesh(&arr1(&[nx, ny, nz]))?;
-    let eval_up = up_model.solve_band_all_parallel(&kvec) - e_fermi;
-    let eval_dn = dn_model.solve_band_all_parallel(&kvec) - e_fermi;
+    let eval_up = up_model.solve_band_all_parallel(&kvec)? - e_fermi;
+    let eval_dn = dn_model.solve_band_all_parallel(&kvec)? - e_fermi;
 
     // Merge: up bands first, then down
     let nk = nx * ny * nz;
@@ -854,7 +854,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> FermiSurface for Model<
                 let kvec: Array2<f64> = gen_kmesh(k_mesh)?;
                 let n1 = k_mesh[0];
                 let n2 = k_mesh[1];
-                let eval = self.solve_band_all_parallel(&kvec);
+                let eval = self.solve_band_all_parallel(&kvec)?;
 
                 let nsta = self.nsta();
                 let mut all_segments: Vec<Vec<(Array1<f64>, Array1<f64>)>> =
@@ -879,7 +879,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> FermiSurface for Model<
                 let n2 = k_mesh[1];
                 let n3 = k_mesh[2];
                 let nk = n1 * n2 * n3;
-                let eval = self.solve_band_all_parallel(&kvec);
+                let eval = self.solve_band_all_parallel(&kvec)?;
 
                 let nsta = self.nsta();
                 let mut all_triangles: Vec<[Array1<f64>; 3]> = Vec::new();
@@ -942,7 +942,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> FermiSurfacePlane for M
         }
 
         let kvec: Array2<f64> = gen_kplane(origin, vec1, vec2, n1, n2)?;
-        let eval = self.solve_band_all_parallel(&kvec);
+        let eval = self.solve_band_all_parallel(&kvec)?;
 
         let nsta = self.nsta();
         let mut all_segments: Vec<Vec<(Array1<f64>, Array1<f64>)>> = Vec::with_capacity(nsta);

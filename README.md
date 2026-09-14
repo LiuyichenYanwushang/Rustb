@@ -104,6 +104,12 @@ including short segments, and require at least as many samples as nodes.
 Unfolding paths use primitive-cell reciprocal coordinates; k-path distances
 omit the `2*pi` factor. Invalid paths return an error.
 
+All `Solve` methods return `Result`: use `model.solve_band_onek(&k)?` for
+energies or `model.solve_onek(&k)?` for `(energies, row_ket_eigenvectors)`.
+Single-point and batched methods report invalid models, invalid k-points and
+eigensolver failures through errors. Energy-window methods select `(low, high]`,
+with bounds and absolute convergence tolerance in the model's energy units.
+
 For a spinful model, use `Model::<true, DIM>`. Spin-independent terms take
 `None`; Pauli-matrix terms take `SpinDirection::X`, `Y`, or `Z`:
 

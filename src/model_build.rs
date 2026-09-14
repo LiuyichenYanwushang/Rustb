@@ -2218,10 +2218,10 @@ mod fold_tests {
             .map(|reciprocal_image| {
                 let reciprocal_image = Array1::from_vec(reciprocal_image.to_vec());
                 let primitive_k = (&k_supercell + &reciprocal_image).dot(&u_inverse_transpose);
-                model.solve_band_onek(&primitive_k)[0]
+                model.solve_band_onek(&primitive_k).unwrap()[0]
             })
             .collect::<Vec<_>>();
-        let mut actual = supercell.solve_band_onek(&k_supercell).to_vec();
+        let mut actual = supercell.solve_band_onek(&k_supercell).unwrap().to_vec();
         expected.sort_by(f64::total_cmp);
         actual.sort_by(f64::total_cmp);
         for (actual, expected) in actual.into_iter().zip(expected) {
@@ -2331,9 +2331,9 @@ mod fold_tests {
         // Band-folding check: the supercell spectrum at fractional k_sc must
         // equal the primitive spectrum at k = k_sc / 2 and k = k_sc / 2 + 1/2.
         let k_sc = 0.3;
-        let band_sc = sc_a.solve_band_onek(&array![k_sc]);
-        let e_prim_1 = model_a.solve_band_onek(&array![k_sc / 2.0])[0];
-        let e_prim_2 = model_a.solve_band_onek(&array![k_sc / 2.0 + 0.5])[0];
+        let band_sc = sc_a.solve_band_onek(&array![k_sc]).unwrap();
+        let e_prim_1 = model_a.solve_band_onek(&array![k_sc / 2.0]).unwrap()[0];
+        let e_prim_2 = model_a.solve_band_onek(&array![k_sc / 2.0 + 0.5]).unwrap()[0];
         let mut expected = vec![e_prim_1, e_prim_2];
         expected.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mut got: Vec<f64> = band_sc.to_vec();
@@ -2371,8 +2371,8 @@ mod fold_tests {
 
         // The identity supercell spectrum must equal the original spectrum.
         let k = array![0.3];
-        let mut expected: Vec<f64> = model.solve_band_onek(&k).to_vec();
-        let mut got: Vec<f64> = sc.solve_band_onek(&k).to_vec();
+        let mut expected: Vec<f64> = model.solve_band_onek(&k).unwrap().to_vec();
+        let mut got: Vec<f64> = sc.solve_band_onek(&k).unwrap().to_vec();
         expected.sort_by(|a, b| a.partial_cmp(b).unwrap());
         got.sort_by(|a, b| a.partial_cmp(b).unwrap());
         for (a, b) in expected.iter().zip(got.iter()) {

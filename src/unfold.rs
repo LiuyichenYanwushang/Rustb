@@ -230,7 +230,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
 
         //我们先unfold一下k点
         let fold_k = &kvec.dot(&U.t()); // fold_k 是要求解的本征值和本征态
-        let (eval, evec) = self.solve_all_parallel(&fold_k); //开始求解本征态和本征值
+        let (eval, evec) = self.solve_all_parallel(&fold_k)?; //开始求解本征态和本征值
         let eval = eval.mapv(|x| Complex::new(x, 0.0));
         let mut G = Array3::<Complex<f64>>::zeros((E_n, nk, self.nsta()));
         //Zip::from(G.outer_iter_mut()).and(E.view()).par_for_each(|mut g,og| {g.assign(&(Complex::new(1.0,0.0)/(*og+li*eta-&eval)));});

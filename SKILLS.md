@@ -161,7 +161,7 @@ let hopping_blocks = &model.ham;
 ```rust
 let k_mesh = arr1(&[51usize, 51]);
 let k_points = gen_kmesh::<f64>(&k_mesh)?;
-let bands = model.solve_band_all_parallel(&k_points);
+let bands = model.solve_band_all_parallel(&k_points)?;
 ```
 
 `gen_kmesh` returns fractional reciprocal coordinates with shape
@@ -179,7 +179,7 @@ let path = arr2(&[
 let labels = vec!["Γ", "K", "M", "Γ"];
 
 let (k_points, k_distance, node_distance) = model.k_path(&path, 501)?;
-let bands = model.solve_band_all_parallel(&k_points);
+let bands = model.solve_band_all_parallel(&k_points)?;
 model.show_band(&path, &labels, 501, "band_output")?;
 ```
 
@@ -192,7 +192,7 @@ as its final argument.
 let k = arr1(&[0.25, 0.0]);
 let h_atom = model.gen_ham(&k, Gauge::Atom);
 let h_lattice = model.gen_ham(&k, Gauge::Lattice);
-let band = model.solve_band_onek(&k);
+let band = model.solve_band_onek(&k)?;
 ```
 
 For several points, construct a batch with a shared Fourier sum:
@@ -223,12 +223,25 @@ separately (for example `MKL_NUM_THREADS=1` with outer Rayon parallelism).
 
 ### Eigenvalue ordering and eigenvector axes
 
-`solve_onek(&k)` returns `(energies, evec)` with shapes `(nsta,)` and
+All eight `Solve` methods return `Result`. Use `?` to propagate invalid-model,
+k-point, generated-Hamiltonian, and eigensolver errors. A batch validates the
+model once, even when it contains zero k-points. Hermiticity remains the caller's
+responsibility. Legacy `Berry` Wilson-loop methods still have infallible
+signatures and panic if their internal solve fails.
+
+`solve_band_range_onek(&k, (low, high), tolerance)?` selects energies in
+`(low, high]`; `solve_range_onek` also returns row-ket eigenvectors. Bounds and
+absolute convergence tolerance use the model's energy units; nonpositive
+tolerances select LAPACK's default. Nonfinite or unordered bounds and nonfinite
+tolerances return errors. No selected bands produces empty energies and, when
+requested, an eigenvector matrix of shape `(0, nsta)`.
+
+`solve_onek(&k)?` returns `(energies, evec)` with shapes `(nsta,)` and
 `(nsta, nsta)`. Energies are in ascending order, including all spin states in
 one ordering. Row `evec.row(n)` contains the **ket coefficients** belonging to
 `energies[n]`; eigenvectors are not columns and the row is not a bra.
 
-`solve_all(&points)` and `solve_all_parallel(&points)` return shapes
+`solve_all(&points)?` and `solve_all_parallel(&points)?` return shapes
 `(nk, nsta)` and `(nk, nsta, nsta)`, with indices `[ik, n]` and
 `[ik, n, basis]`. The k axis preserves input order; each k-point is sorted
 independently by energy. The basis axis follows the model: spin-up orbitals,
@@ -248,7 +261,7 @@ O_band = C* O C^T
 For example, with `op` in the same Atom gauge and basis:
 
 ```rust
-let (energies, evec) = model.solve_onek(&k);
+let (energies, evec) = model.solve_onek(&k)?;
 let ket = evec.row(0); // H.dot(&ket) ≈ energies[0] * ket
 let op_band = evec.mapv(|z| z.conj()).dot(&op.dot(&evec.t()));
 ```

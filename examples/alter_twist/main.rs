@@ -105,7 +105,7 @@ fn main() {
         .show_band(&path, &label, nk, "target/example-output/alter_twist")
         .expect("example output failed");
 
-    let (evec, eval) = new_model.solve_onek(&array![0.0, 0.0, 0.0]);
+    let (evec, eval) = new_model.solve_onek(&array![0.0, 0.0, 0.0]).unwrap();
     println!("{}", evec);
 
     let mut model_up =
@@ -172,8 +172,8 @@ fn main() {
         }
     }
     let (k_vec, k_dist, k_node) = model_up.k_path(&path, nk).unwrap();
-    let band_up = model_up.solve_band_all_parallel(&k_vec);
-    let band_dn = model_dn.solve_band_all_parallel(&k_vec);
+    let band_up = model_up.solve_band_all_parallel(&k_vec).unwrap();
+    let band_dn = model_dn.solve_band_all_parallel(&k_vec).unwrap();
     let name = String::from_str("target/example-output/alter_twist/band_alter").unwrap();
     create_dir_all(name.clone()).expect("can't creat the file");
     let mut fg = Figure::new();
@@ -384,7 +384,7 @@ fn conductivity_onek<const SPIN: bool>(
     //!给定一个k点, 返回 $\Omega_n(\bm k)$
     //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
     let li: Complex<f64> = 1.0 * Complex::i();
-    let (band, evec) = model.solve_onek(&k_vec);
+    let (band, evec) = model.solve_onek(&k_vec).unwrap();
     let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
         model.gen_v(k_vec, Gauge::Atom);
     let mut J: Array3<Complex<f64>> = v.clone();

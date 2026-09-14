@@ -77,7 +77,7 @@ pub trait Berry {
     /// # Panics
     ///
     /// Panics if the loop endpoints do not differ by an integer reciprocal
-    /// lattice vector.
+    /// lattice vector, or if the Hamiltonian solver returns an error.
     fn berry_loop<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> Array1<f64>
     where
         S: Data<Elem = f64>;
@@ -86,6 +86,11 @@ pub trait Berry {
     /// using the determinant instead.
     ///
     /// This captures the total Berry phase of all occupied bands.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the loop endpoints do not differ by an integer reciprocal
+    /// lattice vector, or if the Hamiltonian solver returns an error.
     fn berry_loop_det<S>(&self, kvec: &ArrayBase<S, Ix2>, occ: &Vec<usize>) -> f64
     where
         S: Data<Elem = f64>;
@@ -177,7 +182,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, D
         };
         let add_phase = diff.dot(&use_orb.t());
         let add_phase = add_phase.mapv(|x| Complex::new(0.0, -2.0 * x * PI).exp());
-        let (_eval, mut evec) = self.solve_all(kvec);
+        let (_eval, mut evec) = self
+            .solve_all(kvec)
+            .expect("berry_loop Hamiltonian solve failed");
         let first_evec: &ArrayRef<_, Dim<[_; 2]>> = &evec.slice(s![0, .., ..]);
         let add_phase = Array2::from_diag(&add_phase);
         let end_evec = first_evec.to_owned().dot(&add_phase);
@@ -238,7 +245,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Berry for Model<SPIN, D
         };
         let add_phase = diff.dot(&use_orb.t());
         let add_phase = add_phase.mapv(|x| Complex::new(0.0, -2.0 * x * PI).exp());
-        let (_eval, mut evec) = self.solve_all(kvec);
+        let (_eval, mut evec) = self
+            .solve_all(kvec)
+            .expect("berry_loop_det Hamiltonian solve failed");
         let first_evec: &ArrayRef<_, Dim<[_; 2]>> = &evec.slice(s![0, .., ..]);
         let add_phase = Array2::from_diag(&add_phase);
         let end_evec = first_evec.to_owned().dot(&add_phase);

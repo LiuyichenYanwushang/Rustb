@@ -42,7 +42,7 @@ fn main() {
 
     //---------------计算新的---------------------
     let k = array![0.25, 0.25] / 2.0;
-    let (a, b) = model.solve_onek(&k);
+    let (a, b) = model.solve_onek(&k).unwrap();
 
     let nk = 301;
     let k_mesh = arr1(&[nk, nk]);
@@ -130,7 +130,7 @@ fn conductivity_onek(
     //!给定一个k点, 返回 $\Omega_n(\bm k)$
     //返回 $Omega_{n,\ap\bt}, \ve_{n\bm k}$
     let li: Complex<f64> = 1.0 * Complex::i();
-    let (band, evec) = model.solve_onek(&k_vec);
+    let (band, evec) = model.solve_onek(&k_vec).unwrap();
     let (mut v, hamk): (Array3<Complex<f64>>, Array2<Complex<f64>>) =
         model.gen_v(k_vec, Gauge::Atom);
     let mut J: Array3<Complex<f64>> = v.clone();

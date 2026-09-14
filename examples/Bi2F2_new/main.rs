@@ -381,7 +381,7 @@ fn show_wilson_loop(
 fn calculate_M(model: &Model<true>) {
     //开始计算三个方向的占据态的磁矩
     let kvec = gen_kmesh(&array![101, 101, 1]).unwrap();
-    let (band, evec) = model.solve_all_parallel(&kvec);
+    let (band, evec) = model.solve_all_parallel(&kvec).unwrap();
     let I0 = Array1::<Complex<f64>>::ones(model.norb());
     let I0 = Array2::from_diag(&I0);
     let sx = array![[0.0, 1.0], [1.0, 0.0]];
@@ -507,8 +507,9 @@ fn cut(model: &Model<true>, num: usize, cut_type: usize, name: &str) {
     };
     let mut s = 0;
     let start = Instant::now();
-    //let (band,evec)=new_model.solve_onek(&arr1(&[0.0,0.0,0.0]));
-    let (band, evec) = new_model.solve_range_onek(&arr1(&[0.0, 0.0, 0.0]), (-0.4, 0.4), 1e-8);
+    let (band, evec) = new_model
+        .solve_range_onek(&arr1(&[0.0, 0.0, 0.0]), (-0.4, 0.4), 1e-8)
+        .unwrap();
     let end = Instant::now(); // 结束计时
     let duration = end.duration_since(start); // 计算执行时间
     let nresult = evec.shape();
@@ -573,7 +574,8 @@ fn show_alter(model: &Model<true>, name: &str) {
     let path = array![[-0.5, 0.25, 0.0], [0.5, 0.25, 0.0]];
     //let path=array![[0.5,0.0,0.0],[0.0,0.5,0.0]];
     let (kvec, kdist, knode) = model.k_path(&path, nk).unwrap();
-    let (eval, evec): (Array2<f64>, Array3<Complex<f64>>) = model.solve_all_parallel(&kvec);
+    let (eval, evec): (Array2<f64>, Array3<Complex<f64>>) =
+        model.solve_all_parallel(&kvec).unwrap();
     let label = vec!["X1", "X2"];
     let evec: Array3<f64> = evec.map(|x| x.norm_sqr());
     let mut fg = Figure::new();
@@ -607,7 +609,7 @@ fn calculate_parity(model: &Model<true>) {
     let C2 = C2.mapv(|x| Complex::new(0.0, x));
     //先计算 gamma 点
     let G = array![0.0, 0.0, 0.0];
-    let (eval, evec) = model.solve_onek(&G);
+    let (eval, evec) = model.solve_onek(&G).unwrap();
     let s1 = evec.slice(s![0..2, ..]).t().to_owned();
     let s1_conj = &evec.slice(s![0..2, ..]).map(|x| x.conj());
     println!("{}", &s1_conj.dot(&C2.dot(&s1)));

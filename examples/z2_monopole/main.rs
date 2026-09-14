@@ -77,7 +77,7 @@ fn main() {
     let label = vec!["G", "K", "M", "G"];
     let path = arr2(&path);
     let (k_vec, k_dist, k_node) = model.k_path(&path, nk).unwrap();
-    let (eval, evec) = model.solve_all_parallel(&k_vec);
+    let (eval, evec) = model.solve_all_parallel(&k_vec).unwrap();
     model
         .show_band(
             &path,

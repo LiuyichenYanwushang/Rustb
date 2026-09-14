@@ -232,7 +232,7 @@ fn bench_solve_onek(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("eigh", name),
             &(&m, &kvec),
-            |b, (m, kv)| b.iter(|| m.solve_onek(black_box(kv))),
+            |b, (m, kv)| b.iter(|| m.solve_onek(black_box(kv)).unwrap()),
         );
     }
     // Spinful separately
@@ -241,7 +241,7 @@ fn bench_solve_onek(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("eigh", "spinful(4sta)"),
             &(&m, &kvec),
-            |b, (m, kv)| b.iter(|| m.solve_onek(black_box(kv))),
+            |b, (m, kv)| b.iter(|| m.solve_onek(black_box(kv)).unwrap()),
         );
     }
     group.finish();
@@ -254,20 +254,20 @@ fn bench_solve_band_parallel(c: &mut Criterion) {
     let kmesh = arr1(&[nk, nk]);
     let kvec = gen_kmesh(&kmesh).unwrap();
     group.bench_function("small_101x101", |b| {
-        b.iter(|| model.solve_band_all_parallel(black_box(&kvec)))
+        b.iter(|| model.solve_band_all_parallel(black_box(&kvec)).unwrap())
     });
 
     let dense = build_dense();
     let points = Array2::from_shape_fn((128, 1), |(i, _)| i as f64 / 128.0);
     group.bench_function("dense_128sta_257R_128k_batched", |b| {
-        b.iter(|| dense.solve_band_all_parallel(black_box(&points)))
+        b.iter(|| dense.solve_band_all_parallel(black_box(&points)).unwrap())
     });
     group.bench_function("dense_128sta_257R_128k_pointwise", |b| {
         b.iter(|| {
             let mut bands = Array2::zeros((points.nrows(), dense.nsta()));
             Zip::from(black_box(&points).outer_iter())
                 .and(bands.outer_iter_mut())
-                .par_for_each(|k, mut row| row.assign(&dense.solve_band_onek(&k)));
+                .par_for_each(|k, mut row| row.assign(&dense.solve_band_onek(&k).unwrap()));
             bands
         })
     });
