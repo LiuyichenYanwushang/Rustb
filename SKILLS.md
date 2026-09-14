@@ -210,10 +210,75 @@ Call it on bounded subsets when the complete H(k) array would be too large.
 Both serial and parallel band/eigenvector solvers use this shared batch
 constructor. Parallel jobs receive contiguous k-point ranges and process them
 in bounded batches. The default policy balances the known point/thread counts
-under a 128 MiB total budget for Bloch phase matrices and Hamiltonian batches;
-it has no fixed 16-point cap. Output arrays, orbital phases and LAPACK workspace
-are additional to this budget. A single point is still processed when its
-buffers exceed the budget.
+under one budget for Bloch phase matrices and Hamiltonian batches; it has no
+fixed 16-point cap. That budget is not a constant:
+
+```
+budget = clamp(ceiling / (8 * per-node processes), 128 MiB, 1 GiB)
+ceiling = min(readable cgroup memory limit, host MemAvailable)
+```
+
+`ceiling` is the smallest readable cgroup limit (the controller root, which
+covers container cgroup namespaces, plus every ancestor of the process's own
+cgroup, which covers systemd scopes/slices and launcher step cgroups) together
+with the host's `MemAvailable`. A process in a *named* cgroup — `/proc/self/cgroup`
+resolving to something other than `/` — whose limit is unreadable anywhere on that
+ladder gets the historical 128 MiB instead of the host number, because guessing
+there is what turns a limited job into an OOM kill; the ancestor minimum is still
+only an upper bound if a deeper limit is hidden. A process in the root cgroup
+(bare metal, or a host where `/proc/self/cgroup` itself is unreadable) falls back
+to `MemAvailable`, which is the honest bound there. Detection is Linux-only, and
+so is the `MemAvailable` fallback; other targets always keep 128 MiB. One case
+stays genuinely invisible: a container that hides its cgroup limit *and*
+namespaces `/proc/self/cgroup` down to `/` leaves only the host's `MemAvailable`,
+which is also what a bare-metal host or a VM reports. Pin
+`RUSTB_FOURIER_MEMORY_MIB` for those. `per-node processes` is the rank count a
+launcher reports (`SLURM_NTASKS_PER_NODE`, `OMPI_COMM_WORLD_LOCAL_SIZE`,
+`MV2_COMM_WORLD_LOCAL_SIZE`, `MPI_LOCALNRANKS` for SLURM, Open MPI, MVAPICH2 and
+Intel MPI), so co-resident ranks divide one share instead of each claiming the
+host's memory; without such a variable, or with a non-numeric value, the divisor
+assumes at most eight equal claimants.
+
+Consequences worth knowing:
+
+- With one process per node, a detected ceiling of 8 GiB or more reaches the
+  1 GiB ceiling, eight times the previous fixed budget — measured, a 62 GiB
+  8-core workstation detects a 60 GiB ceiling and resolves to 1 GiB. `p`
+  co-resident processes need a ceiling of `8 * p` GiB to reach that ceiling
+  (8 GiB shared by 8 ranks resolves to the floor). A ceiling at or below `p` GiB
+  sits on the floor, so one process per node inside a container limited to 2 GiB
+  resolves to 256 MiB however large the host is; a host with less than 2 GiB
+  available binds first, because the ceiling is the smaller of the two.
+- The 128 MiB floor is unconditional: it applies on every detection path, it is
+  what a non-Linux target or an all-unreadable ladder in a named cgroup gets, and
+  `p` co-resident processes may each hold it (64 ranks inside a 1 GiB container
+  are permitted 64 × 128 MiB). Only `RUSTB_FOURIER_MEMORY_MIB` goes below it.
+- The larger budget is what keeps a multi-point batch on a large node. A batch
+  of one point drops the Fourier sum onto its `zaxpy` path, which re-reads the
+  whole hopping array for every k point. A very large basis can still land
+  there: `batch_size >= 2` needs `bytes_per_k <= budget / (2 * workers)`, so at
+  128 threads and 1 GiB a basis of about 512 orbitals with 2000 hopping vectors
+  still gets one point per batch.
+- Set `RUSTB_FOURIER_MEMORY_MIB` before the first solve to pin the budget
+  instead. The value is read once per process: a positive number of MiB is used
+  literally and bypasses both clamps (it can exceed the detected ceiling or fall
+  below the floor; on a 32-bit target a value the platform cannot represent
+  saturates to the 1 GiB ceiling), while zero, malformed and overflowing values
+  are ignored and detection is used. This is the right answer for MPI ranks and
+  `--mem-per-cpu` allocations whenever the launcher exports no rank count, and
+  for reproducible last bits, since a one-point batch sums with `zaxpy` instead
+  of `zgemm`. Pin `RAYON_NUM_THREADS` too for that purpose: the batch also
+  divides by the worker count, so the thread count alone can move it.
+- The serial solvers share the policy with a single worker: `threads = 1` makes
+  the batch the whole point count that fits the budget, so `solve_band_all` and
+  `solve_all` on a large host now hold up to 1 GiB of Fourier buffers where the
+  fixed constant allowed 128 MiB. Serial callers who chose that path for memory
+  reasons should set `RUSTB_FOURIER_MEMORY_MIB`.
+- The budget bounds the Fourier buffers only. Output arrays, orbital phases and
+  one LAPACK copy of each H(k) per worker are additional: the process peak is
+  roughly the budget plus `workers * nsta^2` complex numbers, and for
+  `solve_all_parallel` the returned `nk * nsta^2` eigenvector array is unbounded
+  and usually dominates for a large basis.
 
 Batching is internal to the existing solver methods and requires no options.
 When points are fewer than workers, jobs can contain a single point; the policy

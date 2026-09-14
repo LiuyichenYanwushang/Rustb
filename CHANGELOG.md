@@ -164,6 +164,21 @@
 - Add `gen_ham_batch`, `gen_v_batch`, `gen_v_projected_batch`, and parallel/batched
   band solvers. Stored position matrices must span every `hamR` row, consistent
   with `Model::validate`; omitted blocks must be explicitly zero-padded.
+- Band and eigenvector solvers, serial and parallel, size their Fourier batch
+  budget from the machine instead of a fixed 128 MiB:
+  `clamp(min(cgroup limit, host MemAvailable) / (8 * per-node processes),
+  128 MiB, 1 GiB)`, resolved once per process. Detection reads the process's own
+  cgroup and its ancestors plus the controller root and is Linux-only: a process
+  in a named cgroup whose limit is unreadable at every level of the ladder keeps
+  the historical 128 MiB instead of the host number, a root-cgroup or bare-metal
+  process falls back to `MemAvailable`, and other targets always keep 128 MiB.
+  With one process per node, a detected ceiling of 8 GiB or more uses the 1 GiB
+  ceiling, which keeps more k-points in each Fourier batch; `p` co-resident
+  processes need a ceiling of `8 * p` GiB to reach it, and the 128 MiB floor is
+  unconditional. `RUSTB_FOURIER_MEMORY_MIB` pins the budget before the first
+  solve and bypasses both clamps. A fixed budget shrank the per-GEMM batch on
+  large nodes, because the batch is `budget / (workers * bytes_per_k)`, and a
+  one-point batch re-reads the hopping array for every k point.
 
 ### Build and repository changes
 
