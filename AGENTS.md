@@ -673,14 +673,17 @@ Each hopping dressed by `exp[−i a(t)·d_{ijR}]`. Fourier coefficient:
 C_n(d) = (1/T) ∫_0^T dt e^{inΩ₀t} exp[−i a(t)·d]
 ```
 
-Main path: the generalized Bessel backend (exact, no `n_time`); the uniform
-time-grid DFT is retained per link as the fallback for
-`R_α = |a_α·d| > MAX_BESSEL_ARG` for a convolution operand, or the coherent sum
-above `MAX_BESSEL_ARG_CLOSED_FORM` for the single-harmonic closed form, and as
-the crate-internal cross-validation
-reference.  Each link's `J_0..J_M` and every truncation tail come from one
-backward-recurrence ladder per mode, so the coefficient cost is linear in the
-order range rather than quadratic.
+Main path: the generalized Bessel backend, which evaluates each link three
+ways.  A drive with one nonzero temporal harmonic takes the closed form
+(`O(R + K)`), accurate up to `MAX_BESSEL_ARG_CLOSED_FORM`.  Two carriers
+enumerate the resonance sum (`O(K·(2·min(M₁,M₂)+1))`, no working window), also
+up to `MAX_BESSEL_ARG_CLOSED_FORM` and bounded by `MAX_BESSEL_ENUM_WORK`.
+Three or more fold one-mode convolutions, which keeps the lower
+`MAX_BESSEL_ARG` cap and the `MAX_BESSEL_WINDOW` bound.  The uniform time-grid
+DFT is retained per link as the fallback beyond those ranges and as the
+crate-internal cross-validation reference.  Each link's `J_0..J_M` and every
+truncation tail come from one backward-recurrence ladder per mode, so the
+coefficient cost is linear in the order range rather than quadratic.
 
 ### Sambe Hamiltonian
 

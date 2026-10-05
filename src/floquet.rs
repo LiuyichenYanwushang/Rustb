@@ -93,10 +93,11 @@
 //! Both Floquet paths evaluate `C_n` with the same backend: the generalized
 //! Bessel expansion per link, which is exact, needs no sampling count, and
 //! handles arbitrary complex polarization and arbitrary commensurate harmonic
-//! mixing.  A drive with one nonzero temporal harmonic collapses to a single
-//! Bessel term per requested order; a general drive evaluates the multi-index
-//! resonance sum as one-mode convolutions.  Links beyond the backend's exact
-//! range fall back to a per-link time-grid DFT.  The uniform-time-grid
+//! mixing.  Three shapes cover a general drive: one nonzero temporal harmonic
+//! collapses to a single Bessel term per requested order; two carriers enumerate
+//! the resonance sum directly, because the constraint `l₁m₁ + l₂m₂ = −n` leaves
+//! one free index; and three or more fold one-mode convolutions.  Links beyond
+//! the backend's exact range fall back to a per-link time-grid DFT.  The uniform-time-grid
 //! reference the tests cross-validate against lives in the test-only
 //! `crate::floquet_test` module, so no entry point depends on it.
 //!
@@ -2271,6 +2272,9 @@ fn validate_sambe_allocation<const SPIN: bool, const DIM: usize, R: RMatrixData>
         let mut single: Option<(isize, Complex<f64>)> = None;
         let mut per_mode = Vec::<(isize, f64)>::new();
         let mut several_harmonics = false;
+        let mut carriers = 0_usize;
+        // Drive-level count, which is what chose the backend's amplitude cap.
+        let drive_carriers = drive.modes.iter().filter(|mode| mode.harmonic != 0).count();
         for mode in &drive.modes {
             let phase: Complex<f64> = mode.a_complex.iter().zip(&d).map(|(a, x)| a * x).sum();
             let magnitude = phase.norm();
@@ -2286,6 +2290,7 @@ fn validate_sambe_allocation<const SPIN: bool, const DIM: usize, R: RMatrixData>
             if mode.harmonic == 0 {
                 continue; // static: only a phase, never a ladder
             }
+            carriers += 1;
             match &mut single {
                 Some((harmonic, total)) if *harmonic == mode.harmonic => *total += phase,
                 Some(_) => several_harmonics = true,
@@ -2308,17 +2313,48 @@ fn validate_sambe_allocation<const SPIN: bool, const DIM: usize, R: RMatrixData>
                 None => true,
             }
         } else {
-            // `M_α` stays within `⌈r_α⌉ + 48` for every attainable error share
-            // (`1e-12` split over the drive's modes), so `+64` is a safe order
-            // estimate; every step saturates.  `l = 0` contributes no window.
-            per_mode.iter().all(|(_, r)| *r <= MAX_BESSEL_ARG)
-                && per_mode.iter().fold(span, |acc, (harmonic, r)| {
-                    acc.saturating_add(
-                        2_usize
-                            .saturating_mul(harmonic.unsigned_abs())
-                            .saturating_mul(r.ceil() as usize + 64),
-                    )
-                }) <= MAX_BESSEL_WINDOW
+            // Mirror the backend: the enumeration runs on exactly two carriers,
+            // counted exactly as the backend counts them (nonzero harmonic AND
+            // nonzero link projection), and only with the drive-level count in
+            // agreement.  Its scan is the *smaller carrier's* cutoff, so static
+            // modes must not enter the minimum.
+            let carrier_cap = if carriers == drive_carriers && carriers == 2 {
+                per_mode
+                    .iter()
+                    .filter(|(harmonic, _)| *harmonic != 0)
+                    .all(|(_, r)| *r <= MAX_BESSEL_ARG_CLOSED_FORM)
+            } else {
+                false
+            };
+            if carrier_cap {
+                // An upper bound on that cutoff: the ladder seeds at
+                // `⌈r⌉ + margin + 8 + 16·r^{1/3}` and at most doubles a bounded
+                // number of times, so `4·(⌈r⌉ + 64 + 16·r^{1/3})` covers every
+                // case the sweep can reach.  Overestimating only makes the
+                // validator stricter than the backend, never looser.
+                let scan = per_mode
+                    .iter()
+                    .filter(|(harmonic, _)| *harmonic != 0)
+                    .map(|(_, r)| {
+                        4_usize.saturating_mul(
+                            (r.ceil() as usize)
+                                .saturating_add(64)
+                                .saturating_add((16.0 * r.cbrt()) as usize),
+                        )
+                    })
+                    .min()
+                    .unwrap_or(0);
+                span.saturating_mul(2_usize.saturating_mul(scan) + 1) <= MAX_BESSEL_ENUM_WORK
+            } else {
+                per_mode.iter().all(|(_, r)| *r <= MAX_BESSEL_ARG)
+                    && per_mode.iter().fold(span, |acc, (harmonic, r)| {
+                        acc.saturating_add(
+                            2_usize
+                                .saturating_mul(harmonic.unsigned_abs())
+                                .saturating_mul(r.ceil() as usize + 64),
+                        )
+                    }) <= MAX_BESSEL_WINDOW
+            }
         };
         if exact {
             continue;
@@ -2594,6 +2630,13 @@ const MAX_BESSEL_ARG_CLOSED_FORM: f64 = 16384.0;
 /// `R = MAX_BESSEL_ARG_CLOSED_FORM` — about half the cap.  It also bounds the
 /// ladder the fallback sizing builds to estimate a link's bandwidth.
 const MAX_BESSEL_ORDER: usize = 1 << 15;
+
+/// Cap on the two-carrier resonance enumeration's inner iterations,
+/// `K·(2·min(M₁,M₂)+1)`.  The enumeration scans the *smaller* carrier, so an
+/// asymmetric drive stays cheap; this bound keeps a symmetric one from turning a
+/// large requested range into quadratic work.  Exceeding it sends the link to
+/// the per-link time grid, exactly like an over-large amplitude.
+const MAX_BESSEL_ENUM_WORK: usize = 1 << 22;
 
 /// Cap on the one-mode convolution window, `harmonic span + 2·Σ_α|l_α|M_α`.
 /// The window is allocated as two `Complex<f64>` vectors, so an unguarded
@@ -2990,7 +3033,18 @@ fn single_harmonic_closed_form(
 /// ```
 ///
 /// which costs `O(N_mode · N_n · M_avg)` — independent of the time-grid
-/// size.  Each mode's cutoff `M_α` is chosen adaptively so the truncated
+/// size, `N_n` being the requested harmonic range.
+///
+/// Two carriers are the common multi-colour case and are evaluated differently:
+/// the constraint `l₁m₁ + l₂m₂ = −n` leaves one free index, so the same sum is
+/// enumerated directly at `O(N_n · (2·min(M₁,M₂) + 1))` — linear in the
+/// amplitude, with no working window and therefore no BLAS call per requested
+/// bin.  That path admits amplitudes up to [`MAX_BESSEL_ARG_CLOSED_FORM`] and is
+/// bounded by [`MAX_BESSEL_ENUM_WORK`]; three or more carriers fall back to the
+/// convolution above, which keeps the lower [`MAX_BESSEL_ARG`] cap and the
+/// [`MAX_BESSEL_WINDOW`] bound.
+///
+/// Each mode's cutoff `M_α` is chosen adaptively so the truncated
 /// tail `Σ_{|m|>M_α} |J_m(R_α)|` stays below a per-mode error share
 /// (`1e-12 / N_mode`), with `cutoff_margin` as an additional minimum, and
 /// it must stay at or below [`MAX_BESSEL_ORDER`].
@@ -3019,9 +3073,12 @@ fn single_harmonic_closed_form(
 ///
 /// # Errors
 /// Returns [`TbError::Other`] when `harmonic_min > harmonic_max`, when `cutoff_margin`
-/// is outside `0..=48`, when any mode amplitude `R_α` exceeds
-/// [`MAX_BESSEL_ARG_CLOSED_FORM`] (the caller must fall back to the time-grid backend),
-/// or when the harmonic range / working window would overflow `isize`.
+/// is outside `0..=48`, when a carrier amplitude exceeds the branch's cap
+/// ([MAX_BESSEL_ARG_CLOSED_FORM] for one carrier (the closed form) and for two
+/// (the enumeration), [MAX_BESSEL_ARG] for the convolution), when the
+/// enumeration's work budget or the convolution's window bound is exceeded (the
+/// caller must fall back to the time-grid backend), or when the harmonic range
+/// or working window would overflow `isize`.
 pub(crate) fn bessel_peierls_coeffs(
     d: &Array1<f64>,
     drive: &FloquetDrive,
@@ -3068,13 +3125,25 @@ pub(crate) fn bessel_peierls_coeffs(
     struct ModeData {
         /// `J_0..J_{M_α}` and the tail sums behind the adaptive cutoff.
         ladder: BesselLadder,
-        delta: f64,
+        /// Link projection `z_α = a_α·d = R_α e^{iδ_α}`.
+        projection: Complex<f64>,
         harmonic: isize,
         m_cap: isize,
     }
     let mut modes = Vec::<ModeData>::with_capacity(drive.modes.len());
     let error_share = 1e-12 / (drive.modes.len() as f64);
     let mut total_drift = 0_isize;
+    // Two carriers are enumerated, and that path is linear in the amplitude
+    // instead of quadratic, so it can reach as far as the closed form.  The
+    // count is taken over the drive's harmonics up front; a mode whose link
+    // projection vanishes is dropped later and only makes this more permissive,
+    // which the budget check below then catches.
+    let two_carriers = drive.modes.iter().filter(|mode| mode.harmonic != 0).count() == 2;
+    let mode_cap = if two_carriers {
+        MAX_BESSEL_ARG_CLOSED_FORM
+    } else {
+        MAX_BESSEL_ARG
+    };
     for mode in &drive.modes {
         // Mode projection onto the link: z = a·d = R e^{iδ}.
         let z: Complex<f64> = mode
@@ -3088,8 +3157,7 @@ pub(crate) fn bessel_peierls_coeffs(
             // Degenerate mode: only m = 0 contributes (B = 1), a no-op fold.
             continue;
         }
-        let (ladder, m_cap) =
-            bessel_ladder_for_amplitude(r, error_share, cutoff_margin, MAX_BESSEL_ARG)?;
+        let (ladder, m_cap) = bessel_ladder_for_amplitude(r, error_share, cutoff_margin, mode_cap)?;
         let harmonic_abs = mode.harmonic.checked_abs().ok_or_else(|| {
             TbError::Other("bessel_peierls_coeffs: harmonic drift overflow".to_string())
         })?;
@@ -3102,10 +3170,105 @@ pub(crate) fn bessel_peierls_coeffs(
             })?;
         modes.push(ModeData {
             ladder,
-            delta: z.arg(),
+            projection: z,
             harmonic: mode.harmonic,
             m_cap,
         });
+    }
+
+    // Two nonzero harmonics are the common multi-colour case (a fundamental plus
+    // a harmonic, or two commensurate colours).  The resonance condition
+    // l₁m₁ + l₂m₂ = −n leaves one free index, so those coefficients can be
+    // enumerated directly in O(K·(2M+1)) instead of folding a window of width
+    // span + 2·Σ|l|M — one BLAS call per requested bin dominated that fold's
+    // measured cost.  A static mode contributes the pure phase e^{-i Re z}.
+    let dc: f64 = modes
+        .iter()
+        .filter(|mode| mode.harmonic == 0)
+        .map(|mode| mode.projection.re)
+        .sum();
+    let carriers: Vec<&ModeData> = modes.iter().filter(|mode| mode.harmonic != 0).collect();
+    // Both counts must agree: `mode_cap` was chosen from the drive-level count,
+    // so a link that drops one of those carriers (a zero projection) must not
+    // silently take this path with the higher cap.
+    if two_carriers && carriers.len() == 2 {
+        let requested = (harmonic_max - harmonic_min + 1) as usize;
+        let scan_len = 2 * carriers[0].m_cap.min(carriers[1].m_cap) as usize + 1;
+        let work = requested.saturating_mul(scan_len);
+        if work > MAX_BESSEL_ENUM_WORK {
+            return Err(TbError::Other(format!(
+                "bessel_peierls_coeffs: the two-carrier enumeration would need \
+                 {work} iterations for {requested} requested orders, above the \
+                 {MAX_BESSEL_ENUM_WORK} cap; lower the amplitude or the harmonic range"
+            )));
+        }
+        let dc_phase = Complex::new(0.0, -dc).exp();
+        // Iterate over the mode with the smaller cutoff and divmod by the other's
+        // harmonic: only m pairs whose partner index is an integer inside its own
+        // cutoff contribute.
+        let (scan, other) = if carriers[0].m_cap <= carriers[1].m_cap {
+            (carriers[0], carriers[1])
+        } else {
+            (carriers[1], carriers[0])
+        };
+        let sequence = |mode: &ModeData| -> Vec<Complex<f64>> {
+            let delta = mode.projection.arg();
+            let mut out = Vec::with_capacity((2 * mode.m_cap + 1) as usize);
+            let mut minus_i_power = Complex::new(1.0, 0.0);
+            for m in 0..=mode.m_cap {
+                let j_m = mode.ladder.j[m as usize];
+                let value = minus_i_power * j_m * Complex::from_polar(1.0, -(m as f64) * delta);
+                if m == 0 {
+                    out.push(value);
+                } else {
+                    let neg = minus_i_power * j_m * Complex::from_polar(1.0, (m as f64) * delta);
+                    out.push(neg);
+                    out.push(value);
+                }
+                minus_i_power *= Complex::new(0.0, -1.0);
+            }
+            out
+        };
+        let scan_seq = sequence(scan);
+        let other_seq = sequence(other);
+        // Both vectors follow the fold's layout: index 0 is m = 0, then the pairs
+        // (m = -1, m = +1), (m = -2, m = +2), ... so m > 0 sits at 2m and m < 0
+        // at 2|m| - 1.
+        let slot = |m: isize| -> usize {
+            if m >= 0 {
+                (2 * m) as usize
+            } else {
+                (2 * m.unsigned_abs() - 1) as usize
+            }
+        };
+        let mut coeffs = Array1::<Complex<f64>>::zeros((harmonic_max - harmonic_min + 1) as usize);
+        for (index, n) in (harmonic_min..=harmonic_max).enumerate() {
+            let target = n.checked_neg().ok_or_else(|| {
+                TbError::Other("bessel_peierls_coeffs: requested order overflow".to_string())
+            })?;
+            let mut acc = Complex::new(0.0, 0.0);
+            for m in -scan.m_cap..=scan.m_cap {
+                // l_scan·m + l_other·m' = −n; a product that leaves isize cannot
+                // land inside the other cutoff, so it is skipped, like a source
+                // outside the fold's working window.
+                let Some(shift) = scan.harmonic.checked_mul(m) else {
+                    continue;
+                };
+                let Some(numerator) = target.checked_sub(shift) else {
+                    continue;
+                };
+                if numerator % other.harmonic != 0 {
+                    continue;
+                }
+                let partner = numerator / other.harmonic;
+                if partner.abs() > other.m_cap {
+                    continue;
+                }
+                acc += scan_seq[slot(m)] * other_seq[slot(partner)];
+            }
+            coeffs[index] = acc * dc_phase;
+        }
+        return Ok(coeffs);
     }
 
     // Second pass: the working window must cover the actual reachable
@@ -3146,17 +3309,18 @@ pub(crate) fn bessel_peierls_coeffs(
         // ladder's top entry), so every lookup below is in range; the ladder
         // itself is capped at MAX_BESSEL_ORDER.
         debug_assert!(mode.m_cap >= 0 && mode.m_cap as usize <= mode.ladder.max_order());
+        let delta = mode.projection.arg();
         let mut b = Vec::<(isize, Complex<f64>)>::with_capacity((2 * mode.m_cap + 1) as usize);
         for m in 0..=mode.m_cap {
             let j_m = mode.ladder.j[m as usize];
-            let value = minus_i_power * j_m * Complex::from_polar(1.0, -(m as f64) * mode.delta);
+            let value = minus_i_power * j_m * Complex::from_polar(1.0, -(m as f64) * delta);
             if m == 0 {
                 b.push((0, value));
             } else {
                 // B(-m) = (-i)^{-m} J_{-m}(r) e^{+imδ}
                 //       = i^m · (-1)^m J_m(r) e^{+imδ}
                 //       = (-i)^m J_m(r) e^{+imδ} (since i^m (-1)^m = (-i)^m)
-                let neg = minus_i_power * j_m * Complex::from_polar(1.0, (m as f64) * mode.delta);
+                let neg = minus_i_power * j_m * Complex::from_polar(1.0, (m as f64) * delta);
                 b.push((-m, neg));
                 b.push((m, value));
             }
@@ -4109,13 +4273,14 @@ mod tests {
         );
         assert!(bessel_peierls_coeffs(&d, &above_cap, -2, 2, 0).is_err());
 
-        // Two distinct harmonics take the convolution, which keeps the low cap
-        // even for an amplitude the closed form would handle.
+        // Three or more carriers take the convolution, which keeps the low cap
+        // even for an amplitude the other two paths would handle.
         let folded = FloquetDrive::with_modes(
             1.0,
             vec![
                 LightMode::new(1, array![Complex::new(MAX_BESSEL_ARG * 1.5, 0.0)]),
                 LightMode::new(2, array![Complex::new(1.0, 0.0)]),
+                LightMode::new(3, array![Complex::new(1.0, 0.0)]),
             ],
         );
         assert!(bessel_peierls_coeffs(&d, &folded, -2, 2, 0).is_err());
@@ -4333,6 +4498,130 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn validator_scan_bound_dominates_the_true_cutoff() {
+        // validate_sambe_allocation estimates an enumeration scan as
+        // 4·(⌈r⌉ + 64 + 16·r^(1/3)) per carrier.  That estimate must never be
+        // below the cutoff the backend actually computes, otherwise the validator
+        // could certify a link the backend refuses.  Sweep the reachable range at
+        // the error shares real drives produce.
+        let shares = [1e-12_f64, 5e-13, 1e-12 / 3.0, 1e-12 / 8.0];
+        for r in [
+            1.0_f64,
+            8.0,
+            128.0,
+            264.0,
+            400.0,
+            1000.0,
+            4000.0,
+            8000.0,
+            12_000.0,
+            16_000.0,
+            MAX_BESSEL_ARG_CLOSED_FORM,
+        ] {
+            let estimate = 4 * ((r.ceil() as usize) + 64 + (16.0 * r.cbrt()) as usize);
+            for share in shares {
+                let (_, m_cap) = bessel_ladder_with_cutoff(r, share, 6);
+                assert!(
+                    m_cap as usize <= estimate,
+                    "r = {r}, share = {share:e}: cutoff {m_cap} exceeds the validator's bound {estimate}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bessel_enumeration_reaches_past_the_convolution_cap() {
+        // Two carriers are linear in the amplitude, so they are exact well past
+        // the convolution's 128 cap.  R = 400 is 3x beyond it; the time-grid DFT
+        // is the independent oracle (its 4096-point grid resolves the band).
+        let d = array![1.0, 0.5];
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(200.0, 0.0), Complex::new(0.0, 0.0)]),
+                LightMode::new(3, array![Complex::new(0.0, 0.0), Complex::new(160.0, 40.0)]),
+            ],
+        );
+        let grid = FloquetTimeGrid::new(&drive, 4096, -8, 8, 2);
+        let reference = peierls_fourier_coeffs(&d, -8, 8, &drive, &grid);
+        let got = bessel_peierls_coeffs(&d, &drive, -8, 8, 6).unwrap();
+        for (n, (a, b)) in got.iter().zip(reference.iter()).enumerate() {
+            assert!(
+                (a - b).norm() < 1e-12,
+                "n = {}: enumeration {a} vs time-grid DFT {b}",
+                n as isize - 8
+            );
+        }
+
+        // The budget bounds the scan: a symmetric pair at the closed-form cap
+        // with a wide requested range must be refused, not ground through.
+        let heavy = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(
+                    1,
+                    array![Complex::new(16000.0, 0.0), Complex::new(0.0, 0.0)],
+                ),
+                LightMode::new(
+                    2,
+                    array![Complex::new(16000.0, 0.0), Complex::new(0.0, 0.0)],
+                ),
+            ],
+        );
+        assert!(bessel_peierls_coeffs(&d, &heavy, -2000, 2000, 6).is_err());
+        assert!(bessel_peierls_coeffs(&d, &heavy, -2, 2, 6).is_ok());
+    }
+
+    #[test]
+    fn bessel_enumeration_matches_the_fold() {
+        // Two carriers take the resonance enumeration; adding a third carrier
+        // with a negligible amplitude forces the one-mode convolution instead.
+        // The two paths must agree bin for bin, which pins the enumeration
+        // against the code it replaced.
+        let d = array![0.8, -1.1];
+        let cases: Vec<Vec<LightMode>> = vec![
+            vec![
+                LightMode::new(1, array![Complex::new(0.9, 0.2), Complex::new(-0.3, 0.4)]),
+                LightMode::new(
+                    2,
+                    array![Complex::new(0.15, -0.25), Complex::new(0.35, 0.05)],
+                ),
+            ],
+            vec![
+                LightMode::new(3, array![Complex::new(1.4, 0.0), Complex::new(0.0, -0.6)]),
+                LightMode::new(-2, array![Complex::new(-0.2, 0.7), Complex::new(0.1, 0.3)]),
+            ],
+            vec![
+                LightMode::new(7, array![Complex::new(2.0, 0.5), Complex::new(0.25, -0.75)]),
+                LightMode::new(11, array![Complex::new(0.6, -0.4), Complex::new(-0.9, 0.2)]),
+            ],
+            // Large amplitudes: the adaptive cutoffs are ~60 orders per carrier,
+            // so the enumeration's partner search spans the whole ladder.
+            vec![
+                LightMode::new(1, array![Complex::new(40.0, 5.0), Complex::new(-3.0, 8.0)]),
+                LightMode::new(2, array![Complex::new(6.0, -9.0), Complex::new(11.0, 2.0)]),
+            ],
+        ];
+        for (case, modes) in cases.iter().enumerate() {
+            let enumerated = FloquetDrive::with_modes(1.0, modes.clone());
+            let mut folded_modes = modes.clone();
+            folded_modes.push(LightMode::new(
+                5,
+                Array1::from_elem(2, Complex::new(1e-300, 0.0)),
+            ));
+            let folded = FloquetDrive::with_modes(1.0, folded_modes);
+            let a = bessel_peierls_coeffs(&d, &enumerated, -6, 6, 6).unwrap();
+            let b = bessel_peierls_coeffs(&d, &folded, -6, 6, 6).unwrap();
+            for (n, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+                assert!(
+                    (x - y).norm() < 1e-14,
+                    "case {case}, n = {}: enumeration {x} vs fold {y}",
+                    n as isize - 6
+                );
+            }
+        }
+    }
 
     #[test]
     fn bessel_coeffs_match_time_grid_dft() {
@@ -4505,16 +4794,25 @@ mod tests {
         let single = bessel_peierls_coeffs(&d, &over, -2, 2, 6).unwrap();
         assert!((single[2].re - bessel_j(0, 200.0)).abs() < 1e-14);
 
-        // The same amplitude with a second harmonic forces the convolution,
-        // which keeps the low cap and must refuse it.
+        // Three carriers force the convolution, which keeps the low cap and must
+        // refuse the same amplitude; two carriers are enumerated and accept it.
         let folded = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(200.0, 0.0)]),
+                LightMode::new(2, array![Complex::new(1.0, 0.0)]),
+                LightMode::new(3, array![Complex::new(1.0, 0.0)]),
+            ],
+        );
+        assert!(bessel_peierls_coeffs(&d, &folded, -2, 2, 6).is_err());
+        let two = FloquetDrive::with_modes(
             1.0,
             vec![
                 LightMode::new(1, array![Complex::new(200.0, 0.0)]),
                 LightMode::new(2, array![Complex::new(1.0, 0.0)]),
             ],
         );
-        assert!(bessel_peierls_coeffs(&d, &folded, -2, 2, 6).is_err());
+        assert!(bessel_peierls_coeffs(&d, &two, -2, 2, 6).is_ok());
     }
 
     #[test]
@@ -4702,6 +5000,54 @@ mod tests {
                 .is_err()
         );
 
+        // A drive-level carrier count that disagrees with the link's must keep both
+        // sides in step: three raw carriers (one with a zero projection) hold the
+        // convolution cap on both sides, so the two spellings must agree.
+        let zero_third = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(200.0, 0.0)]),
+                LightMode::new(2, array![Complex::new(1.0, 0.0)]),
+                LightMode::new(3, array![Complex::new(0.0, 0.0)]),
+            ],
+        );
+        let plain = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(200.0, 0.0)]),
+                LightMode::new(2, array![Complex::new(1.0, 0.0)]),
+            ],
+        );
+        let from_plain = model
+            .floquet_ham_onek(&k, &plain, &trunc, Gauge::Lattice)
+            .unwrap();
+        let from_zero = model
+            .floquet_ham_onek(&k, &zero_third, &trunc, Gauge::Lattice)
+            .unwrap();
+        assert!(
+            from_plain
+                .iter()
+                .zip(&from_zero)
+                .all(|(a, b)| (a - b).norm() < 1e-11)
+        );
+
+        // Two large carriers plus a static mode: the enumeration scans the
+        // *carriers* only, so the static mode must not make its budget look small,
+        // and a request the per-link grid cannot resolve must be refused.
+        let static_and_big = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(900, array![Complex::new(16000.0, 0.0)]),
+                LightMode::new(901, array![Complex::new(16000.0, 0.0)]),
+                LightMode::new(0, array![Complex::new(1.0, 0.0)]),
+            ],
+        );
+        assert!(
+            model
+                .floquet_model(&static_and_big, &FloquetTruncation::new(500, 32))
+                .is_err()
+        );
+
         // The requested-bin range alone can exceed the fallback grid cap: with a
         // huge photon cutoff, a link beyond the closed-form range cannot be
         // resolved, and the call must be refused before the Sambe matrix is even
@@ -4732,8 +5078,9 @@ mod tests {
         assert!(bessel_peierls_coeffs(&array![1.0], &high_harmonic, 0, 0, 6).is_ok());
 
         // Tiny amplitudes at enormous distinct harmonics stay inside the cap on
-        // every mode, but the convolution window is `Σ|l|·M` wide: it must be
-        // refused, not allocated.
+        // every mode.  Two carriers are enumerated without any window, so this
+        // drive is exact and every requested bin is reachable only through
+        // m = 0: C_0 = 1 and the rest vanish.
         let wide = FloquetDrive::with_modes(
             1.0,
             vec![
@@ -4741,8 +5088,38 @@ mod tests {
                 LightMode::new(1_000_000_001, array![Complex::new(1e-6, 0.0)]),
             ],
         );
-        assert!(model.floquet_model(&wide, &trunc).is_err());
-        assert!(bessel_peierls_coeffs(&array![1.0], &wide, -2, 2, 6).is_err());
+        let wide_coeffs = bessel_peierls_coeffs(&array![1.0], &wide, -2, 2, 6).unwrap();
+        // The harmonics differ by 1, so besides the trivial m = 0 term the pair
+        // (m, m') = (-1, +1) resonates exactly at n = -1 and (+1, -1) at n = +1:
+        // B(-1)B'(+1) = B(+1)B'(-1) = -J_1(r)^2 with r = 1e-6.  Orders +-2 have
+        // no integer solution at all.
+        let j0_sq = bessel_j(0, 1e-6).powi(2);
+        let j1_sq = bessel_j(1, 1e-6).powi(2);
+        for (n, value) in (-2_isize..=2).zip(wide_coeffs.iter()) {
+            let (expected, tolerance) = match n {
+                0 => (j0_sq, 1e-15),
+                -1 | 1 => (-j1_sq, 1e-25),
+                _ => (0.0, 1e-25),
+            };
+            assert!(
+                (value.re - expected).abs() < tolerance && value.im.abs() < tolerance,
+                "n = {n}: {value} vs {expected}"
+            );
+        }
+        assert!(model.floquet_model(&wide, &trunc).is_ok());
+
+        // A third carrier falls back to the fold, whose window is `Σ|l|·M` wide:
+        // that one must be refused, not allocated.
+        let wider = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1_000_000_000, array![Complex::new(1e-6, 0.0)]),
+                LightMode::new(1_000_000_001, array![Complex::new(1e-6, 0.0)]),
+                LightMode::new(1_000_000_002, array![Complex::new(1e-6, 0.0)]),
+            ],
+        );
+        assert!(model.floquet_model(&wider, &trunc).is_err());
+        assert!(bessel_peierls_coeffs(&array![1.0], &wider, -2, 2, 6).is_err());
     }
 
     #[test]
@@ -5315,11 +5692,11 @@ mod tests {
             .unwrap();
         assert!((h[[0, 0]].re + 2.0 * bessel_j(0, 4000.0)).abs() < 1e-10);
         // Both cases need more orders than the per-link grid can resolve.  The
-        // second is written with two harmonics because a single one at R = 4000
-        // is now inside the closed-form range and would be exact.
+        // second needs three harmonics: one at R = 4000 takes the closed form and
+        // two take the enumeration, and both of those are exact.
         for (harmonics, amplitude) in [
             (vec![1_isize], FALLBACK_GRID_MAX as f64),
-            (vec![10000, 9999], 4000.0),
+            (vec![10000, 9999, 9998], 4000.0),
         ] {
             let unresolved = FloquetDrive::with_modes(
                 1.0,
