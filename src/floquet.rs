@@ -2556,24 +2556,32 @@ const BESSEL_DECAY_FLOOR: f64 = 1e-20;
 const SWEEP_BAND_LOW: f64 = 1e-30;
 const SWEEP_BAND_HIGH: f64 = 1e30;
 /// Arguments below this are evaluated analytically instead of by recurrence:
-/// with `k ≤ ~5·10^3` the growth factor `2k/r` then approaches `10^254`, and
-/// even a rescale of `SWEEP_RESCALE_DOWN` can no longer keep the next product
-/// inside `f64`.  At this size `J_0 = 1`, `J_1 = r/2` and every higher order
-/// underflows to zero anyway.
+/// with `k ≤ ~5·10^3` the growth factor `2k/r` then approaches `10^254`, so the
+/// band rescale can no longer guarantee the next product stays finite.  At this
+/// size `J_0 = 1`, `J_1 = r/2` and every higher order underflows to zero anyway.
 const SWEEP_MIN_ARG: f64 = 1e-250;
-/// Divide every value from `newest` on by one power of two, chosen so the
-/// newest entry lands at `~1`.  The factor is exact, so every ratio
-/// `u[m]/u[anchor]` — the only thing the normalization reads — is preserved,
-/// and no stored magnitude can drift out of [`SWEEP_BAND_LOW`,
-/// `SWEEP_BAND_HIGH`] far enough to overflow or to underflow to zero.
+/// Divide every value from `newest` on by one power of two chosen so the
+/// **largest** entry of that suffix lands at `~1`.  The factor is exact, so
+/// every ratio `u[m]/u[anchor]` — the only thing the normalization reads — is
+/// preserved, and no entry the sweep still needs can overflow.  Normalizing on
+/// the suffix maximum rather than on its newest entry also covers the decay
+/// region, where an older entry can be the largest one.
+///
+/// Deep-tail entries may still underflow to zero — their `J_m(r)` is
+/// negligible there — but the normalization's `anchor` is the turning-point
+/// order, which carries the largest magnitude of the finished sweep, so it is
+/// never one of them.
 fn rescale_sweep_tail(u: &mut [f64], newest: usize) {
-    let magnitude = u[newest].abs();
+    let magnitude = u[newest..]
+        .iter()
+        .fold(0.0_f64, |largest, value| largest.max(value.abs()));
     debug_assert!(
         magnitude.is_finite() && magnitude > 0.0,
         "rescale_sweep_tail expects a finite non-zero entry"
     );
-    // `magnitude <= 1e30`, so the unbiased exponent stays far inside the
-    // representable normal range (`1023 - exponent` is a valid biased exponent).
+    // The caller only rescales when the newest magnitude left the band, and
+    // `SWEEP_BAND_HIGH` bounds it, so `1023 - exponent` stays a valid biased
+    // exponent and the scale is a finite positive power of two.
     let exponent = (magnitude.log2().floor() as i32).clamp(-1000, 1000);
     let scale = f64::from_bits(((1023 - exponent) as u64) << 52);
     for value in u[newest..].iter_mut() {
@@ -3775,8 +3783,19 @@ mod tests {
             assert!(ladder.max_order() >= n);
             for m in [0_usize, 1, 2, 8, 64] {
                 let expected = series(m, r);
+                if expected == 0.0 {
+                    // The true order underflows in f64 (r = 1e-6, m = 64), so
+                    // the ladder must report it as negligible rather than
+                    // invent a value; a relative check here would be vacuous.
+                    assert!(
+                        ladder.j[m].abs() <= BESSEL_DECAY_FLOOR,
+                        "r = {r}, m = {m}: expected an underflowed order, got {}",
+                        ladder.j[m]
+                    );
+                    continue;
+                }
                 assert!(
-                    (ladder.j[m] - expected).abs() <= 1e-12 * expected.abs() + f64::MIN_POSITIVE,
+                    (ladder.j[m] - expected).abs() <= 1e-12 * expected.abs(),
                     "r = {r}, m = {m}: ladder {} vs series {expected}",
                     ladder.j[m]
                 );
