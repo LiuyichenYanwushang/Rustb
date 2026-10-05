@@ -2479,16 +2479,20 @@ fn validate_target_hamr<const DIM: usize>(target_ham_r: &Array2<isize>) -> Resul
 /// non-negative arguments.
 ///
 /// Thin wrapper over [`puruspe::Jn`] (pure Rust special-functions crate,
-/// MIT/Apache-2.0; measured worst relative error ~2e-15 over the Floquet
-/// backend's range `r ≤ 8`, `|m| ≤ ~24`).  Negative orders use the
-/// symmetry
+/// MIT/Apache-2.0).  Negative orders use the symmetry
 ///
 /// ```math
 /// J_{-m}(r) = (-1)^m J_m(r).
 /// ```
 ///
-/// Cross-checked in tests against an independent Miller downward-recurrence
-/// reference and tabulated NIST values.
+/// It is accurate to a few ulp around `|m| ~ r` — which is where
+/// [`bessel_backward_sweep`] anchors its normalization — and over the ranges
+/// the tests probe, cross-checked against an independent Miller
+/// downward-recurrence reference, tabulated NIST values and `mpmath` at 50
+/// digits.  It is *not* a general oracle for `|m| >> r`: measured
+/// `Jn(4096, 0.5) = 1.7e34` where the true value underflows to zero, and
+/// `Jn(n ≥ 2, r) = 0` for `r ≤ 4.2e-154`.  The ladder therefore never asks it
+/// for such orders, and tests that need them build their own reference.
 ///
 /// # Arguments
 /// * `m` - integer order (may be negative).
@@ -2694,12 +2698,14 @@ fn bessel_backward_sweep(r: f64, n: usize) -> Vec<f64> {
             rescale_sweep_tail(&mut u, k - 1);
         }
     }
-    // `anchor <= n`, so it survives the truncation below.
-    let anchor = if r < 1.0 {
-        0
-    } else {
-        (r.ceil() as usize).min(n)
-    };
+    // Anchor on the largest stored magnitude, which for the callers here is the
+    // turning point.  Picking an order by index instead would break whenever
+    // that order sits on a zero of `J_m` (`J_0` has one at 2.4048…, `J_1` at
+    // 7.0156…): the whole ladder would then be scaled by a value whose relative
+    // error is enormous.
+    let anchor = (0..=n)
+        .max_by(|&a, &b| u[a].abs().total_cmp(&u[b].abs()))
+        .expect("the sweep always stores at least one order");
     let scale = bessel_j(anchor as isize, r) / u[anchor];
     u.truncate(n + 1);
     for value in u.iter_mut() {
@@ -2869,6 +2875,17 @@ pub(crate) fn bessel_peierls_coeffs(
         // delivered together with J_0..J_M and every candidate tail from one
         // backward sweep.
         let (ladder, m_cap) = bessel_ladder_with_cutoff(r, error_share, cutoff_margin);
+        if !ladder.decayed {
+            // A truncated ladder's suffix sums stop at MAX_BESSEL_ORDER, so they
+            // cannot certify a truncation budget.  MAX_BESSEL_ARG plus the
+            // largest allowed margin keeps this out of reach, but a future cap
+            // change must fail loudly instead of folding a truncated expansion.
+            return Err(TbError::Other(format!(
+                "bessel_peierls_coeffs: the order range for R = {r:.3} saturated at \
+                 {MAX_BESSEL_ORDER} orders without decaying; lower MAX_BESSEL_ARG or \
+                 raise MAX_BESSEL_ORDER"
+            )));
+        }
         let harmonic_abs = mode.harmonic.checked_abs().ok_or_else(|| {
             TbError::Other("bessel_peierls_coeffs: harmonic drift overflow".to_string())
         })?;
@@ -3058,14 +3075,17 @@ fn fallback_grid_size(
             continue;
         }
         // The Bessel backend's precision margin is not a sampling floor.
-        // Above MAX_BESSEL_ORDER the adaptive search cannot converge at all;
-        // at it the ladder reports whether its top order decayed.  Either way
-        // the conservative analytic bound below takes over.
+        // A ladder that never decayed inside MAX_BESSEL_ORDER cannot certify a
+        // bandwidth: its suffix sums stop at the cap, so a cutoff read from them
+        // omits the orders above it — measured at r = 3955 a suffix budget of
+        // 7.4e-13 against a complete two-sided tail of 1.8e-12 for a 1e-12
+        // share.  Such an argument therefore always takes the conservative
+        // analytic bound below, exactly like r > MAX_BESSEL_ORDER.
         let (m_cap, truncated) = if r > MAX_BESSEL_ORDER as f64 {
             (MAX_BESSEL_ORDER as isize, true)
         } else {
             let (ladder, m_cap) = bessel_ladder_with_cutoff(r, error_share, 0);
-            (m_cap, m_cap >= MAX_BESSEL_ORDER as isize && !ladder.decayed)
+            (m_cap, !ladder.decayed)
         };
         let cutoff = if truncated {
             saturated = true;
@@ -3849,6 +3869,67 @@ mod tests {
                     "r = {r}, margin = {margin}: {m} is not the first fitting order"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn fallback_saturation_covers_the_undecayed_window() {
+        // Just below MAX_BESSEL_ORDER the ladder's top order has not decayed, so
+        // its suffix sums stop at the cap and understate the truncation budget.
+        // Measured at r = 3955: the stored suffix says 7.4e-13 while the complete
+        // two-sided tail is 1.8e-12, against a 1e-12 share.  Sizing must
+        // therefore fall back to the conservative analytic bound and the maximum
+        // grid, exactly as for r > MAX_BESSEL_ORDER, instead of certifying a
+        // cutoff from the truncated sum.
+        let (ladder, m_cap) = bessel_ladder_with_cutoff(3955.0, 1e-12, 0);
+        assert!(!ladder.decayed, "r = 3955 must exhaust MAX_BESSEL_ORDER");
+        let truncated_budget = ladder.tail_after(m_cap as usize);
+        let complete_budget: f64 = 2.0
+            * ((m_cap as usize + 1)..=(m_cap as usize + 200))
+                .map(|k| bessel_j(k as isize, 3955.0).abs())
+                .sum::<f64>();
+        assert!(
+            truncated_budget <= 1e-12,
+            "the stored suffix is expected to look converged, got {truncated_budget}"
+        );
+        assert!(
+            complete_budget > 1e-12,
+            "the omitted orders must break the 1e-12 budget, got {complete_budget}"
+        );
+
+        let near_cap = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(1, array![Complex::new(3955.0, 0.0)])],
+        );
+        let size = fallback_grid_size(&near_cap, &array![1.0, 0.0], -1, 1);
+        assert!(size.saturated, "an undecayed ladder must saturate");
+        assert_eq!(size.n_req, FALLBACK_GRID_MAX);
+    }
+
+    #[test]
+    fn bessel_ladder_anchors_away_from_bessel_zeros() {
+        // J_0 has a zero at 2.404825557695773 and J_1 at 7.015586669815619.
+        // Anchoring the sweep on such an order would scale every order by a
+        // value whose relative error is enormous, so the anchor is chosen at the
+        // largest magnitude instead and the orders next to the zero stay
+        // accurate.  References from mpmath at 50 digits.
+        let reference: [(f64, usize, f64); 8] = [
+            (2.404_825_557_695_773, 0, -1.201_195_007_367_686_1e-16),
+            (2.404_825_557_695_773, 1, 0.519_147_497_289_466_7),
+            (2.404_825_557_695_773, 2, 0.431_754_807_019_680_4),
+            (2.404_825_557_695_773, 3, 0.198_999_905_357_690_85),
+            (7.015_586_669_815_619, 0, 0.300_115_752_526_132_56),
+            (7.015_586_669_815_619, 1, 7.396_741_371_461_977e-17),
+            (7.015_586_669_815_619, 2, -0.300_115_752_526_132_54),
+            (7.015_586_669_815_619, 3, -0.171_113_702_474_732_7),
+        ];
+        for (r, m, expected) in reference {
+            let ladder = BesselLadder::new(r, m);
+            assert!(
+                (ladder.j[m] - expected).abs() <= 1e-12 * expected.abs() + 1e-15,
+                "J_{m}({r}) = {}, mpmath reference {expected}",
+                ladder.j[m]
+            );
         }
     }
 
@@ -6755,7 +6836,7 @@ mod tests {
         assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, 6).is_err());
 
         // Just inside the cap the ladder must still resolve the coefficients:
-        // R = 60 and R = 128 need orders past the old 64-order ceiling.
+        // R = 60 and R = 128 need orders past the removed 64-order ceiling.
         let grid = FloquetTimeGrid::new(&drive, 4096, -4, 4, 1);
         for r in [60.0, MAX_BESSEL_ARG] {
             let d_allowed = array![r];
