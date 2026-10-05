@@ -46,6 +46,9 @@ Rustb = { version = "0.7", features = ["intel-mkl-system", "cryspglib"] }
 The optional `mimalloc` and `jemalloc` allocator features are mutually
 exclusive and can be combined with one backend feature.
 
+Source builds enable `ndarray/blas`, so ndarray matrix products use the selected
+backend for supported layouts and sizes, with ndarray's fallback otherwise.
+
 On Debian/Ubuntu, `netlib-src` expects `libcblas.so`, while the distribution
 provides its CBLAS symbols inside `libblas.so`. After installing `libblas-dev`,
 `liblapack-dev` and `gfortran`, provide a local linker alias when using Netlib:
@@ -109,6 +112,16 @@ energies or `model.solve_onek(&k)?` for `(energies, row_ket_eigenvectors)`.
 Single-point and batched methods report invalid models, invalid k-points and
 eigensolver failures through errors. Energy-window methods select `(low, high]`,
 with bounds and absolute convergence tolerance in the model's energy units.
+All full-spectrum calculations share the row-ket convention `C[band, basis]`:
+`H C^T = C^T diag(E)` and `O_band = C* O C^T`.
+
+Surface Hamiltonian, spectral-density, and plotting methods also return `Result`.
+Remove the old `spin` argument from `surf_green_path`, `show_arc_state`, and
+`show_surf_state`, and propagate failures with `?`. Single-k surface methods
+return `(right, left, bulk)`; paths retain `(left, right, bulk)`.
+Hopping amplitudes now use `Into<Complex64>` and k meshes use `num_traits::Float`;
+the custom numeric conversion traits were removed. Serialized model fields stay
+the same, with unknown and duplicate fields now rejected.
 
 The five `Berry` Wilson-loop methods also return `Result` and accept occupied
 bands as slices, for example `model.berry_loop(&loop_k, &[0])?`. Returned phases
@@ -397,7 +410,7 @@ let drive = FloquetDrive::with_modes(
         ]),
     )],
 );
-let truncation = FloquetTruncation::new(1, 128);
+let truncation = FloquetTruncation::new(1);
 let k = arr1(&[0.2, 0.1]);
 
 // Full truncated Sambe problem and folded quasienergies.
@@ -430,8 +443,8 @@ The real-space effective-model path determines its generated hopping support
 automatically. `FloquetEffectiveOptions::harmonic_max` controls the commutator
 sums and defaults to `2`; `order` defaults to `1` and may be `0`, `1`, or `2`.
 All three effective-model APIs take only `FloquetEffectiveOptions` as numerical
-controls. `FloquetTruncation` controls photon sectors and time sampling for the
-full Sambe calculation. When migrating an effective-model call that relied on
+controls. `FloquetTruncation` controls the photon cutoff `n_max` of the full
+Sambe calculation; its coefficients no longer take a sampling count. When migrating an effective-model call that relied on
 the old cutoff, set `.with_harmonic_max(2 * old_n_max)` explicitly to preserve
 its harmonic range.
 Use `floquet_effective_mode_resolved_model` when different modes are mutually

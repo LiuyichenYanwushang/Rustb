@@ -188,7 +188,7 @@
 //! |---------------|---------|
 //! | [`LightMode`] | One harmonic component `(harmonic, a_complex)` |
 //! | [`FloquetDrive`] | Base photon energy plus all light modes |
-//! | [`FloquetTruncation`] | Photon cutoff and time-Fourier grid |
+//! | [`FloquetTruncation`] | Photon cutoff `n_max` |
 //! | [`IncidentBasis`] | 3D transverse basis from an incident direction |
 //! | [`FloquetEffectiveOptions`] | Effective-model expansion order and harmonic cutoff |
 //! | [`Floquet::floquet_model`] | Build an enlarged static Sambe tight-binding model |
@@ -230,7 +230,7 @@
 //!         0.8,
 //!         vec![LightMode::new(1, circular.mapv(|z| 0.15 * z))],
 //!     );
-//!     let trunc = FloquetTruncation::new(1, 128);
+//!     let trunc = FloquetTruncation::new(1);
 //!     let k = arr1(&[0.25, 0.0, 0.0]);
 //!
 //!     let floquet_model = model.floquet_model(&drive, &trunc)?;
@@ -346,10 +346,8 @@ impl FloquetDrive {
 /// $$
 ///
 /// Both Floquet paths evaluate the Peierls coefficients `C_n(d)` with the
-/// exact, grid-free Bessel backend, so no entry point takes a sampling count
-/// any more.  `n_time` is retained for the time-grid reference implementation
-/// (`peierls_fourier_coeffs`) that the tests cross-validate against, and for
-/// nothing else: changing it does not change any Floquet result.
+/// exact, grid-free Bessel backend, so no entry point takes a sampling count:
+/// this truncation carries the photon cutoff and nothing else.
 ///
 /// Links beyond the Bessel backend's exact range fall back to a per-link
 /// time-grid DFT whose resolution is sized from the link's own spectral
@@ -357,8 +355,8 @@ impl FloquetDrive {
 /// warn-once message; a drive whose link needs more than that is rejected up
 /// front instead of being silently aliased.  The exact range is the closed
 /// form's `MAX_BESSEL_ARG_CLOSED_FORM` when the drive's nonzero projections
-/// collapse to one coherent harmonic, and the convolution's smaller
-/// `MAX_BESSEL_ARG` otherwise.
+/// collapse to one coherent harmonic or to two carriers, and the convolution's
+/// smaller `MAX_BESSEL_ARG` otherwise.
 ///
 /// The van Vleck effective-model path uses [`FloquetEffectiveOptions`]
 /// instead of this truncation.
@@ -366,16 +364,11 @@ impl FloquetDrive {
 pub struct FloquetTruncation {
     /// Photon cutoff `N`.
     pub n_max: isize,
-    /// Number of time samples in one drive period.
-    ///
-    /// Retained for the time-grid reference implementation; the Floquet
-    /// entry points themselves are grid-free and ignore it.
-    pub n_time: usize,
 }
 
 impl FloquetTruncation {
-    pub fn new(n_max: isize, n_time: usize) -> Self {
-        Self { n_max, n_time }
+    pub fn new(n_max: isize) -> Self {
+        Self { n_max }
     }
 
     #[inline]
@@ -2185,7 +2178,7 @@ fn validate_floquet_truncation(trunc: &FloquetTruncation) -> Result<()> {
         .checked_mul(4)
         .and_then(|n| n.checked_add(1))
         .ok_or_else(|| TbError::Other("Floquet harmonic range overflows".into()))?;
-    validate_floquet_time_samples(trunc.n_time)
+    Ok(())
 }
 
 // Check every Sambe array extent before allocating, and check that each link
@@ -4923,7 +4916,7 @@ mod tests {
     fn sambe_validation_mirrors_the_backend_limits() {
         let model = chain_model();
         let k = array![0.21];
-        let trunc = FloquetTruncation::new(0, 32);
+        let trunc = FloquetTruncation::new(0);
 
         // The backend sums equal harmonics coherently before it checks the cap,
         // so two modes at the closed-form cap sum to twice it: the call must be
@@ -5044,7 +5037,7 @@ mod tests {
         );
         assert!(
             model
-                .floquet_model(&static_and_big, &FloquetTruncation::new(500, 32))
+                .floquet_model(&static_and_big, &FloquetTruncation::new(500))
                 .is_err()
         );
 
@@ -5061,7 +5054,7 @@ mod tests {
         );
         assert!(
             model
-                .floquet_model(&above, &FloquetTruncation::new(300_000, 32))
+                .floquet_model(&above, &FloquetTruncation::new(300_000))
                 .is_err()
         );
 
@@ -5163,7 +5156,7 @@ mod tests {
             .floquet_ham_onek(
                 &array![0.21, 0.0],
                 &drive,
-                &FloquetTruncation::new(n_max as isize, 32),
+                &FloquetTruncation::new(n_max as isize),
                 Gauge::Lattice,
             )
             .unwrap();
@@ -5406,7 +5399,10 @@ mod tests {
         let k = array![0.2];
         let q = array![0.0];
         let drive = FloquetDrive::new(1.0);
-        for trunc in [FloquetTruncation::new(-1, 32), FloquetTruncation::new(1, 0)] {
+        for trunc in [
+            FloquetTruncation::new(-1),
+            FloquetTruncation::new(isize::MIN),
+        ] {
             assert!(model.floquet_model(&drive, &trunc).is_err());
             assert!(
                 model
@@ -5457,12 +5453,12 @@ mod tests {
     }
 
     #[test]
-    fn sambe_rejects_overflowing_cutoffs_and_is_grid_free() {
+    fn sambe_rejects_overflowing_cutoffs() {
         let model = chain_model();
         let k = array![0.2];
         let static_drive = FloquetDrive::new(1.0);
         for n in [isize::MIN, -1, isize::MAX / 2, isize::MAX] {
-            let trunc = FloquetTruncation::new(n, 64);
+            let trunc = FloquetTruncation::new(n);
             assert!(model.floquet_model(&static_drive, &trunc).is_err());
             assert!(
                 model
@@ -5471,30 +5467,18 @@ mod tests {
             );
         }
         for n in [isize::MIN, -1, isize::MAX] {
-            assert!(FloquetTruncation::new(n, 64).n_sector().is_err());
-            assert!(FloquetTruncation::new(n, 64).sectors().is_err());
+            assert!(FloquetTruncation::new(n).n_sector().is_err());
+            assert!(FloquetTruncation::new(n).sectors().is_err());
         }
-        // The Sambe backend is grid-free: no sampling count can alias it, so
-        // even a degenerate `n_time` is accepted and changes nothing.
+        // The Sambe backend is grid-free: there is no sampling count to alias
+        // it, and the only truncation left is the photon cutoff.
         let drive = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(100, array![Complex::new(50.0, 0.0)])],
         );
-        let coarse = FloquetTruncation::new(4, 1);
-        let resolved = FloquetTruncation::new(4, 65536);
-        let from_coarse = model
-            .floquet_ham_onek(&k, &drive, &coarse, Gauge::Atom)
-            .unwrap();
         let sambe = model
-            .floquet_ham_onek(&k, &drive, &resolved, Gauge::Atom)
+            .floquet_ham_onek(&k, &drive, &FloquetTruncation::new(4), Gauge::Atom)
             .unwrap();
-        assert!(
-            from_coarse
-                .iter()
-                .zip(&sambe)
-                .all(|(a, b)| (a - b).norm() == 0.0),
-            "the Sambe path must ignore n_time"
-        );
         // Nonzero drive harmonics are multiples of 100, outside this Sambe
         // cutoff. The diagonal is J0(50)*H(k), plus the photon shift.
         let base = model.gen_ham(&k, Gauge::Atom)[[0, 0]] * bessel_j(0, 50.0);
@@ -5512,7 +5496,7 @@ mod tests {
     fn sambe_places_added_or_displaced_origin_first() {
         let original = chain_model();
         let drive = FloquetDrive::new(1.0);
-        let trunc = FloquetTruncation::new(1, 32);
+        let trunc = FloquetTruncation::new(1);
         for order in [vec![1, 2], vec![1, 2, 0]] {
             let mut model = original.clone();
             model.hamR = model.hamR.select(Axis(0), &order);
@@ -5539,7 +5523,7 @@ mod tests {
         let drive = FloquetDrive::new(f64::MAX);
         for cutoff in [1, 2] {
             model.ham[[0, 0, 0]] = Complex::new(f64::MAX, 0.0);
-            let trunc = FloquetTruncation::new(cutoff, 32);
+            let trunc = FloquetTruncation::new(cutoff);
             assert!(model.floquet_model(&drive, &trunc).is_err());
             assert!(
                 model
@@ -5551,7 +5535,7 @@ mod tests {
             Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
         diagonal.add_hop(1.0, 0, 0, &array![1, 1], None);
         let k = array![0.2, 0.1];
-        let trunc = FloquetTruncation::new(0, 4);
+        let trunc = FloquetTruncation::new(0);
         // Two modes whose Cartesian components overflow when summed, but whose
         // projection onto the link cancels exactly.  The Bessel backend projects
         // each mode before exponentiating, so this is the undressed static model
@@ -5589,13 +5573,13 @@ mod tests {
     }
 
     #[test]
-    fn sambe_allocation_validation_is_independent_of_n_time() {
+    fn sambe_allocation_validation_accepts_an_exactly_representable_drive() {
         let model = chain_model();
         let drive = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(10000, array![Complex::new(50.0, 0.0)])],
         );
-        let trunc = FloquetTruncation::new(0, 1 << 21);
+        let trunc = FloquetTruncation::new(0);
         // Validation allocates nothing and no longer reasons about a sampling
         // count: this drive is resolved exactly by the Bessel ladder, and the
         // `2^20` cap applies only to the per-link fallback grid.
@@ -5611,7 +5595,7 @@ mod tests {
     #[test]
     fn sambe_dc_mode_is_a_pure_phase_shift() {
         let model = chain_model();
-        let trunc = FloquetTruncation::new(1, 32);
+        let trunc = FloquetTruncation::new(1);
         let k = array![0.21];
         for amplitude in [0.2, 5000.0] {
             let drive = FloquetDrive::with_modes(
@@ -5633,32 +5617,21 @@ mod tests {
     }
 
     #[test]
-    fn weak_sambe_drive_is_independent_of_n_time() {
+    fn weak_sambe_drive_matches_the_analytic_bessel_series() {
         let model = chain_model();
         for amplitude in [0.05, 0.1, 0.5] {
             let drive = FloquetDrive::with_modes(
                 5.0,
                 vec![LightMode::new(1, array![Complex::new(amplitude, 0.0)])],
             );
-            let coarse = model
+            let sambe = model
                 .floquet_ham_onek(
                     &array![0.21],
                     &drive,
-                    &FloquetTruncation::new(1, 64),
+                    &FloquetTruncation::new(1),
                     Gauge::Atom,
                 )
                 .unwrap();
-            let fine = model
-                .floquet_ham_onek(
-                    &array![0.21],
-                    &drive,
-                    &FloquetTruncation::new(1, 512),
-                    Gauge::Atom,
-                )
-                .unwrap();
-            // Both calls differ only in `n_time`, which the grid-free Sambe
-            // backend ignores outright.
-            assert!(coarse.iter().zip(&fine).all(|(a, b)| (a - b).norm() == 0.0));
             let bloch = Complex::new(0.0, TAU * 0.21).exp();
             for i in 0..3 {
                 for j in 0..3 {
@@ -5669,7 +5642,7 @@ mod tests {
                     if i == j {
                         expected += (i as f64 - 1.0) * drive.omega0_ev;
                     }
-                    assert!((coarse[[i, j]] - expected).norm() < 1e-12);
+                    assert!((sambe[[i, j]] - expected).norm() < 1e-12);
                 }
             }
         }
@@ -5686,7 +5659,7 @@ mod tests {
             .floquet_ham_onek(
                 &array![0.0],
                 &drive,
-                &FloquetTruncation::new(0, 32768),
+                &FloquetTruncation::new(0),
                 Gauge::Atom,
             )
             .unwrap();
@@ -5706,12 +5679,8 @@ mod tests {
                     .collect(),
             );
             assert!(
-                validate_sambe_allocation(
-                    &model,
-                    &unresolved,
-                    &FloquetTruncation::new(0, FALLBACK_GRID_MAX),
-                )
-                .is_err()
+                validate_sambe_allocation(&model, &unresolved, &FloquetTruncation::new(0),)
+                    .is_err()
             );
         }
     }
@@ -5835,7 +5804,7 @@ mod tests {
             .floquet_quasienergy_onek(
                 &array![0.0],
                 &FloquetDrive::new(f64::MAX),
-                &FloquetTruncation::new(0, 1),
+                &FloquetTruncation::new(0),
                 Gauge::Atom,
             )
             .unwrap();
@@ -5851,7 +5820,7 @@ mod tests {
         // Every matrix entry is finite, but its upper eigenvalue is 2e308.
         model.ham.fill(Complex::new(1e308, 0.0));
         let drive = FloquetDrive::new(1.0);
-        let trunc = FloquetTruncation::new(0, 1);
+        let trunc = FloquetTruncation::new(0);
         assert!(
             model
                 .floquet_band_onek(&array![0.0], &drive, &trunc, Gauge::Atom)
@@ -7039,7 +7008,7 @@ mod tests {
             1,
             array![Complex::new(0.23, 0.04), Complex::new(-0.02, 0.19)],
         );
-        let trunc = FloquetTruncation::new(8, 4096);
+        let trunc = FloquetTruncation::new(8);
         let base_options = FloquetEffectiveOptions::new().with_harmonic_max(8);
         let mut first_order_errors = Vec::new();
         let mut second_order_errors = Vec::new();
@@ -7676,7 +7645,7 @@ mod tests {
 
         let mut outer_previous = f64::INFINITY;
         for n_max in [4, 8, 12] {
-            let trunc = FloquetTruncation::new(n_max, 512);
+            let trunc = FloquetTruncation::new(n_max);
             let hf = model
                 .floquet_ham_onek(&k, &drive, &trunc, Gauge::Lattice)
                 .unwrap();
@@ -7958,7 +7927,7 @@ mod tests {
         let model = chain_model();
         let k = arr1(&[0.17]);
         let drive = FloquetDrive::new(0.7);
-        let trunc = FloquetTruncation::new(1, 64);
+        let trunc = FloquetTruncation::new(1);
 
         let bands = model
             .floquet_band_onek(&k, &drive, &trunc, Gauge::Atom)
@@ -7987,7 +7956,7 @@ mod tests {
                 arr1(&[Complex::new(0.11, 0.0), Complex::new(0.0, 0.07)]),
             )],
         );
-        let trunc = FloquetTruncation::new(2, 512);
+        let trunc = FloquetTruncation::new(2);
         let k = arr1(&[0.13, 0.29]);
         let hf = model
             .floquet_ham_onek(&k, &drive, &trunc, Gauge::Atom)
@@ -8018,7 +7987,7 @@ mod tests {
                 arr1(&[Complex::new(0.13, 0.0), Complex::new(0.0, 0.09)]),
             )],
         );
-        let trunc = FloquetTruncation::new(1, 256);
+        let trunc = FloquetTruncation::new(1);
         let k = arr1(&[0.23, 0.31]);
         let floquet_model = model.floquet_model(&drive, &trunc).unwrap();
 
@@ -8061,7 +8030,7 @@ mod tests {
                 arr1(&[Complex::new(0.07, 0.0), Complex::new(0.0, 0.05)]),
             )],
         );
-        let trunc = FloquetTruncation::new(1, 256);
+        let trunc = FloquetTruncation::new(1);
         let k = arr1(&[0.17, 0.29]);
         let floquet_model = model.floquet_model(&drive, &trunc).unwrap();
 
@@ -8094,7 +8063,7 @@ mod tests {
     fn floquet_models_preserve_atom_metadata() {
         let model = metadata_model();
         let drive = FloquetDrive::new(1.2);
-        let trunc = FloquetTruncation::new(1, 32);
+        let trunc = FloquetTruncation::new(1);
 
         let sambe = model.floquet_model(&drive, &trunc).unwrap();
         assert_eq!(sambe.natom(), model.natom() * trunc.n_sector().unwrap());
@@ -8222,7 +8191,7 @@ mod tests {
             1.0,
             vec![LightMode::new(1, arr1(&[Complex::new(amp, 0.0)]))],
         );
-        let trunc = FloquetTruncation::new(1, 512);
+        let trunc = FloquetTruncation::new(1);
         let k = arr1(&[0.25]);
         let hf = model
             .floquet_ham_onek(&k, &drive, &trunc, Gauge::Lattice)
@@ -8257,7 +8226,7 @@ mod tests {
         ]);
         let drive =
             FloquetDrive::with_modes(0.8, vec![LightMode::new(1, circular.mapv(|z| 0.12 * z))]);
-        let trunc = FloquetTruncation::new(1, 128);
+        let trunc = FloquetTruncation::new(1);
         let k = arr1(&[0.2, 0.1, 0.0]);
 
         let hf = model

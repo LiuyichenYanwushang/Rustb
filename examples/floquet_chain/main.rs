@@ -28,7 +28,7 @@ fn main() -> Result<()> {
         0.8,
         vec![LightMode::new(1, circular.mapv(|z| amplitude * z))],
     );
-    let trunc = FloquetTruncation::new(1, 128);
+    let trunc = FloquetTruncation::new(1);
     let floquet_model = model.floquet_model(&drive, &trunc)?;
 
     println!("# kx    unfolded Sambe energies from the returned Floquet Model");

@@ -2,7 +2,41 @@
 
 ## 0.7.3 — Unreleased
 
+### Breaking changes
+
+- `FloquetTruncation::new(n_max, n_time)` is now `FloquetTruncation::new(n_max)`
+  and the `n_time` field is gone.  Both Floquet paths evaluate the Peierls
+  coefficients with the exact, grid-free Bessel backend, so no public entry
+  point takes a sampling count any more; the time grid survives only as the
+  per-link fallback for links beyond the backend's range.  Callers that passed
+  a sampling count can drop the second argument and will get the same results.
+
 ### Safety and numerical fixes
+
+- Replace the Floquet and batched Fourier raw GEMM calls with ndarray's
+  `general_mat_mul`, with `ndarray/blas` enabled for the selected backend.
+  Restrict crate-owned `unsafe` to the existing `ndarray_lapack` module.
+- Use ordinary `f64` accumulation for mode-resolved Floquet models. Remove
+  the custom exact accumulator, per-mode block storage, and its extreme-range
+  tests; mode reordering may now change floating-point rounding.
+- Simplify Wannier90 import into parsing, orbital matching, support adjustment,
+  and assembly; validate declared records, indices, weights, sizes, and energy
+  shifts before constructing a model. Match position-matrix weights by R and
+  symmetrize every conjugate block, including the sole/final origin block;
+  retain the energy offset when wsvec introduces a synthetic origin.
+- Surface Hamiltonian, spectrum, and plot APIs return `Result`. Remove the old
+  `spin` argument from path/plot methods and always use logarithmic path colors.
+  Preserve single-k `(right, left, bulk)` and path `(left, right, bulk)` order.
+  Reject invalid log data, center constant data, and correct nonsquare arc grids.
+- Replace `HopUse` with `Into<Complex64>`, `ToFloat`/`UseFloat` with
+  `num_traits::Float` for grids, and duplicated model deserialization visitors
+  with one derived wire format that rejects unknown and duplicate fields.
+- Centralize full-spectrum diagonalization into one layout-independent row-ket
+  boundary. Migrate response, Hubbard, geometry, angular momentum, and irrep
+  consumers to `C* O C^T`; fix irrep projection of conjugated complex eigenstates.
+- Group nonlinear vertex primitives and release separately held tracking states
+  before integration. Optical components share energies, velocities, and one
+  tracking pass without allocating a placeholder component kernel.
 
 - Model, surface, and unfolding k-paths share validation and node-preserving
   sampling. Surface and unfolding paths now round and reserve segment intervals

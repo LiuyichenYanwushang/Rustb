@@ -137,7 +137,23 @@ let model_with_r: Model<false, 3, HasRMatrix> =
 ```
 
 The `HasRMatrix` form includes position-matrix contributions in velocity
-operators.
+operators. The importer reads the declared HR, position, and wsvec record
+counts and rejects truncation, invalid indices, zero weights, and overflowing
+sizes. `zero_energy` must be finite. Optional centres/wsvec files and coordinate
+unit conversion retain their existing behavior.
+
+### Numeric bounds and serialized models
+
+Hopping amplitudes use `Into<Complex64>`; `f64` and `Complex64` callers remain
+valid. The custom `HopUse`, `ToFloat`, and `UseFloat` traits were removed.
+`gen_kmesh` and `gen_krange` accept `num_traits::Float`, including `f32`/`f64`.
+Text output uses standard formatting bounds.
+
+Model deserialization keeps the existing fields and legacy atom representation.
+Unknown or duplicate fields are rejected, as are mismatched spin/dimension,
+missing required fields and invalid model data. `HasRMatrix` requires `rmatrix`;
+`NoRMatrix` still accepts a supplied matrix and discards it after parsing.
+
 
 ### Model inspection
 
@@ -302,14 +318,11 @@ let ket = evec.row(0); // H.dot(&ket) ≈ energies[0] * ket
 let op_band = evec.mapv(|z| z.conj()).dot(&op.dot(&evec.t()));
 ```
 
-The raw `ndarray-linalg 0.18.1` `.eigh()` result for a C-layout complex H uses
-a different convention: its internal axis swap makes LAPACK solve `H^T = H*`.
-Rustb converts that raw matrix `U` with `ndarray_linalg::conjugate(&U)` into
-`C = U†`. Here `conjugate()` means **conjugate transpose**; `.t()` only
-transposes, while `mapv(|z| z.conj())` only conjugates. The raw-U formula
-`U^T O U*` must not be used with the returned C. Recheck this compensation if
-the dependency or input memory layout changes; matching energies alone will
-not detect a conjugated-eigenvector error.
+All internal full-spectrum calculations use one solver boundary that packs
+logical matrices in Fortran layout and returns row kets, including strided
+views. This avoids the raw `ndarray-linalg 0.18.1` C-layout complex transpose
+behavior. `ndarray_linalg::conjugate()` means conjugate transpose, while
+`mapv(|z| z.conj())` only conjugates; use the row-ket formula above.
 
 Eigenvectors have arbitrary overall phases; a degenerate subspace admits
 arbitrary orthonormal rotations. Compare residuals, overlaps or subspace
@@ -356,9 +369,9 @@ energy-cut convolution samples only the requested Fermi windows, so its
 sample count does not grow as `1/T`.
 
 `FloquetTruncation::n_sector()` and `sectors()` now return `Result`; use `?`
-in fallible code. Sambe entry points check allocation arithmetic and reject
-a time grid below the per-link spectral estimate instead of silently aliasing
-high harmonics. For a k scan, construct `floquet_model` once and use its
+in fallible code. Sambe entry points check allocation arithmetic and reject a
+drive whose link needs more samples than the per-link fallback grid can
+alias-free, instead of silently aliasing high harmonics. For a k scan, construct `floquet_model` once and use its
 ordinary band solvers to reuse the Fourier work.
 
 Examples write to `target/example-output/`; plotting tests write to
@@ -812,14 +825,28 @@ let surface = surf_Green::from_Model(
 
 let k_parallel = arr1(&[0.25]);
 let (right_ldos, left_ldos, bulk_ldos) =
-    surface.surf_green_one(&k_parallel, 0.0);
+    surface.surf_green_one(&k_parallel, 0.0)?;
 
 let energy = Array1::linspace(-2.0, 2.0, 401);
 let (right_curve, left_curve, bulk_curve) =
-    surface.surf_green_onek(&k_parallel, &energy);
+    surface.surf_green_onek(&k_parallel, &energy)?;
 ```
 
 The k-vector passed to the surface object has length `DIM - 1`.
+`gen_ham_onek`, `surf_green_one`, `surf_green_onek`, `surf_green_path`,
+`show_arc_state`, and `show_surf_state` return `Result`; propagate with `?`.
+`surf_green_path` returns `(left, right, bulk)`, whereas the single-k methods
+retain `(right, left, bulk)`. Path arrays have shape `(nk, nenergy)`.
+The path and plotting methods no longer accept a `spin` argument. For example:
+
+```rust
+let (left, right, bulk) = surface.surf_green_path(&kpoints, -2.0, 2.0, 401)?;
+surface.show_surf_state("surface", &path, &labels, 101, -2.0, 2.0, 401)?;
+```
+
+Path plots use logarithmic normalization and require finite positive densities;
+a constant positive dataset maps to the middle of the color scale. File and
+plotting failures propagate as errors.
 
 ## 7. Floquet driven systems
 
@@ -837,7 +864,7 @@ let drive = FloquetDrive::with_modes(
         ]),
     )],
 );
-let truncation = FloquetTruncation::new(1, 128);
+let truncation = FloquetTruncation::new(1);
 let k = arr1(&[0.2, 0.1]);
 
 let sambe_model = model.floquet_model(&drive, &truncation)?;
@@ -894,8 +921,8 @@ no `FloquetTruncation`: out-of-range links fall back to a per-link
 time-grid DFT sized from the link's own bandwidth and the requested
 harmonic range.
 
-`FloquetTruncation` controls photon sectors and time sampling only for the
-full Sambe APIs. To preserve an old effective-model call's implicit harmonic
+`FloquetTruncation` controls the photon cutoff `n_max` only, and only for the
+full Sambe APIs; the coefficients are grid-free. To preserve an old effective-model call's implicit harmonic
 range during migration, pass `.with_harmonic_max(2 * old_n_max)` explicitly.
 
 For multiple mutually incoherent modes,
@@ -904,6 +931,8 @@ For multiple mutually incoherent modes,
 Peierls exponential, skips exact-zero modes, and unions all generated hopping
 supports.  This is the leading weak-field random-phase result, not an exact
 all-orders phase average: higher-order cross-intensity terms are omitted.
+The correction sum uses ordinary `f64` arithmetic, so changing the mode order
+can change floating-point rounding.
 
 `floquet_effective_q_model` does not use numerical momentum differences.
 For a Cartesian bond `d = (R + tau_j - tau_i) * lat`, it represents
@@ -1152,6 +1181,10 @@ primitive-cell database labels can be assigned.
 
 No backend is enabled by default; every build, test, and doc command must
 select exactly one backend feature.
+
+`ndarray/blas` is enabled for matrix products, using that same backend for
+supported layouts and sizes. Small or incompatible layouts use ndarray's
+fallback; no additional backend choice is required.
 
 | Feature | Backend |
 |---|---|
