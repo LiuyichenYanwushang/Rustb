@@ -512,182 +512,6 @@ fn place_origin_first(ham: &mut Array3<Complex<f64>>, ham_r: &mut Array2<isize>)
     Ok(())
 }
 
-const EXACT_SUM_LIMBS: usize = 35;
-
-#[derive(Clone, Debug)]
-struct ExactRealAccumulator {
-    positive: [u64; EXACT_SUM_LIMBS],
-    negative: [u64; EXACT_SUM_LIMBS],
-    invalid: bool,
-}
-
-impl Default for ExactRealAccumulator {
-    fn default() -> Self {
-        Self {
-            positive: [0; EXACT_SUM_LIMBS],
-            negative: [0; EXACT_SUM_LIMBS],
-            invalid: false,
-        }
-    }
-}
-
-impl ExactRealAccumulator {
-    fn add(&mut self, value: f64) {
-        if !value.is_finite() {
-            self.invalid = true;
-            return;
-        }
-        if value == 0.0 {
-            return;
-        }
-        let bits = value.to_bits();
-        let exponent_bits = ((bits >> 52) & 0x7ff) as usize;
-        let fraction = bits & ((1_u64 << 52) - 1);
-        let (mantissa, shift) = if exponent_bits == 0 {
-            (fraction, 0)
-        } else {
-            ((1_u64 << 52) | fraction, exponent_bits - 1)
-        };
-        let target = if bits >> 63 == 0 {
-            &mut self.positive
-        } else {
-            &mut self.negative
-        };
-        exact_sum_add_shifted(target, mantissa, shift);
-    }
-
-    fn finish(self) -> Result<f64> {
-        if self.invalid {
-            return Err(TbError::Other(
-                "floquet_effective_mode_resolved_model encountered a non-finite summand"
-                    .to_string(),
-            ));
-        }
-
-        Ok(match exact_sum_compare(&self.positive, &self.negative) {
-            std::cmp::Ordering::Equal => 0.0,
-            std::cmp::Ordering::Greater => {
-                exact_sum_to_f64(exact_sum_subtract(&self.positive, &self.negative), false)
-            }
-            std::cmp::Ordering::Less => {
-                exact_sum_to_f64(exact_sum_subtract(&self.negative, &self.positive), true)
-            }
-        })
-    }
-}
-
-fn exact_sum_add_word(limbs: &mut [u64; EXACT_SUM_LIMBS], mut index: usize, word: u64) {
-    let mut carry = word;
-    while carry != 0 {
-        let (updated, overflow) = limbs[index].overflowing_add(carry);
-        limbs[index] = updated;
-        carry = u64::from(overflow);
-        index += 1;
-    }
-}
-
-fn exact_sum_add_shifted(limbs: &mut [u64; EXACT_SUM_LIMBS], mantissa: u64, shift: usize) {
-    let word_index = shift / 64;
-    let bit_offset = shift % 64;
-    let shifted = (mantissa as u128) << bit_offset;
-    exact_sum_add_word(limbs, word_index, shifted as u64);
-    let high = (shifted >> 64) as u64;
-    if high != 0 {
-        exact_sum_add_word(limbs, word_index + 1, high);
-    }
-}
-
-fn exact_sum_compare(
-    left: &[u64; EXACT_SUM_LIMBS],
-    right: &[u64; EXACT_SUM_LIMBS],
-) -> std::cmp::Ordering {
-    for index in (0..EXACT_SUM_LIMBS).rev() {
-        match left[index].cmp(&right[index]) {
-            std::cmp::Ordering::Equal => {}
-            ordering => return ordering,
-        }
-    }
-    std::cmp::Ordering::Equal
-}
-
-fn exact_sum_subtract(
-    larger: &[u64; EXACT_SUM_LIMBS],
-    smaller: &[u64; EXACT_SUM_LIMBS],
-) -> [u64; EXACT_SUM_LIMBS] {
-    let mut output = [0_u64; EXACT_SUM_LIMBS];
-    let mut borrow = false;
-    for index in 0..EXACT_SUM_LIMBS {
-        let (first, borrow_first) = larger[index].overflowing_sub(smaller[index]);
-        let (second, borrow_second) = first.overflowing_sub(u64::from(borrow));
-        output[index] = second;
-        borrow = borrow_first || borrow_second;
-    }
-    debug_assert!(!borrow);
-    output
-}
-
-fn exact_sum_bit(limbs: &[u64; EXACT_SUM_LIMBS], bit: usize) -> bool {
-    ((limbs[bit / 64] >> (bit % 64)) & 1) != 0
-}
-
-fn exact_sum_any_lower_bit(limbs: &[u64; EXACT_SUM_LIMBS], bit_exclusive: usize) -> bool {
-    let full_words = bit_exclusive / 64;
-    if limbs[..full_words].iter().any(|word| *word != 0) {
-        return true;
-    }
-    let remaining = bit_exclusive % 64;
-    remaining != 0 && (limbs[full_words] & ((1_u64 << remaining) - 1)) != 0
-}
-
-fn exact_sum_shifted_low(limbs: &[u64; EXACT_SUM_LIMBS], shift: usize) -> u64 {
-    let word = shift / 64;
-    let offset = shift % 64;
-    let mut value = limbs[word] >> offset;
-    if offset != 0 && word + 1 < EXACT_SUM_LIMBS {
-        value |= limbs[word + 1] << (64 - offset);
-    }
-    value
-}
-
-fn exact_sum_to_f64(limbs: [u64; EXACT_SUM_LIMBS], negative: bool) -> f64 {
-    let Some(high_word) = limbs.iter().rposition(|word| *word != 0) else {
-        return 0.0;
-    };
-    let mut highest_bit = high_word * 64 + (63 - limbs[high_word].leading_zeros() as usize);
-    let sign = u64::from(negative) << 63;
-    if highest_bit < 52 {
-        return f64::from_bits(sign | limbs[0]);
-    }
-
-    let shift = highest_bit - 52;
-    let mut significand = exact_sum_shifted_low(&limbs, shift) & ((1_u64 << 53) - 1);
-    if shift != 0 {
-        let halfway = exact_sum_bit(&limbs, shift - 1);
-        let lower_nonzero = exact_sum_any_lower_bit(&limbs, shift - 1);
-        if halfway && (lower_nonzero || significand & 1 != 0) {
-            significand += 1;
-            if significand == 1_u64 << 53 {
-                significand >>= 1;
-                highest_bit += 1;
-            }
-        }
-    }
-
-    let unbiased_exponent = highest_bit as isize - 1074;
-    if unbiased_exponent > 1023 {
-        return f64::from_bits(sign | (0x7ff_u64 << 52));
-    }
-    let exponent_bits = (unbiased_exponent + 1023) as u64;
-    let fraction = significand & ((1_u64 << 52) - 1);
-    f64::from_bits(sign | (exponent_bits << 52) | fraction)
-}
-
-#[derive(Debug, Default)]
-struct ModeResolvedBlockTerms {
-    static_block: Option<Array2<Complex<f64>>>,
-    driven_blocks: Vec<Array2<Complex<f64>>>,
-}
-
 trait RealSpaceBlockSource: Sync {
     fn nblocks(&self) -> usize;
     fn block(&self, index: usize) -> ArrayView2<'_, Complex<f64>>;
@@ -998,7 +822,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// Exact-zero modes are skipped.  Real-space supports from all one-mode
     /// results are unioned, and the returned model has the same state count
-    /// and metadata as the input model.
+    /// and metadata as the input model. The sum uses ordinary `f64` arithmetic;
+    /// changing mode order can change floating-point rounding.
     pub fn floquet_effective_mode_resolved_model(
         &self,
         drive: &FloquetDrive,
@@ -1057,15 +882,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             return self.floquet_effective_model(&single_drive, Some(options));
         }
 
-        let active_mode_count = active_modes.len();
-        let mut blocks = std::collections::BTreeMap::<Vec<isize>, ModeResolvedBlockTerms>::new();
+        // H0 + sum_alpha (H_eff[alpha] - H0) = (1 - N) H0 + sum_alpha H_eff[alpha].
+        let static_weight = 1.0 - active_modes.len() as f64;
+        let mut blocks = RealSpaceBlockMap::new();
         for (i_r, row) in self.hamR.outer_iter().enumerate() {
             blocks.insert(
                 row.to_vec(),
-                ModeResolvedBlockTerms {
-                    static_block: Some(self.ham.index_axis(Axis(0), i_r).to_owned()),
-                    driven_blocks: Vec::with_capacity(active_mode_count),
-                },
+                self.ham
+                    .index_axis(Axis(0), i_r)
+                    .mapv(|value| value * static_weight),
             );
         }
 
@@ -1073,14 +898,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             let single_drive = FloquetDrive::with_modes(drive.omega0_ev, vec![mode_def.clone()]);
             let single = self.floquet_effective_model(&single_drive, Some(options))?;
 
-            for i_r in 0..single.ham.len_of(Axis(0)) {
-                let key = single.hamR.row(i_r).to_vec();
-                let src = single.ham.index_axis(Axis(0), i_r);
-                let dst = blocks.entry(key).or_insert_with(|| ModeResolvedBlockTerms {
-                    static_block: None,
-                    driven_blocks: Vec::with_capacity(active_mode_count),
-                });
-                dst.driven_blocks.push(src.to_owned());
+            for (i_r, row) in single.hamR.outer_iter().enumerate() {
+                let dst = blocks
+                    .entry(row.to_vec())
+                    .or_insert_with(|| Array2::zeros((nsta, nsta)));
+                *dst += &single.ham.index_axis(Axis(0), i_r);
             }
         }
 
@@ -1092,38 +914,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         effective.orb_projection = self.orb_projection.clone();
         effective.hamR = Array2::zeros((blocks.len(), DIM));
         effective.ham = Array3::zeros((blocks.len(), nsta, nsta));
-        for (i_r, (row, terms)) in blocks.into_iter().enumerate() {
+        for (i_r, (row, block)) in blocks.into_iter().enumerate() {
             for axis in 0..DIM {
                 effective.hamR[[i_r, axis]] = row[axis];
             }
-            let mut output = effective.ham.index_axis_mut(Axis(0), i_r);
-            for i in 0..nsta {
-                for j in 0..nsta {
-                    let mut real = ExactRealAccumulator::default();
-                    let mut imaginary = ExactRealAccumulator::default();
-                    if let Some(static_block) = &terms.static_block {
-                        let value = static_block[[i, j]];
-                        real.add(value.re);
-                        imaginary.add(value.im);
-                        for _ in 0..active_mode_count {
-                            real.add(-value.re);
-                            imaginary.add(-value.im);
-                        }
-                    }
-                    for driven_block in &terms.driven_blocks {
-                        let value = driven_block[[i, j]];
-                        real.add(value.re);
-                        imaginary.add(value.im);
-                    }
-                    let value = Complex::new(real.finish()?, imaginary.finish()?);
-                    if !value.re.is_finite() || !value.im.is_finite() {
-                        return Err(TbError::Other(format!(
-                            "floquet_effective_mode_resolved_model overflowed at support row {i_r}"
-                        )));
-                    }
-                    output[[i, j]] = value;
-                }
+            if block
+                .iter()
+                .any(|value| !value.re.is_finite() || !value.im.is_finite())
+            {
+                return Err(TbError::Other(format!(
+                    "floquet_effective_mode_resolved_model produced non-finite hopping values at support row {i_r}"
+                )));
             }
+            effective.ham.index_axis_mut(Axis(0), i_r).assign(&block);
         }
         place_origin_first(&mut effective.ham, &mut effective.hamR)?;
         enforce_real_space_hermiticity(&mut effective.ham, &effective.hamR)?;
@@ -1140,8 +943,8 @@ pub(crate) enum PeierlsFourierMethod {
     TimeGrid { n_time: usize },
     /// Generalized Bessel expansion via sequential one-mode convolutions.
     /// Exact and independent of `n_time`, but restricted to per-mode
-    /// projections `R_α = |a_α·d| ≤ 8`; the cache falls back to
-    /// [`PeierlsFourierMethod::TimeGrid`] per link beyond that.
+    /// projections `R_α = |a_α·d| ≤` [`MAX_BESSEL_ARG`]; the cache falls back
+    /// to [`PeierlsFourierMethod::TimeGrid`] per link beyond that.
     Bessel {
         /// Minimum number of Bessel orders beyond `⌈R_α⌉` (the adaptive tail
         /// check may push the cutoff higher).
@@ -1681,7 +1484,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// generalized Bessel backend. The numerical controls are
     /// [`FloquetEffectiveOptions`]; no photon cutoff, time-sampling count,
     /// or `k_mesh` is required. Links whose amplitude exceeds the Bessel range
-    /// (`R > 8`) fall back to a per-link time-grid DFT whose resolution is
+    /// (`R > MAX_BESSEL_ARG`) fall back to a per-link time-grid DFT whose resolution is
     /// sized from the link's own spectral bandwidth and the requested
     /// harmonic range.
     ///
@@ -1689,8 +1492,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// `floquet_effective_model_legacy` is the k-space reference
     /// implementation, kept for cross-validation tests.
     ///
-    /// The effective hopping blocks are built entirely in real space
-    /// (`FLOQUET_REAL_SPACE_PLAN.md` §3):
+    /// The effective hopping blocks are built entirely in real space:
     ///
     /// ```math
     /// T_{\mathrm{eff}}(R)
@@ -2714,48 +2516,224 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
     puruspe::Jn(m as u32, r)
 }
 
-/// Two-sided Bessel tail `2·Σ_{m>M} |J_m(r)|`, accumulated until the terms
-/// decay below the noise floor (bounded at 200 orders).  Shared by the
-/// adaptive cutoff and the fallback saturation re-check so the two cannot
-/// desync.
-fn bessel_two_sided_tail(m: isize, r: f64) -> f64 {
-    let mut tail = 0.0;
-    let mut current = bessel_j(m + 1, r).abs();
-    for order in (m + 2)..(m + 201) {
-        tail += current;
-        if current < 1e-20 {
-            break;
-        }
-        current = bessel_j(order, r).abs();
+/// Largest per-mode link amplitude `R_α = |a_α·d|` handled by the Bessel
+/// backend.  Above it [`bessel_peierls_coeffs`] reports an error and the
+/// harmonic cache falls back to a per-link time-grid DFT.
+///
+/// The cap is a **cost** contract, not a mathematical or accuracy limit: the
+/// generalized Bessel expansion converges for every finite `R`, and the
+/// backward-recurrence ladder below keeps machine precision far beyond this
+/// value (measured `max|ΔJ| ≤ 5e-14` at `R = 4000` against independent
+/// `scipy`/`mpmath` references).  It exists because the one-mode convolution
+/// costs `O(M·W)` with `M ≈ R` and window `W ≈ 2·Σ_α |l_α|M_α`, while the DFT
+/// it replaces costs `O(N·K)` with `N ≈ 2R`: at `R = 128` and a five-bin
+/// requested range the former is already ~50x the work, and the ratio grows
+/// linearly with `R`.
+const MAX_BESSEL_ARG: f64 = 128.0;
+
+/// Hard cap on the order range evaluated for one link.  A tail that still
+/// exceeds its error share here means the amplitude is beyond practical use;
+/// the fallback sizing then switches to its conservative analytic bound.
+const MAX_BESSEL_ORDER: usize = 4096;
+
+/// Magnitudes below this are treated as decayed; the ladder extends until its
+/// top order is below the floor, which is what makes every suffix tail a
+/// complete truncation budget.
+const BESSEL_DECAY_FLOOR: f64 = 1e-20;
+
+/// Magnitude band the sweep keeps its running values inside.  Unscaled sweep
+/// values grow from the seed toward the turning point like
+/// `J_⌈r⌉(r)/J_start(r)`, which overflows `f64` for a small argument and a high
+/// seed; only the ratios are physical, so an exact power-of-two rescale costs
+/// no accuracy.  The upper end must satisfy
+/// `SWEEP_BAND_HIGH · 2·start/SWEEP_MIN_ARG < f64::MAX` (`10^30 · 10^254 <<
+/// 10^308`), so no value that passes the check can overflow on the next
+/// multiplication — checking "did this value overflow?" alone is not enough,
+/// because the growth factor itself is unbounded.  The lower end is what stops
+/// the rescale from driving *representable* orders to zero: a one-sided upper
+/// guard did exactly that for `r ~ 1e-150`, where every rescale multiplied the
+/// whole suffix by `2^-1000` while the recurrence grew only `~10^152` per step.
+const SWEEP_BAND_LOW: f64 = 1e-30;
+const SWEEP_BAND_HIGH: f64 = 1e30;
+/// Arguments below this are evaluated analytically instead of by recurrence:
+/// with `k ≤ ~5·10^3` the growth factor `2k/r` then approaches `10^254`, and
+/// even a rescale of `SWEEP_RESCALE_DOWN` can no longer keep the next product
+/// inside `f64`.  At this size `J_0 = 1`, `J_1 = r/2` and every higher order
+/// underflows to zero anyway.
+const SWEEP_MIN_ARG: f64 = 1e-250;
+/// Divide every value from `newest` on by one power of two, chosen so the
+/// newest entry lands at `~1`.  The factor is exact, so every ratio
+/// `u[m]/u[anchor]` — the only thing the normalization reads — is preserved,
+/// and no stored magnitude can drift out of [`SWEEP_BAND_LOW`,
+/// `SWEEP_BAND_HIGH`] far enough to overflow or to underflow to zero.
+fn rescale_sweep_tail(u: &mut [f64], newest: usize) {
+    let magnitude = u[newest].abs();
+    debug_assert!(
+        magnitude.is_finite() && magnitude > 0.0,
+        "rescale_sweep_tail expects a finite non-zero entry"
+    );
+    // `magnitude <= 1e30`, so the unbiased exponent stays far inside the
+    // representable normal range (`1023 - exponent` is a valid biased exponent).
+    let exponent = (magnitude.log2().floor() as i32).clamp(-1000, 1000);
+    let scale = f64::from_bits(((1023 - exponent) as u64) << 52);
+    for value in u[newest..].iter_mut() {
+        *value *= scale;
     }
-    2.0 * tail
 }
 
-/// Adaptive Bessel order cutoff for amplitude `r`: the smallest
-/// `M ≥ ⌈r⌉ + margin` such that the two-sided tail `2·Σ_{m>M} |J_m(r)|`
-/// stays at or below `error_share`.  Used by [`bessel_peierls_coeffs`]
-/// (with `r ≤ 8`) and by the time-grid fallback sizing for arbitrary `r`;
-/// there, `margin` doubles as a higher starting estimate.
+/// Every `J_m(r)` for `m ∈ [0, n]` at one argument, plus the two-sided tail
+/// sums `tail[m] = 2·Σ_{k>m} |J_k(r)|`.
 ///
-/// The growth loop is bounded at `m = 4096`: a tail that still exceeds the
-/// share there means the input amplitude is beyond any practical use (the
-/// fallback sizing clamps its grid and warns).  `r` must be finite and
-/// non-negative; huge `r` saturates the start estimate at 4096.
-fn bessel_adaptive_m_cap(r: f64, error_share: f64, margin: isize) -> isize {
+/// Both consumers of the Bessel backend need a *contiguous* order range at one
+/// fixed argument: the Peierls fold sums `B_α(m)` over `m ∈ [-M, M]`, and the
+/// adaptive cutoff needs `M+1, M+2, …` until the tail decays.  One backward
+/// (Miller) sweep therefore yields the entire object in `O(n)`; requesting
+/// each order separately reruns the special-function library's internal
+/// recurrence (`O(n)` each) and costs `O(n²)`, and re-summing each tail
+/// restarts an overlapping suffix every time.
+struct BesselLadder {
+    /// `J_0..J_n` at this argument.
+    j: Vec<f64>,
+    /// `tail[m] = 2·Σ_{k>m} |j[k]|`, with `tail[max_order()] = 0`.
+    tail: Vec<f64>,
+    /// Whether the top order fell below [`BESSEL_DECAY_FLOOR`], i.e. whether
+    /// the tail sums are complete truncation budgets.  False only when the
+    /// sweep hit [`MAX_BESSEL_ORDER`] first, so `decayed == false` always
+    /// implies `max_order() == MAX_BESSEL_ORDER`; the caller must then treat
+    /// the bandwidth estimate as truncated rather than converged.
+    decayed: bool,
+}
+
+impl BesselLadder {
+    /// Sweep a range of at least `n_min` orders, doubling at most a constant
+    /// number of times when the initial estimate leaves the top order above the
+    /// decay floor (a range that still sits below the turning point cannot show
+    /// decay).
+    fn new(r: f64, n_min: usize) -> Self {
+        debug_assert!(r.is_finite() && r > 0.0, "ladder argument must be positive");
+        let mut n = n_min.clamp(1, MAX_BESSEL_ORDER);
+        loop {
+            let j = bessel_backward_sweep(r, n);
+            if j[n].abs() < BESSEL_DECAY_FLOOR {
+                return Self::from_orders(j, true);
+            }
+            if n >= MAX_BESSEL_ORDER {
+                return Self::from_orders(j, false);
+            }
+            n = (n * 2).min(MAX_BESSEL_ORDER);
+        }
+    }
+
+    fn from_orders(j: Vec<f64>, decayed: bool) -> Self {
+        let n = j.len() - 1;
+        let mut tail = vec![0.0_f64; n + 1];
+        let mut suffix = 0.0;
+        for k in (0..=n).rev() {
+            tail[k] = 2.0 * suffix;
+            suffix += j[k].abs();
+        }
+        Self { j, tail, decayed }
+    }
+
+    /// Largest order stored in the ladder.
+    #[inline]
+    fn max_order(&self) -> usize {
+        self.j.len() - 1
+    }
+
+    /// Two-sided tail `2·Σ_{k>m} |J_k(r)|`, complete when [`Self::decayed`].
+    #[inline]
+    fn tail_after(&self, m: usize) -> f64 {
+        self.tail[m]
+    }
+}
+
+/// Backward (Miller) recurrence returning `J_0..J_n` for one argument.
+///
+/// The recurrence is stable only in the backward direction, so it is seeded at
+/// `N = max(n, ⌈r⌉) + 20 + √(160·max(n, ⌈r⌉))` — above the turning point and
+/// high enough for the seed's contamination to decay.  A margin of only a few
+/// orders above `r` is not enough: measured `|ΔJ| = 4e-9` at `r = 4000` against
+/// `5e-14` with this rule.
+///
+/// The sweep is normalized on the order with the largest `|J|` (the turning
+/// point), not on `J_0`: `J_0` has zeros, and one ulp of absolute error there
+/// becomes a relative error for *every* order.  Measured at `r = 128`, where
+/// `|J_0|` is 2% of its envelope, normalizing by `J_0` costs 1.3e-13 relative
+/// while the turning point stays at 7.8e-16.
+fn bessel_backward_sweep(r: f64, n: usize) -> Vec<f64> {
+    if r < SWEEP_MIN_ARG {
+        // The growth factor `2k/r` would overflow before any rescale can act;
+        // at this size `J_0 = 1`, `J_1 = r/2` and every higher order underflows.
+        let mut j = vec![0.0_f64; n + 1];
+        j[0] = 1.0;
+        if n >= 1 {
+            j[1] = r / 2.0;
+        }
+        return j;
+    }
+    let base = n.max(r.ceil() as usize).min(MAX_BESSEL_ORDER);
+    let start = base + 20 + (160.0 * base as f64).sqrt() as usize;
+    let mut u = vec![0.0_f64; start + 2];
+    u[start] = 1.0;
+    for k in (1..=start).rev() {
+        u[k - 1] = (2.0 * k as f64 / r) * u[k] - u[k + 1];
+        let magnitude = u[k - 1].abs();
+        // Every written value shares one scale (the sweep only ever reads what
+        // it has already written), so rescaling the written suffix keeps all
+        // ratios exact.
+        if magnitude > 0.0 && !(SWEEP_BAND_LOW..=SWEEP_BAND_HIGH).contains(&magnitude) {
+            rescale_sweep_tail(&mut u, k - 1);
+        }
+    }
+    // `anchor <= n`, so it survives the truncation below.
+    let anchor = if r < 1.0 {
+        0
+    } else {
+        (r.ceil() as usize).min(n)
+    };
+    let scale = bessel_j(anchor as isize, r) / u[anchor];
+    u.truncate(n + 1);
+    for value in u.iter_mut() {
+        *value *= scale;
+    }
+    u
+}
+
+/// Adaptive Bessel order cutoff for one link — the smallest
+/// `M ≥ ⌈r⌉ + margin` whose two-sided tail `2·Σ_{m>M} |J_m(r)|` fits
+/// `error_share` — together with the ladder that backs it.
+///
+/// `margin` doubles as a higher starting estimate for the time-grid fallback
+/// sizing, which passes `0`.  At [`MAX_BESSEL_ORDER`] the cutoff saturates and
+/// the returned ladder reports `decayed == false`, so the caller can tell a
+/// converged bandwidth estimate from a truncated one.
+fn bessel_ladder_with_cutoff(r: f64, error_share: f64, margin: isize) -> (BesselLadder, isize) {
     debug_assert!(
-        r.is_finite() && r >= 0.0,
-        "bessel_adaptive_m_cap: r must be finite and non-negative"
+        r.is_finite() && r > 0.0,
+        "bessel_ladder_with_cutoff: r must be finite and positive"
     );
     // The float-to-int cast saturates for huge r; saturating_add keeps the
-    // +margin step overflow-free before the growth loop clamps at 4096.
-    let mut m_cap = (r.ceil() as isize).saturating_add(margin).min(4096);
-    while m_cap <= 4096 {
-        if bessel_two_sided_tail(m_cap, r) <= error_share {
-            return m_cap;
+    // +margin step overflow-free before the clamp.
+    let m_start = (r.ceil() as isize)
+        .saturating_add(margin)
+        .clamp(0, MAX_BESSEL_ORDER as isize) as usize;
+    let mut ladder = BesselLadder::new(r, m_start);
+    loop {
+        // The scan stops *before* `max_order`, whose suffix sum is zero by
+        // construction: accepting it would report a truncated (non-decayed)
+        // ladder as a converged cutoff.  A decayed ladder always fits some
+        // `m <= max_order - 1`, because `tail[max_order - 1] = 2|J_top| <
+        // 2·BESSEL_DECAY_FLOOR` is far below any per-mode error share.
+        let found = (m_start..ladder.max_order()).find(|&m| ladder.tail_after(m) <= error_share);
+        if let Some(m) = found {
+            return (ladder, m as isize);
         }
-        m_cap += 1;
+        if ladder.max_order() >= MAX_BESSEL_ORDER {
+            return (ladder, MAX_BESSEL_ORDER as isize);
+        }
+        ladder = BesselLadder::new(r, ladder.max_order() + 1);
     }
-    m_cap.min(4096)
 }
 
 /// Peierls Fourier coefficients `C_n(d)` via the generalized Bessel
@@ -2784,10 +2762,14 @@ fn bessel_adaptive_m_cap(r: f64, error_share: f64, margin: isize) -> isize {
 /// which costs `O(N_mode · N_n · M_avg)` — independent of the time-grid
 /// size.  Each mode's cutoff `M_α` is chosen adaptively so the truncated
 /// tail `Σ_{|m|>M_α} |J_m(R_α)|` stays below a per-mode error share
-/// (`1e-12 / N_mode`), with `cutoff_margin` as an additional minimum.
-/// With `R_α ≤ 8` and `cutoff_margin ≤ 48` every cutoff stays below the
-/// 64-order safety bound (`⌈8⌉ + 48 = 56`, and the tail there is already
-/// far below the share, so the growth loop never runs).
+/// (`1e-12 / N_mode`), with `cutoff_margin` as an additional minimum, and
+/// it must stay at or below [`MAX_BESSEL_ORDER`].
+///
+/// Each mode needs `J_0..J_{M_α}` **and** every tail `Σ_{m>M}|J_m(R_α)|`;
+/// both come from one [`BesselLadder`] per mode, i.e. a single backward
+/// recurrence sweep plus one suffix sum.  In particular the adaptive search
+/// never evaluates an order on its own, so its cost is linear in the order
+/// range instead of quadratic.
 ///
 /// Verified against the independent time-grid DFT
 /// ([`peierls_fourier_coeffs`]) for linear, circular, elliptical, and
@@ -2807,9 +2789,9 @@ fn bessel_adaptive_m_cap(r: f64, error_share: f64, margin: isize) -> isize {
 ///
 /// # Errors
 /// Returns [`TbError::Other`] when `harmonic_min > harmonic_max`, when `cutoff_margin`
-/// is outside `0..=48`, when any mode amplitude `R_α` exceeds 8 (the
-/// caller must fall back to the time-grid backend), or when the harmonic
-/// range / working window would overflow `isize`.
+/// is outside `0..=48`, when any mode amplitude `R_α` exceeds
+/// [`MAX_BESSEL_ARG`] (the caller must fall back to the time-grid backend),
+/// or when the harmonic range / working window would overflow `isize`.
 pub(crate) fn bessel_peierls_coeffs(
     d: &Array1<f64>,
     drive: &FloquetDrive,
@@ -2843,10 +2825,11 @@ pub(crate) fn bessel_peierls_coeffs(
     }
 
     // Two-pass construction.  First pass: per-mode projections and adaptive
-    // cutoffs.  The Bessel path only supports R_α ≤ 8; the caller falls back
-    // to the time-grid backend beyond that (plan §7).
+    // cutoffs.  The Bessel path only supports R_α ≤ MAX_BESSEL_ARG; the caller falls back
+    // to the time-grid backend beyond that.
     struct ModeData {
-        r: f64,
+        /// `J_0..J_{M_α}` and the tail sums behind the adaptive cutoff.
+        ladder: BesselLadder,
         delta: f64,
         harmonic: isize,
         m_cap: isize,
@@ -2867,22 +2850,17 @@ pub(crate) fn bessel_peierls_coeffs(
             // Degenerate mode: only m = 0 contributes (B = 1), a no-op fold.
             continue;
         }
-        if !r.is_finite() || r > 8.0 {
+        if !r.is_finite() || r > MAX_BESSEL_ARG {
             return Err(TbError::Other(format!(
                 "bessel_peierls_coeffs: mode amplitude R = {r:.3} is outside the \
-                 Bessel backend's finite range (R ≤ 8); use the time-grid backend"
+                 Bessel backend's range (R ≤ {MAX_BESSEL_ARG}); use the time-grid backend"
             )));
         }
-        // Adaptive cutoff: grow M until the two-sided Bessel tail
-        // 2 * Σ_{m>M} |J_m(r)| falls below the per-mode error share.  With
-        // R ≤ 8 and cutoff_margin ≤ 48 the result is provably ≤ 64
-        // (⌈8⌉ + 48 = 56 and the tail there is already ~1e-64, far below
-        // the share, so the growth loop never runs) — asserted explicitly.
-        let m_cap = bessel_adaptive_m_cap(r, error_share, cutoff_margin);
-        assert!(
-            m_cap <= 64,
-            "Bessel cutoff exceeded the safety cap for R = {r}"
-        );
+        // Adaptive cutoff plus the ladder that backs it: the smallest M whose
+        // two-sided tail 2 * Σ_{m>M} |J_m(r)| fits the per-mode error share,
+        // delivered together with J_0..J_M and every candidate tail from one
+        // backward sweep.
+        let (ladder, m_cap) = bessel_ladder_with_cutoff(r, error_share, cutoff_margin);
         let harmonic_abs = mode.harmonic.checked_abs().ok_or_else(|| {
             TbError::Other("bessel_peierls_coeffs: harmonic drift overflow".to_string())
         })?;
@@ -2894,7 +2872,7 @@ pub(crate) fn bessel_peierls_coeffs(
                 TbError::Other("bessel_peierls_coeffs: harmonic drift overflow".to_string())
             })?;
         modes.push(ModeData {
-            r,
+            ladder,
             delta: z.arg(),
             harmonic: mode.harmonic,
             m_cap,
@@ -2929,21 +2907,21 @@ pub(crate) fn bessel_peierls_coeffs(
         // One-mode sequence B(m) = (-i)^m J_m(r) e^{-imδ}, m ∈ [-M, M].
         // Accumulate (-i)^m iteratively.
         let mut minus_i_power = Complex::new(1.0, 0.0); // (-i)^0
-        // m_cap <= 64 by the assert in the first pass, so this cannot overflow.
+        // The cutoff is at most the ladder length (the scan stops before the
+        // ladder's top entry), so every lookup below is in range; the ladder
+        // itself is capped at MAX_BESSEL_ORDER.
+        debug_assert!(mode.m_cap >= 0 && mode.m_cap as usize <= mode.ladder.max_order());
         let mut b = Vec::<(isize, Complex<f64>)>::with_capacity((2 * mode.m_cap + 1) as usize);
         for m in 0..=mode.m_cap {
-            let value = minus_i_power
-                * bessel_j(m, mode.r)
-                * Complex::from_polar(1.0, -(m as f64) * mode.delta);
+            let j_m = mode.ladder.j[m as usize];
+            let value = minus_i_power * j_m * Complex::from_polar(1.0, -(m as f64) * mode.delta);
             if m == 0 {
                 b.push((0, value));
             } else {
                 // B(-m) = (-i)^{-m} J_{-m}(r) e^{+imδ}
                 //       = i^m · (-1)^m J_m(r) e^{+imδ}
                 //       = (-i)^m J_m(r) e^{+imδ} (since i^m (-1)^m = (-i)^m)
-                let neg = minus_i_power
-                    * bessel_j(m, mode.r)
-                    * Complex::from_polar(1.0, (m as f64) * mode.delta);
+                let neg = minus_i_power * j_m * Complex::from_polar(1.0, (m as f64) * mode.delta);
                 b.push((-m, neg));
                 b.push((m, value));
             }
@@ -3072,23 +3050,26 @@ fn fallback_grid_size(
             continue;
         }
         // The Bessel backend's precision margin is not a sampling floor.
-        let m_cap = if r > 4096.0 {
-            4096
+        // Above MAX_BESSEL_ORDER the adaptive search cannot converge at all;
+        // at it the ladder reports whether its top order decayed.  Either way
+        // the conservative analytic bound below takes over.
+        let (m_cap, truncated) = if r > MAX_BESSEL_ORDER as f64 {
+            (MAX_BESSEL_ORDER as isize, true)
         } else {
-            bessel_adaptive_m_cap(r, error_share, 0)
+            let (ladder, m_cap) = bessel_ladder_with_cutoff(r, error_share, 0);
+            (m_cap, m_cap >= MAX_BESSEL_ORDER as isize && !ladder.decayed)
         };
-        let cutoff =
-            if m_cap >= 4096 && (r >= 4096.0 || bessel_two_sided_tail(m_cap, r) > error_share) {
-                saturated = true;
-                // For m >= 3r, |J_m(r)| <= (r/2)^m/m! <= (e/6)^m < 2^-m
-                // (DLMF 10.14.4). Thus the two-sided tail is <= 2^(1-M).
-                // Split its budget across modes. Float casts and all grid-size
-                // arithmetic saturate; the explicit requirement is never clamped.
-                let tail_floor = 44 + (usize::BITS - mode_count.leading_zeros()) as usize;
-                ((3.0 * r).ceil() as usize).max(tail_floor)
-            } else {
-                m_cap as usize
-            };
+        let cutoff = if truncated {
+            saturated = true;
+            // For m >= 3r, |J_m(r)| <= (r/2)^m/m! <= (e/6)^m < 2^-m
+            // (DLMF 10.14.4). Thus the two-sided tail is <= 2^(1-M).
+            // Split its budget across modes. Float casts and all grid-size
+            // arithmetic saturate; the explicit requirement is never clamped.
+            let tail_floor = 44 + (usize::BITS - mode_count.leading_zeros()) as usize;
+            ((3.0 * r).ceil() as usize).max(tail_floor)
+        } else {
+            m_cap as usize
+        };
         let drift = (mode.harmonic.unsigned_abs() as usize).saturating_mul(cutoff);
         bandwidth = bandwidth.saturating_add(drift);
     }
@@ -3128,9 +3109,10 @@ fn fallback_grid_size(
 /// [`fallback_grid_size`], clamped to [`FALLBACK_GRID_MAX`] = 2^20 points
 /// (beyond that the drive or truncation is pathological; accuracy degrades
 /// and a warn-once message is printed).  When the adaptive bandwidth
-/// estimate saturates at its 4096-order cap (mode amplitude ≈ 4000, the
-/// point where the two-sided tail beyond order 4096 still exceeds the
-/// 1e-12 budget), sizing switches to a conservative analytic tail bound.
+/// estimate saturates at its 4096-order cap — the ladder reaches
+/// `MAX_BESSEL_ORDER` without decaying, which for a single mode starts
+/// around `R ≈ 3955` at the `1e-12` budget — sizing switches to a
+/// conservative analytic tail bound.
 /// The automatic grid uses the maximum size and prints a warn-once message;
 /// it can still be too small when the analytic requirement exceeds this cap.
 fn fallback_time_grid_coeffs(
@@ -3185,55 +3167,6 @@ fn fallback_time_grid_coeffs(
         *coeff *= inv_n;
     }
     Array1::from(coeffs)
-}
-
-/// Row-major in-place accumulation `C += α·A·B` via BLAS `zgemm`.
-///
-/// ndarray stores row-major (C order) while BLAS is column-major; the
-/// identity `(A·B)^T = B^T·A^T` turns the row-major product into a
-/// column-major `zgemm('N', 'N')` over the same memory with the operands
-/// swapped, so no transposition copies are needed.
-///
-/// # Panics
-/// Debug-asserts that all three matrices are square `n x n` of one
-/// common size.
-fn zgemm_row_accumulate<SA, SB>(
-    alpha: Complex<f64>,
-    a: &ArrayBase<SA, Ix2>,
-    b: &ArrayBase<SB, Ix2>,
-    c: &mut Array2<Complex<f64>>,
-) where
-    SA: Data<Elem = Complex<f64>>,
-    SB: Data<Elem = Complex<f64>>,
-{
-    let n = a.nrows();
-    debug_assert_eq!(
-        (a.ncols(), b.nrows(), b.ncols(), c.nrows(), c.ncols()),
-        (n, n, n, n, n),
-        "zgemm_row_accumulate: square n x n blocks required"
-    );
-    let n_i = n as i32;
-    let beta = Complex::new(1.0, 0.0);
-    // Safety: owned ndarray matrices are contiguous standard-layout
-    // buffers of length n·n; the transpose trick above makes every
-    // leading dimension equal to n.
-    unsafe {
-        blas::zgemm(
-            b'N',
-            b'N',
-            n_i,
-            n_i,
-            n_i,
-            alpha,
-            b.as_slice().unwrap(),
-            n_i,
-            a.as_slice().unwrap(),
-            n_i,
-            beta,
-            c.as_slice_mut().unwrap(),
-            n_i,
-        );
-    }
 }
 
 #[cfg(test)]
@@ -3319,16 +3252,15 @@ fn merge_real_space_block_maps(
 }
 
 /// Real-space commutator blocks `comm_n(R) = (AB)(R) − (BA)(R)` for the
-/// harmonic pair `A_R = T_n(R)` and `B_R = T_{−n}(R)` (see
-/// `FLOQUET_REAL_SPACE_PLAN.md` §3):
+/// harmonic pair `A_R = T_n(R)` and `B_R = T_{−n}(R)`:
 ///
 /// ```math
 /// (AB)(R) = \sum_{R'} A_{R-R'}\, B_{R'}, \qquad
 /// (BA)(R) = \sum_{R'} B_{R-R'}\, A_{R'}.
 /// ```
 ///
-/// Both convolutions are accumulated with BLAS `zgemm`
-/// ([`zgemm_row_accumulate`]); the returned support is the Minkowski sum
+/// Both convolutions are accumulated with [`ndarray::linalg::general_mat_mul`],
+/// which handles the input storage layouts; the returned support is the Minkowski sum
 /// `{R1 + R2 : R1, R2 ∈ hamR}` in lexicographic order.  The result
 /// satisfies the Hermiticity pairing `comm(R) = comm(−R)†` exactly — a
 /// final pass ([`enforce_real_space_hermiticity`]) averages each ±R pair
@@ -3514,8 +3446,8 @@ where
         if !skip_products {
             let a = a_blocks.block(i_a);
             let b = b_blocks.block(i_b);
-            zgemm_row_accumulate(one, &a, &b, comm);
-            zgemm_row_accumulate(reverse_scale, &b, &a, comm);
+            ndarray::linalg::general_mat_mul(one, &a, &b, one, comm);
+            ndarray::linalg::general_mat_mul(reverse_scale, &b, &a, one, comm);
         }
         Ok(())
     };
@@ -3765,6 +3697,215 @@ mod tests {
     }
 
     #[test]
+    fn bessel_ladder_matches_high_precision_reference() {
+        // Reference values evaluated with mpmath at 60 significant digits.
+        // The ladder is a backward recurrence normalized on the turning-point
+        // order, so this pins its shape and its normalization independently of
+        // both `puruspe` and the time-grid DFT used elsewhere.
+        let reference: [(f64, usize, f64); 16] = [
+            (8.0, 0, 0.17165080713755390609),
+            (8.0, 8, 0.22345498635110295428),
+            (8.0, 20, 2.0805829639717027777e-7),
+            (8.0, 40, 1.0010983703741214214e-24),
+            (64.0, 0, 0.092590012216048114331),
+            (64.0, 32, -0.069532193048999732619),
+            (64.0, 64, 0.1118209766528825465),
+            (64.0, 96, 4.1885539768510200271e-11),
+            (128.0, 0, 0.0014722223281851497517),
+            (128.0, 64, 0.044765812254841955288),
+            (128.0, 128, 0.08875518402355613961),
+            (128.0, 160, 1.36538822309338787e-8),
+            (200.0, 0, -0.015437439930565091592),
+            (200.0, 100, 0.0093332141865575864571),
+            (200.0, 200, 0.076487608930953319678),
+            (200.0, 240, 1.9238421623930608555e-9),
+        ];
+        for (r, m, expected) in reference {
+            let ladder = BesselLadder::new(r, m);
+            let got = ladder.j[m];
+            // Pure relative tolerance: an absolute floor would make the
+            // deep-tail references (1e-24 at (8, 40), 4e-11 at (64, 96))
+            // meaningless, and the measured ladder error there is ~1e-15
+            // relative, so 1e-12 is both safe and much stronger.
+            assert!(
+                (got - expected).abs() <= 1e-12 * expected.abs(),
+                "J_{m}({r}) = {got}, mpmath reference {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn bessel_ladder_survives_rescale_heavy_sweeps() {
+        // Small arguments with a high requested order make the growth factor
+        // 2k/r swing by hundreds of decades per step, so the band rescale fires
+        // on nearly every step; a rescale that lost the running scale would
+        // show up here as a wrong low order or an underflowed tail.
+        //
+        // The reference is an ascending series evaluated here, not
+        // [`bessel_j`]: the special-function wrapper is only verified around
+        // `x ~ n`, and returns garbage for `x << n` (measured
+        // `Jn(4096, 0.5) = 1.7e34`, where the true value underflows to zero).
+        let series = |m: usize, r: f64| -> f64 {
+            let half = r / 2.0;
+            let mut term = 1.0_f64;
+            for i in 1..=m {
+                term *= half / i as f64;
+            }
+            let mut sum = term;
+            for k in 1..200 {
+                term *= -(half * half) / ((k * (m + k)) as f64);
+                sum += term;
+                if term.abs() <= f64::MIN_POSITIVE {
+                    break;
+                }
+            }
+            sum
+        };
+        for (r, n) in [
+            (0.5_f64, 4096_usize),
+            (1.0, 4096),
+            (2.0, 4096),
+            (1e-6, 4096),
+        ] {
+            let ladder = BesselLadder::new(r, n);
+            assert!(
+                ladder.j.iter().all(|value| value.is_finite()),
+                "r = {r} produced a non-finite ladder"
+            );
+            assert!(ladder.max_order() >= n);
+            for m in [0_usize, 1, 2, 8, 64] {
+                let expected = series(m, r);
+                assert!(
+                    (ladder.j[m] - expected).abs() <= 1e-12 * expected.abs() + f64::MIN_POSITIVE,
+                    "r = {r}, m = {m}: ladder {} vs series {expected}",
+                    ladder.j[m]
+                );
+            }
+            for m in [2048_usize, 4096] {
+                assert!(
+                    ladder.j[m].abs() <= BESSEL_DECAY_FLOOR,
+                    "r = {r}, m = {m}: expected a decayed tail entry, got {}",
+                    ladder.j[m]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bessel_arg_cap_and_adaptive_cutoff_are_pinned() {
+        // The amplitude cap is inclusive and rejects the next float above it.
+        let d = array![1.0];
+        let at_cap = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(1, array![Complex::new(MAX_BESSEL_ARG, 0.0)])],
+        );
+        assert!(bessel_peierls_coeffs(&d, &at_cap, -2, 2, 0).is_ok());
+        let above_cap = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(
+                    f64::from_bits(MAX_BESSEL_ARG.to_bits() + 1),
+                    0.0,
+                )],
+            )],
+        );
+        assert!(bessel_peierls_coeffs(&d, &above_cap, -2, 2, 0).is_err());
+
+        // Cutoffs across the raised range, with and without the margin floor:
+        // the returned order is the first one whose two-sided tail fits the
+        // share, the ladder backs it, and the invariant the caller relies on
+        // (`m_cap` strictly below the ladder's top) holds.
+        for r in [9.0_f64, 64.0, MAX_BESSEL_ARG] {
+            for margin in [0_isize, 48] {
+                let (ladder, m_cap) = bessel_ladder_with_cutoff(r, 1e-12, margin);
+                let m = m_cap as usize;
+                assert!(ladder.decayed, "r = {r} ladder must decay");
+                assert!(m > 0 && m < ladder.max_order());
+                assert!(ladder.tail_after(m) <= 1e-12);
+                let m_start = (r.ceil() as usize) + margin as usize;
+                assert!(m >= m_start, "r = {r}, margin = {margin}");
+                assert!(
+                    m == m_start || ladder.tail_after(m - 1) > 1e-12,
+                    "r = {r}, margin = {margin}: {m} is not the first fitting order"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bessel_ladder_tails_match_per_order_sum() {
+        // `tail[m] = 2·Σ_{k>m}|J_k(r)|` must equal the direct sum built from
+        // the single-order wrapper [`bessel_j`]; the adaptive cutoff reads
+        // nothing else.  That wrapper also supplies the ladder's scale at the
+        // anchor, so this is a shape/summation check rather than a fully
+        // independent one; the mpmath and ascending-series tests above supply
+        // the independent anchors.
+        for r in [0.5, 3.0, 8.0, 64.0, 128.0] {
+            let ladder = BesselLadder::new(r, (r.ceil() as usize) + 6);
+            assert!(ladder.decayed, "r = {r} ladder must decay");
+            for m in [
+                (r.ceil() as usize).max(1),
+                ladder.max_order() / 2,
+                ladder.max_order() - 1,
+            ] {
+                let direct = 2.0
+                    * ((m + 1)..=ladder.max_order())
+                        .map(|k| bessel_j(k as isize, r).abs())
+                        .sum::<f64>();
+                let got = ladder.tail_after(m);
+                assert!(
+                    (got - direct).abs() <= 1e-11 * direct + 1e-18,
+                    "r = {r}, m = {m}: ladder tail {got} vs direct sum {direct}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bessel_ladder_handles_extreme_arguments() {
+        // The unscaled recurrence grows like (2/r)^k, which overflows f64 for a
+        // small argument and a high seed.  The ratio-preserving rescale covers
+        // the range above SWEEP_MIN_ARG, and the analytic branch below it; both
+        // must reproduce the leading orders with every entry finite.
+        // The band around 1e-150 is the one a one-sided rescale guard used to
+        // drive to zero (J_1 returned as 0 instead of r/2).
+        for r in [1e-3, 1e-8, 1e-40, 1e-100, 1e-150, 1e-200, 1e-250, 1e-320] {
+            let ladder = BesselLadder::new(r, 48);
+            assert!(ladder.decayed, "r = {r} ladder must decay");
+            assert!(
+                ladder.j.iter().all(|value| value.is_finite()),
+                "r = {r} produced a non-finite ladder"
+            );
+            // J_0 = 1 - r²/4 + O(r⁴), J_1 = (r/2)(1 - r²/8) + O(r⁵).
+            let j0 = 1.0 - r * r / 4.0 + r.powi(4) / 64.0;
+            let j1 = r / 2.0 * (1.0 - r * r / 8.0);
+            assert!(
+                (ladder.j[0] - j0).abs() <= 1e-15 + 1e-14 * r * r,
+                "J_0({r}) = {} vs {j0}",
+                ladder.j[0]
+            );
+            assert!(
+                (ladder.j[1] - j1).abs() <= 1e-14 * r + f64::MIN_POSITIVE,
+                "J_1({r}) = {} vs {j1}",
+                ladder.j[1]
+            );
+        }
+        // Large argument with a requested order past the turning point: the
+        // range extends until the top decays and the tails stay monotone.
+        let ladder = BesselLadder::new(400.0, 512);
+        assert!(ladder.max_order() >= 512);
+        assert!(ladder.decayed);
+        assert!(
+            ladder
+                .tail
+                .iter()
+                .all(|tail| tail.is_finite() && *tail >= 0.0)
+        );
+        assert!(ladder.tail_after(0) > ladder.tail_after(400));
+    }
+
+    #[test]
     fn bessel_j_satisfies_recurrence_and_negative_order_symmetry() {
         // Recurrence: J_{m-1}(r) + J_{m+1}(r) = (2m/r) J_m(r).
         for r in [0.3, 0.7, 1.3, 2.5, 4.0, 7.0] {
@@ -3963,10 +4104,11 @@ mod tests {
 
     #[test]
     fn harmonic_cache_bessel_falls_back_for_large_amplitudes() {
-        // |a·d| > 8 must silently fall back to the time grid per link, so
-        // the Bessel-method cache still matches the time-grid cache.
-        // The (0,1) hopping at R=(0,1) has d = (10, 1), so |a·d| = 9.0 > 8
-        // and the fallback branch must actually execute.
+        // |a·d| > MAX_BESSEL_ARG must silently fall back to the time grid per
+        // link, so the Bessel-method cache still matches the time-grid cache.
+        // The (0,1) hopping at R=(0,1) has d = (10, 1), so |a·d| = 130 > 128
+        // and the fallback branch must actually execute, while the (1,0)
+        // hopping at d = (1, 0) has R = 13 and stays on the ladder.
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
         let orb = array![[0.0, 0.0], [10.0, 0.0]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
@@ -3977,10 +4119,10 @@ mod tests {
             1.0,
             vec![LightMode::new(
                 1,
-                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+                array![Complex::new(13.0, 0.0), Complex::new(0.0, 0.0)],
             )],
         );
-        let n_time = 512;
+        let n_time = 1024;
         let time_grid_cache =
             model.floquet_harmonic_cache(&drive, -3, 3, &PeierlsFourierMethod::TimeGrid { n_time });
         let bessel_cache = model.floquet_harmonic_cache(
@@ -4003,13 +4145,12 @@ mod tests {
 
     #[test]
     fn harmonic_cache_bessel_fallback_uses_alias_free_grid() {
-        // R > 8 forces the per-link time-grid fallback.  A fixed
-        // n_time = 512 aliases the high-order Bessel tails into the
-        // wrong bins for l = 100, R = 50 (C_−8 ≈ −J_46(50) ≈ −0.17
-        // instead of 0; C_0 = J_0(50) = 0.0558 survives there only by a
-        // divisibility coincidence).  The fallback must size its grid to
-        // the link's bandwidth (n ≳ 2·|l|·M(R)) and match a 65536-point
-        // oracle.
+        // R > MAX_BESSEL_ARG forces the per-link time-grid fallback.  A fixed
+        // small n_time aliases the high-order Bessel tails into the wrong bins
+        // for l = 100, R = 150 (C_−8 ≈ −J_46(150)-like tails instead of 0;
+        // C_0 = J_0(150) survives there only by a divisibility coincidence).
+        // The fallback must size its grid to the link's bandwidth
+        // (n ≳ 2·|l|·M(R)) and match a 65536-point oracle.
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
         let orb = array![[0.0, 0.0], [55.555_555_555_555_56, 0.0]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
@@ -4019,7 +4160,7 @@ mod tests {
             1.0,
             vec![LightMode::new(
                 100,
-                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+                array![Complex::new(2.7, 0.0), Complex::new(0.0, 0.0)],
             )],
         );
         let oracle = model.floquet_harmonic_cache(
@@ -4042,12 +4183,12 @@ mod tests {
         }
 
         // Physical anchor: the block stores t·C_0 with t = -1, so its
-        // n = 0 entry on the r = 50 link is -J_0(50).
+        // n = 0 entry on the r = 150 link is -J_0(150).
         let i_r_link = find_R(&model.hamR, &array![0, 1]).unwrap();
         let c0 = bessel_cache.blocks[[bessel_cache.harmonic_index(0), i_r_link, 0, 1]];
         assert!(
-            (c0 - Complex::new(-bessel_j(0, 50.0), 0.0)).norm() < 1e-10,
-            "C_0 on the r = 50 link should be -J_0(50) (t = -1), got {c0}"
+            (c0 - Complex::new(-bessel_j(0, 150.0), 0.0)).norm() < 1e-10,
+            "C_0 on the r = 150 link should be -J_0(150) (t = -1), got {c0}"
         );
     }
 
@@ -4060,13 +4201,13 @@ mod tests {
         let orb = array![[0.0, 0.0], [10.0, 0.0]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.add_hop(-1.0, 0, 0, &array![1, 0], None);
-        model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (10, 1), R = 9 > 8
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (10, 1), R = 130 > MAX_BESSEL_ARG
 
         let drive = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(
                 1,
-                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+                array![Complex::new(13.0, 0.0), Complex::new(0.0, 0.0)],
             )],
         );
         let coarse = model.floquet_harmonic_cache(
@@ -4099,36 +4240,36 @@ mod tests {
         // The per-link fallback DFT must also resolve the requested
         // harmonic range, not just the signal bandwidth: an n-point DFT
         // returns Σ_m C_{n+mn}, so bins with |n| >= n_req/2 fold genuine
-        // low-order coefficients in.  For the l = 1, R = 9 link below the
-        // bandwidth-only grid has n_req = 118 and corrupts bins
-        // n ∈ [103, 110] at the J_{118-n}(9) level (up to ~0.3); sizing the
-        // grid to the requested range [-110, 110] keeps every requested bin
-        // alias-free, and the true C_n for n > 57 is exponentially small.
+        // low-order coefficients in.  For the l = 1, R = 130 link below the
+        // bandwidth-only grid has n_req = 2·M(130) + 4 ≈ 294 and would alias
+        // bins |n| >= 147 — the requested range [-300, 300] therefore spans
+        // bins the bandwidth term does not cover.  Sizing the grid to the
+        // requested range keeps every requested bin alias-free, and the true
+        // C_n for |n| > 147 is exponentially small.
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
         let orb = array![[0.0, 0.0], [10.0, 0.0]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
         model.add_hop(-1.0, 0, 0, &array![1, 0], None);
-        model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (10, 1), R = 9 > 8
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (10, 1), R = 130 > MAX_BESSEL_ARG
 
         let drive = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(
                 1,
-                array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
+                array![Complex::new(13.0, 0.0), Complex::new(0.0, 0.0)],
             )],
         );
         let cache = model.floquet_harmonic_cache(
             &drive,
-            -110,
-            110,
+            -300,
+            300,
             &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
         );
         let i_r_link = find_R(&model.hamR, &array![0, 1]).unwrap();
-        // n beyond the signal bandwidth (57 for R = 9, l = 1) must vanish:
-        // |C_60| ~ J_60(9) ~ 1e-45, and the grid (n_req = 221) folds only
-        // coefficients with |n ± n_req| >= 111 (min |110 − 221|), also
-        // exponentially small.
-        for n in 60..=110 {
+        // n beyond the signal bandwidth (~147 for R = 130, l = 1) must
+        // vanish: |C_200| = |J_200(130)| ~ 1e-30, while a bandwidth-only grid
+        // would fold J_{200-294}(130) ≈ J_{-94}(130) into that bin.
+        for n in 200..=300 {
             let coeff = cache.blocks[[cache.harmonic_index(n), i_r_link, 0, 1]];
             assert!(
                 coeff.norm() < 1e-10,
@@ -4141,7 +4282,8 @@ mod tests {
     #[test]
     fn floquet_effective_apis_use_explicit_default_options() {
         // All three public APIs use the same defaults, including when the
-        // Bessel backend needs its automatically sized time-grid fallback.
+        // Bessel backend needs its automatically sized time-grid fallback
+        // (the (0,1) link has d = (10, 1), so R = 130 > MAX_BESSEL_ARG).
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
         let orb = array![[0.0, 0.0], [10.0, 0.0]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
@@ -4150,7 +4292,7 @@ mod tests {
         let drive = FloquetDrive::with_modes(
             1.0,
             vec![
-                LightMode::new(1, array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)]),
+                LightMode::new(1, array![Complex::new(13.0, 0.0), Complex::new(0.0, 0.0)]),
                 LightMode::new(2, array![Complex::new(0.03, 0.01), Complex::new(0.0, 0.02)]),
             ],
         );
@@ -4632,7 +4774,7 @@ mod tests {
                 array![Complex::new(0.9, 0.0), Complex::new(0.0, 0.0)],
             )],
         );
-        let d = array![10.0, 1.0]; // R = 9 > 8: fallback link
+        let d = array![10.0, 1.0]; // R = 9: a link the harmonic cache now feeds to the ladder, but this helper sizes any r
 
         // Normal: sized from the signal bandwidth (M(9) = 29).
         let s = fallback_grid_size(&drive, &d, -3, 3);
@@ -4666,7 +4808,7 @@ mod tests {
                 array![Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
             )],
         );
-        let d_sat = array![4000.0, 1.0]; // R = 4000 > 8
+        let d_sat = array![4000.0, 1.0]; // R = 4000: past MAX_BESSEL_ORDER's adaptive reach
         let s = fallback_grid_size(&sat, &d_sat, -1, 1);
         assert_eq!(s.n_req, 1 << 20);
         assert!(!s.clamped);
@@ -4803,6 +4945,80 @@ mod tests {
             "oracle must be non-trivial (circular 2D drive); otherwise \
              the comparison is vacuous, got {oracle_scale}"
         );
+    }
+
+    #[test]
+    fn real_space_products_match_explicit_oracle_across_storage_layouts() {
+        let a_r = array![[-1_isize], [1]];
+        let b_r = array![[-2_isize], [0], [2]];
+        let expected_r = array![[-3_isize], [-1], [1], [3]];
+        // Size 9 also exercises ndarray's BLAS path for contiguous blocks;
+        // size 3 covers its small-matrix path.
+        for n in [3, 9] {
+            let a = Array3::from_shape_fn((2, n, n), |(r, i, j)| {
+                Complex::new(
+                    ((3 * r + 2 * i + j) % 7) as f64 / 8.0,
+                    ((r + i + 3 * j) % 5) as f64 / 8.0 - 0.25,
+                )
+            });
+            let b = Array3::from_shape_fn((3, n, n), |(r, i, j)| {
+                Complex::new(
+                    ((r + i + 2 * j) % 5) as f64 / 8.0 - 0.5,
+                    ((2 * r + 3 * i + j) % 7) as f64 / 8.0,
+                )
+            });
+            let mut a_f = Array3::zeros(a.raw_dim());
+            let mut b_f = Array3::zeros(b.raw_dim());
+            a_f.swap_axes(1, 2);
+            b_f.swap_axes(1, 2);
+            a_f.assign(&a);
+            b_f.assign(&b);
+            let mut a_storage = Array3::zeros((2, 2 * n, 2 * n));
+            let mut b_storage = Array3::zeros((3, 2 * n, 2 * n));
+            a_storage.slice_mut(s![.., ..;-2, ..;2]).assign(&a);
+            b_storage.slice_mut(s![.., ..;-2, ..;2]).assign(&b);
+            let a_layouts = [a.view(), a_f.view(), a_storage.slice(s![.., ..;-2, ..;2])];
+            let b_layouts = [b.view(), b_f.view(), b_storage.slice(s![.., ..;-2, ..;2])];
+
+            for (sign, operation) in [(-1.0, "commutator"), (1.0, "anticommutator")] {
+                // Compute each convolution coefficient by scalar multiplication,
+                // independently of ndarray dot/GEMM and the production map.
+                let expected = Array3::from_shape_fn((4, n, n), |(r, i, j)| {
+                    let mut value = Complex::new(0.0, 0.0);
+                    for ia in 0..a_r.nrows() {
+                        for ib in 0..b_r.nrows() {
+                            if a_r[[ia, 0]] + b_r[[ib, 0]] == expected_r[[r, 0]] {
+                                for k in 0..n {
+                                    value += a[[ia, i, k]] * b[[ib, k, j]]
+                                        + sign * b[[ib, i, k]] * a[[ia, k, j]];
+                                }
+                            }
+                        }
+                    }
+                    value
+                });
+                assert!(expected.iter().any(|value| value.norm() > 1e-4));
+                for (a_layout, a_blocks) in a_layouts.iter().enumerate() {
+                    for (b_layout, b_blocks) in b_layouts.iter().enumerate() {
+                        let (actual, support) = real_space_two_product_sum_with_supports(
+                            a_blocks, &a_r, b_blocks, &b_r, sign, operation,
+                        )
+                        .unwrap();
+                        assert_eq!(support, expected_r);
+                        for (r, block) in actual.iter().enumerate() {
+                            for ((i, j), value) in block.indexed_iter() {
+                                assert!(
+                                    (*value - expected[[r, i, j]]).norm() < 1e-12,
+                                    "{operation}, n={n}, layouts=({a_layout},{b_layout}), \
+                                     coefficient=({r},{i},{j}): {value} vs {}",
+                                    expected[[r, i, j]]
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -5555,54 +5771,6 @@ mod tests {
     }
 
     #[test]
-    fn floquet_mode_resolved_avoids_transient_static_overflow() {
-        let mut model = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
-        model.set_onsite(&array![1.0e308], None);
-        let drive =
-            FloquetDrive::with_modes(2.0, vec![LightMode::new(1, array![Complex::new(0.2, 0.0)])]);
-
-        // The only hopping has zero bond length, so the field induces exactly
-        // zero correction.  Forming H0 + Heff before subtracting H0 would
-        // overflow here even though the physical answer remains finite.
-        let resolved = model
-            .floquet_effective_mode_resolved_model(&drive, None)
-            .unwrap();
-        assert_eq!(resolved.hamR, model.hamR);
-        assert_eq!(resolved.ham, model.ham);
-        assert!(resolved.ham.iter().all(|value| value.re.is_finite()));
-    }
-
-    #[test]
-    fn floquet_mode_resolved_exact_sum_handles_cancelling_large_corrections() {
-        let mut model = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
-        let hopping = 1.5e308;
-        model.set_hop(hopping, 0, 0, &array![1], None);
-        let drive = FloquetDrive::with_modes(
-            2.0,
-            vec![
-                LightMode::new(1, array![Complex::new(3.0, 0.0)]),
-                LightMode::new(1, array![Complex::new(1.0e-10, 0.0)]),
-            ],
-        );
-        let options = FloquetEffectiveOptions::new().with_order(0);
-
-        // The first isolated correction (J0(3)-1)*hopping is outside f64,
-        // while the complete signed sum is representable because the second
-        // mode contributes J0(1e-10)≈1.  No individual delta may be formed.
-        let resolved = model
-            .floquet_effective_mode_resolved_model(&drive, Some(&options))
-            .unwrap();
-        let expected = hopping * (bessel_j(0, 3.0) + bessel_j(0, 1.0e-10) - 1.0);
-        for block in resolved.ham.axis_iter(Axis(0)) {
-            let value = block[[0, 0]].re;
-            assert!(value.is_finite());
-            if value != 0.0 {
-                assert!(((value - expected) / expected).abs() < 1e-14);
-            }
-        }
-    }
-
-    #[test]
     fn hermiticity_midpoint_preserves_finite_extremes() {
         for value in [f64::from_bits(1), 1.0e308] {
             let mut ham = Array3::from_elem((1, 1, 1), Complex::new(value, 0.0));
@@ -5610,51 +5778,6 @@ mod tests {
             enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
             assert_eq!(ham[[0, 0, 0]].re.to_bits(), value.to_bits());
             assert_eq!(ham[[0, 0, 0]].im.to_bits(), 0.0_f64.to_bits());
-        }
-    }
-
-    #[test]
-    fn exact_real_sum_preserves_residuals_after_large_cancellation() {
-        for (values, residual) in [
-            (
-                vec![1.0, 2.0_f64.powi(-54), -1.0, 1.0, -1.0],
-                2.0_f64.powi(-54),
-            ),
-            (
-                vec![f64::from_bits(1), f64::MAX, -f64::MAX],
-                f64::from_bits(1),
-            ),
-            (
-                vec![1.0, f64::from_bits(1), -1.0, f64::MAX, -f64::MAX],
-                f64::from_bits(1),
-            ),
-            (
-                vec![
-                    2.0_f64.powi(197),
-                    2.0_f64.powi(934),
-                    2.0_f64.powi(144),
-                    -2.0_f64.powi(197),
-                    -2.0_f64.powi(934),
-                ],
-                2.0_f64.powi(144),
-            ),
-        ] {
-            let mut sum = ExactRealAccumulator::default();
-            for value in values {
-                sum.add(value);
-            }
-            assert_eq!(sum.finish().unwrap().to_bits(), residual.to_bits());
-        }
-    }
-
-    #[test]
-    fn exact_real_sum_rejects_non_finite_summands() {
-        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let mut sum = ExactRealAccumulator::default();
-            sum.add(1.0);
-            sum.add(invalid);
-            sum.add(-1.0);
-            assert!(sum.finish().is_err());
         }
     }
 
@@ -6605,12 +6728,28 @@ mod tests {
 
     #[test]
     fn bessel_coeffs_reject_large_amplitudes_and_bad_ranges() {
-        // R > 8 must error (the caller falls back to the time grid) instead
-        // of silently violating the 1e-12 error budget via the 64 cap.
-        let d = array![60.0];
+        // R > MAX_BESSEL_ARG must error (the caller falls back to the time
+        // grid) instead of silently reporting a truncated order range.
+        let d = array![200.0];
         let drive =
             FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(1.0, 0.0)])]);
         assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, 6).is_err());
+
+        // Just inside the cap the ladder must still resolve the coefficients:
+        // R = 60 and R = 128 need orders past the old 64-order ceiling.
+        let grid = FloquetTimeGrid::new(&drive, 4096, -4, 4, 1);
+        for r in [60.0, MAX_BESSEL_ARG] {
+            let d_allowed = array![r];
+            let allowed = bessel_peierls_coeffs(&d_allowed, &drive, -4, 4, 6).unwrap();
+            let reference = peierls_fourier_coeffs(&d_allowed, -4, 4, &drive, &grid);
+            for (n, (got, want)) in allowed.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (got - want).norm() < 1e-12,
+                    "C_{} at R = {r}: ladder {got} vs time-grid DFT {want}",
+                    n as isize - 4
+                );
+            }
+        }
 
         // Harmonic ranges that exclude 0 must not panic; harmonic_min > harmonic_max errors.
         let zero_l =
@@ -6621,9 +6760,8 @@ mod tests {
         }
         assert!(bessel_peierls_coeffs(&d, &drive, 3, 2, 6).is_err());
 
-        // cutoff_margin is bounded to [0, 48]: beyond that the starting
-        // cutoff can reach the Bessel library's inf region and the
-        // 64-order invariant breaks.
+        // cutoff_margin is a documented minimum-order floor bounded to
+        // [0, 48]; a larger value would only force a needlessly long sweep.
         assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, 49).is_err());
         assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, -1).is_err());
     }

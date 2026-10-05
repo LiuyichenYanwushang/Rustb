@@ -392,17 +392,15 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
   coordinates are `fractional.dot(lat)`.
   Reciprocal vectors via `Model::rec_lat()` (rows = reciprocal vectors,
   formula `B = 2π·(Aᵀ)⁻¹`).
-- **Eigenbasis transformation**: distinguish raw `eigh` output from `Solve`
-  output. For the current ndarray-linalg 0.18.1 C-layout complex-H path,
-  raw `U = H.eigh(...).1` uses `U^T · O · U^*`, verified by
-  `evec_transform_sanity`. Rustb's `solve_onek` / `solve_all` /
-  `solve_all_parallel` return `C = U†`, with ket coefficients in rows:
-  `C[n, basis]` or `C[ik, n, basis]`. Their formula is `C* · O · C^T` and
-  `H C^T = C^T diag(E)`. Energies ascend independently at each input k-point;
-  no band tracking or phase alignment is performed. `ndarray_linalg::conjugate`
-  is a conjugate transpose, not elementwise conjugation. Recheck layout-dependent
-  compensation when upgrading ndarray-linalg or changing H storage; see the
-  detailed `Solve` rustdoc and its complex-H residual examples.
+- **Eigenbasis transformation**: internal full-spectrum calculations use
+  `ndarray_lapack::eigh_full`, which packs any logical layout into column-major
+  storage and returns ket coefficients in rows: `C[band, basis]`. Public `Solve`
+  methods use the same convention: `H C^T = C^T diag(E)` and `C* O C^T` for
+  operators. Energies ascend independently at each input k-point; no band
+  tracking or phase alignment is performed by `Solve`. Raw ndarray-linalg
+  C-layout complex eigenvectors have different transpose/conjugation behavior;
+  retain independent test oracles and rerun complex residual/layout checks when
+  upgrading that dependency. `ndarray_linalg::conjugate` is conjugate transpose.
 - **Solver errors**: every `Solve` method returns `Result`. Propagate with `?`
   in fallible callers; never turn an eigensolver error into a panic inside
   `Solve`. Validate model and k-points once per batch before scheduling work.
@@ -676,8 +674,11 @@ C_n(d) = (1/T) ∫_0^T dt e^{inΩ₀t} exp[−i a(t)·d]
 ```
 
 Main path: the generalized Bessel backend (exact, no `n_time`); the uniform
-time-grid DFT is retained per link as the fallback for `R_α = |a_α·d| > 8` and
-as the crate-internal cross-validation reference.
+time-grid DFT is retained per link as the fallback for
+`R_α = |a_α·d| > MAX_BESSEL_ARG` (128) and as the crate-internal cross-validation
+reference.  Each link's `J_0..J_M` and every truncation tail come from one
+backward-recurrence ladder per mode, so the coefficient cost is linear in the
+order range rather than quadratic.
 
 ### Sambe Hamiltonian
 
@@ -694,7 +695,7 @@ Quasienergies can be folded to `[−Ω₀/2, Ω₀/2)` via `fold_quasienergy`.
 ### Real-space Bessel backend (main path of `floquet_effective_model`)
 
 van Vleck through `O(W⁻²)`, with `W = omega0_ev = ħΩ₀`, entirely in real space — no `k_mesh`, no `n_time`
-(only `R > 8` fallback links touch the time grid):
+(only `R > MAX_BESSEL_ARG` fallback links touch the time grid):
 
 ```math
 T_eff(R) = T_0(R) + Σ_{n=1}^{harmonic_max} comm_n(R) / (n W),
@@ -726,15 +727,15 @@ the literature pointwise. Do not "fix" either sign in isolation.
 Machinery: `bessel_peierls_coeffs` (recursive one-mode convolutions,
 adaptive tail truncation, `cutoff_margin ∈ [0,48]`, all integer arithmetic
 checked), `floquet_harmonic_cache` (dedup by distinct `d`, `[u64; DIM]` bit
-keys), `real_space_commutator` (two zgemm convolutions via the
-`(A·B)^T = B^T·A^T` transpose trick, fp symmetrization),
+keys), `real_space_commutator` (two convolutions using ndarray's
+`general_mat_mul`, fp symmetrization),
 `floquet_effective_model_legacy` (crate-internal k-space reference,
 `pub(crate)` with `FloquetEffectiveOptions::target_hamR`/`with_target_hamR`).
 
 ### Graphene circular-light benchmarks (tests in `src/floquet.rs`)
 
 `floquet::tests::graphene_*` pins the implementation against the analytic
-derivation (arXiv:1511.00755 conventions, plan §9). Drive `a = α(1, i)` for
+derivation (arXiv:1511.00755 conventions). Drive `a = α(1, i)` for
 right-handed CPL reproduces `a(t)·e_l = α sin(ωt − 2πl/3)`; the single-mode
 closed form gives `C_n(e_l) = J_n(α)e^{i2πnl/3}`.
 
@@ -799,6 +800,11 @@ vectors and be closed under `R -> -R`.
 ---
 
 ## Performance Notes
+
+**Numerical safety boundary**: crate-owned `unsafe` is restricted to
+`ndarray_lapack.rs`. Use `ndarray::linalg::general_mat_mul` for matrix products;
+the enabled `ndarray/blas` feature uses the selected BLAS backend for supported
+layouts and sizes. Keep raw BLAS/LAPACK calls behind the existing safe bindings.
 
 **`zaxpy`** (`src/ndarray_lapack.rs`): safe BLAS `y += alpha * x` for `Complex<f64>` slices.
 Preferred over `Zip`/elementwise for direction-weight accumulation. Only call when
@@ -935,8 +941,7 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
 - **Still deferred**: explicit radial-channel metadata, automatic local-frame
   or SOC-entangled Wannier representations, gauge-covariant Peierls
   transformations, supercell band-irrep unfolding, and wiring weighted meshes
-  into response solvers remain follow-up work in
-  `CRYSPGLIB_INTEGRATION_PLAN.md`.
+  into response solvers remain follow-up work.
 
 ### Current cryspglib corep boundary used by Rustb (2026-08-30)
 
