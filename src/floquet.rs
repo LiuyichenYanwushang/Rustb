@@ -2636,7 +2636,14 @@ impl BesselLadder {
     /// decay).
     fn new(r: f64, n_min: usize) -> Self {
         debug_assert!(r.is_finite() && r > 0.0, "ladder argument must be positive");
-        let mut n = n_min.clamp(1, MAX_BESSEL_ORDER);
+        // The top order can only decay past the turning point: `|J_m(r)|` falls
+        // below `BESSEL_DECAY_FLOOR` about `13·r^(1/3)` orders beyond it
+        // (measured 17, 28, 66 and 199 for r = 1, 8, 128 and 4000).  Starting the
+        // estimate there rather than doubling up from the requested order alone
+        // roughly halves the number of sweeps; an estimate that is still too
+        // short is caught by the doubling below.
+        let decay_estimate = (r.ceil() as usize).saturating_add(8 + (16.0 * r.cbrt()) as usize);
+        let mut n = n_min.max(decay_estimate).clamp(1, MAX_BESSEL_ORDER);
         loop {
             let j = bessel_backward_sweep(r, n);
             if j[n].abs() < BESSEL_DECAY_FLOOR {
@@ -2763,6 +2770,134 @@ fn bessel_ladder_with_cutoff(r: f64, error_share: f64, margin: isize) -> (Bessel
     }
 }
 
+/// Ladder and adaptive cutoff for one link amplitude, with the validation both
+/// coefficient paths need.
+fn bessel_ladder_for_amplitude(
+    r: f64,
+    error_share: f64,
+    cutoff_margin: isize,
+) -> Result<(BesselLadder, isize)> {
+    if !r.is_finite() || r > MAX_BESSEL_ARG {
+        return Err(TbError::Other(format!(
+            "bessel_peierls_coeffs: mode amplitude R = {r:.3} is outside the \
+             Bessel backend's range (R ≤ {MAX_BESSEL_ARG}); use the time-grid backend"
+        )));
+    }
+    // Adaptive cutoff plus the ladder that backs it: the smallest M whose
+    // two-sided tail 2 * Σ_{m>M} |J_m(r)| fits the per-mode error share,
+    // delivered together with J_0..J_M and every candidate tail from one
+    // backward sweep.
+    let (ladder, m_cap) = bessel_ladder_with_cutoff(r, error_share, cutoff_margin);
+    if !ladder.decayed {
+        // A truncated ladder's suffix sums stop at MAX_BESSEL_ORDER, so they
+        // cannot certify a truncation budget.  MAX_BESSEL_ARG plus the largest
+        // allowed margin keeps this out of reach, but a future cap change must
+        // fail loudly instead of folding a truncated expansion.
+        return Err(TbError::Other(format!(
+            "bessel_peierls_coeffs: the order range for R = {r:.3} saturated at \
+             {MAX_BESSEL_ORDER} orders without decaying; lower MAX_BESSEL_ARG or \
+             raise MAX_BESSEL_ORDER"
+        )));
+    }
+    Ok((ladder, m_cap))
+}
+
+/// Closed form for a drive whose nonzero temporal harmonics collapse to one
+/// value `l`.
+///
+/// The resonance condition `l·m = -n` then fixes the multi-index sum to a single
+/// term,
+///
+/// ```math
+/// C_n = (-i)^m J_m(R)\, e^{-im\delta},\qquad l \mid n,
+/// ```
+///
+/// and every other bin vanishes: one lookup per requested order instead of the
+/// `O(M·W)` one-mode convolution.  Orders past the adaptive cutoff `M` stay
+/// zero, which is exactly what the convolution returns once its Bessel orders
+/// are truncated there.  DC modes only multiply the result by
+/// `exp(-i Re(a_0·d))`, the static Peierls phase.
+///
+/// Returns `Ok(None)` when the drive has two or more distinct nonzero harmonics
+/// — coherent sums of equal harmonics count once — because that sum genuinely
+/// needs the convolution.
+fn single_harmonic_closed_form(
+    d: &Array1<f64>,
+    drive: &FloquetDrive,
+    harmonic_min: isize,
+    harmonic_max: isize,
+    cutoff_margin: isize,
+) -> Result<Option<Array1<Complex<f64>>>> {
+    let mut single: Option<(isize, Complex<f64>)> = None;
+    let mut dc = 0.0_f64;
+    for mode in &drive.modes {
+        // Mode projection onto the link: z = a·d = R e^{iδ}.
+        let z: Complex<f64> = mode
+            .a_complex
+            .iter()
+            .zip(d.iter())
+            .map(|(a, x)| *a * *x)
+            .sum();
+        if mode.harmonic == 0 {
+            // Only the real part of the DC projection enters the Peierls phase.
+            dc += z.re;
+            continue;
+        }
+        if z.re == 0.0 && z.im == 0.0 {
+            continue;
+        }
+        match &mut single {
+            Some((harmonic, total)) if *harmonic == mode.harmonic => *total += z,
+            Some(_) => return Ok(None),
+            None => single = Some((mode.harmonic, z)),
+        }
+    }
+    let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
+    let dc_phase = Complex::new(0.0, -dc).exp();
+    // Equal harmonics are summed coherently, so the total can cancel exactly;
+    // such a drive dresses nothing, exactly like a single zero projection, and
+    // must not reach the ladder (whose argument is asserted positive).
+    let single = single.filter(|(_, z)| z.re != 0.0 || z.im != 0.0);
+    let Some((harmonic, z)) = single else {
+        // Purely static drive: the Peierls phase shifts the on-site term only.
+        let mut coeffs = Array1::<Complex<f64>>::zeros(harmonic_count);
+        if harmonic_min <= 0 && 0 <= harmonic_max {
+            coeffs[(0 - harmonic_min) as usize] = dc_phase;
+        }
+        return Ok(Some(coeffs));
+    };
+
+    let r = z.norm();
+    // Same per-mode share as the convolution path, so the adaptive cutoff — and
+    // therefore every truncated bin — agrees exactly.
+    let error_share = 1e-12 / (drive.modes.len() as f64);
+    let (ladder, m_cap) = bessel_ladder_for_amplitude(r, error_share, cutoff_margin)?;
+    let delta = z.arg();
+    let mut coeffs = Array1::<Complex<f64>>::zeros(harmonic_count);
+    for (index, n) in (harmonic_min..=harmonic_max).enumerate() {
+        if n.rem_euclid(harmonic) != 0 {
+            continue;
+        }
+        // Exact division by construction; `|m| <= m_cap` keeps the lookup inside
+        // the ladder, and the truncated tail is exactly zero there.
+        let m = -n / harmonic;
+        let order = m.unsigned_abs();
+        if order > m_cap as usize {
+            continue;
+        }
+        let j_m = if m < 0 && order % 2 == 1 {
+            -ladder.j[order]
+        } else {
+            ladder.j[order]
+        };
+        coeffs[index] = dc_phase
+            * Complex::new(0.0, -1.0).powi(m as i32)
+            * j_m
+            * Complex::from_polar(1.0, -(m as f64) * delta);
+    }
+    Ok(Some(coeffs))
+}
+
 /// Peierls Fourier coefficients `C_n(d)` via the generalized Bessel
 /// expansion, for `n ∈ [harmonic_min, harmonic_max]`.
 ///
@@ -2776,8 +2911,10 @@ fn bessel_ladder_with_cutoff(r: f64, error_share: f64, margin: isize) -> (Bessel
 /// ```
 ///
 /// (Resonance `n + Σ l m = 0`; the equivalent form `Σ l m = +n` with phase
-/// `e^{+imδ}` must not be mixed in.)  The multi-index sum is evaluated as a
-/// sequence of one-mode discrete convolutions
+/// `e^{+imδ}` must not be mixed in.)  A drive whose nonzero harmonics collapse
+/// to one value needs no sum at all: [`single_harmonic_closed_form`] returns one
+/// term per bin.  Everything else evaluates the multi-index sum as a sequence
+/// of one-mode discrete convolutions
 ///
 /// ```math
 /// S^{(0)}_n = δ_{n,0},\qquad
@@ -2851,6 +2988,14 @@ pub(crate) fn bessel_peierls_coeffs(
         return Ok(coeffs);
     }
 
+    // A drive whose nonzero harmonics collapse to one value needs no
+    // convolution: the resonance condition leaves exactly one term per bin.
+    if let Some(coeffs) =
+        single_harmonic_closed_form(d, drive, harmonic_min, harmonic_max, cutoff_margin)?
+    {
+        return Ok(coeffs);
+    }
+
     // Two-pass construction.  First pass: per-mode projections and adaptive
     // cutoffs.  The Bessel path only supports R_α ≤ MAX_BESSEL_ARG; the caller falls back
     // to the time-grid backend beyond that.
@@ -2877,28 +3022,7 @@ pub(crate) fn bessel_peierls_coeffs(
             // Degenerate mode: only m = 0 contributes (B = 1), a no-op fold.
             continue;
         }
-        if !r.is_finite() || r > MAX_BESSEL_ARG {
-            return Err(TbError::Other(format!(
-                "bessel_peierls_coeffs: mode amplitude R = {r:.3} is outside the \
-                 Bessel backend's range (R ≤ {MAX_BESSEL_ARG}); use the time-grid backend"
-            )));
-        }
-        // Adaptive cutoff plus the ladder that backs it: the smallest M whose
-        // two-sided tail 2 * Σ_{m>M} |J_m(r)| fits the per-mode error share,
-        // delivered together with J_0..J_M and every candidate tail from one
-        // backward sweep.
-        let (ladder, m_cap) = bessel_ladder_with_cutoff(r, error_share, cutoff_margin);
-        if !ladder.decayed {
-            // A truncated ladder's suffix sums stop at MAX_BESSEL_ORDER, so they
-            // cannot certify a truncation budget.  MAX_BESSEL_ARG plus the
-            // largest allowed margin keeps this out of reach, but a future cap
-            // change must fail loudly instead of folding a truncated expansion.
-            return Err(TbError::Other(format!(
-                "bessel_peierls_coeffs: the order range for R = {r:.3} saturated at \
-                 {MAX_BESSEL_ORDER} orders without decaying; lower MAX_BESSEL_ARG or \
-                 raise MAX_BESSEL_ORDER"
-            )));
-        }
+        let (ladder, m_cap) = bessel_ladder_for_amplitude(r, error_share, cutoff_margin)?;
         let harmonic_abs = mode.harmonic.checked_abs().ok_or_else(|| {
             TbError::Other("bessel_peierls_coeffs: harmonic drift overflow".to_string())
         })?;
@@ -4120,6 +4244,122 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn bessel_single_harmonic_closed_form_matches_time_grid() {
+        // One nonzero temporal harmonic collapses the resonance sum to a single
+        // term, so the coefficient path takes the closed form instead of the
+        // one-mode convolution.  Pin it against the independent time-grid DFT,
+        // covering a negative harmonic, a coherently summed pair at one
+        // harmonic (still a single harmonic), a DC mode riding along, and a
+        // purely static drive (which is only an on-site Peierls phase).
+        let d = array![1.3, -0.7];
+        let harmonic_min = -6_isize;
+        let harmonic_max = 6_isize;
+        let cases: Vec<FloquetDrive> = vec![
+            FloquetDrive::with_modes(
+                1.0,
+                vec![LightMode::new(
+                    1,
+                    array![Complex::new(0.25, 0.1), Complex::new(-0.05, 0.2)],
+                )],
+            ),
+            FloquetDrive::with_modes(
+                0.7,
+                vec![LightMode::new(
+                    -2,
+                    array![Complex::new(0.3, 0.0), Complex::new(0.1, -0.15)],
+                )],
+            ),
+            FloquetDrive::with_modes(
+                1.0,
+                vec![
+                    LightMode::new(1, array![Complex::new(0.2, 0.0), Complex::new(0.0, 0.2)]),
+                    LightMode::new(1, array![Complex::new(0.05, -0.05), Complex::new(0.0, 0.0)]),
+                ],
+            ),
+            FloquetDrive::with_modes(
+                1.0,
+                vec![
+                    LightMode::new(0, array![Complex::new(0.3, 0.2), Complex::new(0.0, 0.0)]),
+                    LightMode::new(3, array![Complex::new(0.1, 0.0), Complex::new(0.0, -0.1)]),
+                ],
+            ),
+            FloquetDrive::with_modes(
+                1.0,
+                vec![LightMode::new(
+                    0,
+                    array![Complex::new(0.4, -0.25), Complex::new(0.0, 0.0)],
+                )],
+            ),
+            // Two DC modes: the static phase accumulates over both.
+            FloquetDrive::with_modes(
+                1.0,
+                vec![
+                    LightMode::new(0, array![Complex::new(0.2, 0.0), Complex::new(0.0, 0.0)]),
+                    LightMode::new(0, array![Complex::new(0.15, -0.4), Complex::new(0.0, 0.0)]),
+                ],
+            ),
+            // Equal harmonics that cancel exactly: the drive is static, and the
+            // ladder must never be asked for R = 0.
+            FloquetDrive::with_modes(
+                1.0,
+                vec![
+                    LightMode::new(1, array![Complex::new(0.3, 0.1), Complex::new(0.0, 0.0)]),
+                    LightMode::new(1, array![Complex::new(-0.3, -0.1), Complex::new(0.0, 0.0)]),
+                ],
+            ),
+        ];
+        for (case, drive) in cases.iter().enumerate() {
+            let closed = bessel_peierls_coeffs(&d, drive, harmonic_min, harmonic_max, 6).unwrap();
+            let grid = FloquetTimeGrid::new(drive, 512, harmonic_min, harmonic_max, 2);
+            let reference = peierls_fourier_coeffs(&d, harmonic_min, harmonic_max, drive, &grid);
+            for (n, (got, want)) in closed.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (got - want).norm() < 1e-12,
+                    "case {case}, n = {}: closed form {got} vs DFT {want}",
+                    harmonic_min + n as isize
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bessel_single_harmonic_fast_path_is_actually_taken() {
+        // Two modes at the same harmonic whose individual amplitudes exceed
+        // MAX_BESSEL_ARG while their coherent sum does not: the convolution path
+        // validates each mode and would error, so a successful call proves the
+        // closed form handled it.  The result must equal the single coherent
+        // drive it is physically identical to.
+        let d = array![1.0];
+        let split = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(200.0, 0.0)]),
+                LightMode::new(1, array![Complex::new(-150.0, 0.0)]),
+            ],
+        );
+        let coherent = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(1, array![Complex::new(50.0, 0.0)])],
+        );
+        let split_coeffs = bessel_peierls_coeffs(&d, &split, -3, 3, 6).unwrap();
+        let coherent_coeffs = bessel_peierls_coeffs(&d, &coherent, -3, 3, 6).unwrap();
+        for (n, (a, b)) in split_coeffs.iter().zip(coherent_coeffs.iter()).enumerate() {
+            assert!(
+                (a - b).norm() < 1e-14,
+                "n = {}: split {a} vs coherent {b}",
+                n as isize - 3
+            );
+        }
+
+        // Just past the cap the fast path must still refuse the drive.
+        let over = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(1, array![Complex::new(200.0, 0.0)])],
+        );
+        assert!(bessel_peierls_coeffs(&d, &over, -2, 2, 6).is_err());
     }
 
     #[test]
