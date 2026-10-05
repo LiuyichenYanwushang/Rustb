@@ -350,11 +350,14 @@ impl FloquetDrive {
 /// (`peierls_fourier_coeffs`) that the tests cross-validate against, and for
 /// nothing else: changing it does not change any Floquet result.
 ///
-/// Links beyond the Bessel backend's exact range (`MAX_BESSEL_ARG`) fall back
-/// to a per-link time-grid DFT whose resolution is sized from the link's own
-/// spectral bandwidth and the requested harmonic range, clamped to `2^20`
-/// points with a warn-once message; a drive whose link needs more than that is
-/// rejected up front instead of being silently aliased.
+/// Links beyond the Bessel backend's exact range fall back to a per-link
+/// time-grid DFT whose resolution is sized from the link's own spectral
+/// bandwidth and the requested harmonic range, clamped to `2^20` points with a
+/// warn-once message; a drive whose link needs more than that is rejected up
+/// front instead of being silently aliased.  The exact range is the closed
+/// form's `MAX_BESSEL_ARG_CLOSED_FORM` when the drive's nonzero projections
+/// collapse to one coherent harmonic, and the convolution's smaller
+/// `MAX_BESSEL_ARG` otherwise.
 ///
 /// The van Vleck effective-model path uses [`FloquetEffectiveOptions`]
 /// instead of this truncation.
@@ -950,9 +953,10 @@ pub(crate) enum PeierlsFourierMethod {
     TimeGrid { n_time: usize },
     /// Generalized Bessel expansion via sequential one-mode convolutions.
     /// Exact and independent of `n_time`, but restricted to per-mode
-    /// projections `R_α = |a_α·d| ≤` [`MAX_BESSEL_ARG`]; the cache falls back to
-    /// a self-sized per-link time-grid DFT (`fallback_time_grid_coeffs`) beyond
-    /// that.
+    /// projections `R_α = |a_α·d| ≤` [`MAX_BESSEL_ARG`], and the same bound on
+    /// the coherent sum for the single-harmonic closed form
+    /// ([`MAX_BESSEL_ARG_CLOSED_FORM`]); the cache falls back to a self-sized
+    /// per-link time-grid DFT (`fallback_time_grid_coeffs`) beyond that.
     Bessel {
         /// Minimum number of Bessel orders beyond `⌈R_α⌉` (the adaptive tail
         /// check may push the cutoff higher).
@@ -1113,7 +1117,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         let harmonic_min = -2 * trunc.n_max;
         let harmonic_max = 2 * trunc.n_max;
         // The Sambe path shares the exact, grid-free Bessel backend with the
-        // effective-model path; links beyond MAX_BESSEL_ARG fall back to a
+        // effective-model path; links beyond the backend's range fall back to a
         // self-sized per-link grid inside the cache.
         let harmonic_cache = self.floquet_harmonic_cache(
             drive,
@@ -1443,7 +1447,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// generalized Bessel backend. The numerical controls are
     /// [`FloquetEffectiveOptions`]; no photon cutoff, time-sampling count,
     /// or `k_mesh` is required. Links whose amplitude exceeds the Bessel range
-    /// (`R > MAX_BESSEL_ARG`) fall back to a per-link time-grid DFT whose resolution is
+    /// (beyond the backend's range) fall back to a per-link time-grid DFT whose resolution is
     /// sized from the link's own spectral bandwidth and the requested
     /// harmonic range.
     ///
@@ -2259,8 +2263,14 @@ fn validate_sambe_allocation<const SPIN: bool, const DIM: usize, R: RMatrixData>
         // slip past the cap; checking the sum in both would reject drives the
         // convolution handles.  Modes whose projection is exactly zero are
         // dropped first, as the backend drops them.
-        let mut sums = std::collections::BTreeMap::<isize, Complex<f64>>::new();
+        // Walk the modes exactly like `single_harmonic_closed_form` does: it
+        // keeps one running coherent sum and bails out to the convolution at the
+        // *first* harmonic change — including when a later mode would have
+        // cancelled that sum back to zero.  Accumulating per harmonic instead
+        // would call such a drive exact while the backend convolves it.
+        let mut single: Option<(isize, Complex<f64>)> = None;
         let mut per_mode = Vec::<(isize, f64)>::new();
+        let mut several_harmonics = false;
         for mode in &drive.modes {
             let phase: Complex<f64> = mode.a_complex.iter().zip(&d).map(|(a, x)| a * x).sum();
             let magnitude = phase.norm();
@@ -2273,24 +2283,30 @@ fn validate_sambe_allocation<const SPIN: bool, const DIM: usize, R: RMatrixData>
                 continue;
             }
             per_mode.push((mode.harmonic, magnitude));
-            if mode.harmonic != 0 {
-                sums.entry(mode.harmonic)
-                    .and_modify(|total| *total += phase)
-                    .or_insert(phase);
+            if mode.harmonic == 0 {
+                continue; // static: only a phase, never a ladder
+            }
+            match &mut single {
+                Some((harmonic, total)) if *harmonic == mode.harmonic => *total += phase,
+                Some(_) => several_harmonics = true,
+                None => single = Some((mode.harmonic, phase)),
             }
         }
         let key: Vec<_> = d.iter().map(|x| x.to_bits()).collect();
         if !checked.insert(key) {
             continue;
         }
-        // Coherent sums that cancel exactly are inactive in the backend too.
-        let coherent: Vec<Complex<f64>> = sums
-            .into_values()
-            .filter(|z| z.re != 0.0 || z.im != 0.0)
-            .collect();
         let span = (4 * trunc.n_max + 1) as usize;
-        let exact = if coherent.len() <= 1 {
-            coherent.iter().all(|z| z.norm() <= MAX_BESSEL_ARG)
+        let exact = if !several_harmonics {
+            // One coherent harmonic (or none at all): the closed form is exact
+            // for any amplitude whose coherent sum fits its cap, and an exactly
+            // cancelling sum never reaches the ladder.
+            match single {
+                Some((_, z)) => {
+                    z.re == 0.0 && z.im == 0.0 || z.norm() <= MAX_BESSEL_ARG_CLOSED_FORM
+                }
+                None => true,
+            }
         } else {
             // `M_α` stays within `⌈r_α⌉ + 48` for every attainable error share
             // (`1e-12` split over the drive's modes), so `+64` is a safe order
@@ -2316,8 +2332,9 @@ fn validate_sambe_allocation<const SPIN: bool, const DIM: usize, R: RMatrixData>
         if needed > FALLBACK_GRID_MAX {
             return Err(TbError::Other(format!(
                 "Floquet drive needs {} samples on a link the Bessel backend cannot \
-                 represent exactly (cap |a·d| ≤ {MAX_BESSEL_ARG}, window ≤ {MAX_BESSEL_WINDOW}); \
-                 the per-link grid cap is {FALLBACK_GRID_MAX}",
+                 represent exactly (coherent sum ≤ {MAX_BESSEL_ARG_CLOSED_FORM}, convolution \
+                 operand ≤ {MAX_BESSEL_ARG} and window ≤ {MAX_BESSEL_WINDOW}); the per-link \
+                 grid cap is {FALLBACK_GRID_MAX}",
                 needed,
             )));
         }
@@ -2540,9 +2557,9 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
     puruspe::Jn(m as u32, r)
 }
 
-/// Largest per-mode link amplitude `R_α = |a_α·d|` handled by the Bessel
-/// backend.  Above it [`bessel_peierls_coeffs`] reports an error and the
-/// harmonic cache falls back to a per-link time-grid DFT.
+/// Largest per-mode link amplitude `R_α = |a_α·d|` handled by the one-mode
+/// convolution path.  Above it [`bessel_peierls_coeffs`] reports an error and
+/// the harmonic cache falls back to a per-link time-grid DFT.
 ///
 /// The cap is a **cost** contract, not a mathematical or accuracy limit: the
 /// generalized Bessel expansion converges for every finite `R`, and the
@@ -2555,10 +2572,28 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
 /// linearly with `R`.
 const MAX_BESSEL_ARG: f64 = 128.0;
 
+/// Largest link amplitude `R = |Σ_α a_α·d|` handled by the single-harmonic
+/// closed form, i.e. by a drive whose nonzero projections collapse to one
+/// coherent harmonic.
+///
+/// That path allocates no convolution window — one `O(R)` ladder plus the
+/// `O(K)` requested bins — so its cost is `O(R + K)` against the DFT's
+/// `O(R·K)`, and it reaches two orders of magnitude further than the
+/// convolution path at ~25 µs per distinct link.  Above this cap the link
+/// falls back to a per-link time grid.  The ladder stays at machine precision
+/// across the whole range (checked against 60-digit references).
+const MAX_BESSEL_ARG_CLOSED_FORM: f64 = 16384.0;
+
 /// Hard cap on the order range evaluated for one link.  A tail that still
 /// exceeds its error share here means the amplitude is beyond practical use;
 /// the fallback sizing then switches to its conservative analytic bound.
-const MAX_BESSEL_ORDER: usize = 4096;
+///
+/// This covers the whole closed-form range: the sweep for an argument `R` seeds
+/// at `⌈R⌉ + 8 + 16·R^{1/3}` and runs to
+/// `max(seed, ⌈R⌉) + 20 + √(160·max(seed, ⌈R⌉))` orders, i.e. 18459 at
+/// `R = MAX_BESSEL_ARG_CLOSED_FORM` — about half the cap.  It also bounds the
+/// ladder the fallback sizing builds to estimate a link's bandwidth.
+const MAX_BESSEL_ORDER: usize = 1 << 15;
 
 /// Cap on the one-mode convolution window, `harmonic span + 2·Σ_α|l_α|M_α`.
 /// The window is allocated as two `Complex<f64>` vectors, so an unguarded
@@ -2798,16 +2833,19 @@ fn bessel_ladder_with_cutoff(r: f64, error_share: f64, margin: isize) -> (Bessel
 }
 
 /// Ladder and adaptive cutoff for one link amplitude, with the validation both
-/// coefficient paths need.
+/// coefficient paths need.  `max_arg` is the cap of the calling path:
+/// [`MAX_BESSEL_ARG_CLOSED_FORM`] for the closed form, whose cost is linear in
+/// `R`, and [`MAX_BESSEL_ARG`] for a convolution operand.
 fn bessel_ladder_for_amplitude(
     r: f64,
     error_share: f64,
     cutoff_margin: isize,
+    max_arg: f64,
 ) -> Result<(BesselLadder, isize)> {
-    if !r.is_finite() || r > MAX_BESSEL_ARG {
+    if !r.is_finite() || r > max_arg {
         return Err(TbError::Other(format!(
             "bessel_peierls_coeffs: mode amplitude R = {r:.3} is outside the \
-             Bessel backend's range (R ≤ {MAX_BESSEL_ARG}); use the time-grid backend"
+             Bessel backend's range (R ≤ {max_arg}); use the time-grid backend"
         )));
     }
     // Adaptive cutoff plus the ladder that backs it: the smallest M whose
@@ -2817,7 +2855,7 @@ fn bessel_ladder_for_amplitude(
     let (ladder, m_cap) = bessel_ladder_with_cutoff(r, error_share, cutoff_margin);
     if !ladder.decayed {
         // A truncated ladder's suffix sums stop at MAX_BESSEL_ORDER, so they
-        // cannot certify a truncation budget.  MAX_BESSEL_ARG plus the largest
+        // cannot certify a truncation budget.  The closed-form cap plus the largest
         // allowed margin keeps this out of reach, but a future cap change must
         // fail loudly instead of folding a truncated expansion.
         return Err(TbError::Other(format!(
@@ -2898,7 +2936,8 @@ fn single_harmonic_closed_form(
     // Same per-mode share as the convolution path, so the adaptive cutoff — and
     // therefore every truncated bin — agrees exactly.
     let error_share = 1e-12 / (drive.modes.len() as f64);
-    let (ladder, m_cap) = bessel_ladder_for_amplitude(r, error_share, cutoff_margin)?;
+    let (ladder, m_cap) =
+        bessel_ladder_for_amplitude(r, error_share, cutoff_margin, MAX_BESSEL_ARG_CLOSED_FORM)?;
     let delta = z.arg();
     let mut coeffs = Array1::<Complex<f64>>::zeros(harmonic_count);
     for (index, n) in (harmonic_min..=harmonic_max).enumerate() {
@@ -2981,7 +3020,7 @@ fn single_harmonic_closed_form(
 /// # Errors
 /// Returns [`TbError::Other`] when `harmonic_min > harmonic_max`, when `cutoff_margin`
 /// is outside `0..=48`, when any mode amplitude `R_α` exceeds
-/// [`MAX_BESSEL_ARG`] (the caller must fall back to the time-grid backend),
+/// [`MAX_BESSEL_ARG_CLOSED_FORM`] (the caller must fall back to the time-grid backend),
 /// or when the harmonic range / working window would overflow `isize`.
 pub(crate) fn bessel_peierls_coeffs(
     d: &Array1<f64>,
@@ -3024,7 +3063,7 @@ pub(crate) fn bessel_peierls_coeffs(
     }
 
     // Two-pass construction.  First pass: per-mode projections and adaptive
-    // cutoffs.  The Bessel path only supports R_α ≤ MAX_BESSEL_ARG; the caller falls back
+    // cutoffs.  The convolution only supports R_α ≤ MAX_BESSEL_ARG; the caller falls back
     // to the time-grid backend beyond that.
     struct ModeData {
         /// `J_0..J_{M_α}` and the tail sums behind the adaptive cutoff.
@@ -3049,7 +3088,8 @@ pub(crate) fn bessel_peierls_coeffs(
             // Degenerate mode: only m = 0 contributes (B = 1), a no-op fold.
             continue;
         }
-        let (ladder, m_cap) = bessel_ladder_for_amplitude(r, error_share, cutoff_margin)?;
+        let (ladder, m_cap) =
+            bessel_ladder_for_amplitude(r, error_share, cutoff_margin, MAX_BESSEL_ARG)?;
         let harmonic_abs = mode.harmonic.checked_abs().ok_or_else(|| {
             TbError::Other("bessel_peierls_coeffs: harmonic drift overflow".to_string())
         })?;
@@ -3165,8 +3205,8 @@ struct FallbackGridSize {
     request_range: usize,
     /// The unclamped size exceeded [`FALLBACK_GRID_MAX`].
     clamped: bool,
-    /// A mode's adaptive cutoff saturated at 4096 orders, requiring a
-    /// conservative analytic tail bound instead.
+    /// A mode's adaptive cutoff saturated at [`MAX_BESSEL_ORDER`] orders,
+    /// requiring a conservative analytic tail bound instead.
     saturated: bool,
 }
 
@@ -3214,8 +3254,8 @@ fn fallback_grid_size(
         // The Bessel backend's precision margin is not a sampling floor.
         // A ladder that never decayed inside MAX_BESSEL_ORDER cannot certify a
         // bandwidth: its suffix sums stop at the cap, so a cutoff read from them
-        // omits the orders above it — measured at r = 3955 a suffix budget of
-        // 7.4e-13 against a complete two-sided tail of 1.8e-12 for a 1e-12
+        // omits the orders above it — measured at r = 32483 a suffix budget of
+        // 9.5e-13 against a complete two-sided tail of 1.9e-12 for a 1e-12
         // share.  Such an argument therefore always takes the conservative
         // analytic bound below, exactly like r > MAX_BESSEL_ORDER.
         let (m_cap, truncated) = if r > MAX_BESSEL_ORDER as f64 {
@@ -3274,10 +3314,10 @@ fn fallback_grid_size(
 /// [`fallback_grid_size`], clamped to [`FALLBACK_GRID_MAX`] = 2^20 points
 /// (beyond that the drive or truncation is pathological; accuracy degrades
 /// and a warn-once message is printed).  When the adaptive bandwidth
-/// estimate saturates at its 4096-order cap — the ladder reaches
-/// `MAX_BESSEL_ORDER` without decaying, which for a single mode starts
-/// around `R ≈ 3955` at the `1e-12` budget — sizing switches to a
-/// conservative analytic tail bound.
+/// estimate saturates at its [`MAX_BESSEL_ORDER`]-order cap — the ladder
+/// reaches the cap without decaying, which for a single mode starts around
+/// `R ≈ 32483` at the `1e-12` budget — sizing switches to a conservative
+/// analytic tail bound.
 /// The automatic grid uses the maximum size and prints a warn-once message;
 /// it can still be too small when the analytic requirement exceeds this cap.
 fn fallback_time_grid_coeffs(
@@ -3302,7 +3342,7 @@ fn fallback_time_grid_coeffs(
     if size.saturated && !saturated.swap(true, Ordering::Relaxed) {
         // Warn once that alias-freedom is no longer guaranteed.
         eprintln!(
-            "Floquet fallback bandwidth estimate saturated at 4096 Bessel \
+            "Floquet fallback bandwidth estimate saturated at {MAX_BESSEL_ORDER} Bessel \
              orders; using the maximum {FALLBACK_GRID_MAX}-point grid — \
              coefficients on this link may still be inaccurate for extreme \
              amplitudes"
@@ -3899,6 +3939,82 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn bessel_ladder_holds_machine_precision_across_the_closed_form_range() {
+        // The closed-form cap is two orders of magnitude above the convolution
+        // cap, so the ladder has to stay accurate there.  References come from a
+        // 60-digit Miller recurrence normalized by Σ_m J_m(R)² = 1, whose
+        // generator reproduces mpmath's own `besselj` to 1e-59 relative at
+        // R = 2048 and 4096 (where mpmath's series still converges).
+        let reference: [(f64, usize, f64); 21] = [
+            (4096.0, 0, 1.84512862999888826e-3),
+            (4096.0, 2048, 1.07157451300922933e-2),
+            (4096.0, 4096, 2.79567017949838674e-2),
+            (4096.0, 4097, 2.63531832981593467e-2),
+            (8192.0, 0, -4.13522621428857352e-3),
+            (8192.0, 1, -7.78564119591970000e-3),
+            (8192.0, 4096, -4.55870884789159186e-3),
+            (8192.0, 7372, 1.33484833425830847e-2),
+            (8192.0, 8191, 2.31997231698089813e-2),
+            (8192.0, 8192, 2.21892516034517713e-2),
+            (8192.0, 8193, 2.11787800370945647e-2),
+            (12000.0, 0, -7.16635491761340063e-4),
+            (12000.0, 1, -7.24834561689710610e-3),
+            (12000.0, 6000, 5.05249117141911858e-3),
+            (12000.0, 10800, 8.70171159659731581e-3),
+            (12000.0, 11999, 2.03214636355080677e-2),
+            (12000.0, 12000, 1.95379458204867872e-2),
+            (16384.0, 0, -6.12000513004155172e-3),
+            (16384.0, 8192, 1.45380086823188362e-3),
+            (16384.0, 14745, 8.84966808545540294e-3),
+            (16384.0, 16384, 1.76116215137440066e-2),
+        ];
+        for (r, m, expected) in reference {
+            let ladder = BesselLadder::new(r, m);
+            let got = ladder.j[m];
+            assert!(
+                (got - expected).abs() <= 1e-12 * expected.abs(),
+                "J_{m}({r}) = {got}, 60-digit reference {expected}"
+            );
+        }
+
+        // The same orders where mpmath's own `besselj` still converges, so the
+        // reference generator above is anchored to an independent implementation
+        // rather than only to itself.
+        let mpmath: [(f64, usize, f64); 8] = [
+            (2048.0, 0, 7.93646094171144602e-3),
+            (2048.0, 1024, -1.88980147990797168e-2),
+            (2048.0, 2048, 3.52232263308058999e-2),
+            (2048.0, 2049, 3.26790722294217559e-2),
+            (4096.0, 0, 1.84512862999888826e-3),
+            (4096.0, 2048, 1.07157451300922933e-2),
+            (4096.0, 4096, 2.79567017949838674e-2),
+            (4096.0, 4097, 2.63531832981593467e-2),
+        ];
+        for (r, m, expected) in mpmath {
+            let ladder = BesselLadder::new(r, m);
+            let got = ladder.j[m];
+            assert!(
+                (got - expected).abs() <= 1e-12 * expected.abs(),
+                "J_{m}({r}) = {got}, mpmath reference {expected}"
+            );
+        }
+
+        // The cap must be reachable: at the largest supported amplitude the
+        // adaptive tail still converges inside MAX_BESSEL_ORDER, otherwise every
+        // call at the cap would take the saturation error path instead.
+        for margin in [0_isize, 48] {
+            let (ladder, m_cap) = bessel_ladder_for_amplitude(
+                MAX_BESSEL_ARG_CLOSED_FORM,
+                1e-12,
+                margin,
+                MAX_BESSEL_ARG_CLOSED_FORM,
+            )
+            .unwrap();
+            assert!(ladder.decayed && m_cap as usize <= ladder.max_order());
+            assert!(ladder.max_order() < MAX_BESSEL_ORDER);
+        }
+    }
 
     #[test]
     fn bessel_ladder_survives_rescale_heavy_sweeps() {
@@ -3970,11 +4086,15 @@ mod tests {
 
     #[test]
     fn bessel_arg_cap_and_adaptive_cutoff_are_pinned() {
-        // The amplitude cap is inclusive and rejects the next float above it.
+        // The single-harmonic cap is inclusive and rejects the next float
+        // above it; it sits two orders of magnitude above the convolution cap.
         let d = array![1.0];
         let at_cap = FloquetDrive::with_modes(
             1.0,
-            vec![LightMode::new(1, array![Complex::new(MAX_BESSEL_ARG, 0.0)])],
+            vec![LightMode::new(
+                1,
+                array![Complex::new(MAX_BESSEL_ARG_CLOSED_FORM, 0.0)],
+            )],
         );
         assert!(bessel_peierls_coeffs(&d, &at_cap, -2, 2, 0).is_ok());
         let above_cap = FloquetDrive::with_modes(
@@ -3982,18 +4102,29 @@ mod tests {
             vec![LightMode::new(
                 1,
                 array![Complex::new(
-                    f64::from_bits(MAX_BESSEL_ARG.to_bits() + 1),
+                    f64::from_bits(MAX_BESSEL_ARG_CLOSED_FORM.to_bits() + 1),
                     0.0,
                 )],
             )],
         );
         assert!(bessel_peierls_coeffs(&d, &above_cap, -2, 2, 0).is_err());
 
+        // Two distinct harmonics take the convolution, which keeps the low cap
+        // even for an amplitude the closed form would handle.
+        let folded = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(MAX_BESSEL_ARG * 1.5, 0.0)]),
+                LightMode::new(2, array![Complex::new(1.0, 0.0)]),
+            ],
+        );
+        assert!(bessel_peierls_coeffs(&d, &folded, -2, 2, 0).is_err());
+
         // Cutoffs across the raised range, with and without the margin floor:
         // the returned order is the first one whose two-sided tail fits the
         // share, the ladder backs it, and the invariant the caller relies on
         // (`m_cap` strictly below the ladder's top) holds.
-        for r in [9.0_f64, 64.0, MAX_BESSEL_ARG] {
+        for r in [9.0_f64, 64.0, MAX_BESSEL_ARG, MAX_BESSEL_ARG_CLOSED_FORM] {
             for margin in [0_isize, 48] {
                 let (ladder, m_cap) = bessel_ladder_with_cutoff(r, 1e-12, margin);
                 let m = m_cap as usize;
@@ -4013,31 +4144,39 @@ mod tests {
     #[test]
     fn fallback_saturation_covers_the_undecayed_window() {
         // Just below MAX_BESSEL_ORDER the ladder's top order has not decayed, so
-        // its suffix sums stop at the cap and understate the truncation budget.
-        // Measured at r = 3955: the stored suffix says 7.4e-13 while the complete
-        // two-sided tail is 1.8e-12, against a 1e-12 share.  Sizing must
-        // therefore fall back to the conservative analytic bound and the maximum
-        // grid, exactly as for r > MAX_BESSEL_ORDER, instead of certifying a
-        // cutoff from the truncated sum.
-        let (ladder, m_cap) = bessel_ladder_with_cutoff(3955.0, 1e-12, 0);
-        assert!(!ladder.decayed, "r = 3955 must exhaust MAX_BESSEL_ORDER");
-        let truncated_budget = ladder.tail_after(m_cap as usize);
-        let complete_budget: f64 = 2.0
-            * ((m_cap as usize + 1)..=(m_cap as usize + 200))
-                .map(|k| bessel_j(k as isize, 3955.0).abs())
+        // its suffix sums stop at the cap and understate the truncation budget:
+        // the stored suffix can look converged while the true two-sided tail,
+        // which needs orders past the cap, does not.  Sizing must therefore fall
+        // back to the conservative analytic bound and the maximum grid, exactly
+        // as for r > MAX_BESSEL_ORDER, instead of certifying a cutoff from the
+        // truncated sum.
+        // r = 32483 sits on that knife edge for the current order cap: the scan
+        // finds a cutoff whose *stored* suffix looks converged (9.5e-13 <= 1e-12)
+        // while the complete two-sided tail, which needs orders past
+        // MAX_BESSEL_ORDER, is 1.9e-12 and breaks the budget.  Sizing must read
+        // `decayed == false` and take the conservative analytic bound with the
+        // maximum grid instead of certifying that cutoff.
+        let r_sat = 32_483.0;
+        let (ladder, m_cap) = bessel_ladder_with_cutoff(r_sat, 1e-12, 0);
+        assert!(!ladder.decayed, "r = {r_sat} must exhaust MAX_BESSEL_ORDER");
+        let m = m_cap as usize;
+        assert!(m < ladder.max_order(), "the cutoff must be a stored order");
+        let stored = ladder.tail_after(m);
+        assert!(
+            stored <= 1e-12,
+            "the stored suffix must look converged: {stored:e}"
+        );
+        let complete: f64 = 2.0
+            * ((m + 1)..=(m + 200))
+                .map(|k| bessel_j(k as isize, r_sat).abs())
                 .sum::<f64>();
         assert!(
-            truncated_budget <= 1e-12,
-            "the stored suffix is expected to look converged, got {truncated_budget}"
+            complete > 1e-12,
+            "the omitted orders must break the budget, got {complete:e}"
         );
-        assert!(
-            complete_budget > 1e-12,
-            "the omitted orders must break the 1e-12 budget, got {complete_budget}"
-        );
-
         let near_cap = FloquetDrive::with_modes(
             1.0,
-            vec![LightMode::new(1, array![Complex::new(3955.0, 0.0)])],
+            vec![LightMode::new(1, array![Complex::new(r_sat, 0.0)])],
         );
         let size = fallback_grid_size(&near_cap, &array![1.0, 0.0], -1, 1);
         assert!(size.saturated, "an undecayed ladder must saturate");
@@ -4355,12 +4494,27 @@ mod tests {
             );
         }
 
-        // Just past the cap the fast path must still refuse the drive.
+        // A single 200-amplitude mode is past the convolution cap but well
+        // inside the closed form’s, so it must be evaluated, not refused:
+        // that is the whole point of the split cap.
         let over = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(1, array![Complex::new(200.0, 0.0)])],
         );
-        assert!(bessel_peierls_coeffs(&d, &over, -2, 2, 6).is_err());
+        assert!(bessel_peierls_coeffs(&d, &over, -2, 2, 6).is_ok());
+        let single = bessel_peierls_coeffs(&d, &over, -2, 2, 6).unwrap();
+        assert!((single[2].re - bessel_j(0, 200.0)).abs() < 1e-14);
+
+        // The same amplitude with a second harmonic forces the convolution,
+        // which keeps the low cap and must refuse it.
+        let folded = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(200.0, 0.0)]),
+                LightMode::new(2, array![Complex::new(1.0, 0.0)]),
+            ],
+        );
+        assert!(bessel_peierls_coeffs(&d, &folded, -2, 2, 6).is_err());
     }
 
     #[test]
@@ -4474,13 +4628,13 @@ mod tests {
         let trunc = FloquetTruncation::new(0, 32);
 
         // The backend sums equal harmonics coherently before it checks the cap,
-        // so two modes at the cap sum to twice it: the call must be refused
-        // rather than silently aliased through a clamped fallback grid.
+        // so two modes at the closed-form cap sum to twice it: the call must be
+        // refused rather than silently aliased through a clamped fallback grid.
         let split = FloquetDrive::with_modes(
             1.0,
             vec![
-                LightMode::new(4096, array![Complex::new(MAX_BESSEL_ARG, 0.0)]),
-                LightMode::new(4096, array![Complex::new(MAX_BESSEL_ARG, 0.0)]),
+                LightMode::new(4096, array![Complex::new(MAX_BESSEL_ARG_CLOSED_FORM, 0.0)]),
+                LightMode::new(4096, array![Complex::new(MAX_BESSEL_ARG_CLOSED_FORM, 0.0)]),
             ],
         );
         assert!(model.floquet_model(&split, &trunc).is_err());
@@ -4492,16 +4646,22 @@ mod tests {
 
         // Exactly at the cap is still the ladder's range, and one float above it
         // is resolvable by the per-link fallback, so both must build and agree.
+        // The fallback grid is the accuracy-limiting side: its measured
+        // relative deviation here is 4.1e-12, so 1e-10 is a real bound rather
+        // than a formality.
         let at_cap = FloquetDrive::with_modes(
             1.0,
-            vec![LightMode::new(1, array![Complex::new(MAX_BESSEL_ARG, 0.0)])],
+            vec![LightMode::new(
+                1,
+                array![Complex::new(MAX_BESSEL_ARG_CLOSED_FORM, 0.0)],
+            )],
         );
         let above_cap = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(
                 1,
                 array![Complex::new(
-                    f64::from_bits(MAX_BESSEL_ARG.to_bits() + 1),
+                    f64::from_bits(MAX_BESSEL_ARG_CLOSED_FORM.to_bits() + 1),
                     0.0,
                 )],
             )],
@@ -4516,15 +4676,42 @@ mod tests {
             from_ladder
                 .iter()
                 .zip(&from_grid)
-                .all(|(a, b)| (a - b).norm() < 1e-12),
+                .all(|(a, b)| (a - b).norm() < 1e-10),
             "the two backends must agree across the cap boundary"
         );
 
+        // A mode at another harmonic sends the backend to the convolution even
+        // when the equal-harmonic pair cancels exactly.  Summing per harmonic
+        // instead would call this drive exact and let it through; the
+        // convolution operand is past its cap and the huge harmonic makes the
+        // per-link grid unresolvable, so the call must be refused.  The photon
+        // cutoff stays small on purpose: a wrong verdict here would otherwise
+        // build a multi-terabyte Sambe matrix instead of failing.
+        let cancelling = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(200.0, 0.0)]),
+                LightMode::new(100_000, array![Complex::new(1.0, 0.0)]),
+                LightMode::new(1, array![Complex::new(-200.0, 0.0)]),
+            ],
+        );
+        assert!(model.floquet_model(&cancelling, &trunc).is_err());
+        assert!(
+            model
+                .floquet_ham_onek(&k, &cancelling, &trunc, Gauge::Lattice)
+                .is_err()
+        );
+
         // The requested-bin range alone can exceed the fallback grid cap: with a
-        // huge photon cutoff an above-cap link cannot be resolved.
+        // huge photon cutoff, a link beyond the closed-form range cannot be
+        // resolved, and the call must be refused before the Sambe matrix is even
+        // allocated.
         let above = FloquetDrive::with_modes(
             1.0,
-            vec![LightMode::new(1, array![Complex::new(200.0, 0.0)])],
+            vec![LightMode::new(
+                1,
+                array![Complex::new(2.0 * MAX_BESSEL_ARG_CLOSED_FORM, 0.0)],
+            )],
         );
         assert!(
             model
@@ -5127,13 +5314,19 @@ mod tests {
             )
             .unwrap();
         assert!((h[[0, 0]].re + 2.0 * bessel_j(0, 4000.0)).abs() < 1e-10);
-        for (harmonic, amplitude) in [(1, FALLBACK_GRID_MAX as f64), (10000, 4000.0)] {
+        // Both cases need more orders than the per-link grid can resolve.  The
+        // second is written with two harmonics because a single one at R = 4000
+        // is now inside the closed-form range and would be exact.
+        for (harmonics, amplitude) in [
+            (vec![1_isize], FALLBACK_GRID_MAX as f64),
+            (vec![10000, 9999], 4000.0),
+        ] {
             let unresolved = FloquetDrive::with_modes(
                 1.0,
-                vec![LightMode::new(
-                    harmonic,
-                    array![Complex::new(amplitude, 0.0)],
-                )],
+                harmonics
+                    .into_iter()
+                    .map(|harmonic| LightMode::new(harmonic, array![Complex::new(amplitude, 0.0)]))
+                    .collect(),
             );
             assert!(
                 validate_sambe_allocation(
@@ -5333,7 +5526,8 @@ mod tests {
         assert!(s.clamped);
         assert!(!s.saturated);
 
-        // Saturation: R = 4000 needs the analytic cutoff beyond order 4096.
+        // Saturation: R past MAX_BESSEL_ORDER cannot be certified by the ladder,
+        // so sizing switches to the conservative analytic cutoff.
         let sat = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(
@@ -5341,7 +5535,7 @@ mod tests {
                 array![Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
             )],
         );
-        let d_sat = array![4000.0, 1.0]; // R = 4000: past MAX_BESSEL_ORDER's adaptive reach
+        let d_sat = array![4.0 * MAX_BESSEL_ORDER as f64, 1.0];
         let s = fallback_grid_size(&sat, &d_sat, -1, 1);
         assert_eq!(s.n_req, 1 << 20);
         assert!(!s.clamped);
@@ -5350,16 +5544,15 @@ mod tests {
 
     #[test]
     fn harmonic_cache_bessel_fallback_saturation_matches_oracle() {
-        // R = 8900 saturates the 4096-order adaptive cutoff; the fallback
-        // must detect the truncated bandwidth estimate and use the maximum
-        // grid so its coefficients match a 65536-point oracle (which
-        // resolves the true band ≈ 9100).  A broken saturation detector
-        // leaves the bandwidth-only 8196-point grid, whose Nyquist
-        // (4098) aliases the true band and fails this test.
+        // R = 40000 is past MAX_BESSEL_ORDER, so the adaptive cutoff cannot be
+        // certified and the fallback must switch to the conservative analytic
+        // bound with the maximum grid.  A broken saturation detector would size
+        // the grid from a truncated bandwidth and alias the true band, which the
+        // 131072-point oracle resolves.
         let lat = array![[1.0, 0.0], [0.0, 1.0]];
-        let orb = array![[0.0, 0.0], [8900.0, 0.0]];
+        let orb = array![[0.0, 0.0], [40_000.0, 0.0]];
         let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
-        model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (8900, 1), R = 8900 > 8
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None); // d = (40000, 1), R = 40000
         let drive = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(
@@ -5371,7 +5564,7 @@ mod tests {
             &drive,
             -3,
             3,
-            &PeierlsFourierMethod::TimeGrid { n_time: 65536 },
+            &PeierlsFourierMethod::TimeGrid { n_time: 131_072 },
         );
         let cache = model.floquet_harmonic_cache(
             &drive,
@@ -7261,17 +7454,18 @@ mod tests {
 
     #[test]
     fn bessel_coeffs_reject_large_amplitudes_and_bad_ranges() {
-        // R > MAX_BESSEL_ARG must error (the caller falls back to the time
-        // grid) instead of silently reporting a truncated order range.
-        let d = array![200.0];
+        // R above the single-harmonic cap must error (the caller falls back to
+        // the time grid) instead of silently reporting a truncated order range.
         let drive =
             FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(1.0, 0.0)])]);
+        let d = array![2.0 * MAX_BESSEL_ARG_CLOSED_FORM];
         assert!(bessel_peierls_coeffs(&d, &drive, -4, 4, 6).is_err());
 
-        // Just inside the cap the ladder must still resolve the coefficients:
-        // R = 60 and R = 128 need orders past the removed 64-order ceiling.
-        let grid = FloquetTimeGrid::new(&drive, 4096, -4, 4, 1);
-        for r in [60.0, MAX_BESSEL_ARG] {
+        // Inside the cap the ladder must still resolve the coefficients against
+        // an alias-free grid: the oracle needs at least 2·R samples, so it is
+        // sized for the largest amplitude in the loop.
+        let grid = FloquetTimeGrid::new(&drive, 65536, -4, 4, 1);
+        for r in [60.0, MAX_BESSEL_ARG, MAX_BESSEL_ARG_CLOSED_FORM] {
             let d_allowed = array![r];
             let allowed = bessel_peierls_coeffs(&d_allowed, &drive, -4, 4, 6).unwrap();
             let reference = peierls_fourier_coeffs(&d_allowed, -4, 4, &drive, &grid);

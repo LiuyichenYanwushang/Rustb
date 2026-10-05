@@ -675,7 +675,9 @@ C_n(d) = (1/T) ∫_0^T dt e^{inΩ₀t} exp[−i a(t)·d]
 
 Main path: the generalized Bessel backend (exact, no `n_time`); the uniform
 time-grid DFT is retained per link as the fallback for
-`R_α = |a_α·d| > MAX_BESSEL_ARG` (128) and as the crate-internal cross-validation
+`R_α = |a_α·d| > MAX_BESSEL_ARG` for a convolution operand, or the coherent sum
+above `MAX_BESSEL_ARG_CLOSED_FORM` for the single-harmonic closed form, and as
+the crate-internal cross-validation
 reference.  Each link's `J_0..J_M` and every truncation tail come from one
 backward-recurrence ladder per mode, so the coefficient cost is linear in the
 order range rather than quadratic.
@@ -695,7 +697,7 @@ Quasienergies can be folded to `[−Ω₀/2, Ω₀/2)` via `fold_quasienergy`.
 ### Real-space Bessel backend (main path of `floquet_effective_model`)
 
 van Vleck through `O(W⁻²)`, with `W = omega0_ev = ħΩ₀`, entirely in real space — no `k_mesh`, no `n_time`
-(only `R > MAX_BESSEL_ARG` fallback links touch the time grid):
+(only fallback links beyond the branch's cap touch the time grid):
 
 ```math
 T_eff(R) = T_0(R) + Σ_{n=1}^{harmonic_max} comm_n(R) / (n W),
@@ -783,8 +785,8 @@ photon truncation.  Both Floquet paths now share the grid-free Bessel backend,
 so no entry point takes a sampling count: `FloquetTruncation::n_time` is
 retained for the crate-internal time-grid reference
 (`peierls_fourier_coeffs`/`FloquetTimeGrid`) and the tests that cross-validate
-against it, and changing it cannot change a Floquet result.  Links beyond
-`MAX_BESSEL_ARG` fall back to a per-link, self-sized time grid inside the
+against it, and changing it cannot change a Floquet result.  Links beyond the
+relevant branch cap fall back to a per-link, self-sized time grid inside the
 harmonic cache; a drive whose link needs more than `FALLBACK_GRID_MAX` samples
 is rejected by `validate_sambe_allocation` instead of being silently aliased.
 
