@@ -685,6 +685,36 @@ crate-internal cross-validation reference.  Each link's `J_0..J_M` and every
 truncation tail come from one backward-recurrence ladder per mode, so the
 coefficient cost is linear in the order range rather than quadratic.
 
+### Bessel coefficient cost model (measured, per link)
+
+`R_α = |a_α·d|`; `N_mode` is the drive's mode count; `M_α` is the adaptive cutoff
+— at least `⌈R_α⌉ + cutoff_margin`, raised until the two-sided tail
+`2·Σ_{m>M_α}|J_m|` fits a `1e-12/N_mode` share, so `M_α ≈ R_α`; `K` is the
+requested harmonic range; `L_α` is a mode's temporal harmonic.
+
+| Drive shape | Cost | Caps |
+|---|---|---|
+| one nonzero harmonic | `O(R + K)` (one ladder + lookups) | `MAX_BESSEL_ARG_CLOSED_FORM` = 16384 |
+| two carriers | `O(K·(2·min(M₁,M₂)+1))`, no window | same cap, plus `MAX_BESSEL_ENUM_WORK` = 2^22 iterations |
+| ≥ 3 carriers | `O(Σ(2M_α+1)·W)`, `W = K + 2·Σ|L_α|M_α` | `MAX_BESSEL_ARG` = 128 per operand, `MAX_BESSEL_WINDOW` = 2^22 |
+| past a cap | per-link time-grid DFT `O(N·(N_mode·DIM + K))`: one complex exponential per mode, direction and sample | `N ≤ FALLBACK_GRID_MAX` = 2^20, else refused |
+
+A single ladder sweep (`max(⌈R⌉, requested) + O(√R)` orders) yields `J_0..J_M`
+and every truncation tail; no order is ever evaluated in isolation.  Measured
+with `n_max = 2`, `floquet_ham_onek` costs R = 128 → 15 µs, R = 4000 → 72 µs,
+R = 16000 → 286 µs, against 2121 µs and 8357 µs through the fallback grid —
+whose cost is one complex exponential per mode, direction and sample, not a
+multiply count.  Two carriers cost 9-15 µs at R ≤ 400 where the fold costs ~0.9 ms;
+≥ 3 carriers still fold, which is the remaining slow path.
+
+`validate_sambe_allocation` mirrors the backend's branch conditions exactly —
+carrier counts, per-branch caps, the enumeration budget and the convolution
+window — and refuses a drive whose link the fallback grid cannot resolve,
+instead of returning silently aliased coefficients.  When a cap, a budget or a
+branch condition changes, both sides must change together, and the tests that
+pin the boundary (`sambe_validation_mirrors_the_backend_limits`,
+`validator_scan_bound_dominates_the_true_cutoff`) must be refreshed.
+
 ### Sambe Hamiltonian
 
 ```math

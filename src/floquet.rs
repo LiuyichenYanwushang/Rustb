@@ -101,6 +101,35 @@
 //! reference the tests cross-validate against lives in the test-only
 //! `crate::floquet_test` module, so no entry point depends on it.
 //!
+//! # Cost of one link
+//!
+//! With `R_α = |a_α·d|`, `N_mode` the number of drive modes, `K` the requested
+//! harmonic range, `L_α` the temporal harmonic of mode `α`, and `M_α` the
+//! adaptive order cutoff of mode `α` — at least `⌈R_α⌉ + cutoff_margin`, raised
+//! until the two-sided Bessel tail `2·Σ_{m>M_α}|J_m|` fits a `1e-12/N_mode`
+//! share, so `M_α ≈ R_α`:
+//!
+//! | Drive shape | Cost | Amplitude cap |
+//! |---|---|---|
+//! | one nonzero harmonic | `O(R + K)`: one ladder, then table lookups | `MAX_BESSEL_ARG_CLOSED_FORM` |
+//! | two carriers | `O(K·(2·min(M₁,M₂)+1))`, no working window | `MAX_BESSEL_ARG_CLOSED_FORM`, and `MAX_BESSEL_ENUM_WORK` iterations |
+//! | three or more carriers | `O(Σ_α(2M_α+1)·W)` with window `W = K + 2·Σ_α|L_α|M_α` | `MAX_BESSEL_ARG` per operand, `MAX_BESSEL_WINDOW` window |
+//! | beyond a cap | per-link time-grid DFT, `O(N·(N_mode·DIM + K))` — it evaluates one complex exponential per mode, direction and sample | `N ≤ FALLBACK_GRID_MAX`, else the call is refused |
+//!
+//! Every `M_α` sweep comes from one backward recurrence whose length is
+//! `max(⌈R⌉, requested) + O(√R)`; the ladder evaluates no order in isolation,
+//! so the whole `J_0..J_M` range and every truncation tail cost one sweep and
+//! one suffix sum.
+//!
+//! Because the closed form is linear in `R` instead of in `R·K`, it reaches two
+//! orders of magnitude further than the convolution.  Measured per link with the
+//! photon cutoff `n_max = 2`, `floquet_ham_onek` takes R = 128 → 15 µs,
+//! R = 4000 → 72 µs and R = 16000 → 286 µs, against 2121 µs and 8357 µs for the
+//! same links through the fallback grid, whose cost is dominated by one complex
+//! exponential per (harmonic, sample) rather than by its multiply count.  Two
+//! carriers cost 9-15 µs per link at R ≤ 400, where the fold they replace costs
+//! ~0.9 ms; three or more carriers still fold, which is the remaining slow path.
+//!
 //! The reciprocal-space Fourier block is
 //!
 //! ```math

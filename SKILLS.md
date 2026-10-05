@@ -925,6 +925,17 @@ harmonic range.
 full Sambe APIs; the coefficients are grid-free. To preserve an old effective-model call's implicit harmonic
 range during migration, pass `.with_harmonic_max(2 * old_n_max)` explicitly.
 
+Cost of one link, with `R = |a·d|` and `K` the requested harmonic range: a
+single nonzero harmonic is `O(R + K)` and exact up to `R = 16384`; two carriers
+enumerate the resonance sum in `O(K·min(M))` and reach the same amplitude;
+three or more fold one-mode convolutions, which is exact only up to `R = 128`
+and is the slow case (~1 ms per link at `R = 60`).  A link past a cap is
+evaluated by a self-sized per-link time-grid DFT instead, and a drive whose
+link needs more than `2^20` samples is rejected rather than silently aliased.
+In practice: a single-colour or two-colour drive is effectively free at any
+realistic field strength, and only three-plus commensurate colours over a
+large bond can reach the fallback.
+
 For multiple mutually incoherent modes,
 `floquet_effective_mode_resolved_model` computes
 `H0 + sum_alpha (H_eff[a_alpha] - H0)`.  It never combines the modes inside one
