@@ -762,7 +762,7 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 |------|---------|
 | `LightMode` | One harmonic component: `LightMode::new(harmonic, a_complex)` |
 | `FloquetDrive` | `omega0_ev` + `Vec<LightMode>`; builder: `new()`, `with_modes()`, `add_mode()` |
-| `FloquetTruncation` | Full Sambe calculation only: photon cutoff `n_max` and time-grid `n_time`; `n_sector()` = `2n_max+1` |
+| `FloquetTruncation` | Full Sambe calculation only: photon cutoff `n_max` (plus the vestigial `n_time`, kept for the time-grid reference backend); `n_sector()` = `2n_max+1` |
 | `IncidentBasis` | Transverse polarization basis from incident direction |
 | `FloquetEffectiveOptions` | van Vleck controls: concrete `order = 1`, `harmonic_max = 2` defaults; `with_order(n)`, `with_harmonic_max(n)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
 | `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
@@ -779,12 +779,18 @@ to `floquet_effective_q_model`. They do not take `FloquetTruncation`.
 independent of Sambe photon sectors. Migrate calls that relied on the old
 implicit cutoff using `.with_harmonic_max(2 * old_n_max)`.
 The test-only legacy DFT reference takes an explicit `n_time` instead of a
-photon truncation. Internally, only the `TimeGrid { n_time }` Fourier backend
-accepts a sampling count; the Bessel backend sizes its own fallback grid.
+photon truncation.  Both Floquet paths now share the grid-free Bessel backend,
+so no entry point takes a sampling count: `FloquetTruncation::n_time` is
+retained for the crate-internal time-grid reference
+(`peierls_fourier_coeffs`/`FloquetTimeGrid`) and the tests that cross-validate
+against it, and changing it cannot change a Floquet result.  Links beyond
+`MAX_BESSEL_ARG` fall back to a per-link, self-sized time grid inside the
+harmonic cache; a drive whose link needs more than `FALLBACK_GRID_MAX` samples
+is rejected by `validate_sambe_allocation` instead of being silently aliased.
 
 | Path | Returns | Basis size | When |
 |------|---------|------------|------|
-| `floquet_model` | Enlarged `Model` | `nsta·(2N+1)` | Exact, any Ω |
+| `floquet_model` | Enlarged `Model` | `nsta·(2N+1)` | Exact, any Ω; same Bessel backend as the effective-model path |
 | `floquet_effective_model` | Same-size `Model` | `nsta` | Ω ≫ bandwidth; real-space Bessel backend, no `k_mesh` |
 | `floquet_effective_q_model` | Same-size `Model` | `nsta` | Coherent weak-field, long-wavelength `O(A^2 q/W)` correction |
 | `floquet_effective_model_legacy` | Same-size `Model` | `nsta` | `pub(crate)` k-space reference: cross-validation, custom `target_hamR` |

@@ -90,14 +90,16 @@
 //! \exp\left[-i\,\mathbf a(t)\cdot\mathbf d\right].
 //! ```
 //!
-//! Two backends evaluate `C_n`.  The Sambe and time-grid paths
-//! ([`Floquet::floquet_model`], `PeierlsFourierMethod::TimeGrid`) integrate
-//! the uniform time grid over one period — deliberately more general than a
-//! Bessel-function formula, handling arbitrary complex polarization and
-//! arbitrary commensurate harmonic mixing.  The van Vleck effective-model
-//! path (`Model::floquet_effective_model`, Bessel backend) uses the
-//! generalized Bessel expansion per link, falling back to a per-link
-//! time-grid DFT when a mode amplitude exceeds the Bessel range.
+//! Both Floquet paths evaluate `C_n` with the same backend: the generalized
+//! Bessel expansion per link ([`PeierlsFourierMethod::Bessel`]), which is
+//! exact, needs no sampling count, and handles arbitrary complex polarization
+//! and arbitrary commensurate harmonic mixing.  A drive with one nonzero
+//! temporal harmonic collapses to a single Bessel term per requested order; a
+//! general drive evaluates the multi-index resonance sum as one-mode
+//! convolutions.  Links beyond the backend's exact range fall back to a
+//! per-link time-grid DFT, and that time grid is also the crate-internal
+//! reference implementation the tests cross-validate the Bessel results
+//! against ([`peierls_fourier_coeffs`], [`FloquetTimeGrid`]).
 //!
 //! The reciprocal-space Fourier block is
 //!
@@ -343,25 +345,28 @@ impl FloquetDrive {
 /// N_{\mathrm{Sambe}} = N_{\mathrm{state}}(2N+1).
 /// $$
 ///
-/// `n_time` is the number of samples per drive period used by the Sambe and
-/// time-grid paths for the discrete Fourier transform of the Peierls
-/// coefficients `C_n(d)`. Sambe entry points reject grids below a conservative
-/// per-link spectral estimate (Bessel-tail budget `1e-12`). Increase it when
-/// the drive amplitude or maximum harmonic is large.
+/// Both Floquet paths evaluate the Peierls coefficients `C_n(d)` with the
+/// exact, grid-free Bessel backend, so no entry point takes a sampling count
+/// any more.  `n_time` is retained for the time-grid reference implementation
+/// (`peierls_fourier_coeffs`) that the tests cross-validate against, and for
+/// nothing else: changing it does not change any Floquet result.
+///
+/// Links beyond the Bessel backend's exact range (`MAX_BESSEL_ARG`) fall back
+/// to a per-link time-grid DFT whose resolution is sized from the link's own
+/// spectral bandwidth and the requested harmonic range, clamped to `2^20`
+/// points with a warn-once message; a drive whose link needs more than that is
+/// rejected up front instead of being silently aliased.
 ///
 /// The van Vleck effective-model path uses [`FloquetEffectiveOptions`]
-/// instead of this truncation. Links outside the Bessel range fall back to a per-link
-/// time-grid DFT whose resolution is sized from the link's own spectral
-/// bandwidth and the requested harmonic range, clamped to `2^20` points
-/// with a warn-once message.
+/// instead of this truncation.
 #[derive(Clone, Copy, Debug)]
 pub struct FloquetTruncation {
     /// Photon cutoff `N`.
     pub n_max: isize,
     /// Number of time samples in one drive period.
     ///
-    /// Used by the Sambe path. The effective-model path sizes its own
-    /// per-link fallback grid from the drive and requested harmonic range.
+    /// Retained for the time-grid reference implementation; the Floquet
+    /// entry points themselves are grid-free and ignore it.
     pub n_time: usize,
 }
 
@@ -938,8 +943,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 /// Backend selection for the Peierls Fourier coefficients `C_n(d)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PeierlsFourierMethod {
-    /// Numerical DFT on a uniform time grid. The reference implementation: handles arbitrary drives,
-    /// including non-commensurate content and large amplitudes.
+    /// Numerical DFT on a uniform time grid.  The per-link fallback for links
+    /// beyond [`MAX_BESSEL_ARG`], and the crate-internal reference the tests
+    /// cross-validate the Bessel backend against.
     TimeGrid { n_time: usize },
     /// Generalized Bessel expansion via sequential one-mode convolutions.
     /// Exact and independent of `n_time`, but restricted to per-mode
@@ -1141,7 +1147,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
     ) -> Result<Self::FloquetModel> {
         validate_floquet_drive::<DIM>(drive)?;
         validate_floquet_truncation(trunc)?;
-        validate_sambe_allocation_and_grid(self, drive, trunc)?;
+        validate_sambe_allocation(self, drive, trunc)?;
 
         let nsta = self.nsta();
         let norb = self.norb();
@@ -1152,13 +1158,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
         let harmonic_min = -2 * trunc.n_max;
         let harmonic_max = 2 * trunc.n_max;
+        // The Sambe path shares the exact, grid-free Bessel backend with the
+        // effective-model path; links beyond MAX_BESSEL_ARG fall back to a
+        // self-sized per-link grid inside the cache.
         let harmonic_cache = self.floquet_harmonic_cache(
             drive,
             harmonic_min,
             harmonic_max,
-            &PeierlsFourierMethod::TimeGrid {
-                n_time: trunc.n_time,
-            },
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
         );
 
         let mut orb = Array2::<f64>::zeros((new_norb, DIM));
@@ -1254,7 +1261,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         gauge: Gauge,
     ) -> Result<Array2<Complex<f64>>> {
         validate_floquet_input(self, kvec, drive, trunc)?;
-        validate_sambe_allocation_and_grid(self, drive, trunc)?;
+        validate_sambe_allocation(self, drive, trunc)?;
 
         let nsta = self.nsta();
         let norb = self.norb();
@@ -1269,9 +1276,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
             drive,
             harmonic_min,
             harmonic_max,
-            &PeierlsFourierMethod::TimeGrid {
-                n_time: trunc.n_time,
-            },
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
         );
         let harmonics: Vec<Array2<Complex<f64>>> = (harmonic_min..=harmonic_max)
             .map(|n| self.floquet_cached_harmonic_onek(kvec, n, gauge, &harmonic_cache))
@@ -2220,9 +2225,12 @@ fn validate_floquet_truncation(trunc: &FloquetTruncation) -> Result<()> {
     validate_floquet_time_samples(trunc.n_time)
 }
 
-// Check every Sambe array extent before allocating or constructing a time
-// grid. Reuse the existing per-link bandwidth estimate used by Bessel fallback.
-fn validate_sambe_allocation_and_grid<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+// Check every Sambe array extent before allocating, and check that each link
+// is either exactly representable by the Bessel ladder or resolvable by the
+// per-link time grid it falls back to.  The Sambe path takes no time-grid
+// parameter any more, so there is nothing to compare a sampling count against;
+// what remains is the "never return silently aliased coefficients" guarantee.
+fn validate_sambe_allocation<const SPIN: bool, const DIM: usize, R: RMatrixData>(
     model: &Model<SPIN, DIM, R>,
     drive: &FloquetDrive,
     trunc: &FloquetTruncation,
@@ -2242,8 +2250,6 @@ fn validate_sambe_allocation_and_grid<const SPIN: bool, const DIM: usize, R: RMa
     for shape in [
         vec![n_r, total, total],
         vec![harmonic_count, n_r, model.nsta(), model.nsta()],
-        vec![harmonic_count, trunc.n_time],
-        vec![trunc.n_time, DIM],
         vec![total, DIM],
     ] {
         shape
@@ -2280,25 +2286,81 @@ fn validate_sambe_allocation_and_grid<const SPIN: bool, const DIM: usize, R: RMa
                 "Floquet link displacement is not finite".into(),
             ));
         }
+        // Mirror the backend's own applicability test.  It groups modes
+        // differently depending on how many distinct harmonics survive:
+        //
+        // * a drive whose nonzero projections collapse to one coherent harmonic
+        //   takes the closed form.  Its only precondition is that the *summed*
+        //   projection fits the cap, and it allocates no convolution window at
+        //   all, so no window bound applies;
+        // * two or more such harmonics take the convolution, whose mode loop
+        //   checks every remaining mode separately, DC included, and whose work
+        //   window `span + 2·Σ|l|·M` is allocated and must therefore be bounded.
+        //
+        // Checking per mode in both cases would let a split amplitude (a + a)
+        // slip past the cap; checking the sum in both would reject drives the
+        // convolution handles.  Modes whose projection is exactly zero are
+        // dropped first, as the backend drops them.
+        let mut sums = std::collections::BTreeMap::<isize, Complex<f64>>::new();
+        let mut per_mode = Vec::<(isize, f64)>::new();
         for mode in &drive.modes {
             let phase: Complex<f64> = mode.a_complex.iter().zip(&d).map(|(a, x)| a * x).sum();
-            if !phase.norm().is_finite() {
+            let magnitude = phase.norm();
+            if !magnitude.is_finite() {
                 return Err(TbError::Other(
                     "Floquet link phase amplitude is not finite".into(),
                 ));
+            }
+            if phase.re == 0.0 && phase.im == 0.0 {
+                continue;
+            }
+            per_mode.push((mode.harmonic, magnitude));
+            if mode.harmonic != 0 {
+                sums.entry(mode.harmonic)
+                    .and_modify(|total| *total += phase)
+                    .or_insert(phase);
             }
         }
         let key: Vec<_> = d.iter().map(|x| x.to_bits()).collect();
         if !checked.insert(key) {
             continue;
         }
+        // Coherent sums that cancel exactly are inactive in the backend too.
+        let coherent: Vec<Complex<f64>> = sums
+            .into_values()
+            .filter(|z| z.re != 0.0 || z.im != 0.0)
+            .collect();
+        let span = (4 * trunc.n_max + 1) as usize;
+        let exact = if coherent.len() <= 1 {
+            coherent.iter().all(|z| z.norm() <= MAX_BESSEL_ARG)
+        } else {
+            // `M_α` stays within `⌈r_α⌉ + 48` for every attainable error share
+            // (`1e-12` split over the drive's modes), so `+64` is a safe order
+            // estimate; every step saturates.  `l = 0` contributes no window.
+            per_mode.iter().all(|(_, r)| *r <= MAX_BESSEL_ARG)
+                && per_mode.iter().fold(span, |acc, (harmonic, r)| {
+                    acc.saturating_add(
+                        2_usize
+                            .saturating_mul(harmonic.unsigned_abs())
+                            .saturating_mul(r.ceil() as usize + 64),
+                    )
+                }) <= MAX_BESSEL_WINDOW
+        };
+        if exact {
+            continue;
+        }
+        // Otherwise the per-link grid must resolve the link's spectrum; refuse
+        // the whole call rather than return coefficients that alias.  The
+        // requested range counts too: an n-point DFT only returns true `C_n`
+        // for `|n| < n/2`.
         let grid = fallback_grid_size(drive, &d, -harmonic_max, harmonic_max);
-        if trunc.n_time < grid.required.max(grid.request_range) {
+        let needed = grid.required.max(grid.request_range);
+        if needed > FALLBACK_GRID_MAX {
             return Err(TbError::Other(format!(
-                "Floquet n_time={} does not resolve the link spectrum: need at least {} samples (bandwidth estimate saturated: {})",
-                trunc.n_time,
-                grid.required.max(grid.request_range),
-                grid.saturated,
+                "Floquet drive needs {} samples on a link the Bessel backend cannot \
+                 represent exactly (cap |a·d| ≤ {MAX_BESSEL_ARG}, window ≤ {MAX_BESSEL_WINDOW}); \
+                 the per-link grid cap is {FALLBACK_GRID_MAX}",
+                needed,
             )));
         }
     }
@@ -2539,6 +2601,13 @@ const MAX_BESSEL_ARG: f64 = 128.0;
 /// exceeds its error share here means the amplitude is beyond practical use;
 /// the fallback sizing then switches to its conservative analytic bound.
 const MAX_BESSEL_ORDER: usize = 4096;
+
+/// Cap on the one-mode convolution window, `harmonic span + 2·Σ_α|l_α|M_α`.
+/// The window is allocated as two `Complex<f64>` vectors, so an unguarded
+/// high-harmonic drive would abort on allocation instead of returning an error;
+/// at this size the pair costs ~64 MB, well above any useful drive (the window
+/// is `O(4·n_max + Σ|l_α|·r_α)`).
+const MAX_BESSEL_WINDOW: usize = 1 << 22;
 
 /// Magnitudes below this are treated as decayed; the ladder extends until its
 /// top order is below the floor, which is what makes every suffix tail a
@@ -3059,6 +3128,12 @@ pub(crate) fn bessel_peierls_coeffs(
     let work_len = usize::try_from(work_span).map_err(|_| {
         TbError::Other("bessel_peierls_coeffs: working window too large".to_string())
     })? + 1;
+    if work_len > MAX_BESSEL_WINDOW {
+        return Err(TbError::Other(format!(
+            "bessel_peierls_coeffs: the one-mode convolution window needs {work_len} entries, \
+             above the {MAX_BESSEL_WINDOW} cap; lower the drive harmonics or the amplitudes"
+        )));
+    }
 
     let mut sequence = vec![Complex::new(0.0, 0.0); work_len];
     if (0_isize..work_len as isize).contains(&(0 - work_min)) {
@@ -4456,6 +4531,147 @@ mod tests {
     }
 
     #[test]
+    fn sambe_validation_mirrors_the_backend_limits() {
+        let model = chain_model();
+        let k = array![0.21];
+        let trunc = FloquetTruncation::new(0, 32);
+
+        // The backend sums equal harmonics coherently before it checks the cap,
+        // so two modes at the cap sum to twice it: the call must be refused
+        // rather than silently aliased through a clamped fallback grid.
+        let split = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(4096, array![Complex::new(MAX_BESSEL_ARG, 0.0)]),
+                LightMode::new(4096, array![Complex::new(MAX_BESSEL_ARG, 0.0)]),
+            ],
+        );
+        assert!(model.floquet_model(&split, &trunc).is_err());
+        assert!(
+            model
+                .floquet_ham_onek(&k, &split, &trunc, Gauge::Lattice)
+                .is_err()
+        );
+
+        // Exactly at the cap is still the ladder's range, and one float above it
+        // is resolvable by the per-link fallback, so both must build and agree.
+        let at_cap = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(1, array![Complex::new(MAX_BESSEL_ARG, 0.0)])],
+        );
+        let above_cap = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(
+                    f64::from_bits(MAX_BESSEL_ARG.to_bits() + 1),
+                    0.0,
+                )],
+            )],
+        );
+        let from_ladder = model
+            .floquet_ham_onek(&k, &at_cap, &trunc, Gauge::Lattice)
+            .unwrap();
+        let from_grid = model
+            .floquet_ham_onek(&k, &above_cap, &trunc, Gauge::Lattice)
+            .unwrap();
+        assert!(
+            from_ladder
+                .iter()
+                .zip(&from_grid)
+                .all(|(a, b)| (a - b).norm() < 1e-12),
+            "the two backends must agree across the cap boundary"
+        );
+
+        // The requested-bin range alone can exceed the fallback grid cap: with a
+        // huge photon cutoff an above-cap link cannot be resolved.
+        let above = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(1, array![Complex::new(200.0, 0.0)])],
+        );
+        assert!(
+            model
+                .floquet_model(&above, &FloquetTruncation::new(300_000, 32))
+                .is_err()
+        );
+
+        // A single coherent harmonic needs no convolution window at all, so even
+        // an enormous harmonic is fine: only the closed form runs.
+        let high_harmonic = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                20_000,
+                array![Complex::new(MAX_BESSEL_ARG, 0.0)],
+            )],
+        );
+        assert!(model.floquet_model(&high_harmonic, &trunc).is_ok());
+        assert!(bessel_peierls_coeffs(&array![1.0], &high_harmonic, 0, 0, 6).is_ok());
+
+        // Tiny amplitudes at enormous distinct harmonics stay inside the cap on
+        // every mode, but the convolution window is `Σ|l|·M` wide: it must be
+        // refused, not allocated.
+        let wide = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1_000_000_000, array![Complex::new(1e-6, 0.0)]),
+                LightMode::new(1_000_000_001, array![Complex::new(1e-6, 0.0)]),
+            ],
+        );
+        assert!(model.floquet_model(&wide, &trunc).is_err());
+        assert!(bessel_peierls_coeffs(&array![1.0], &wide, -2, 2, 6).is_err());
+    }
+
+    #[test]
+    fn harmonic_cache_bessel_matches_time_grid_at_sambe_range() {
+        // The Sambe path now shares the Bessel backend with the effective-model
+        // path.  Compare the two backends over a full Sambe harmonic range for a
+        // multi-harmonic drive, i.e. the case that takes the convolution.
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let orb = array![[0.0, 0.0], [0.3, 0.0]];
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        model.add_hop(-1.0, 0, 0, &array![1, 0], None);
+        model.add_hop(-0.5, 0, 1, &array![0, 1], None);
+        let drive = FloquetDrive::with_modes(
+            0.8,
+            vec![
+                LightMode::new(1, array![Complex::new(0.2, 0.1), Complex::new(0.0, 0.15)]),
+                LightMode::new(
+                    2,
+                    array![Complex::new(0.05, -0.05), Complex::new(0.02, 0.0)],
+                ),
+            ],
+        );
+        let n_max = 2;
+        let time_grid = model.floquet_harmonic_cache(
+            &drive,
+            -2 * n_max,
+            2 * n_max,
+            &PeierlsFourierMethod::TimeGrid { n_time: 4096 },
+        );
+        let bessel = model.floquet_harmonic_cache(
+            &drive,
+            -2 * n_max,
+            2 * n_max,
+            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+        );
+        for (a, b) in time_grid.blocks.iter().zip(bessel.blocks.iter()) {
+            assert!((a - b).norm() < 1e-10, "Sambe-range Bessel {b} vs grid {a}");
+        }
+        // And the Sambe entry point over the same drive is Hermitian.
+        let ham = model
+            .floquet_ham_onek(
+                &array![0.21, 0.0],
+                &drive,
+                &FloquetTruncation::new(n_max as isize, 32),
+                Gauge::Lattice,
+            )
+            .unwrap();
+        for ((i, j), value) in ham.indexed_iter() {
+            assert!((*value - ham[[j, i]].conj()).norm() < 1e-12);
+        }
+    }
+
+    #[test]
     fn harmonic_cache_bessel_falls_back_for_large_amplitudes() {
         // |a·d| > MAX_BESSEL_ARG must silently fall back to the time grid per
         // link, so the Bessel-method cache still matches the time-grid cache.
@@ -4740,7 +4956,7 @@ mod tests {
     }
 
     #[test]
-    fn sambe_rejects_overflowing_cutoffs_and_aliased_time_grids() {
+    fn sambe_rejects_overflowing_cutoffs_and_is_grid_free() {
         let model = chain_model();
         let k = array![0.2];
         let static_drive = FloquetDrive::new(1.0);
@@ -4757,26 +4973,27 @@ mod tests {
             assert!(FloquetTruncation::new(n, 64).n_sector().is_err());
             assert!(FloquetTruncation::new(n, 64).sectors().is_err());
         }
-        assert!(
-            model
-                .floquet_model(&static_drive, &FloquetTruncation::new(1, usize::MAX))
-                .is_err()
-        );
+        // The Sambe backend is grid-free: no sampling count can alias it, so
+        // even a degenerate `n_time` is accepted and changes nothing.
         let drive = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(100, array![Complex::new(50.0, 0.0)])],
         );
-        let coarse = FloquetTruncation::new(4, 512);
-        assert!(model.floquet_model(&drive, &coarse).is_err());
-        assert!(
-            model
-                .floquet_ham_onek(&k, &drive, &coarse, Gauge::Atom)
-                .is_err()
-        );
+        let coarse = FloquetTruncation::new(4, 1);
         let resolved = FloquetTruncation::new(4, 65536);
+        let from_coarse = model
+            .floquet_ham_onek(&k, &drive, &coarse, Gauge::Atom)
+            .unwrap();
         let sambe = model
             .floquet_ham_onek(&k, &drive, &resolved, Gauge::Atom)
             .unwrap();
+        assert!(
+            from_coarse
+                .iter()
+                .zip(&sambe)
+                .all(|(a, b)| (a - b).norm() == 0.0),
+            "the Sambe path must ignore n_time"
+        );
         // Nonzero drive harmonics are multiples of 100, outside this Sambe
         // cutoff. The diagonal is J0(50)*H(k), plus the photon shift.
         let base = model.gen_ham(&k, Gauge::Atom)[[0, 0]] * bessel_j(0, 50.0);
@@ -4832,37 +5049,66 @@ mod tests {
         let mut diagonal =
             Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
         diagonal.add_hop(1.0, 0, 0, &array![1, 1], None);
-        // Each projected mode is zero, but Cartesian accumulation overflows.
+        let k = array![0.2, 0.1];
+        let trunc = FloquetTruncation::new(0, 4);
+        // Two modes whose Cartesian components overflow when summed, but whose
+        // projection onto the link cancels exactly.  The Bessel backend projects
+        // each mode before exponentiating, so this is the undressed static model
+        // rather than the overflow the time grid used to report.
         let mode = LightMode::new(
             1,
             array![Complex::new(1e308, 0.0), Complex::new(-1e308, 0.0)],
         );
-        let drive = FloquetDrive::with_modes(1.0, vec![mode.clone(), mode]);
-        let trunc = FloquetTruncation::new(0, 4);
-        assert!(diagonal.floquet_model(&drive, &trunc).is_err());
+        let cancelling = FloquetDrive::with_modes(1.0, vec![mode.clone(), mode]);
+        let sambe = diagonal.floquet_model(&cancelling, &trunc).unwrap();
+        let base = diagonal.gen_ham(&k, Gauge::Atom);
+        assert!(
+            sambe
+                .gen_ham(&k, Gauge::Atom)
+                .iter()
+                .zip(base.iter())
+                .all(|(a, b)| (a - b).norm() < 1e-12),
+            "a drive whose projection vanishes must leave the hoppings undressed"
+        );
+        // A projection that really is huge is refused up front instead: the
+        // ladder cannot represent it and the per-link grid cannot resolve it.
+        let huge = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(
+                1,
+                array![Complex::new(1e308, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        );
+        assert!(diagonal.floquet_model(&huge, &trunc).is_err());
         assert!(
             diagonal
-                .floquet_ham_onek(&array![0.2, 0.1], &drive, &trunc, Gauge::Atom)
+                .floquet_ham_onek(&k, &huge, &trunc, Gauge::Atom)
                 .is_err()
         );
     }
 
     #[test]
-    fn explicit_sambe_grid_can_exceed_automatic_fallback_cap() {
+    fn sambe_allocation_validation_is_independent_of_n_time() {
         let model = chain_model();
         let drive = FloquetDrive::with_modes(
             1.0,
             vec![LightMode::new(10000, array![Complex::new(50.0, 0.0)])],
         );
         let trunc = FloquetTruncation::new(0, 1 << 21);
-        // Validate without allocating the large grid: this limit belongs to
-        // automatic fallback, while an explicitly sufficient grid is valid.
+        // Validation allocates nothing and no longer reasons about a sampling
+        // count: this drive is resolved exactly by the Bessel ladder, and the
+        // `2^20` cap applies only to the per-link fallback grid.
         validate_floquet_truncation(&trunc).unwrap();
-        validate_sambe_allocation_and_grid(&model, &drive, &trunc).unwrap();
+        validate_sambe_allocation(&model, &drive, &trunc).unwrap();
+        assert!(
+            model
+                .floquet_ham_onek(&array![0.21], &drive, &trunc, Gauge::Atom)
+                .is_ok()
+        );
     }
 
     #[test]
-    fn sambe_dc_mode_does_not_require_a_large_time_grid() {
+    fn sambe_dc_mode_is_a_pure_phase_shift() {
         let model = chain_model();
         let trunc = FloquetTruncation::new(1, 32);
         let k = array![0.21];
@@ -4886,7 +5132,7 @@ mod tests {
     }
 
     #[test]
-    fn weak_sambe_drive_accepts_64_samples() {
+    fn weak_sambe_drive_is_independent_of_n_time() {
         let model = chain_model();
         for amplitude in [0.05, 0.1, 0.5] {
             let drive = FloquetDrive::with_modes(
@@ -4909,12 +5155,9 @@ mod tests {
                     Gauge::Atom,
                 )
                 .unwrap();
-            assert!(
-                coarse
-                    .iter()
-                    .zip(&fine)
-                    .all(|(a, b)| (a - b).norm() < 1e-12)
-            );
+            // Both calls differ only in `n_time`, which the grid-free Sambe
+            // backend ignores outright.
+            assert!(coarse.iter().zip(&fine).all(|(a, b)| (a - b).norm() == 0.0));
             let bloch = Complex::new(0.0, TAU * 0.21).exp();
             for i in 0..3 {
                 for j in 0..3 {
@@ -4956,7 +5199,7 @@ mod tests {
                 )],
             );
             assert!(
-                validate_sambe_allocation_and_grid(
+                validate_sambe_allocation(
                     &model,
                     &unresolved,
                     &FloquetTruncation::new(0, FALLBACK_GRID_MAX),
