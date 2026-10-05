@@ -91,15 +91,14 @@
 //! ```
 //!
 //! Both Floquet paths evaluate `C_n` with the same backend: the generalized
-//! Bessel expansion per link ([`PeierlsFourierMethod::Bessel`]), which is
-//! exact, needs no sampling count, and handles arbitrary complex polarization
-//! and arbitrary commensurate harmonic mixing.  A drive with one nonzero
-//! temporal harmonic collapses to a single Bessel term per requested order; a
-//! general drive evaluates the multi-index resonance sum as one-mode
-//! convolutions.  Links beyond the backend's exact range fall back to a
-//! per-link time-grid DFT, and that time grid is also the crate-internal
-//! reference implementation the tests cross-validate the Bessel results
-//! against ([`peierls_fourier_coeffs`], [`FloquetTimeGrid`]).
+//! Bessel expansion per link, which is exact, needs no sampling count, and
+//! handles arbitrary complex polarization and arbitrary commensurate harmonic
+//! mixing.  A drive with one nonzero temporal harmonic collapses to a single
+//! Bessel term per requested order; a general drive evaluates the multi-index
+//! resonance sum as one-mode convolutions.  Links beyond the backend's exact
+//! range fall back to a per-link time-grid DFT.  The uniform-time-grid
+//! reference the tests cross-validate against lives in the test-only
+//! `crate::floquet_test` module, so no entry point depends on it.
 //!
 //! The reciprocal-space Fourier block is
 //!
@@ -943,14 +942,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 /// Backend selection for the Peierls Fourier coefficients `C_n(d)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PeierlsFourierMethod {
-    /// Numerical DFT on a uniform time grid.  The per-link fallback for links
-    /// beyond [`MAX_BESSEL_ARG`], and the crate-internal reference the tests
-    /// cross-validate the Bessel backend against.
+    /// Numerical DFT on a uniform time grid.  Compiled for test builds only:
+    /// production has exactly one coefficient backend, and the tests use this
+    /// variant to cross-check it against an independent oracle
+    /// ([`crate::floquet_test`]).
+    #[cfg(test)]
     TimeGrid { n_time: usize },
     /// Generalized Bessel expansion via sequential one-mode convolutions.
     /// Exact and independent of `n_time`, but restricted to per-mode
-    /// projections `R_α = |a_α·d| ≤` [`MAX_BESSEL_ARG`]; the cache falls back
-    /// to [`PeierlsFourierMethod::TimeGrid`] per link beyond that.
+    /// projections `R_α = |a_α·d| ≤` [`MAX_BESSEL_ARG`]; the cache falls back to
+    /// a self-sized per-link time-grid DFT (`fallback_time_grid_coeffs`) beyond
+    /// that.
     Bessel {
         /// Minimum number of Bessel orders beyond `⌈R_α⌉` (the adaptive tail
         /// check may push the cutoff higher).
@@ -985,54 +987,6 @@ impl FloquetHarmonicCache {
     #[inline]
     fn harmonic_blocks(&self, n: isize) -> ArrayView3<'_, Complex<f64>> {
         self.blocks.index_axis(Axis(0), self.harmonic_index(n))
-    }
-}
-
-/// Precomputed time-grid data for the discrete Fourier integration of
-/// Peierls coefficients `C_n(d)`.
-///
-/// `link_field[it, a]` stores the real part of the total dimensionless
-/// vector potential `a_a(t_it)` for each time step and spatial direction.
-/// `fourier[i_n, it]` stores `exp(i * n * theta)` for each harmonic and time step.
-/// Building these once avoids recomputing the same exponentials for every
-/// hopping link.
-struct FloquetTimeGrid {
-    link_field: Array2<f64>,
-    fourier: Array2<Complex<f64>>,
-    inv_n_time: f64,
-}
-
-impl FloquetTimeGrid {
-    fn new(
-        drive: &FloquetDrive,
-        n_time: usize,
-        harmonic_min: isize,
-        harmonic_max: isize,
-        dim: usize,
-    ) -> Self {
-        let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
-        let inv_n_time = 1.0 / (n_time as f64);
-        let mut link_field = Array2::<f64>::zeros((n_time, dim));
-        let mut fourier = Array2::<Complex<f64>>::zeros((harmonic_count, n_time));
-
-        for it in 0..n_time {
-            let theta = TAU * (it as f64) * inv_n_time;
-            for mode in &drive.modes {
-                let harmonic_phase = Complex::new(0.0, -(mode.harmonic as f64) * theta).exp();
-                for a in 0..dim {
-                    link_field[[it, a]] += (mode.a_complex[a] * harmonic_phase).re;
-                }
-            }
-            for (i_n, n) in (harmonic_min..=harmonic_max).enumerate() {
-                fourier[[i_n, it]] = Complex::new(0.0, (n as f64) * theta).exp();
-            }
-        }
-
-        Self {
-            link_field,
-            fourier,
-            inv_n_time,
-        }
     }
 }
 
@@ -1901,18 +1855,21 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
 
-        // Phase 2: coefficients per distinct d (parallel).  The shared time
-        // grid is built only for the TimeGrid backend; the Bessel backend
+        // Phase 2: coefficients per distinct d (parallel).  The Bessel backend
         // sizes its own per-link fallback grid from the link's bandwidth, so
-        // no eager grid is allocated on that path.
+        // production allocates no eager grid at all; the reference time grid
+        // exists only in test builds.
+        #[cfg(test)]
         let time_grid = match method {
-            PeierlsFourierMethod::TimeGrid { n_time } => Some(FloquetTimeGrid::new(
-                drive,
-                *n_time,
-                harmonic_min,
-                harmonic_max,
-                DIM,
-            )),
+            PeierlsFourierMethod::TimeGrid { n_time } => {
+                Some(crate::floquet_test::FloquetTimeGrid::new(
+                    drive,
+                    *n_time,
+                    harmonic_min,
+                    harmonic_max,
+                    DIM,
+                ))
+            }
             PeierlsFourierMethod::Bessel { .. } => None,
         };
         // Per-call warn-once flag: the parallel loop below may hit the
@@ -1953,11 +1910,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         }
                     }
                 }
+                #[cfg(test)]
                 PeierlsFourierMethod::TimeGrid { .. } => {
                     let time_grid = time_grid
                         .as_ref()
                         .expect("shared time grid is built for the TimeGrid backend");
-                    Array1::from(peierls_fourier_coeffs(
+                    Array1::from(crate::floquet_test::peierls_fourier_coeffs(
                         d,
                         harmonic_min,
                         harmonic_max,
@@ -3005,8 +2963,8 @@ fn single_harmonic_closed_form(
 /// range instead of quadratic.
 ///
 /// Verified against the independent time-grid DFT
-/// ([`peierls_fourier_coeffs`]) for linear, circular, elliptical, and
-/// multi-harmonic drives to ~1e-15.
+/// (`crate::floquet_test::peierls_fourier_coeffs`) for linear, circular,
+/// elliptical, and multi-harmonic drives to ~1e-15.
 ///
 /// # Arguments
 /// * `d` - real link displacement (Cartesian, length `DIM`).
@@ -3192,39 +3150,6 @@ pub(crate) fn bessel_peierls_coeffs(
         sequence[(harmonic_min - work_min) as usize..(harmonic_max - work_min + 1) as usize]
             .to_vec(),
     ))
-}
-
-fn peierls_fourier_coeffs(
-    d_cart: &Array1<f64>,
-    harmonic_min: isize,
-    harmonic_max: isize,
-    drive: &FloquetDrive,
-    time_grid: &FloquetTimeGrid,
-) -> Vec<Complex<f64>> {
-    let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
-    if drive.modes.is_empty() {
-        let mut coeffs = vec![Complex::new(0.0, 0.0); harmonic_count];
-        if harmonic_min <= 0 && 0 <= harmonic_max {
-            coeffs[(0 - harmonic_min) as usize] = Complex::new(1.0, 0.0);
-        }
-        return coeffs;
-    }
-
-    let mut coeffs = vec![Complex::new(0.0, 0.0); harmonic_count];
-    for it in 0..time_grid.link_field.nrows() {
-        let mut link_phase = 0.0;
-        for a in 0..d_cart.len() {
-            link_phase += time_grid.link_field[[it, a]] * d_cart[a];
-        }
-        let peierls = Complex::new(0.0, -link_phase).exp();
-        for (i_n, coeff) in coeffs.iter_mut().enumerate() {
-            *coeff += time_grid.fourier[[i_n, it]] * peierls;
-        }
-    }
-    for coeff in &mut coeffs {
-        *coeff *= time_grid.inv_n_time;
-    }
-    coeffs
 }
 
 /// Maximum number of time points for a per-link fallback DFT.
@@ -3848,6 +3773,7 @@ mod tests {
     use super::*;
     use crate::SpinDirection;
     use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
+    use crate::floquet_test::{FloquetTimeGrid, peierls_fourier_coeffs};
     use crate::model::NoRMatrix;
 
     use crate::solve_ham::Solve;
@@ -4449,6 +4375,17 @@ mod tests {
                 Complex::new(0.0, 0.0)
             };
             assert!((coeffs[(n + 3) as usize] - expected).norm() < 1e-15);
+        }
+        // The reference oracle has its own empty-drive branch; the harmonic cache
+        // returns before reaching it, so exercise it directly here.
+        let grid = FloquetTimeGrid::new(&drive, 8, -3, 3, 1);
+        let reference = peierls_fourier_coeffs(&d, -3, 3, &drive, &grid);
+        for (n, (a, b)) in coeffs.iter().zip(reference.iter()).enumerate() {
+            assert!(
+                (a - b).norm() < 1e-15,
+                "n = {}: Bessel {a} vs reference {b}",
+                n as isize - 3
+            );
         }
     }
 

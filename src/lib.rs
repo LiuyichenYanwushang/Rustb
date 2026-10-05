@@ -1,4 +1,5 @@
 #![allow(non_snake_case)]
+#![deny(unsafe_code)]
 
 //! # Rustb -- Tight-Binding Model Library
 //!
@@ -227,6 +228,9 @@ pub mod cut;
 pub mod error;
 pub mod fermi_surface;
 pub mod floquet;
+/// Test-only time-grid reference the Floquet coefficient tests cross-check against.
+#[cfg(test)]
+pub(crate) mod floquet_test;
 pub mod generics;
 pub mod geometry;
 #[cfg(feature = "cryspglib")]
@@ -245,6 +249,8 @@ pub mod model;
 pub mod model_build;
 pub mod model_physics;
 pub mod model_utils;
+// The only module allowed to call raw BLAS/LAPACK routines.
+#[allow(unsafe_code)]
 pub mod ndarray_lapack;
 pub mod orbital_angular;
 pub mod output;
@@ -268,7 +274,6 @@ pub use crate::cut::*;
 pub use crate::error::{Result, TbError};
 pub use crate::fermi_surface::*;
 pub use crate::floquet::*;
-use crate::generics::UseFloat;
 pub use crate::geometry::*;
 #[cfg(feature = "cryspglib")]
 pub use crate::hamiltonian_symmetry::{
@@ -1088,16 +1093,17 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
-        green.show_surf_state(
-            "target/test-output/Haldan/surf",
-            &path,
-            &label,
-            nk,
-            E_min,
-            E_max,
-            E_n,
-            0,
-        );
+        green
+            .show_surf_state(
+                "target/test-output/Haldan/surf",
+                &path,
+                &label,
+                nk,
+                E_min,
+                E_max,
+                E_n,
+            )
+            .unwrap();
 
         //-----算一下wilson loop 的结果-----------------------
         let dir_1 = arr1(&[1.0, 0.0]);
@@ -1212,7 +1218,7 @@ mod tests {
         let omega_ref = band_berry_curvature(&model, &k, &dx, &dy, None, eta).berry_curvature;
         // Tetra primitives
         let dv = Array1::zeros(2);
-        let pt = model
+        let (pt, _) = model
             .compute_velocity_kernel(&k, &dx, &dy, Some(&dv), Gauge::Atom, None)
             .unwrap();
 
@@ -1521,16 +1527,17 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
-        green.show_surf_state(
-            "target/test-output/kane",
-            &path,
-            &label,
-            nk,
-            E_min,
-            E_max,
-            E_n,
-            0,
-        );
+        green
+            .show_surf_state(
+                "target/test-output/kane",
+                &path,
+                &label,
+                nk,
+                E_min,
+                E_max,
+                E_n,
+            )
+            .unwrap();
 
         //-----算一下wilson loop 结果-----------------------
         let n = 51;
@@ -1688,16 +1695,17 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
-        green.show_surf_state(
-            "target/test-output/kane/magnetic",
-            &path,
-            &label,
-            nk,
-            E_min,
-            E_max,
-            E_n,
-            0,
-        );
+        green
+            .show_surf_state(
+                "target/test-output/kane/magnetic",
+                &path,
+                &label,
+                nk,
+                E_min,
+                E_max,
+                E_n,
+            )
+            .unwrap();
 
         //-----算一下wilson loop 结果-----------------------
         let n = 51;
@@ -1982,16 +1990,17 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "M", "G"];
-        green.show_surf_state(
-            "target/test-output/kagome_zig",
-            &path,
-            &label,
-            nk,
-            E_min,
-            E_max,
-            E_n,
-            0,
-        );
+        green
+            .show_surf_state(
+                "target/test-output/kagome_zig",
+                &path,
+                &label,
+                nk,
+                E_min,
+                E_max,
+                E_n,
+            )
+            .unwrap();
 
         //Starting to calculate the DOS of kagome
         let nk: usize = 51;
@@ -2119,16 +2128,17 @@ mod tests {
         let path = [[0.0], [0.5], [1.0]];
         let path = arr2(&path);
         let label = vec!["G", "X", "G"];
-        green.show_surf_state(
-            "target/test-output/BBH",
-            &path,
-            &label,
-            nk,
-            E_min,
-            E_max,
-            E_n,
-            0,
-        );
+        green
+            .show_surf_state(
+                "target/test-output/BBH",
+                &path,
+                &label,
+                nk,
+                E_min,
+                E_max,
+                E_n,
+            )
+            .unwrap();
 
         //算一下corner state
         let num = 10;
@@ -2636,7 +2646,7 @@ mod tests {
             let omega_n_old =
                 band_berry_curvature(&model, &kv, &dx, &dy, None, eta).berry_curvature;
             // Gauge-invariant K_nm must produce the same Ω_n.
-            let tk = model
+            let (tk, _) = model
                 .compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None)
                 .unwrap();
             let nsta = model.nsta();
@@ -2697,7 +2707,7 @@ mod tests {
             let all_pts: Vec<crate::response::VertexKernel> = (0..nkt)
                 .map(|ik| {
                     let kv = kvec.row(ik).to_owned();
-                    let tk = model
+                    let (tk, _) = model
                         .compute_velocity_kernel(&kv, &dx, &dy, None, Gauge::Atom, None)
                         .unwrap();
                     tk
