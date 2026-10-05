@@ -2603,6 +2603,19 @@ fn rescale_sweep_tail(u: &mut [f64], newest: usize) {
 /// each order separately reruns the special-function library's internal
 /// recurrence (`O(n)` each) and costs `O(n²)`, and re-summing each tail
 /// restarts an overlapping suffix every time.
+///
+/// # Cost
+///
+/// `n` grows by doubling until the top order decays, so the sequence of sweeps
+/// is geometric and construction is `O(n + √n)` recurrence steps with
+/// `n ≤ MAX_BESSEL_ORDER`.  The band rescale adds `O(n)` work per trigger and
+/// fires roughly once per `30 / log10(2k/r)` orders.  Because every caller
+/// passes `n_min ≈ ⌈r⌉ + margin`, large `r` means a large `n` but a small growth
+/// factor and small `r` decays within a handful of orders, so the measured
+/// rescale work stays below ~7 multiplies per sweep step (~5 ns/step) across
+/// the whole reachable range.  A caller that paired a tiny argument with a huge
+/// requested order would make the rescale quadratic (`≤ MAX_BESSEL_ORDER²`
+/// multiplies, a few ms); `bessel_ladder_with_cutoff` never does.
 struct BesselLadder {
     /// `J_0..J_n` at this argument.
     j: Vec<f64>,
