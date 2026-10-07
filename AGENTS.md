@@ -707,7 +707,14 @@ whose cost is one complex exponential per mode, direction and sample, not a
 multiply count.  Two carriers cost 9-15 µs at R ≤ 400 where the fold costs ~0.9 ms;
 ≥ 3 carriers still fold, which is the remaining slow path.
 
-`validate_sambe_allocation` mirrors the backend's branch conditions exactly —
+Static (harmonic-0) modes are a pure phase `e^{-i Re z}` in every branch: the
+imaginary part of a static projection is physically inert, so it consumes no
+ladder, no amplitude cap and no bandwidth.  The same rule must hold in the
+backend and in the validation, or a drive with a large imaginary static
+amplitude is refused while the backend would have handled it exactly.
+
+`validate_sambe_allocation` (and, for the effective model,
+`validate_link_resolvability`) mirrors the backend's branch conditions exactly —
 carrier counts, per-branch caps, the enumeration budget and the convolution
 window — and refuses a drive whose link the fallback grid cannot resolve,
 instead of returning silently aliased coefficients.  When a cap, a budget or a
