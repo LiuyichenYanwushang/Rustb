@@ -3,7 +3,7 @@
 use ndarray::prelude::*;
 use num_complex::Complex;
 
-use super::types::{SimplexDiagnostics, TrackedSimplex, VertexKernel};
+use super::types::{NonlinearKernel, SimplexDiagnostics, TrackedSimplex, VertexKernel};
 
 const CUBE_TETS: [[usize; 4]; 5] = [
     [0, 1, 2, 4],
@@ -26,14 +26,14 @@ pub(crate) fn build_overlap_matrix(
     evec_ref: &Array2<Complex<f64>>,
     evec_other: &Array2<Complex<f64>>,
 ) -> Array2<f64> {
-    let nsta = evec_ref.ncols();
-    let norb = evec_ref.nrows();
+    let nsta = evec_ref.nrows();
+    let norb = evec_ref.ncols();
     let mut ov = Array2::<f64>::zeros((nsta, nsta));
     for n in 0..nsta {
         for m in 0..nsta {
             let mut s = Complex::new(0.0, 0.0);
             for orb in 0..norb {
-                s += evec_ref[[orb, n]].conj() * evec_other[[orb, m]];
+                s += evec_ref[[n, orb]].conj() * evec_other[[m, orb]];
             }
             ov[[n, m]] = s.norm_sqr();
         }
@@ -68,71 +68,29 @@ pub(crate) fn greedy_assign(overlap: &Array2<f64>) -> Vec<usize> {
 }
 
 pub(crate) fn permute_vertex(v: &VertexKernel, p: &[usize]) -> VertexKernel {
-    let nsta = v.band.len();
-    let norb = v.evec.nrows();
-
-    let perm_mat_opt = |m_opt: &Option<Array2<Complex<f64>>>| -> Option<Array2<Complex<f64>>> {
-        m_opt.as_ref().map(|m| {
-            let mut out = Array2::<Complex<f64>>::zeros((nsta, nsta));
-            for ni in 0..nsta {
-                for mi in 0..nsta {
-                    out[[ni, mi]] = m[[p[ni], p[mi]]];
-                }
-            }
-            out
-        })
-    };
-    let perm_vec_opt = |v_opt: &Option<Array1<f64>>| -> Option<Array1<f64>> {
-        v_opt.as_ref().map(|arr| {
-            let mut out = Array1::<f64>::zeros(nsta);
-            for ni in 0..nsta {
-                out[[ni]] = arr[[p[ni]]];
-            }
-            out
-        })
-    };
-
-    let mut band = Array1::<f64>::zeros(nsta);
-    let mut evec = Array2::<Complex<f64>>::zeros((norb, nsta));
-    for n in 0..nsta {
-        band[[n]] = v.band[[p[n]]];
-        for orb in 0..norb {
-            evec[[orb, n]] = v.evec[[orb, p[n]]];
-        }
-    }
-
-    let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
-    for ni in 0..nsta {
-        for mi in 0..nsta {
-            k_ab[[ni, mi]] = v.k_ab[[p[ni], p[mi]]];
-        }
-    }
-
+    let matrix = |m: &Array2<Complex<f64>>| m.select(Axis(0), p).select(Axis(1), p);
     VertexKernel {
-        band,
-        k_ab,
-        k_bc: perm_mat_opt(&v.k_bc),
-        k_ac: perm_mat_opt(&v.k_ac),
-        vdiag: perm_vec_opt(&v.vdiag),
-        vdiag_a: perm_vec_opt(&v.vdiag_a),
-        vdiag_b: perm_vec_opt(&v.vdiag_b),
-        evec,
+        band: v.band.select(Axis(0), p),
+        k_ab: matrix(&v.k_ab),
+        nonlinear: v.nonlinear.as_ref().map(|n| NonlinearKernel {
+            k_bc: matrix(&n.k_bc),
+            k_ac: matrix(&n.k_ac),
+            vdiag: n.vdiag.select(Axis(0), p),
+            vdiag_a: n.vdiag_a.select(Axis(0), p),
+            vdiag_b: n.vdiag_b.select(Axis(0), p),
+        }),
     }
 }
 
-pub(crate) fn global_band_track(all_pts: &mut [VertexKernel], k_mesh: &[usize]) {
-    global_band_track_with(all_pts, k_mesh, |_, _| {});
-}
-
-/// Apply the same band-label permutation to additional per-vertex data.
+/// Track row-ket eigenvectors and apply each band permutation to caller data.
 /// Each callback concerns a previously unvisited vertex, so `p` indexes its
 /// original band order. The seed vertex keeps its original order.
-pub(crate) fn global_band_track_with(
-    all_pts: &mut [VertexKernel],
+pub(crate) fn global_band_track(
+    eigenvectors: &mut [Array2<Complex<f64>>],
     k_mesh: &[usize],
-    mut permute_extra: impl FnMut(usize, &[usize]),
+    mut permute_data: impl FnMut(usize, &[usize]),
 ) {
-    let nk = all_pts.len();
+    let nk = eigenvectors.len();
     if nk <= 1 {
         return;
     }
@@ -156,7 +114,7 @@ pub(crate) fn global_band_track_with(
                 if !visited[vn] {
                     continue;
                 }
-                let ov = build_overlap_matrix(&all_pts[vn].evec, &all_pts[nb].evec);
+                let ov = build_overlap_matrix(&eigenvectors[vn], &eigenvectors[nb]);
                 if let Some(ref mut s) = ov_sum {
                     *s += &ov;
                 } else {
@@ -167,8 +125,8 @@ pub(crate) fn global_band_track_with(
             if let Some(ov) = ov_sum {
                 let ov_avg = ov / n_contrib as f64;
                 let p = greedy_assign(&ov_avg);
-                all_pts[nb] = permute_vertex(&all_pts[nb], &p);
-                permute_extra(nb, &p);
+                eigenvectors[nb] = eigenvectors[nb].select(Axis(0), &p);
+                permute_data(nb, &p);
             }
             visited[nb] = true;
             queue.push_back(nb);

@@ -233,120 +233,67 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData + Serialize> Serialize
     }
 }
 
-// Helper for deserialization
+// Keep the on-disk fields independent of the requested const generics/storage.
+// Serde rejects unknown and duplicate fields before model validation.
 #[derive(Deserialize)]
-#[serde(field_identifier)]
-enum ModelField {
-    #[serde(rename = "dim_r")]
-    DimR,
-    #[serde(rename = "spin")]
-    Spin,
-    #[serde(rename = "lat")]
-    Lat,
-    #[serde(rename = "orb")]
-    Orb,
-    #[serde(rename = "orb_projection")]
-    OrbProjection,
-    #[serde(rename = "atoms")]
-    Atoms,
-    #[serde(rename = "ham")]
-    Ham,
-    #[serde(rename = "hamR")]
-    HamR,
-    #[serde(rename = "rmatrix")]
-    Rmatrix,
+#[serde(rename = "Model", deny_unknown_fields)]
+struct ModelWire {
+    dim_r: usize,
+    spin: bool,
+    lat: Array2<f64>,
+    orb: Array2<f64>,
+    orb_projection: Vec<OrbProj>,
+    atoms: Vec<AtomWire>,
+    ham: Array3<Complex<f64>>,
+    hamR: Array2<isize>,
+    #[serde(default, deserialize_with = "deserialize_rmatrix")]
+    rmatrix: Option<HasRMatrix>,
+}
+
+// A missing matrix is allowed for NoRMatrix; a present value must still be an
+// array (including when the caller will discard it), not a null placeholder.
+fn deserialize_rmatrix<'de, De: Deserializer<'de>>(
+    deserializer: De,
+) -> std::result::Result<Option<HasRMatrix>, De::Error> {
+    HasRMatrix::deserialize(deserializer).map(Some)
+}
+
+impl ModelWire {
+    fn into_model<const SPIN: bool, const DIM: usize, R: RMatrixData, E: de::Error>(
+        self,
+        rmatrix: R,
+    ) -> std::result::Result<Model<SPIN, DIM, R>, E> {
+        if self.spin != SPIN {
+            return Err(E::custom(format!(
+                "spin mismatch: file has spin={}, but Model<{}> was requested",
+                self.spin, SPIN
+            )));
+        }
+        if self.dim_r != DIM {
+            return Err(E::custom(format!(
+                "dimension mismatch: file has dim_r={}, but Model<DIM={}> was requested",
+                self.dim_r, DIM
+            )));
+        }
+        let model = Model {
+            lat: self.lat,
+            orb: self.orb,
+            orb_projection: self.orb_projection,
+            atoms: atoms_from_wire(self.atoms).map_err(E::custom)?,
+            ham: self.ham,
+            hamR: self.hamR,
+            rmatrix,
+        };
+        model.validate().map_err(E::custom)?;
+        Ok(model)
+    }
 }
 
 impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, DIM, NoRMatrix> {
     fn deserialize<De: Deserializer<'de>>(
         deserializer: De,
     ) -> std::result::Result<Self, De::Error> {
-        struct ModelVisitor<const S: bool, const D: usize>;
-
-        impl<'de, const S: bool, const D: usize> de::Visitor<'de> for ModelVisitor<S, D> {
-            type Value = Model<S, D, NoRMatrix>;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a Model struct without rmatrix")
-            }
-
-            fn visit_map<A: de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> std::result::Result<Self::Value, A::Error> {
-                let mut dim_r: Option<usize> = None;
-                let mut spin: Option<bool> = None;
-                let mut lat: Option<Array2<f64>> = None;
-                let mut orb: Option<Array2<f64>> = None;
-                let mut orb_projection: Option<Vec<OrbProj>> = None;
-                let mut atoms: Option<Vec<AtomWire>> = None;
-                let mut ham: Option<Array3<Complex<f64>>> = None;
-                let mut hamR: Option<Array2<isize>> = None;
-
-                while let Some(key) = map.next_key()? {
-                    match key {
-                        ModelField::DimR => dim_r = Some(map.next_value()?),
-                        ModelField::Spin => spin = Some(map.next_value()?),
-                        ModelField::Lat => lat = Some(map.next_value()?),
-                        ModelField::Orb => orb = Some(map.next_value()?),
-                        ModelField::OrbProjection => orb_projection = Some(map.next_value()?),
-                        ModelField::Atoms => atoms = Some(map.next_value()?),
-                        ModelField::Ham => ham = Some(map.next_value()?),
-                        ModelField::HamR => hamR = Some(map.next_value()?),
-                        ModelField::Rmatrix => {
-                            let _: Array4<Complex<f64>> = map.next_value()?;
-                        }
-                    }
-                }
-
-                let spin = spin.ok_or_else(|| de::Error::missing_field("spin"))?;
-                if spin != S {
-                    return Err(de::Error::custom(format!(
-                        "spin mismatch: file has spin={}, but Model<{}> was requested",
-                        spin, S
-                    )));
-                }
-                let dim_r = dim_r.ok_or_else(|| de::Error::missing_field("dim_r"))?;
-                if dim_r != D {
-                    return Err(de::Error::custom(format!(
-                        "dimension mismatch: file has dim_r={}, but Model<DIM={}> was requested",
-                        dim_r, D
-                    )));
-                }
-
-                let atoms =
-                    atoms_from_wire(atoms.ok_or_else(|| de::Error::missing_field("atoms"))?)
-                        .map_err(de::Error::custom)?;
-                let model = Model {
-                    lat: lat.ok_or_else(|| de::Error::missing_field("lat"))?,
-                    orb: orb.ok_or_else(|| de::Error::missing_field("orb"))?,
-                    orb_projection: orb_projection
-                        .ok_or_else(|| de::Error::missing_field("orb_projection"))?,
-                    atoms,
-                    ham: ham.ok_or_else(|| de::Error::missing_field("ham"))?,
-                    hamR: hamR.ok_or_else(|| de::Error::missing_field("hamR"))?,
-                    rmatrix: NoRMatrix,
-                };
-                model.validate().map_err(de::Error::custom)?;
-                Ok(model)
-            }
-        }
-
-        deserializer.deserialize_struct(
-            "Model",
-            &[
-                "dim_r",
-                "spin",
-                "lat",
-                "orb",
-                "orb_projection",
-                "atoms",
-                "ham",
-                "hamR",
-                "rmatrix",
-            ],
-            ModelVisitor::<SPIN, DIM>,
-        )
+        ModelWire::deserialize(deserializer)?.into_model(NoRMatrix)
     }
 }
 
@@ -354,93 +301,12 @@ impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, D
     fn deserialize<De: Deserializer<'de>>(
         deserializer: De,
     ) -> std::result::Result<Self, De::Error> {
-        struct ModelVisitor<const S: bool, const D: usize>;
-
-        impl<'de, const S: bool, const D: usize> de::Visitor<'de> for ModelVisitor<S, D> {
-            type Value = Model<S, D, HasRMatrix>;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a Model struct with rmatrix")
-            }
-
-            fn visit_map<A: de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> std::result::Result<Self::Value, A::Error> {
-                let mut dim_r: Option<usize> = None;
-                let mut spin: Option<bool> = None;
-                let mut lat: Option<Array2<f64>> = None;
-                let mut orb: Option<Array2<f64>> = None;
-                let mut orb_projection: Option<Vec<OrbProj>> = None;
-                let mut atoms: Option<Vec<AtomWire>> = None;
-                let mut ham: Option<Array3<Complex<f64>>> = None;
-                let mut hamR: Option<Array2<isize>> = None;
-                let mut rmatrix: Option<Array4<Complex<f64>>> = None;
-
-                while let Some(key) = map.next_key()? {
-                    match key {
-                        ModelField::DimR => dim_r = Some(map.next_value()?),
-                        ModelField::Spin => spin = Some(map.next_value()?),
-                        ModelField::Lat => lat = Some(map.next_value()?),
-                        ModelField::Orb => orb = Some(map.next_value()?),
-                        ModelField::OrbProjection => orb_projection = Some(map.next_value()?),
-                        ModelField::Atoms => atoms = Some(map.next_value()?),
-                        ModelField::Ham => ham = Some(map.next_value()?),
-                        ModelField::HamR => hamR = Some(map.next_value()?),
-                        ModelField::Rmatrix => rmatrix = Some(map.next_value()?),
-                    }
-                }
-
-                let spin = spin.ok_or_else(|| de::Error::missing_field("spin"))?;
-                if spin != S {
-                    return Err(de::Error::custom(format!(
-                        "spin mismatch: file has spin={}, but Model<{}> was requested",
-                        spin, S
-                    )));
-                }
-                let dim_r = dim_r.ok_or_else(|| de::Error::missing_field("dim_r"))?;
-                if dim_r != D {
-                    return Err(de::Error::custom(format!(
-                        "dimension mismatch: file has dim_r={}, but Model<DIM={}> was requested",
-                        dim_r, D
-                    )));
-                }
-
-                let atoms =
-                    atoms_from_wire(atoms.ok_or_else(|| de::Error::missing_field("atoms"))?)
-                        .map_err(de::Error::custom)?;
-                let model = Model {
-                    lat: lat.ok_or_else(|| de::Error::missing_field("lat"))?,
-                    orb: orb.ok_or_else(|| de::Error::missing_field("orb"))?,
-                    orb_projection: orb_projection
-                        .ok_or_else(|| de::Error::missing_field("orb_projection"))?,
-                    atoms,
-                    ham: ham.ok_or_else(|| de::Error::missing_field("ham"))?,
-                    hamR: hamR.ok_or_else(|| de::Error::missing_field("hamR"))?,
-                    rmatrix: HasRMatrix(
-                        rmatrix.ok_or_else(|| de::Error::missing_field("rmatrix"))?,
-                    ),
-                };
-                model.validate().map_err(de::Error::custom)?;
-                Ok(model)
-            }
-        }
-
-        deserializer.deserialize_struct(
-            "Model",
-            &[
-                "dim_r",
-                "spin",
-                "lat",
-                "orb",
-                "orb_projection",
-                "atoms",
-                "ham",
-                "hamR",
-                "rmatrix",
-            ],
-            ModelVisitor::<SPIN, DIM>,
-        )
+        let mut wire = ModelWire::deserialize(deserializer)?;
+        let rmatrix = wire
+            .rmatrix
+            .take()
+            .ok_or_else(|| de::Error::missing_field("rmatrix"))?;
+        wire.into_model(rmatrix)
     }
 }
 
@@ -1302,17 +1168,27 @@ mod ownership_tests {
         )
         .unwrap();
         model.atoms[0].set_magnetic_moment([0.0, 0.0, 2.0]).unwrap();
+        model.set_hop(Complex::new(0.3, -0.2), 0, 1, &array![1, 0, 0], None);
+        model.add_hop(0.7, 0, 1, &array![1, 0, 0], None);
 
         let encoded = toml::to_string(&model).unwrap();
         let decoded: Model<SPIN, 3, R> = toml::from_str(&encoded).unwrap();
         decoded.validate().unwrap();
         assert_eq!(decoded.norb(), 2);
+        assert_eq!(decoded.lat, model.lat);
+        assert_eq!(decoded.orb, model.orb);
+        assert_eq!(decoded.orb_projection, model.orb_projection);
+        assert_eq!(decoded.ham, model.ham);
+        assert_eq!(decoded.hamR, model.hamR);
         assert_eq!(
             decoded.atoms[0].orbitals(),
             &[OrbitalId::new(0), OrbitalId::new(1)]
         );
         assert_eq!(decoded.atoms[0].magnetic_moment(), Some([0.0, 0.0, 2.0]));
         assert_eq!(decoded.has_rmatrix(), R::HAS_RMATRIX);
+        if R::HAS_RMATRIX {
+            assert_eq!(decoded.rmatrix.as_array4(), model.rmatrix.as_array4());
+        }
     }
 
     fn non_contiguous_model() -> Model<false, 3> {
@@ -1582,6 +1458,99 @@ mod ownership_tests {
         assert_model_round_trip::<true, NoRMatrix>();
         assert_model_round_trip::<false, HasRMatrix>();
         assert_model_round_trip::<true, HasRMatrix>();
+    }
+
+    #[test]
+    fn model_serde_checks_required_fields_types_and_storage() {
+        let model =
+            Model::<false, 3, HasRMatrix>::tb_model(Array2::eye(3), array![[0.0, 0.0, 0.0]], None)
+                .unwrap();
+        let value = toml::Value::try_from(&model).unwrap();
+        let encoded = toml::to_string(&value).unwrap();
+        let stripped: Model<false, 3> = toml::from_str(&encoded).unwrap();
+        assert_eq!(stripped.ham, model.ham);
+        assert_eq!(stripped.orb, model.orb);
+        assert!(
+            toml::from_str::<Model<true, 3>>(&encoded)
+                .unwrap_err()
+                .to_string()
+                .contains("spin mismatch")
+        );
+        assert!(
+            toml::from_str::<Model<false, 2, HasRMatrix>>(&encoded)
+                .unwrap_err()
+                .to_string()
+                .contains("dimension mismatch")
+        );
+        for field in [
+            "dim_r",
+            "spin",
+            "lat",
+            "orb",
+            "orb_projection",
+            "atoms",
+            "ham",
+            "hamR",
+            "rmatrix",
+        ] {
+            let mut missing = value.clone();
+            missing.as_table_mut().unwrap().remove(field);
+            let encoded = toml::to_string(&missing).unwrap();
+            let error = toml::from_str::<Model<false, 3, HasRMatrix>>(&encoded).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("missing field `{field}`"))
+            );
+            if field == "rmatrix" {
+                assert!(toml::from_str::<Model<false, 3>>(&encoded).is_ok());
+            } else {
+                assert!(toml::from_str::<Model<false, 3>>(&encoded).is_err());
+            }
+        }
+        let mut malformed = value;
+        malformed["rmatrix"] = toml::Value::Integer(0);
+        let encoded = toml::to_string(&malformed).unwrap();
+        assert!(toml::from_str::<Model<false, 3>>(&encoded).is_err());
+        assert!(toml::from_str::<Model<false, 3, HasRMatrix>>(&encoded).is_err());
+    }
+
+    #[test]
+    fn model_serde_rejects_unknown_and_duplicate_fields() {
+        let model =
+            Model::<false, 3, HasRMatrix>::tb_model(Array2::eye(3), array![[0.0, 0.0, 0.0]], None)
+                .unwrap();
+        let value = toml::Value::try_from(&model).unwrap();
+        for field in ["spin", "rmatrix", "unexpected"] {
+            let mut fields: Vec<_> = value.as_table().unwrap().clone().into_iter().collect();
+            fields.push((
+                field.to_string(),
+                value.get(field).cloned().unwrap_or(toml::Value::Integer(0)),
+            ));
+            // Feed entries directly: a TOML parser would reject duplicate keys
+            // itself and never exercise the derived Model deserializer.
+            let error = Model::<false, 3>::deserialize(de::value::MapDeserializer::<
+                _,
+                toml::de::Error,
+            >::new(
+                fields.clone().into_iter()
+            ))
+            .unwrap_err();
+            let expected = if field == "unexpected" {
+                "unknown field"
+            } else {
+                "duplicate field"
+            };
+            assert!(error.to_string().contains(expected), "{error}");
+            let error = Model::<false, 3, HasRMatrix>::deserialize(de::value::MapDeserializer::<
+                _,
+                toml::de::Error,
+            >::new(
+                fields.into_iter()
+            ))
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

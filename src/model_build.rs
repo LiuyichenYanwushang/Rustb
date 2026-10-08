@@ -33,7 +33,6 @@ use crate::Model;
 use crate::SpinDirection;
 use crate::atom_struct::{Atom, OrbProj, OrbitalId};
 use crate::error::{Result, TbError};
-use crate::generics::HopUse;
 use crate::model::RMatrixData;
 use crate::model_utils::find_R;
 use ndarray::prelude::*;
@@ -324,7 +323,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// For a spinless model (`Model<false>`), `pauli` is silently ignored.
     ///
     /// # Arguments
-    /// * `tmp` - Hopping amplitude, `f64` (real) or `Complex<f64>`.
+    /// * `tmp` - Hopping amplitude convertible into `Complex<f64>`, including
+    ///   real `f64` and complex `Complex<f64>` values.
     /// * `ind_i` - Row orbital index (0-based, in the spinless basis).
     /// * `ind_j` - Column orbital index (0-based, in the spinless basis).
     /// * `R` - Lattice vector to the target cell. Must have length `DIM`.
@@ -351,7 +351,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// model.set_hop(0.0_f64, 0, 0, &arr1(&[0isize]), None);
     /// ```
     #[allow(non_snake_case)]
-    pub fn set_hop<T: Data<Elem = isize>, U: HopUse>(
+    pub fn set_hop<T: Data<Elem = isize>, U: Into<Complex<f64>>>(
         &mut self,
         tmp: U,
         ind_i: usize,
@@ -360,7 +360,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         pauli: impl Into<Option<SpinDirection>>,
     ) {
         let pauli: Option<SpinDirection> = pauli.into();
-        let tmp: Complex<f64> = tmp.to_complex();
+        let tmp: Complex<f64> = tmp.into();
         if pauli.is_some() && !SPIN {
             eprintln!("Warning: pauli is ignored because this Model is spinless (SPIN=false)")
         }
@@ -474,7 +474,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// model.add_hop(Complex::new(0.0, 0.1), 0, 0, &arr1(&[1isize]), None);
     /// ```
     #[allow(non_snake_case)]
-    pub fn add_hop<T: Data<Elem = isize>, U: HopUse>(
+    pub fn add_hop<T: Data<Elem = isize>, U: Into<Complex<f64>>>(
         &mut self,
         tmp: U,
         ind_i: usize,
@@ -483,7 +483,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         pauli: impl Into<Option<SpinDirection>>,
     ) {
         let pauli: Option<SpinDirection> = pauli.into();
-        let tmp: Complex<f64> = tmp.to_complex();
+        let tmp: Complex<f64> = tmp.into();
         if pauli.is_some() && !SPIN {
             eprintln!("Warning: pauli is ignored because this Model is spinless (SPIN=false)")
         }

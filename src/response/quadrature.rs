@@ -50,13 +50,25 @@ pub(crate) const TET_QUAD_WTS_4: [f64; 4] = [0.25, 0.25, 0.25, 0.25];
 /// vertex band slices (no per-vertex clone).
 pub(crate) fn bary_interp_band_refs(bands: &[&[f64]], lam: &[f64], nsta: usize) -> Vec<f64> {
     let mut out = vec![0.0; nsta];
-    for v in 0..bands.len() {
-        let lv = lam[v];
-        if lv == 0.0 {
-            continue;
-        }
-        for n in 0..nsta {
-            out[n] += bands[v][n] * lv;
+    for n in 0..nsta {
+        let origin = bands[0][n];
+        // Affine form preserves constant bands exactly, including occupations
+        // at their chemical potential. Avoid overflowing opposite-sign shifts.
+        if bands.iter().all(|band| (band[n] - origin).is_finite()) {
+            out[n] = origin
+                + bands
+                    .iter()
+                    .zip(lam)
+                    .filter(|(_, w)| **w != 0.0)
+                    .map(|(band, w)| (band[n] - origin) * w)
+                    .sum::<f64>();
+        } else {
+            out[n] = bands
+                .iter()
+                .zip(lam)
+                .filter(|(_, w)| **w != 0.0)
+                .map(|(band, w)| band[n] * w)
+                .sum();
         }
     }
     out

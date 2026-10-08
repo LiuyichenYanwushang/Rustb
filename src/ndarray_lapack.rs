@@ -27,8 +27,8 @@ extern crate netlib_src as _src;
 
 use crate::error::{Result, TbError};
 use lapack::{zheev, zheevr, zheevx};
-use ndarray::{Array1, Array2, ArrayBase, Data, Ix2};
-use ndarray_linalg::UPLO;
+use ndarray::{Array1, Array2, ArrayBase, Data, Ix2, ShapeBuilder};
+use ndarray_linalg::{EighInto, UPLO};
 use num_complex::Complex;
 
 /// Safe wrapper around BLAS `zaxpy`: `y += alpha * x` for `Complex<f64>` slices.
@@ -41,6 +41,26 @@ pub fn zaxpy(alpha: Complex<f64>, x: &[Complex<f64>], y: &mut [Complex<f64>]) {
     assert_eq!(x.len(), y.len(), "zaxpy: x and y must have the same length");
     let n = i32::try_from(x.len()).expect("zaxpy: vector length exceeds LAPACK integer range");
     unsafe { blas::zaxpy(n, alpha, x, 1, y, 1) };
+}
+
+/// Full Hermitian spectrum, with ket coefficients in rows: `H C^T = C^T E`.
+///
+/// Pack the logical matrix into Fortran layout before calling ndarray-linalg.
+/// Its C-layout complex path transposes the input without conjugation; keeping
+/// that library detail here makes every caller use `C* O C^T` for operators.
+/// `uplo` selects a triangle of the logical input, including strided views.
+pub(crate) fn eigh_full<S: Data<Elem = Complex<f64>>>(
+    x: &ArrayBase<S, Ix2>,
+    uplo: UPLO,
+) -> Result<(Array1<f64>, Array2<Complex<f64>>)> {
+    let (n, data) = prepare_matrix(x, uplo)?;
+    if n == 0 {
+        return Ok((Array1::zeros(0), Array2::zeros((0, 0))));
+    }
+    let column_major = Array2::from_shape_vec((n as usize, n as usize).f(), data)?;
+    let (energies, columns) = column_major.eigh_into(uplo)?;
+    check_finite_eigensolution(energies.iter(), columns.iter())?;
+    Ok((energies, columns.reversed_axes()))
 }
 
 /// Compute selected eigenvalues and eigenvectors of a complex Hermitian matrix
@@ -73,7 +93,7 @@ pub fn eigh_x<S>(
 where
     S: Data<Elem = Complex<f64>>,
 {
-    let (n, mut a) = prepare_matrix(x)?;
+    let (n, mut a) = prepare_matrix(x, uplo)?;
     validate_range(range, epsilon)?;
     if n == 0 {
         return Ok((Array1::zeros(0), Array2::zeros((0, 0))));
@@ -119,6 +139,10 @@ where
         );
     }
     if info == 0 {
+        check_finite_eigensolution(
+            w.iter().take(m as usize),
+            z.iter().take(n as usize * m as usize),
+        )?;
         Ok((
             Array1::<f64>::from_vec(w.into_iter().take(m as usize).collect()),
             Array2::<Complex<f64>>::from_shape_vec(
@@ -161,7 +185,7 @@ pub fn eigvalsh_x<S>(
 where
     S: Data<Elem = Complex<f64>>,
 {
-    let (n, mut a) = prepare_matrix(x)?;
+    let (n, mut a) = prepare_matrix(x, uplo)?;
     validate_range(range, epsilon)?;
     if n == 0 {
         return Ok(Array1::zeros(0));
@@ -207,6 +231,7 @@ where
         );
     }
     if info == 0 {
+        check_finite_eigensolution(w.iter().take(m as usize), std::iter::empty())?;
         Ok(Array1::<f64>::from_vec(
             w.into_iter().take(m as usize).collect(),
         ))
@@ -250,7 +275,7 @@ where
         UPLO::Upper => b'U',
         UPLO::Lower => b'L',
     };
-    let (n, mut a) = prepare_matrix(x)?;
+    let (n, mut a) = prepare_matrix(x, uplo)?;
     validate_range(range, epsilon)?;
     if n == 0 {
         return Ok((Array1::zeros(0), Array2::zeros((0, 0))));
@@ -296,6 +321,10 @@ where
     }
 
     if info == 0 {
+        check_finite_eigensolution(
+            w.iter().take(m as usize),
+            z.iter().take(n as usize * m as usize),
+        )?;
         Ok((
             Array1::<f64>::from_vec(w.into_iter().take(m as usize).collect()),
             Array2::<Complex<f64>>::from_shape_vec(
@@ -333,7 +362,7 @@ pub fn eigvalsh_r<S>(
 where
     S: Data<Elem = Complex<f64>>,
 {
-    let (n, mut a) = prepare_matrix(x)?;
+    let (n, mut a) = prepare_matrix(x, uplo)?;
     validate_range(range, epsilon)?;
     if n == 0 {
         return Ok(Array1::zeros(0));
@@ -418,6 +447,7 @@ where
         );
     }
     if info == 0 {
+        check_finite_eigensolution(w.iter().take(m as usize), std::iter::empty())?;
         Ok(Array1::<f64>::from_vec(
             w.into_iter().take(m as usize).collect(),
         ))
@@ -449,7 +479,7 @@ pub fn eigvalsh_v<S>(x: &ArrayBase<S, Ix2>, uplo: UPLO) -> Result<Array1<f64>>
 where
     S: Data<Elem = Complex<f64>>,
 {
-    let (n, mut a) = prepare_matrix(x)?;
+    let (n, mut a) = prepare_matrix(x, uplo)?;
     if n == 0 {
         return Ok(Array1::zeros(0));
     }
@@ -480,6 +510,7 @@ where
         );
     }
     if info == 0 {
+        check_finite_eigensolution(w.iter(), std::iter::empty())?;
         Ok(Array1::<f64>::from_vec(w))
     } else {
         Err(TbError::Lapack {
@@ -501,6 +532,7 @@ fn lapack_dimension(n: usize) -> Result<i32> {
 
 fn prepare_matrix<S: Data<Elem = Complex<f64>>>(
     x: &ArrayBase<S, Ix2>,
+    uplo: UPLO,
 ) -> Result<(i32, Vec<Complex<f64>>)> {
     if x.nrows() != x.ncols() {
         return Err(TbError::InvalidArrayShape {
@@ -509,6 +541,17 @@ fn prepare_matrix<S: Data<Elem = Complex<f64>>>(
         });
     }
     let n = lapack_dimension(x.nrows())?;
+    if x.indexed_iter().any(|((i, j), z)| {
+        let selected = match uplo {
+            UPLO::Lower => i >= j,
+            UPLO::Upper => i <= j,
+        };
+        selected && (!z.re.is_finite() || !z.im.is_finite())
+    }) {
+        return Err(TbError::Other(
+            "H(k) contains nonfinite matrix elements".into(),
+        ));
+    }
     // LAPACK consumes columns. ndarray iterates in logical row order even for views.
     Ok((n, x.t().iter().copied().collect()))
 }
@@ -521,6 +564,25 @@ fn validate_range(range: (f64, f64), epsilon: f64) -> Result<()> {
     }
     if !epsilon.is_finite() {
         return Err(TbError::Other("eigenvalue tolerance must be finite".into()));
+    }
+    Ok(())
+}
+
+// INFO=0 does not guarantee finite outputs when rescaling overflows. Partial
+// drivers pass only their m energies and n*m vector coefficients, not workspace.
+fn check_finite_eigensolution<'a>(
+    mut energies: impl Iterator<Item = &'a f64>,
+    mut eigenvectors: impl Iterator<Item = &'a Complex<f64>>,
+) -> Result<()> {
+    if energies.any(|e| !e.is_finite()) {
+        return Err(TbError::Other(
+            "eigensolver returned nonfinite eigenvalues".into(),
+        ));
+    }
+    if eigenvectors.any(|z| !z.re.is_finite() || !z.im.is_finite()) {
+        return Err(TbError::Other(
+            "eigensolver returned nonfinite eigenvectors".into(),
+        ));
     }
     Ok(())
 }
@@ -542,6 +604,7 @@ mod tests {
     fn eigensolvers_reject_rectangular_inputs() {
         for shape in [(3, 2), (2, 3), (0, 2)] {
             let x = Array2::zeros(shape);
+            assert!(eigh_full(&x, UPLO::Upper).is_err());
             assert!(eigh_x(&x, (-10.0, 10.0), 0.0, UPLO::Upper).is_err());
             assert!(eigh_r(&x, (-10.0, 10.0), 0.0, UPLO::Upper).is_err());
             assert!(eigvalsh_x(&x, (-10.0, 10.0), 0.0, UPLO::Upper).is_err());
@@ -550,6 +613,157 @@ mod tests {
         }
         assert!(lapack_dimension(i32::MAX as usize).is_err());
         assert!(lapack_dimension(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn eigensolution_validation_checks_only_returned_values() {
+        let c = Complex::new;
+        let energies = [1.0, f64::INFINITY];
+        let vectors = [
+            c(1.0, 0.0),
+            c(0.0, 0.0),
+            c(f64::NAN, 0.0),
+            c(0.0, f64::INFINITY),
+        ];
+        // A partial driver returns m=1 columns of length n=2. Its unused
+        // workspace may be nonfinite and is not part of the returned solution.
+        check_finite_eigensolution(energies.iter().take(1), vectors.iter().take(2)).unwrap();
+        check_finite_eigensolution(energies.iter().take(0), vectors.iter().take(0)).unwrap();
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                check_finite_eigensolution([value].iter(), std::iter::empty()),
+                Err(TbError::Other(message)) if message.contains("nonfinite eigenvalues")
+            ));
+            for vector in [c(value, 0.0), c(0.0, value)] {
+                assert!(matches!(
+                    check_finite_eigensolution([1.0].iter(), [vector].iter()),
+                    Err(TbError::Other(message)) if message.contains("nonfinite eigenvectors")
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn full_eigensolvers_reject_finite_input_spectral_overflow() {
+        let h = Array2::from_elem((2, 2), Complex::new(1e308, 0.0));
+        // Every entry is finite, but the upper eigenvalue is 2e308.
+        for uplo in [UPLO::Upper, UPLO::Lower] {
+            for result in [
+                eigh_full(&h, uplo).map(|_| ()),
+                eigvalsh_v(&h, uplo).map(|_| ()),
+            ] {
+                assert!(matches!(
+                    result,
+                    Err(TbError::Other(message)) if message.contains("nonfinite eigenvalues")
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn selected_eigensolvers_preserve_finite_subsets_of_overflowing_spectra() {
+        let c = Complex::new;
+        let h = array![
+            [c(-1e308, 0.0), c(0.0, 0.0), c(0.0, 0.0)],
+            [c(0.0, 0.0), c(1e308, 0.0), c(1e308, 0.0)],
+            [c(0.0, 0.0), c(1e308, 0.0), c(1e308, 0.0)],
+        ];
+        for uplo in [UPLO::Upper, UPLO::Lower] {
+            for window in [(-1.5e308, -0.5e308), (-1.7e308, -1.6e308)] {
+                let expected_count = usize::from(window.1 == -0.5e308);
+                for solve in [eigh_x, eigh_r] {
+                    let (energies, vectors) = solve(&h, window, 0.0, uplo).unwrap();
+                    assert_eq!(energies.len(), expected_count);
+                    assert_eq!(vectors.dim(), (expected_count, 3));
+                    assert!(energies.iter().all(|e| (e / 1e308 + 1.0).abs() < 1e-12));
+                    assert!(vectors.iter().all(|z| z.re.is_finite() && z.im.is_finite()));
+                    if expected_count == 1 {
+                        assert!((vectors[[0, 0]].norm_sqr() - 1.0).abs() < 1e-12);
+                        assert!(vectors.slice(s![0, 1..]).iter().all(|z| z.norm() < 1e-12));
+                    }
+                }
+                for solve in [eigvalsh_x, eigvalsh_r] {
+                    let energies = solve(&h, window, 0.0, uplo).unwrap();
+                    assert_eq!(energies.len(), expected_count);
+                    assert!(energies.iter().all(|e| (e / 1e308 + 1.0).abs() < 1e-12));
+                }
+            }
+            // Extreme range endpoints may round differently across backends.
+            // Only actual returned nonfinite values are forbidden, not an empty
+            // selection or a finite subset of this unrepresentable spectrum.
+            for solve in [eigh_x, eigh_r] {
+                if let Ok((energies, vectors)) = solve(&h, (-f64::MAX, f64::MAX), 0.0, uplo) {
+                    assert!(energies.iter().all(|e| e.is_finite()));
+                    assert!(vectors.iter().all(|z| z.re.is_finite() && z.im.is_finite()));
+                }
+            }
+            for solve in [eigvalsh_x, eigvalsh_r] {
+                if let Ok(energies) = solve(&h, (-f64::MAX, f64::MAX), 0.0, uplo) {
+                    assert!(energies.iter().all(|e| e.is_finite()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn eigensolvers_validate_selected_triangle_components_consistently() {
+        for uplo in [UPLO::Upper, UPLO::Lower] {
+            for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                // The existing contract checks both diagonal components, even
+                // though LAPACK ignores a Hermitian diagonal's imaginary part.
+                for entry in [Complex::new(value, 0.0), Complex::new(0.0, value)] {
+                    for index in [
+                        (0, 0),
+                        if matches!(uplo, UPLO::Upper) {
+                            (0, 1)
+                        } else {
+                            (1, 0)
+                        },
+                    ] {
+                        let mut h = Array2::<Complex<f64>>::eye(2);
+                        h[index] = entry;
+                        let mut fortran = Array2::zeros((2, 2).f());
+                        fortran.assign(&h);
+                        let mut padded = Array2::zeros((4, 4));
+                        padded.slice_mut(s![..;2, ..;2]).assign(&h);
+                        for x in [h.view(), fortran.view(), padded.slice(s![..;2, ..;2])] {
+                            for result in [
+                                eigh_full(&x, uplo).map(|_| ()),
+                                eigvalsh_v(&x, uplo).map(|_| ()),
+                                eigh_x(&x, (-2.0, 2.0), 0.0, uplo).map(|_| ()),
+                                eigh_r(&x, (-2.0, 2.0), 0.0, uplo).map(|_| ()),
+                                eigvalsh_x(&x, (-2.0, 2.0), 0.0, uplo).map(|_| ()),
+                                eigvalsh_r(&x, (-2.0, 2.0), 0.0, uplo).map(|_| ()),
+                            ] {
+                                assert!(matches!(
+                                    result,
+                                    Err(TbError::Other(message)) if message.contains("H(k) contains nonfinite")
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            // Do not reject finite components because their complex norm
+            // overflows, or impose a new zero-imaginary-diagonal policy.
+            let scalar = array![[Complex::new(f64::MAX, f64::MAX)]];
+            let (energies, vectors) = eigh_full(&scalar, uplo).unwrap();
+            assert_eq!(energies, array![f64::MAX]);
+            assert_eq!(vectors, array![[Complex::new(1.0, 0.0)]]);
+            assert_eq!(eigvalsh_v(&scalar, uplo).unwrap(), array![f64::MAX]);
+            for solve in [eigh_x, eigh_r] {
+                assert_eq!(
+                    solve(&scalar, (0.0, f64::MAX), 0.0, uplo).unwrap().0,
+                    array![f64::MAX]
+                );
+            }
+            for solve in [eigvalsh_x, eigvalsh_r] {
+                assert_eq!(
+                    solve(&scalar, (0.0, f64::MAX), 0.0, uplo).unwrap(),
+                    array![f64::MAX]
+                );
+            }
+        }
     }
 
     #[test]
@@ -578,10 +792,21 @@ mod tests {
             for x in [stored.view(), fortran.view(), padded.slice(s![..;2, ..;2])] {
                 let reference = eigvalsh_v(&x, uplo).unwrap();
                 for (energies, vectors) in [
+                    eigh_full(&x, uplo).unwrap(),
                     eigh_x(&x, (-10.0, 10.0), 0.0, uplo).unwrap(),
                     eigh_r(&x, (-10.0, 10.0), 0.0, uplo).unwrap(),
                 ] {
                     assert_eq!(vectors.dim(), (3, 3));
+                    let bra = vectors.mapv(|z| z.conj());
+                    let gram = bra.dot(&vectors.t());
+                    let transformed = bra.dot(&h.dot(&vectors.t()));
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            let delta = if i == j { 1.0 } else { 0.0 };
+                            assert!((gram[[i, j]] - delta).norm() < 1e-12);
+                            assert!((transformed[[i, j]] - delta * energies[i]).norm() < 1e-12);
+                        }
+                    }
                     for n in 0..3 {
                         assert!((energies[n] - reference[n]).abs() < 1e-12);
                         let ket = vectors.row(n);
@@ -608,9 +833,34 @@ mod tests {
     }
 
     #[test]
+    fn full_spectrum_degenerate_subspace_matches_independent_projector() {
+        // H = I - 3 |q><q| has a two-dimensional eigenspace at +1.
+        // Its projector is I - |q><q|, independent of LAPACK's basis choice.
+        let q = array![Complex::new(1.0, 0.0), Complex::i(), Complex::new(1.0, 1.0)] / 2.0;
+        let outer = Array2::from_shape_fn((3, 3), |(i, j)| q[i] * q[j].conj());
+        let h = Array2::<Complex<f64>>::eye(3) - &outer * 3.0;
+        let expected = Array2::<Complex<f64>>::eye(3) - &outer;
+        let (energies, vectors) = eigh_full(&h, UPLO::Lower).unwrap();
+        assert!((energies[0] + 2.0).abs() < 1e-12);
+        assert!(energies.iter().skip(1).all(|e| (e - 1.0).abs() < 1e-12));
+        let degenerate = vectors.slice(s![1.., ..]);
+        let projector = degenerate.t().dot(&degenerate.mapv(|z| z.conj()));
+        assert!((&projector - &expected).iter().all(|z| z.norm() < 1e-12));
+        // Compare a partial-spectrum driver without comparing arbitrary phases.
+        let (_, window) = eigh_r(&h, (0.0, 2.0), 0.0, UPLO::Lower).unwrap();
+        let window_projector = window.t().dot(&window.mapv(|z| z.conj()));
+        assert!(
+            (&projector - window_projector)
+                .iter()
+                .all(|z| z.norm() < 1e-12)
+        );
+    }
+
+    #[test]
     fn eigensolvers_handle_empty_scalar_and_invalid_ranges() {
         let empty = Array2::<Complex<f64>>::zeros((0, 0));
         for uplo in [UPLO::Upper, UPLO::Lower] {
+            assert_eq!(eigh_full(&empty, uplo).unwrap().1.dim(), (0, 0));
             assert_eq!(
                 eigh_x(&empty, (-1.0, 1.0), 0.0, uplo).unwrap().1.dim(),
                 (0, 0)

@@ -128,7 +128,8 @@ pub use traits::{BandBerryCurvature, BerryCurvature};
 
 // Internal numerical machinery shared with crate-level tests and
 // `quantum_geometry`; it is deliberately not part of the public API.
-pub(crate) use tracking::global_band_track;
+pub(crate) use tracking::{global_band_track, permute_vertex};
+#[cfg(test)]
 pub(crate) use types::VertexKernel;
 
 #[cfg(test)]
@@ -322,18 +323,19 @@ mod regression_tests {
         let (direct, energies) = model.berry_connection_dipole_onek(&k, &a, &b, &c).unwrap();
         assert!((1e-10..1e-5).contains(&(energies[1] - energies[0])));
         assert!(direct.iter().any(|x| x.abs() > 1e-6));
-        let vertex = model
+        let (vertex, _) = model
             .compute_velocity_kernel(&k, &a, &b, Some(&c), crate::Gauge::Atom, None)
             .unwrap();
+        let nonlinear = vertex.nonlinear.as_ref().unwrap();
         for n in 0..2 {
             let bands = [vertex.band.to_vec()];
             let g = |matrix: &ndarray::Array2<num_complex::Complex<f64>>| {
                 kernel::eval_intrinsic_G_at_lam(n, &bands, &[matrix.clone()], &[1.0], 2)
             };
-            let ec = -(2.0 * vertex.vdiag.as_ref().unwrap()[n] * g(&vertex.k_ab)
+            let ec = -(2.0 * nonlinear.vdiag[n] * g(&vertex.k_ab)
                 - 0.5
-                    * (vertex.vdiag_a.as_ref().unwrap()[n] * g(vertex.k_bc.as_ref().unwrap())
-                        + vertex.vdiag_b.as_ref().unwrap()[n] * g(vertex.k_ac.as_ref().unwrap())));
+                    * (nonlinear.vdiag_a[n] * g(&nonlinear.k_bc)
+                        + nonlinear.vdiag_b[n] * g(&nonlinear.k_ac)));
             assert!((direct[n] - ec).abs() < 1e-12 * direct[n].abs().max(1.0));
         }
         assert_eq!(kernel::intrinsic_inverse_gap(1e-10), 0.0);

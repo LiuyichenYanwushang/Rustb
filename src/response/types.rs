@@ -28,27 +28,25 @@ use num_complex::Complex;
 
 /// Per‑k‑point gauge‑invariant primitives for energy‑cut integration.
 ///
-/// Fields dependent on `dir_c` are `Option`: `None` when only two
-/// directions were requested (e.g. Berry curvature).  Callers must
-/// handle the absence explicitly rather than receiving silent zeros.
+/// Nonlinear primitives form one optional group. Tracking eigenvectors are
+/// held separately and released before integration.
 #[derive(Clone)]
 pub(crate) struct VertexKernel {
     /// Band energies $E_n$, length `nsta`.
     pub band: Array1<f64>,
     /// $K^{ab}_{nm}=v^a_{nm}v^b_{mn}$, shape `(nsta, nsta)` (always computed).
     pub k_ab: Array2<Complex<f64>>,
-    /// $K^{bc}_{nm}=v^b_{nm}v^c_{mn}$ — `None` if `dir_c` was not supplied.
-    pub k_bc: Option<Array2<Complex<f64>>>,
-    /// $K^{ac}_{nm}=v^a_{nm}v^c_{mn}$ — `None` if `dir_c` was not supplied.
-    pub k_ac: Option<Array2<Complex<f64>>>,
-    /// Diagonal velocity $v^c_n$ — `None` if `dir_c` was not supplied.
-    pub vdiag: Option<Array1<f64>>,
-    /// Diagonal velocity $v^a_n$ — `None` if `dir_c` was not supplied.
-    pub vdiag_a: Option<Array1<f64>>,
-    /// Diagonal velocity $v^b_n$ — `None` if `dir_c` was not supplied.
-    pub vdiag_b: Option<Array1<f64>>,
-    /// Eigenvectors $U[:, n]$, shape `(norb, nsta)` — for band tracking.
-    pub evec: Array2<Complex<f64>>,
+    /// The five primitives needed only for nonlinear responses.
+    pub nonlinear: Option<NonlinearKernel>,
+}
+
+#[derive(Clone)]
+pub(crate) struct NonlinearKernel {
+    pub k_bc: Array2<Complex<f64>>,
+    pub k_ac: Array2<Complex<f64>>,
+    pub vdiag: Array1<f64>,
+    pub vdiag_a: Array1<f64>,
+    pub vdiag_b: Array1<f64>,
 }
 
 /// Zero‑clone simplex referencing `all_pts` vertex data by borrowed pointer.

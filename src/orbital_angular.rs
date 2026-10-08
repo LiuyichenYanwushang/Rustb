@@ -7,11 +7,12 @@
 //! Brillouin-zone integral for bulk orbital magnetization.
 
 use crate::error::{Result, TbError};
+use crate::ndarray_lapack::eigh_full;
 use crate::phy_const::{Element_charge, hbar, mass_charge};
 use crate::velocity::Velocity;
 use crate::{Gauge, Model, RMatrixData};
 use ndarray::prelude::*;
-use ndarray_linalg::{Eigh, UPLO};
+use ndarray_linalg::UPLO;
 use num_complex::Complex;
 
 /// Band-space Bloch-electron orbital angular momentum.
@@ -94,11 +95,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OrbitalAngular for Mode
                 ));
             }
         }
-        // An explicit Fortran layout makes ndarray-linalg return columns of H's
-        // eigenvectors, without the C-layout transpose/conjugation compensation.
-        let mut column_major = Array2::zeros((self.nsta(), self.nsta()).f());
-        column_major.assign(&ham);
-        let (energies, ket) = column_major.eigh(UPLO::Lower)?;
+        let (energies, eigenvectors) = eigh_full(&ham, UPLO::Lower)?;
+        let ket = eigenvectors.t();
         if energies
             .windows(2)
             .into_iter()
@@ -106,7 +104,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OrbitalAngular for Mode
         {
             return Err(TbError::Other("Bloch orbital angular momentum is undefined by the single-band formula for gaps <= 1e-10 eV".into()));
         }
-        let bra = ket.t().mapv(|z| z.conj());
+        let bra = eigenvectors.mapv(|z| z.conj());
         let mut band_velocity = Array3::zeros((3, self.nsta(), self.nsta()));
         for axis in 0..DIM {
             band_velocity

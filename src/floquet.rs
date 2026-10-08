@@ -853,7 +853,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Exact-zero modes are skipped.  Real-space supports from all one-mode
     /// results are unioned, and the returned model has the same state count
     /// and metadata as the input model. The sum uses ordinary `f64` arithmetic;
-    /// changing mode order can change floating-point rounding.
+    /// changing mode order can change floating-point rounding. An unrepresentable
+    /// intermediate correction is rejected even when an exact-arithmetic final
+    /// sum could be finite; no arbitrary-precision accumulator is used.
     pub fn floquet_effective_mode_resolved_model(
         &self,
         drive: &FloquetDrive,
@@ -912,16 +914,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             return self.floquet_effective_model(&single_drive, Some(options));
         }
 
-        // H0 + sum_alpha (H_eff[alpha] - H0) = (1 - N) H0 + sum_alpha H_eff[alpha].
-        let static_weight = 1.0 - active_modes.len() as f64;
+        // Accumulate the induced differences around H0. Multiplying H0 by
+        // (1 - N) first can overflow even when every correction is exactly zero.
         let mut blocks = RealSpaceBlockMap::new();
         for (i_r, row) in self.hamR.outer_iter().enumerate() {
-            blocks.insert(
-                row.to_vec(),
-                self.ham
-                    .index_axis(Axis(0), i_r)
-                    .mapv(|value| value * static_weight),
-            );
+            blocks.insert(row.to_vec(), self.ham.index_axis(Axis(0), i_r).to_owned());
         }
 
         for mode_def in active_modes {
@@ -932,7 +929,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 let dst = blocks
                     .entry(row.to_vec())
                     .or_insert_with(|| Array2::zeros((nsta, nsta)));
-                *dst += &single.ham.index_axis(Axis(0), i_r);
+                let dressed = single.ham.index_axis(Axis(0), i_r);
+                if let Some(original) = find_R(&self.hamR, &row) {
+                    let baseline = self.ham.index_axis(Axis(0), original);
+                    Zip::from(&mut *dst)
+                        .and(dressed)
+                        .and(baseline)
+                        .for_each(|out, &value, &static_value| *out += value - static_value);
+                } else {
+                    *dst += &dressed;
+                }
             }
         }
 
@@ -1397,12 +1403,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         validate_target_hamr::<DIM>(&target_ham_r)?;
 
         let harmonic_max = effective_harmonic_max(options)?;
-        let has_time_dependence = drive_has_time_dependent_field::<DIM>(drive);
+        let has_time_dependence = drive_has_ac_components(drive);
         let static_drive;
         let cache_drive = if has_time_dependence {
             drive
         } else {
-            static_drive = static_component_drive::<DIM>(drive);
+            static_drive = static_component_drive(drive);
             &static_drive
         };
         let cache_max = if has_time_dependence {
@@ -1575,12 +1581,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let harmonic_max = effective_harmonic_max(options)?;
 
         let nsta = self.nsta();
-        let has_time_dependence = drive_has_time_dependent_field::<DIM>(drive);
+        let has_time_dependence = drive_has_ac_components(drive);
         let static_drive;
         let cache_drive = if has_time_dependence {
             drive
         } else {
-            static_drive = static_component_drive::<DIM>(drive);
+            static_drive = static_component_drive(drive);
             &static_drive
         };
         let cache_max = if has_time_dependence {
@@ -1936,7 +1942,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                 drive,
                                 harmonic_min,
                                 harmonic_max,
-                                DIM,
                                 &fallback_clamped,
                                 &fallback_saturated,
                             )
@@ -2298,9 +2303,9 @@ fn validate_link_resolvability<const SPIN: bool, const DIM: usize, R: RMatrixDat
         //   takes the closed form.  Its only precondition is that the *summed*
         //   projection fits the cap, and it allocates no convolution window at
         //   all, so no window bound applies;
-        // * two or more such harmonics take the convolution, whose mode loop
-        //   checks every remaining mode separately, DC included, and whose work
-        //   window `span + 2·Σ|l|·M` is allocated and must therefore be bounded.
+        // * exactly two carriers may enumerate resonances without a window;
+        //   the remaining drives convolve individual AC modes and bound their
+        //   work window. DC never consumes an AC cap, ladder or window.
         //
         // Checking per mode in both cases would let a split amplitude (a + a)
         // slip past the cap; checking the sum in both would reject drives the
@@ -2319,6 +2324,15 @@ fn validate_link_resolvability<const SPIN: bool, const DIM: usize, R: RMatrixDat
         // Drive-level count, which is what chose the backend's amplitude cap.
         let drive_carriers = drive.modes.iter().filter(|mode| mode.harmonic != 0).count();
         for mode in &drive.modes {
+            if mode.harmonic == 0 {
+                dc_re += mode
+                    .a_complex
+                    .iter()
+                    .zip(&d)
+                    .map(|(a, x)| a.re * x)
+                    .sum::<f64>();
+                continue;
+            }
             let phase: Complex<f64> = mode.a_complex.iter().zip(&d).map(|(a, x)| a * x).sum();
             if !phase.re.is_finite() || !phase.im.is_finite() {
                 return Err(TbError::Other(
@@ -2328,20 +2342,9 @@ fn validate_link_resolvability<const SPIN: bool, const DIM: usize, R: RMatrixDat
             if phase.re == 0.0 && phase.im == 0.0 {
                 continue;
             }
-            if mode.harmonic == 0 {
-                // Static modes are a pure phase: only Re z is physical, so a large
-                // imaginary amplitude consumes no ladder and no bandwidth, exactly
-                // as in the backend.
-                dc_re += phase.re;
-                continue;
-            }
-            let magnitude = phase.norm();
-            if !magnitude.is_finite() {
-                return Err(TbError::Other(
-                    "Floquet link phase amplitude is not finite".into(),
-                ));
-            }
-            per_mode.push((mode.harmonic, magnitude));
+            // A single coherent carrier only uses the summed projection. An
+            // individual norm may overflow even when that sum cancels exactly.
+            per_mode.push((mode.harmonic, phase.norm()));
             carriers += 1;
             match &mut single {
                 Some((harmonic, total)) if *harmonic == mode.harmonic => *total += phase,
@@ -2429,9 +2432,15 @@ fn validate_link_resolvability<const SPIN: bool, const DIM: usize, R: RMatrixDat
         // the whole call rather than return coefficients that alias.  The
         // requested range counts too: an n-point DFT only returns true `C_n`
         // for `|n| < n/2`.
-        let grid = fallback_grid_size(drive, &d, -harmonic_max, harmonic_max);
+        let grid = fallback_grid_size(drive, &d, harmonic_min, harmonic_max);
         let needed = grid.required.max(grid.request_range);
         if needed > FALLBACK_GRID_MAX {
+            // The cheap cutoff upper bound is only a sufficient test. Before
+            // rejecting, let the actual backend certify its adaptive cutoffs
+            // and work budget; this expensive probe runs only on this boundary.
+            if bessel_peierls_coeffs(&d, drive, harmonic_min, harmonic_max, 6).is_ok() {
+                continue;
+            }
             return Err(TbError::Other(format!(
                 "Floquet drive needs {} samples on a link the Bessel backend cannot \
                  represent exactly (coherent sum ≤ {MAX_BESSEL_ARG_CLOSED_FORM}, convolution \
@@ -2509,48 +2518,25 @@ fn validate_effective_cache_layout(cache_max: isize, n_r: usize, nsta: usize) ->
     Ok(())
 }
 
-fn drive_has_time_dependent_field<const DIM: usize>(drive: &FloquetDrive) -> bool {
-    let mut amplitudes = std::collections::BTreeMap::<usize, [Complex<f64>; DIM]>::new();
-    for mode in &drive.modes {
-        if mode.harmonic == 0 {
-            continue;
-        }
-        let harmonic = mode.harmonic.unsigned_abs();
-        let entry = amplitudes
-            .entry(harmonic)
-            .or_insert([Complex::new(0.0, 0.0); DIM]);
-        for (component, amplitude) in entry.iter_mut().zip(mode.a_complex.iter()) {
-            *component += if mode.harmonic > 0 {
-                *amplitude
-            } else {
-                amplitude.conj()
-            };
-        }
-    }
-    amplitudes.values().any(|amplitude| {
-        amplitude
-            .iter()
-            .any(|value| value.re != 0.0 || value.im != 0.0)
-    })
+fn drive_has_ac_components(drive: &FloquetDrive) -> bool {
+    // Cartesian cancellation cannot certify link-local cancellation: a rounded
+    // zero could erase an ordinary physical phase. Let the scalar backend sum
+    // all nonzero AC modes after projection instead.
+    drive
+        .modes
+        .iter()
+        .any(|mode| mode.harmonic != 0 && mode.a_complex.iter().any(|a| a.re != 0.0 || a.im != 0.0))
 }
 
-fn static_component_drive<const DIM: usize>(drive: &FloquetDrive) -> FloquetDrive {
-    let mut amplitude = Array1::<Complex<f64>>::zeros(DIM);
-    for mode in &drive.modes {
-        if mode.harmonic == 0 {
-            for (total, value) in amplitude.iter_mut().zip(mode.a_complex.iter()) {
-                total.re += value.re;
-            }
-        }
-    }
-    let modes = if amplitude
+fn static_component_drive(drive: &FloquetDrive) -> FloquetDrive {
+    // Keep DC projections mode-local: Cartesian summation can discard a
+    // small physical phase before a large cancelling vector is projected.
+    let modes = drive
+        .modes
         .iter()
-        .any(|value| value.re != 0.0 || value.im != 0.0)
-    {
-        vec![LightMode::new(0, amplitude)]
-    } else {
-        Vec::new()
-    };
+        .filter(|mode| mode.harmonic == 0)
+        .map(|mode| LightMode::new(0, mode.a_complex.mapv(|a| Complex::new(a.re, 0.0))))
+        .collect();
     FloquetDrive::with_modes(drive.omega0_ev, modes)
 }
 
@@ -3005,6 +2991,17 @@ fn single_harmonic_closed_form(
     let mut single: Option<(isize, Complex<f64>)> = None;
     let mut dc = 0.0_f64;
     for mode in &drive.modes {
+        if mode.harmonic == 0 {
+            // Never form the unused imaginary projection: it may overflow even
+            // when the static real field is identically zero.
+            dc += mode
+                .a_complex
+                .iter()
+                .zip(d)
+                .map(|(a, x)| a.re * x)
+                .sum::<f64>();
+            continue;
+        }
         // Mode projection onto the link: z = a·d = R e^{iδ}.
         let z: Complex<f64> = mode
             .a_complex
@@ -3012,11 +3009,6 @@ fn single_harmonic_closed_form(
             .zip(d.iter())
             .map(|(a, x)| *a * *x)
             .sum();
-        if mode.harmonic == 0 {
-            // Only the real part of the DC projection enters the Peierls phase.
-            dc += z.re;
-            continue;
-        }
         if z.re == 0.0 && z.im == 0.0 {
             continue;
         }
@@ -3025,6 +3017,11 @@ fn single_harmonic_closed_form(
             Some(_) => return Ok(None),
             None => single = Some((mode.harmonic, z)),
         }
+    }
+    if !dc.is_finite() {
+        return Err(TbError::Other(
+            "bessel_peierls_coeffs: the static phase is not finite".into(),
+        ));
     }
     let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
     let dc_phase = Complex::new(0.0, -dc).exp();
@@ -3050,16 +3047,20 @@ fn single_harmonic_closed_form(
     let delta = z.arg();
     let mut coeffs = Array1::<Complex<f64>>::zeros(harmonic_count);
     for (index, n) in (harmonic_min..=harmonic_max).enumerate() {
-        if n.rem_euclid(harmonic) != 0 {
+        let n = n as i128;
+        let harmonic = harmonic as i128;
+        if n % harmonic != 0 {
             continue;
         }
-        // Exact division by construction; `|m| <= m_cap` keeps the lookup inside
-        // the ladder, and the truncated tail is exactly zero there.
+        // Widen before negation/division: MIN / -1 must not panic, and only
+        // an index inside the bounded ladder is converted back to isize.
         let m = -n / harmonic;
         let order = m.unsigned_abs();
-        if order > m_cap as usize {
+        if order > m_cap as u128 {
             continue;
         }
+        let order = order as usize;
+        let m = m as isize;
         let j_m = if m < 0 && order % 2 == 1 {
             -ladder.j[order]
         } else {
@@ -3211,6 +3212,15 @@ pub(crate) fn bessel_peierls_coeffs(
         MAX_BESSEL_ARG
     };
     for mode in &drive.modes {
+        if mode.harmonic == 0 {
+            dc_re += mode
+                .a_complex
+                .iter()
+                .zip(d)
+                .map(|(a, x)| a.re * x)
+                .sum::<f64>();
+            continue;
+        }
         // Mode projection onto the link: z = a·d = R e^{iδ}.
         let z: Complex<f64> = mode
             .a_complex
@@ -3218,13 +3228,6 @@ pub(crate) fn bessel_peierls_coeffs(
             .zip(d.iter())
             .map(|(a, d)| *a * *d)
             .sum();
-        if mode.harmonic == 0 {
-            // Static mode: a(t) contributes Re[a_0], so only the real part of
-            // the projection is physical.  A large imaginary amplitude is
-            // inert and must not consume a ladder, a cap or any bandwidth.
-            dc_re += z.re;
-            continue;
-        }
         let r = z.norm();
         if r == 0.0 {
             // Degenerate mode: only m = 0 contributes (B = 1), a no-op fold.
@@ -3327,28 +3330,22 @@ pub(crate) fn bessel_peierls_coeffs(
         };
         let mut coeffs = Array1::<Complex<f64>>::zeros((harmonic_max - harmonic_min + 1) as usize);
         for (index, n) in (harmonic_min..=harmonic_max).enumerate() {
-            let target = n.checked_neg().ok_or_else(|| {
-                TbError::Other("bessel_peierls_coeffs: requested order overflow".to_string())
-            })?;
+            let target = -(n as i128);
             let mut acc = Complex::new(0.0, 0.0);
             for m in -scan.m_cap..=scan.m_cap {
-                // l_scan·m + l_other·m' = −n; a product that leaves isize cannot
-                // land inside the other cutoff, so it is skipped, like a source
-                // outside the fold's working window.
-                let Some(shift) = scan.harmonic.checked_mul(m) else {
-                    continue;
-                };
-                let Some(numerator) = target.checked_sub(shift) else {
-                    continue;
-                };
-                if numerator % other.harmonic != 0 {
+                // Huge products can cancel to a small requested order. isize
+                // harmonics times the bounded Bessel cutoff fit in i128, including
+                // the subtraction, division and absolute value at either limit.
+                let numerator = target - (scan.harmonic as i128) * (m as i128);
+                let other_harmonic = other.harmonic as i128;
+                if numerator % other_harmonic != 0 {
                     continue;
                 }
-                let partner = numerator / other.harmonic;
-                if partner.abs() > other.m_cap {
+                let partner = numerator / other_harmonic;
+                if partner.abs() > other.m_cap as i128 {
                     continue;
                 }
-                acc += scan_seq[slot(m)] * other_seq[slot(partner)];
+                acc += scan_seq[slot(m)] * other_seq[slot(partner as isize)];
             }
             coeffs[index] = acc * dc_phase;
         }
@@ -3464,14 +3461,37 @@ struct FallbackGridSize {
     saturated: bool,
 }
 
-/// Size the alias-free fallback grid: `max(2·Σ_α |l_α|·M_α + 4,
-/// 2·max(|harmonic_min|, |harmonic_max|) + 1)`, clamped to [`FALLBACK_GRID_MAX`].  The
-/// first term resolves the link's signal bandwidth, the second the
-/// requested harmonic range: an n-point DFT returns the aliased sum
-/// `Σ_m C_{n+mn}`, which equals the true `C_n` only for `|n| < n/2`, so
-/// every requested bin needs `n ≥ 2·max(|harmonic_min|, |harmonic_max|) + 1`.  Kept
-/// separate from the DFT so tests can pin the exact sizing, the clamp,
-/// and the saturation flag.
+// Project before time evolution, sum coherent carriers (including l/-l),
+// and keep DC outside the oscillating phase. Sizing and sampling must use
+// the same scalar signal, not separately rounded Cartesian fields.
+fn time_grid_projections(
+    drive: &FloquetDrive,
+    d: &Array1<f64>,
+) -> (f64, std::collections::BTreeMap<usize, Complex<f64>>) {
+    let mut dc = 0.0;
+    let mut carriers = std::collections::BTreeMap::new();
+    for mode in &drive.modes {
+        if mode.harmonic == 0 {
+            dc += mode
+                .a_complex
+                .iter()
+                .zip(d)
+                .map(|(a, x)| a.re * x)
+                .sum::<f64>();
+            continue;
+        }
+        let z: Complex<f64> = mode.a_complex.iter().zip(d).map(|(a, x)| a * x).sum();
+        *carriers
+            .entry(mode.harmonic.unsigned_abs())
+            .or_insert(Complex::new(0.0, 0.0)) += if mode.harmonic > 0 { z } else { z.conj() };
+    }
+    carriers.retain(|_, z| z.re != 0.0 || z.im != 0.0);
+    (dc, carriers)
+}
+
+/// Size the alias-free grid from the coherent physical carriers after projection:
+/// `max(2·Σ |l|·M + 4, 2·max(|harmonic_min|, |harmonic_max|) + 1)`.
+/// Keep the unclamped requirement so public validation can reject aliasing.
 fn fallback_grid_size(
     drive: &FloquetDrive,
     d: &Array1<f64>,
@@ -3483,27 +3503,14 @@ fn fallback_grid_size(
     let mut saturated = false;
     let mode_count = drive.modes.len().max(1);
     let error_share = 1e-12 / mode_count as f64;
-    for mode in &drive.modes {
-        // A DC mode contributes a constant phase, independent of its complex
-        // amplitude, and therefore has no Fourier bandwidth or Bessel tail.
-        if mode.harmonic == 0 {
-            continue;
-        }
-        let z: Complex<f64> = mode
-            .a_complex
-            .iter()
-            .zip(d.iter())
-            .map(|(a, d)| *a * *d)
-            .sum();
+    let (_, carriers) = time_grid_projections(drive, d);
+    for (harmonic, z) in carriers {
         let r = z.norm();
-        if r == 0.0 {
-            continue;
-        }
         if !r.is_finite() {
-            // Degenerate amplitude (NaN/inf): skip the sizing and let the
-            // fallback DFT propagate the NaN visibly instead of panicking
-            // inside the Bessel order search.
-            continue;
+            // An unrepresentable physical carrier has unbounded required work,
+            // not zero bandwidth. Public validation must refuse this fallback.
+            bandwidth = usize::MAX;
+            break;
         }
         // The Bessel backend's precision margin is not a sampling floor.
         // A ladder that never decayed inside MAX_BESSEL_ORDER cannot certify a
@@ -3529,7 +3536,7 @@ fn fallback_grid_size(
         } else {
             m_cap as usize
         };
-        let drift = (mode.harmonic.unsigned_abs() as usize).saturating_mul(cutoff);
+        let drift = harmonic.saturating_mul(cutoff);
         bandwidth = bandwidth.saturating_add(drift);
     }
     let required = bandwidth.saturating_mul(2).saturating_add(4);
@@ -3579,7 +3586,6 @@ fn fallback_time_grid_coeffs(
     drive: &FloquetDrive,
     harmonic_min: isize,
     harmonic_max: isize,
-    dim: usize,
     clamped: &AtomicBool,
     saturated: &AtomicBool,
 ) -> Array1<Complex<f64>> {
@@ -3608,16 +3614,16 @@ fn fallback_time_grid_coeffs(
     let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
     let inv_n = 1.0 / (n_req as f64);
     let mut coeffs = vec![Complex::new(0.0, 0.0); harmonic_count];
+    let (dc, carriers) = time_grid_projections(drive, d);
+    let dc_phase = Complex::new(0.0, -dc).exp();
     for it in 0..n_req {
         let theta = TAU * (it as f64) * inv_n;
         let mut link_phase = 0.0;
-        for mode in &drive.modes {
-            let harmonic_phase = Complex::new(0.0, -(mode.harmonic as f64) * theta).exp();
-            for a in 0..dim {
-                link_phase += (mode.a_complex[a] * harmonic_phase).re * d[a];
-            }
+        for (&harmonic, &z) in &carriers {
+            let harmonic_phase = Complex::new(0.0, -(harmonic as f64) * theta).exp();
+            link_phase += (z * harmonic_phase).re;
         }
-        let peierls = Complex::new(0.0, -link_phase).exp();
+        let peierls = dc_phase * Complex::new(0.0, -link_phase).exp();
         for (i_n, n) in (harmonic_min..=harmonic_max).enumerate() {
             coeffs[i_n] += Complex::new(0.0, (n as f64) * theta).exp() * peierls;
         }
@@ -5288,39 +5294,493 @@ mod tests {
     fn sambe_review_regression_overflowing_drift_never_returns_aliased_coefficients() {
         let model = chain_model();
         let k = array![0.0];
-        let trunc = FloquetTruncation::new(0);
+        let trunc = FloquetTruncation::new(1);
+        // Independent J0(1), J1(1), J2(1) references. Adjacent huge carriers
+        // have C_n = (-1)^n J_|n|(1)^2 for this whole requested range. Products
+        // outside isize must still cancel, and both APIs must succeed, not merely
+        // agree on an error. n_max=0 would miss the lost second harmonic.
+        let bessel = [
+            0.765_197_686_557_966_6_f64,
+            0.440_050_585_744_933_5,
+            0.114_903_484_931_900_5,
+        ];
+        for harmonics in [[isize::MAX - 1, isize::MAX], [isize::MIN, isize::MIN + 1]] {
+            let drive = FloquetDrive::with_modes(
+                5.0,
+                harmonics
+                    .into_iter()
+                    .map(|h| LightMode::new(h, array![Complex::new(1.0, 0.0)]))
+                    .collect(),
+            );
+            let matrices = [
+                model
+                    .floquet_model(&drive, &trunc)
+                    .unwrap()
+                    .gen_ham(&k, Gauge::Lattice),
+                model
+                    .floquet_ham_onek(&k, &drive, &trunc, Gauge::Lattice)
+                    .unwrap(),
+            ];
+            for ham in matrices {
+                for ((row, col), &value) in ham.indexed_iter() {
+                    let order = row.abs_diff(col);
+                    let sign = if order % 2 == 0 { 1.0 } else { -1.0 };
+                    let expected = -2.0 * sign * bessel[order].powi(2)
+                        + if row == col {
+                            (row as f64 - 1.0) * drive.omega0_ev
+                        } else {
+                            0.0
+                        };
+                    assert!(
+                        (value - expected).norm() < 1e-10,
+                        "{harmonics:?}: H[{row},{col}]={value}, expected {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn static_shortcut_preserves_mode_local_link_projections() {
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, -1], None);
+        let big = (1_u64 << 53) as f64;
         let drive = FloquetDrive::with_modes(
             5.0,
             vec![
-                LightMode::new(isize::MAX - 1, array![Complex::new(1.0, 0.0)]),
-                LightMode::new(isize::MAX, array![Complex::new(1.0, 0.0)]),
+                LightMode::new(0, array![Complex::new(big, 0.0), Complex::new(big, 0.0)]),
+                LightMode::new(0, array![Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)]),
             ],
         );
-        // l1*m1 + l2*m2 = 0 only has m1=m2=0 inside the Bessel cutoffs.
-        // Independent J0(1) reference: C0 = J0(1)^2, H(0) = -2 C0.
-        // A backend may reject unrepresentable arithmetic, but must not return
-        // a finite, aliased matrix from an unresolved fallback grid.
-        let expected = -2.0 * 0.765_197_686_557_966_6_f64.powi(2);
-        let from_model = model
-            .floquet_model(&drive, &trunc)
-            .map(|sambe| sambe.gen_ham(&k, Gauge::Lattice));
-        let from_onek = model.floquet_ham_onek(&k, &drive, &trunc, Gauge::Lattice);
-        // Both paths share the backend and the validation, so they must reach
-        // the same verdict; without this the loop below would pass vacuously
-        // when both refuse.
-        assert_eq!(
-            from_model.is_err(),
-            from_onek.is_err(),
-            "the Sambe model and one-k paths disagree on an overflowing drift"
-        );
-        for result in [from_model, from_onek] {
-            if let Ok(ham) = result {
-                assert!(
-                    (ham[[0, 0]] - expected).norm() < 1e-10,
-                    "overflowing drift returned an aliased matrix: {} vs {expected}",
-                    ham[[0, 0]]
-                );
+        let k = array![0.0, 0.0];
+        let options = FloquetEffectiveOptions::new()
+            .with_order(0)
+            .with_harmonic_max(0);
+        let mut ac = drive.clone();
+        for mode in &mut ac.modes {
+            mode.harmonic = 1;
+        }
+        ac.add_mode(LightMode::new(
+            1,
+            array![Complex::new(-big, 0.0), Complex::new(-big, 0.0)],
+        ));
+        for (drive, expected) in [
+            (drive, -2.0 * 1.0_f64.cos()),
+            (ac, -2.0 * 0.765_197_686_557_966_6),
+        ] {
+            let expected = Complex::new(expected, 0.0);
+            let sambe = model
+                .floquet_ham_onek(&k, &drive, &FloquetTruncation::new(0), Gauge::Lattice)
+                .unwrap();
+            assert!((sambe[[0, 0]] - expected).norm() < 1e-12);
+            for effective in [
+                model
+                    .floquet_effective_model(&drive, Some(&options))
+                    .unwrap(),
+                model
+                    .floquet_effective_q_model(&drive, Some(&options), &array![0.0, 0.0])
+                    .unwrap(),
+                model
+                    .floquet_effective_mode_resolved_model(&drive, Some(&options))
+                    .unwrap(),
+                model
+                    .floquet_effective_model_legacy(&drive, 32, [3, 3], Some(&options))
+                    .unwrap(),
+            ] {
+                assert!((effective.gen_ham(&k, Gauge::Lattice)[[0, 0]] - expected).norm() < 1e-12);
             }
+        }
+    }
+
+    #[test]
+    fn true_fallback_nonzero_bins_preserve_negative_carrier_and_coherent_residual_phase() {
+        // Independent 60-digit mpmath J0/J1/J2(24576), not the production ladder.
+        let j = [
+            -0.000_538_813_002_458_071_2,
+            0.005_060_997_376_662_55,
+            0.000_539_224_867_478_958_5,
+        ];
+        let mut model =
+            Model::<false, 1>::tb_model(array![[1.0]], array![[0.0], [1.0]], None).unwrap();
+        model.set_hop(1.0, 0, 1, &array![0], None);
+        let z = Complex::new(24576.0 * 0.6, 24576.0 * 0.8);
+        let drives = [
+            (
+                FloquetDrive::with_modes(5.0, vec![LightMode::new(-1, array![z])]),
+                -1,
+                z.arg(),
+            ),
+            (
+                FloquetDrive::with_modes(
+                    5.0,
+                    vec![
+                        LightMode::new(1, array![Complex::new(1e19, 1e19)]),
+                        LightMode::new(-1, array![Complex::new(-1e19 + 24576.0, 1e19)]),
+                    ],
+                ),
+                1,
+                0.0,
+            ),
+        ];
+        for (drive, carrier, phase) in drives {
+            assert!(bessel_peierls_coeffs(&array![1.0], &drive, -2, 2, 6).is_err());
+            let size = fallback_grid_size(&drive, &array![1.0], -2, 2);
+            assert!(!size.clamped && !size.saturated);
+            let ham = model
+                .floquet_ham_onek(
+                    &array![0.0],
+                    &drive,
+                    &FloquetTruncation::new(1),
+                    Gauge::Lattice,
+                )
+                .unwrap();
+            for left in 0..3 {
+                for right in 0..3 {
+                    let n = left as isize - right as isize;
+                    let m = -n / carrier;
+                    let bessel = j[m.unsigned_abs()] * if m < 0 && m % 2 != 0 { -1.0 } else { 1.0 };
+                    let expected = Complex::new(0.0, -1.0).powi(m as i32)
+                        * bessel
+                        * Complex::from_polar(1.0, -(m as f64) * phase);
+                    assert!(
+                        (ham[[2 * left, 2 * right + 1]] - expected).norm() < 1e-11,
+                        "n={n}: {:?} vs {expected}",
+                        ham[[2 * left, 2 * right + 1]]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bessel_integer_limits_preserve_resonances_without_panics() {
+        let model = chain_model();
+        let k = array![0.13];
+        let trunc = FloquetTruncation::new(1);
+        let bessel = [
+            0.765_197_686_557_966_6_f64,
+            0.440_050_585_744_933_5,
+            0.114_903_484_931_900_5,
+        ];
+        let bloch_phase = Complex::from_polar(1.0, TAU * k[0]);
+        for large in [isize::MIN, isize::MAX] {
+            for small in [-1, 1] {
+                let drive = FloquetDrive::with_modes(
+                    5.0,
+                    vec![
+                        LightMode::new(large, array![Complex::new(1.0, 0.0)]),
+                        LightMode::new(small, array![Complex::new(1.0, 0.0)]),
+                    ],
+                );
+                let coefficients = bessel_peierls_coeffs(&array![1.0], &drive, -2, 2, 6).unwrap();
+                for (index, n) in (-2_isize..=2).enumerate() {
+                    let expected = bessel[0]
+                        * bessel[n.unsigned_abs()]
+                        * Complex::new(0.0, -1.0).powi(n.unsigned_abs() as i32);
+                    assert!((coefficients[index] - expected).norm() < 1e-12);
+                }
+                for ham in [
+                    model
+                        .floquet_ham_onek(&k, &drive, &trunc, Gauge::Lattice)
+                        .unwrap(),
+                    model
+                        .floquet_model(&drive, &trunc)
+                        .unwrap()
+                        .gen_ham(&k, Gauge::Lattice),
+                ] {
+                    for ((row, col), &value) in ham.indexed_iter() {
+                        let order = row.abs_diff(col);
+                        let coefficient =
+                            bessel[0] * bessel[order] * Complex::new(0.0, -1.0).powi(order as i32);
+                        let expected = -2.0 * (coefficient * bloch_phase).re
+                            + if row == col {
+                                (row as f64 - 1.0) * drive.omega0_ev
+                            } else {
+                                0.0
+                            };
+                        assert!((value - expected).norm() < 1e-11);
+                    }
+                }
+            }
+        }
+        // The single-carrier lookup must widen MIN negation and MIN / -1 too.
+        for harmonic in [isize::MIN, -1, 1] {
+            let drive = FloquetDrive::with_modes(
+                5.0,
+                vec![LightMode::new(harmonic, array![Complex::new(1.0, 0.0)])],
+            );
+            let value =
+                bessel_peierls_coeffs(&array![1.0], &drive, isize::MIN, isize::MIN, 6).unwrap()[0];
+            let expected = if harmonic == isize::MIN {
+                Complex::new(0.0, -bessel[1])
+            } else {
+                Complex::new(0.0, 0.0)
+            };
+            assert!((value - expected).norm() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn fallback_projection_matches_an_independent_bessel_reference() {
+        let mut model =
+            Model::<false, 2>::tb_model(array![[1.0, 0.0], [0.0, 1.0]], array![[0.0, 0.0]], None)
+                .unwrap();
+        model.set_hop(-1.0, 0, 0, &array![1, -1], None);
+        let k = array![0.0, 0.0];
+        let options = FloquetEffectiveOptions::new()
+            .with_order(0)
+            .with_harmonic_max(0);
+        // 60-digit mpmath reference: -2 J0(24576). Both representations have
+        // exactly the same projection. This fallback is neither clamped nor saturated.
+        let expected = 0.001_077_626_004_916_142_4;
+        assert!(24_576.0 > MAX_BESSEL_ARG_CLOSED_FORM);
+        for amplitude in [array![24_576.0, 0.0], array![1e19, 1e19 - 24_576.0]] {
+            let drive = FloquetDrive::with_modes(
+                5.0,
+                vec![LightMode::new(1, amplitude.mapv(|a| Complex::new(a, 0.0)))],
+            );
+            assert!(bessel_peierls_coeffs(&array![1.0, -1.0], &drive, 0, 0, 6).is_err());
+            let size = fallback_grid_size(&drive, &array![1.0, -1.0], 0, 0);
+            assert!(!size.clamped && !size.saturated);
+            let reference_grid = FloquetTimeGrid::new(&drive, 131_072, 0, 0, 2);
+            let reference =
+                peierls_fourier_coeffs(&array![1.0, -1.0], 0, 0, &drive, &reference_grid)[0];
+            assert!((reference - (-0.5 * expected)).norm() < 1e-10);
+            for ham in [
+                model
+                    .floquet_ham_onek(&k, &drive, &FloquetTruncation::new(0), Gauge::Lattice)
+                    .unwrap(),
+                model
+                    .floquet_model(&drive, &FloquetTruncation::new(0))
+                    .unwrap()
+                    .gen_ham(&k, Gauge::Lattice),
+                model
+                    .floquet_effective_model(&drive, Some(&options))
+                    .unwrap()
+                    .gen_ham(&k, Gauge::Lattice),
+                model
+                    .floquet_effective_q_model(&drive, Some(&options), &k)
+                    .unwrap()
+                    .gen_ham(&k, Gauge::Lattice),
+                model
+                    .floquet_effective_mode_resolved_model(&drive, Some(&options))
+                    .unwrap()
+                    .gen_ham(&k, Gauge::Lattice),
+            ] {
+                assert!((ham[[0, 0]] - expected).norm() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_factors_real_dc_and_coherent_cancellations_before_sampling() {
+        let model = chain_model();
+        let k = array![0.0];
+        let options = FloquetEffectiveOptions::new()
+            .with_order(0)
+            .with_harmonic_max(0);
+        let j0_200 = -0.015_437_439_930_565_085_f64;
+        assert!(200.0 > MAX_BESSEL_ARG);
+        let mut drive = FloquetDrive::with_modes(
+            5.0,
+            vec![
+                LightMode::new(1, array![Complex::new(200.0, 0.0)]),
+                LightMode::new(2, array![Complex::new(1e-15, 0.0)]),
+                LightMode::new(3, array![Complex::new(1e-15, 0.0)]),
+            ],
+        );
+        drive.add_mode(LightMode::new(0, array![Complex::new(1e20, 0.0)]));
+        assert!(bessel_peierls_coeffs(&array![1.0], &drive, 0, 0, 6).is_err());
+        let expected = 0.023_587_494_454_597_398_f64; // -2 cos(1e20) J0(200), independent 60-digit reference
+        let grid = FloquetTimeGrid::new(&drive, 4096, -2, 2, 1);
+        let oracle = peierls_fourier_coeffs(&array![1.0], -2, 2, &drive, &grid);
+        let ac_drive = FloquetDrive::with_modes(5.0, drive.modes[..3].to_vec());
+        let ac_grid = FloquetTimeGrid::new(&ac_drive, 4096, -2, 2, 1);
+        let ac = peierls_fourier_coeffs(&array![1.0], -2, 2, &ac_drive, &ac_grid);
+        for (actual, reference) in oracle.iter().zip(&ac) {
+            assert!((*actual - Complex::new(0.0, -1e20).exp() * reference).norm() < 1e-11);
+        }
+        for ham in [
+            model
+                .floquet_ham_onek(&k, &drive, &FloquetTruncation::new(0), Gauge::Lattice)
+                .unwrap(),
+            model
+                .floquet_model(&drive, &FloquetTruncation::new(0))
+                .unwrap()
+                .gen_ham(&k, Gauge::Lattice),
+            model
+                .floquet_effective_model(&drive, Some(&options))
+                .unwrap()
+                .gen_ham(&k, Gauge::Lattice),
+            model
+                .floquet_effective_q_model(&drive, Some(&options), &k)
+                .unwrap()
+                .gen_ham(&k, Gauge::Lattice),
+        ] {
+            assert!((ham[[0, 0]] - expected).norm() < 1e-10);
+        }
+        // The per-mode norm overflows, but the coherent pair cancels. A later
+        // distinct carrier prevents the single-harmonic fast path from hiding it.
+        let mixed = FloquetDrive::with_modes(
+            5.0,
+            vec![
+                LightMode::new(1, array![Complex::new(f64::MAX, f64::MAX)]),
+                LightMode::new(2, array![Complex::new(200.0, 0.0)]),
+                LightMode::new(1, array![Complex::new(-f64::MAX, -f64::MAX)]),
+            ],
+        );
+        let size = fallback_grid_size(&mixed, &array![1.0], 0, 0);
+        assert!(!size.clamped);
+        let ham = model
+            .floquet_ham_onek(&k, &mixed, &FloquetTruncation::new(0), Gauge::Lattice)
+            .unwrap();
+        assert!((ham[[0, 0]] + 2.0 * j0_200).norm() < 1e-11);
+        // A truly unrepresentable carrier must not be mistaken for zero bandwidth.
+        let overflowing = FloquetDrive::with_modes(
+            5.0,
+            vec![
+                LightMode::new(1, array![Complex::new(f64::MAX, f64::MAX)]),
+                LightMode::new(2, array![Complex::new(1.0, 0.0)]),
+            ],
+        );
+        assert!(fallback_grid_size(&overflowing, &array![1.0], 0, 0).clamped);
+        assert!(
+            model
+                .floquet_model(&overflowing, &FloquetTruncation::new(0))
+                .is_err()
+        );
+        assert!(
+            model
+                .floquet_effective_model(&overflowing, Some(&options))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn validation_ignores_inert_dc_and_defers_coherent_norms() {
+        let options = FloquetEffectiveOptions::new()
+            .with_order(0)
+            .with_harmonic_max(0);
+        for (length, modes) in [
+            (
+                2.0,
+                vec![LightMode::new(0, array![Complex::new(0.0, 1e308)])],
+            ),
+            (
+                1.0,
+                vec![
+                    LightMode::new(1, array![Complex::new(f64::MAX, f64::MAX)]),
+                    LightMode::new(1, array![Complex::new(-f64::MAX, -f64::MAX)]),
+                ],
+            ),
+            (
+                1.0,
+                vec![
+                    LightMode::new(1, array![Complex::new(f64::MAX, f64::MAX)]),
+                    LightMode::new(-1, array![Complex::new(-f64::MAX, f64::MAX)]),
+                ],
+            ),
+        ] {
+            let mut model = chain_model();
+            model.lat[[0, 0]] = length;
+            let drive = FloquetDrive::with_modes(5.0, modes);
+            let k = array![0.0];
+            let trunc = FloquetTruncation::new(1);
+            for ham in [
+                model
+                    .floquet_ham_onek(&k, &drive, &trunc, Gauge::Lattice)
+                    .unwrap(),
+                model
+                    .floquet_model(&drive, &trunc)
+                    .unwrap()
+                    .gen_ham(&k, Gauge::Lattice),
+            ] {
+                for ((row, col), &value) in ham.indexed_iter() {
+                    let expected = if row == col {
+                        -2.0 + (row as f64 - 1.0) * 5.0
+                    } else {
+                        0.0
+                    };
+                    assert!((value - expected).norm() < 1e-11);
+                }
+            }
+            for effective in [
+                model
+                    .floquet_effective_model(&drive, Some(&options))
+                    .unwrap(),
+                model
+                    .floquet_effective_q_model(&drive, Some(&options), &k)
+                    .unwrap(),
+            ] {
+                assert!((effective.gen_ham(&k, Gauge::Lattice)[[0, 0]] + 2.0).norm() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn validation_accepts_the_true_enumeration_budget() {
+        let model = chain_model();
+        let drive = FloquetDrive::with_modes(
+            5.0,
+            vec![
+                LightMode::new(1_000_000, array![Complex::new(1000.0, 0.0)]),
+                LightMode::new(1_000_001, array![Complex::new(1000.0, 0.0)]),
+            ],
+        );
+        let (_, actual_cutoff) =
+            bessel_ladder_for_amplitude(1000.0, 5e-13, 6, MAX_BESSEL_ARG_CLOSED_FORM).unwrap();
+        assert!(501 * (2 * actual_cutoff as usize + 1) <= MAX_BESSEL_ENUM_WORK);
+        let conservative = 4 * (1000 + 64 + 160);
+        assert!(501 * (2 * conservative + 1) > MAX_BESSEL_ENUM_WORK);
+        let reference = 0.000_614_379_810_418_578_f64; // J0(1000)^2, independent high-precision reference
+        let coefficients = bessel_peierls_coeffs(&array![1.0], &drive, -250, 250, 6).unwrap();
+        assert!((coefficients[250] - reference).norm() < 1e-12);
+        validate_link_resolvability(&model, &drive, -250, 250).unwrap();
+        let options = FloquetEffectiveOptions::new()
+            .with_order(1)
+            .with_harmonic_max(250);
+        for effective in [
+            model
+                .floquet_effective_model(&drive, Some(&options))
+                .unwrap(),
+            model
+                .floquet_effective_q_model(&drive, Some(&options), &array![0.0])
+                .unwrap(),
+        ] {
+            assert!(
+                (effective.gen_ham(&array![0.0], Gauge::Lattice)[[0, 0]] + 2.0 * reference).norm()
+                    < 1e-10
+            );
+        }
+    }
+
+    #[test]
+    fn mode_resolved_accumulates_corrections_without_scaling_the_common_baseline() {
+        let mut model = chain_model();
+        model.set_onsite(&array![6e307], None);
+        let options = FloquetEffectiveOptions::new()
+            .with_order(0)
+            .with_harmonic_max(0);
+        let j0 = 0.765_197_686_557_966_6_f64;
+        for modes in [
+            (1..=4)
+                .map(|h| LightMode::new(0, array![Complex::new(0.0, h as f64)]))
+                .collect::<Vec<_>>(),
+            (1..=4)
+                .map(|h| LightMode::new(h, array![Complex::new(1.0, 0.0)]))
+                .collect::<Vec<_>>(),
+        ] {
+            let inert = modes[0].harmonic == 0;
+            let drive = FloquetDrive::with_modes(5.0, modes);
+            let effective = model
+                .floquet_effective_mode_resolved_model(&drive, Some(&options))
+                .unwrap();
+            let origin = find_R(&effective.hamR, &array![0]).unwrap();
+            let link = find_R(&effective.hamR, &array![1]).unwrap();
+            assert_eq!(effective.ham[[origin, 0, 0]], Complex::new(6e307, 0.0));
+            let expected = if inert { -1.0 } else { 3.0 - 4.0 * j0 };
+            assert!((effective.ham[[link, 0, 0]] - expected).norm() < 1e-12);
         }
     }
 
@@ -7684,10 +8144,9 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        // Equivalent non-dynamic representations use the same n-independent
-        // path: a zero mode, exactly cancelling ±frequency amplitudes, and a
-        // purely static harmonic.  A huge harmonic_max must not create a huge cache
-        // or repeat the same support construction harmonic_max^2 times.
+        // Equivalent non-dynamic representations stay finite at a large cutoff.
+        // Exact-zero/static entries use the shortcut; coherent ±frequency
+        // cancellation is certified after projection by the scalar backend.
         let non_dynamic_drives = [
             FloquetDrive::with_modes(
                 1e-200,

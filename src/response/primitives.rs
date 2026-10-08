@@ -3,6 +3,7 @@
 //! Extracts band‑basis velocity matrix elements `v^a_nm` and builds the
 //! gauge‑invariant product `K^{ab}_nm = v^a_nm · v^b_mn`.
 
+use crate::ndarray_lapack::eigh_full;
 use ndarray::prelude::*;
 use ndarray_linalg::*;
 use num_complex::Complex;
@@ -13,12 +14,53 @@ use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::math::anti_comm;
 
-use super::types::VertexKernel;
+use super::types::{NonlinearKernel, VertexKernel};
+
+// ponytail: interpolators store raw velocity products; reject overflow
+// and off-diagonal underflow instead of inventing a zero response.
+// Raw subnormals also cannot preserve relative accuracy when weighted.
+// A scaled primitive representation is needed to extend this domain.
+pub(super) fn checked_velocity_product(
+    a: ArrayView2<'_, Complex<f64>>,
+    b: ArrayView2<'_, Complex<f64>>,
+) -> Result<Array2<Complex<f64>>> {
+    let nsta = a.nrows();
+    let mut product = Array2::<Complex<f64>>::zeros((nsta, nsta));
+    for n in 0..nsta {
+        for m in 0..nsta {
+            let left = a[[n, m]];
+            let right = b[[m, n]];
+            let value = left * right;
+            if !value.re.is_finite()
+                || !value.im.is_finite()
+                || (n != m
+                    && [
+                        (left.re, right.re),
+                        (left.im, right.im),
+                        (left.re, right.im),
+                        (left.im, right.re),
+                    ]
+                    .into_iter()
+                    .any(|(a, b)| a != 0.0 && b != 0.0 && (a * b == 0.0 || (a * b).is_subnormal())))
+                || (n != m && (value.re.is_subnormal() || value.im.is_subnormal()))
+            {
+                return Err(TbError::InvalidResponseParameter {
+                    parameter: "velocity_kernel",
+                    message: format!(
+                        "velocity product ({n}, {m}) is outside the f64 numerical range"
+                    ),
+                });
+            }
+            product[[n, m]] = value;
+        }
+    }
+    Ok(product)
+}
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Compute band‑basis velocity primitives at one k‑point.
     ///
-    /// Returns a `VertexKernel` containing band energies, eigenvectors,
+    /// Returns row-ket eigenvectors separately from the kernel containing energies,
     /// the gauge‑invariant `K^{ab}_nm = v^a_nm · v^b_mn`, and optionally
     /// the diagonal velocity `v^c_n`.
     ///
@@ -37,9 +79,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         dir_c: Option<&Array1<f64>>,
         gauge: Gauge,
         spin_matrix: Option<&Array2<Complex<f64>>>,
-    ) -> Result<VertexKernel> {
-        let nsta = self.nsta();
-
+    ) -> Result<(VertexKernel, Array2<Complex<f64>>)> {
         if k_vec.len() != DIM {
             return Err(TbError::KVectorLengthMismatch {
                 expected: DIM,
@@ -77,10 +117,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let (v_proj, hamk) = self.gen_v_projected(k_vec, gauge, &directions);
         #[cfg(test)]
         super::config::counters::count_eigen_decomposition();
-        let (band, evec) = hamk.eigh(UPLO::Lower)?;
-        // Convention: U^T · v · U^*
-        let ut = evec.t();
-        let uc = evec.map(|x| x.conj());
+        let (band, evec) = eigh_full(&hamk, UPLO::Lower)?;
+        // Row-ket convention: C* · v · C^T
+        let ut = evec.mapv(|x| x.conj());
+        let uc = evec.t();
 
         let to_band = |d: usize, spin_dress: bool| -> Array2<Complex<f64>> {
             let v_raw = v_proj.slice(s![d, .., ..]).to_owned();
@@ -96,43 +136,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let va = to_band(0, true);
         let vb = to_band(1, false);
 
-        let mut k_ab = Array2::<Complex<f64>>::zeros((nsta, nsta));
-        for n in 0..nsta {
-            for m in 0..nsta {
-                k_ab[[n, m]] = va[[n, m]] * vb[[m, n]];
-            }
-        }
+        let k_ab = checked_velocity_product(va.view(), vb.view())?;
 
-        let (vdiag, k_bc, k_ac, vdiag_a, vdiag_b) = if let Some(_dc) = dir_c {
+        let nonlinear = if dir_c.is_some() {
             let vc = to_band(2, false);
-            let mut bc = Array2::<Complex<f64>>::zeros((nsta, nsta));
-            let mut ac = Array2::<Complex<f64>>::zeros((nsta, nsta));
-            for n in 0..nsta {
-                for m in 0..nsta {
-                    bc[[n, m]] = vb[[n, m]] * vc[[m, n]];
-                    ac[[n, m]] = va[[n, m]] * vc[[m, n]];
-                }
-            }
-            (
-                Some(vc.diag().map(|x| x.re).to_owned()),
-                Some(bc),
-                Some(ac),
-                Some(va.diag().map(|x| x.re).to_owned()),
-                Some(vb.diag().map(|x| x.re).to_owned()),
-            )
+            Some(NonlinearKernel {
+                k_bc: checked_velocity_product(vb.view(), vc.view())?,
+                k_ac: checked_velocity_product(va.view(), vc.view())?,
+                vdiag: vc.diag().mapv(|z| z.re),
+                vdiag_a: va.diag().mapv(|z| z.re),
+                vdiag_b: vb.diag().mapv(|z| z.re),
+            })
         } else {
-            (None, None, None, None, None)
+            None
         };
-
-        Ok(VertexKernel {
-            band,
+        Ok((
+            VertexKernel {
+                band,
+                k_ab,
+                nonlinear,
+            },
             evec,
-            k_ab,
-            k_bc,
-            k_ac,
-            vdiag,
-            vdiag_a,
-            vdiag_b,
-        })
+        ))
     }
 }

@@ -1,8 +1,9 @@
 //! Reusable band-resolved Berry-curvature interface.
 
+use crate::ndarray_lapack::eigh_full;
 use ndarray::prelude::*;
 use ndarray::{ArrayBase, Data};
-use ndarray_linalg::{Eigh, UPLO};
+use ndarray_linalg::UPLO;
 use num_complex::Complex;
 use rayon::prelude::*;
 
@@ -270,7 +271,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let (projected_velocity, hamiltonian) = self.gen_v_projected(k, Gauge::Atom, direction);
         #[cfg(test)]
         super::config::counters::count_eigen_decomposition();
-        let (energies, eigenvectors) = hamiltonian.eigh(UPLO::Lower)?;
+        let (energies, eigenvectors) = eigh_full(&hamiltonian, UPLO::Lower)?;
 
         let current: Array2<Complex<f64>> = if let Some(spin_matrix) = spin {
             anti_comm(spin_matrix, &projected_velocity.index_axis(Axis(0), 0)) * 0.5
@@ -278,8 +279,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             projected_velocity.index_axis(Axis(0), 0).to_owned()
         };
         let second_velocity = projected_velocity.index_axis(Axis(0), 1);
-        let bra = eigenvectors.t();
-        let ket = eigenvectors.mapv(|value| value.conj());
+        let bra = eigenvectors.mapv(|value| value.conj());
+        let ket = eigenvectors.t();
         let current_band = bra.dot(&current.dot(&ket));
         let velocity_band = bra.dot(&second_velocity.dot(&ket));
         let kernel = current_band * velocity_band.reversed_axes();

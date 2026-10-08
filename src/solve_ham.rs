@@ -3,7 +3,7 @@ use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
-use crate::ndarray_lapack::{eigh_r, eigvalsh_r, eigvalsh_v};
+use crate::ndarray_lapack::{eigh_full, eigh_r, eigvalsh_r, eigvalsh_v};
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::*;
@@ -253,31 +253,6 @@ fn check_finite_hamiltonian<S: Data<Elem = Complex<f64>>>(ham: &ArrayBase<S, Ix2
         ));
     }
     Ok(())
-}
-
-#[inline(always)]
-fn diagonalize_with_vectors<S: Data<Elem = Complex<f64>>>(
-    ham: &ArrayBase<S, Ix2>,
-) -> Result<(Array1<f64>, Array2<Complex<f64>>)> {
-    // 布局/共轭约定（此处所有调用者均传入 gen_ham[_batch] 生成的 C 布局 H）：
-    // 本次核对的 ndarray-linalg 0.18.1 的 eigh_inplace 对 C 布局只做 swap_axes(0, 1)，
-    // 并没有共轭数据，所以 LAPACK 实际读到 H^T = H*（H 必须是 Hermitian）。
-    // 原始返回矩阵 U（下面的 vectors）按列存放 H* 的本征矢：H* U = U D。
-    // 因而 H 的列 ket 矩阵为 U*，而 Rustb 要返回按行存放 ket 系数的 C：
-    //     C = (U*)^T = U†，C[n, alpha] = <alpha|psi_n>。
-    // 注意 ndarray_linalg::conjugate(&U) 是“共轭转置”，不是仅逐元素共轭！
-    // 若改成 mapv(|z| z.conj()) 就会丢掉转置，使 band/basis 两个轴颠倒。
-    // 对 Rustb 返回的 C：H C^T = C^T D，算符变换为 C* O C^T。
-    // 对原始 eigh 返回的 U：算符变换才是 U^T O U*。两套公式不能混用。
-    // 这是当前依赖和输入布局对应的补偿，不适用于任意 F 布局的 eigh 结果。
-    // 升级 ndarray-linalg/lax 或改变 H 的布局时，必须重跑复数 H 的残差检查；
-    // H 与 H* 的能量相同，仅比较本征值不足以发现这个错误。
-    check_finite_hamiltonian(ham)?;
-    let (energies, vectors) = ham.eigh(UPLO::Lower)?;
-    Ok((
-        energies,
-        conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>>(&vectors),
-    ))
 }
 
 /// Solve the tight-binding Hamiltonian H(k).
@@ -596,7 +571,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Solve for Model<SPIN, D
     ) -> Result<(Array1<f64>, Array2<Complex<f64>>)> {
         self.validate_solver_input(kvec.view().insert_axis(Axis(0)))?;
         let hamk = self.gen_ham(&kvec, Gauge::Atom);
-        diagonalize_with_vectors(&hamk)
+        eigh_full(&hamk, UPLO::Lower)
     }
     fn solve_range_onek<S: Data<Elem = f64>>(
         &self,
@@ -707,7 +682,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .zip(output.outer_iter_mut())
                     .zip(states.outer_iter_mut())
                 {
-                    let (energies, eigenvectors) = diagonalize_with_vectors(&ham)?;
+                    let (energies, eigenvectors) = eigh_full(&ham, UPLO::Lower)?;
                     row.assign(&energies);
                     state.assign(&eigenvectors);
                 }
@@ -934,6 +909,85 @@ mod tests {
                     matches!(result, Err(TbError::Other(message)) if message.contains("H(k) contains nonfinite"))
                 );
             }
+        }
+    }
+
+    #[test]
+    fn solvers_reject_finite_hamiltonian_spectral_overflow() {
+        let mut model =
+            Model::<false, 1>::tb_model(array![[1.0]], array![[0.0], [0.0]], None).unwrap();
+        model.ham.fill(Complex::new(1e308, 0.0));
+        model.validate().unwrap();
+        let points = array![[0.0], [0.13], [0.25], [0.51], [0.75]];
+        for k in points.outer_iter() {
+            let ham = model.gen_ham(&k, Gauge::Atom);
+            assert!(ham.iter().all(|z| z.re.is_finite() && z.im.is_finite()));
+            for result in [
+                model.solve_onek(&k).map(|_| ()),
+                model.solve_band_onek(&k).map(|_| ()),
+            ] {
+                assert!(matches!(
+                    result,
+                    Err(TbError::Other(message)) if message.contains("nonfinite eigenvalues")
+                ));
+            }
+        }
+        for threads in [1, 3] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for result in pool.install(|| {
+                let hams = model.gen_ham_batch(&points, Gauge::Atom);
+                assert!(hams.iter().all(|z| z.re.is_finite() && z.im.is_finite()));
+                [
+                    model.solve_band_all(&points).map(|_| ()),
+                    model.solve_band_all_parallel(&points).map(|_| ()),
+                    model.solve_all(&points).map(|_| ()),
+                    model.solve_all_parallel(&points).map(|_| ()),
+                ]
+            }) {
+                assert!(matches!(
+                    result,
+                    Err(TbError::Other(message)) if message.contains("nonfinite eigenvalues")
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn range_solvers_preserve_finite_subsets_of_overflowing_spectra() {
+        let mut model =
+            Model::<false, 1>::tb_model(array![[1.0]], Array2::zeros((3, 1)), None).unwrap();
+        model.set_onsite(&array![-1e308, 1e308, 1e308], None);
+        model.add_hop(1e308, 1, 2, &array![0], None);
+        model.validate().unwrap();
+        let k = array![0.0];
+        assert!(model.solve_onek(&k).is_err());
+        assert!(model.solve_band_onek(&k).is_err());
+        for window in [(-1.5e308, -0.5e308), (-1.7e308, -1.6e308)] {
+            let expected_count = usize::from(window.1 == -0.5e308);
+            let energies = model.solve_band_range_onek(&k, window, 0.0).unwrap();
+            assert_eq!(energies.len(), expected_count);
+            assert!(energies.iter().all(|e| (e / 1e308 + 1.0).abs() < 1e-12));
+            let (energies, vectors) = model.solve_range_onek(&k, window, 0.0).unwrap();
+            assert_eq!(energies.len(), expected_count);
+            assert_eq!(vectors.dim(), (expected_count, model.nsta()));
+            assert!(energies.iter().all(|e| (e / 1e308 + 1.0).abs() < 1e-12));
+            assert!(vectors.iter().all(|z| z.re.is_finite() && z.im.is_finite()));
+            if expected_count == 1 {
+                assert!((vectors[[0, 0]].norm_sqr() - 1.0).abs() < 1e-12);
+                assert!(vectors.slice(s![0, 1..]).iter().all(|z| z.norm() < 1e-12));
+            }
+        }
+        // A range solve need not fail just because an omitted band overflows;
+        // regardless of backend rounding, every successful output must be finite.
+        if let Ok(energies) = model.solve_band_range_onek(&k, (-f64::MAX, f64::MAX), 0.0) {
+            assert!(energies.iter().all(|e| e.is_finite()));
+        }
+        if let Ok((energies, vectors)) = model.solve_range_onek(&k, (-f64::MAX, f64::MAX), 0.0) {
+            assert!(energies.iter().all(|e| e.is_finite()));
+            assert!(vectors.iter().all(|z| z.re.is_finite() && z.im.is_finite()));
         }
     }
 

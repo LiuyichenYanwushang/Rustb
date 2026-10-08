@@ -148,8 +148,11 @@ use ndarray::*;
 use ndarray_linalg::conjugate;
 use ndarray_linalg::*;
 use num_complex::Complex;
+use rayon::prelude::*;
 use std::f64::consts::PI;
-use std::fs::File;
+use std::fs::{File, create_dir_all};
+use std::io::{BufWriter, Write};
+use std::process::{Command, Stdio};
 
 /// Basic building block for surface Green's function calculations.
 #[derive(Clone, Debug)]
@@ -225,10 +228,17 @@ impl SurfGreen {
                 dim: model.dim_r(),
             });
         }
-        let mut R_max: usize = 0;
+        model.validate()?;
+        if !eta.is_finite() || eta <= 0.0 {
+            return Err(surface_error("eta", "must be finite and positive"));
+        }
+        if Np == Some(0) {
+            return Err(surface_error("Np", "must be positive"));
+        }
+        let mut R_max: usize = 1;
         for R0 in model.hamR.rows() {
-            if R_max < R0[[dir]].abs() as usize {
-                R_max = R0[[dir]].abs() as usize;
+            if R_max < R0[[dir]].unsigned_abs() {
+                R_max = R0[[dir]].unsigned_abs();
             }
         }
         let R_max = match Np {
@@ -292,16 +302,21 @@ impl SurfGreen {
     /// atom-position gauge described in the [module-level documentation](self).
     /// Both matrices have shape `nsta × nsta`.
     ///
-    /// # Panics
-    ///
-    /// Panics if `kvec.len() != self.dim_r`.
+    /// Returns an error for malformed surface storage or nonfinite/wrong-length momentum.
     #[inline(always)]
     pub fn gen_ham_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-    ) -> (Array2<Complex<f64>>, Array2<Complex<f64>>) {
+    ) -> Result<(Array2<Complex<f64>>, Array2<Complex<f64>>)> {
+        self.validate()?;
         if kvec.len() != self.dim_r {
-            panic!("Wrong, the k-vector's length must equal to the dimension of model.")
+            return Err(TbError::KVectorLengthMismatch {
+                expected: self.dim_r,
+                actual: kvec.len(),
+            });
+        }
+        if kvec.iter().any(|x| !x.is_finite()) {
+            return Err(surface_error("kvec", "components must be finite"));
         }
         // Orbital gauge phases: exp(i 2π τ·k)
         let orb_phase: Array1<Complex<f64>> = self
@@ -340,686 +355,660 @@ impl SurfGreen {
                     .for_each(|h, &pn| *h *= conj_pm * pn);
             }
         }
-        (ham0k, hamRk)
+        if ham0k
+            .iter()
+            .chain(hamRk.iter())
+            .any(|z| !z.re.is_finite() || !z.im.is_finite())
+        {
+            return Err(surface_error(
+                "Hamiltonian",
+                "Fourier transform must be finite",
+            ));
+        }
+        Ok((ham0k, hamRk))
     }
-    /// Evaluate the two surface densities and the bulk density at one energy.
+    fn validate(&self) -> Result<()> {
+        if !self.eta.is_finite() || self.eta <= 0.0 {
+            return Err(surface_error("eta", "must be finite and positive"));
+        }
+        if self.norb == 0
+            || self.norb.checked_mul(if self.spin { 2 } else { 1 }) != Some(self.nsta)
+            || self.orb.dim() != (self.norb, self.dim_r)
+            || self.lat.dim() != (self.dim_r, self.dim_r)
+            || self.ham_bulk.dim() != (self.ham_bulkR.nrows(), self.nsta, self.nsta)
+            || self.ham_hop.dim() != (self.ham_hopR.nrows(), self.nsta, self.nsta)
+            || self.ham_bulkR.ncols() != self.dim_r
+            || self.ham_hopR.ncols() != self.dim_r
+        {
+            return Err(surface_error(
+                "storage",
+                "inconsistent surface model dimensions",
+            ));
+        }
+        if self
+            .orb
+            .iter()
+            .chain(self.lat.iter())
+            .any(|x| !x.is_finite())
+            || self
+                .ham_bulk
+                .iter()
+                .chain(self.ham_hop.iter())
+                .any(|z| !z.re.is_finite() || !z.im.is_finite())
+        {
+            return Err(surface_error(
+                "storage",
+                "surface model data must be finite",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Evaluate spectral densities at one energy, returning `(right, left, bulk)`.
     ///
-    /// Returns `(rho_right, rho_left, rho_bulk)`. Each value is
-    /// $-\operatorname{Im}\operatorname{Tr}(G)/\pi$ for one principal layer.
-    /// The implementation performs at most 10 López-Sancho iterations and uses
-    /// a residual-coupling threshold of `1e-8`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `kvec` has the wrong length or a required matrix inversion
-    /// fails.
-    #[inline(always)]
+    /// Each density is $-\operatorname{Im}\operatorname{Tr}(G)/\pi$ for one
+    /// principal layer. Uses at most 10 decimation steps and a residual-coupling
+    /// threshold of `1e-8`. Invalid input and matrix inversion errors propagate.
     pub fn surf_green_one<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-        Energy: f64,
-    ) -> (f64, f64, f64) {
-        let (hamk, hamRk) = self.gen_ham_onek(kvec);
-        let hamRk_conj: Array2<Complex<f64>> =
-            conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>>(&hamRk);
-        let I0 = Array2::<Complex<f64>>::eye(self.nsta);
-        let accurate: f64 = 1e-8;
-        let epsilon = Complex::new(Energy, self.eta) * &I0;
-        let mut epi = hamk.clone();
-        let mut eps = hamk.clone();
-        let mut eps_t = hamk.clone();
-        let mut ap = hamRk.clone();
-        let mut bt = hamRk_conj.clone();
-
-        for _ in 0..10 {
-            let g0 = (&epsilon - &epi).inv().unwrap();
-            let mat_1 = &ap.dot(&g0);
-            let mat_2 = &bt.dot(&g0);
-            let g0 = &mat_1.dot(&bt);
-            epi = epi + g0;
-            eps = eps + g0;
-            let g0 = &mat_2.dot(&ap);
-            epi = epi + g0;
-            eps_t = eps_t + g0;
-            ap = mat_1.dot(&ap);
-            bt = mat_2.dot(&bt);
-            if ap.iter().map(|x| x.norm()).sum::<f64>() < accurate {
-                break;
-            }
+        energy: f64,
+    ) -> Result<(f64, f64, f64)> {
+        if !energy.is_finite() {
+            return Err(surface_error("energy", "must be finite"));
         }
-        let g_LL = (&epsilon - eps).inv().unwrap();
-        let g_RR = (&epsilon - eps_t).inv().unwrap();
-        let g_B = (&epsilon - epi).inv().unwrap();
-        let N_R: f64 = -1.0 / (PI) * g_RR.into_diag().sum().im;
-        let N_L: f64 = -1.0 / (PI) * g_LL.into_diag().sum().im;
-        let N_B: f64 = -1.0 / (PI) * g_B.into_diag().sum().im;
-        (N_R, N_L, N_B)
+        let (ham, hop) = self.gen_ham_onek(kvec)?;
+        decimate(&ham, &hop, energy, self.eta, 1e-8)
     }
 
-    /// Evaluate the two surface densities and the bulk density over an energy grid.
+    /// Evaluate an energy grid, returning `(right, left, bulk)` in energy order.
     ///
-    /// Returns `(rho_right, rho_left, rho_bulk)`; every array follows the order
-    /// of `Energy`. The implementation performs at most 10 López-Sancho
-    /// iterations per energy and uses a residual-coupling threshold of `1e-6`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `kvec` has the wrong length or a required matrix inversion
-    /// fails.
-    #[inline(always)]
+    /// Uses at most 10 decimation steps per energy and a residual-coupling
+    /// threshold of `1e-6`. The energy grid must be nonempty and finite.
     pub fn surf_green_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
-        Energy: &Array1<f64>,
-    ) -> (Array1<f64>, Array1<f64>, Array1<f64>) {
-        let (hamk, hamRk) = self.gen_ham_onek(kvec);
-        let hamRk_conj: Array2<Complex<f64>> =
-            conjugate::<Complex<f64>, OwnedRepr<Complex<f64>>>(&hamRk);
-        let I0 = Array2::<Complex<f64>>::eye(self.nsta);
-        let accurate: f64 = 1e-6;
-        let ((N_R, N_L), N_B): ((Vec<_>, Vec<_>), Vec<_>) = Energy
-            .map(|e| {
-                let epsilon = Complex::new(*e, self.eta) * &I0;
-                let mut epi = hamk.clone();
-                let mut eps = hamk.clone();
-                let mut eps_t = hamk.clone();
-                let mut ap = hamRk.clone();
-                let mut bt = hamRk_conj.clone();
-                for _ in 0..10 {
-                    let g0 = (&epsilon - &epi).inv().unwrap();
-                    let mat_1 = &ap.dot(&g0);
-                    let mat_2 = &bt.dot(&g0);
-                    let g0 = &mat_1.dot(&bt);
-                    epi += g0;
-                    eps += g0;
-                    let g0 = &mat_2.dot(&ap);
-                    epi += g0;
-                    eps_t += g0;
-                    ap = mat_1.dot(&ap);
-                    bt = mat_2.dot(&bt);
-                    if ap.iter().map(|x| x.norm()).sum::<f64>() < accurate {
-                        break;
-                    }
-                }
-                let g_LL = (&epsilon - eps).inv().unwrap();
-                let g_RR = (&epsilon - eps_t).inv().unwrap();
-                let g_B = (&epsilon - epi).inv().unwrap();
-                let N_R: f64 = -1.0 / (PI) * g_RR.into_diag().sum().im;
-                let N_L: f64 = -1.0 / (PI) * g_LL.into_diag().sum().im;
-                let N_B: f64 = -1.0 / (PI) * g_B.into_diag().sum().im;
-                ((N_R, N_L), N_B)
-            })
-            .into_iter()
-            .unzip();
-        let N_R = Array1::from_vec(N_R);
-        let N_L = Array1::from_vec(N_L);
-        let N_B = Array1::from_vec(N_B);
-        (N_R, N_L, N_B)
+        energy: &Array1<f64>,
+    ) -> Result<(Array1<f64>, Array1<f64>, Array1<f64>)> {
+        if energy.is_empty() || energy.iter().any(|e| !e.is_finite()) {
+            return Err(surface_error("energy", "grid must be nonempty and finite"));
+        }
+        let (ham, hop) = self.gen_ham_onek(kvec)?;
+        let mut right = Array1::zeros(energy.len());
+        let mut left = Array1::zeros(energy.len());
+        let mut bulk = Array1::zeros(energy.len());
+        for (i, &e) in energy.iter().enumerate() {
+            (right[i], left[i], bulk[i]) = decimate(&ham, &hop, e, self.eta, 1e-6)?;
+        }
+        Ok((right, left, bulk))
     }
 
-    /// Evaluate surface and bulk spectral densities along a momentum path.
+    /// Evaluate a momentum path, returning `(left, right, bulk)`.
     ///
-    /// The three returned arrays have shape `(kvec.nrows(), E_n)` and are
-    /// ordered as `(rho_left, rho_right, rho_bulk)`. Notice that this public
-    /// path-level ordering is the reverse of the first two elements returned by
-    /// [`SurfGreen::surf_green_one`] and [`SurfGreen::surf_green_onek`].
+    /// Arrays have shape `(kvec.nrows(), E_n)`. This path-level order reverses
+    /// the first two elements of [`Self::surf_green_one`] and
+    /// [`Self::surf_green_onek`]. Energies span the inclusive range `[E_min, E_max]`.
     pub fn surf_green_path(
         &self,
         kvec: &Array2<f64>,
         E_min: f64,
         E_max: f64,
         E_n: usize,
-        _spin: usize,
-    ) -> (Array2<f64>, Array2<f64>, Array2<f64>) {
-        let Energy = Array1::<f64>::linspace(E_min, E_max, E_n);
-        let nk = kvec.nrows();
-        let mut N_R = Array2::<f64>::zeros((nk, E_n));
-        let mut N_L = Array2::<f64>::zeros((nk, E_n));
-        let mut N_B = Array2::<f64>::zeros((nk, E_n));
-        Zip::from(N_R.outer_iter_mut())
-            .and(N_L.outer_iter_mut())
-            .and(N_B.outer_iter_mut())
-            .and(kvec.outer_iter())
-            .par_for_each(|mut nr, mut nl, mut nb, k| {
-                let (NR, NL, NB) = self.surf_green_onek(&k, &Energy);
-                nr.assign(&NR);
-                nl.assign(&NL);
-                nb.assign(&NB);
-            });
-        (N_L, N_R, N_B)
-    }
-
-    pub fn show_arc_state(&self, name: &str, kmesh: &Array1<usize>, energy: f64, _spin: usize) {
-        use std::fs::create_dir_all;
-        use std::io::{BufWriter, Write};
-        create_dir_all(name).expect("can't creat the file");
-        assert_eq!(
-            kmesh.len(),
-            2,
-            "show_arc_state can only calculated the three dimension system, so the kmesh need to be [m,n], but you give {}",
-            kmesh
-        );
-        let kvec = gen_kmesh(kmesh).expect("Failed to generate k-mesh");
-        let nk = kvec.nrows();
-        let mut N_R = Array1::<f64>::zeros(nk);
-        let mut N_L = Array1::<f64>::zeros(nk);
-        let mut N_B = Array1::<f64>::zeros(nk);
-        Zip::from(N_R.view_mut())
-            .and(N_L.view_mut())
-            .and(N_B.view_mut())
-            .and(kvec.outer_iter())
-            .par_for_each(|nr, nl, nb, k| {
-                let (NR, NL, NB) = self.surf_green_one(&k, energy);
-                *nr = NR;
-                *nl = NL;
-                *nb = NB;
-            });
-        let K = 2.0 * PI * self.lat.inv().unwrap().reversed_axes();
-        let kvec_real = kvec.dot(&K);
-        let mut file_name = String::new();
-        file_name.push_str(&name);
-        file_name.push_str("/arc.dat");
-        let mut file = File::create(file_name).expect("Uable to create arc.dat");
-        writeln!(file, r"# nk1, nk2, N_L, N_R, N_B").expect("failed to write arc.dat header");
-        let mut writer = BufWriter::new(file);
-        let mut s = String::new();
-        for i in 0..nk {
-            let aa = format!("{:.6}", kvec_real[[i, 0]]);
-            s.push_str(&aa);
-            let bb: String = format!("{:.6}", kvec_real[[i, 1]]);
-            if kvec_real[[i, 1]] >= 0.0 {
-                s.push_str("    ");
-            } else {
-                s.push_str("   ");
-            }
-            s.push_str(&bb);
-            let cc: String = format!("{:.6}", N_L[[i]]);
-            if N_L[[i]] >= 0.0 {
-                s.push_str("    ");
-            } else {
-                s.push_str("   ");
-            }
-            s.push_str(&cc);
-            let cc: String = format!("{:.6}", N_R[[i]]);
-            if N_R[[i]] >= 0.0 {
-                s.push_str("    ");
-            } else {
-                s.push_str("   ");
-            }
-            s.push_str(&cc);
-            let cc: String = format!("{:.6}", N_B[[i]]);
-            if N_B[[i]] >= 0.0 {
-                s.push_str("    ");
-            } else {
-                s.push_str("   ");
-            }
-            s.push_str(&cc);
-            s.push_str("\n");
+    ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>)> {
+        validate_energy_range(E_min, E_max, E_n)?;
+        self.validate()?;
+        if kvec.nrows() == 0 || kvec.ncols() != self.dim_r || kvec.iter().any(|x| !x.is_finite()) {
+            return Err(surface_error(
+                "kvec",
+                "path must be nonempty, finite and have dim_r columns",
+            ));
         }
-        writer.write_all(s.as_bytes()).unwrap();
-        let _ = file;
-
-        let width: usize = kmesh[[0]];
-        let height: usize = kmesh[[1]];
-
-        let N_L: Array2<f64> =
-            Array2::from_shape_vec((height, width), N_L.to_vec()).expect("Shape error");
-        let N_L = N_L.reversed_axes(); // 转置操作
-        let N_L = N_L.iter().cloned().collect::<Vec<f64>>();
-        let N_R: Array2<f64> =
-            Array2::from_shape_vec((height, width), N_R.to_vec()).expect("Shape error");
-        let N_R = N_R.reversed_axes(); // 转置操作
-        let N_R = N_R.iter().cloned().collect::<Vec<f64>>();
-        let N_B: Array2<f64> =
-            Array2::from_shape_vec((height, width), N_B.to_vec()).expect("Shape error");
-        let N_B = N_B.reversed_axes(); // 转置操作
-        let N_B = N_B.iter().cloned().collect::<Vec<f64>>();
-
-        //接下来我们绘制表面态
-        let mut fg = Figure::new();
-        let heatmap_data = N_L;
-        let axes = fg.axes2d();
-        //axes.set_palette(RAINBOW);
-        axes.set_palette(Custom(&[
-            (-1.0, 0.0, 0.0, 0.0),
-            (-0.9, 65.0 / 255.0, 9.0 / 255.0, 103.0 / 255.0),
-            (0.0, 147.0 / 255.0, 37.0 / 255.0, 103.0 / 255.0),
-            (0.2, 220.0 / 255.0, 80.0 / 255.0, 57.0 / 255.0),
-            (1.0, 252.0 / 255.0, 254.0 / 255.0, 164.0 / 255.0),
-        ]));
-        axes.image(
-            heatmap_data.iter(),
-            width,
-            height,
-            Some((0.0, 0.0, 1.0, 1.0)),
-            &[],
-        );
-        let axes = axes.set_x_range(Fix(0.0), Fix(1.0));
-        let axes = axes.set_y_range(Fix(0.0), Fix(1.0));
-        let axes = axes.set_aspect_ratio(Fix(1.0));
-        axes.set_x_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
-        axes.set_y_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
-        axes.set_cb_ticks_custom(
-            [
-                Major(-10.0, Fix("low")),
-                Major(0.0, Fix("0")),
-                Major(10.0, Fix("high")),
-            ]
-            .into_iter(),
-            &[],
-            &[Font("Times New Roman", 24.0)],
-        );
-        let mut pdfname = String::new();
-        pdfname.push_str(&name);
-        pdfname.push_str("/surf_state_l.pdf");
-        fg.set_terminal("pdfcairo", &pdfname);
-        fg.show().expect("Unable to draw heatmap");
-        let _ = fg;
-
-        let mut fg = Figure::new();
-        let heatmap_data = N_R;
-        let axes = fg.axes2d();
-        //axes.set_palette(RAINBOW);
-        axes.set_palette(Custom(&[
-            (-1.0, 0.0, 0.0, 0.0),
-            (-0.9, 65.0 / 255.0, 9.0 / 255.0, 103.0 / 255.0),
-            (0.0, 147.0 / 255.0, 37.0 / 255.0, 103.0 / 255.0),
-            (0.2, 220.0 / 255.0, 80.0 / 255.0, 57.0 / 255.0),
-            (1.0, 252.0 / 255.0, 254.0 / 255.0, 164.0 / 255.0),
-        ]));
-        axes.image(
-            heatmap_data.iter(),
-            width,
-            height,
-            Some((0.0, 0.0, 1.0, 1.0)),
-            &[],
-        );
-        let axes = axes.set_x_range(Fix(0.0), Fix(1.0));
-        let axes = axes.set_y_range(Fix(0.0), Fix(1.0));
-        let axes = axes.set_aspect_ratio(Fix(1.0));
-        axes.set_x_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
-        axes.set_y_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
-        axes.set_cb_ticks_custom(
-            [
-                Major(-10.0, Fix("low")),
-                Major(0.0, Fix("0")),
-                Major(10.0, Fix("high")),
-            ]
-            .into_iter(),
-            &[],
-            &[Font("Times New Roman", 24.0)],
-        );
-        let mut pdfname = String::new();
-        pdfname.push_str(&name);
-        pdfname.push_str("/surf_state_r.pdf");
-        fg.set_terminal("pdfcairo", &pdfname);
-        fg.show().expect("Unable to draw heatmap");
-        let _ = fg;
-
-        let mut fg = Figure::new();
-        let heatmap_data = N_B;
-        let axes = fg.axes2d();
-        //axes.set_palette(RAINBOW);
-        axes.set_palette(Custom(&[
-            (-1.0, 0.0, 0.0, 0.0),
-            (-0.9, 65.0 / 255.0, 9.0 / 255.0, 103.0 / 255.0),
-            (0.0, 147.0 / 255.0, 37.0 / 255.0, 103.0 / 255.0),
-            (0.2, 220.0 / 255.0, 80.0 / 255.0, 57.0 / 255.0),
-            (1.0, 252.0 / 255.0, 254.0 / 255.0, 164.0 / 255.0),
-        ]));
-        axes.image(
-            heatmap_data.iter(),
-            width,
-            height,
-            Some((0.0, 0.0, 1.0, 1.0)),
-            &[],
-        );
-        let axes = axes.set_x_range(Fix(0.0), Fix(1.0));
-        let axes = axes.set_y_range(Fix(0.0), Fix(1.0));
-        let axes = axes.set_aspect_ratio(Fix(1.0));
-        axes.set_x_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
-        axes.set_y_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
-        axes.set_cb_ticks_custom(
-            [
-                Major(-10.0, Fix("low")),
-                Major(0.0, Fix("0")),
-                Major(10.0, Fix("high")),
-            ]
-            .into_iter(),
-            &[],
-            &[Font("Times New Roman", 24.0)],
-        );
-        let mut pdfname = String::new();
-        pdfname.push_str(&name);
-        pdfname.push_str("/surf_state_b.pdf");
-        fg.set_terminal("pdfcairo", &pdfname);
-        fg.show().expect("Unable to draw heatmap");
-        let _ = fg;
+        kvec.nrows()
+            .checked_mul(E_n)
+            .and_then(|n| n.checked_mul(size_of::<f64>()))
+            .filter(|&bytes| bytes <= isize::MAX as usize)
+            .ok_or_else(|| surface_error("grid", "array size overflows"))?;
+        let energy = Array1::linspace(E_min, E_max, E_n);
+        // Collect in indexed momentum order before propagating errors, so the
+        // first failing momentum is deterministic across Rayon schedules.
+        let results: Vec<_> = kvec
+            .axis_iter(Axis(0))
+            .into_par_iter()
+            .map(|k| self.surf_green_onek(&k, &energy))
+            .collect();
+        let mut right = Array2::zeros((kvec.nrows(), E_n));
+        let mut left = right.clone();
+        let mut bulk = right.clone();
+        for (i, result) in results.into_iter().enumerate() {
+            let (r, l, b) = result?;
+            right.row_mut(i).assign(&r);
+            left.row_mut(i).assign(&l);
+            bulk.row_mut(i).assign(&b);
+        }
+        Ok((left, right, bulk))
     }
+
+    /// Write `arc.dat` and left/right/bulk PDFs for a two-dimensional surface.
+    ///
+    /// The data file uses Cartesian reciprocal coordinates (including `2π`);
+    /// image axes retain fractional coordinates. Spectral densities are unscaled.
+    /// Invalid input, file errors and gnuplot failures are returned to the caller.
+    pub fn show_arc_state(&self, name: &str, kmesh: &Array1<usize>, energy: f64) -> Result<()> {
+        self.validate()?;
+        if self.dim_r != 2 || kmesh.len() != 2 {
+            return Err(TbError::InvalidKmeshDimensions(kmesh.to_owned()));
+        }
+        if !energy.is_finite() {
+            return Err(surface_error("energy", "must be finite"));
+        }
+        let kvec = gen_kmesh::<f64>(kmesh)?;
+        let reciprocal = 2.0 * PI * self.lat.inv()?.reversed_axes();
+        let kvec_real = kvec.dot(&reciprocal);
+        if kvec_real.iter().any(|x| !x.is_finite()) {
+            return Err(surface_error(
+                "coordinates",
+                "reciprocal coordinates must be finite",
+            ));
+        }
+        let results: Vec<_> = kvec
+            .axis_iter(Axis(0))
+            .into_par_iter()
+            .map(|k| self.surf_green_one(&k, energy))
+            .collect();
+        let mut left = Array2::zeros((kmesh[0], kmesh[1]));
+        let mut right = left.clone();
+        let mut bulk = left.clone();
+        for (i, result) in results.into_iter().enumerate() {
+            let (r, l, b) = result?;
+            let index = [i / kmesh[1], i % kmesh[1]];
+            left[index] = l;
+            right[index] = r;
+            bulk[index] = b;
+        }
+        create_dir_all(name)?;
+        let mut writer = BufWriter::new(File::create(format!("{name}/arc.dat"))?);
+        writeln!(writer, "# nk1, nk2, N_L, N_R, N_B")?;
+        for (i, k) in kvec_real.rows().into_iter().enumerate() {
+            let index = [i / kmesh[1], i % kmesh[1]];
+            writeln!(
+                writer,
+                "{:.6}    {:.6}    {:.6}    {:.6}    {:.6}",
+                k[0], k[1], left[index], right[index], bulk[index]
+            )?;
+        }
+        writer.flush()?;
+        for (suffix, data) in [("l", &left), ("r", &right), ("b", &bulk)] {
+            let mut figure = surface_figure(data, (0.0, 0.0, 1.0, 1.0), &[]);
+            figure.set_terminal("pdfcairo", &format!("{name}/surf_state_{suffix}.pdf"));
+            render_surface(&figure, &mut Command::new("gnuplot"))?;
+        }
+        Ok(())
+    }
+
+    /// Write path spectra (`dos.surf_l`, `dos.surf_r`, `dos.surf_bulk`) and PDFs.
+    ///
+    /// Each positive density is log-normalized independently to `[-10, 10]`;
+    /// constant positive data maps to zero. Data files contain this same color
+    /// scale. Path distances omit `2π`, as in [`Kpath::k_path`].
+    /// Invalid input, nonpositive densities, file and gnuplot errors propagate.
     pub fn show_surf_state(
         &self,
         name: &str,
         kpath: &Array2<f64>,
-        label: &Vec<&str>,
+        label: &[&str],
         nk: usize,
         E_min: f64,
         E_max: f64,
         E_n: usize,
-        spin: usize,
-    ) {
-        use std::fs::create_dir_all;
-        use std::io::{BufWriter, Write};
-        create_dir_all(name).expect("can't creat the file");
-        let (kvec, kdist, knode) = self.k_path(kpath, nk).expect("Failed to generate k-path");
-        let Energy = Array1::<f64>::linspace(E_min, E_max, E_n);
-        let (N_L, N_R, N_B) = self.surf_green_path(&kvec, E_min, E_max, E_n, spin);
-        //let N_L=N_L.mapv(|x| if x > 0.0 {x.ln()} else if  x< 0.0 {-x.abs().ln()} else {0.0});
-        //let N_R=N_R.mapv(|x| if x > 0.0 {x.ln()} else if  x< 0.0 {-x.abs().ln()} else {0.0});
-        //let N_B=N_B.mapv(|x| if x > 0.0 {x.ln()} else if  x< 0.0 {-x.abs().ln()} else {0.0});
-        let ((N_L, N_R), N_B) = if spin == 0 {
-            let N_L = N_L.mapv(|x| x.ln());
-            let N_R = N_R.mapv(|x| x.ln());
-            let N_B = N_B.mapv(|x| x.ln());
-            let max = N_L.iter().fold(f64::NEG_INFINITY, |acc, &x| acc.max(x));
-            let min = N_L.iter().fold(f64::INFINITY, |acc, &x| acc.min(x));
-            let N_L = (N_L - min) / (max - min) * 20.0 - 10.0;
-            let max = N_R.iter().fold(f64::NEG_INFINITY, |acc, &x| acc.max(x));
-            let min = N_R.iter().fold(f64::INFINITY, |acc, &x| acc.min(x));
-            let N_R = (N_R - min) / (max - min) * 20.0 - 10.0;
-            let max = N_B.iter().fold(f64::NEG_INFINITY, |acc, &x| acc.max(x));
-            let min = N_B.iter().fold(f64::INFINITY, |acc, &x| acc.min(x));
-            let N_B = (N_B - min) / (max - min) * 20.0 - 10.0;
-            ((N_L, N_R), N_B)
-        } else {
-            ((N_L, N_R), N_B)
-        };
-
-        //绘制 left_dos------------------------
-        let mut left_name: String = String::new();
-        left_name.push_str(&name);
-        left_name.push_str("/dos.surf_l");
-        let file = File::create(left_name).expect("Unable to dos.surf_l.dat");
-        let mut writer = BufWriter::new(file);
-        let mut s = String::new();
-        for i in 0..nk {
-            for j in 0..E_n {
-                let aa = format!("{:.6}", kdist[[i]]);
-                s.push_str(&aa);
-                let bb: String = format!("{:.6}", Energy[[j]]);
-                if Energy[[j]] >= 0.0 {
-                    s.push_str("    ");
-                } else {
-                    s.push_str("   ");
+    ) -> Result<()> {
+        validate_energy_range(E_min, E_max, E_n)?;
+        if E_min == E_max || E_n < 2 {
+            return Err(surface_error(
+                "energy",
+                "a heatmap needs at least two distinct energies",
+            ));
+        }
+        if label.len() != kpath.nrows() {
+            return Err(TbError::PathLengthMismatch {
+                expected: kpath.nrows(),
+                actual: label.len(),
+            });
+        }
+        let (kvec, kdist, knode) = self.k_path(kpath, nk)?;
+        let energy = Array1::linspace(E_min, E_max, E_n);
+        let (left, right, bulk) = self.surf_green_path(&kvec, E_min, E_max, E_n)?;
+        // Validate all three datasets before creating any output.
+        let surfaces = [
+            ("l", "l", log_normalize(&left)?),
+            ("r", "r", log_normalize(&right)?),
+            ("bulk", "b", log_normalize(&bulk)?),
+        ];
+        let ticks: Vec<_> = knode.iter().copied().zip(label.iter().copied()).collect();
+        create_dir_all(name)?;
+        for (data_suffix, pdf_suffix, data) in surfaces {
+            let mut writer =
+                BufWriter::new(File::create(format!("{name}/dos.surf_{data_suffix}"))?);
+            for (i, &distance) in kdist.iter().enumerate() {
+                for (j, &e) in energy.iter().enumerate() {
+                    writeln!(writer, "{distance:.6}    {e:.6}    {:.6}", data[[i, j]])?;
                 }
-                s.push_str(&bb);
-                let cc: String = format!("{:.6}", N_L[[i, j]]);
-                if N_L[[i, j]] >= 0.0 {
-                    s.push_str("    ");
-                } else {
-                    s.push_str("   ");
-                }
-                s.push_str(&cc);
-                s.push_str("    ");
-                //writeln!(file,"{}",s);
-                s.push_str("\n");
+                writeln!(writer)?;
             }
-            s.push_str("\n");
-            //writeln!(file,"\n");
+            writer.flush()?;
+            let mut figure = surface_figure(&data, (kdist[0], E_min, kdist[nk - 1], E_max), &ticks);
+            figure.set_terminal("pdfcairo", &format!("{name}/surf_state_{pdf_suffix}.pdf"));
+            render_surface(&figure, &mut Command::new("gnuplot"))?;
         }
-        writer.write_all(s.as_bytes()).unwrap();
-        let _ = file;
-
-        //绘制右表面态----------------------
-        let mut left_name: String = String::new();
-        left_name.push_str(&name);
-        left_name.push_str("/dos.surf_r");
-        let file = File::create(left_name).expect("Unable to dos.surf_l.dat");
-        let mut writer = BufWriter::new(file);
-        let mut s = String::new();
-        for i in 0..nk {
-            for j in 0..E_n {
-                let aa = format!("{:.6}", kdist[[i]]);
-                s.push_str(&aa);
-                let bb: String = format!("{:.6}", Energy[[j]]);
-                if Energy[[j]] >= 0.0 {
-                    s.push_str("    ");
-                } else {
-                    s.push_str("   ");
-                }
-                s.push_str(&bb);
-                let cc: String = format!("{:.6}", N_R[[i, j]]);
-                if N_L[[i, j]] >= 0.0 {
-                    s.push_str("    ");
-                } else {
-                    s.push_str("   ");
-                }
-                s.push_str(&cc);
-                s.push_str("    ");
-                //writeln!(file,"{}",s);
-                s.push_str("\n");
-            }
-            s.push_str("\n");
-            //writeln!(file,"\n");
-        }
-        writer.write_all(s.as_bytes()).unwrap();
-        let _ = file;
-
-        //绘制体态----------------------
-        let mut left_name: String = String::new();
-        left_name.push_str(&name);
-        left_name.push_str("/dos.surf_bulk");
-        let file = File::create(left_name).expect("Unable to dos.surf_l.dat");
-        let mut writer = BufWriter::new(file);
-        let mut s = String::new();
-        for i in 0..nk {
-            for j in 0..E_n {
-                let aa = format!("{:.6}", kdist[[i]]);
-                s.push_str(&aa);
-                let bb: String = format!("{:.6}", Energy[[j]]);
-                if Energy[[j]] >= 0.0 {
-                    s.push_str("    ");
-                } else {
-                    s.push_str("   ");
-                }
-                s.push_str(&bb);
-                let cc: String = format!("{:.6}", N_B[[i, j]]);
-                if N_L[[i, j]] >= 0.0 {
-                    s.push_str("    ");
-                } else {
-                    s.push_str("   ");
-                }
-                s.push_str(&cc);
-                s.push_str("    ");
-                //writeln!(file,"{}",s);
-                s.push_str("\n");
-            }
-            s.push_str("\n");
-            //writeln!(file,"\n");
-        }
-        writer.write_all(s.as_bytes()).unwrap();
-        let _ = file;
-
-        //接下来我们绘制表面态
-        let mut fg = Figure::new();
-        let width: usize = nk;
-        let height: usize = E_n;
-        let mut heatmap_data = vec![];
-        for i in 0..height {
-            for j in 0..width {
-                heatmap_data.push(N_L[[j, i]]);
-            }
-        }
-        let axes = fg.axes2d();
-        //axes.set_palette(RAINBOW);
-        axes.set_palette(Custom(&[
-            (-1.0, 0.0, 0.0, 0.0),
-            (-0.9, 65.0 / 255.0, 9.0 / 255.0, 103.0 / 255.0),
-            (0.0, 147.0 / 255.0, 37.0 / 255.0, 103.0 / 255.0),
-            (0.2, 220.0 / 255.0, 80.0 / 255.0, 57.0 / 255.0),
-            (1.0, 252.0 / 255.0, 254.0 / 255.0, 164.0 / 255.0),
-        ]));
-        axes.image(
-            heatmap_data.iter(),
-            width,
-            height,
-            Some((kdist[[0]], E_min, kdist[[nk - 1]], E_max)),
-            &[],
-        );
-        let axes = axes.set_y_range(Fix(E_min), Fix(E_max));
-        let axes = axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk - 1]]));
-        let axes = axes.set_aspect_ratio(Fix(1.0));
-        let mut show_ticks = Vec::new();
-        for i in 0..knode.len() {
-            let A = knode[[i]];
-            let B = label[i];
-            show_ticks.push(Major(A, Fix(B)));
-        }
-        axes.set_x_ticks_custom(
-            show_ticks.into_iter(),
-            &[],
-            &[Font("Times New Roman", 24.0)],
-        );
-        axes.set_y_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
-        //axes.set_cb_ticks(Some((Fix(5.0),0)),&[],&[Font("Times New Roman",24.0)]);
-        axes.set_cb_ticks_custom(
-            [
-                Major(-10.0, Fix("low")),
-                Major(0.0, Fix("0")),
-                Major(10.0, Fix("high")),
-            ]
-            .into_iter(),
-            &[],
-            &[Font("Times New Roman", 24.0)],
-        );
-        let mut pdfname = String::new();
-        pdfname.push_str(&name);
-        pdfname.push_str("/surf_state_l.pdf");
-        fg.set_terminal("pdfcairo", &pdfname);
-        fg.show().expect("Unable to draw heatmap");
-        let _ = fg;
-
-        //接下来我们绘制right表面态
-        let mut fg = Figure::new();
-        let width: usize = nk;
-        let height: usize = E_n;
-        let mut heatmap_data = vec![];
-        for i in 0..height {
-            for j in 0..width {
-                heatmap_data.push(N_R[[j, i]]);
-            }
-        }
-        let axes = fg.axes2d();
-        //axes.set_palette(RAINBOW);
-        axes.set_palette(Custom(&[
-            (-1.0, 0.0, 0.0, 0.0),
-            (-0.9, 65.0 / 255.0, 9.0 / 255.0, 103.0 / 255.0),
-            (0.0, 147.0 / 255.0, 37.0 / 255.0, 103.0 / 255.0),
-            (0.2, 220.0 / 255.0, 80.0 / 255.0, 57.0 / 255.0),
-            (1.0, 252.0 / 255.0, 254.0 / 255.0, 164.0 / 255.0),
-        ]));
-        axes.image(
-            heatmap_data.iter(),
-            width,
-            height,
-            Some((kdist[[0]], E_min, kdist[[nk - 1]], E_max)),
-            &[],
-        );
-        let axes = axes.set_y_range(Fix(E_min), Fix(E_max));
-        let axes = axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk - 1]]));
-        let axes = axes.set_aspect_ratio(Fix(1.0));
-        let mut show_ticks = Vec::new();
-        for i in 0..knode.len() {
-            let A = knode[[i]];
-            let B = label[i];
-            show_ticks.push(Major(A, Fix(B)));
-        }
-        axes.set_x_ticks_custom(
-            show_ticks.into_iter(),
-            &[],
-            &[Font("Times New Roman", 24.0)],
-        );
-        axes.set_y_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
-        //axes.set_cb_ticks(Some((Fix(5.0),0)),&[],&[Font("Times New Roman",24.0)]);
-        axes.set_cb_ticks_custom(
-            [
-                Major(-10.0, Fix("low")),
-                Major(0.0, Fix("0")),
-                Major(10.0, Fix("high")),
-            ]
-            .into_iter(),
-            &[],
-            &[Font("Times New Roman", 24.0)],
-        );
-        let mut pdfname = String::new();
-        pdfname.push_str(&name);
-        pdfname.push_str("/surf_state_r.pdf");
-        fg.set_terminal("pdfcairo", &pdfname);
-        fg.show().expect("Unable to draw heatmap");
-        let _ = fg;
-        //接下来我们绘制bulk表面态
-        let mut fg = Figure::new();
-        let width: usize = nk;
-        let height: usize = E_n;
-        let mut heatmap_data = vec![];
-        for i in 0..height {
-            for j in 0..width {
-                heatmap_data.push(N_B[[j, i]]);
-            }
-        }
-        let axes = fg.axes2d();
-        //axes.set_palette(RAINBOW);
-        axes.set_palette(Custom(&[
-            (-1.0, 0.0, 0.0, 0.0),
-            (-0.9, 65.0 / 255.0, 9.0 / 255.0, 103.0 / 255.0),
-            (0.0, 147.0 / 255.0, 37.0 / 255.0, 103.0 / 255.0),
-            (0.2, 220.0 / 255.0, 80.0 / 255.0, 57.0 / 255.0),
-            (1.0, 252.0 / 255.0, 254.0 / 255.0, 164.0 / 255.0),
-        ]));
-        axes.image(
-            heatmap_data.iter(),
-            width,
-            height,
-            Some((kdist[[0]], E_min, kdist[[nk - 1]], E_max)),
-            &[],
-        );
-        let axes = axes.set_y_range(Fix(E_min), Fix(E_max));
-        let axes = axes.set_x_range(Fix(kdist[[0]]), Fix(kdist[[nk - 1]]));
-        let axes = axes.set_aspect_ratio(Fix(1.0));
-        let mut show_ticks = Vec::new();
-        for i in 0..knode.len() {
-            let A = knode[[i]];
-            let B = label[i];
-            show_ticks.push(Major(A, Fix(B)));
-        }
-        axes.set_x_ticks_custom(
-            show_ticks.into_iter(),
-            &[],
-            &[Font("Times New Roman", 24.0)],
-        );
-        axes.set_y_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
-        //axes.set_cb_ticks(Some((Fix(5.0),0)),&[],&[Font("Times New Roman",24.0)]);
-        axes.set_cb_ticks_custom(
-            [
-                Major(-10.0, Fix("low")),
-                Major(0.0, Fix("0")),
-                Major(10.0, Fix("high")),
-            ]
-            .into_iter(),
-            &[],
-            &[Font("Times New Roman", 24.0)],
-        );
-        let mut pdfname = String::new();
-        pdfname.push_str(&name);
-        pdfname.push_str("/surf_state_b.pdf");
-        fg.set_terminal("pdfcairo", &pdfname);
-        fg.show().expect("Unable to draw heatmap");
-        let _ = fg;
+        Ok(())
     }
+}
+
+fn surface_error(parameter: &'static str, message: &str) -> TbError {
+    TbError::InvalidSurfaceParameter {
+        parameter,
+        message: message.into(),
+    }
+}
+
+fn validate_energy_range(min: f64, max: f64, count: usize) -> Result<()> {
+    if !min.is_finite() || !max.is_finite() || min > max || !(max - min).is_finite() {
+        return Err(TbError::InvalidEnergyRange { min, max });
+    }
+    if count == 0 || count > isize::MAX as usize / size_of::<f64>() {
+        return Err(surface_error(
+            "energy",
+            "grid size must be positive and fit in memory indexing",
+        ));
+    }
+    Ok(())
+}
+
+// The scalar and vector APIs intentionally retain their distinct stopping thresholds.
+fn decimate(
+    ham: &Array2<Complex<f64>>,
+    hop: &Array2<Complex<f64>>,
+    energy: f64,
+    eta: f64,
+    tolerance: f64,
+) -> Result<(f64, f64, f64)> {
+    let epsilon = Complex::new(energy, eta) * Array2::<Complex<f64>>::eye(ham.nrows());
+    let mut bulk = ham.clone();
+    let mut left = ham.clone();
+    let mut right = ham.clone();
+    let mut alpha = hop.clone();
+    let mut beta = conjugate(hop);
+    for _ in 0..10 {
+        let g = (&epsilon - &bulk).inv()?;
+        let ag = alpha.dot(&g);
+        let bg = beta.dot(&g);
+        let agb = ag.dot(&beta);
+        let bga = bg.dot(&alpha);
+        bulk += &agb;
+        bulk += &bga;
+        left += &agb;
+        right += &bga;
+        alpha = ag.dot(&alpha);
+        beta = bg.dot(&beta);
+        if alpha.iter().map(|z| z.norm()).sum::<f64>() < tolerance {
+            break;
+        }
+    }
+    let density = |block: Array2<Complex<f64>>| -> Result<f64> {
+        let rho = -(&epsilon - block).inv()?.into_diag().sum().im / PI;
+        if !rho.is_finite() {
+            return Err(surface_error(
+                "density",
+                "decimation produced a nonfinite spectral density",
+            ));
+        }
+        Ok(rho)
+    };
+    Ok((density(right)?, density(left)?, density(bulk)?))
+}
+
+fn log_normalize(data: &Array2<f64>) -> Result<Array2<f64>> {
+    if data.is_empty() || data.iter().any(|x| !x.is_finite() || *x <= 0.0) {
+        return Err(surface_error(
+            "density",
+            "log normalization requires finite positive densities",
+        ));
+    }
+    let mut logarithms = data.mapv(f64::ln);
+    let min = logarithms.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = logarithms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if min == max {
+        logarithms.fill(0.0);
+    } else {
+        logarithms.mapv_inplace(|x| (x - min) / (max - min) * 20.0 - 10.0);
+    }
+    Ok(logarithms)
+}
+
+fn surface_figure(
+    data: &Array2<f64>,
+    bounds: (f64, f64, f64, f64),
+    ticks: &[(f64, &str)],
+) -> Figure {
+    let mut figure = Figure::new();
+    let axes = figure.axes2d();
+    axes.set_palette(Custom(&[
+        (-1.0, 0.0, 0.0, 0.0),
+        (-0.9, 65.0 / 255.0, 9.0 / 255.0, 103.0 / 255.0),
+        (0.0, 147.0 / 255.0, 37.0 / 255.0, 103.0 / 255.0),
+        (0.2, 220.0 / 255.0, 80.0 / 255.0, 57.0 / 255.0),
+        (1.0, 252.0 / 255.0, 254.0 / 255.0, 164.0 / 255.0),
+    ]));
+    // Model grids are (x, y), whereas gnuplot consumes rows of fixed y.
+    axes.image(
+        data.t().iter(),
+        data.ncols(),
+        data.nrows(),
+        Some(bounds),
+        &[],
+    );
+    axes.set_x_range(Fix(bounds.0), Fix(bounds.2));
+    axes.set_y_range(Fix(bounds.1), Fix(bounds.3));
+    axes.set_aspect_ratio(Fix(1.0));
+    if ticks.is_empty() {
+        axes.set_x_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
+    } else {
+        axes.set_x_ticks_custom(
+            ticks.iter().map(|&(x, label)| Major(x, Fix(label))),
+            &[],
+            &[Font("Times New Roman", 24.0)],
+        );
+    }
+    axes.set_y_ticks(Some((Auto, 0)), &[], &[Font("Times New Roman", 24.0)]);
+    axes.set_cb_ticks_custom(
+        [
+            Major(-10.0, Fix("low")),
+            Major(0.0, Fix("0")),
+            Major(10.0, Fix("high")),
+        ],
+        &[],
+        &[Font("Times New Roman", 24.0)],
+    );
+    figure
+}
+
+fn render_surface(figure: &Figure, command: &mut Command) -> Result<()> {
+    // Figure::show internally panics on spawn errors and discards write/status
+    // failures. Echo to an infallible memory buffer and own the process instead.
+    let mut script = Vec::new();
+    figure.echo(&mut script);
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("gnuplot stdin is unavailable"))?;
+    // Drain diagnostics while feeding the image: either pipe can exceed the
+    // OS buffer, so writing all input before reading stderr can deadlock.
+    let (written, output) = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || stdin.write_all(&script));
+        let output = child.wait_with_output();
+        let written = writer
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("gnuplot input writer panicked")));
+        (written, output)
+    });
+    let output = output?;
+    if !output.status.success() {
+        return Err(TbError::Other(format!(
+            "gnuplot exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    written?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plotting_drains_large_diagnostics_while_writing_large_images() {
+        let figure = surface_figure(&Array2::ones((200, 200)), (0.0, 0.0, 1.0, 1.0), &[]);
+        let error = render_surface(
+            &figure,
+            Command::new("sh").args(["-c", "head -c 131072 /dev/zero >&2; cat >/dev/null; exit 1"]),
+        )
+        .unwrap_err();
+        assert!(matches!(error, TbError::Other(message) if message.contains("gnuplot exited")));
+    }
+
+    fn asymmetric_surface() -> SurfGreen {
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0], [0.0, 0.0]], None)
+                .unwrap();
+        model.set_hop(0.4, 0, 0, &array![0, 0], None);
+        model.set_hop(-0.7, 1, 1, &array![0, 0], None);
+        model.set_hop(Complex::new(0.6, 0.2), 0, 1, &array![1, 0], None);
+        SurfGreen::from_Model(&model, 0, 0.05, None).unwrap()
+    }
+
+    #[test]
+    fn point_grid_and_path_preserve_surface_order() {
+        let surface = asymmetric_surface();
+        let energies = array![-0.5, 0.0, 0.5];
+        let k = array![0.27];
+        let (right, left, bulk) = surface.surf_green_onek(&k, &energies).unwrap();
+        let (path_left, path_right, path_bulk) = surface
+            .surf_green_path(&array![[0.27], [0.61]], -0.5, 0.5, 3)
+            .unwrap();
+        assert!((right[1] - left[1]).abs() > 0.01);
+        for (i, &energy) in energies.iter().enumerate() {
+            // This model consists of independent inter-layer dimers. The left
+            // edge leaves orbital 1 dangling, and the right leaves orbital 0.
+            // This is an analytic oracle independent of the decimation loop.
+            let z = Complex::new(energy, surface.eta);
+            let determinant = (z - 0.4) * (z + 0.7) - 0.4;
+            let expected_left = -((z + 0.7) / determinant + 1.0 / (z + 0.7)).im / PI;
+            let expected_right = -(1.0 / (z - 0.4) + (z - 0.4) / determinant).im / PI;
+            let expected_bulk = -((2.0 * z + 0.3) / determinant).im / PI;
+            let point = surface.surf_green_one(&k, energy).unwrap();
+            for (actual, expected) in [
+                (point.0, expected_right),
+                (point.1, expected_left),
+                (point.2, expected_bulk),
+                (right[i], expected_right),
+                (left[i], expected_left),
+                (bulk[i], expected_bulk),
+                (path_right[[0, i]], expected_right),
+                (path_left[[0, i]], expected_left),
+                (path_bulk[[0, i]], expected_bulk),
+            ] {
+                assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+            }
+        }
+        assert_eq!(path_left.row(0), path_left.row(1));
+        assert_eq!(path_right.row(0), path_right.row(1));
+    }
+
+    #[test]
+    fn surface_inputs_and_inversion_failures_are_errors() {
+        let mut surface = asymmetric_surface();
+        assert!(surface.gen_ham_onek(&array![0.0, 0.0]).is_err());
+        assert!(surface.gen_ham_onek(&array![f64::NAN]).is_err());
+        assert!(surface.surf_green_one(&array![0.0], f64::INFINITY).is_err());
+        assert!(surface.surf_green_onek(&array![0.0], &array![]).is_err());
+        assert!(
+            surface
+                .surf_green_onek(&array![0.0], &array![f64::NAN])
+                .is_err()
+        );
+        for (min, max, count) in [
+            (1.0, 0.0, 2),
+            (0.0, 1.0, 0),
+            (0.0, f64::INFINITY, 2),
+            (0.0, 1.0, usize::MAX),
+        ] {
+            assert!(
+                surface
+                    .surf_green_path(&array![[0.0]], min, max, count)
+                    .is_err()
+            );
+        }
+        assert!(
+            surface
+                .surf_green_path(&Array2::zeros((0, 1)), 0.0, 1.0, 2)
+                .is_err()
+        );
+        assert!(
+            surface
+                .surf_green_path(&array![[0.0, 0.0]], 0.0, 1.0, 2)
+                .is_err()
+        );
+        surface.eta = 0.0;
+        assert!(surface.surf_green_one(&array![0.0], 0.0).is_err());
+        surface.eta = 0.05;
+        surface.ham_bulk.fill(Complex::new(0.0, 0.0));
+        surface.ham_bulk[[0, 0, 0]] = Complex::new(0.0, surface.eta);
+        surface.ham_hop.fill(Complex::new(0.0, 0.0));
+        assert!(matches!(
+            surface.surf_green_one(&array![0.0], 0.0),
+            Err(TbError::Linalg(_))
+        ));
+        assert!(matches!(
+            surface.surf_green_onek(&array![0.0], &array![0.0]),
+            Err(TbError::Linalg(_))
+        ));
+        assert!(matches!(
+            surface.surf_green_path(&array![[0.0]], 0.0, 0.0, 1),
+            Err(TbError::Linalg(_))
+        ));
+        surface.orb = Array2::zeros((1, 1));
+        assert!(surface.gen_ham_onek(&array![0.0]).is_err());
+    }
+
+    #[test]
+    fn isolated_layers_and_constructor_validation() {
+        let model = Model::<false, 2>::tb_model(Array2::eye(2), array![[0.0, 0.0]], None).unwrap();
+        let surface = SurfGreen::from_Model(&model, 0, 0.2, None).unwrap();
+        let (right, left, bulk) = surface.surf_green_one(&array![0.0], 0.0).unwrap();
+        assert!((bulk - 1.0 / (PI * 0.2)).abs() < 1e-12);
+        assert_eq!(right, left);
+        assert_eq!(left, bulk);
+        for eta in [0.0, -0.1, f64::NAN, f64::INFINITY] {
+            assert!(SurfGreen::from_Model(&model, 0, eta, None).is_err());
+        }
+        assert!(SurfGreen::from_Model(&model, 0, 0.2, Some(0)).is_err());
+    }
+
+    #[test]
+    fn log_normalization_rejects_invalid_data_and_centers_constants() {
+        assert_eq!(
+            log_normalize(&array![[2.0, 2.0]]).unwrap(),
+            array![[0.0, 0.0]]
+        );
+        assert_eq!(
+            log_normalize(&array![[1.0, 10.0, 100.0]]).unwrap(),
+            array![[-10.0, 0.0, 10.0]]
+        );
+        for value in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(log_normalize(&array![[value]]).is_err());
+        }
+        assert!(log_normalize(&Array2::zeros((0, 0))).is_err());
+        assert!(
+            log_normalize(&array![[f64::from_bits(1), f64::MAX]])
+                .unwrap()
+                .iter()
+                .all(|x| x.is_finite())
+        );
+    }
+
+    #[test]
+    fn nonsquare_heatmap_preserves_x_y_order() {
+        let data = array![[11.0, 12.0, 13.0], [21.0, 22.0, 23.0]];
+        let figure = surface_figure(&data, (0.0, 0.0, 1.0, 1.0), &[]);
+        let mut script = Vec::new();
+        figure.echo(&mut script);
+        assert!(String::from_utf8_lossy(&script).contains("array=(2,3)"));
+        let expected: Vec<u8> = [11.0_f64, 21.0, 12.0, 22.0, 13.0, 23.0]
+            .into_iter()
+            .flat_map(f64::to_le_bytes)
+            .collect();
+        assert!(
+            script
+                .windows(expected.len())
+                .any(|bytes| bytes == expected)
+        );
+    }
+
+    #[test]
+    fn plotting_validates_before_files_and_propagates_io_errors() {
+        let surface = asymmetric_surface();
+        let path =
+            std::env::temp_dir().join(format!("rustb-surface-errors-{}", std::process::id()));
+        let name = path.to_str().unwrap();
+        let kpath = array![[0.0], [1.0]];
+        assert!(
+            surface
+                .show_surf_state(name, &kpath, &["G"], 2, -1.0, 1.0, 2)
+                .is_err()
+        );
+        assert!(
+            surface
+                .show_surf_state(name, &kpath, &["G", "G"], 2, 0.0, 0.0, 2)
+                .is_err()
+        );
+        let mut invalid_density = surface.clone();
+        invalid_density.ham_hop.fill(Complex::new(0.0, 0.0));
+        invalid_density.ham_bulk.fill(Complex::new(0.0, 0.0));
+        for band in 0..invalid_density.nsta {
+            invalid_density.ham_bulk[[0, band, band]] =
+                Complex::new(0.0, 2.0 * invalid_density.eta);
+        }
+        assert!(
+            invalid_density
+                .show_surf_state(name, &kpath, &["G", "G"], 2, -1.0, 1.0, 2)
+                .is_err()
+        );
+        assert!(!path.exists());
+        File::create(&path).unwrap();
+        assert!(matches!(
+            surface.show_surf_state(name, &kpath, &["G", "G"], 2, -1.0, 1.0, 2),
+            Err(TbError::Io(_))
+        ));
+        let surface2d = surface_for_k_path();
+        assert!(matches!(
+            surface2d.show_arc_state(name, &array![2, 3], 0.0),
+            Err(TbError::Io(_))
+        ));
+        assert!(surface2d.show_arc_state(name, &array![2], 0.0).is_err());
+        assert!(surface2d.show_arc_state(name, &array![2, 0], 0.0).is_err());
+        std::fs::remove_file(&path).unwrap();
+        // An existing directory at the data filename exercises File::create,
+        // independently of the create_dir_all error above.
+        create_dir_all(path.join("dos.surf_l")).unwrap();
+        assert!(matches!(
+            surface.show_surf_state(name, &kpath, &["G", "G"], 2, -1.0, 1.0, 2),
+            Err(TbError::Io(_))
+        ));
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn plotting_reports_spawn_and_exit_errors() {
+        let figure = surface_figure(&array![[1.0, 2.0], [3.0, 4.0]], (0.0, 0.0, 1.0, 1.0), &[]);
+        assert!(matches!(
+            render_surface(&figure, &mut Command::new("/missing/rustb-gnuplot")),
+            Err(TbError::Io(_))
+        ));
+        let error = render_surface(
+            &figure,
+            Command::new("sh")
+                .arg("-c")
+                .arg("cat >/dev/null; echo deliberate-plot-error >&2; exit 7"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("deliberate-plot-error"));
+    }
 
     fn surface_for_k_path() -> SurfGreen {
         let mut model = Model::<false, 3>::tb_model(

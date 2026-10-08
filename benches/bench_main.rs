@@ -481,7 +481,7 @@ fn bench_surfgreen(c: &mut Criterion) {
     let kvec_1d_sg = arr1(&[0.3]);
     group.bench_function("gen_ham_onek", |b| {
         b.iter(|| {
-            let (h0, hr) = sg.gen_ham_onek(black_box(&kvec_1d_sg));
+            let (h0, hr) = sg.gen_ham_onek(black_box(&kvec_1d_sg)).unwrap();
             black_box((h0, hr))
         })
     });
@@ -490,7 +490,7 @@ fn bench_surfgreen(c: &mut Criterion) {
     let kvec_1d = arr1(&[0.3]);
     group.bench_function("surf_green_one", |b| {
         b.iter(|| {
-            let r = sg.surf_green_one(black_box(&kvec_1d), 0.0);
+            let r = sg.surf_green_one(black_box(&kvec_1d), 0.0).unwrap();
             black_box(r)
         })
     });
@@ -498,7 +498,9 @@ fn bench_surfgreen(c: &mut Criterion) {
     let energies = Array1::linspace(-3.0, 3.0, 20);
     group.bench_function("surf_green_onek", |b| {
         b.iter(|| {
-            let r = sg.surf_green_onek(black_box(&kvec_1d), black_box(&energies));
+            let r = sg
+                .surf_green_onek(black_box(&kvec_1d), black_box(&energies))
+                .unwrap();
             black_box(r)
         })
     });

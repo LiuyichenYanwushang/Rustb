@@ -2,17 +2,240 @@ use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
 use crate::error::{Result, TbError};
 use crate::{HasRMatrix, Model, RMatrixData, find_R};
 use ndarray::prelude::*;
-use ndarray_linalg::*;
-use num_complex::Complex;
+use ndarray_linalg::Inverse;
+use num_complex::Complex64;
+use std::collections::HashSet;
+use std::str::{FromStr, SplitWhitespace};
 
 const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_67;
 
+fn parse_error(file: &str, message: impl Into<String>) -> TbError {
+    TbError::FileParse {
+        file: file.into(),
+        message: message.into(),
+    }
+}
+
+// Only missing optional files are ignored; permission/read errors remain errors.
+fn read_optional(file: &str) -> Result<Option<String>> {
+    match std::fs::read_to_string(file) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn read_required(file: &str) -> Result<String> {
+    read_optional(file)?.ok_or_else(|| TbError::FileCreation {
+        path: file.into(),
+        message: "Required Wannier90 file not found".into(),
+    })
+}
+
+fn field<T: FromStr>(fields: &mut SplitWhitespace<'_>, file: &str, name: &str) -> Result<T> {
+    let token = fields
+        .next()
+        .ok_or_else(|| parse_error(file, format!("Missing {name}")))?;
+    token
+        .parse()
+        .map_err(|_| parse_error(file, format!("Invalid {name}: '{token}'")))
+}
+
+fn data_line<'a>(lines: &mut impl Iterator<Item = &'a str>, file: &str) -> Result<&'a str> {
+    lines
+        .next()
+        .ok_or_else(|| parse_error(file, "Truncated file"))
+}
+
+fn finite_field(fields: &mut SplitWhitespace<'_>, file: &str) -> Result<f64> {
+    let value: f64 = field(fields, file, "numeric component")?;
+    if !value.is_finite() {
+        return Err(parse_error(file, "Non-finite numeric component"));
+    }
+    Ok(value)
+}
+
+fn record_key(
+    fields: &mut SplitWhitespace<'_>,
+    file: &str,
+    nsta: usize,
+) -> Result<([isize; 3], usize, usize)> {
+    let translation = [
+        field(fields, file, "R vector")?,
+        field(fields, file, "R vector")?,
+        field(fields, file, "R vector")?,
+    ];
+    let i: usize = field(fields, file, "orbital index")?;
+    let j: usize = field(fields, file, "orbital index")?;
+    if !(1..=nsta).contains(&i) || !(1..=nsta).contains(&j) {
+        return Err(parse_error(
+            file,
+            format!("Orbital indices ({i}, {j}) must be in 1..={nsta}"),
+        ));
+    }
+    Ok((translation, i - 1, j - 1))
+}
+
+fn matrix_size(file: &str, nr: usize, nsta: usize, components: usize) -> Result<usize> {
+    nr.checked_mul(nsta)
+        .and_then(|n| n.checked_mul(nsta))
+        .and_then(|n| n.checked_mul(components))
+        .filter(|&n| n <= isize::MAX as usize / std::mem::size_of::<Complex64>())
+        .ok_or_else(|| parse_error(file, "Matrix size overflow"))
+}
+
+struct HrData {
+    ham: Array3<Complex64>,
+    translations: Array2<isize>,
+    // Aligned with translations; zero denotes the synthetic origin, if absent in HR.
+    weights: Vec<usize>,
+}
+
+fn parse_hr(file: &str) -> Result<HrData> {
+    let text = read_required(file)?;
+    let mut lines = text.lines();
+    data_line(&mut lines, file)?;
+    let nsta: usize = field(
+        &mut data_line(&mut lines, file)?.split_whitespace(),
+        file,
+        "state count",
+    )?;
+    let nr: usize = field(
+        &mut data_line(&mut lines, file)?.split_whitespace(),
+        file,
+        "R count",
+    )?;
+    if nsta == 0 || nr == 0 {
+        return Err(parse_error(file, "State and R counts must be positive"));
+    }
+    let records = matrix_size(file, nr, nsta, 1)?;
+    matrix_size(
+        file,
+        nr.checked_add(1)
+            .ok_or_else(|| parse_error(file, "R count overflow"))?,
+        nsta,
+        1,
+    )?;
+    let mut weights = Vec::new();
+    while weights.len() < nr {
+        let mut fields = data_line(&mut lines, file)?.split_whitespace();
+        while fields.clone().next().is_some() {
+            let weight: usize = field(&mut fields, file, "degeneracy weight")?;
+            if weight == 0 || weights.len() == nr {
+                return Err(parse_error(
+                    file,
+                    "Invalid degeneracy weight count or zero weight",
+                ));
+            }
+            weights.push(weight);
+        }
+    }
+    let rows = lines.collect::<Vec<_>>();
+    if rows.len() < records {
+        return Err(parse_error(file, "Truncated Hamiltonian records"));
+    }
+    if rows[records..].iter().any(|row| !row.trim().is_empty()) {
+        return Err(parse_error(file, "Extra Hamiltonian records"));
+    }
+    let mut data = HrData {
+        ham: Array3::zeros((1, nsta, nsta)),
+        translations: Array2::zeros((1, 3)),
+        weights: vec![0],
+    };
+    let mut seen_translations = HashSet::new();
+    for (block, weight) in weights.into_iter().enumerate() {
+        let start = block * nsta * nsta;
+        let (translation, _, _) = record_key(&mut rows[start].split_whitespace(), file, nsta)?;
+        if !seen_translations.insert(translation) {
+            return Err(parse_error(file, "Duplicate R block"));
+        }
+        let index = if translation == [0; 3] {
+            0
+        } else {
+            let index = data.translations.nrows();
+            data.translations.push_row(ArrayView1::from(&translation))?;
+            data.ham.push(Axis(0), Array2::zeros((nsta, nsta)).view())?;
+            data.weights.push(0);
+            index
+        };
+        data.weights[index] = weight;
+        let mut seen = HashSet::new();
+        for row in &rows[start..start + nsta * nsta] {
+            let mut fields = row.split_whitespace();
+            let (r, i, j) = record_key(&mut fields, file, nsta)?;
+            if r != translation || !seen.insert((i, j)) {
+                return Err(parse_error(
+                    file,
+                    "Inconsistent R block or duplicate orbital record",
+                ));
+            }
+            // The first Wannier90 index is the matrix row, regardless of record order.
+            data.ham[[index, i, j]] = Complex64::new(
+                finite_field(&mut fields, file)?,
+                finite_field(&mut fields, file)?,
+            ) / weight as f64;
+        }
+    }
+    Ok(data)
+}
+
+fn parse_rmatrix(file: &str, hr: &HrData) -> Result<Array4<Complex64>> {
+    let text = read_required(file)?;
+    let mut lines = text.lines();
+    data_line(&mut lines, file)?;
+    let nsta: usize = field(
+        &mut data_line(&mut lines, file)?.split_whitespace(),
+        file,
+        "state count",
+    )?;
+    let nr: usize = field(
+        &mut data_line(&mut lines, file)?.split_whitespace(),
+        file,
+        "R count",
+    )?;
+    if nsta != hr.ham.shape()[1] || nr == 0 {
+        return Err(parse_error(file, "Position-matrix state/R count mismatch"));
+    }
+    let records = matrix_size(file, nr, nsta, 1)?;
+    matrix_size(file, hr.translations.nrows(), nsta, 3)?;
+    let rows = lines.collect::<Vec<_>>();
+    if rows.len() < records {
+        return Err(parse_error(file, "Truncated position-matrix records"));
+    }
+    if rows[records..].iter().any(|row| !row.trim().is_empty()) {
+        return Err(parse_error(file, "Extra position-matrix records"));
+    }
+    // Preserve sparse position support: only its own declared blocks are
+    // required; HR translations absent from this file start with zero entries.
+    let mut result = Array4::zeros((hr.translations.nrows(), 3, nsta, nsta));
+    let mut seen = HashSet::new();
+    for block in rows[..records].chunks(nsta * nsta) {
+        let (translation, _, _) = record_key(&mut block[0].split_whitespace(), file, nsta)?;
+        let index = find_R(&hr.translations, &Array1::from_vec(translation.to_vec()))
+            .filter(|&i| hr.weights[i] > 0)
+            .ok_or_else(|| parse_error(file, "R vector not found in Hamiltonian"))?;
+        for row in block {
+            let mut fields = row.split_whitespace();
+            let (r, i, j) = record_key(&mut fields, file, nsta)?;
+            if r != translation || !seen.insert((r, i, j)) {
+                return Err(parse_error(
+                    file,
+                    "Inconsistent R block or duplicate orbital record",
+                ));
+            }
+            for axis in 0..3 {
+                result[[index, axis, i, j]] = Complex64::new(
+                    finite_field(&mut fields, file)?,
+                    finite_field(&mut fields, file)?,
+                ) / hr.weights[index] as f64;
+            }
+        }
+    }
+    Ok(result)
+}
+
 fn win_data_line(line: &str) -> &str {
-    // Wannier90 treats both `!` and `#` as inline comment markers.
-    // Strip whichever comes first so that commented-out directives
-    // (e.g. `#spinors = .true.`) are not mistaken for active ones.
-    let line = line.split('!').next().unwrap_or_default();
-    line.split('#').next().unwrap_or_default().trim()
+    line.split(['!', '#']).next().unwrap_or_default().trim()
 }
 
 fn length_unit_scale(token: &str) -> Option<f64> {
@@ -23,20 +246,440 @@ fn length_unit_scale(token: &str) -> Option<f64> {
     }
 }
 
-fn parse_coordinate_component(token: &str, file: &str, context: &str) -> Result<f64> {
-    token.parse::<f64>().map_err(|error| TbError::FileParse {
-        file: file.to_string(),
-        message: format!("Failed to parse {context}: {error}"),
-    })
+struct WinData {
+    lat: Array2<f64>,
+    spin: bool,
+    projections: Vec<(AtomType, Vec<OrbProj>)>,
+    atoms: Vec<(AtomType, Array1<f64>)>,
+}
+
+fn parse_win(file: &str) -> Result<WinData> {
+    let text = read_required(file)?;
+    let mut lines = text
+        .lines()
+        .map(win_data_line)
+        .filter(|line| !line.is_empty());
+    let mut data = WinData {
+        lat: Array2::zeros((3, 3)),
+        spin: false,
+        projections: Vec::new(),
+        atoms: Vec::new(),
+    };
+    let mut fractional_atoms = Vec::new();
+    while let Some(line) = lines.next() {
+        let keyword = line.to_ascii_lowercase();
+        if keyword == "begin unit_cell_cart" {
+            let mut line = data_line(&mut lines, file)?;
+            let scale = if let Some(scale) = length_unit_scale(line) {
+                line = data_line(&mut lines, file)?;
+                scale
+            } else {
+                1.0
+            };
+            for row in 0..3 {
+                let mut fields = line.split_whitespace();
+                for axis in 0..3 {
+                    data.lat[[row, axis]] = finite_field(&mut fields, file)? * scale;
+                }
+                if fields.next().is_some() {
+                    return Err(parse_error(
+                        file,
+                        "Lattice row must contain three components",
+                    ));
+                }
+                line = data_line(&mut lines, file)?;
+            }
+            if !line.eq_ignore_ascii_case("end unit_cell_cart") {
+                return Err(parse_error(file, "Missing end unit_cell_cart"));
+            }
+        } else if keyword.starts_with("spinors") {
+            let value = keyword
+                .trim_start_matches("spinors")
+                .trim()
+                .trim_start_matches(['=', ':'])
+                .trim();
+            data.spin = match value {
+                "true" | ".true." | "t" => true,
+                "false" | ".false." | "f" => false,
+                _ => return Err(parse_error(file, "Invalid spinors value")),
+            };
+        } else if keyword == "begin projections" {
+            loop {
+                let line = data_line(&mut lines, file)?;
+                if line.eq_ignore_ascii_case("end projections") {
+                    break;
+                }
+                let mut fields = line.split([',', ';', ':']).map(str::trim);
+                let species = fields.next().unwrap_or_default();
+                let atom_type = species.parse::<AtomType>().map_err(|_| {
+                    parse_error(
+                        file,
+                        format!("Unknown atomic species '{species}' in begin projections"),
+                    )
+                })?;
+                let mut projections = Vec::new();
+                for item in fields {
+                    let orbitals: &[OrbProj] = match item {
+                        "s" => &[OrbProj::s],
+                        "p" => &[OrbProj::pz, OrbProj::px, OrbProj::py],
+                        "d" => &[
+                            OrbProj::dz2,
+                            OrbProj::dxz,
+                            OrbProj::dyz,
+                            OrbProj::dx2y2,
+                            OrbProj::dxy,
+                        ],
+                        "f" => &[
+                            OrbProj::fz3,
+                            OrbProj::fxz2,
+                            OrbProj::fyz2,
+                            OrbProj::fzx2y2,
+                            OrbProj::fxyz,
+                            OrbProj::fxx23y2,
+                            OrbProj::fy3x2y2,
+                        ],
+                        "sp3" => &[
+                            OrbProj::sp3_1,
+                            OrbProj::sp3_2,
+                            OrbProj::sp3_3,
+                            OrbProj::sp3_4,
+                        ],
+                        "sp2" => &[OrbProj::sp2_1, OrbProj::sp2_2, OrbProj::sp2_3],
+                        "sp" => &[OrbProj::sp_1, OrbProj::sp_2],
+                        "sp3d" => &[
+                            OrbProj::sp3d_1,
+                            OrbProj::sp3d_2,
+                            OrbProj::sp3d_3,
+                            OrbProj::sp3d_4,
+                            OrbProj::sp3d_5,
+                        ],
+                        "sp3d2" => &[
+                            OrbProj::sp3d2_1,
+                            OrbProj::sp3d2_2,
+                            OrbProj::sp3d2_3,
+                            OrbProj::sp3d2_4,
+                            OrbProj::sp3d2_5,
+                            OrbProj::sp3d2_6,
+                        ],
+                        "px" => &[OrbProj::px],
+                        "py" => &[OrbProj::py],
+                        "pz" => &[OrbProj::pz],
+                        "dxy" => &[OrbProj::dxy],
+                        "dxz" => &[OrbProj::dxz],
+                        "dyz" => &[OrbProj::dyz],
+                        "dz2" => &[OrbProj::dz2],
+                        "dx2-y2" => &[OrbProj::dx2y2],
+                        _ => {
+                            return Err(TbError::InvalidOrbitalProjection(format!(
+                                "Unrecognized projection '{item}' in seedname.win"
+                            )));
+                        }
+                    };
+                    projections.extend_from_slice(orbitals);
+                }
+                if projections.is_empty() {
+                    return Err(parse_error(
+                        file,
+                        "Projection line must contain species:orbital",
+                    ));
+                }
+                data.projections.push((atom_type, projections));
+            }
+        } else if keyword == "begin atoms_cart" || keyword == "begin atoms_frac" {
+            let fractional = keyword == "begin atoms_frac";
+            let end = if fractional {
+                "end atoms_frac"
+            } else {
+                "end atoms_cart"
+            };
+            let mut first = true;
+            let mut scale = 1.0;
+            loop {
+                let line = data_line(&mut lines, file)?;
+                if line.eq_ignore_ascii_case(end) {
+                    break;
+                }
+                if first
+                    && !fractional
+                    && let Some(unit) = length_unit_scale(line)
+                {
+                    scale = unit;
+                    first = false;
+                    continue;
+                }
+                first = false;
+                let mut fields = line.split_whitespace();
+                let species: AtomType = field(&mut fields, file, "atomic species")?;
+                let position = array![
+                    finite_field(&mut fields, file)? * scale,
+                    finite_field(&mut fields, file)? * scale,
+                    finite_field(&mut fields, file)? * scale
+                ];
+                if fields.next().is_some() {
+                    return Err(parse_error(
+                        file,
+                        "Atom row must contain a species and three coordinates",
+                    ));
+                }
+                fractional_atoms.push(fractional);
+                data.atoms.push((species, position));
+            }
+        }
+    }
+    // Defer coordinate conversion until the lattice has been read, allowing either block order.
+    let inverse = data.lat.inv()?;
+    for ((_, position), fractional) in data.atoms.iter_mut().zip(fractional_atoms) {
+        if !fractional {
+            *position = position.dot(&inverse);
+        }
+    }
+    Ok(data)
+}
+
+fn match_orbitals(
+    file: &str,
+    win: &WinData,
+    nsta: usize,
+) -> Result<(Array2<f64>, Vec<OrbProj>, Vec<Atom>)> {
+    let norb = if win.spin { nsta / 2 } else { nsta };
+    let text = read_optional(file)?;
+    let mut centres = None;
+    let mut xyz_atoms = Vec::new();
+    if let Some(text) = &text {
+        let mut lines = text.lines();
+        let entries: usize = field(
+            &mut data_line(&mut lines, file)?.split_whitespace(),
+            file,
+            "XYZ entry count",
+        )?;
+        data_line(&mut lines, file)?;
+        if entries < nsta || lines.clone().count() < entries {
+            return Err(parse_error(file, "Truncated _centres.xyz entries"));
+        }
+        let inverse = win.lat.inv()?;
+        let mut orb = Array2::zeros((norb, 3));
+        for index in 0..entries {
+            let mut fields = data_line(&mut lines, file)?.split_whitespace();
+            let species: String = field(&mut fields, file, "XYZ label")?;
+            let position = array![
+                finite_field(&mut fields, file)?,
+                finite_field(&mut fields, file)?,
+                finite_field(&mut fields, file)?
+            ]
+            .dot(&inverse);
+            if index < norb {
+                orb.row_mut(index).assign(&position);
+            }
+            if index >= nsta {
+                xyz_atoms.push((
+                    species.parse::<AtomType>().map_err(|_| {
+                        parse_error(
+                            file,
+                            format!("Unknown atomic species '{species}' in _centres.xyz"),
+                        )
+                    })?,
+                    position,
+                ));
+            }
+        }
+        centres = Some(orb);
+    }
+    let atoms = if text.is_some() {
+        &xyz_atoms
+    } else {
+        &win.atoms
+    };
+    let mut projections = Vec::new();
+    let mut assigned = Vec::new();
+    let mut fallback = Array2::zeros((0, 3));
+    let mut dropped = HashSet::new();
+    for (species, position) in atoms {
+        let first = projections.len();
+        for (projected_species, orbitals) in &win.projections {
+            if species == projected_species {
+                projections.extend(orbitals.iter().copied());
+            }
+        }
+        if first == projections.len() {
+            if dropped.insert(species.to_str()) {
+                eprintln!(
+                    "warning: dropping '{species}' atoms (no orbitals in the projections block)"
+                );
+            }
+            continue;
+        }
+        if centres.is_none() {
+            for _ in first..projections.len() {
+                fallback.push_row(position.view())?;
+            }
+        }
+        assigned.push(Atom::with_orbitals(
+            position.clone(),
+            *species,
+            (first..projections.len()).map(OrbitalId::new),
+        ));
+    }
+    if projections.len() != norb {
+        return Err(parse_error(
+            file,
+            format!(
+                "species mismatch between atom data and projections: HR declares {norb} orbitals, but {} could be assigned to atoms",
+                projections.len()
+            ),
+        ));
+    }
+    Ok((centres.unwrap_or(fallback), projections, assigned))
+}
+
+fn adjust_support(
+    file: &str,
+    hr: &mut HrData,
+    rmatrix: &mut Option<Array4<Complex64>>,
+) -> Result<()> {
+    let Some(text) = read_optional(file)? else {
+        return Ok(());
+    };
+    let nsta = hr.ham.shape()[1];
+    let records = matrix_size(
+        file,
+        hr.weights.iter().filter(|&&weight| weight > 0).count(),
+        nsta,
+        1,
+    )?;
+    let mut lines = text.lines();
+    data_line(&mut lines, file)?;
+    let mut new_r = Array2::zeros((1, 3));
+    let mut new_ham = Array3::<Complex64>::zeros((1, nsta, nsta));
+    let mut new_rmatrix = rmatrix
+        .as_ref()
+        .map(|_| Array4::<Complex64>::zeros((1, 3, nsta, nsta)));
+    let mut seen = HashSet::new();
+    for _ in 0..records {
+        let (translation, i, j) = record_key(
+            &mut data_line(&mut lines, file)?.split_whitespace(),
+            file,
+            nsta,
+        )?;
+        if !seen.insert((translation, i, j)) {
+            return Err(parse_error(file, "Duplicate wsvec record"));
+        }
+        let source = find_R(&hr.translations, &Array1::from_vec(translation.to_vec()))
+            .filter(|&index| hr.weights[index] > 0)
+            .ok_or_else(|| parse_error(file, "wsvec R vector not found in Hamiltonian"))?;
+        let weight: usize = field(
+            &mut data_line(&mut lines, file)?.split_whitespace(),
+            file,
+            "wsvec multiplicity",
+        )?;
+        if weight == 0 {
+            return Err(parse_error(file, "Zero wsvec multiplicity"));
+        }
+        for _ in 0..weight {
+            let mut fields = data_line(&mut lines, file)?.split_whitespace();
+            let mut shifted = Array1::zeros(3);
+            for axis in 0..3 {
+                shifted[axis] = translation[axis]
+                    .checked_add(field(&mut fields, file, "wsvec shift")?)
+                    .ok_or_else(|| parse_error(file, "wsvec translation overflow"))?;
+            }
+            let target = if let Some(index) = find_R(&new_r, &shifted) {
+                index
+            } else {
+                let index = new_r.nrows();
+                matrix_size(
+                    file,
+                    index
+                        .checked_add(1)
+                        .ok_or_else(|| parse_error(file, "R count overflow"))?,
+                    nsta,
+                    if rmatrix.is_some() { 3 } else { 1 },
+                )?;
+                new_r.push_row(shifted.view())?;
+                new_ham.push(Axis(0), Array2::zeros((nsta, nsta)).view())?;
+                if let Some(matrix) = &mut new_rmatrix {
+                    matrix.push(Axis(0), Array3::zeros((3, nsta, nsta)).view())?;
+                }
+                index
+            };
+            new_ham[[target, i, j]] += hr.ham[[source, i, j]] / weight as f64;
+            if let (Some(old), Some(new)) = (rmatrix.as_ref(), &mut new_rmatrix) {
+                for axis in 0..3 {
+                    new[[target, axis, i, j]] += old[[source, axis, i, j]] / weight as f64;
+                }
+            }
+        }
+    }
+    if lines.any(|line| !line.trim().is_empty()) {
+        return Err(parse_error(file, "Extra wsvec records"));
+    }
+    hr.ham = new_ham;
+    hr.translations = new_r;
+    *rmatrix = new_rmatrix;
+    Ok(())
+}
+
+fn assemble_model<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+    win: WinData,
+    orbitals: (Array2<f64>, Vec<OrbProj>, Vec<Atom>),
+    mut hr: HrData,
+    mut rmatrix: Option<Array4<Complex64>>,
+    zero_energy: f64,
+) -> Result<Model<SPIN, DIM, R>> {
+    let nsta = hr.ham.shape()[1];
+    for i in 0..nsta {
+        hr.ham[[0, i, i]] -= zero_energy;
+    }
+    if let Some(matrix) = &mut rmatrix {
+        for r in 0..hr.translations.nrows() {
+            let translation = hr.translations.row(r);
+            let opposite = translation
+                .iter()
+                .map(|x| x.checked_neg())
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| parse_error("_r.dat", "Conjugate translation overflow"))?;
+            let partner =
+                find_R(&hr.translations, &Array1::from_vec(opposite)).ok_or_else(|| {
+                    TbError::MissingHermitianConjugate {
+                        r: translation.to_owned(),
+                    }
+                })?;
+            if partner < r {
+                continue;
+            }
+            for axis in 0..3 {
+                for i in 0..nsta {
+                    for j in 0..nsta {
+                        if partner == r && j < i {
+                            continue;
+                        }
+                        let value =
+                            (matrix[[r, axis, i, j]] + matrix[[partner, axis, j, i]].conj()) / 2.0;
+                        matrix[[r, axis, i, j]] = value;
+                        matrix[[partner, axis, j, i]] = value.conj();
+                    }
+                }
+            }
+        }
+    }
+    let (orb, orb_projection, atoms) = orbitals;
+    let model = Model {
+        lat: win.lat,
+        orb,
+        orb_projection,
+        atoms,
+        ham: hr.ham,
+        hamR: hr.translations,
+        rmatrix: R::from_array(rmatrix.unwrap_or_else(|| Array4::zeros((0, 0, 0, 0)))),
+    };
+    model.validate()?;
+    Ok(model)
 }
 
 /// Trait for loading a tight-binding model from Wannier90 output files.
 ///
-/// The implementing type controls which data is loaded:
-/// - `DIM` must be `3` (Wannier90 always works in 3D).
-/// - `R: RMatrixData` determines whether position matrix elements are loaded:
-///   `HasRMatrix` requires `_r.dat` (generated by `write_rmn=true` in Wannier90),
-///   while `NoRMatrix` skips it.
+/// `DIM` must be 3. `HasRMatrix` requires `_r.dat` (`write_rmn=true`), while
+/// `NoRMatrix` skips it. `_centres.xyz` and `_wsvec.dat` are optional; without
+/// centres, the atomic positions from `.win` supply the orbital positions.
 pub trait Wannier90 {
     fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Self>
     where
@@ -44,1153 +687,42 @@ pub trait Wannier90 {
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPIN, DIM, R> {
-    #[allow(non_snake_case)]
     fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Self> {
-        // This function reads tight-binding files from Wannier90.
-        //
-        // The 'path' parameter specifies the file location, which can be an absolute path (starting with "/")
-        // or a relative path relative to the directory when cargo run is executed.
-        // The 'file_name' is the seedname in Wannier90. The function reads files:
-        // seedname.win, seedname_centres.xyz, seedname_hr.dat, and optionally seedname_r.dat.
-        //
-        // For seedname_centres.xyz, set write_xyz=true in Wannier90; for seedname_hr.dat, set write_hr=true.
-        //
-        // Set write_rmn=true in Wannier90 to generate seedname_r.dat. This file is required when the
-        // Model uses `HasRMatrix` (position matrix elements) for accurate velocity operators.
-        // When `R = NoRMatrix`, the _r.dat file is skipped.
-        //
-        // DIM is always 3 for Wannier90 (the lattice matrix and all vectors are 3D).
-        //
-        // Additionally, for newer versions of Wannier90, to preserve good symmetry, it is recommended
-        // to also provide wannier90_wsvec.dat for better symmetric results.
-
-        use std::fs::File;
-        use std::io::BufRead;
-        use std::io::BufReader;
-        use std::path::Path;
-
-        let mut file_path = path.to_string();
-        file_path.push_str(file_name);
-        let mut hr_path = file_path.clone();
-        hr_path.push_str("_hr.dat");
-
-        let path = Path::new(&hr_path);
-        let hr = File::open(path).map_err(|e| TbError::FileCreation {
-            path: hr_path.clone(),
-            message: format!("Unable to open HR file: {}", e),
-        })?;
-        let reader = BufReader::new(hr);
-        let mut reads: Vec<String> = Vec::new();
-
-        // 读取文件行
-        for line in reader.lines() {
-            let line = line.map_err(|e| TbError::Io(e))?;
-            reads.push(line.clone());
-        }
-
-        // 获取轨道数和R点数
-        let nsta = reads[1]
-            .trim()
-            .parse::<usize>()
-            .map_err(|e| TbError::FileParse {
-                file: hr_path.clone(),
-                message: format!("Failed to parse nsta: {}", e),
-            })?;
-        let n_R = reads[2]
-            .trim()
-            .parse::<usize>()
-            .map_err(|e| TbError::FileParse {
-                file: hr_path.clone(),
-                message: format!("Failed to parse n_R: {}", e),
-            })?;
-        let mut weights: Vec<usize> = Vec::new();
-        let mut n_line: usize = 0;
-
-        // 解析文件数据以获取权重
-        for i in 3..reads.len() {
-            if reads[i].contains(".") {
-                n_line = i;
-                break;
-            }
-            let string = reads[i].trim().split_whitespace();
-            let string: Vec<_> = string
-                .map(|x| {
-                    x.parse::<usize>().map_err(|e| TbError::FileParse {
-                        file: hr_path.clone(),
-                        message: format!("Failed to parse weight: {}", e),
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
-            weights.extend(string.clone());
-        }
-
-        // 初始化哈密顿量矩阵
-        let mut hamR = Array2::<isize>::zeros((1, 3));
-        let mut ham = Array3::<Complex<f64>>::zeros((1, nsta, nsta));
-
-        // 遍历每个R点并填充哈密顿量
-        for i in 0..n_R {
-            let mut string = reads[i * nsta * nsta + n_line].trim().split_whitespace();
-            let a = string
-                .next()
-                .ok_or_else(|| TbError::FileParse {
-                    file: hr_path.clone(),
-                    message: "Missing R vector component".to_string(),
-                })?
-                .parse::<isize>()
-                .map_err(|e| TbError::FileParse {
-                    file: hr_path.clone(),
-                    message: format!("Failed to parse R vector: {}", e),
-                })?;
-            let b = string
-                .next()
-                .ok_or_else(|| TbError::FileParse {
-                    file: hr_path.clone(),
-                    message: "Missing R vector component".to_string(),
-                })?
-                .parse::<isize>()
-                .map_err(|e| TbError::FileParse {
-                    file: hr_path.clone(),
-                    message: format!("Failed to parse R vector: {}", e),
-                })?;
-            let c = string
-                .next()
-                .ok_or_else(|| TbError::FileParse {
-                    file: hr_path.clone(),
-                    message: "Missing R vector component".to_string(),
-                })?
-                .parse::<isize>()
-                .map_err(|e| TbError::FileParse {
-                    file: hr_path.clone(),
-                    message: format!("Failed to parse R vector: {}", e),
-                })?;
-
-            if a == 0 && b == 0 && c == 0 {
-                for ind_i in 0..nsta {
-                    for ind_j in 0..nsta {
-                        let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
-                            .trim()
-                            .split_whitespace();
-                        let re = string
-                            .nth(5)
-                            .ok_or_else(|| TbError::FileParse {
-                                file: hr_path.clone(),
-                                message: "Missing Hamiltonian real part".to_string(),
-                            })?
-                            .parse::<f64>()
-                            .map_err(|e| TbError::FileParse {
-                                file: hr_path.clone(),
-                                message: format!("Failed to parse Hamiltonian real part: {}", e),
-                            })?;
-                        let im = string
-                            .next()
-                            .ok_or_else(|| TbError::FileParse {
-                                file: hr_path.clone(),
-                                message: "Missing Hamiltonian imaginary part".to_string(),
-                            })?
-                            .parse::<f64>()
-                            .map_err(|e| TbError::FileParse {
-                                file: hr_path.clone(),
-                                message: format!(
-                                    "Failed to parse Hamiltonian imaginary part: {}",
-                                    e
-                                ),
-                            })?;
-                        ham[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
-                    }
-                }
-            } else {
-                let mut matrix = Array3::<Complex<f64>>::zeros((1, nsta, nsta));
-                for ind_i in 0..nsta {
-                    for ind_j in 0..nsta {
-                        let mut string = reads[i * nsta * nsta + ind_i * nsta + ind_j + n_line]
-                            .trim()
-                            .split_whitespace();
-                        let re = string
-                            .nth(5)
-                            .ok_or_else(|| TbError::FileParse {
-                                file: hr_path.clone(),
-                                message: "Missing Hamiltonian real part".to_string(),
-                            })?
-                            .parse::<f64>()
-                            .map_err(|e| TbError::FileParse {
-                                file: hr_path.clone(),
-                                message: format!("Failed to parse Hamiltonian real part: {}", e),
-                            })?;
-                        let im = string
-                            .next()
-                            .ok_or_else(|| TbError::FileParse {
-                                file: hr_path.clone(),
-                                message: "Missing Hamiltonian imaginary part".to_string(),
-                            })?
-                            .parse::<f64>()
-                            .map_err(|e| TbError::FileParse {
-                                file: hr_path.clone(),
-                                message: format!(
-                                    "Failed to parse Hamiltonian imaginary part: {}",
-                                    e
-                                ),
-                            })?;
-                        matrix[[0, ind_j, ind_i]] = Complex::new(re, im) / (weights[i] as f64);
-                        // wannier90 里面是按照纵向排列的矩阵
-                    }
-                }
-                ham.append(Axis(0), matrix.view())
-                    .map_err(|e| TbError::Linalg(ndarray_linalg::error::LinalgError::Shape(e)))?;
-                hamR.append(Axis(0), arr2(&[[a, b, c]]).view())
-                    .map_err(|e| TbError::Linalg(ndarray_linalg::error::LinalgError::Shape(e)))?;
-            }
-        }
-
-        // 调整哈密顿量以匹配能量零点
-        for i in 0..nsta {
-            ham[[0, i, i]] -= Complex::new(zero_energy, 0.0);
-        }
-        //开始读取 .win 文件
-        let _reads: Vec<String> = Vec::new();
-        let mut win_path = file_path.clone();
-        win_path.push_str(".win"); //文件的位置
-        let path = Path::new(&win_path); //转化为路径格式
-        let hr = File::open(path).map_err(|e| TbError::FileCreation {
-            path: win_path.clone(),
-            message: format!("Unable to open win file: {}", e),
-        })?;
-        let reader = BufReader::new(hr);
-        let mut reads: Vec<String> = Vec::new();
-        for line in reader.lines() {
-            let line = line.map_err(|e| TbError::Io(e))?;
-            reads.push(line.clone());
-        }
-        let mut read_iter = reads.iter();
-        let mut lat = Array2::<f64>::zeros((3, 3)); //晶格轨道坐标初始化
-        let mut spin: bool = false; //体系自旋初始化
-        let _natom: usize = 0; //原子位置初始化
-        let mut atom = Vec::new(); //原子位置坐标初始化
-        let mut orb_proj = Vec::new();
-        let mut proj_name = Vec::new();
-        let mut proj_list: Vec<usize> = Vec::new();
-        let _atom_list: Vec<usize> = Vec::new();
-        let mut atom_name: Vec<&str> = Vec::new();
-        let mut atom_pos = Array2::<f64>::zeros((0, 3));
-        let mut atom_proj = Vec::new();
-        loop {
-            let a = read_iter.next();
-            if a == None {
-                break;
-            } else {
-                let a = a.ok_or_else(|| TbError::FileParse {
-                    file: win_path.clone(),
-                    message: "Unexpected end of file".to_string(),
-                })?;
-                let keyword = win_data_line(a).to_ascii_lowercase();
-                if keyword.contains("begin unit_cell_cart") {
-                    let mut unit_scale = 1.0_f64;
-                    let mut rows = Vec::<[f64; 3]>::with_capacity(3);
-                    while rows.len() < 3 {
-                        let line = read_iter.next().ok_or_else(|| TbError::FileParse {
-                            file: win_path.clone(),
-                            message: "Missing lattice vector line".to_string(),
-                        })?;
-                        let line = win_data_line(line);
-                        if line.is_empty() {
-                            continue;
-                        }
-                        let tokens = line.split_whitespace().collect::<Vec<_>>();
-                        if rows.is_empty() && tokens.len() == 1 {
-                            unit_scale =
-                                length_unit_scale(tokens[0]).ok_or_else(|| TbError::FileParse {
-                                    file: win_path.clone(),
-                                    message: format!("Unknown unit_cell_cart unit '{}'", tokens[0]),
-                                })?;
-                            continue;
-                        }
-                        if tokens.len() != 3 {
-                            return Err(TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!(
-                                    "A unit_cell_cart row must contain 3 numbers, found {} in '{line}'",
-                                    tokens.len()
-                                ),
-                            });
-                        }
-                        rows.push([
-                            parse_coordinate_component(tokens[0], &win_path, "lattice vector")?
-                                * unit_scale,
-                            parse_coordinate_component(tokens[1], &win_path, "lattice vector")?
-                                * unit_scale,
-                            parse_coordinate_component(tokens[2], &win_path, "lattice vector")?
-                                * unit_scale,
-                        ]);
-                    }
-                    for row in 0..3 {
-                        for column in 0..3 {
-                            lat[[row, column]] = rows[row][column];
-                        }
-                    }
-                } else if keyword.contains("spinors")
-                    && (keyword.contains('t') || keyword.contains("true"))
-                {
-                    spin = true;
-                } else if keyword.contains("begin projections") {
-                    loop {
-                        let string = read_iter.next().ok_or_else(|| TbError::FileParse {
-                            file: win_path.clone(),
-                            message: "Unexpected end of file".to_string(),
-                        })?;
-                        let string = win_data_line(string);
-                        if string.is_empty() {
-                            continue;
-                        }
-                        if string.to_ascii_lowercase().contains("end projections") {
-                            break;
-                        } else {
-                            let prj: Vec<&str> = string
-                                .split(|c| c == ',' || c == ';' || c == ':')
-                                .map(|x| x.trim())
-                                .collect();
-                            if prj.len() < 2 || prj[0].is_empty() {
-                                return Err(TbError::FileParse {
-                                    file: win_path.clone(),
-                                    message: format!(
-                                        "Malformed projection line '{string}': expected species:orbital"
-                                    ),
-                                });
-                            }
-                            let mut atom_orb_number: usize = 0;
-                            let mut proj_orb = Vec::new();
-                            for item in prj[1..].iter() {
-                                let (aa, use_proj_orb): (usize, Vec<_>) = match (*item).trim() {
-                                    "s" => (1, vec![OrbProj::s]),
-                                    "p" => (3, vec![OrbProj::pz, OrbProj::px, OrbProj::py]),
-                                    "d" => (
-                                        5,
-                                        vec![
-                                            OrbProj::dz2,
-                                            OrbProj::dxz,
-                                            OrbProj::dyz,
-                                            OrbProj::dx2y2,
-                                            OrbProj::dxy,
-                                        ],
-                                    ),
-                                    "f" => (
-                                        7,
-                                        vec![
-                                            OrbProj::fz3,
-                                            OrbProj::fxz2,
-                                            OrbProj::fyz2,
-                                            OrbProj::fzx2y2,
-                                            OrbProj::fxyz,
-                                            OrbProj::fxx23y2,
-                                            OrbProj::fy3x2y2,
-                                        ],
-                                    ),
-                                    "sp3" => (
-                                        4,
-                                        vec![
-                                            OrbProj::sp3_1,
-                                            OrbProj::sp3_2,
-                                            OrbProj::sp3_3,
-                                            OrbProj::sp3_4,
-                                        ],
-                                    ),
-                                    "sp2" => {
-                                        (3, vec![OrbProj::sp2_1, OrbProj::sp2_2, OrbProj::sp2_3])
-                                    }
-                                    "sp" => (2, vec![OrbProj::sp_1, OrbProj::sp_2]),
-                                    "sp3d" => (
-                                        5,
-                                        vec![
-                                            OrbProj::sp3d_1,
-                                            OrbProj::sp3d_2,
-                                            OrbProj::sp3d_3,
-                                            OrbProj::sp3d_4,
-                                            OrbProj::sp3d_5,
-                                        ],
-                                    ),
-                                    "sp3d2" => (
-                                        6,
-                                        vec![
-                                            OrbProj::sp3d2_1,
-                                            OrbProj::sp3d2_2,
-                                            OrbProj::sp3d2_3,
-                                            OrbProj::sp3d2_4,
-                                            OrbProj::sp3d2_5,
-                                            OrbProj::sp3d2_6,
-                                        ],
-                                    ),
-                                    "px" => (1, vec![OrbProj::px]),
-                                    "py" => (1, vec![OrbProj::py]),
-                                    "pz" => (1, vec![OrbProj::pz]),
-                                    "dxy" => (1, vec![OrbProj::dxy]),
-                                    "dxz" => (1, vec![OrbProj::dxz]),
-                                    "dyz" => (1, vec![OrbProj::dyz]),
-                                    "dz2" => (1, vec![OrbProj::dz2]),
-                                    "dx2-y2" => (1, vec![OrbProj::dx2y2]),
-                                    &_ => {
-                                        return Err(TbError::InvalidOrbitalProjection(format!(
-                                            "Unrecognized projection '{}' in seedname.win",
-                                            item
-                                        )));
-                                    }
-                                };
-                                atom_orb_number += aa;
-                                proj_orb.extend(use_proj_orb);
-                            }
-                            proj_list.push(atom_orb_number);
-                            atom_proj.push(proj_orb);
-                            let proj_type =
-                                prj[0].parse::<AtomType>().map_err(|_| TbError::FileParse {
-                                    file: win_path.clone(),
-                                    message: format!(
-                                        "Unknown atomic species '{}' in begin projections",
-                                        prj[0]
-                                    ),
-                                })?;
-                            proj_name.push(proj_type);
-                        }
-                    }
-                } else if keyword.contains("begin atoms_cart") {
-                    let mut cartesian_unit = 1.0_f64;
-                    let mut first_data_line = true;
-                    loop {
-                        let string = read_iter.next().ok_or_else(|| TbError::FileParse {
-                            file: win_path.clone(),
-                            message: "Unexpected end of file".to_string(),
-                        })?;
-                        let string = win_data_line(string);
-                        if string.is_empty() {
-                            continue;
-                        }
-                        if string.to_ascii_lowercase().contains("end atoms_cart") {
-                            break;
-                        }
-                        let fields = string.split_whitespace().collect::<Vec<_>>();
-                        if first_data_line && fields.len() == 1 {
-                            cartesian_unit =
-                                length_unit_scale(fields[0]).ok_or_else(|| TbError::FileParse {
-                                    file: win_path.clone(),
-                                    message: format!("Unknown atoms_cart unit '{}'", fields[0]),
-                                })?;
-                            first_data_line = false;
-                            continue;
-                        }
-                        first_data_line = false;
-                        if fields.len() != 4 {
-                            return Err(TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!(
-                                    "An atoms_cart row must contain a species and 3 coordinates, found {} fields in '{string}'",
-                                    fields.len()
-                                ),
-                            });
-                        }
-                        atom_name.push(fields[0]);
-                        let position = array![
-                            parse_coordinate_component(
-                                fields[1],
-                                &win_path,
-                                "Cartesian atom position",
-                            )? * cartesian_unit,
-                            parse_coordinate_component(
-                                fields[2],
-                                &win_path,
-                                "Cartesian atom position",
-                            )? * cartesian_unit,
-                            parse_coordinate_component(
-                                fields[3],
-                                &win_path,
-                                "Cartesian atom position",
-                            )? * cartesian_unit,
-                        ];
-                        // Only used when no _centres.xyz file is available.
-                        atom_pos.push_row(position.view())?;
-                    }
-                } else if keyword.contains("begin atoms_frac") {
-                    // Fractional positions; convert to Cartesian at parse
-                    // time so the fallback path stays uniform.
-                    loop {
-                        let string = read_iter.next().ok_or_else(|| TbError::FileParse {
-                            file: win_path.clone(),
-                            message: "Unexpected end of file".to_string(),
-                        })?;
-                        let string = win_data_line(string);
-                        if string.is_empty() {
-                            continue;
-                        }
-                        if string.to_ascii_lowercase().contains("end atoms_frac") {
-                            break;
-                        }
-                        let fields = string.split_whitespace().collect::<Vec<_>>();
-                        if fields.len() != 4 {
-                            return Err(TbError::FileParse {
-                                file: win_path.clone(),
-                                message: format!(
-                                    "An atoms_frac row must contain a species and 3 coordinates, found {} fields in '{string}'",
-                                    fields.len()
-                                ),
-                            });
-                        }
-                        atom_name.push(fields[0]);
-                        let fractional = array![
-                            parse_coordinate_component(
-                                fields[1],
-                                &win_path,
-                                "fractional atom position",
-                            )?,
-                            parse_coordinate_component(
-                                fields[2],
-                                &win_path,
-                                "fractional atom position",
-                            )?,
-                            parse_coordinate_component(
-                                fields[3],
-                                &win_path,
-                                "fractional atom position",
-                            )?,
-                        ];
-                        let position = fractional.dot(&lat);
-                        atom_pos.push_row(position.view())?;
-                    }
-                }
-            }
-        }
-        // 验证文件中的自旋设置与 SPIN 常量泛型是否一致
-        if spin != SPIN {
-            return Err(TbError::Other(format!(
-                "Spin mismatch: Wannier90 .win file has spin={} but Model was constructed with SPIN={}",
-                spin, SPIN
-            )));
-        }
-        //开始读取 seedname_centres.xyz 文件
-        let _reads: Vec<String> = Vec::new();
-        let mut xyz_path = file_path.clone();
-        xyz_path.push_str("_centres.xyz");
-        let path = Path::new(&xyz_path);
-        let hr = File::open(path);
-        let orb = if let Ok(hr) = hr {
-            let reader = BufReader::new(hr);
-            let mut reads: Vec<String> = Vec::new();
-            for line in reader.lines() {
-                let line = line.map_err(|e| TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!("Failed to read line: {}", e),
-                })?;
-                reads.push(line.clone());
-            }
-            if reads.len() < 2 {
-                return Err(TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: "_centres.xyz must contain a count and comment line".to_string(),
-                });
-            }
-            let declared_entries =
-                reads[0]
-                    .trim()
-                    .parse::<usize>()
-                    .map_err(|error| TbError::FileParse {
-                        file: xyz_path.clone(),
-                        message: format!("Invalid _centres.xyz entry count: {error}"),
-                    })?;
-            let available_entries = reads.len() - 2;
-            if declared_entries < nsta || available_entries < declared_entries {
-                return Err(TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!(
-                        "Truncated _centres.xyz: header declares {declared_entries} entries, \
-                         HR requires {nsta} Wannier-centre entries, but only {} data lines are present",
-                        available_entries
-                    ),
-                });
-            }
-            let norb = if spin { nsta / 2 } else { nsta };
-            let mut orb = Array2::<f64>::zeros((norb, 3));
-            for i in 0..norb {
-                let fields = reads[i + 2].split_whitespace().collect::<Vec<_>>();
-                if fields.len() < 4 {
-                    return Err(TbError::FileParse {
-                        file: xyz_path.clone(),
-                        message: format!(
-                            "Malformed Wannier-centre row {}: expected a label and 3 coordinates",
-                            i + 1
-                        ),
-                    });
-                }
-                for axis in 0..3 {
-                    orb[[i, axis]] = parse_coordinate_component(
-                        fields[axis + 1],
-                        &xyz_path,
-                        "Wannier-centre position",
-                    )?;
-                }
-            }
-            orb = orb.dot(&lat.inv().map_err(TbError::Linalg)?);
-            let atom_count = declared_entries - nsta;
-            let mut new_atom_pos = Array2::<f64>::zeros((atom_count, 3));
-            let mut new_atom_name = Vec::with_capacity(atom_count);
-            for i in 0..atom_count {
-                let fields = reads[i + 2 + nsta].split_whitespace().collect::<Vec<_>>();
-                if fields.len() < 4 {
-                    return Err(TbError::FileParse {
-                        file: xyz_path.clone(),
-                        message: format!(
-                            "Malformed atom row {} in _centres.xyz: expected a species and 3 coordinates",
-                            i + 1
-                        ),
-                    });
-                }
-                for axis in 0..3 {
-                    new_atom_pos[[i, axis]] =
-                        parse_coordinate_component(fields[axis + 1], &xyz_path, "atom position")?;
-                }
-                let name = fields[0]
-                    .parse::<AtomType>()
-                    .map_err(|_| TbError::FileParse {
-                        file: xyz_path.clone(),
-                        message: format!(
-                            "Unknown atomic species '{}' in _centres.xyz; \
-                         species must be listed in the win file's begin projections block",
-                            fields[0]
-                        ),
-                    })?;
-                new_atom_name.push(name);
-            }
-            //接下来如果wannier90.win 和 .xyz 文件的原子顺序不一致, 那么我们以xyz的原子顺序为准, 调整 atom_list
-
-            let mut dropped: Vec<AtomType> = Vec::new();
-            for (i, name) in new_atom_name.iter().enumerate() {
-                // Multiple projection lines of the same species belong to the
-                // SAME atom; merge them into one Atom.
-                let mut atom_orbitals = Vec::new();
-                for (j, j_name) in proj_name.iter().enumerate() {
-                    if j_name == name {
-                        let first = orb_proj.len();
-                        atom_orbitals.extend((first..first + proj_list[j]).map(OrbitalId::new));
-                        orb_proj.extend(atom_proj[j].clone());
-                    }
-                }
-                if atom_orbitals.is_empty() {
-                    // 该物种在 projections 块中没有被拟合任何轨道, 默认直接丢弃该物种的所有原子,
-                    // 而不是报错 (例如只提供了 Cs 的坐标但没有在 Cs 上拟合 Wannier 轨道)。
-                    // 每个物种只警告一次, 避免同一物种的多个原子重复刷屏。
-                    if !dropped.contains(name) {
-                        eprintln!(
-                            "warning: dropping '{}' atoms from _centres.xyz (no orbitals in the projections block)",
-                            name.to_str()
-                        );
-                        dropped.push(*name);
-                    }
-                    continue;
-                }
-                let use_pos = new_atom_pos
-                    .row(i)
-                    .dot(&lat.inv().map_err(TbError::Linalg)?);
-                atom.push(Atom::with_orbitals(use_pos, *name, atom_orbitals));
-            }
-            // 所有轨道都必须能被 xyz 物种与 projections 物种的匹配覆盖,
-            // 否则 orb_proj 条目数少于 norb, validate() 会报 orbital_projection_count。
-            if orb_proj.len() != norb {
-                let xyz_species: Vec<&str> = new_atom_name.iter().map(|n| n.to_str()).collect();
-                let proj_species: Vec<&str> = proj_name.iter().map(|n| n.to_str()).collect();
-                let detail = if orb_proj.len() < norb {
-                    format!(
-                        "{norb} orbitals declared in the projections block, but only {} could be assigned to atoms",
-                        orb_proj.len()
-                    )
-                } else {
-                    format!(
-                        "{norb} orbitals declared in the projections block, but {} were assigned to atoms",
-                        orb_proj.len()
-                    )
-                };
-                return Err(TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!(
-                        "species mismatch between _centres.xyz and the win projections block: \
-                         {detail}. _centres.xyz species: {xyz_species:?}; \
-                         projection species: {proj_species:?}"
-                    ),
-                });
-            }
-            orb
-        } else {
-            let mut orb = Array2::<f64>::zeros((0, 3));
-            let atom_pos = atom_pos.dot(&lat.inv().map_err(TbError::Linalg)?);
-            let mut dropped: Vec<AtomType> = Vec::new();
-            for (i, name) in atom_name.iter().enumerate() {
-                let name = name.parse::<AtomType>().map_err(|_| TbError::FileParse {
-                    file: win_path.clone(),
-                    message: format!("Unknown atomic species '{name}' in begin atoms_frac block"),
-                })?;
-                // Wannier90 permits multiple projection lines per species
-                // (e.g. separate spin-up/down blocks): all lines of this
-                // species belong to the SAME atom, so merge them into one
-                // Atom instead of creating one Atom per line.
-                let mut atom_orbitals = Vec::new();
-                for (j, j_name) in proj_name.iter().enumerate() {
-                    if name == *j_name {
-                        let first = orb_proj.len();
-                        atom_orbitals.extend((first..first + proj_list[j]).map(OrbitalId::new));
-                        orb_proj.extend(atom_proj[j].clone());
-                        for _ in 0..proj_list[j] {
-                            orb.push_row(atom_pos.row(i).view())?;
-                        }
-                    }
-                }
-                if atom_orbitals.is_empty() {
-                    // 该物种在 projections 块中没有被拟合任何轨道, 默认直接丢弃该物种的所有原子。
-                    // 每个物种只警告一次, 避免同一物种的多个原子重复刷屏。
-                    if !dropped.contains(&name) {
-                        eprintln!(
-                            "warning: dropping '{name}' atoms from begin atoms_frac/atoms_cart (no orbitals in the projections block)"
-                        );
-                        dropped.push(name);
-                    }
-                    continue;
-                }
-                atom.push(Atom::with_orbitals(
-                    atom_pos.row(i).to_owned(),
-                    name,
-                    atom_orbitals,
-                ));
-            }
-            // 与 xyz 分支相同的物种覆盖检查: atoms_frac 的物种必须全部出现在
-            // projections 块中, 否则 orb_proj 条目数不足, validate() 会失败。
-            // The HR file's nsta is authoritative: every atom of a species
-            // gets its own copy of each projection line, so the constructed
-            // count is (projection lines x atoms), not the once-only win
-            // declaration count.
-            let expected_norb = if spin { nsta / 2 } else { nsta };
-            if orb_proj.len() != expected_norb {
-                let proj_species: Vec<&str> = proj_name.iter().map(|n| n.to_str()).collect();
-                let detail = if orb_proj.len() < expected_norb {
-                    format!(
-                        "{expected_norb} orbitals declared in the HR file, but only {} could be assigned to atoms",
-                        orb_proj.len()
-                    )
-                } else {
-                    format!(
-                        "{expected_norb} orbitals declared in the HR file, but {} were assigned to atoms",
-                        orb_proj.len()
-                    )
-                };
-                return Err(TbError::FileParse {
-                    file: win_path.clone(),
-                    message: format!(
-                        "species mismatch between begin atoms_frac and the projections block: \
-                         {detail}. atom species: {atom_name:?}; \
-                         projection species: {proj_species:?}"
-                    ),
-                });
-            }
-            orb
-        };
-        //开始尝试读取 _r.dat 文件
-        let mut have_r = false;
-        let mut rmatrix = if R::HAS_RMATRIX {
-            let mut r_path = file_path.clone();
-            r_path.push_str("_r.dat");
-            let path = Path::new(&r_path);
-            let hr = File::open(path);
-            if let Ok(hr) = hr {
-                have_r = true;
-                let reader = BufReader::new(hr);
-                let mut reads: Vec<String> = Vec::new();
-                for line in reader.lines() {
-                    let line = line.map_err(|e| TbError::FileParse {
-                        file: xyz_path.clone(),
-                        message: format!("Failed to read line: {}", e),
-                    })?;
-                    reads.push(line.clone());
-                }
-                let n_R = reads[2]
-                    .trim()
-                    .parse::<usize>()
-                    .map_err(|e| TbError::FileParse {
-                        file: r_path.clone(),
-                        message: format!("Failed to parse n_R: {}", e),
-                    })?;
-                let mut rmatrix = Array4::<Complex<f64>>::zeros((hamR.nrows(), 3, nsta, nsta));
-                for i in 0..n_R {
-                    let mut string = reads[i * nsta * nsta + 3].trim().split_whitespace();
-                    let a = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: r_path.clone(),
-                            message: "Missing R vector component".to_string(),
-                        })?
-                        .parse::<isize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: r_path.clone(),
-                            message: format!("Failed to parse R vector: {}", e),
-                        })?;
-                    let b = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: r_path.clone(),
-                            message: "Missing R vector component".to_string(),
-                        })?
-                        .parse::<isize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: r_path.clone(),
-                            message: format!("Failed to parse R vector: {}", e),
-                        })?;
-                    let c = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: r_path.clone(),
-                            message: "Missing R vector component".to_string(),
-                        })?
-                        .parse::<isize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: r_path.clone(),
-                            message: format!("Failed to parse R vector: {}", e),
-                        })?;
-                    let R0 = array![a, b, c];
-                    let index = find_R(&hamR, &R0).ok_or_else(|| TbError::FileParse {
-                        file: r_path.clone(),
-                        message: format!("R vector {:?} not found in Hamiltonian", R0),
-                    })?;
-                    for ind_i in 0..nsta {
-                        for ind_j in 0..nsta {
-                            let string = &reads[i * nsta * nsta + ind_i * nsta + ind_j + 3];
-                            let mut string = string.trim().split_whitespace();
-                            string.nth(4);
-                            for r in 0..3 {
-                                let re = string
-                                    .next()
-                                    .ok_or_else(|| TbError::FileParse {
-                                        file: r_path.clone(),
-                                        message: "Missing R matrix real part".to_string(),
-                                    })?
-                                    .parse::<f64>()
-                                    .map_err(|e| TbError::FileParse {
-                                        file: r_path.clone(),
-                                        message: format!(
-                                            "Failed to parse R matrix real part: {}",
-                                            e
-                                        ),
-                                    })?;
-                                let im = string
-                                    .next()
-                                    .ok_or_else(|| TbError::FileParse {
-                                        file: r_path.clone(),
-                                        message: "Missing R matrix imaginary part".to_string(),
-                                    })?
-                                    .parse::<f64>()
-                                    .map_err(|e| TbError::FileParse {
-                                        file: r_path.clone(),
-                                        message: format!(
-                                            "Failed to parse R matrix imaginary part: {}",
-                                            e
-                                        ),
-                                    })?;
-                                rmatrix[[index, r, ind_j, ind_i]] =
-                                    Complex::new(re, im) / (weights[i] as f64);
-                            }
-                        }
-                    }
-                }
-                rmatrix
-            } else {
-                return Err(TbError::FileCreation {
-                    path: r_path.clone(),
-                    message: "R::HAS_RMATRIX=true but _r.dat file not found".to_string(),
-                });
-            }
-        } else {
-            Array4::<Complex<f64>>::zeros((1, 3, 1, 1))
-        };
-
-        //最后判断有没有wannier90_wsvec.dat-----------------------------------
-        let mut ws_path = file_path.clone();
-        ws_path.push_str("_wsvec.dat");
-        let path = Path::new(&ws_path); //转化为路径格式
-        let ws = File::open(path);
-        if let Ok(ws) = ws {
-            let reader = BufReader::new(ws);
-            let mut reads: Vec<String> = Vec::new();
-            for line in reader.lines() {
-                let line = line.map_err(|e| TbError::FileParse {
-                    file: xyz_path.clone(),
-                    message: format!("Failed to read line: {}", e),
-                })?;
-                reads.push(line.clone());
-            }
-            //开始针对ham, hamR 以及 rmatrix 进行修改
-            //我们先考虑有rmatrix的情况
-            if have_r {
-                let mut i = 0;
-                let mut new_hamR = Array2::zeros((1, 3));
-                let mut new_ham = Array3::zeros((1, nsta, nsta));
-                let mut new_rmatrix = Array4::zeros((1, 3, nsta, nsta));
-                while i < reads.len() - 1 {
-                    i += 1;
-                    let line = &reads[i];
-                    let mut string = line.trim().split_whitespace();
-                    let a = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing R vector component".to_string(),
-                        })?
-                        .parse::<isize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse R vector: {}", e),
-                        })?;
-                    let b = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing R vector component".to_string(),
-                        })?
-                        .parse::<isize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse R vector: {}", e),
-                        })?;
-                    let c = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing R vector component".to_string(),
-                        })?
-                        .parse::<isize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse R vector: {}", e),
-                        })?;
-                    let int_i = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing orbital index".to_string(),
-                        })?
-                        .parse::<usize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse orbital index: {}", e),
-                        })?
-                        - 1;
-                    let int_j = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing orbital index".to_string(),
-                        })?
-                        .parse::<usize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse orbital index: {}", e),
-                        })?
-                        - 1;
-                    //接下来判断是否在我们的hamR 中
-                    i += 1;
-                    let weight = reads[i]
-                        .trim()
-                        .split_whitespace()
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing weight value".to_string(),
-                        })?
-                        .parse::<usize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse weight: {}", e),
-                        })?;
-                    let R = array![a, b, c];
-                    let index = find_R(&hamR, &R).ok_or_else(|| TbError::FileParse {
-                        file: ws_path.clone(),
-                        message: format!("R vector {:?} not found in Hamiltonian", R),
-                    })?;
-                    let hop = ham[[index, int_i, int_j]] / (weight as f64);
-                    let hop_x = rmatrix[[index, 0, int_i, int_j]] / (weight as f64);
-                    let hop_y = rmatrix[[index, 1, int_i, int_j]] / (weight as f64);
-                    let hop_z = rmatrix[[index, 2, int_i, int_j]] / (weight as f64);
-
-                    for _i0 in 0..weight {
-                        i += 1;
-                        let line = &reads[i];
-                        let mut string = line.trim().split_whitespace();
-                        let a = string.next().unwrap().parse::<isize>().unwrap();
-                        let b = string.next().unwrap().parse::<isize>().unwrap();
-                        let c = string.next().unwrap().parse::<isize>().unwrap();
-                        let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                        if let Some(index0) = find_R(&new_hamR, &new_R) {
-                            new_ham[[index0, int_i, int_j]] += hop;
-                            new_rmatrix[[index0, 0, int_i, int_j]] += hop_x;
-                            new_rmatrix[[index0, 1, int_i, int_j]] += hop_y;
-                            new_rmatrix[[index0, 2, int_i, int_j]] += hop_z;
-                        } else {
-                            let mut use_ham = Array2::zeros((nsta, nsta));
-                            let mut use_rmatrix = Array3::zeros((3, nsta, nsta));
-                            use_ham[[int_i, int_j]] += hop;
-                            use_rmatrix[[0, int_i, int_j]] += hop_x;
-                            use_rmatrix[[1, int_i, int_j]] += hop_y;
-                            use_rmatrix[[2, int_i, int_j]] += hop_z;
-                            new_hamR.push_row(new_R.view())?;
-                            new_ham.push(Axis(0), use_ham.view())?;
-                            new_rmatrix.push(Axis(0), use_rmatrix.view())?;
-                        }
-                    }
-                }
-                hamR = new_hamR;
-                ham = new_ham;
-                rmatrix = new_rmatrix;
-            } else {
-                let mut i = 0;
-                let mut new_hamR = Array2::zeros((1, 3));
-                let mut new_ham = Array3::zeros((1, nsta, nsta));
-                while i < reads.len() - 1 {
-                    i += 1;
-                    let line = &reads[i];
-                    let mut string = line.trim().split_whitespace();
-                    let a = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing R vector component".to_string(),
-                        })?
-                        .parse::<isize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse R vector: {}", e),
-                        })?;
-                    let b = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing R vector component".to_string(),
-                        })?
-                        .parse::<isize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse R vector: {}", e),
-                        })?;
-                    let c = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing R vector component".to_string(),
-                        })?
-                        .parse::<isize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse R vector: {}", e),
-                        })?;
-                    let int_i = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing orbital index".to_string(),
-                        })?
-                        .parse::<usize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse orbital index: {}", e),
-                        })?
-                        - 1;
-                    let int_j = string
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing orbital index".to_string(),
-                        })?
-                        .parse::<usize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse orbital index: {}", e),
-                        })?
-                        - 1;
-                    //接下来判断是否在我们的hamR 中
-                    i += 1;
-                    let weight = reads[i]
-                        .trim()
-                        .split_whitespace()
-                        .next()
-                        .ok_or_else(|| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: "Missing weight value".to_string(),
-                        })?
-                        .parse::<usize>()
-                        .map_err(|e| TbError::FileParse {
-                            file: ws_path.clone(),
-                            message: format!("Failed to parse weight: {}", e),
-                        })?;
-                    let R = array![a, b, c];
-                    let index = find_R(&hamR, &R).ok_or_else(|| TbError::FileParse {
-                        file: ws_path.clone(),
-                        message: format!("R vector {:?} not found in Hamiltonian", R),
-                    })?;
-                    let hop = ham[[index, int_i, int_j]] / (weight as f64);
-
-                    for _i0 in 0..weight {
-                        i += 1;
-                        let line = &reads[i];
-                        let mut string = line.trim().split_whitespace();
-                        let a = string.next().unwrap().parse::<isize>().unwrap();
-                        let b = string.next().unwrap().parse::<isize>().unwrap();
-                        let c = string.next().unwrap().parse::<isize>().unwrap();
-                        let new_R = array![R[[0]] + a, R[[1]] + b, R[[2]] + c];
-                        if let Some(index0) = find_R(&new_hamR, &new_R) {
-                            new_ham[[index0, int_i, int_j]] += hop;
-                        } else {
-                            let mut use_ham = Array2::zeros((nsta, nsta));
-                            use_ham[[int_i, int_j]] = hop;
-                            new_hamR.push_row(new_R.view())?;
-                            new_ham.push(Axis(0), use_ham.view())?;
-                        }
-                    }
-                }
-                hamR = new_hamR;
-                ham = new_ham;
-            }
-        }
-        //最后一步, 将rmatrix 变成厄密的
-
-        if have_r {
-            for r in 0..hamR.nrows() - 1 {
-                let R = hamR.row(r);
-                let R_inv = -&R;
-                if let Some(index) = find_R(&hamR, &R_inv) {
-                    for i in 0..nsta {
-                        for j in 0..nsta {
-                            rmatrix[[r, 0, i, j]] =
-                                (rmatrix[[r, 0, i, j]] + rmatrix[[index, 0, j, i]].conj()) / 2.0;
-                            rmatrix[[r, 1, i, j]] =
-                                (rmatrix[[r, 1, i, j]] + rmatrix[[index, 1, j, i]].conj()) / 2.0;
-                            rmatrix[[r, 2, i, j]] =
-                                (rmatrix[[r, 2, i, j]] + rmatrix[[index, 2, j, i]].conj()) / 2.0;
-                            rmatrix[[index, 0, j, i]] = rmatrix[[r, 0, i, j]].conj();
-                            rmatrix[[index, 1, j, i]] = rmatrix[[r, 1, i, j]].conj();
-                            rmatrix[[index, 2, j, i]] = rmatrix[[r, 2, i, j]].conj();
-                        }
-                    }
-                } else {
-                    return Err(TbError::MissingHermitianConjugate { r: R.to_owned() });
-                }
-            }
-        }
-
-        // Validate that loaded data dimension matches the const generic DIM
         if DIM != 3 {
             return Err(TbError::InvalidDimension {
                 dim: DIM,
                 supported: vec![3],
             });
         }
-        let model = Self {
-            lat,
-            orb,
-            orb_projection: orb_proj,
-            atoms: atom,
-            ham,
-            hamR,
-            rmatrix: R::from_array(rmatrix),
+        if !zero_energy.is_finite() {
+            return Err(TbError::Other(
+                "Wannier90 zero_energy must be finite".into(),
+            ));
+        }
+        let prefix = format!("{path}{file_name}");
+        let mut hr = parse_hr(&format!("{prefix}_hr.dat"))?;
+        let win = parse_win(&format!("{prefix}.win"))?;
+        if win.spin != SPIN {
+            return Err(TbError::Other(format!(
+                "Spin mismatch: Wannier90 .win file has spin={} but Model was constructed with SPIN={SPIN}",
+                win.spin
+            )));
+        }
+        let nsta = hr.ham.shape()[1];
+        if SPIN && nsta % 2 != 0 {
+            return Err(parse_error(
+                &format!("{prefix}_hr.dat"),
+                "Spinful state count must be even",
+            ));
+        }
+        let orbitals = match_orbitals(&format!("{prefix}_centres.xyz"), &win, nsta)?;
+        let mut rmatrix = if R::HAS_RMATRIX {
+            Some(parse_rmatrix(&format!("{prefix}_r.dat"), &hr)?)
+        } else {
+            None
         };
-        model.validate()?;
-        Ok(model)
+        adjust_support(&format!("{prefix}_wsvec.dat"), &mut hr, &mut rmatrix)?;
+        assemble_model(win, orbitals, hr, rmatrix, zero_energy)
     }
 }
 
@@ -1513,5 +1045,264 @@ mod tests {
         );
         assert_eq!(model.atoms[0].norb(), 4);
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_rejects_invalid_counts_records_and_parameters() {
+        // Parameter validation precedes all file access.
+        assert!(matches!(
+            Model::<false, 2>::from_hr("missing/", "seed", 0.0),
+            Err(TbError::InvalidDimension { .. })
+        ));
+        for energy in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                Model::<false, 3>::from_hr("missing/", "seed", energy)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("finite")
+            );
+        }
+        let dir = "tests/tmp_w90_bad_records/";
+        write_minimal_dataset(dir, "C");
+        for hr in [
+            String::new(),
+            "generated\n".into(),
+            "generated\n1\n".into(),
+            "generated\n1\n1\n".into(),
+            "generated\n1\n1\n0\n".into(),
+            "generated\n1\n1\n1\n".into(),
+            "generated\n0\n1\n1\n".into(),
+            format!("generated\n{}\n2\n1 1\n", usize::MAX),
+            "generated\n1\n1\n1\n0 0 0 0 1 2 0\n".into(),
+            "generated\n1\n1\n1\n0 0 0 1 2 2 0\n".into(),
+            "generated\n1\n1\n1\n0 0 0 1 1 NaN 0\n".into(),
+            "generated\n2\n1\n1\n0 0 0 1 1 0 0\n0 0 0 1 1 0 0\n0 0 0 2 1 0 0\n0 0 0 2 2 0 0\n"
+                .into(),
+        ] {
+            fs::write(format!("{dir}seedname_hr.dat"), &hr).unwrap();
+            assert!(
+                matches!(
+                    Model::<false, 3>::from_hr(dir, "seedname", 0.0),
+                    Err(TbError::FileParse { .. })
+                ),
+                "accepted {hr:?}"
+            );
+        }
+        // No decimal point is needed to identify the beginning of the matrix records.
+        fs::write(
+            format!("{dir}seedname_hr.dat"),
+            "generated\n1\n1\n2\n0 0 0 1 1 6 0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Model::<false, 3>::from_hr(dir, "seedname", 0.5)
+                .unwrap()
+                .ham[[0, 0, 0]],
+            Complex64::new(2.5, 0.0)
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn from_hr_spin_and_position_storage_modes() {
+        let dir = "tests/tmp_w90_spin_storage/";
+        write_minimal_dataset(dir, "C");
+        let mut win = fs::read_to_string(format!("{dir}seedname.win")).unwrap();
+        win.push_str("\nspinors = .true.\n");
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(
+            format!("{dir}seedname_hr.dat"),
+            "generated\n2\n1\n1\n0 0 0 1 1 1 0\n0 0 0 2 1 0 2\n0 0 0 1 2 0 -2\n0 0 0 2 2 3 0\n",
+        )
+        .unwrap();
+        fs::write(
+            format!("{dir}seedname_centres.xyz"),
+            "3\ncentres\nX 0 0 0\nX 0 0 0\nC 0 0 0\n",
+        )
+        .unwrap();
+        assert!(
+            Model::<false, 3>::from_hr(dir, "seedname", 0.0)
+                .unwrap_err()
+                .to_string()
+                .contains("Spin mismatch")
+        );
+        let model = Model::<true, 3>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 1);
+        assert_eq!(model.ham[[0, 1, 0]], Complex64::new(0.0, 2.0));
+        assert!(matches!(
+            Model::<true, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0),
+            Err(TbError::FileCreation { .. })
+        ));
+        fs::write(format!("{dir}seedname_r.dat"), "generated\n2\n1\n0 0 0 1 1 1 9 2 0 3 0\n0 0 0 2 1 2 4 0 0 0 0\n0 0 0 1 2 6 -2 0 0 0 0\n0 0 0 2 2 3 -9 2 0 1 0\n").unwrap();
+        let model = Model::<true, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0).unwrap();
+        // The sole R=0 block also undergoes Hermitian projection.
+        assert_eq!(model.rmatrix[[0, 0, 0, 0]], Complex64::new(1.0, 0.0));
+        assert_eq!(model.rmatrix[[0, 0, 1, 0]], Complex64::new(4.0, 3.0));
+        assert_eq!(model.rmatrix[[0, 0, 0, 1]], Complex64::new(4.0, -3.0));
+        // Every declared spin centre is parsed, including the second half.
+        fs::write(
+            format!("{dir}seedname_centres.xyz"),
+            "3\ncentres\nX 0 0 0\nX NaN 0 0\nC 0 0 0\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            Model::<true, 3>::from_hr(dir, "seedname", 0.0),
+            Err(TbError::FileParse { .. })
+        ));
+        fs::write(
+            format!("{dir}seedname_hr.dat"),
+            "generated\n1\n1\n1\n0 0 0 1 1 0 0\n",
+        )
+        .unwrap();
+        assert!(
+            Model::<true, 3>::from_hr(dir, "seedname", 0.0)
+                .unwrap_err()
+                .to_string()
+                .contains("even")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn from_hr_remaps_support_and_matches_rmatrix_weights_by_translation() {
+        let dir = "tests/tmp_w90_support/";
+        write_minimal_dataset(dir, "C");
+        // The origin is not the first declared block, and _r.dat has another block order.
+        fs::write(
+            format!("{dir}seedname_hr.dat"),
+            "generated\n1\n3\n2 3 5\n-1 0 0 1 1 8 -4\n0 0 0 1 1 18 0\n1 0 0 1 1 20 10\n",
+        )
+        .unwrap();
+        fs::write(format!("{dir}seedname_r.dat"), "generated\n1\n3\n1 0 0 1 1 50 20 0 0 0 0\n-1 0 0 1 1 20 -8 0 0 0 0\n0 0 0 1 1 9 3 0 0 0 0\n").unwrap();
+        fs::write(format!("{dir}seedname_wsvec.dat"), "generated\n-1 0 0 1 1\n2\n0 0 0\n-1 0 0\n0 0 0 1 1\n1\n0 0 0\n1 0 0 1 1\n2\n0 0 0\n1 0 0\n").unwrap();
+        let plain = Model::<false, 3>::from_hr(dir, "seedname", 1.0).unwrap();
+        let model = Model::<false, 3, HasRMatrix>::from_hr(dir, "seedname", 1.0).unwrap();
+        assert_eq!(model.ham, plain.ham);
+        assert_eq!(model.hamR, plain.hamR);
+        assert_eq!(model.hamR.row(0), array![0, 0, 0]);
+        assert_eq!(model.ham[[0, 0, 0]], Complex64::new(5.0, 0.0));
+        assert_eq!(model.rmatrix[[0, 0, 0, 0]], Complex64::new(3.0, 0.0));
+        for translation in [-2, -1, 1, 2] {
+            let index = find_R(&model.hamR, &array![translation, 0, 0]).unwrap();
+            let sign = translation.signum() as f64;
+            assert_eq!(model.ham[[index, 0, 0]], Complex64::new(2.0, sign));
+            assert_eq!(
+                model.rmatrix[[index, 0, 0, 0]],
+                Complex64::new(5.0, 2.0 * sign)
+            );
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn from_hr_rejects_malformed_rmatrix_and_wsvec() {
+        let dir = "tests/tmp_w90_bad_optional/";
+        write_minimal_dataset(dir, "C");
+        let rfile = format!("{dir}seedname_r.dat");
+        for input in [
+            "",
+            "generated\n",
+            "generated\n1\n1\n",
+            "generated\n2\n1\n",
+            "generated\n1\n1\n0 0 0 0 1 1 0 0 0 0 0\n",
+            "generated\n1\n1\n0 0 0 1 1 1 0 0\n",
+        ] {
+            fs::write(&rfile, input).unwrap();
+            assert!(
+                matches!(
+                    Model::<false, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0),
+                    Err(TbError::FileParse { .. })
+                ),
+                "accepted {input:?}"
+            );
+            // NoRMatrix does not inspect an unused _r.dat file.
+            Model::<false, 3>::from_hr(dir, "seedname", 0.0).unwrap();
+        }
+        fs::write(&rfile, "generated\n1\n1\n0 0 0 1 1 1 0 0 0 0 0\n").unwrap();
+        let wsfile = format!("{dir}seedname_wsvec.dat");
+        for input in [
+            "",
+            "generated\n",
+            "generated\n0 0 0 1 1\n",
+            "generated\n0 0 0 1 1\n0\n",
+            "generated\n0 0 0 1 1\n1\n",
+            "generated\n0 0 0 0 1\n1\n0 0 0\n",
+            "generated\n0 0 0 1 1\n1\n0 bad 0\n",
+            "generated\n0 0 0 1 1\n1\n0 0\n",
+        ] {
+            fs::write(&wsfile, input).unwrap();
+            assert!(
+                matches!(
+                    Model::<false, 3>::from_hr(dir, "seedname", 0.0),
+                    Err(TbError::FileParse { .. })
+                ),
+                "accepted {input:?}"
+            );
+            assert!(
+                matches!(
+                    Model::<false, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0),
+                    Err(TbError::FileParse { .. })
+                ),
+                "accepted {input:?}"
+            );
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn from_hr_checks_support_overflow_and_last_hermitian_partner() {
+        let dir = "tests/tmp_w90_support_errors/";
+        write_minimal_dataset(dir, "C");
+        fs::write(
+            format!("{dir}seedname_hr.dat"),
+            format!("generated\n1\n1\n1\n{} 0 0 1 1 2 0\n", isize::MAX),
+        )
+        .unwrap();
+        fs::write(
+            format!("{dir}seedname_wsvec.dat"),
+            format!("generated\n{} 0 0 1 1\n1\n1 0 0\n", isize::MAX),
+        )
+        .unwrap();
+        assert!(
+            Model::<false, 3>::from_hr(dir, "seedname", 0.0)
+                .unwrap_err()
+                .to_string()
+                .contains("overflow")
+        );
+        fs::write(
+            format!("{dir}seedname_hr.dat"),
+            "generated\n1\n1\n1\n1 0 0 1 1 2 0\n",
+        )
+        .unwrap();
+        fs::write(
+            format!("{dir}seedname_wsvec.dat"),
+            "generated\n1 0 0 1 1\n1\n0 0 0\n",
+        )
+        .unwrap();
+        let model = Model::<false, 3>::from_hr(dir, "seedname", 0.25).unwrap();
+        // A synthetic R=0 survives support redistribution and carries the energy origin.
+        assert_eq!(model.ham[[0, 0, 0]], Complex64::new(-0.25, 0.0));
+        fs::write(
+            format!("{dir}seedname_r.dat"),
+            "generated\n1\n1\n1 0 0 1 1 1 0 0 0 0 0\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            Model::<false, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0),
+            Err(TbError::MissingHermitianConjugate { .. })
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn from_hr_fractional_atoms_may_precede_lattice() {
+        let dir = "tests/tmp_w90_block_order/";
+        write_minimal_dataset(dir, "C");
+        fs::remove_file(format!("{dir}seedname_centres.xyz")).unwrap();
+        fs::write(format!("{dir}seedname.win"), "spinors\t = .false.\nbegin atoms_frac\nC 0.25 0 0\nend atoms_frac\nbegin projections\nC:s\nend projections\nbegin unit_cell_cart\n2 0 0\n0 2 0\n0 0 2\nend unit_cell_cart\n").unwrap();
+        let model = Model::<false, 3>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.orb.row(0), array![0.25, 0.0, 0.0]);
+        assert_eq!(model.atoms[0].position(), array![0.25, 0.0, 0.0]);
+        fs::remove_dir_all(dir).unwrap();
     }
 }

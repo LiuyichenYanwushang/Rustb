@@ -224,16 +224,17 @@ fn main() {
     let path = [[-0.5, -0.5], [0.0, 0.0], [0.5, 0.5]];
     let path = arr2(&path);
     let label = vec!["M", "G", "M"];
-    green.show_surf_state(
-        "target/example-output/BiF_square/surf",
-        &path,
-        &label,
-        nk,
-        E_min,
-        E_max,
-        E_n,
-        0,
-    );
+    green
+        .show_surf_state(
+            "target/example-output/BiF_square/surf",
+            &path,
+            &label,
+            nk,
+            E_min,
+            E_max,
+            E_n,
+        )
+        .unwrap();
 
     let super_model = model.cut_piece(20, 0).unwrap();
     let path = [[0.0, -0.5, 0.0], [0.0, 0.0, 0.0], [0.0, 0.5, 0.0]];

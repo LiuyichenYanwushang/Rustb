@@ -278,8 +278,12 @@ Rayon parallelism).
 
 All eight `Solve` methods return `Result`. Use `?` to propagate invalid-model,
 k-point, generated-Hamiltonian, and eigensolver errors. A batch validates the
-model once, even when it contains zero k-points. Hermiticity remains the caller's
-responsibility. `Berry` Wilson-loop methods also propagate these errors.
+model once, even when it contains zero k-points. Successful results contain only
+finite energies and eigenvector components: finite matrix entries alone do not
+prevent spectral overflow. Selected-window solvers check only the returned bands,
+so an omitted overflowing band does not invalidate a finite subset. Hermiticity
+remains the caller's responsibility. `Berry` Wilson-loop methods also propagate
+these errors.
 
 `solve_band_range_onek(&k, (low, high), tolerance)?` selects energies in
 `(low, high]`; `solve_range_onek` also returns row-ket eigenvectors. Bounds and
@@ -702,7 +706,17 @@ let berry_curvature = result.berry_curvature;
 For reusable band-resolved data, use the `QuantumGeometry` trait methods
 `quantum_geometry_at` and `quantum_geometry_on`. They take only a k-point (or
 list), the two directions and `eta_ev` — no `Conditions`, no k-mesh — so a
-swept state cannot be passed to them at all.
+swept state cannot be passed to them at all. The at/on/Direct kernel divides
+velocities by a scaled gap/broadening norm before multiplying, so uniformly tiny
+or large energy scales do not themselves destroy the metric. Singular unbroadened
+gaps, lost scaled-velocity components and unrepresentable geometry return
+errors instead of successful NaN/Inf or an uncertifiable zero. Simplex
+interpolates pair gaps directly, rather than subtracting separately rounded
+absolute energies.
+Simplex retains unscaled interpolated primitives and rejects overflowing,
+underflowed or nonzero-subnormal velocity products, whose relative information
+cannot survive interpolation. Denominators need rounding headroom above the
+numerical cutoff and below f64::MAX; use Direct for extreme-scale geometry.
 
 ### Optical conductivity
 
@@ -919,7 +933,10 @@ are `order = 1` and `harmonic_max = 2`. The harmonic cutoff is a concrete
 nonnegative integer, independent of the Sambe photon cutoff. These APIs take
 no `FloquetTruncation`: out-of-range links fall back to a per-link
 time-grid DFT sized from the link's own bandwidth and the requested
-harmonic range.
+harmonic range. The fallback projects onto the link before time evolution,
+sums coherent carriers, and factors the real DC phase outside the sampled AC
+signal. A conservative work estimate never alone rejects a drive: the actual
+Bessel backend is checked before an otherwise unresolvable fallback is refused.
 
 `FloquetTruncation` controls the photon cutoff `n_max` only, and only for the
 full Sambe APIs; the coefficients are grid-free. To preserve an old effective-model call's implicit harmonic

@@ -230,8 +230,20 @@ fn accumulate_triangle_dipole_kquad(
 
     // Borrow vertex data (no clone).
     let v0 = &sim.vertices[0];
+    let n0 = v0
+        .nonlinear
+        .as_ref()
+        .expect("nonlinear primitives required");
     let v1 = &sim.vertices[1];
+    let n1 = v1
+        .nonlinear
+        .as_ref()
+        .expect("nonlinear primitives required");
     let v2 = &sim.vertices[2];
+    let n2 = v2
+        .nonlinear
+        .as_ref()
+        .expect("nonlinear primitives required");
     let bands: [&[f64]; 3] = [
         v0.band.as_slice().unwrap(),
         v1.band.as_slice().unwrap(),
@@ -239,21 +251,9 @@ fn accumulate_triangle_dipole_kquad(
     ];
     let kmats: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
     let vdiags: [&[f64]; 3] = [
-        v0.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
-        v1.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
-        v2.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
+        n0.vdiag.as_slice().unwrap(),
+        n1.vdiag.as_slice().unwrap(),
+        n2.vdiag.as_slice().unwrap(),
     ];
     let mut e_buf = vec![0.0f64; nsta];
     let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
@@ -441,74 +441,42 @@ fn accumulate_triangle_intrinsic_kquad(
     let nsta = sim.vertices[0].band.len();
 
     let v0 = &sim.vertices[0];
+    let n0 = v0
+        .nonlinear
+        .as_ref()
+        .expect("nonlinear primitives required");
     let v1 = &sim.vertices[1];
+    let n1 = v1
+        .nonlinear
+        .as_ref()
+        .expect("nonlinear primitives required");
     let v2 = &sim.vertices[2];
+    let n2 = v2
+        .nonlinear
+        .as_ref()
+        .expect("nonlinear primitives required");
     let bands: [&[f64]; 3] = [
         v0.band.as_slice().unwrap(),
         v1.band.as_slice().unwrap(),
         v2.band.as_slice().unwrap(),
     ];
     let kmat_ab: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
-    let kmat_bc: [&Array2<Complex<f64>>; 3] = [
-        v0.k_bc.as_ref().expect("k_bc required"),
-        v1.k_bc.as_ref().expect("k_bc required"),
-        v2.k_bc.as_ref().expect("k_bc required"),
-    ];
-    let kmat_ac: [&Array2<Complex<f64>>; 3] = [
-        v0.k_ac.as_ref().expect("k_ac required"),
-        v1.k_ac.as_ref().expect("k_ac required"),
-        v2.k_ac.as_ref().expect("k_ac required"),
-    ];
+    let kmat_bc: [&Array2<Complex<f64>>; 3] = [&n0.k_bc, &n1.k_bc, &n2.k_bc];
+    let kmat_ac: [&Array2<Complex<f64>>; 3] = [&n0.k_ac, &n1.k_ac, &n2.k_ac];
     let vdiag_c: [&[f64]; 3] = [
-        v0.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
-        v1.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
-        v2.vdiag
-            .as_ref()
-            .expect("vdiag required")
-            .as_slice()
-            .unwrap(),
+        n0.vdiag.as_slice().unwrap(),
+        n1.vdiag.as_slice().unwrap(),
+        n2.vdiag.as_slice().unwrap(),
     ];
     let vdiag_a: [&[f64]; 3] = [
-        v0.vdiag_a
-            .as_ref()
-            .expect("vdiag_a required")
-            .as_slice()
-            .unwrap(),
-        v1.vdiag_a
-            .as_ref()
-            .expect("vdiag_a required")
-            .as_slice()
-            .unwrap(),
-        v2.vdiag_a
-            .as_ref()
-            .expect("vdiag_a required")
-            .as_slice()
-            .unwrap(),
+        n0.vdiag_a.as_slice().unwrap(),
+        n1.vdiag_a.as_slice().unwrap(),
+        n2.vdiag_a.as_slice().unwrap(),
     ];
     let vdiag_b: [&[f64]; 3] = [
-        v0.vdiag_b
-            .as_ref()
-            .expect("vdiag_b required")
-            .as_slice()
-            .unwrap(),
-        v1.vdiag_b
-            .as_ref()
-            .expect("vdiag_b required")
-            .as_slice()
-            .unwrap(),
-        v2.vdiag_b
-            .as_ref()
-            .expect("vdiag_b required")
-            .as_slice()
-            .unwrap(),
+        n0.vdiag_b.as_slice().unwrap(),
+        n1.vdiag_b.as_slice().unwrap(),
+        n2.vdiag_b.as_slice().unwrap(),
     ];
 
     let mut e_buf = vec![0.0f64; nsta];
@@ -847,9 +815,25 @@ fn accumulate_tetrahedron_intrinsic_kquad(
     let nsta = sim.vertices[0].band.len();
 
     let v0 = &sim.vertices[0];
+    let n0 = v0
+        .nonlinear
+        .as_ref()
+        .expect("nonlinear primitives required");
     let v1 = &sim.vertices[1];
+    let n1 = v1
+        .nonlinear
+        .as_ref()
+        .expect("nonlinear primitives required");
     let v2 = &sim.vertices[2];
+    let n2 = v2
+        .nonlinear
+        .as_ref()
+        .expect("nonlinear primitives required");
     let v3 = &sim.vertices[3];
+    let n3 = v3
+        .nonlinear
+        .as_ref()
+        .expect("nonlinear primitives required");
     let bands: [&[f64]; 4] = [
         v0.band.as_slice().unwrap(),
         v1.band.as_slice().unwrap(),
@@ -857,35 +841,25 @@ fn accumulate_tetrahedron_intrinsic_kquad(
         v3.band.as_slice().unwrap(),
     ];
     let kmat_ab: [&Array2<Complex<f64>>; 4] = [&v0.k_ab, &v1.k_ab, &v2.k_ab, &v3.k_ab];
-    let kmat_bc: [&Array2<Complex<f64>>; 4] = [
-        v0.k_bc.as_ref().expect("k_bc"),
-        v1.k_bc.as_ref().expect("k_bc"),
-        v2.k_bc.as_ref().expect("k_bc"),
-        v3.k_bc.as_ref().expect("k_bc"),
-    ];
-    let kmat_ac: [&Array2<Complex<f64>>; 4] = [
-        v0.k_ac.as_ref().expect("k_ac"),
-        v1.k_ac.as_ref().expect("k_ac"),
-        v2.k_ac.as_ref().expect("k_ac"),
-        v3.k_ac.as_ref().expect("k_ac"),
-    ];
+    let kmat_bc: [&Array2<Complex<f64>>; 4] = [&n0.k_bc, &n1.k_bc, &n2.k_bc, &n3.k_bc];
+    let kmat_ac: [&Array2<Complex<f64>>; 4] = [&n0.k_ac, &n1.k_ac, &n2.k_ac, &n3.k_ac];
     let vdiag_c: [&[f64]; 4] = [
-        v0.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
-        v1.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
-        v2.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
-        v3.vdiag.as_ref().expect("vdiag").as_slice().unwrap(),
+        n0.vdiag.as_slice().unwrap(),
+        n1.vdiag.as_slice().unwrap(),
+        n2.vdiag.as_slice().unwrap(),
+        n3.vdiag.as_slice().unwrap(),
     ];
     let vdiag_a: [&[f64]; 4] = [
-        v0.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
-        v1.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
-        v2.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
-        v3.vdiag_a.as_ref().expect("vdiag_a").as_slice().unwrap(),
+        n0.vdiag_a.as_slice().unwrap(),
+        n1.vdiag_a.as_slice().unwrap(),
+        n2.vdiag_a.as_slice().unwrap(),
+        n3.vdiag_a.as_slice().unwrap(),
     ];
     let vdiag_b: [&[f64]; 4] = [
-        v0.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
-        v1.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
-        v2.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
-        v3.vdiag_b.as_ref().expect("vdiag_b").as_slice().unwrap(),
+        n0.vdiag_b.as_slice().unwrap(),
+        n1.vdiag_b.as_slice().unwrap(),
+        n2.vdiag_b.as_slice().unwrap(),
+        n3.vdiag_b.as_slice().unwrap(),
     ];
 
     let _n_mu = mu.len();

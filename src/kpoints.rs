@@ -14,8 +14,8 @@
 //! ```
 
 use crate::error::{Result, TbError};
-use crate::generics::UseFloat;
 use ndarray::{Array1, Array2, Array3};
+use num_traits::Float;
 
 fn mesh_len<T>(k_mesh: &Array1<usize>, values_per_point: usize) -> Result<usize> {
     let invalid = || TbError::InvalidKmeshDimensions(k_mesh.to_owned());
@@ -48,12 +48,13 @@ fn mesh_len<T>(k_mesh: &Array1<usize>, values_per_point: usize) -> Result<usize>
 ///
 /// # Returns
 /// `Result<Array2<T>>` where each row is a k-point in fractional coordinates
+/// (`T: num_traits::Float`, including `f32` and `f64`).
 ///
 /// # Errors
 /// Returns `TbError` if the mesh dimensions are invalid
 pub fn gen_kmesh<T>(k_mesh: &Array1<usize>) -> Result<Array2<T>>
 where
-    T: UseFloat + std::ops::Div<Output = T>,
+    T: Float,
 {
     let dim = k_mesh.len();
     let count = mesh_len::<T>(k_mesh, dim)?;
@@ -61,7 +62,9 @@ where
     for (index, mut point) in points.outer_iter_mut().enumerate() {
         let mut remainder = index;
         for axis in (0..dim).rev() {
-            point[axis] = T::from(remainder % k_mesh[axis]) / T::from(k_mesh[axis]);
+            let invalid = || TbError::InvalidKmeshDimensions(k_mesh.to_owned());
+            point[axis] = T::from(remainder % k_mesh[axis]).ok_or_else(invalid)?
+                / T::from(k_mesh[axis]).ok_or_else(invalid)?;
             remainder /= k_mesh[axis];
         }
     }
@@ -71,9 +74,10 @@ where
 /// Generate fractional-coordinate cell bounds corresponding to [`gen_kmesh`].
 /// The last coordinate varies fastest; each cell includes its upper endpoint.
 /// Supports one, two and three dimensions, rejecting zero or overflowing sizes.
+/// The scalar type implements [`num_traits::Float`], including `f32` and `f64`.
 pub fn gen_krange<T>(k_mesh: &Array1<usize>) -> Result<Array3<T>>
 where
-    T: UseFloat + std::ops::Div<Output = T>,
+    T: Float,
 {
     let dim = k_mesh.len();
     if !(1..=3).contains(&dim) {
@@ -89,7 +93,9 @@ where
         for axis in (0..dim).rev() {
             let coordinate = remainder % k_mesh[axis];
             for endpoint in 0..2 {
-                cell[[axis, endpoint]] = T::from(coordinate + endpoint) / T::from(k_mesh[axis]);
+                let invalid = || TbError::InvalidKmeshDimensions(k_mesh.to_owned());
+                cell[[axis, endpoint]] = T::from(coordinate + endpoint).ok_or_else(invalid)?
+                    / T::from(k_mesh[axis]).ok_or_else(invalid)?;
             }
             remainder /= k_mesh[axis];
         }
@@ -114,6 +120,10 @@ mod tests {
             array![[0.0], [0.25], [0.5], [0.75]]
         );
         assert_eq!(gen_kmesh::<f32>(&array![1]).unwrap(), array![[0.0f32]]);
+        assert_eq!(
+            gen_krange::<f32>(&array![2]).unwrap(),
+            array![[[0.0f32, 0.5]], [[0.5, 1.0]]]
+        );
     }
 
     #[test]

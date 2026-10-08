@@ -30,11 +30,12 @@ use crate::hamiltonian_symmetry::{
     LocalizedBasisAction, hamiltonian_residual, validate_action, validate_action_geometry,
     validate_hamiltonian, validate_projective_corepresentation, validate_tolerances,
 };
+use crate::ndarray_lapack::eigh_full;
 use crate::{AtomicOrbitalBasis, Gauge, Model, RMatrixData};
 use cryspglib::irrep::magnetic_summary::{MagneticKPointSummary, magnetic_irrep_summary_by_uni};
 use cryspglib::irrep::wigner::SettingTransform;
 use ndarray::{Array1, Array2, s};
-use ndarray_linalg::{Eigh, LeastSquaresSvd, UPLO};
+use ndarray_linalg::{LeastSquaresSvd, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
 use std::fmt::{Display, Formatter, Write};
@@ -1039,7 +1040,7 @@ fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
 ) -> Result<IrrepKPointReport> {
     let k = Array1::from_vec(point.model_coordinate.to_vec());
     let hamiltonian = model.gen_ham(&k, Gauge::Lattice);
-    let (energies, eigenvectors) = hamiltonian.eigh(UPLO::Lower)?;
+    let (energies, eigenvectors) = eigh_full(&hamiltonian, UPLO::Lower)?;
     let groups = degeneracy_groups(
         energies.as_slice().expect("eigenvalues are contiguous"),
         options.degeneracy_absolute,
@@ -1047,7 +1048,7 @@ fn calculate_kpoint<const SPIN: bool, R: RMatrixData>(
     );
     let mut bands = Vec::with_capacity(groups.len());
     for (start, end) in groups {
-        let vectors = eigenvectors.slice(s![.., start..end]).to_owned();
+        let vectors = eigenvectors.slice(s![start..end, ..]).t().to_owned();
         let dimension = end - start;
         let mut characters = Vec::with_capacity(point.operations.len());
         for (summary_operation, mapped) in point.summary.operations.iter().zip(&point.operations) {
@@ -1850,6 +1851,57 @@ mod tests {
                 .any(|value| value.im.abs() > 0.5),
             "the spinor regression must exercise a genuinely complex character"
         );
+    }
+
+    #[test]
+    fn complex_zeeman_eigenstates_have_energy_resolved_rotation_characters() {
+        // A monoclinic cell fixes the unique twofold axis to y. For a single
+        // s orbital, H = delta sigma_y and U(C2y) = -i sigma_y, hence the
+        // E = -delta/+delta bands have characters +i/-i respectively.
+        // Conjugating the ket coefficients exchanges these two characters.
+        let mut model = Model::<true, 3>::tb_model(
+            array![[1.0, 0.0, 0.0], [0.0, 1.3, 0.0], [0.2, 0.0, 1.7]],
+            array![[0.0, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::Fe,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        model.atoms[0].set_magnetic_moment([0.0, 1.0, 0.0]).unwrap();
+        model.set_onsite(&array![0.4], Some(crate::SpinDirection::Y));
+        let h = model.gen_ham(&array![0.0, 0.0, 0.0], Gauge::Lattice);
+        assert_eq!(h[[0, 1]], Complex64::new(0.0, -0.4));
+        assert_eq!(h[[1, 0]], Complex64::new(0.0, 0.4));
+
+        let report = model.calculate_irrep(None).unwrap();
+        assert!(report.target_hamiltonian_compatible, "{report}");
+        let gamma = report
+            .high_symmetry_kpoints
+            .iter()
+            .find(|point| point.label == "GM")
+            .unwrap();
+        assert_eq!(gamma.bands.len(), 2);
+        for (band, sign) in gamma.bands.iter().zip([-1.0, 1.0]) {
+            assert_eq!(band.energies.len(), 1);
+            assert!((band.energies[0] - sign * 0.4).abs() < 1e-12);
+            let character = band
+                .characters
+                .iter()
+                .find(|character| {
+                    !character.time_reversal
+                        && character.rotation == [[-1, 0, 0], [0, 1, 0], [0, 0, -1]]
+                })
+                .expect("the monoclinic Gamma little group contains C2y");
+            assert!(
+                (character.value.unwrap() - Complex64::new(0.0, -sign)).norm() < 1e-12,
+                "E = {:?} has the wrong C2y character: {:?}",
+                band.energies,
+                character.value
+            );
+            assert!(band.is_identified(), "{report}");
+        }
     }
 
     #[test]

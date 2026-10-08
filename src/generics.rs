@@ -1,67 +1,7 @@
-//! Generic trait definitions for numeric type flexibility and hopping parameter conversions.
+//! Checked conversions for spin directions and spatial dimensions.
 use crate::SpinDirection;
 use crate::TbError;
 use crate::model::Dimension;
-use num_complex::Complex64;
-use num_traits::identities::Zero;
-
-pub trait ToFloat {
-    fn to_float(self) -> f64;
-}
-impl ToFloat for usize {
-    fn to_float(self) -> f64 {
-        self as f64
-    }
-}
-
-impl ToFloat for isize {
-    fn to_float(self) -> f64 {
-        self as f64
-    }
-}
-
-impl ToFloat for f32 {
-    fn to_float(self) -> f64 {
-        self as f64
-    }
-}
-
-impl ToFloat for f64 {
-    fn to_float(self) -> f64 {
-        self
-    }
-}
-
-pub trait UseFloat: Copy + Clone + Zero + std::fmt::Display + PartialOrd {
-    fn from<T: ToFloat>(n: T) -> Self;
-}
-impl UseFloat for f32 {
-    fn from<T: ToFloat>(n: T) -> Self {
-        n.to_float() as f32
-    }
-}
-
-impl UseFloat for f64 {
-    fn from<T: ToFloat>(n: T) -> Self {
-        n.to_float()
-    }
-}
-
-//这里的trait是为了让set_hop 可以同时满足 f64 和 Complex64 的
-pub trait HopUse: Copy + Clone + Zero {
-    fn to_complex(&self) -> Complex64;
-}
-impl HopUse for f64 {
-    fn to_complex(&self) -> Complex64 {
-        Complex64::new(*self, 0.0)
-    }
-}
-
-impl HopUse for Complex64 {
-    fn to_complex(&self) -> Complex64 {
-        *self
-    }
-}
 
 // Conversion from integer types to Option<SpinDirection>.
 // Note: we cannot impl From<usize> for Option<SpinDirection> due to orphan rules

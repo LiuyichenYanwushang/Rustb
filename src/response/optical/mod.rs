@@ -22,9 +22,10 @@
 //! computes the full Cartesian tensor. Both entry points share the same
 //! preparation and integration implementation.
 
+use crate::ndarray_lapack::eigh_full;
 use ndarray::array;
 use ndarray::prelude::*;
-use ndarray_linalg::{Determinant, Eigh, UPLO};
+use ndarray_linalg::{Determinant, UPLO};
 use num_complex::Complex;
 use rayon::prelude::*;
 
@@ -36,9 +37,7 @@ use super::config::{
     occupation_for, validate_broadening, validate_direction_values,
 };
 use super::kernel::{eval_optical_kernel, quadrature_optical_simplex};
-use super::tracking::{
-    build_tetrahedra_3d_diagavg, build_triangles_2d, global_band_track, global_band_track_with,
-};
+use super::tracking::{build_tetrahedra_3d_diagavg, build_triangles_2d, global_band_track};
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 
 /// Optical conductivity for one or more tensor components.
@@ -154,8 +153,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut conductivity = Array2::<Complex<f64>>::zeros((direction_pairs.len(), samples));
         let mut unsafe_simplex_count = 0usize;
         let full_tensor = direction_pairs.len() > 1;
+        let mut vertices = Vec::new();
+        let mut bands = Vec::new();
         let mut velocities = Vec::new();
-        let mut vertices: Vec<VertexKernel> = if full_tensor {
+        if full_tensor {
             let directions = Array2::<f64>::eye(DIM);
             let data: Vec<Result<_>> = k_points
                 .outer_iter()
@@ -164,42 +165,44 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     let (projected, ham) = self.gen_v_projected(&k, Gauge::Atom, &directions);
                     #[cfg(test)]
                     super::config::counters::count_eigen_decomposition();
-                    let (band, evec) = ham.eigh(UPLO::Lower)?;
-                    // Match compute_velocity_kernel's ndarray-linalg convention.
-                    let ket = evec.mapv(|z| z.conj());
+                    let (band, evec) = eigh_full(&ham, UPLO::Lower)?;
+                    let bra = evec.mapv(|z| z.conj());
                     let mut velocity = Array3::zeros((DIM, self.nsta(), self.nsta()));
                     for (mut out, v) in velocity.outer_iter_mut().zip(projected.outer_iter()) {
-                        out.assign(&evec.t().dot(&v.dot(&ket)));
+                        out.assign(&bra.dot(&v.dot(&evec.t())));
                     }
-                    let vertex = VertexKernel {
-                        band,
-                        evec,
-                        k_ab: &velocity.index_axis(Axis(0), 0)
-                            * &velocity.index_axis(Axis(0), 0).t(),
-                        k_bc: None,
-                        k_ac: None,
-                        vdiag: None,
-                        vdiag_a: None,
-                        vdiag_b: None,
-                    };
-                    Ok((vertex, velocity))
+                    Ok((band, (evec, velocity)))
                 })
                 .collect();
-            let (vertices, all_velocities): (Vec<_>, Vec<_>) = data
+            let vectors_and_velocities: Vec<_>;
+            (bands, vectors_and_velocities) = data
                 .into_iter()
                 .collect::<Result<Vec<_>>>()?
                 .into_iter()
                 .unzip();
-            velocities = all_velocities;
-            vertices
+            let mut eigenvectors: Vec<_>;
+            (eigenvectors, velocities) = vectors_and_velocities
+                .into_iter()
+                .unzip::<_, _, Vec<_>, Vec<_>>();
+            if params.integration == Integration::Simplex {
+                global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
+                    bands[index] = bands[index].select(Axis(0), permutation);
+                    velocities[index] = velocities[index]
+                        .select(Axis(1), permutation)
+                        .select(Axis(2), permutation);
+                });
+            }
         } else {
+            // A single component retains just its kernel, not both dense
+            // velocity matrices over the whole mesh.
             let direction_a = direction_pairs[0].row(0).to_owned();
             let direction_b = direction_pairs[0].row(1).to_owned();
-            let vertices: Vec<Result<_>> = (0..k_points.nrows())
+            let data: Vec<Result<_>> = k_points
+                .outer_iter()
                 .into_par_iter()
-                .map(|index| {
+                .map(|k| {
                     self.compute_velocity_kernel(
-                        &k_points.row(index).to_owned(),
+                        &k.to_owned(),
                         &direction_a,
                         &direction_b,
                         None,
@@ -208,32 +211,35 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     )
                 })
                 .collect();
-            vertices.into_iter().collect::<Result<_>>()?
-        };
-        if params.integration == Integration::Simplex {
-            if full_tensor {
-                global_band_track_with(&mut vertices, &params.kmesh, |index, permutation| {
-                    velocities[index] = velocities[index]
-                        .select(Axis(1), permutation)
-                        .select(Axis(2), permutation);
+            let mut eigenvectors: Vec<_>;
+            (vertices, eigenvectors) = data
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .unzip::<_, _, Vec<_>, Vec<_>>();
+            if params.integration == Integration::Simplex {
+                global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
+                    vertices[index] =
+                        super::tracking::permute_vertex(&vertices[index], permutation);
                 });
-            } else {
-                global_band_track(&mut vertices, &params.kmesh);
             }
-        }
-        // Simplex construction uses energies and kernels after tracking; the
-        // eigenvectors can be released before integrating any frequencies.
-        for vertex in &mut vertices {
-            vertex.evec = Array2::zeros((0, 0));
         }
 
         for component in 0..direction_pairs.len() {
             if full_tensor {
                 let (a, b) = (component / DIM, component % DIM);
-                for (vertex, velocity) in vertices.iter_mut().zip(&velocities) {
-                    vertex.k_ab.assign(
-                        &(&velocity.index_axis(Axis(0), a) * &velocity.index_axis(Axis(0), b).t()),
-                    );
+                // Build components only after shared band/velocity tracking;
+                // no placeholder kernel or tracking states survive here.
+                vertices.clear();
+                for (band, velocity) in bands.iter().zip(&velocities) {
+                    vertices.push(VertexKernel {
+                        band: band.clone(),
+                        k_ab: super::primitives::checked_velocity_product(
+                            velocity.index_axis(Axis(0), a),
+                            velocity.index_axis(Axis(0), b),
+                        )?,
+                        nonlinear: None,
+                    });
                 }
             }
 
@@ -428,6 +434,43 @@ mod tests {
     /// Rows of a direction matrix as the fixed-size array the entry points take.
     fn direction_rows<const DIM: usize>(directions: &Array2<f64>) -> [[f64; DIM]; 2] {
         std::array::from_fn(|row| std::array::from_fn(|axis| directions[[row, axis]]))
+    }
+
+    #[test]
+    fn tensor_and_component_reject_the_same_underflowed_raw_product() {
+        let mut model = Model::<false, 2>::tb_model(
+            array![[2e-165, 0.0], [0.0, 1.0]],
+            array![[0.0, 0.0], [0.5, 0.0]],
+            None,
+        )
+        .unwrap();
+        model.set_hop(1.0, 0, 1, &array![0, 0], None);
+        // d² underflows, but d² / det = 5e-166 and the true conductivity
+        // are normal, nonzero values. Neither entry point may invent zero.
+        let z = Complex::new(1.0, 0.1);
+        let expected: Complex<f64> = Complex::new(0.0, -5e-166) * z / (4.0 - z * z);
+        assert!(expected.re.is_normal() && expected.im.is_normal());
+        for integration in [Integration::Direct, Integration::Simplex] {
+            let params = Parameters {
+                conditions: Conditions::fixed(0.0, 0.0, 1.0),
+                kmesh: [1, 1],
+                integration,
+            };
+            assert!(matches!(
+                model.optical_conductivity(&params, [[1.0, 0.0], [1.0, 0.0]], 0.1),
+                Err(TbError::InvalidResponseParameter {
+                    parameter: "velocity_kernel",
+                    ..
+                })
+            ));
+            assert!(matches!(
+                model.optical_conductivity_tensor(&params, 0.1),
+                Err(TbError::InvalidResponseParameter {
+                    parameter: "velocity_kernel",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]
@@ -702,24 +745,17 @@ mod tests {
         ];
         let mut vertices: Vec<_> = velocities
             .iter()
-            .enumerate()
-            .map(|(index, v)| VertexKernel {
+            .map(|v| VertexKernel {
                 band: array![1.0, 2.0],
-                evec: if index == 0 {
-                    Array2::eye(2)
-                } else {
-                    Array2::eye(2).select(Axis(1), &[1, 0])
-                },
                 k_ab: v * &v.t(),
-                k_bc: None,
-                k_ac: None,
-                vdiag: None,
-                vdiag_a: None,
-                vdiag_b: None,
+                nonlinear: None,
             })
             .collect();
+        let mut eigenvectors = vec![Array2::eye(2), Array2::eye(2).select(Axis(0), &[1, 0])];
         let mut calls = 0;
-        global_band_track_with(&mut vertices, &[2, 1], |index, permutation| {
+        global_band_track(&mut eigenvectors, &[2, 1], |index, permutation| {
+            vertices[index] =
+                crate::response::tracking::permute_vertex(&vertices[index], permutation);
             calls += 1;
             velocities[index] = velocities[index]
                 .select(Axis(0), permutation)
@@ -739,12 +775,7 @@ mod tests {
                 [Complex::new(0.0, 0.0), Complex::i()],
                 [-Complex::i(), Complex::new(0.0, 0.0)]
             ],
-            evec: Array2::eye(2),
-            k_bc: None,
-            k_ac: None,
-            vdiag: None,
-            vdiag_a: None,
-            vdiag_b: None,
+            nonlinear: None,
         };
         let frequencies = array![0.3, 1.1];
         // f_lower=1, f_upper=0: summing both off-diagonal terms gives

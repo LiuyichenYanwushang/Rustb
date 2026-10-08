@@ -49,34 +49,15 @@ where
     }
     if coefficients.nrows() > 1
         && let Some(data) = blocks.as_slice()
-        && let (Ok(m), Ok(n), Ok(k)) = (
-            i32::try_from(width),
-            i32::try_from(coefficients.nrows()),
-            i32::try_from(nr),
-        )
     {
-        let coefficients = coefficients.as_standard_layout();
-        // SAFETY: C-row-major result = coefficients * blocks is the same
-        // memory as column-major result^T = blocks^T * coefficients^T.
-        // The slices have lengths m*k, k*n, m*n; all dimensions are positive
-        // and fit BLAS integers. Output owns disjoint writable storage.
-        unsafe {
-            blas::zgemm(
-                b'N',
-                b'N',
-                m,
-                n,
-                k,
-                Complex::new(1.0, 0.0),
-                data,
-                m,
-                coefficients.as_slice().unwrap(),
-                k,
-                Complex::new(0.0, 0.0),
-                result.as_slice_mut().unwrap(),
-                m,
-            );
-        }
+        let flat_blocks = ArrayView2::from_shape((nr, width), data).unwrap();
+        ndarray::linalg::general_mat_mul(
+            Complex::new(1.0, 0.0),
+            coefficients,
+            &flat_blocks,
+            Complex::new(0.0, 0.0),
+            &mut result,
+        );
     } else {
         // Preserve the cheap single-row AXPY path and support strided blocks
         // without materializing a potentially very large contiguous copy.
@@ -282,5 +263,55 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .reduce(|| Array1::<f64>::zeros(E_n), |acc, x| acc + x);
         let dos = dos / (nk as f64);
         Ok((E, dos))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fourier_sum_matches_scalar_sum_across_layouts() {
+        let coefficients = Array2::from_shape_fn((4, 9), |(row, ir)| {
+            Complex::new(0.3 * (row + ir + 1) as f64, 0.2 * row as f64 - ir as f64)
+        });
+        let coefficients_f = Array2::from_shape_fn((4, 9).f(), |index| coefficients[index]);
+        let coefficients_strided =
+            Array2::from_shape_fn((8, 18), |(row, ir)| coefficients[[row / 2, ir / 2]]);
+        let blocks = Array3::from_shape_fn((9, 2, 5), |(ir, i, j)| {
+            Complex::new(
+                0.7 * (ir + 2 * i + j) as f64,
+                0.4 * (ir + i) as f64 - j as f64,
+            )
+        });
+
+        for coefficients in [
+            coefficients.view(),
+            coefficients_f.view(),
+            coefficients_strided.slice(s![..;2, ..;2]),
+            coefficients.slice(s![..;-1, ..;-1]),
+            coefficients.slice(s![..1, ..]),
+            coefficients.slice(s![..0, ..]),
+        ] {
+            for blocks in [
+                blocks.view(),
+                blocks.slice(s![..;-1, .., ..]),
+                blocks.slice(s![.., .., ..;-1]),
+                blocks.slice(s![.., .., ..;2]),
+            ] {
+                let (_, ni, nj) = blocks.dim();
+                let expected =
+                    Array2::from_shape_fn((coefficients.nrows(), ni * nj), |(row, col)| {
+                        (0..coefficients.ncols())
+                            .map(|ir| coefficients[[row, ir]] * blocks[[ir, col / nj, col % nj]])
+                            .sum::<Complex<f64>>()
+                    });
+                let actual = fourier_sum(&coefficients, &blocks);
+                assert_eq!(actual.dim(), expected.dim());
+                for (index, &value) in expected.indexed_iter() {
+                    assert!((actual[index] - value).norm() < 1e-12, "at {index:?}");
+                }
+            }
+        }
     }
 }

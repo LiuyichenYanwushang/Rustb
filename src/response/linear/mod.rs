@@ -464,7 +464,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
             Integration::EnergyCut => {
                 let kvec = crate::kpoints::gen_kmesh(&k_mesh)?;
-                let all_pts: Vec<Result<VertexKernel>> = (0..kvec.nrows())
+                let all_pts: Vec<Result<_>> = (0..kvec.nrows())
                     .into_par_iter()
                     .map(|ik| {
                         self.compute_velocity_kernel(
@@ -477,9 +477,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
-                let mut all_pts: Vec<VertexKernel> = all_pts.into_iter().collect::<Result<_>>()?;
+                let (mut all_pts, mut eigenvectors): (Vec<_>, Vec<_>) = all_pts
+                    .into_iter()
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .unzip();
                 // Tracked once; every sample reuses the labelled vertices.
-                global_band_track(&mut all_pts, &params.kmesh);
+                global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
+                    all_pts[index] =
+                        crate::response::tracking::permute_vertex(&all_pts[index], permutation);
+                });
+                drop(eigenvectors);
                 let integrate =
                     |chemical_potentials: &Array1<f64>, width: f64| -> Result<Array1<f64>> {
                         Ok(match DIM {

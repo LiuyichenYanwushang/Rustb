@@ -94,7 +94,7 @@ pub(crate) fn eval_berry_kernel(
 
 /// Evaluate $\Omega_n$ for a single band at one quadrature point.
 ///
-/// Interpolates $E_m(q)$ and $K_{nm}(q)$ at barycentric coords `lam`,
+/// Interpolates vertex gaps $E_n-E_m$ and $K_{nm}$ at barycentric coords `lam`,
 /// then computes $\Omega_n = -2\\,\mathrm{Im}\sum_{m\ne n} K_{nm}/(\Delta_{nm}^2+\eta^2)$.
 /// Reuses caller-provided buffers and computes only the requested band.
 #[inline]
@@ -116,7 +116,9 @@ pub(crate) fn eval_berry_band_at_lam_buf(
             continue;
         }
         for m in 0..nsta {
-            e_buf[m] += bands[v][m] * lv;
+            // Interpolate the gap, not two large absolute energies whose
+            // separately rounded sums can erase a representable splitting.
+            e_buf[m] += (bands[v][n] - bands[v][m]) * lv;
         }
     }
     for v in 0..kmats.len() {
@@ -134,7 +136,7 @@ pub(crate) fn eval_berry_band_at_lam_buf(
         if m == n {
             continue;
         }
-        let de = e_buf[n] - e_buf[m];
+        let de = e_buf[m];
         let denom = de * de + eta2;
         if denom < 1e-30 {
             continue;
@@ -146,7 +148,8 @@ pub(crate) fn eval_berry_band_at_lam_buf(
 
 /// Evaluate $G_n = \Sigma_{m\ne n} K_{nm} / (\Delta_{nm}^2 + \eta^2)$
 /// for a single band at barycentrics, returning `(metric_n, berry_n)`.
-/// Interpolates only $E_m$ and the $n$-th row of $K$ into caller-provided buffers.
+/// Interpolates only vertex gaps $E_n-E_m$ and the $n$-th row of $K$
+/// into caller-provided buffers; the energy scratch buffer stores gaps.
 #[inline]
 pub(crate) fn eval_berry_complex_at_lam_buf(
     n: usize,
@@ -166,7 +169,9 @@ pub(crate) fn eval_berry_complex_at_lam_buf(
             continue;
         }
         for m in 0..nsta {
-            e_buf[m] += bands[v][m] * lv;
+            // Interpolate the gap, not two large absolute energies whose
+            // separately rounded sums can erase a representable splitting.
+            e_buf[m] += (bands[v][n] - bands[v][m]) * lv;
         }
     }
     for v in 0..kmats.len() {
@@ -184,7 +189,7 @@ pub(crate) fn eval_berry_complex_at_lam_buf(
         if m == n {
             continue;
         }
-        let de = e_buf[n] - e_buf[m];
+        let de = e_buf[m];
         let denom = de * de + eta2;
         if denom < 1e-30 {
             continue;
@@ -357,15 +362,25 @@ pub(crate) fn quadrature_occupied_geometry_simplex<const NV: usize>(
     let mut metric = Array1::<f64>::zeros(chemical_potentials.len());
     let mut berry = Array1::<f64>::zeros(chemical_potentials.len());
 
+    let mut gaps = vec![0.0; nsta];
+    let mut row_kernel = vec![Complex::new(0.0, 0.0); nsta];
     let mut accumulate = |lambda: &[f64], weight: f64| {
         let energies = bary_interp_band_refs(&bands, lambda, nsta);
-        let kernel = bary_interp_matrix_refs(&kernels, lambda);
-        let (metric_n, berry_n) = eval_berry_kernel(&energies, &kernel, eta, nsta);
-        for (index, &mu) in chemical_potentials.iter().enumerate() {
-            for band in 0..nsta {
+        for band in 0..nsta {
+            let (metric_n, berry_n) = eval_berry_complex_at_lam_buf(
+                band,
+                &bands,
+                &kernels,
+                lambda,
+                eta,
+                nsta,
+                &mut gaps,
+                &mut row_kernel,
+            );
+            for (index, &mu) in chemical_potentials.iter().enumerate() {
                 let f = occupation.value_unchecked(energies[band], mu);
-                metric[index] += weight * f * metric_n[band];
-                berry[index] += weight * f * berry_n[band];
+                metric[index] += weight * f * metric_n;
+                berry[index] += weight * f * berry_n;
             }
         }
     };

@@ -31,6 +31,7 @@
 //! | `extrinsic_nonlinear_hall` | direct sum or energy cut | $\chi^{\rm ext}$ |
 //! | `intrinsic_nonlinear_hall` | direct sum or energy cut | $\sigma\_{\rm int}$ |
 
+use crate::ndarray_lapack::eigh_full;
 use ndarray::array;
 use ndarray::prelude::*;
 use ndarray_linalg::*;
@@ -212,9 +213,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         #[cfg(test)]
         super::config::counters::count_eigen_decomposition();
-        let (band, evec) = hamk.eigh(UPLO::Lower)?;
-        let evec_conj = evec.t();
-        let evec = evec.map(|x| x.conj());
+        let (band, evec) = eigh_full(&hamk, UPLO::Lower)?;
+        let evec_conj = evec.mapv(|x| x.conj());
+        let evec = evec.t();
 
         let v0 = v0.dot(&evec);
         let v0 = &evec_conj.dot(&v0);
@@ -391,7 +392,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .outer_iter()
                 .into_par_iter()
                 .map(|k| {
-                    let vertex = compute(k)?;
+                    let (vertex, _) = compute(k)?;
                     let evaluate = |kernel, diagonal| {
                         let kernel: &Array2<Complex<f64>> = kernel;
                         // Preserve the direct extrinsic denominator, including
@@ -408,14 +409,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         });
                         berry * diagonal
                     };
-                    let first = evaluate(&vertex.k_ab, vertex.vdiag.as_ref().unwrap());
+                    let nonlinear = vertex.nonlinear.as_ref().unwrap();
+                    let first = evaluate(&vertex.k_ab, &nonlinear.vdiag);
                     let values = if symmetrized {
-                        (first
-                            + evaluate(
-                                vertex.k_ac.as_ref().unwrap(),
-                                vertex.vdiag_b.as_ref().unwrap(),
-                            ))
-                            * 0.5
+                        (first + evaluate(&nonlinear.k_ac, &nonlinear.vdiag_b)) * 0.5
                     } else {
                         first
                     };
@@ -446,9 +443,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             });
         }
         let vertices: Vec<Result<_>> = k_points.outer_iter().into_par_iter().map(compute).collect();
-        let mut vertices = vertices.into_iter().collect::<Result<Vec<_>>>()?;
+        let (mut vertices, mut eigenvectors): (Vec<_>, Vec<_>) = vertices
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .unzip();
         // Tracked once; every sample reuses the labelled vertices.
-        global_band_track(&mut vertices, &params.kmesh);
+        global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
+            vertices[index] =
+                crate::response::tracking::permute_vertex(&vertices[index], permutation);
+        });
+        drop(eigenvectors);
         let integrate = |vertices: &[VertexKernel],
                          chemical_potentials: &Array1<f64>,
                          width: f64| {
@@ -489,8 +494,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             // The same eigenbasis already contains K^{ac} and v^b. Exchange
             // only the two consumed kernels, preserving the tracked band order.
             for vertex in &mut vertices {
-                std::mem::swap(&mut vertex.k_ab, vertex.k_ac.as_mut().unwrap());
-                std::mem::swap(&mut vertex.vdiag, &mut vertex.vdiag_b);
+                let nonlinear = vertex.nonlinear.as_mut().unwrap();
+                std::mem::swap(&mut vertex.k_ab, &mut nonlinear.k_ac);
+                std::mem::swap(&mut nonlinear.vdiag, &mut nonlinear.vdiag_b);
             }
             let (second, _) = scan(&mut vertices)?;
             (first + second) * 0.5
@@ -566,9 +572,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         #[cfg(test)]
         super::config::counters::count_eigen_decomposition();
-        let (band, evec) = hamk.eigh(UPLO::Lower)?;
-        let ut = evec.t();
-        let uc = evec.map(|x| x.conj());
+        let (band, evec) = eigh_full(&hamk, UPLO::Lower)?;
+        let ut = evec.mapv(|x| x.conj());
+        let uc = evec.t();
         let to_band = |op: &Array2<Complex<f64>>| -> Array2<Complex<f64>> { ut.dot(&op.dot(&uc)) };
 
         // Transform projected matrices to eigenbasis in one shot per projection.
@@ -754,7 +760,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 Array1::from_vec(values)
             }
             Integration::EnergyCut => {
-                let vertices: Vec<Result<VertexKernel>> = (0..k_points.nrows())
+                let vertices: Vec<Result<_>> = (0..k_points.nrows())
                     .into_par_iter()
                     .map(|index| {
                         self.compute_velocity_kernel(
@@ -767,10 +773,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
-                let mut vertices: Vec<VertexKernel> =
-                    vertices.into_iter().collect::<Result<_>>()?;
+                let (mut vertices, mut eigenvectors): (Vec<_>, Vec<_>) = vertices
+                    .into_iter()
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .unzip();
                 // Tracked once; every sample reuses the labelled vertices.
-                global_band_track(&mut vertices, &params.kmesh);
+                global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
+                    vertices[index] =
+                        crate::response::tracking::permute_vertex(&vertices[index], permutation);
+                });
+                drop(eigenvectors);
                 let integrate = |chemical_potentials: &Array1<f64>, width: f64| -> Array1<f64> {
                     let values = match DIM {
                         2 => super::energy_cut::integrate_intrinsic_cut_2d(

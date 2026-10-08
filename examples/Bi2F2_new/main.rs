@@ -130,7 +130,7 @@ fn main() {
     let path=[[-0.5,-0.5],[0.0,0.0],[0.5,0.5]];
     let path=arr2(&path);
     let label=vec!["X","{/symbol G}","X"];
-    green.show_surf_state("target/example-output/Bi2F2_new/surf",&path,&label,nk,E_min,E_max,E_n,0);
+    green.show_surf_state("target/example-output/Bi2F2_new/surf",&path,&label,nk,E_min,E_max,E_n).unwrap();
 
     let super_model=model.cut_piece(50,0);
     let path=[[0.0,-0.5,0.0],[0.0,0.0,0.0],[0.0,0.5,0.0]];
@@ -165,7 +165,7 @@ fn main() {
     let path=[[-0.5,-0.0],[0.0,0.0],[0.5,0.0]];
     let path=arr2(&path);
     let label=vec!["X","G","X"];
-    green.show_surf_state("target/example-output/Bi2F2_new/xy/surf",&path,&label,nk,E_min,E_max,E_n,0);
+    green.show_surf_state("target/example-output/Bi2F2_new/xy/surf",&path,&label,nk,E_min,E_max,E_n).unwrap();
 
     let num=42;
     let name="target/example-output/Bi2F2_new/xy";
@@ -197,7 +197,7 @@ fn main() {
     let path=[[-0.5,-0.0],[0.0,0.0],[0.5,0.0]];
     let path=arr2(&path);
     let label=vec!["X","G","X"];
-    green.show_surf_state("target/example-output/Bi2F2_new/bar_xy/surf",&path,&label,nk,E_min,E_max,E_n,0);
+    green.show_surf_state("target/example-output/Bi2F2_new/bar_xy/surf",&path,&label,nk,E_min,E_max,E_n).unwrap();
 
     let num=42;
     let name="target/example-output/Bi2F2_new/bar_xy";
@@ -230,7 +230,7 @@ fn main() {
     let path=[[-0.5,-0.0],[0.0,0.0],[0.5,0.0]];
     let path=arr2(&path);
     let label=vec!["X","G","X"];
-    green.show_surf_state("target/example-output/Bi2F2_new/z_new/surf",&path,&label,nk,E_min,E_max,E_n,0);
+    green.show_surf_state("target/example-output/Bi2F2_new/z_new/surf",&path,&label,nk,E_min,E_max,E_n).unwrap();
 
     let num=30;
     let name="target/example-output/Bi2F2_new/z_new";

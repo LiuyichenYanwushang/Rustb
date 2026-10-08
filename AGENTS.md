@@ -697,30 +697,33 @@ requested harmonic range; `L_α` is a mode's temporal harmonic.
 | one nonzero harmonic | `O(R + K)` (one ladder + lookups) | `MAX_BESSEL_ARG_CLOSED_FORM` = 16384 |
 | two carriers | `O(K·(2·min(M₁,M₂)+1))`, no window | same cap, plus `MAX_BESSEL_ENUM_WORK` = 2^22 iterations |
 | ≥ 3 carriers | `O(Σ(2M_α+1)·W)`, `W = K + 2·Σ|L_α|M_α` | `MAX_BESSEL_ARG` = 128 per operand, `MAX_BESSEL_WINDOW` = 2^22 |
-| past a cap | per-link time-grid DFT `O(N·(N_mode·DIM + K))`: one complex exponential per mode, direction and sample | `N ≤ FALLBACK_GRID_MAX` = 2^20, else refused |
+| past a cap | project/group once, then per-link DFT `O(N·(N_carrier + K))`: one time exponential per coherent carrier and sample | `N ≤ FALLBACK_GRID_MAX` = 2^20, else refused |
 
 A single ladder sweep (`max(⌈R⌉, requested) + O(√R)` orders) yields `J_0..J_M`
-and every truncation tail; no order is ever evaluated in isolation.  Measured
-with `n_max = 2`, `floquet_ham_onek` costs R = 128 → 15 µs, R = 4000 → 72 µs,
-R = 16000 → 286 µs, against 2121 µs and 8357 µs through the fallback grid —
-whose cost is one complex exponential per mode, direction and sample, not a
-multiply count.  Two carriers cost 9-15 µs at R ≤ 400 where the fold costs ~0.9 ms;
+and every truncation tail; no order is ever evaluated in isolation. Historical
+measurements with `n_max = 2`: `floquet_ham_onek` costs R = 128 → 15 µs,
+R = 4000 → 72 µs, R = 16000 → 286 µs, against 2121 µs and 8357 µs through
+the old Cartesian fallback. The projected fallback now sums coherent scalar
+carriers before sampling; those old fallback timings are not a new benchmark.
+Two carriers cost 9-15 µs at R ≤ 400 where the fold costs ~0.9 ms;
 ≥ 3 carriers still fold, which is the remaining slow path.
 
-Static (harmonic-0) modes are a pure phase `e^{-i Re z}` in every branch: the
-imaginary part of a static projection is physically inert, so it consumes no
-ladder, no amplitude cap and no bandwidth.  The same rule must hold in the
-backend and in the validation, or a drive with a large imaginary static
-amplitude is refused while the backend would have handled it exactly.
+Static (harmonic-0) modes are a pure phase `e^{-i Re z}` in every branch: never
+form their unused imaginary projection or add DC into the sampled AC phase.
+It consumes no ladder, amplitude cap or bandwidth. Project AC onto the link
+before time evolution and sum coherent carriers before sampling; equal link
+projections must give equal coefficients even for cancelling Cartesian fields.
 
-`validate_sambe_allocation` (and, for the effective model,
-`validate_link_resolvability`) mirrors the backend's branch conditions exactly —
-carrier counts, per-branch caps, the enumeration budget and the convolution
-window — and refuses a drive whose link the fallback grid cannot resolve,
-instead of returning silently aliased coefficients.  When a cap, a budget or a
-branch condition changes, both sides must change together, and the tests that
-pin the boundary (`sambe_validation_mirrors_the_backend_limits`,
-`validator_scan_bound_dominates_the_true_cutoff`) must be refreshed.
+`validate_sambe_allocation` and the effective model's
+`validate_link_resolvability` use cheap sufficient cutoff/window upper bounds.
+If those cannot certify the link and its fallback grid is unresolvable, probe
+the actual Bessel backend before rejecting: an upper bound cannot prove that
+the true enumeration budget or convolution window is exceeded. When a cap,
+budget or branch condition changes, refresh both sides and their boundary tests,
+including `sambe_validation_mirrors_the_backend_limits`,
+`validator_scan_bound_dominates_the_true_cutoff` and
+`validation_accepts_the_true_enumeration_budget`. Resonance products/division
+must be widened to i128 before cancellation and narrowed only after cutoff checks.
 
 ### Sambe Hamiltonian
 

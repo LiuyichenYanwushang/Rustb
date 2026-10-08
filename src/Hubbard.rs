@@ -72,10 +72,11 @@
 use crate::error::{Result, TbError};
 use crate::model::{Gauge, Model, NoRMatrix, RMatrixData};
 use crate::model_utils::find_R;
+use crate::ndarray_lapack::eigh_full;
 use crate::thermodynamics::{Occupation, fermi_from_width};
 use ndarray::parallel::prelude::*;
 use ndarray::{Array1, Array2, Array3, ArrayBase, Axis, Data, Ix1};
-use ndarray_linalg::{Eigh, UPLO};
+use ndarray_linalg::UPLO;
 use num_complex::Complex;
 
 const ENERGY_EQUAL_TOLERANCE: f64 = 1e-12;
@@ -437,10 +438,7 @@ impl<const DIM: usize, R: RMatrixData> Model<true, DIM, R> {
                 actual: k.len(),
             });
         }
-        let (_, mut eigenvectors) = self.gen_ham(k, Gauge::Atom).eigh(UPLO::Lower)?;
-        // ndarray-linalg returns the LAPACK vectors conjugated relative to the
-        // basis convention used by Model; this matches solve_ham::solve_onek.
-        eigenvectors.mapv_inplace(|value| value.conj());
+        let (_, eigenvectors) = eigh_full(&self.gen_ham(k, Gauge::Atom), UPLO::Lower)?;
         Ok(band_spin_expectations(&eigenvectors, self.norb()))
     }
 
@@ -490,6 +488,7 @@ impl<const DIM: usize, R: RMatrixData> Model<true, DIM, R> {
 #[derive(Debug)]
 struct KPointSpectrum {
     energies: Array1<f64>,
+    /// Row kets, indexed by [band, basis].
     eigenvectors: Array2<Complex<f64>>,
 }
 
@@ -542,9 +541,7 @@ fn diagonalize_model<const SPIN: bool, const DIM: usize, R: RMatrixData>(
         .axis_iter(Axis(0))
         .into_par_iter()
         .map(|k| {
-            let (energies, mut eigenvectors) = model.gen_ham(&k, Gauge::Atom).eigh(UPLO::Lower)?;
-            // Keep the same eigenvector convention as Model::solve_onek.
-            eigenvectors.mapv_inplace(|value| value.conj());
+            let (energies, eigenvectors) = eigh_full(&model.gen_ham(&k, Gauge::Atom), UPLO::Lower)?;
             Ok(KPointSpectrum {
                 energies,
                 eigenvectors,
@@ -791,8 +788,8 @@ fn local_density_matrix(
                 continue;
             }
             for orbital in 0..norb {
-                let up = spectrum.eigenvectors[[orbital, band]];
-                let down = spectrum.eigenvectors[[orbital + norb, band]];
+                let up = spectrum.eigenvectors[[band, orbital]];
+                let down = spectrum.eigenvectors[[band, orbital + norb]];
                 let prefactor = weight * f;
                 density[[orbital, 0, 0]] += Complex::new(prefactor * up.norm_sqr(), 0.0);
                 density[[orbital, 1, 1]] += Complex::new(prefactor * down.norm_sqr(), 0.0);
@@ -926,12 +923,12 @@ fn shift_energy_origin<const SPIN: bool, const DIM: usize, R: RMatrixData>(
 }
 
 fn band_spin_expectations(eigenvectors: &Array2<Complex<f64>>, norb: usize) -> Array2<f64> {
-    let nsta = eigenvectors.ncols();
+    let nsta = eigenvectors.nrows();
     let mut spin = Array2::<f64>::zeros((nsta, 3));
     for band in 0..nsta {
         for orbital in 0..norb {
-            let up = eigenvectors[[orbital, band]];
-            let down = eigenvectors[[orbital + norb, band]];
+            let up = eigenvectors[[band, orbital]];
+            let down = eigenvectors[[band, orbital + norb]];
             let coherence = up.conj() * down;
             spin[[band, 0]] += coherence.re;
             spin[[band, 1]] += coherence.im;
@@ -954,8 +951,8 @@ fn local_spin_moment_from_spectra(
                 continue;
             }
             for orbital in 0..norb {
-                let up = spectrum.eigenvectors[[orbital, band]];
-                let down = spectrum.eigenvectors[[orbital + norb, band]];
+                let up = spectrum.eigenvectors[[band, orbital]];
+                let down = spectrum.eigenvectors[[band, orbital + norb]];
                 let coherence = up.conj() * down;
                 let prefactor = weight * f;
                 spin[[orbital, 0]] += prefactor * coherence.re;
