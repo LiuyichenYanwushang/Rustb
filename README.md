@@ -415,12 +415,9 @@ let k = arr1(&[0.2, 0.1]);
 
 // Full truncated Sambe problem and folded quasienergies.
 let sambe_model = model.floquet_model(&drive, &truncation)?;
-let quasienergies = model.floquet_quasienergy_onek(
-    &k,
-    &drive,
-    &truncation,
-    Gauge::Lattice,
-)?;
+let mut quasienergies = sambe_model.solve_band_onek(&k)?;
+quasienergies.mapv_inplace(|energy| fold_quasienergy(energy, drive.omega0_ev));
+quasienergies.as_slice_mut().unwrap().sort_by(f64::total_cmp);
 
 // Same-size off-resonant van Vleck model.
 let effective = model.floquet_effective_model(&drive, None)?;
@@ -433,11 +430,15 @@ let effective_second_order =
 
 | API | Returned basis size | Intended use |
 |-----|--------------------:|--------------|
-| `floquet_model` / `floquet_ham_onek` | `nsta * (2*n_max + 1)` | Full truncated Sambe problem |
-| `floquet_quasienergy_onek` | `nsta * (2*n_max + 1)` | Quasienergies folded into one Floquet zone |
+| `floquet_model` | `nsta * (2*n_max + 1)` | Full truncated real-space Sambe model |
 | `floquet_effective_model` | `nsta` | Coherent, off-resonant van Vleck expansion |
 | `floquet_effective_mode_resolved_model` | `nsta` | Mutually incoherent mode-diagonal correction sum |
 | `floquet_effective_q_model` | `nsta` | Coherent long-wavelength correction through `O(A^2 q/W)` |
+
+Construct the real-space Sambe model once, then use its ordinary `gen_ham`,
+`solve_band_onek` or batch solvers. The Floquet single-k shortcuts have been
+removed. The ordinary band solvers return unfolded, gauge-independent energies;
+apply `fold_quasienergy` and sort afterwards when folded quasienergies are needed.
 
 The real-space effective-model path determines its generated hopping support
 automatically. `FloquetEffectiveOptions::harmonic_max` controls the commutator

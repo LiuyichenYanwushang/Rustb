@@ -890,10 +890,11 @@ let truncation = FloquetTruncation::new(1);
 let k = arr1(&[0.2, 0.1]);
 
 let sambe_model = model.floquet_model(&drive, &truncation)?;
-let h_floquet =
-    model.floquet_ham_onek(&k, &drive, &truncation, Gauge::Lattice)?;
-let quasienergy =
-    model.floquet_quasienergy_onek(&k, &drive, &truncation, Gauge::Lattice)?;
+// sambe_model.ham and sambe_model.hamR are the real-space Hamiltonian.
+let h_floquet = sambe_model.gen_ham(&k, Gauge::Lattice);
+let mut quasienergy = sambe_model.solve_band_onek(&k)?;
+quasienergy.mapv_inplace(|energy| fold_quasienergy(energy, drive.omega0_ev));
+quasienergy.as_slice_mut().unwrap().sort_by(f64::total_cmp);
 
 let effective =
     model.floquet_effective_model(&drive, None)?;
@@ -927,10 +928,16 @@ let effective_linear_q = model.floquet_effective_q_model(
 
 | API | Basis size | Intended regime |
 |---|---:|---|
-| `floquet_model` / `floquet_ham_onek` | `nsta * (2*n_max + 1)` | Full truncated Sambe problem |
+| `floquet_model` | `nsta * (2*n_max + 1)` | Full truncated real-space Sambe model |
 | `floquet_effective_model` | `nsta` | Off-resonant, high-frequency expansion |
 | `floquet_effective_mode_resolved_model` | `nsta` | Mode-diagonal mutually incoherent correction sum |
 | `floquet_effective_q_model` | `nsta` | One coherent common `q`, through `O(A^2 q/W)` |
+
+All public Floquet construction paths return an ordinary real-space `Model`.
+Build the Sambe model once and reuse `gen_ham`, `gen_ham_batch` or the ordinary
+`Solve` methods across a k-path. The single-k Floquet shortcuts have been removed.
+Band solvers return unfolded, gauge-independent energies; fold with
+`fold_quasienergy` and sort afterwards if ascending quasienergies are required.
 
 `floquet_effective_model` uses the real-space generalized-Bessel backend:
 no `k_mesh` and no `target_hamR` — the effective hopping support is

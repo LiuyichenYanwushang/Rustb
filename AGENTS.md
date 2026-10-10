@@ -696,17 +696,26 @@ requested harmonic range; `L_α` is a mode's temporal harmonic.
 |---|---|---|
 | one nonzero harmonic | `O(R + K)` (one ladder + lookups) | `MAX_BESSEL_ARG_CLOSED_FORM` = 16384 |
 | two carriers | `O(K·(2·min(M₁,M₂)+1))`, no window | same cap, plus `MAX_BESSEL_ENUM_WORK` = 2^22 iterations |
-| ≥ 3 carriers | `O(Σ(2M_α+1)·W)`, `W = K + 2·Σ|L_α|M_α` | `MAX_BESSEL_ARG` = 128 per operand, `MAX_BESSEL_WINDOW` = 2^22 |
+| ≥ 3 carriers | worst-case `O(Σ(2M_α+1)·W)`, `W = K + 2·Σ|L_α|M_α` | `MAX_BESSEL_ARG` = 128 per operand, `MAX_BESSEL_WINDOW` = 2^22 |
 | past a cap | project/group once, then per-link DFT `O(N·(N_carrier + K))`: one time exponential per coherent carrier and sample | `N ≤ FALLBACK_GRID_MAX` = 2^20, else refused |
 
 A single ladder sweep (`max(⌈R⌉, requested) + O(√R)` orders) yields `J_0..J_M`
 and every truncation tail; no order is ever evaluated in isolation. Historical
-measurements with `n_max = 2`: `floquet_ham_onek` costs R = 128 → 15 µs,
+measurements with `n_max = 2`: the removed single-k Sambe entry point cost R = 128 → 15 µs,
 R = 4000 → 72 µs, R = 16000 → 286 µs, against 2121 µs and 8357 µs through
 the old Cartesian fallback. The projected fallback now sums coherent scalar
 carriers before sampling; those old fallback timings are not a new benchmark.
-Two carriers cost 9-15 µs at R ≤ 400 where the fold costs ~0.9 ms;
-≥ 3 carriers still fold, which is the remaining slow path.
+Historical two-carrier timings were 9-15 µs at R ≤ 400 against ~0.9 ms for
+then-unpruned folds; these are not timings of the current convolution kernel.
+
+The ≥3-carrier fold retains the original full-window overflow and resource
+checks before optimization. It reuses two call-local full-window buffers and
+accumulates only overlapping contiguous slices of the reachable prefix and the
+requested range expanded by the remaining modes' drift. Do not clip intermediate
+support to the requested bins alone: excursions can fold back. Preserve mode
+and Bessel-order summation order; never prune by an amplitude tolerance.
+Link resolvability deduplicates finite Cartesian displacement bit keys before
+mode projections, using the same exact `[u64; DIM]` equivalence as the cache.
 
 Static (harmonic-0) modes are a pure phase `e^{-i Re z}` in every branch: never
 form their unused imaginary projection or add DC into the sampled AC phase.
@@ -810,7 +819,7 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 | `FloquetTruncation` | Full Sambe calculation only: photon cutoff `n_max`; `n_sector()` = `2n_max+1`. No sampling count exists (the coefficients are grid-free), so `new(n_max)` takes one argument |
 | `IncidentBasis` | Transverse polarization basis from incident direction |
 | `FloquetEffectiveOptions` | van Vleck controls: concrete `order = 1`, `harmonic_max = 2` defaults; `with_order(n)`, `with_harmonic_max(n)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
-| `Floquet` trait | `floquet_model`, `floquet_ham_onek`, `floquet_band_onek`, `floquet_quasienergy_onek` |
+| `Floquet` trait | `floquet_model` only: build a real-space Sambe `Model`; use ordinary `Model` Hamiltonian/band solvers and `fold_quasienergy` afterwards |
 | `Model::floquet_effective_model` | Inherent method returning same-size effective Model |
 | `Model::floquet_effective_q_model` | Same-size coherent weak-field correction through `O(A^2 q/W)` for one common Cartesian `q` |
 | `Model::floquet_effective_mode_resolved_model` | `H_0 + sum_alpha (H_eff[a_alpha] - H_0)` for mutually incoherent modes; no weights |
