@@ -114,7 +114,7 @@
 //! | one nonzero harmonic | `O(R + K)`: one ladder, then table lookups | `MAX_BESSEL_ARG_CLOSED_FORM` |
 //! | two carriers | `O(K·(2·min(M₁,M₂)+1))`, no working window | `MAX_BESSEL_ARG_CLOSED_FORM`, and `MAX_BESSEL_ENUM_WORK` iterations |
 //! | three or more carriers | `O(Σ_α(2M_α+1)·W)` with window `W = K + 2·Σ_α|L_α|M_α` | `MAX_BESSEL_ARG` per operand, `MAX_BESSEL_WINDOW` window |
-//! | beyond a cap | per-link time-grid DFT, `O(N·(N_mode·DIM + K))` — it evaluates one complex exponential per mode, direction and sample | `N ≤ FALLBACK_GRID_MAX`, else the call is refused |
+//! | beyond a cap | per-link time-grid DFT, `O(N·(N_carrier + K))` — it projects the AC field onto the link, folds DC into one phase, and evaluates one complex exponential per coherent carrier (a distinct `|L|` with nonzero projected amplitude) and sample | `N ≤ FALLBACK_GRID_MAX`, else the call is refused |
 //!
 //! Every `M_α` sweep comes from one backward recurrence whose length is
 //! `max(⌈R⌉, requested) + O(√R)`; the ladder evaluates no order in isolation,
@@ -125,8 +125,8 @@
 //! orders of magnitude further than the convolution.  Measured per link with the
 //! photon cutoff `n_max = 2`, `floquet_ham_onek` takes R = 128 → 15 µs,
 //! R = 4000 → 72 µs and R = 16000 → 286 µs, against 2121 µs and 8357 µs for the
-//! same links through the fallback grid, whose cost is dominated by one complex
-//! exponential per (harmonic, sample) rather than by its multiply count.  Two
+//! same links through the old Cartesian fallback grid. Those fallback timings
+//! are historical, not a benchmark of the current projected-carrier sampler. Two
 //! carriers cost 9-15 µs per link at R ≤ 400, where the fold they replace costs
 //! ~0.9 ms; three or more carriers still fold, which is the remaining slow path.
 //!
@@ -1152,7 +1152,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
             drive,
             harmonic_min,
             harmonic_max,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
 
         let mut orb = Array2::<f64>::zeros((new_norb, DIM));
@@ -1265,7 +1267,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
             drive,
             harmonic_min,
             harmonic_max,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
         let harmonics: Vec<Array2<Complex<f64>>> = (harmonic_min..=harmonic_max)
             .map(|n| self.floquet_cached_harmonic_onek(kvec, n, gauge, &harmonic_cache))
@@ -1603,7 +1607,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             cache_drive,
             -cache_max,
             cache_max,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
         // Zeroth order: the Peierls-dressed static blocks on the input
         // support.  The BTreeMap merges the per-n contributions onto the
@@ -1621,10 +1627,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             );
         }
 
-        // With no time-dependent field every nonzero harmonic vanishes.  The
-        // documented support still depends on the requested order, so build
-        // each zero-valued Minkowski layer once, independent of harmonic_max.
-        if !has_time_dependence && harmonic_max > 0 && options.order >= 1 {
+        // Retain the documented support even when harmonic operands vanish,
+        // but construct its zero-valued Minkowski layers only once.
+        if harmonic_max > 0 && options.order >= 1 {
             let zero_primitive = (0..self.hamR.nrows())
                 .map(|_| Array2::<Complex<f64>>::zeros((nsta, nsta)))
                 .collect::<Vec<_>>();
@@ -1642,11 +1647,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
 
+        // Inspect the computed blocks, not a Cartesian sum of drive amplitudes:
+        // exact-zero harmonics cannot contribute, but every tiny nonzero survives.
+        let nonzero_harmonics = harmonic_cache
+            .blocks
+            .outer_iter()
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .any(|value| value.re != 0.0 || value.im != 0.0)
+            })
+            .collect::<Vec<_>>();
+        let nonzero = |n| nonzero_harmonics[harmonic_cache.harmonic_index(n)];
+
         // First order: sum over n of comm_n/(n·ħΩ₀); omega0_ev carries
         // the ħΩ₀ energy (same convention as the legacy k-space path).
         let inverse_omega = drive.omega0_ev.recip();
         if options.order >= 1 && has_time_dependence {
             for n in 1..=harmonic_max {
+                if !nonzero(n) || !nonzero(-n) {
+                    continue;
+                }
                 let positive = harmonic_cache.harmonic_blocks(n);
                 let negative = harmonic_cache.harmonic_blocks(-n);
                 let (comm_blocks, comm_r) =
@@ -1663,7 +1684,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         if options.order >= 2 && has_time_dependence {
             let inverse_omega_squared = inverse_omega * inverse_omega;
             let signed_harmonics = (-harmonic_max..=harmonic_max)
-                .filter(|harmonic| *harmonic != 0)
+                .filter(|&n| n != 0 && (nonzero(n) || nonzero(-n)))
                 .collect::<Vec<_>>();
 
             // Each fixed-m contribution is independent.  Accumulate one
@@ -1672,22 +1693,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             // the abundant harmonic-level parallelism of the O(omega^-2)
             // double sum without locking the output map in the hot loop.
             let accumulate_fixed_m = |partial: &mut RealSpaceBlockMap, m: isize| -> Result<()> {
-                let h_zero = harmonic_cache.harmonic_blocks(0);
+                if !nonzero(m) {
+                    return Ok(());
+                }
                 let h_m = harmonic_cache.harmonic_blocks(m);
-                let (inner, inner_r) =
-                    real_space_commutator_with_supports(&h_zero, &self.hamR, &h_m, &self.hamR)?;
-                let h_minus_m = harmonic_cache.harmonic_blocks(-m);
-                let (outer, outer_r) =
-                    real_space_commutator_with_supports(&h_minus_m, &self.hamR, &inner, &inner_r)?;
-                let scale = inverse_omega_squared / (2.0 * (m as f64).powi(2));
-                accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
+                if nonzero(0) && nonzero(-m) {
+                    let h_zero = harmonic_cache.harmonic_blocks(0);
+                    let (inner, inner_r) =
+                        real_space_commutator_with_supports(&h_zero, &self.hamR, &h_m, &self.hamR)?;
+                    let h_minus_m = harmonic_cache.harmonic_blocks(-m);
+                    let (outer, outer_r) = real_space_commutator_with_supports(
+                        &h_minus_m, &self.hamR, &inner, &inner_r,
+                    )?;
+                    let scale = inverse_omega_squared / (2.0 * (m as f64).powi(2));
+                    accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
+                }
 
                 for &m_prime in &signed_harmonics {
-                    if m_prime == m {
+                    if m_prime == m || !nonzero(-m_prime) || !nonzero(m_prime - m) {
                         continue;
                     }
                     let h_difference = harmonic_cache.harmonic_blocks(m_prime - m);
-                    let h_m = harmonic_cache.harmonic_blocks(m);
                     let (inner, inner_r) = real_space_commutator_with_supports(
                         &h_difference,
                         &self.hamR,
@@ -1906,7 +1932,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     *n_time,
                     harmonic_min,
                     harmonic_max,
-                    DIM,
                 ))
             }
             PeierlsFourierMethod::Bessel { .. } => None,
@@ -2438,7 +2463,9 @@ fn validate_link_resolvability<const SPIN: bool, const DIM: usize, R: RMatrixDat
             // The cheap cutoff upper bound is only a sufficient test. Before
             // rejecting, let the actual backend certify its adaptive cutoffs
             // and work budget; this expensive probe runs only on this boundary.
-            if bessel_peierls_coeffs(&d, drive, harmonic_min, harmonic_max, 6).is_ok() {
+            if bessel_peierls_coeffs(&d, drive, harmonic_min, harmonic_max, BESSEL_CUTOFF_MARGIN)
+                .is_ok()
+            {
                 continue;
             }
             return Err(TbError::Other(format!(
@@ -2644,6 +2671,9 @@ pub(crate) fn bessel_j(m: isize, r: f64) -> f64 {
     }
     puruspe::Jn(m as u32, r)
 }
+
+/// Production tail margin shared by coefficient generation and its validation probe.
+const BESSEL_CUTOFF_MARGIN: isize = 6;
 
 /// Largest per-mode link amplitude `R_α = |a_α·d|` handled by the one-mode
 /// convolution path.  Above it [`bessel_peierls_coeffs`] reports an error and
@@ -3186,6 +3216,23 @@ pub(crate) fn bessel_peierls_coeffs(
         return Ok(coeffs);
     }
 
+    // Certify exact physical cancellation after link projection, not by summing
+    // Cartesian amplitudes. Separate truncated Bessel products for opposite
+    // carriers otherwise leave spurious nonzero edge harmonics for a zero field.
+    let (dc, carriers, exact_sum) = time_grid_projections(drive, d);
+    if carriers.is_empty() && exact_sum {
+        if !dc.is_finite() {
+            return Err(TbError::Other(
+                "bessel_peierls_coeffs: the static phase is not finite".into(),
+            ));
+        }
+        let mut coeffs = Array1::<Complex<f64>>::zeros(harmonic_count);
+        if harmonic_min <= 0 && 0 <= harmonic_max {
+            coeffs[(0 - harmonic_min) as usize] = Complex::new(0.0, -dc).exp();
+        }
+        return Ok(coeffs);
+    }
+
     // Two-pass construction.  First pass: per-mode projections and adaptive
     // cutoffs.  The convolution only supports R_α ≤ MAX_BESSEL_ARG; the caller falls back
     // to the time-grid backend beyond that.
@@ -3379,8 +3426,10 @@ pub(crate) fn bessel_peierls_coeffs(
     }
 
     let mut sequence = vec![Complex::new(0.0, 0.0); work_len];
-    if (0_isize..work_len as isize).contains(&(0 - work_min)) {
-        sequence[(0 - work_min) as usize] = Complex::new(1.0, 0.0);
+    if let Some(zero_index) = work_min.checked_neg()
+        && (0_isize..work_len as isize).contains(&zero_index)
+    {
+        sequence[zero_index as usize] = Complex::new(1.0, 0.0);
     }
 
     for mode in &modes {
@@ -3412,6 +3461,8 @@ pub(crate) fn bessel_peierls_coeffs(
         // Fold: S'_n = Σ_m S_{n + l·m} B(m).
         let mut next = vec![Complex::new(0.0, 0.0); work_len];
         for &(m, weight) in &b {
+            // drift_for_fold checked |harmonic| * m_cap and their sum;
+            // |m| <= m_cap, so this signed product is representable.
             let shift = mode.harmonic * m;
             for (index, _) in sequence.iter().enumerate() {
                 let n = work_min + index as isize;
@@ -3467,9 +3518,16 @@ struct FallbackGridSize {
 fn time_grid_projections(
     drive: &FloquetDrive,
     d: &Array1<f64>,
-) -> (f64, std::collections::BTreeMap<usize, Complex<f64>>) {
+) -> (f64, std::collections::BTreeMap<usize, Complex<f64>>, bool) {
     let mut dc = 0.0;
     let mut carriers = std::collections::BTreeMap::new();
+    let mut exact_sum = true;
+    // TwoSum detects discarded rounding without changing the computed signal.
+    // A rounded zero alone must not certify the new exact-static shortcut.
+    let addition_is_exact = |a: f64, b: f64, sum: f64| {
+        let recovered_b = sum - a;
+        (a - (sum - recovered_b)) + (b - recovered_b) == 0.0
+    };
     for mode in &drive.modes {
         if mode.harmonic == 0 {
             dc += mode
@@ -3481,12 +3539,17 @@ fn time_grid_projections(
             continue;
         }
         let z: Complex<f64> = mode.a_complex.iter().zip(d).map(|(a, x)| a * x).sum();
-        *carriers
+        let z = if mode.harmonic > 0 { z } else { z.conj() };
+        let total = carriers
             .entry(mode.harmonic.unsigned_abs())
-            .or_insert(Complex::new(0.0, 0.0)) += if mode.harmonic > 0 { z } else { z.conj() };
+            .or_insert(Complex::new(0.0, 0.0));
+        let next = *total + z;
+        exact_sum &= addition_is_exact(total.re, z.re, next.re)
+            && addition_is_exact(total.im, z.im, next.im);
+        *total = next;
     }
     carriers.retain(|_, z| z.re != 0.0 || z.im != 0.0);
-    (dc, carriers)
+    (dc, carriers, exact_sum)
 }
 
 /// Size the alias-free grid from the coherent physical carriers after projection:
@@ -3503,7 +3566,7 @@ fn fallback_grid_size(
     let mut saturated = false;
     let mode_count = drive.modes.len().max(1);
     let error_share = 1e-12 / mode_count as f64;
-    let (_, carriers) = time_grid_projections(drive, d);
+    let (_, carriers, _) = time_grid_projections(drive, d);
     for (harmonic, z) in carriers {
         let r = z.norm();
         if !r.is_finite() {
@@ -3614,7 +3677,7 @@ fn fallback_time_grid_coeffs(
     let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
     let inv_n = 1.0 / (n_req as f64);
     let mut coeffs = vec![Complex::new(0.0, 0.0); harmonic_count];
-    let (dc, carriers) = time_grid_projections(drive, d);
+    let (dc, carriers, _) = time_grid_projections(drive, d);
     let dc_phase = Complex::new(0.0, -dc).exp();
     for it in 0..n_req {
         let theta = TAU * (it as f64) * inv_n;
@@ -3830,6 +3893,12 @@ where
     Ok((blocks, support_rows))
 }
 
+#[cfg(test)]
+thread_local! {
+    // Per-test-thread count: assert bounded work without flaky timing thresholds.
+    static REAL_SPACE_SUPPORT_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Accumulate `AB + reverse_scale * BA` for operands with independent
 /// real-space supports.
 fn real_space_two_product_sum_with_supports<A, B>(
@@ -3844,6 +3913,8 @@ where
     A: RealSpaceBlockSource + ?Sized,
     B: RealSpaceBlockSource + ?Sized,
 {
+    #[cfg(test)]
+    REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
     debug_assert_eq!(a_blocks.nblocks(), a_r.nrows(), "a_blocks must match a_r");
     debug_assert_eq!(b_blocks.nblocks(), b_r.nrows(), "b_blocks must match b_r");
     debug_assert_eq!(a_r.ncols(), b_r.ncols(), "support dimensions must match");
@@ -4655,7 +4726,7 @@ mod tests {
                 LightMode::new(3, array![Complex::new(0.0, 0.0), Complex::new(160.0, 40.0)]),
             ],
         );
-        let grid = FloquetTimeGrid::new(&drive, 4096, -8, 8, 2);
+        let grid = FloquetTimeGrid::new(&drive, 4096, -8, 8);
         let reference = peierls_fourier_coeffs(&d, -8, 8, &drive, &grid);
         let got = bessel_peierls_coeffs(&d, &drive, -8, 8, 6).unwrap();
         for (n, (a, b)) in got.iter().zip(reference.iter()).enumerate() {
@@ -4775,7 +4846,7 @@ mod tests {
             let harmonic_min = -5_isize;
             let harmonic_max = 5_isize;
             let bessel = bessel_peierls_coeffs(&d, drive, harmonic_min, harmonic_max, 6).unwrap();
-            let time_grid = FloquetTimeGrid::new(drive, 512, harmonic_min, harmonic_max, 2);
+            let time_grid = FloquetTimeGrid::new(drive, 512, harmonic_min, harmonic_max);
             let dft = peierls_fourier_coeffs(&d, harmonic_min, harmonic_max, drive, &time_grid);
             for (n, (got, expected)) in bessel.iter().zip(dft.iter()).enumerate() {
                 assert!(
@@ -4854,7 +4925,7 @@ mod tests {
         ];
         for (case, drive) in cases.iter().enumerate() {
             let closed = bessel_peierls_coeffs(&d, drive, harmonic_min, harmonic_max, 6).unwrap();
-            let grid = FloquetTimeGrid::new(drive, 512, harmonic_min, harmonic_max, 2);
+            let grid = FloquetTimeGrid::new(drive, 512, harmonic_min, harmonic_max);
             let reference = peierls_fourier_coeffs(&d, harmonic_min, harmonic_max, drive, &grid);
             for (n, (got, want)) in closed.iter().zip(reference.iter()).enumerate() {
                 assert!(
@@ -4942,7 +5013,7 @@ mod tests {
         }
         // The reference oracle has its own empty-drive branch; the harmonic cache
         // returns before reaching it, so exercise it directly here.
-        let grid = FloquetTimeGrid::new(&drive, 8, -3, 3, 1);
+        let grid = FloquetTimeGrid::new(&drive, 8, -3, 3);
         let reference = peierls_fourier_coeffs(&d, -3, 3, &drive, &grid);
         for (n, (a, b)) in coeffs.iter().zip(reference.iter()).enumerate() {
             assert!(
@@ -5016,7 +5087,9 @@ mod tests {
             &drive,
             -4,
             4,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
         assert_eq!(time_grid_cache.blocks.dim(), bessel_cache.blocks.dim());
         for (a, b) in time_grid_cache
@@ -5521,6 +5594,111 @@ mod tests {
         }
     }
 
+    // Definition-only oracle: evolve signed modes in Cartesian components before
+    // projecting. No production grouping, DC split, Bessel ladder or grid sizing.
+    fn independent_cartesian_dft(
+        d: &Array1<f64>,
+        drive: &FloquetDrive,
+        n_time: usize,
+        min: isize,
+        max: isize,
+    ) -> Array1<Complex<f64>> {
+        let mut coeffs = Array1::<Complex<f64>>::zeros((max - min + 1) as usize);
+        for it in 0..n_time {
+            let theta = TAU * it as f64 / n_time as f64;
+            let mut field = 0.0;
+            for mode in &drive.modes {
+                let carrier = Complex::from_polar(1.0, -(mode.harmonic as f64) * theta);
+                for a in 0..d.len() {
+                    field += (mode.a_complex[a] * carrier).re * d[a];
+                }
+            }
+            let peierls = Complex::from_polar(1.0, -field);
+            for (index, n) in (min..=max).enumerate() {
+                coeffs[index] += Complex::from_polar(1.0, n as f64 * theta) * peierls;
+            }
+        }
+        coeffs.mapv(|value| value / n_time as f64)
+    }
+
+    #[test]
+    fn projected_fallback_matches_an_independent_cartesian_dft() {
+        // The production fallback and the test-only reference now share the same
+        // carrier grouping, so neither can falsify that grouping.  This oracle
+        // goes back to the definition: build the Cartesian field from every mode
+        // and direction with a *signed* harmonic, and Fourier transform that
+        // field.  No projection helper, no grouping by |l|, no separate DC phase.
+        let d = array![1.0, -0.5];
+        let drive = FloquetDrive::with_modes(
+            5.0,
+            vec![
+                LightMode::new(
+                    1,
+                    array![Complex::new(24_576.0, 0.0), Complex::new(0.0, 0.0)],
+                ),
+                LightMode::new(-1, array![Complex::new(0.0, 300.0), Complex::new(0.0, 0.0)]),
+                LightMode::new(2, array![Complex::new(0.0, 0.0), Complex::new(120.0, 0.0)]),
+                LightMode::new(0, array![Complex::new(0.5, 9.0), Complex::new(0.25, 0.0)]),
+            ],
+        );
+        let (harmonic_min, harmonic_max) = (-1_isize, 1_isize);
+        let clamped = std::sync::atomic::AtomicBool::new(false);
+        let saturated = std::sync::atomic::AtomicBool::new(false);
+        let got =
+            fallback_time_grid_coeffs(&d, &drive, harmonic_min, harmonic_max, &clamped, &saturated);
+        let size = fallback_grid_size(&drive, &d, harmonic_min, harmonic_max);
+        assert!(!size.clamped, "the oracle needs an unclamped grid");
+        // Fixed independent grid, comfortably above twice the signal bandwidth
+        // (~24700): a sizing regression must not alias the reference identically.
+        let want = independent_cartesian_dft(&d, &drive, 1 << 18, harmonic_min, harmonic_max);
+        for (i_n, (actual, reference)) in got.iter().zip(want.iter()).enumerate() {
+            assert!(
+                (actual - reference).norm() < 1e-9,
+                "n = {}: {actual} vs independent Cartesian DFT {reference}",
+                i_n as isize + harmonic_min
+            );
+        }
+    }
+
+    #[test]
+    fn enumeration_matches_the_cartesian_oracle_for_a_negative_carrier() {
+        // Complex amplitude is essential: with purely real amplitudes flipping
+        // the carrier's sign leaves cos(l theta), and thus all coefficients, unchanged.
+        let d = array![1.0];
+        let drive = FloquetDrive::with_modes(
+            5.0,
+            vec![
+                LightMode::new(-1, array![Complex::new(1.0, 0.4)]),
+                LightMode::new(3, array![Complex::new(0.7, -0.2)]),
+            ],
+        );
+        let reference = independent_cartesian_dft(&d, &drive, 1024, -2, 2);
+        let refined = independent_cartesian_dft(&d, &drive, 2048, -2, 2);
+        assert!(
+            reference
+                .iter()
+                .zip(&refined)
+                .all(|(a, b)| (*a - *b).norm() < 1e-13)
+        );
+        let mut wrong_sign = drive.clone();
+        wrong_sign.modes[0].harmonic = 1;
+        let sign_flipped = independent_cartesian_dft(&d, &wrong_sign, 1024, -2, 2);
+        assert!(
+            reference
+                .iter()
+                .zip(&sign_flipped)
+                .any(|(a, b)| (*a - *b).norm() > 1e-3)
+        );
+        let got = bessel_peierls_coeffs(&d, &drive, -2, 2, BESSEL_CUTOFF_MARGIN).unwrap();
+        for (i_n, (actual, expected)) in got.iter().zip(reference.iter()).enumerate() {
+            assert!(
+                (actual - expected).norm() < 1e-11,
+                "n = {}: {actual} vs Cartesian oracle {expected}",
+                i_n as isize - 2
+            );
+        }
+    }
+
     #[test]
     fn fallback_projection_matches_an_independent_bessel_reference() {
         let mut model =
@@ -5543,7 +5721,7 @@ mod tests {
             assert!(bessel_peierls_coeffs(&array![1.0, -1.0], &drive, 0, 0, 6).is_err());
             let size = fallback_grid_size(&drive, &array![1.0, -1.0], 0, 0);
             assert!(!size.clamped && !size.saturated);
-            let reference_grid = FloquetTimeGrid::new(&drive, 131_072, 0, 0, 2);
+            let reference_grid = FloquetTimeGrid::new(&drive, 131_072, 0, 0);
             let reference =
                 peierls_fourier_coeffs(&array![1.0, -1.0], 0, 0, &drive, &reference_grid)[0];
             assert!((reference - (-0.5 * expected)).norm() < 1e-10);
@@ -5593,10 +5771,10 @@ mod tests {
         drive.add_mode(LightMode::new(0, array![Complex::new(1e20, 0.0)]));
         assert!(bessel_peierls_coeffs(&array![1.0], &drive, 0, 0, 6).is_err());
         let expected = 0.023_587_494_454_597_398_f64; // -2 cos(1e20) J0(200), independent 60-digit reference
-        let grid = FloquetTimeGrid::new(&drive, 4096, -2, 2, 1);
+        let grid = FloquetTimeGrid::new(&drive, 4096, -2, 2);
         let oracle = peierls_fourier_coeffs(&array![1.0], -2, 2, &drive, &grid);
         let ac_drive = FloquetDrive::with_modes(5.0, drive.modes[..3].to_vec());
-        let ac_grid = FloquetTimeGrid::new(&ac_drive, 4096, -2, 2, 1);
+        let ac_grid = FloquetTimeGrid::new(&ac_drive, 4096, -2, 2);
         let ac = peierls_fourier_coeffs(&array![1.0], -2, 2, &ac_drive, &ac_grid);
         for (actual, reference) in oracle.iter().zip(&ac) {
             assert!((*actual - Complex::new(0.0, -1e20).exp() * reference).norm() < 1e-11);
@@ -5815,7 +5993,9 @@ mod tests {
             &drive,
             -2 * n_max,
             2 * n_max,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
         for (a, b) in time_grid.blocks.iter().zip(bessel.blocks.iter()) {
             assert!((a - b).norm() < 1e-10, "Sambe-range Bessel {b} vs grid {a}");
@@ -5861,7 +6041,9 @@ mod tests {
             &drive,
             -3,
             3,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
         for (a, b) in time_grid_cache
             .blocks
@@ -5905,7 +6087,9 @@ mod tests {
             &drive,
             -10,
             10,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
         for (a, b) in oracle.blocks.iter().zip(bessel_cache.blocks.iter()) {
             assert!(
@@ -5946,7 +6130,9 @@ mod tests {
             &drive,
             -110,
             110,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
         let fine = model.floquet_harmonic_cache(
             &drive,
@@ -5995,7 +6181,9 @@ mod tests {
             &drive,
             -300,
             300,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
         let i_r_link = find_R(&model.hamR, &array![0, 1]).unwrap();
         // n beyond the signal bandwidth (~147 for R = 130, l = 1) must
@@ -6626,7 +6814,9 @@ mod tests {
             &drive,
             -3,
             3,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
         for (a, b) in oracle.blocks.iter().zip(cache.blocks.iter()) {
             assert!(
@@ -6650,7 +6840,9 @@ mod tests {
             drive,
             -1,
             1,
-            &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
         );
         let n_r = model.hamR.nrows();
         let n1 = cache.harmonic_index(1);
@@ -8284,7 +8476,9 @@ mod tests {
                 &drive,
                 -4,
                 4,
-                &PeierlsFourierMethod::Bessel { cutoff_margin: 6 },
+                &PeierlsFourierMethod::Bessel {
+                    cutoff_margin: BESSEL_CUTOFF_MARGIN,
+                },
             );
             for k in [[0.13, 0.21], [0.5, 0.5], [0.87, 0.11]] {
                 let kvec = array![k[0], k[1]];
@@ -8519,7 +8713,7 @@ mod tests {
         // Inside the cap the ladder must still resolve the coefficients against
         // an alias-free grid: the oracle needs at least 2·R samples, so it is
         // sized for the largest amplitude in the loop.
-        let grid = FloquetTimeGrid::new(&drive, 65536, -4, 4, 1);
+        let grid = FloquetTimeGrid::new(&drive, 65536, -4, 4);
         for r in [60.0, MAX_BESSEL_ARG, MAX_BESSEL_ARG_CLOSED_FORM] {
             let d_allowed = array![r];
             let allowed = bessel_peierls_coeffs(&d_allowed, &drive, -4, 4, 6).unwrap();
@@ -8577,6 +8771,24 @@ mod tests {
     }
 
     #[test]
+    fn bessel_fold_handles_windows_at_both_integer_limits() {
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            (1..=3)
+                .map(|harmonic| LightMode::new(harmonic, array![Complex::new(1.0, 0.0)]))
+                .collect(),
+        );
+        let (_, cutoff) = bessel_ladder_for_amplitude(1.0, 1e-12 / 3.0, 0, MAX_BESSEL_ARG).unwrap();
+        let drift = 6 * cutoff;
+        for n in [isize::MIN + drift, isize::MAX - drift] {
+            // Three distinct carriers force the fold; the entire finite window
+            // lies away from zero, including work_min = MIN on the first case.
+            let got = bessel_peierls_coeffs(&array![1.0], &drive, n, n, 0).unwrap();
+            assert_eq!(got, array![Complex::new(0.0, 0.0)]);
+        }
+    }
+
+    #[test]
     fn bessel_coeffs_window_edge_overflows_are_skipped() {
         // The fold evaluates n + l·m for every (n, m) pair in the working
         // window; pairs whose source would leave the isize range must be
@@ -8598,6 +8810,86 @@ mod tests {
         // The requested bin is far outside the mode's spectral support
         // (±22400), so C_n = 0.
         assert!(coeffs[0].norm() == 0.0);
+    }
+
+    #[test]
+    fn rounded_carrier_cancellation_does_not_certify_static_coefficients() {
+        let epsilon = 2.0_f64.powi(-54);
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(1, array![Complex::new(1.0, 0.0)]),
+                LightMode::new(1, array![Complex::new(epsilon, 0.0)]),
+                LightMode::new(-1, array![Complex::new(-1.0, 0.0)]),
+            ],
+        );
+        let d = array![1.0];
+        let (_, carriers, exact_sum) = time_grid_projections(&drive, &d);
+        assert!(carriers.is_empty()); // Rounded (1 + epsilon) - 1, not an exact cancellation.
+        assert!(!exact_sum);
+        let got = bessel_peierls_coeffs(&d, &drive, -40, 40, BESSEL_CUTOFF_MARGIN).unwrap();
+        assert!(
+            got.iter()
+                .enumerate()
+                .any(|(index, z)| index != 40 && (z.re != 0.0 || z.im != 0.0)),
+            "uncertified cancellation must retain the previous non-static backend path"
+        );
+        for amplitude in [1e-200, f64::from_bits(1)] {
+            let tiny = FloquetDrive::with_modes(
+                1.0,
+                vec![LightMode::new(1, array![Complex::new(amplitude, 0.0)])],
+            );
+            let (_, carriers, exact_sum) = time_grid_projections(&tiny, &d);
+            assert_eq!(carriers[&1].re, amplitude);
+            assert!(exact_sum);
+        }
+    }
+
+    #[test]
+    fn cancelled_ac_harmonics_construct_support_once_at_large_cutoff() {
+        // Count Rayon work as well as caller work, without cross-test interference.
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| {
+                let model = chain_model();
+                let drive = FloquetDrive::with_modes(
+                    1e-200,
+                    vec![
+                        LightMode::new(1, array![Complex::new(0.3, -0.2)]),
+                        LightMode::new(-1, array![Complex::new(-0.3, -0.2)]),
+                    ],
+                );
+                assert!(drive_has_ac_components(&drive)); // Must not restore Cartesian compaction.
+                let mut small_support = None;
+                for harmonic_max in [1, 1000] {
+                    REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.set(0));
+                    let options = FloquetEffectiveOptions::new()
+                        .with_order(2)
+                        .with_harmonic_max(harmonic_max);
+                    let out = model
+                        .floquet_effective_model(&drive, Some(&options))
+                        .unwrap();
+                    assert_eq!(
+                        REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.get()),
+                        2,
+                        "construct pair/triple support once, never harmonic_max squared times"
+                    );
+                    for (row, r) in out.hamR.outer_iter().enumerate() {
+                        let expected = model
+                            .hamR
+                            .outer_iter()
+                            .position(|source| source == r)
+                            .map_or(Complex::new(0.0, 0.0), |source| model.ham[[source, 0, 0]]);
+                        assert_eq!(out.ham[[row, 0, 0]], expected); // No new nonzero hopping.
+                    }
+                    if let Some(support) = &small_support {
+                        assert_eq!(&out.hamR, support);
+                    }
+                    small_support = Some(out.hamR);
+                }
+            });
     }
 
     fn chain_model() -> Model<false, 1, NoRMatrix> {

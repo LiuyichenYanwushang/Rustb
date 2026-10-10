@@ -36,7 +36,6 @@ impl FloquetTimeGrid {
         n_time: usize,
         harmonic_min: isize,
         harmonic_max: isize,
-        _dim: usize,
     ) -> Self {
         let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
         let inv_n_time = 1.0 / (n_time as f64);
