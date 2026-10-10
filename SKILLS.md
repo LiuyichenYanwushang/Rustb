@@ -678,6 +678,14 @@ so those requests are compile errors. Both entry points require
 `omega_ev: Sampling::Fixed(0.0)`. `NonlinearHallResult::single()` mirrors
 `HallConductivityResult::single()`.
 
+Both nonlinear entry points require a normal, finite, nonzero lattice determinant
+and check **every** final conductivity sample. Nonfinite output rejects the
+whole call with `InvalidResponseParameter`; no partially valid scan is returned.
+Extrinsic squared gaps and broadening must remain representable (with rounding
+headroom for energy-cut interpolation). These are ordinary `f64` range checks,
+not arbitrary-precision evaluation: a finite exact answer can still be rejected
+when the required intermediate representation is unsupported.
+
 Direct integration samples `-df/dE` on k-points, so **every** sample must have
 a finite peak derivative `0.25 / (k_B T)`. Zero widths or overflowing peaks
 reject the whole call before any k-mesh work. Use

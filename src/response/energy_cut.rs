@@ -91,6 +91,9 @@ fn find_line_intersections(
     let mut pts = [[0.0f64; 2]; 2];
     let mut bcs = [[0.0f64; 3]; 2];
     let mut count = 0usize;
+    if !energy.is_finite() || energy_v.iter().any(|e| !e.is_finite()) {
+        return ([[f64::NAN; 2]; 2], [[f64::NAN; 3]; 2], 2);
+    }
     let xy = [
         [coords[[0, 0]], coords[[0, 1]]],
         [coords[[1, 0]], coords[[1, 1]]],
@@ -100,20 +103,41 @@ fn find_line_intersections(
         let ei = energy_v[i];
         let ej = energy_v[j];
         let denom = ej - ei;
+        let offset = energy - ei;
+        if !denom.is_finite() || !offset.is_finite() {
+            // An edge outside the cut needs no representable subtraction.
+            if energy < ei.min(ej) || energy > ei.max(ej) {
+                continue;
+            }
+            return ([[f64::NAN; 2]; 2], [[f64::NAN; 3]; 2], 2);
+        }
         if denom.abs() < ENERGY_CUT_EPS {
             continue;
         }
-        let t = (energy - ei) / denom;
+        let t = offset / denom;
+        if !t.is_finite() {
+            if energy < ei.min(ej) || energy > ei.max(ej) {
+                continue;
+            }
+            return ([[f64::NAN; 2]; 2], [[f64::NAN; 3]; 2], 2);
+        }
         if (-ENERGY_CUT_EPS..=1.0 + ENERGY_CUT_EPS).contains(&t) {
             let tc = t.clamp(0.0, 1.0);
             let px = xy[i][0] + tc * (xy[j][0] - xy[i][0]);
             let py = xy[i][1] + tc * (xy[j][1] - xy[i][1]);
+            if !px.is_finite() || !py.is_finite() {
+                return ([[f64::NAN; 2]; 2], [[f64::NAN; 3]; 2], 2);
+            }
             // Deduplicate
             let mut dup = false;
             for k in 0..count {
                 let dx = pts[k][0] - px;
                 let dy = pts[k][1] - py;
-                if dx * dx + dy * dy < 1e-24 {
+                let distance2 = dx * dx + dy * dy;
+                if !distance2.is_finite() {
+                    return ([[f64::NAN; 2]; 2], [[f64::NAN; 3]; 2], 2);
+                }
+                if distance2 < 1e-24 {
                     dup = true;
                     break;
                 }
@@ -150,6 +174,9 @@ fn kquad_line_cut_dipole(
     k_buf: &mut [Complex<f64>],
 ) -> f64 {
     let (pts, bcs, n_pts) = find_line_intersections(coords, energy_v, energy);
+    if pts.iter().flatten().any(|x| !x.is_finite()) {
+        return f64::NAN;
+    }
     if n_pts < 2 {
         return 0.0;
     }
@@ -159,6 +186,9 @@ fn kquad_line_cut_dipole(
     let (x1, y1) = (coords[[1, 0]], coords[[1, 1]]);
     let (x2, y2) = (coords[[2, 0]], coords[[2, 1]]);
     let det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if !det.is_finite() {
+        return f64::NAN;
+    }
     if det.abs() < ENERGY_CUT_EPS {
         return 0.0;
     }
@@ -166,7 +196,13 @@ fn kquad_line_cut_dipole(
     let de2 = energy_v[2] - energy_v[0];
     let grad_x = (de1 * (y2 - y0) - de2 * (y1 - y0)) / det;
     let grad_y = ((x1 - x0) * de2 - (x2 - x0) * de1) / det;
-    let grad_norm = (grad_x * grad_x + grad_y * grad_y).sqrt();
+    let grad_norm = grad_x.hypot(grad_y);
+    if [de1, de2, grad_x, grad_y, grad_norm]
+        .iter()
+        .any(|x| !x.is_finite())
+    {
+        return f64::NAN;
+    }
     if grad_norm < ENERGY_CUT_EPS {
         return 0.0;
     }
@@ -179,6 +215,9 @@ fn kquad_line_cut_dipole(
             let dx = pts[i][0] - pts[j][0];
             let dy = pts[i][1] - pts[j][1];
             let l2 = dx * dx + dy * dy;
+            if !l2.is_finite() {
+                return f64::NAN;
+            }
             if l2 > best_l2 {
                 best_l2 = l2;
                 best = (i, j);
@@ -205,10 +244,24 @@ fn kquad_line_cut_dipole(
         let (_metric, berry) =
             eval_berry_complex_at_lam_buf(n, bands, kmats, &lam, eta, nsta, e_buf, k_buf);
         let vc = lam[0] * vdiag_v[0] + lam[1] * vdiag_v[1] + lam[2] * vdiag_v[2];
+        if !berry.is_finite()
+            || !vc.is_finite()
+            || e_buf[..nsta].iter().any(|x| !x.is_finite())
+            || k_buf[..nsta]
+                .iter()
+                .any(|x| !x.re.is_finite() || !x.im.is_finite())
+        {
+            return f64::NAN;
+        }
         amp_sum += vc * berry;
     }
     // Gauss weights are 0.5 each
-    0.5 * length * amp_sum / grad_norm
+    let integral = 0.5 * length * amp_sum / grad_norm;
+    if integral.is_finite() {
+        integral
+    } else {
+        f64::NAN
+    }
 }
 
 /// K‑quadrature dipole accumulator (zero-clone, borrows simplex vertices).
@@ -379,8 +432,14 @@ fn kquad_line_cut_intrinsic(
     grad_norm: f64,
 ) -> f64 {
     let (pts, bcs, n_pts) = find_line_intersections(coords, energy_v, energy);
+    if pts.iter().flatten().any(|x| !x.is_finite()) {
+        return f64::NAN;
+    }
     if n_pts < 2 {
         return 0.0;
+    }
+    if !grad_norm.is_finite() {
+        return f64::NAN;
     }
 
     let mut best = (0usize, 1usize);
@@ -390,6 +449,9 @@ fn kquad_line_cut_intrinsic(
             let dx = pts[i][0] - pts[j][0];
             let dy = pts[i][1] - pts[j][1];
             let l2 = dx * dx + dy * dy;
+            if !l2.is_finite() {
+                return f64::NAN;
+            }
             if l2 > best_l2 {
                 best_l2 = l2;
                 best = (i, j);
@@ -419,9 +481,26 @@ fn kquad_line_cut_intrinsic(
         let vb = lam[0] * vdiag_b[0] + lam[1] * vdiag_b[1] + lam[2] * vdiag_b[2];
         let vc = lam[0] * vdiag_c[0] + lam[1] * vdiag_c[1] + lam[2] * vdiag_c[2];
         let q = 2.0 * vc * g_ab - 0.5 * (va * g_bc + vb * g_ac);
+        if [g_ab, g_bc, g_ac, va, vb, vc, q]
+            .iter()
+            .any(|x| !x.is_finite())
+            || e_buf[..nsta]
+                .iter()
+                .any(|&e| !e.is_finite() || !(e_buf[n] - e).is_finite())
+            || k_buf[..nsta * 3]
+                .iter()
+                .any(|x| !x.re.is_finite() || !x.im.is_finite())
+        {
+            return f64::NAN;
+        }
         amp_sum -= q; // sign convention: direct sum returns −Q, so EC returns −∫ δ Q dk
     }
-    0.5 * length * amp_sum / grad_norm
+    let integral = 0.5 * length * amp_sum / grad_norm;
+    if integral.is_finite() {
+        integral
+    } else {
+        f64::NAN
+    }
 }
 
 /// K‑quadrature intrinsic accumulator (zero-clone, borrows simplex vertices).
@@ -506,7 +585,15 @@ fn accumulate_triangle_intrinsic_kquad(
         let de2 = e_v[2] - e_v[0];
         let gx = (de1 * (y2 - y0) - de2 * (y1 - y0)) / det_grad;
         let gy = ((x1 - x0) * de2 - (x2 - x0) * de1) / det_grad;
-        let grad_norm = (gx * gx + gy * gy).sqrt();
+        let norm = gx.hypot(gy);
+        let grad_norm = if [det_grad, de1, de2, gx, gy, norm]
+            .iter()
+            .all(|x| x.is_finite())
+        {
+            norm
+        } else {
+            f64::NAN
+        };
 
         let mu_slice = mu.as_slice().unwrap();
         let (i_start, i_end) = if beta == 0.0 {
@@ -616,6 +703,9 @@ fn energy_gradient_3d(coords: &Array2<f64>, de: [f64; 3]) -> (f64, f64, f64, f64
     // Cramer's rule for 3×3
     let det = dx1 * (dy2 * dz3 - dz2 * dy3) - dy1 * (dx2 * dz3 - dz2 * dx3)
         + dz1 * (dx2 * dy3 - dy2 * dx3);
+    if !det.is_finite() || de.iter().any(|x| !x.is_finite()) {
+        return (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+    }
     if det.abs() < ENERGY_CUT_EPS {
         return (0.0, 0.0, 0.0, 0.0);
     }
@@ -632,7 +722,10 @@ fn energy_gradient_3d(coords: &Array2<f64>, de: [f64; 3]) -> (f64, f64, f64, f64
         + (dy1 * dx3 - dx1 * dy3) * e2
         + (dx1 * dy2 - dy1 * dx2) * e3)
         / det;
-    let norm = (gx * gx + gy * gy + gz * gz).sqrt();
+    let norm = gx.hypot(gy).hypot(gz);
+    if [gx, gy, gz, norm].iter().any(|x| !x.is_finite()) {
+        return (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+    }
     (gx, gy, gz, norm)
 }
 
@@ -640,6 +733,9 @@ fn energy_gradient_3d(coords: &Array2<f64>, de: [f64; 3]) -> (f64, f64, f64, f64
 /// Returns vertices as barycentric coordinates in the original tet.
 fn tet_plane_intersection(energy_v: [f64; 4], mu: f64) -> ([[f64; 4]; 4], usize) {
     let eps = 1e-12;
+    if !mu.is_finite() || energy_v.iter().any(|e| !e.is_finite()) {
+        return ([[f64::NAN; 4]; 4], 3);
+    }
 
     // Sort by energy
     let mut idx: [usize; 4] = [0, 1, 2, 3];
@@ -652,11 +748,15 @@ fn tet_plane_intersection(energy_v: [f64; 4], mu: f64) -> ([[f64; 4]; 4], usize)
 
     let cut = |i: usize, j: usize| -> [f64; 4] {
         let de = energy_v[j] - energy_v[i];
-        let t = if de.abs() < eps {
-            0.5
-        } else {
-            ((mu - energy_v[i]) / de).clamp(0.0, 1.0)
-        };
+        let offset = mu - energy_v[i];
+        if !de.is_finite() || !offset.is_finite() {
+            return [f64::NAN; 4];
+        }
+        let t = if de.abs() < eps { 0.5 } else { offset / de };
+        if !t.is_finite() {
+            return [f64::NAN; 4];
+        }
+        let t = t.clamp(0.0, 1.0);
         let mut l = [0.0; 4];
         l[i] = 1.0 - t;
         l[j] = t;
@@ -714,9 +814,13 @@ fn polygon_area_3d(coords: &Array2<f64>, verts: &[[f64; 4]]) -> f64 {
         let cx = dy1 * dz2 - dz1 * dy2;
         let cy = dz1 * dx2 - dx1 * dz2;
         let cz = dx1 * dy2 - dy1 * dx2;
-        area += 0.5 * (cx * cx + cy * cy + cz * cz).sqrt();
+        let norm = cx.hypot(cy).hypot(cz);
+        if [cx, cy, cz, norm].iter().any(|x| !x.is_finite()) {
+            return f64::NAN;
+        }
+        area += 0.5 * norm;
     }
-    area
+    if area.is_finite() { area } else { f64::NAN }
 }
 
 /// Combine sub‑triangle barycentrics $\alpha$ with the polygon vertex
@@ -751,8 +855,14 @@ fn kquad_surface_cut_intrinsic(
     k_buf: &mut [Complex<f64>],
 ) -> f64 {
     let (verts, n_verts) = tet_plane_intersection(energy_v, mu);
+    if verts.iter().flatten().any(|x| !x.is_finite()) {
+        return f64::NAN;
+    }
     if n_verts < 3 {
         return 0.0;
+    }
+    if !grad_norm.is_finite() {
+        return f64::NAN;
     }
 
     // K‑quadrature over polygon (fan triangulation from vertex 0)
@@ -763,6 +873,9 @@ fn kquad_surface_cut_intrinsic(
             let lam_ref: [[f64; 4]; 3] = [*sub_tri[0], *sub_tri[1], *sub_tri[2]];
             polygon_area_3d(coords, &lam_ref)
         };
+        if !sub_area.is_finite() {
+            return f64::NAN;
+        }
         if sub_area < 1e-30 {
             continue;
         }
@@ -786,11 +899,28 @@ fn kquad_surface_cut_intrinsic(
                 + lam[2] * vdiag_c[2]
                 + lam[3] * vdiag_c[3];
             let q = 2.0 * vc * g_ab - 0.5 * (va * g_bc + vb * g_ac);
+            if [g_ab, g_bc, g_ac, va, vb, vc, q]
+                .iter()
+                .any(|x| !x.is_finite())
+                || e_buf[..nsta]
+                    .iter()
+                    .any(|&e| !e.is_finite() || !(e_buf[n] - e).is_finite())
+                || k_buf[..nsta * 3]
+                    .iter()
+                    .any(|x| !x.re.is_finite() || !x.im.is_finite())
+            {
+                return f64::NAN;
+            }
             amp_sum -= sub_area * w * q;
         }
     }
 
-    amp_sum / grad_norm
+    let integral = amp_sum / grad_norm;
+    if integral.is_finite() {
+        integral
+    } else {
+        f64::NAN
+    }
 }
 
 /// K‑quadrature intrinsic accumulator for tetrahedra (zero-clone).
@@ -1702,6 +1832,77 @@ fn thermal_convolution(
 #[cfg(test)]
 mod thermal_tests {
     use super::*;
+
+    #[test]
+    fn nonlinear_cuts_preserve_large_finite_gradients_and_poison_overflow() {
+        let triangle = array![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let tetrahedron = array![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0]
+        ];
+        // Synthetic constant amplitude: unit Berry curvature and -Q = 1.
+        // The cut energies independently set a large, finite linear gradient.
+        let band = [0.0, 1.0];
+        let bands = [&band[..]; 4];
+        let mut kernel = Array2::zeros((2, 2));
+        kernel[[0, 1]] = Complex::new(0.5, -0.5);
+        let kmats = [&kernel; 4];
+        let mut e_buf = [0.0; 2];
+        let mut k_buf = [Complex::new(0.0, 0.0); 6];
+        let mut dipole = |energies, mu, velocity| {
+            kquad_line_cut_dipole(
+                &triangle,
+                energies,
+                &bands[..3],
+                &kmats[..3],
+                [velocity; 3],
+                mu,
+                0.0,
+                0,
+                2,
+                &mut e_buf,
+                &mut k_buf,
+            )
+        };
+        let line = dipole([0.0, 1e200, 1e200], 5e199, 1.0);
+        assert!((line / 5e-201 - 1.0).abs() < 1e-14);
+        assert!(dipole([-f64::MAX, f64::MAX, f64::MAX], 0.0, 1.0).is_nan());
+        assert!(dipole([0.0, 1e200, 1e200], 5e199, 1e308).is_nan());
+        assert!(dipole([0.0, 1.0, 1.0], f64::INFINITY, 1.0).is_nan());
+        assert_eq!(dipole([-f64::MAX; 3], f64::MAX, 1.0), 0.0);
+        assert_eq!(dipole([0.0; 3], 0.0, 1.0), 0.0);
+
+        let (_, _, _, norm) = energy_gradient_3d(&tetrahedron, [1e200; 3]);
+        assert!(norm.is_finite());
+        assert_eq!(
+            energy_gradient_3d(&tetrahedron, [0.0; 3]),
+            (0.0, 0.0, 0.0, 0.0)
+        );
+        assert!(energy_gradient_3d(&tetrahedron, [f64::MAX; 3]).3.is_nan());
+        let surface = kquad_surface_cut_intrinsic(
+            &tetrahedron,
+            [0.0, 1e200, 1e200, 1e200],
+            &bands,
+            &kmats,
+            &kmats,
+            &kmats,
+            [1.0; 4],
+            [0.0; 4],
+            [0.0; 4],
+            5e199,
+            0,
+            2,
+            norm,
+            &mut e_buf,
+            &mut k_buf,
+        );
+        assert!((surface / 1.25e-201 - 1.0).abs() < 1e-14);
+        let (verts, count) = tet_plane_intersection([-f64::MAX, f64::MAX, f64::MAX, f64::MAX], 0.0);
+        assert!(verts[..count].iter().flatten().any(|x| x.is_nan()));
+        assert_eq!(tet_plane_intersection([0.0, 1.0, 1.0, 1.0], 1.0).1, 0);
+    }
 
     #[test]
     fn finite_temperature_convolution_is_bounded_and_preserves_moments() {

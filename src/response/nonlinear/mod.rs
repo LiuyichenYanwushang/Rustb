@@ -69,6 +69,26 @@ pub struct NonlinearHallResult {
 }
 
 impl NonlinearHallResult {
+    fn checked(
+        axis: ResponseAxis,
+        conductivity: Array1<f64>,
+        diagnostics: Option<IntegrationDiagnostics>,
+    ) -> Result<Self> {
+        if let Some(index) = conductivity.iter().position(|value| !value.is_finite()) {
+            return Err(TbError::InvalidResponseParameter {
+                parameter: "nonlinear_hall",
+                message: format!(
+                    "nonlinear Hall conductivity sample {index} is nonfinite; check velocity, energy and temperature scales"
+                ),
+            });
+        }
+        Ok(Self {
+            axis,
+            conductivity,
+            diagnostics,
+        })
+    }
+
     /// The scalar value of a single-point calculation.
     ///
     /// `None` for a sampled axis, including a sampled series that happens to
@@ -340,6 +360,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         validate_direction_values(&directions)?;
         validate_broadening(eta_ev)?;
         let eta = eta_ev;
+        let eta_squared = eta * eta;
+        if !eta_squared.is_finite() {
+            return Err(TbError::InvalidResponseParameter {
+                parameter: "eta_ev",
+                message: "squared nonlinear Hall broadening overflows".into(),
+            });
+        }
         if !SPIN && let Some(direction) = spin {
             return Err(TbError::SpinNotAllowed(direction));
         }
@@ -372,18 +399,37 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let field_1 = direction.row(1).to_owned();
         let field_2 = direction.row(2).to_owned();
         let k_mesh = mesh_array(&params.kmesh);
-        let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
         let determinant = self.lat.det()?;
+        if !determinant.is_normal() {
+            return Err(TbError::InvalidResponseParameter {
+                parameter: "lat",
+                message:
+                    "nonlinear Hall normalization requires a finite, nonzero normal lattice volume"
+                        .into(),
+            });
+        }
+        let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
         let symmetrized = field_symmetry == FieldSymmetry::Symmetrized && field_1 != field_2;
         let compute = |k: ArrayView1<'_, f64>| {
-            self.compute_velocity_kernel(
+            let data = self.compute_velocity_kernel(
                 &k.to_owned(),
                 &current,
                 &field_1,
                 Some(&field_2),
                 Gauge::Atom,
                 spin_matrix.as_ref(),
-            )
+            )?;
+            // Sorted vertex energies bound every pair gap, even after tracking.
+            // Leave headroom for NV <= 4 energy-cut interpolation rounding.
+            let band = &data.0.band;
+            let spread = band.last().unwrap() - band.first().unwrap();
+            let denominator = spread * spread + eta_squared;
+            if !denominator.is_finite() || denominator > f64::MAX * (1.0 - 64.0 * f64::EPSILON) {
+                return Err(TbError::InvalidResponseParameter {
+                    parameter: "nonlinear_hall", message: "extrinsic nonlinear Hall squared gaps overflow; the kernel cannot be certified".into(),
+                });
+            }
+            Ok(data)
         };
         if params.integration == Integration::Direct {
             // Reduce each point immediately: direct integration retains only
@@ -436,11 +482,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         / determinant
                 })
                 .collect();
-            return Ok(NonlinearHallResult {
-                axis: resolved.axis,
-                conductivity: Array1::from_vec(values),
-                diagnostics: None,
-            });
+            return NonlinearHallResult::checked(resolved.axis, Array1::from_vec(values), None);
         }
         let vertices: Vec<Result<_>> = k_points.outer_iter().into_par_iter().map(compute).collect();
         let (mut vertices, mut eigenvectors): (Vec<_>, Vec<_>) = vertices
@@ -503,11 +545,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         } else {
             first
         };
-        Ok(NonlinearHallResult {
-            axis: resolved.axis,
-            conductivity,
-            diagnostics: Some(diagnostics),
-        })
+        NonlinearHallResult::checked(resolved.axis, conductivity, Some(diagnostics))
     }
 
     /// Computes the Berry connection dipole at a single k-point.
@@ -573,6 +611,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         #[cfg(test)]
         super::config::counters::count_eigen_decomposition();
         let (band, evec) = eigh_full(&hamk, UPLO::Lower)?;
+        if band
+            .first()
+            .zip(band.last())
+            .is_some_and(|(low, high)| !(high - low).is_finite())
+        {
+            return Err(TbError::InvalidResponseParameter {
+                parameter: "nonlinear_hall",
+                message: "nonlinear Hall band-gap subtraction overflows".into(),
+            });
+        }
         let ut = evec.mapv(|x| x.conj());
         let uc = evec.t();
         let to_band = |op: &Array2<Complex<f64>>| -> Array2<Complex<f64>> { ut.dot(&op.dot(&uc)) };
@@ -730,8 +778,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .map(|index| occupation_for(resolved.point(index).0).energy_width())
             .collect::<Result<Vec<_>>>()?;
         let k_mesh = mesh_array(&params.kmesh);
-        let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
         let determinant = self.lat.det()?;
+        if !determinant.is_normal() {
+            return Err(TbError::InvalidResponseParameter {
+                parameter: "lat",
+                message:
+                    "nonlinear Hall normalization requires a finite, nonzero normal lattice volume"
+                        .into(),
+            });
+        }
+        let k_points = crate::kpoints::gen_kmesh::<f64>(&k_mesh)?;
         let direction = direction_matrix(&directions);
         let current = direction.row(0).to_owned();
         let field_1 = direction.row(1).to_owned();
@@ -763,14 +819,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 let vertices: Vec<Result<_>> = (0..k_points.nrows())
                     .into_par_iter()
                     .map(|index| {
-                        self.compute_velocity_kernel(
+                        let data = self.compute_velocity_kernel(
                             &k_points.row(index).to_owned(),
                             &field_1,
                             &field_2,
                             Some(&current),
                             Gauge::Atom,
                             None,
-                        )
+                        )?;
+                        if data
+                            .0
+                            .band
+                            .first()
+                            .zip(data.0.band.last())
+                            .is_some_and(|(low, high)| !(high - low).is_finite())
+                        {
+                            return Err(TbError::InvalidResponseParameter {
+                                parameter: "nonlinear_hall",
+                                message: "nonlinear Hall band-gap subtraction overflows".into(),
+                            });
+                        }
+                        Ok(data)
                     })
                     .collect();
                 let (mut vertices, mut eigenvectors): (Vec<_>, Vec<_>) = vertices
@@ -819,10 +888,305 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             Integration::Simplex => unreachable!("rejected during validation"),
         };
 
-        Ok(NonlinearHallResult {
-            axis: resolved.axis,
-            conductivity,
-            diagnostics: None,
-        })
+        NonlinearHallResult::checked(resolved.axis, conductivity, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::response::config::Conditions;
+
+    fn tilted_qwz() -> Model<false, 2> {
+        let mut model =
+            Model::<false, 2>::tb_model(Array2::eye(2), Array2::zeros((2, 2)), None).unwrap();
+        model.set_onsite(&array![1.0, -1.0], None);
+        for r in [array![1, 0], array![0, 1]] {
+            model.add_hop(0.5, 0, 0, &r, None);
+            model.add_hop(-0.5, 1, 1, &r, None);
+        }
+        for state in 0..2 {
+            model.add_hop(Complex::new(0.0, -0.15), state, state, &array![1, 0], None);
+        }
+        for (r, amplitude) in [
+            (array![1, 0], Complex::new(0.0, -0.5)),
+            (array![-1, 0], Complex::new(0.0, 0.5)),
+            (array![0, 1], Complex::new(-0.5, 0.0)),
+            (array![0, -1], Complex::new(0.5, 0.0)),
+        ] {
+            model.add_hop(amplitude, 0, 1, &r, None);
+        }
+        model
+    }
+
+    #[test]
+    fn nonlinear_hall_rejects_nonfinite_direct_and_cut_outputs() {
+        let model = tilted_qwz();
+        for (integration, temperature, mu, mesh, scale) in [
+            (Integration::Direct, 300.0, 3.0, [1, 1], 1e104),
+            (Integration::Direct, 30.0, 3.0, [1, 1], 1e103),
+            (Integration::EnergyCut, 0.0, 1.5, [4, 4], 1e104),
+        ] {
+            let params = Parameters {
+                conditions: Conditions::fixed(temperature, mu, 0.0),
+                kmesh: mesh,
+                integration,
+            };
+            let x = [scale, 0.0];
+            let y = [0.0, scale];
+            // All raw primitives are finite; overflow occurs later in the
+            // dipole, Fermi weighting or integration, not the existing guard.
+            let (vertex, _) = model
+                .compute_velocity_kernel(
+                    &array![0.0, 0.0],
+                    &array![scale, 0.0],
+                    &array![0.0, scale],
+                    Some(&array![scale, 0.0]),
+                    Gauge::Atom,
+                    None,
+                )
+                .unwrap();
+            assert!(
+                vertex
+                    .k_ab
+                    .iter()
+                    .all(|v| v.re.is_finite() && v.im.is_finite())
+            );
+            let intrinsic = model.intrinsic_nonlinear_hall(&params, [x, y, y]);
+            for symmetry in [FieldSymmetry::Ordered, FieldSymmetry::Symmetrized] {
+                let extrinsic =
+                    model.extrinsic_nonlinear_hall(&params, [x, y, x], 0.0, None, symmetry);
+                eprintln!(
+                    "{integration:?}, T={temperature}, scale={scale}: extrinsic={extrinsic:?}, intrinsic={intrinsic:?}"
+                );
+                assert!(matches!(
+                    extrinsic,
+                    Err(TbError::InvalidResponseParameter {
+                        parameter: "nonlinear_hall",
+                        ..
+                    })
+                ));
+            }
+            assert!(matches!(
+                intrinsic,
+                Err(TbError::InvalidResponseParameter {
+                    parameter: "nonlinear_hall",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn nonlinear_hall_rejects_unreliable_volume_and_overflowed_denominators() {
+        let params = Parameters {
+            conditions: Conditions::fixed(300.0, 3.0, 0.0),
+            kmesh: [1, 1],
+            integration: Integration::Direct,
+        };
+        for lattice_scale in [1e-200, 1e-160, 1e200] {
+            let mut model = tilted_qwz();
+            model.lat *= lattice_scale;
+            model.validate().unwrap(); // Finite inverse does not certify volume.
+            assert!(matches!(
+                model.extrinsic_nonlinear_hall(
+                    &params,
+                    [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+                    0.0,
+                    None,
+                    FieldSymmetry::Ordered
+                ),
+                Err(TbError::InvalidResponseParameter {
+                    parameter: "lat",
+                    ..
+                })
+            ));
+            assert!(matches!(
+                model.intrinsic_nonlinear_hall(&params, [[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]]),
+                Err(TbError::InvalidResponseParameter {
+                    parameter: "lat",
+                    ..
+                })
+            ));
+        }
+        let model = tilted_qwz();
+        // Large but representable eta² must still produce the finite analytic
+        // answer, rather than a blanket rejection of large scales.
+        let s = 1e104_f64;
+        let eta = 1e154_f64;
+        let value = model
+            .extrinsic_nonlinear_hall(
+                &params,
+                [[s, 0.0], [0.0, s], [s, 0.0]],
+                eta,
+                None,
+                FieldSymmetry::Ordered,
+            )
+            .unwrap()
+            .single()
+            .unwrap();
+        let width = occupation_for(300.0).energy_width().unwrap();
+        let window = fermi_derivative_from_width(-3.0, 3.0, width)
+            - fermi_derivative_from_width(3.0, 3.0, width);
+        let expected = 0.6 * (s / eta).powi(2) * s * window;
+        assert!((value / expected - 1.0).abs() < 1e-12);
+        for integration in [Integration::Direct, Integration::EnergyCut] {
+            let mut p = params.clone();
+            p.integration = integration;
+            assert!(matches!(
+                model.extrinsic_nonlinear_hall(
+                    &p,
+                    [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+                    1e155,
+                    None,
+                    FieldSymmetry::Ordered
+                ),
+                Err(TbError::InvalidResponseParameter {
+                    parameter: "eta_ev",
+                    ..
+                })
+            ));
+            let mut huge = tilted_qwz();
+            huge.ham.mapv_inplace(|value| value * 1e155);
+            p.conditions = Conditions::fixed(1e159, 3e155, 0.0);
+            let x = [1e-52, 0.0];
+            let y = [0.0, 1e-52];
+            assert!(matches!(
+                huge.extrinsic_nonlinear_hall(&p, [x, y, x], 0.0, None, FieldSymmetry::Ordered),
+                Err(TbError::InvalidResponseParameter {
+                    parameter: "nonlinear_hall",
+                    ..
+                })
+            ));
+            huge = tilted_qwz();
+            huge.ham.mapv_inplace(|value| value * 5e307);
+            p.conditions = Conditions::fixed(300.0, 1.5e308, 0.0);
+            let x = [1e-206, 0.0];
+            let y = [0.0, 1e-206];
+            assert!(matches!(
+                huge.intrinsic_nonlinear_hall(&p, [x, y, y]),
+                Err(TbError::InvalidResponseParameter {
+                    parameter: "nonlinear_hall",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn nonlinear_hall_rejects_a_later_overflowed_sample() {
+        let model = tilted_qwz();
+        let s = 1e103;
+        let x = [s, 0.0];
+        let y = [0.0, s];
+        let mut params = Parameters {
+            conditions: Conditions::fixed(300.0, 3.0, 0.0),
+            kmesh: [1, 1],
+            integration: Integration::Direct,
+        };
+        assert!(
+            model
+                .extrinsic_nonlinear_hall(&params, [x, y, x], 0.0, None, FieldSymmetry::Ordered)
+                .unwrap()
+                .single()
+                .unwrap()
+                .is_finite()
+        );
+        assert!(
+            model
+                .intrinsic_nonlinear_hall(&params, [x, y, y])
+                .unwrap()
+                .single()
+                .unwrap()
+                .is_finite()
+        );
+        params.conditions.t_kelvin = super::super::config::Sampling::Values(array![300.0, 30.0]);
+        for result in [
+            model.extrinsic_nonlinear_hall(&params, [x, y, x], 0.0, None, FieldSymmetry::Ordered),
+            model.intrinsic_nonlinear_hall(&params, [x, y, y]),
+        ] {
+            assert!(
+                matches!(result, Err(TbError::InvalidResponseParameter { parameter: "nonlinear_hall", message }) if message.contains("sample 1"))
+            );
+        }
+    }
+
+    #[test]
+    fn intrinsic_three_dimensional_cut_preserves_finite_scaling_and_rejects_overflow() {
+        let source = tilted_qwz();
+        let mut model =
+            Model::<false, 3>::tb_model(Array2::eye(3), Array2::zeros((2, 3)), None).unwrap();
+        model.ham = source.ham;
+        model.hamR = Array2::from_shape_fn((source.hamR.nrows(), 3), |(row, col)| {
+            if col < 2 { source.hamR[[row, col]] } else { 0 }
+        });
+        let params = Parameters {
+            conditions: Conditions::fixed(0.0, 1.5, 0.0),
+            kmesh: [4, 4, 2],
+            integration: Integration::EnergyCut,
+        };
+        let directions = |s| [[s, 0.0, 0.0], [0.0, s, 0.0], [0.0, s, 0.0]];
+        let base = model
+            .intrinsic_nonlinear_hall(&params, directions(1.0))
+            .unwrap()
+            .single()
+            .unwrap();
+        assert!(base.is_finite() && base != 0.0);
+        let large = model
+            .intrinsic_nonlinear_hall(&params, directions(1e100))
+            .unwrap()
+            .single()
+            .unwrap();
+        assert!((large / (base * 1e300) - 1.0).abs() < 1e-10);
+        assert!(matches!(
+            model.intrinsic_nonlinear_hall(&params, directions(1e104)),
+            Err(TbError::InvalidResponseParameter {
+                parameter: "nonlinear_hall",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn nonlinear_hall_preserves_finite_cubic_scaling() {
+        let model = tilted_qwz();
+        let params = Parameters {
+            conditions: Conditions::fixed(300.0, 3.0, 0.0),
+            kmesh: [1, 1],
+            integration: Integration::Direct,
+        };
+        let width = occupation_for(300.0).energy_width().unwrap();
+        let window = fermi_derivative_from_width(-3.0, 3.0, width)
+            - fermi_derivative_from_width(3.0, 3.0, width);
+        for scale in [1.0_f64, 1e100] {
+            let x = [scale, 0.0];
+            let y = [0.0, scale];
+            let cubic = scale.powi(3);
+            for (symmetry, weight) in [
+                (FieldSymmetry::Ordered, 1.0),
+                (FieldSymmetry::Symmetrized, 0.5),
+            ] {
+                let value = model
+                    .extrinsic_nonlinear_hall(&params, [x, y, x], 0.0, None, symmetry)
+                    .unwrap()
+                    .single()
+                    .unwrap();
+                let expected = window * (0.3 / 18.0) * cubic * weight;
+                assert!(
+                    (value / expected - 1.0).abs() < 1e-12,
+                    "{value} vs {expected}"
+                );
+            }
+            let value = model
+                .intrinsic_nonlinear_hall(&params, [x, y, y])
+                .unwrap()
+                .single()
+                .unwrap();
+            let expected = window * (0.6 / 216.0) * cubic;
+            assert!(
+                (value / expected - 1.0).abs() < 1e-12,
+                "{value} vs {expected}"
+            );
+        }
     }
 }
