@@ -609,8 +609,17 @@ impl AtomType {
 impl FromStr for AtomType {
     type Err = TbError;
 
+    /// Element symbols are matched case-insensitively: `v`/`V` are both
+    /// [`AtomType::V`], and `cl`/`Cl` are both [`AtomType::Cl`].
     fn from_str(s: &str) -> Result<Self> {
-        match s {
+        // Every match key is already canonical (one upper-case letter followed
+        // by lower-case ones) and no two keys differ only by case, so folding
+        // the input onto the keys cannot merge two different elements.
+        let mut chars = s.chars();
+        let canonical = chars.next().map(|first| {
+            first.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
+        });
+        match canonical.as_deref().unwrap_or_default() {
             "H" => Ok(AtomType::H),
             "He" => Ok(AtomType::He),
             "Li" => Ok(AtomType::Li),
@@ -1043,6 +1052,10 @@ mod tests {
     fn parse_atom_types_from_str() {
         assert_eq!("H".parse::<AtomType>().unwrap(), AtomType::H);
         assert_eq!("Fe".parse::<AtomType>().unwrap(), AtomType::Fe);
+        // Wannier90 output is not case-consistent for element labels.
+        assert_eq!("v".parse::<AtomType>().unwrap(), AtomType::V);
+        assert_eq!("cl".parse::<AtomType>().unwrap(), AtomType::Cl);
+        assert_eq!("CL".parse::<AtomType>().unwrap(), AtomType::Cl);
         assert!("Xx".parse::<AtomType>().is_err());
     }
 

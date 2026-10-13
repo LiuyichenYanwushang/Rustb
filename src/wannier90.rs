@@ -775,6 +775,29 @@ mod tests {
     }
 
     #[test]
+    fn from_hr_accepts_lowercase_atom_labels() {
+        // Regression: Wannier90 output may spell element labels in lower case
+        // ("v", "cl"); labels, projections and the HR state count must agree.
+        let dir = "tests/tmp_w90_lowercase_labels/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin atoms_cart\nv 0.0 0.0 0.0\ncl 0.5 0.5 0.5\nend atoms_cart\n\nbegin projections\nV:s\nCl:s\nend projections\n";
+        let hr = "generated\n2\n1\n1\n0 0 0 1 1 0.0 0.0\n0 0 0 1 2 0.0 0.0\n0 0 0 2 1 0.0 0.0\n0 0 0 2 2 0.0 0.0\n";
+        let xyz =
+            "4\nWannier centres\nv 0.0 0.0 0.0\ncl 0.5 0.5 0.5\nv 0.0 0.0 0.0\ncl 0.5 0.5 0.5\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 2);
+        assert_eq!(model.natom(), 2);
+        assert_eq!(model.atoms[0].atom_type(), AtomType::V);
+        assert_eq!(model.atoms[1].atom_type(), AtomType::Cl);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn from_hr_drops_xyz_atom_without_orbitals() {
         // Regression: an xyz atom whose species has no projection (e.g. a Cs
         // site that was never Wannierized) has no fitted orbitals, so it must
