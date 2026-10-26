@@ -254,6 +254,51 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Velocity for Model<SPIN
     }
 }
 
+/// Add the atom-gauge orbital-position term `i (tau_j - tau_i) H_ij` to one
+/// projected velocity block.
+///
+/// `tau[s]` is the projected orbital position `w . tau_s` of Bloch state `s` along
+/// this direction, pre-expanded from the orbital axis
+/// (`tau_orbital[[s % norb, direction]]`). Walking contiguous rows keeps the
+/// per-element loop free of a modulo by a runtime divisor and of 2-D indexing.
+///
+/// # Panics
+/// Panics when the block shapes disagree, or when `ham` or velocity rows are not
+/// contiguous slices. `gen_v_projected_batch` builds both with a unit last-axis
+/// stride.
+fn add_projected_tau_term(
+    mut velocity: ArrayViewMut2<'_, Complex<f64>>,
+    ham: ArrayView2<'_, Complex<f64>>,
+    tau: &[f64],
+) {
+    assert_eq!(
+        velocity.dim(),
+        ham.dim(),
+        "velocity and Hamiltonian blocks must have the same shape"
+    );
+    assert_eq!(
+        tau.len(),
+        velocity.nrows(),
+        "projected position count must match the state count"
+    );
+    // Row slicing requires a unit last-axis stride, which the C-order Bloch
+    // buffers built by `gen_v_projected_batch` provide.
+    for (i, mut row) in velocity.outer_iter_mut().enumerate() {
+        let tau_i = tau[i];
+        let ham_view = ham.row(i);
+        let ham_row = ham_view
+            .as_slice()
+            .expect("Bloch Hamiltonian rows are contiguous");
+        let velocity_row = row
+            .as_slice_mut()
+            .expect("projected velocity rows are contiguous");
+        for ((value, &ham_ij), &tau_j) in velocity_row.iter_mut().zip(ham_row).zip(tau) {
+            let displacement = tau_j - tau_i;
+            *value += Complex::new(0.0, displacement) * ham_ij;
+        }
+    }
+}
+
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Projected velocity operator: computes direction-weighted velocity matrices
     /// directly without materializing the per-direction `(DIM, nsta, nsta)` array.
@@ -361,7 +406,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .unwrap();
         let mut hams = summed.index_axis(Axis(1), 0).to_owned();
         // Keep velocity blocks in the GEMM allocation. Only H needs copying;
-        // each k-point's velocity block remains contiguous.
+        // each k-point's velocity block remains contiguous. Both buffers must keep
+        // a unit last-axis stride: `add_projected_tau_term` slices their rows.
         let mut velocities = summed.slice_move(s![.., 1.., .., ..]);
         drop(coefficients);
 
@@ -376,8 +422,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         } else {
             None
         };
+        // Projected displacement of each Bloch state, `tau[state % norb, p]`.
         let tau_projected = if matches!(gauge, Gauge::Atom) {
-            Some(self.orb.dot(&lattice_directions))
+            let tau = self.orb.dot(&lattice_directions);
+            let norb = self.norb();
+            Some(Array2::from_shape_fn((nproj, nsta), |(p, state)| {
+                tau[[state % norb, p]]
+            }))
         } else {
             None
         };
@@ -388,11 +439,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .as_ref()
                 .map(|_| self.orbital_phases(&points.row(ik)));
             if let (Some(tau), Some(orbital_phases)) = (&tau_projected, &orbital_phases) {
+                // The tau term reads the lattice-gauge H, so it must run before
+                // `ham` is gauge-transformed below. Each block is gauged while hot.
                 for (p, mut component) in velocity.outer_iter_mut().enumerate() {
-                    for ((i, j), value) in component.indexed_iter_mut() {
-                        let displacement = tau[[j % self.norb(), p]] - tau[[i % self.norb(), p]];
-                        *value += Complex::new(0.0, displacement) * ham[[i, j]];
-                    }
+                    let displacement_row = tau.row(p);
+                    let displacements = displacement_row
+                        .as_slice()
+                        .expect("projected displacements are contiguous");
+                    add_projected_tau_term(component.view_mut(), ham.view(), displacements);
                     apply_atom_gauge(component, orbital_phases);
                 }
                 apply_atom_gauge(ham.view_mut(), orbital_phases);
@@ -419,5 +473,92 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
         (velocities, hams)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Elementwise oracle for the atom-gauge orbital-position term: the original
+    /// per-element formulation that [`add_projected_tau_term`] rewrites.
+    fn reference_tau_term(
+        velocity: &mut Array3<Complex<f64>>,
+        ham: &Array2<Complex<f64>>,
+        tau: &Array2<f64>,
+        norb: usize,
+    ) {
+        for (p, mut component) in velocity.outer_iter_mut().enumerate() {
+            for ((i, j), value) in component.indexed_iter_mut() {
+                let displacement = tau[[j % norb, p]] - tau[[i % norb, p]];
+                *value += Complex::new(0.0, displacement) * ham[[i, j]];
+            }
+        }
+    }
+
+    fn check_tau_term(norb: usize, nsta: usize, nproj: usize) {
+        let sample = |i: usize, j: usize, p: usize| {
+            Complex::new(
+                (0.37 * (i * 7 + j * 13 + p * 3) as f64).sin(),
+                (0.53 * (i * 5 + j * 11 + p * 19) as f64).cos(),
+            )
+        };
+        let ham = Array2::from_shape_fn((nsta, nsta), |(i, j)| sample(i, j, 0));
+        let tau_orbitals = Array2::from_shape_fn((norb, nproj), |(orbital, p)| {
+            0.31 * orbital as f64 - 0.17 * p as f64
+        });
+        // The same projected orbital positions, expanded over Bloch states:
+        // `state % norb` drops the spin-block index, giving the orbital index.
+        let tau_states =
+            Array2::from_shape_fn((nproj, nsta), |(p, state)| tau_orbitals[[state % norb, p]]);
+
+        let mut expected =
+            Array3::from_shape_fn((nproj, nsta, nsta), |(p, i, j)| sample(i, j, p + 1));
+        let mut actual = expected.clone();
+        reference_tau_term(&mut expected, &ham, &tau_orbitals, norb);
+        for (p, mut component) in actual.outer_iter_mut().enumerate() {
+            let displacement_row = tau_states.row(p);
+            add_projected_tau_term(
+                component.view_mut(),
+                ham.view(),
+                displacement_row
+                    .as_slice()
+                    .expect("projected displacements are contiguous"),
+            );
+        }
+        assert_eq!(actual, expected, "norb={norb} nsta={nsta} nproj={nproj}");
+    }
+
+    /// A projection with zero directions must still return the atom-gauge
+    /// Hamiltonian and must not disturb it; this is the only public path with
+    /// `nproj == 0`.
+    #[test]
+    fn zero_direction_projection_keeps_atom_gauge_hamiltonian() {
+        let lat = arr2(&[[1.0, 0.0], [0.5, 3.0_f64.sqrt() / 2.0]]);
+        let orb = arr2(&[[1.0 / 3.0, 1.0 / 3.0], [2.0 / 3.0, 2.0 / 3.0]]);
+        let mut model = Model::<false, 2>::tb_model(lat, orb, None).unwrap();
+        for r in arr2(&[[0, 0], [-1, 0], [0, -1]]).axis_iter(Axis(0)) {
+            model.add_hop(Complex::new(-1.0, 0.0), 0, 1, &r.to_owned(), None);
+        }
+        let points = arr2(&[[0.21, 0.13], [0.37, -0.19]]);
+        let empty = Array2::<f64>::zeros((0, 2));
+        let (velocity, ham) = model.gen_v_projected_batch(&points, Gauge::Atom, &empty);
+        assert_eq!(velocity.dim(), (2, 0, 2, 2));
+        for ik in 0..2 {
+            assert_eq!(
+                ham.index_axis(Axis(0), ik),
+                model.gen_ham(&points.row(ik).to_owned(), Gauge::Atom),
+                "k point {ik}"
+            );
+        }
+    }
+
+    #[test]
+    fn tau_term_matches_elementwise_reference() {
+        check_tau_term(1, 1, 1);
+        check_tau_term(5, 5, 2); // spinless: nsta == norb
+        check_tau_term(3, 6, 3); // spinful: nsta == 2 norb
+        check_tau_term(4, 8, 2);
+        check_tau_term(3, 6, 0); // empty projection is a no-op
     }
 }

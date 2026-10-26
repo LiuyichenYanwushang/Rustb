@@ -303,6 +303,36 @@ fn bench_batch_construction(c: &mut Criterion) {
     group.finish();
 }
 
+/// The entry point the Brillouin-zone response solvers call: direction-projected
+/// velocity blocks with atom-gauge corrections. `build_dense` has zero orbital
+/// positions, so the existing velocity benchmarks cannot show the tau term;
+/// these models use real fractional positions.
+fn bench_gen_v_projected_batch(c: &mut Criterion) {
+    let mut group = c.benchmark_group("gen_v_projected_batch");
+    group.sample_size(20);
+    let directions = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+    let points = Array2::from_shape_fn((512, 2), |(i, d)| {
+        (i as f64 * 0.0137 + d as f64 * 0.21).fract()
+    });
+
+    let medium = build_medium();
+    for (name, gauge) in [("Atom", Gauge::Atom), ("Lattice", Gauge::Lattice)] {
+        group.bench_function(format!("{name}/medium(18sta)"), |b| {
+            b.iter(|| {
+                medium.gen_v_projected_batch(black_box(&points), gauge, black_box(&directions))
+            })
+        });
+    }
+
+    let spinful = build_small_spinful();
+    group.bench_function("Atom/spinful(4sta)", |b| {
+        b.iter(|| {
+            spinful.gen_v_projected_batch(black_box(&points), Gauge::Atom, black_box(&directions))
+        })
+    });
+    group.finish();
+}
+
 fn bench_occupied_berry_curvature_at(c: &mut Criterion) {
     let mut group = c.benchmark_group("occupied_berry_curvature_at");
     let kvec = arr1(&[0.3, 0.5]);
@@ -578,6 +608,7 @@ criterion_group!(
     bench_solve_onek,
     bench_solve_band_parallel,
     bench_batch_construction,
+    bench_gen_v_projected_batch,
     bench_occupied_berry_curvature_at,
     bench_hall_conductivity,
     bench_dos,
