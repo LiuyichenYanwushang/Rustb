@@ -1,5 +1,47 @@
 //! Core implementation of tight-binding model operations and Hamiltonian construction.
 
+//!
+//! # Examples
+//!
+//! Build a model, inspect the arrays that define it, validate the invariants
+//! every solver relies on, and round-trip it through the serde wire format.
+//!
+//! ```rust
+//! use ndarray::{arr1, arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//! model.set_onsite(&arr1(&[0.2, -0.2]), None);
+//!
+//! // Structural invariants checked by the solvers and response entry points.
+//! model.validate()?;
+//! assert_eq!(model.dim_r(), 2);
+//! assert_eq!((model.norb(), model.nsta()), (2, 2));
+//! assert_eq!(model.hamR.ncols(), 2);
+//!
+//! // Reciprocal vectors are rows: B = 2*pi*(A^T)^-1.
+//! let reciprocal = model.rec_lat()?;
+//! assert_eq!(reciprocal.dim(), (2, 2));
+//!
+//! // The serde wire format is validated on load: shape mismatches,
+//! // non-finite data and unknown fields are rejected instead of trusted.
+//! let encoded = toml::to_string(&model).unwrap();
+//! let restored: Model<false, 2> = toml::from_str(&encoded).unwrap();
+//! assert_eq!(restored.ham, model.ham);
+//!
+//! // Gauge selects the Bloch-basis phase convention, not the physics.
+//! let k = arr1(&[0.25, 0.125]);
+//! let h_atom = model.gen_ham(&k, Gauge::Atom);
+//! let h_lattice = model.gen_ham(&k, Gauge::Lattice);
+//! assert_eq!(h_atom.dim(), h_lattice.dim());
+//! # Ok(())
+//! # }
+//! ```
+
 pub use crate::model_utils::{find_R, remove_col, remove_row};
 
 use crate::atom_struct::{Atom, AtomId, AtomWire, OrbProj, OrbitalId, atoms_from_wire};

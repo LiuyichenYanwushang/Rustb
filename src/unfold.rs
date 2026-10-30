@@ -1,3 +1,43 @@
+//! Band unfolding from a supercell onto the primitive-cell Brillouin zone.
+//!
+//! The [`Unfold`] trait implements the projection of PRL 104, 216401 (2010):
+//! the supercell spectral function is weighted by the overlap of supercell
+//! eigenstates with primitive-cell Bloch states, producing the primitive-cell
+//! spectral weight on a requested path.
+//!
+//! The transformation matrix `U` relates supercell and primitive lattice
+//! vectors as `A = U a` and must have an integer determinant greater than
+//! one. The path uses
+//! fractional reciprocal coordinates of the primitive lattice
+//! `U⁻¹ · self.lat`, and the sampling follows the same node-preserving rules as
+//! [`crate::Kpath::k_path`] with the primitive reciprocal metric. Folded models
+//! whose translations alias in the database frame must be unfolded before
+//! primitive-cell symmetry labels can be assigned.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut primitive = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! primitive.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//!
+//! // 2 x 2 supercell and its primitive-cell path.
+//! let u = arr2(&[[2.0, 0.0], [0.0, 2.0]]);
+//! let supercell = primitive.make_supercell(&u)?;
+//! let path = arr2(&[[0.0, 0.0], [0.5, 0.0], [0.0, 0.0]]);
+//!
+//! // Spectral weight, shape (n_energy, nk).
+//! let weight = supercell.unfold(&u, &path, 101, -3.0, 3.0, 101, 1e-2, 1e-5)?;
+//! assert_eq!(weight.dim(), (101, 101));
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::Model;
 use crate::OrbProj;
 use crate::RMatrixData;

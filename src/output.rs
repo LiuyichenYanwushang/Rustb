@@ -9,7 +9,50 @@
 //!All-in-one Wannier90 format
 //!
 //!POSCAR format
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{arr1, arr2, array, Array2};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//!
+//! // Band structure: data files plus a PDF named after the last argument.
+//! let path = arr2(&[[0.0, 0.0], [0.5, 0.0], [0.0, 0.0]]);
+//! let labels = vec!["Γ", "X", "Γ"];
+//! model.show_band(&path, &labels, 101, "band_output")?;
+//!
+//! // Wannier90 interchange files.
+//! model.output_hr("target/example-output/", "seedname")?;
+//! model.output_win("target/example-output/", "seedname")?;
+//!
+//! // POSCAR and centres.xyz need atom metadata.
+//! let atoms = vec![Atom::with_orbitals(
+//!     array![0.0, 0.0, 0.0],
+//!     AtomType::Si,
+//!     [OrbitalId::new(0)],
+//! )];
+//! let silicon = Model::<false, 3>::tb_model(
+//!     Array2::eye(3),
+//!     array![[0.0, 0.0, 0.0]],
+//!     Some(atoms),
+//! )?;
+//! silicon.output_POSCAR("target/example-output/")?;
+//! silicon.output_xyz("target/example-output/", "seedname")?;
+//!
+//! // Heat maps render a 2D array through gnuplot.
+//! draw_heatmap(&arr2(&[[1.0, 2.0], [3.0, 4.0]]), "heatmap");
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::Model;
+
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kpath::*;

@@ -45,8 +45,56 @@
 //! before UNI/BNS identification.  A numerically non-closed set or an
 //! unresolved basis action produces an inconclusive report; the code never
 //! guesses a subgroup by silently adding or deleting operations.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{array, Array2};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let atoms = vec![Atom::with_orbitals(
+//!     array![0.0, 0.0, 0.0],
+//!     AtomType::Si,
+//!     [OrbitalId::new(0)],
+//! )];
+//! let model = Model::<false, 3>::tb_model(
+//!     Array2::eye(3),
+//!     array![[0.0, 0.0, 0.0]],
+//!     Some(atoms),
+//! )?;
+//!
+//! // Exact real-space covariance check of the actual Hamiltonian.
+//! let report = model.check_hamiltonian_symmetry(
+//!     &AtomicOrbitalBasis,
+//!     &HamiltonianSymmetryRequest::default(),
+//! )?;
+//! let summary: Option<bool> = report.is_fully_compatible();
+//! match &report.final_group {
+//!     FinalMagneticGroup::Identified(group) => {
+//!         println!("residual MSG: UNI {}, BNS {}", group.uni_number, group.bns_number);
+//!     }
+//!     FinalMagneticGroup::Inconclusive { reason } => {
+//!         println!("basis metadata needed: {reason}");
+//!     }
+//! }
+//!
+//! // Opt-in projection onto a validated target group (returns a new model).
+//! let target =
+//!     model.magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())?;
+//! let symmetrized = model.symmetrize_hamiltonian(
+//!     &target,
+//!     &AtomicOrbitalBasis,
+//!     &HamiltonianSymmetrizationParameters::default(),
+//! )?;
+//! assert_eq!(symmetrized.nsta(), model.nsta());
+//! assert!(summary.is_some());
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::atom_struct::OrbProj;
+
 use crate::crystal_symmetry::{
     CrystalSymmetry, CrystalSymmetryDataset, CrystalSymmetryOperation, MagneticCrystalSymmetry,
     MagneticGroupType, SymmetryParameters, convert_magnetic_type, cry_lattice, matrix3,

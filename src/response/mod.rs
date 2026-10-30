@@ -103,6 +103,73 @@
 //! # }
 //! ```
 
+//!
+//! # API contract
+//!
+//! - One shared `Parameters<DIM>` holds exactly the conditions (temperature in
+//!   kelvin, chemical potential in eV, photon frequency in eV), the uniform
+//!   k-mesh and the integration algorithm. Every field is required.
+//! - At most one condition axis may be sampled. The sampled axis is evaluated
+//!   from one k-mesh preparation, so eigenstates, velocity kernels and band
+//!   tracking are computed once per call.
+//! - Choices a single method reads are method arguments, never shared fields:
+//!   `directions` (`[[f64; DIM]; 2]` or, current-first,
+//!   `[[f64; DIM]; 3]`), `eta_ev`, `spin: Option<SpinDirection>` and
+//!   `field_symmetry`. A spin-current request to a charge-only method does not
+//!   compile instead of failing at run time.
+//! - DC entry points require `omega_ev: Sampling::Fixed(0.0)`. The optical
+//!   and intrinsic nonlinear Hall entry points are charge-only, and
+//!   `intrinsic_nonlinear_hall` takes no broadening because it broadens no
+//!   denominator.
+//! - Direct, simplex and energy-cut algorithms are selected through
+//!   [`Integration`]; each entry point states which algorithms it accepts.
+//! - Results carry [`ResponseAxis`] plus named arrays such as
+//!   `conductivity`, `metric` and `berry_curvature`. `single()` on the Hall
+//!   and nonlinear Hall results returns the scalar of a fully fixed evaluation;
+//!   optical results expose `component(index)` and the quantum-geometry result
+//!   has no scalar accessor.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{arr1, arr2, array, Array1};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! for r in [[0, 0], [-1, 0], [0, -1]] {
+//!     model.add_hop(-2.7, 0, 1, &array![r[0], r[1]], None);
+//! }
+//! model.set_onsite(&arr1(&[0.2, -0.2]), None);
+//!
+//! // A fixed DC point: the Hall response is one scalar.
+//! let dc: Parameters<2> = Parameters {
+//!     conditions: Conditions::fixed(300.0, 0.0, 0.0),
+//!     kmesh: [41, 41],
+//!     integration: Integration::EnergyCut,
+//! };
+//! let hall = model.hall_conductivity(&dc, [[1.0, 0.0], [0.0, 1.0]], 1e-3, None)?;
+//! assert_eq!(hall.conductivity.len(), 1);
+//! assert!(hall.single().is_some());
+//!
+//! // A frequency scan: columns follow the sampled axis.
+//! let scan: Parameters<2> = Parameters {
+//!     conditions: Conditions {
+//!         t_kelvin: Sampling::Fixed(300.0),
+//!         mu_ev: Sampling::Fixed(0.0),
+//!         omega_ev: Sampling::Values(Array1::linspace(0.0, 3.0, 31)),
+//!     },
+//!     kmesh: [41, 41],
+//!     integration: Integration::Simplex,
+//! };
+//! let optical = model.optical_conductivity(&scan, [[1.0, 0.0], [0.0, 1.0]], 1e-2)?;
+//! assert_eq!(optical.conductivity.ncols(), 31);
+//! # Ok(())
+//! # }
+//! ```
+
 pub mod config;
 pub mod linear;
 pub mod nonlinear;

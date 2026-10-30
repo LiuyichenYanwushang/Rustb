@@ -10,14 +10,29 @@
 //!
 //! # Examples
 //!
-//! ```ignore
-//! use rustb::cut::CutModel;
+//! ```rust
+//! use ndarray::{arr2, array};
+//! use Rustb::*;
 //!
-//! // Create a 10-layer slab along direction 2
-//! let slab = model.cut_piece(10, 2).unwrap();
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
 //!
-//! // Cut a hexagonal dot from the slab
-//! let dot = slab.cut_dot(10, 6, None).unwrap();
+//! // A slab keeps the in-plane periodicity and removes hopping across the
+//! // cut direction; the lattice vector along the cut is scaled by num.
+//! let slab = model.cut_piece(10, 1)?;
+//! assert_eq!(slab.norb(), 10 * model.norb());
+//!
+//! // A shaped finite region; codes are 3 (triangle), 4 (square),
+//! // 6 (hexagon) and 8 (octagon). 2D models use directions 0 and 1.
+//! let dot = slab.cut_dot(4, 6, None)?;
+//! assert!(dot.norb() > 0);
+//!
+//! // 3D models pass the two in-plane directions explicitly.
+//! # Ok(())
+//! # }
 //! ```
 
 use crate::Model;

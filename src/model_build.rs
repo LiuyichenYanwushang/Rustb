@@ -29,6 +29,46 @@
 //! - **On-site energies** must be real. A panic (or error) will result if an
 //!   on-site term with a non-zero imaginary part is set.
 
+//!
+//! # Examples
+//!
+//! Construct a chain, fill in hoppings and on-site terms, then manipulate the
+//! result with the supercell and atom/orbital editing API.
+//!
+//! ```rust
+//! use ndarray::{arr1, arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let mut chain = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None)?;
+//! chain.set_onsite(&arr1(&[0.1]), None);
+//!
+//! // set_hop replaces a block, add_hop accumulates it. Both maintain the
+//! // Hermitian-conjugate block at -R, so the second call adds two rows.
+//! chain.set_hop(-1.0, 0, 0, &array![1], None);
+//! chain.add_hop(-0.2, 0, 0, &array![2], None);
+//! assert_eq!(chain.hamR.nrows(), 5); // 0, +-1, +-2
+//!
+//! // Spin decoration: None is the identity term, Some(axis) a Pauli term.
+//! let mut spinful = Model::<true, 1>::tb_model(array![[1.0]], array![[0.0]], None)?;
+//! spinful.add_hop(0.1, 0, 0, &array![1], SpinDirection::Z);
+//!
+//! // Integer transformation matrices define supercells.
+//! let doubled = chain.make_supercell(&arr2(&[[2.0]]))?;
+//! assert_eq!(doubled.norb(), 2 * chain.norb());
+//!
+//! // Orbital, atom and shape editing keep the dense arrays consistent.
+//! let mut two = Model::<false, 1>::tb_model(
+//!     array![[1.0]],
+//!     array![[0.0], [0.25]],
+//!     None,
+//! )?;
+//! two.remove_orb(&[1])?;
+//! assert_eq!(two.norb(), 1);
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::Model;
 use crate::SpinDirection;
 use crate::atom_struct::{Atom, OrbProj, OrbitalId};

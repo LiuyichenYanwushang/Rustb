@@ -1,6 +1,40 @@
 //! Reusable band-resolved Berry-curvature interface.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{arr1, arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//! model.set_onsite(&arr1(&[0.3, -0.3]), None);
+//! let k = arr1(&[0.2, 0.1]);
+//! let directions = [[1.0, 0.0], [0.0, 1.0]];
+//!
+//! // Band-resolved: no temperature, chemical potential or k-mesh.
+//! let bands = model.berry_curvature_at(&k, directions, 1e-3, None)?;
+//! assert_eq!(bands.berry_curvature.len(), model.nsta());
+//! assert_eq!(bands.energies.len(), model.nsta());
+//!
+//! // Occupation-weighted: one fully fixed DC point, still no k-mesh.
+//! let dc = Conditions::fixed(300.0, 0.0, 0.0);
+//! let occupied = model.occupied_berry_curvature_at(&k, &dc, directions, 1e-3, None)?;
+//! assert!(occupied.is_finite());
+//!
+//! // The batch form returns one value per k-point.
+//! let points = gen_kmesh::<f64>(&arr1(&[5usize, 5]))?;
+//! let on_mesh = model.occupied_berry_curvature_on(&points, &dc, directions, 1e-3, None)?;
+//! assert_eq!(on_mesh.len(), 25);
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::ndarray_lapack::eigh_full;
+
 use ndarray::prelude::*;
 use ndarray::{ArrayBase, Data};
 use ndarray_linalg::UPLO;

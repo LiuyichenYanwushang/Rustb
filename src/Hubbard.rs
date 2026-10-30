@@ -68,8 +68,57 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Examples
+//!
+//! Mean-field solution of a half-filled one-dimensional chain. The solver is
+//! shown with `no_run` because it iterates until self-consistency.
+//!
+//! ```no_run
+//! use ndarray::{arr1, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let mut bare = Model::<true, 1>::tb_model(array![[1.0]], array![[0.0]], None)?;
+//! bare.add_hop(-1.0, 0, 0, &array![1], None);
+//!
+//! // One interaction per orbital, or a uniform value for every orbital.
+//! let solver = HubbardModel::with_uniform_u(bare, 2.0)?;
+//! assert_eq!(solver.onsite_u().len(), solver.bare_model().norb());
+//!
+//! // FixedInitialFilling first measures the bare filling at reference_mu and
+//! // then solves for the chemical potential that preserves it. Use
+//! // MeanFieldConstraint::FixedChemicalPotential { mu } instead to hold mu.
+//! let mut params = MeanFieldParams::new(
+//!     [61],
+//!     MeanFieldConstraint::FixedInitialFilling { reference_mu: 0.0 },
+//!     Occupation::FermiSmearing { width: 0.02 },
+//! );
+//! params.max_iterations = 500;
+//! params.density_tolerance = 1e-10;
+//! params.mixing = 0.2;
+//! params.initial_magnetization = InitialMagnetization::UniformVector {
+//!     moment_per_orbital: [1e-3, 0.0, 0.0],
+//! };
+//!
+//! // The converged result is an ordinary spinful model with the chemical
+//! // potential already shifted to zero.
+//! let model = solver.solve_hartree_fock(&params)?;
+//! let filling = model.electron_filling(&[61], 0.0, params.occupation)?;
+//! let total_spin = model.spin_moment(&[61], 0.0, params.occupation)?;
+//! let local_spin = model.local_spin_moment(&[61], 0.0, params.occupation)?;
+//! let band_spin = model.spin_expectation_onek(&arr1(&[0.0]))?;
+//!
+//! assert!(filling.is_finite());
+//! assert_eq!(total_spin.len(), 3);
+//! assert_eq!(local_spin.dim(), (model.norb(), 3));
+//! assert_eq!(band_spin.dim(), (model.nsta(), 3));
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::error::{Result, TbError};
+
 use crate::model::{Gauge, Model, NoRMatrix, RMatrixData};
 use crate::model_utils::find_R;
 use crate::ndarray_lapack::eigh_full;

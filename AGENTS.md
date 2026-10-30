@@ -301,7 +301,7 @@ pub struct Model<
 - `R` defaults to `NoRMatrix` (zero-sized). `HasRMatrix(Array4)` stores position matrix elements.
 - Hot-path `match DIM { 1 => ..., 2 => ..., 3 => ... }` is compile-time eliminated.
 - Hot-path `if <R as RMatrixData>::HAS_RMATRIX { ... }` is compile-time eliminated.
-- `surf_Green` is non-generic and stores `spin: bool` and `dim_r: usize` (converted from const generics).
+- `SurfGreen` is non-generic and stores `spin: bool` and `dim_r: usize` (converted from const generics).
 
 ### Other key types
 

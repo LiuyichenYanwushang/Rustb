@@ -2,8 +2,29 @@
 //! This module defines the custom error types for the entire tight-binding library.
 //! By using a centralized error enum, we can replace all panics with recoverable
 //! Results, making the library safer and more robust for consumers.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! // Invalid inputs return structured variants instead of panicking.
+//! let err = TbError::InvalidDimension { dim: 4, supported: vec![1, 2, 3] };
+//! assert!(matches!(err, TbError::InvalidDimension { dim: 4, .. }));
+//!
+//! // Propagate with ? and recover selectively at the call site.
+//! let width = Occupation::FermiSmearing { width: 0.05 }.energy_width()?;
+//! assert_eq!(width, 0.05);
+//!
+//! let failed: Result<()> = Err(TbError::NoOrbitals);
+//! assert!(failed.is_err());
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::atom_struct::AtomType;
+
 use crate::{OrbProj, SpinDirection};
 use ndarray::{Array1, ShapeError};
 use num_complex::Complex;

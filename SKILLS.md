@@ -842,7 +842,7 @@ For a 3D `cut_dot`, pass the two in-plane directions through
 ### Surface Green function
 
 ```rust
-let surface = surf_Green::from_Model(
+let surface = SurfGreen::from_Model(
     &model,
     0,       // open lattice direction
     1e-3,    // imaginary broadening

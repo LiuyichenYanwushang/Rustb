@@ -12,6 +12,34 @@
 //! // Generate a 10×10 k-mesh for a 2D system
 //! let kmesh:Array2<f64> = gen_kmesh(&array![10, 10]).unwrap();
 //! ```
+//!
+//! The row order is fixed and shared by every consumer: the last axis varies
+//! fastest, the first axis is outermost. Fermi-surface writers, irreducible
+//! meshes and the response solvers all rely on this order.
+//!
+//! ```rust
+//! use ndarray::{arr1, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let mesh = arr1(&[2usize, 2]);
+//! let points = gen_kmesh::<f64>(&mesh)?;
+//! assert_eq!(
+//!     points,
+//!     array![[0.0, 0.0], [0.0, 0.5], [0.5, 0.0], [0.5, 0.5]]
+//! );
+//!
+//! // Cell bounds include the upper endpoint and follow the same order.
+//! let cells = gen_krange::<f64>(&mesh)?;
+//! assert_eq!(cells.dim(), (4, 2, 2));
+//! assert_eq!(cells[[0, 0, 1]], 0.5);
+//!
+//! // A 3D mesh reports its size in the same convention.
+//! let volume = gen_kmesh::<f64>(&arr1(&[3usize, 4, 5]))?;
+//! assert_eq!(volume.dim(), (60, 3));
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::error::{Result, TbError};
 use ndarray::{Array1, Array2, Array3};

@@ -5,8 +5,64 @@
 //! symmetry and tight-binding Hamiltonian symmetry are deliberately separate:
 //! the results here do not assert that `H(k)` transforms under every detected
 //! operation.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{array, Array2};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let atoms = vec![Atom::with_orbitals(
+//!     array![0.0, 0.0, 0.0],
+//!     AtomType::Si,
+//!     [OrbitalId::new(0)],
+//! )];
+//! let mut model = Model::<false, 3>::tb_model(
+//!     Array2::eye(3),
+//!     array![[0.0, 0.0, 0.0]],
+//!     Some(atoms),
+//! )?;
+//!
+//! // Structural group, high-symmetry points and character tables.
+//! let symmetry = model.crystal_symmetry(&SymmetryParameters::default())?;
+//! let points = symmetry.high_symmetry_kpoints()?;
+//! let table = symmetry.character_table_at("GM")?;
+//! let columns = symmetry.character_table_operations()?;
+//! assert!(!points.is_empty() && !table.is_empty() && !columns.is_empty());
+//!
+//! // Uniform E/B fields already encoded in H are per-analysis context.
+//! let fields = SymmetryParameters {
+//!     external_fields: ExternalFields {
+//!         electric: None,
+//!         magnetic: Some([0.0, 0.0, 1.0]),
+//!     },
+//!     ..Default::default()
+//! };
+//! let effective = model.crystal_symmetry(&fields)?;
+//! assert!(
+//!     effective.field_preserving_operations.len() <= effective.operations.len()
+//! );
+//!
+//! // Optional Atom moments drive magnetic-group detection and mesh reduction.
+//! model.atoms[0].set_magnetic_moment([0.0, 0.0, 1.0])?;
+//! let magnetic =
+//!     model.magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())?;
+//! let mesh = model.magnetic_irreducible_kmesh_from_atoms(
+//!     [8, 8, 8],
+//!     &SymmetryParameters::default(),
+//! )?;
+//! assert!((mesh.weights.sum() - 1.0).abs() < 1e-12);
+//! assert_eq!(
+//!     magnetic.operations.len(),
+//!     magnetic.field_preserving_operations.len()
+//! );
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::error::{Result, TbError};
+
 use crate::model::{Model, RMatrixData};
 use cryspglib::irrep::corep::symmetry_operations_of;
 use cryspglib::irrep::magnetic_summary::{

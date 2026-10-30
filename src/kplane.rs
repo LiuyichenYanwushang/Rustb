@@ -2,6 +2,31 @@
 //!
 //! Provides [`gen_kplane`] for generating a uniform 2D grid of k-points spanning
 //! a plane in reciprocal space, defined by an origin and two spanning vectors.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{arr1, array, Array2};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let origin = arr1(&[0.0, 0.0, 0.0]);
+//! let v1 = arr1(&[0.5, 0.0, 0.0]);
+//! let v2 = arr1(&[0.0, 0.5, 0.0]);
+//! let plane = gen_kplane(&origin, &v1, &v2, 11, 11)?;
+//! assert_eq!(plane.dim(), (121, 3));
+//!
+//! // The same grid can feed a 3D model or a Fermi-surface plane plot.
+//! let model = Model::<false, 3>::tb_model(
+//!     Array2::eye(3),
+//!     array![[0.0, 0.0, 0.0]],
+//!     None,
+//! )?;
+//! let bands = model.solve_band_all_parallel(&plane)?;
+//! assert_eq!(bands.dim(), (121, 1));
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::error::{Result, TbError};
 use ndarray::{Array1, Array2};

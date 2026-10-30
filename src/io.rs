@@ -1,3 +1,26 @@
+//! Plain-text array output.
+//!
+//! [`write_txt`] writes a 2D array and [`write_txt_1`] a 1D array, one value per
+//! column-separated field, in fixed-point form with sign-aligned leading
+//! whitespace. Both return `std::io::Result` and therefore convert into
+//! [`crate::TbError`] with `?`.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{arr1, arr2};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! write_txt(
+//!     &arr2(&[[1.0, 2.0], [3.0, 4.0]]),
+//!     "target/example-output/data.dat",
+//! )?;
+//! write_txt_1(&arr1(&[1.0, 2.0, 3.0]), "target/example-output/data1.dat")?;
+//! # Ok(())
+//! # }
+//! ```
+
 use ndarray::*;
 use num_traits::Zero;
 use std::fmt::Display;

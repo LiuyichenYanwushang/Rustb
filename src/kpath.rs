@@ -1,3 +1,41 @@
+//! Piecewise-linear high-symmetry paths.
+//!
+//! [`Kpath`] is implemented by [`crate::Model`] and [`crate::SurfGreen`]. The
+//! sampler validates the node coordinates, retains every node exactly (including
+//! nodes that border very short segments) and returns
+//!
+//! - the sampled k-points, shape `(nk, DIM)`,
+//! - the cumulative Cartesian reciprocal distance, shape `(nk,)`,
+//! - the distance at each requested node, shape `(path.nrows(),)`.
+//!
+//! Distances omit the `2*pi` factor and use the object's reciprocal-lattice
+//! metric. Invalid coordinates, fewer samples than nodes and singular lattices
+//! return errors.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let model = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None)?;
+//! let path = arr2(&[[0.0], [0.5], [0.0]]);
+//!
+//! let (k_points, distance, node_distance) = model.k_path(&path, 101)?;
+//! assert_eq!(k_points.nrows(), 101);
+//! assert_eq!(distance.len(), 101);
+//! assert_eq!(node_distance.len(), 3);
+//! assert_eq!(distance[0], 0.0);
+//! assert!(distance.iter().zip(distance.iter().skip(1)).all(|(a, b)| a <= b));
+//!
+//! // The sampled path feeds the ordinary solvers.
+//! let bands = model.solve_band_all_parallel(&k_points)?;
+//! assert_eq!(bands.dim(), (101, model.nsta()));
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::Model;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};

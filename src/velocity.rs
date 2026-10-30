@@ -189,6 +189,45 @@
 //!   obtained by multiplying fractional vectors with the lattice matrix `lat`
 //! - For a Hermitian Hamiltonian and position operator, the returned velocity
 //!   is **Hermitian**: $v\_\alpha^\dagger = v\_\alpha$.
+
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{arr1, arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//! model.set_onsite(&arr1(&[0.2, -0.2]), None);
+//! let k = arr1(&[0.2, 0.3]);
+//!
+//! // Shape (DIM, nsta, nsta); each block is Hermitian in the Atom gauge.
+//! let (velocity, h_k) = model.gen_v(&k, Gauge::Atom);
+//! assert_eq!(velocity.dim(), (2, model.nsta(), model.nsta()));
+//! for block in velocity.outer_iter() {
+//!     let adjoint = block.t().mapv(|z| z.conj());
+//!     let residual = &block - &adjoint;
+//!     assert!(residual.iter().all(|z| z.norm() < 1e-12));
+//! }
+//!
+//! // One operator per projection row, without materializing all directions.
+//! let directions = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let (projected, _) = model.gen_v_projected(&k, Gauge::Atom, &directions);
+//! assert_eq!(projected.dim(), (2, model.nsta(), model.nsta()));
+//!
+//! // Batches share the Fourier preparation and create no Rayon jobs.
+//! let points = gen_kmesh::<f64>(&arr1(&[5usize, 5]))?;
+//! let (batch_v, batch_h) = model.gen_v_batch(&points, Gauge::Lattice);
+//! assert_eq!(batch_v.dim(), (25, 2, model.nsta(), model.nsta()));
+//! assert_eq!(batch_h.dim(), (25, model.nsta(), model.nsta()));
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;

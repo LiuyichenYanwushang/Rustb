@@ -1,3 +1,53 @@
+//! Atomic sites, typed orbital handles and angular-momentum projections.
+//!
+//! [`Atom`] stores a fractional position (lattice-vector units, the same
+//! convention as the rows of [`crate::Model::orb`]), a chemical species, the
+//! [`OrbitalId`] handles of the model orbitals it owns, and an optional
+//! Cartesian magnetic moment. [`OrbProj`] labels the angular character of each orbital. The model
+//! owns the dense orbital arrays; atoms only reference them, so an orbital-only
+//! model created by `tb_model(..., None)` remains valid.
+//!
+//! Atom metadata is required by crystal-symmetry analysis, atom-based
+//! Hamiltonian symmetrization and [`crate::Model::orb_angular`] (the atomic
+//! angular-momentum matrices).
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{array, Array2};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let atoms = vec![
+//!     Atom::with_orbitals(array![0.0, 0.0, 0.0], AtomType::Si, [OrbitalId::new(0)]),
+//!     Atom::with_orbitals(array![0.5, 0.5, 0.5], AtomType::O, [OrbitalId::new(1)]),
+//! ];
+//! let mut model = Model::<false, 3>::tb_model(
+//!     Array2::eye(3),
+//!     array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]],
+//!     Some(atoms),
+//! )?;
+//!
+//! // Typed accessors reject out-of-range handles with structured errors.
+//! let site = model.atom(AtomId::new(1))?;
+//! assert_eq!(site.orbitals().len(), 1);
+//! assert_eq!(site.orbitals()[0].projection(), &OrbProj::s);
+//! let orbital = model.orbital(OrbitalId::new(0))?;
+//! assert_eq!(orbital.position().len(), 3);
+//!
+//! // Projections drive orbital-aware analysis and Wannier90 orbital matching.
+//! model.set_projection(&vec![OrbProj::s, OrbProj::pz]);
+//! assert_eq!(model.orbital(OrbitalId::new(1))?.projection(), &OrbProj::pz);
+//!
+//! // Optional magnetic moments feed magnetic-space-group detection.
+//! assert_eq!(model.atoms[0].magnetic_moment(), None);
+//! model.atoms[0].set_magnetic_moment([0.0, 0.0, 1.0])?;
+//! assert_eq!(model.atoms[0].magnetic_moment(), Some([0.0, 0.0, 1.0]));
+//! model.atoms[0].clear_magnetic_moment();
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::{Result, TbError};
 use ndarray::Array1;
 use num_complex::Complex;

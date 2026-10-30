@@ -1,5 +1,28 @@
 //! Checked conversions for spin directions and spatial dimensions.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let spin = SpinDirection::try_from_index(3)?;
+//! assert_eq!(spin, Some(SpinDirection::Z));
+//! assert!(SpinDirection::try_from_index(4).is_err());
+//!
+//! // The panicking convenience form accepts 0..=3.
+//! assert_eq!(SpinDirection::from_index(1), Some(SpinDirection::X));
+//! assert_eq!(SpinDirection::from_index(0), None);
+//!
+//! let dimension = Dimension::try_from(2usize)?;
+//! assert_eq!(usize::from(dimension), 2);
+//! assert!(Dimension::try_from(4usize).is_err());
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::SpinDirection;
+
 use crate::TbError;
 use crate::model::Dimension;
 

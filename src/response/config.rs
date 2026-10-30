@@ -6,8 +6,48 @@
 //! frequency denominators, so the expensive k-mesh preparation — eigenstates,
 //! velocity kernels and band tracking — is performed once and reused by every
 //! sample of the sampled axis.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::Array1;
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! // Pin all three axes at once.
+//! let fixed = Conditions::fixed(300.0, 0.0, 0.0);
+//! assert!(fixed.t_kelvin.is_fixed());
+//!
+//! // Sample exactly one axis; the others stay fixed.
+//! let sweep: Parameters<2> = Parameters {
+//!     conditions: Conditions {
+//!         t_kelvin: Sampling::Fixed(300.0),
+//!         mu_ev: Sampling::Values(Array1::linspace(-1.0, 1.0, 21)),
+//!         omega_ev: Sampling::Fixed(0.0),
+//!     },
+//!     kmesh: [41, 41],
+//!     integration: Integration::EnergyCut,
+//! };
+//! assert!(!sweep.conditions.mu_ev.is_fixed());
+//! assert_eq!(sweep.conditions.mu_ev.len(), 21);
+//!
+//! // Sampling more than one axis is rejected before any k-mesh work.
+//! let invalid: Parameters<2> = Parameters {
+//!     conditions: Conditions {
+//!         t_kelvin: Sampling::Values(Array1::linspace(0.0, 300.0, 3)),
+//!         mu_ev: Sampling::Values(Array1::linspace(-1.0, 1.0, 3)),
+//!         omega_ev: Sampling::Fixed(0.0),
+//!     },
+//!     kmesh: [41, 41],
+//!     integration: Integration::Direct,
+//! };
+//! let _ = invalid; // passing this to an entry point returns an error
+//! # Ok(())
+//! # }
+//! ```
 
 use ndarray::array;
+
 use ndarray::{Array1, Array2, ArrayView1};
 
 use crate::error::{Result, TbError};

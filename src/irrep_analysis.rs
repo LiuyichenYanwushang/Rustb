@@ -21,6 +21,41 @@
 //! returned report.  Users should normally set the selected BLAS backend to one
 //! thread when using this outer parallelism.
 
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{array, Array2};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let atoms = vec![Atom::with_orbitals(
+//!     array![0.0, 0.0, 0.0],
+//!     AtomType::Si,
+//!     [OrbitalId::new(0)],
+//! )];
+//! let model = Model::<false, 3>::tb_model(
+//!     Array2::eye(3),
+//!     array![[0.0, 0.0, 0.0]],
+//!     Some(atoms),
+//! )?;
+//!
+//! // Detect the Atom-defined group and label every high-symmetry k-point.
+//! let report = model.calculate_irrep(None)?;
+//! println!("{report}");
+//!
+//! // Optionally test an explicitly supplied target group.
+//! let target =
+//!     model.magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())?;
+//! let for_target = model.calculate_irrep_for_group(
+//!     &target,
+//!     Some(&IrrepCalculationOptions::default()),
+//! )?;
+//! println!("{for_target}");
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::crystal_symmetry::{
     CrystalSymmetry, CrystalSymmetryOperation, MagneticCrystalSymmetry, cry_lattice,
 };

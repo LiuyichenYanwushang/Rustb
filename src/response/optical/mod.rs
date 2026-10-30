@@ -21,12 +21,52 @@
 //! computes one projected component; [`Model::optical_conductivity_tensor`]
 //! computes the full Cartesian tensor. Both entry points share the same
 //! preparation and integration implementation.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{arr1, arr2, array, Array1};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! for r in [[0, 0], [-1, 0], [0, -1]] {
+//!     model.add_hop(-2.7, 0, 1, &array![r[0], r[1]], None);
+//! }
+//! model.set_onsite(&arr1(&[0.2, -0.2]), None);
+//!
+//! // Optical response is the only entry point that may sample omega.
+//! let params: Parameters<2> = Parameters {
+//!     conditions: Conditions {
+//!         t_kelvin: Sampling::Fixed(300.0),
+//!         mu_ev: Sampling::Fixed(0.0),
+//!         omega_ev: Sampling::Values(Array1::linspace(0.0, 3.0, 9)),
+//!     },
+//!     kmesh: [21, 21],
+//!     integration: Integration::Simplex,
+//! };
+//!
+//! // One projected component; rows are components, columns are samples.
+//! let component = model.optical_conductivity(&params, [[1.0, 0.0], [0.0, 1.0]], 1e-2)?;
+//! assert_eq!(component.conductivity.ncols(), 9);
+//! assert!(component.component(0).is_some());
+//!
+//! // Full ordered Cartesian tensor from one shared preparation.
+//! let tensor = model.optical_conductivity_tensor(&params, 1e-2)?;
+//! assert_eq!(tensor.conductivity.nrows(), 4); // (0,0), (0,1), (1,0), (1,1)
+//! assert_eq!(tensor.conductivity.ncols(), 9);
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::ndarray_lapack::eigh_full;
 use ndarray::array;
 use ndarray::prelude::*;
 use ndarray_linalg::{Determinant, UPLO};
 use num_complex::Complex;
+
 use rayon::prelude::*;
 
 use crate::error::{Result, TbError};

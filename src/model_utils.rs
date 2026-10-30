@@ -1,5 +1,33 @@
 //! Utility functions and macros for tight-binding model operations
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 0, &array![1, 0], None);
+//!
+//! // Index of the R = (0, 0) block; unknown vectors return None.
+//! let origin = find_R(&model.hamR, &array![0, 0]);
+//! assert_eq!(origin, Some(0));
+//! assert!(find_R(&model.hamR, &array![1, 0]).is_some());
+//! assert!(find_R(&model.hamR, &array![7, 7]).is_none());
+//!
+//! let smaller = remove_row(model.hamR.clone(), 0);
+//! assert_eq!(smaller.nrows() + 1, model.hamR.nrows());
+//! let fewer_cols = remove_col(arr2(&[[1.0, 2.0], [3.0, 4.0]]), 1);
+//! assert_eq!(fewer_cols.dim(), (2, 1));
+//! # Ok(())
+//! # }
+//! ```
+
 use ndarray::prelude::*;
+
 use ndarray::*;
 
 /// Find the index of lattice vector $\mathbf{R}$ in the `hamR` array.

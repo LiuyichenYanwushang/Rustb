@@ -113,6 +113,32 @@
 //! the correct non-orthogonal-lattice generalization of the usual Landau-gauge
 //! construction.
 
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{arr1, arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//!
+//! // In 2D the field is out of plane and the direction argument must be 2.
+//! // The model is enlarged into a 4 x 4 magnetic supercell threaded by one
+//! // flux quantum.
+//! let magnetic = model.add_magnetic_field(2, [4, 4], 1)?;
+//! assert_eq!(magnetic.norb(), 16 * model.norb());
+//!
+//! // The result is an ordinary model: solve it with the usual solvers.
+//! let bands = magnetic.solve_band_onek(&arr1(&[0.0, 0.0]))?;
+//! assert_eq!(bands.len(), magnetic.nsta());
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::Model;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};

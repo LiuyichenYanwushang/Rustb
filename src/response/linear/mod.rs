@@ -37,8 +37,59 @@
 //! |--------|------|---------|
 //! | `BerryCurvature::berry_curvature_at` | one k-point | band-resolved $\Omega_n^{ab}$ |
 //! | `Model::hall_conductivity` | direct sum or energy cut | $\sigma_{\text{AHC}}(\mu)$ |
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{arr1, arr2, array, Array1};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! for r in [[0, 0], [-1, 0], [0, -1]] {
+//!     model.add_hop(-2.7, 0, 1, &array![r[0], r[1]], None);
+//! }
+//! model.set_onsite(&arr1(&[0.2, -0.2]), None);
+//!
+//! // Fixed conditions: exactly one scalar, available through single().
+//! let fixed: Parameters<2> = Parameters {
+//!     conditions: Conditions::fixed(300.0, 0.0, 0.0),
+//!     kmesh: [41, 41],
+//!     integration: Integration::Direct,
+//! };
+//! let one = model.hall_conductivity(&fixed, [[1.0, 0.0], [0.0, 1.0]], 1e-3, None)?;
+//! assert!(one.single().is_some());
+//!
+//! // Sweep the chemical potential. EnergyCut requires ascending samples and
+//! // shares one band-tracking preparation across the whole scan.
+//! let scan: Parameters<2> = Parameters {
+//!     conditions: Conditions {
+//!         t_kelvin: Sampling::Fixed(30.0),
+//!         mu_ev: Sampling::Values(Array1::linspace(-2.0, 2.0, 11)),
+//!         omega_ev: Sampling::Fixed(0.0),
+//!     },
+//!     kmesh: [41, 41],
+//!     integration: Integration::EnergyCut,
+//! };
+//! let swept = model.hall_conductivity(&scan, [[1.0, 0.0], [0.0, 1.0]], 1e-3, None)?;
+//! assert_eq!(swept.conductivity.len(), 11);
+//!
+//! // A spinless model cannot evaluate a spin current.
+//! let rejected = model.hall_conductivity(
+//!     &fixed,
+//!     [[1.0, 0.0], [0.0, 1.0]],
+//!     1e-3,
+//!     Some(SpinDirection::Z),
+//! );
+//! assert!(matches!(rejected, Err(TbError::SpinNotAllowed(_))));
+//! # Ok(())
+//! # }
+//! ```
 
 use ndarray::array;
+
 use ndarray::prelude::*;
 use ndarray_linalg::*;
 use num_complex::Complex;

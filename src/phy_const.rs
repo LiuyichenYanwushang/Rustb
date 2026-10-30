@@ -2,6 +2,19 @@
 //!
 //! Names follow common physics notation (`hbar`, `mu_B`, ...) rather than
 //! Rust's UPPER_CASE convention, so `non_upper_case_globals` is allowed here.
+
+//!
+//! # Examples
+//!
+//! ```rust
+//! use Rustb::phy_const::*;
+//!
+//! assert!(
+//!     (Quantum_conductivity - Element_charge * Element_charge / hbar).abs() < 1e-24
+//! );
+//! assert!(mu_B > 0.0 && phy_0 > 0.0 && mass_charge > 0.0);
+//! ```
+
 #![allow(non_upper_case_globals)]
 
 /// Elementary charge $e$, in Coulombs (C).

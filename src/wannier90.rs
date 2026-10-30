@@ -1,3 +1,36 @@
+//! Wannier90 file import.
+//!
+//! [`Wannier90::from_hr`] reads a `seedname_hr.dat` hopping file and, when
+//! present, `seedname_centres.xyz` centres and `seedname_wsvec.dat` weights.
+//! Position matrices are read from `seedname_r.dat` only for a
+//! `Model<SPIN, 3, HasRMatrix>` target, and are then required;
+//! `Model<SPIN, 3, NoRMatrix>` never opens that file. The importer validates
+//! declared record counts, indices, weights, sizes and energy shifts before
+//! assembling the model, and rejects truncated or inconsistent files instead of
+//! guessing.
+//!
+//! Element labels in the `.win` projection lines, `atoms_cart`/`atoms_frac`
+//! blocks and the extra-atom labels of `_centres.xyz` are matched
+//! case-insensitively; the orbital token after the colon remains case-sensitive.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! // Reads wannier90_hr.dat from the given directory.
+//! let model: Model<false, 3> = Model::from_hr("path/to/seedname/", "wannier90", 0.0)?;
+//!
+//! // The same files with position matrices, for velocity commutators.
+//! let with_positions: Model<false, 3, HasRMatrix> =
+//!     Model::from_hr("path/to/seedname/", "wannier90", 0.0)?;
+//!
+//! assert_eq!(model.nsta(), with_positions.nsta());
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
 use crate::error::{Result, TbError};
 use crate::{HasRMatrix, Model, RMatrixData, find_R};

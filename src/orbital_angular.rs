@@ -5,8 +5,36 @@
 //! including complex off-diagonal matrix elements. It is distinct from the
 //! local atomic-orbital approximation [`Model::orb_angular`] and is not the
 //! Brillouin-zone integral for bulk orbital magnetization.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{arr1, arr2, array, Axis};
+//! use Rustb::*;
+//! use Rustb::orbital_angular::OrbitalAngular;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//! model.set_onsite(&arr1(&[0.3, -0.3]), None);
+//! let k = arr1(&[0.2, 0.1]);
+//!
+//! let angular = model.orbital_angular_momentum_onek(&k)?;
+//! assert_eq!(angular.dim(), (3, model.nsta(), model.nsta()));
+//!
+//! // The operator is already expressed in the ascending-energy band basis:
+//! // axis 2 is Lz and (band, band) matrix elements are complex.
+//! let lz = angular.index_axis(Axis(0), 2);
+//! assert_eq!(lz.dim(), (model.nsta(), model.nsta()));
+//! assert!(lz.iter().all(|z| z.re.is_finite() && z.im.is_finite()));
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::error::{Result, TbError};
+
 use crate::ndarray_lapack::eigh_full;
 use crate::phy_const::{Element_charge, hbar, mass_charge};
 use crate::velocity::Velocity;

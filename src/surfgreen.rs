@@ -134,6 +134,46 @@
 //!   “Highly convergent schemes for the calculation of bulk and surface Green
 //!   functions,” *Journal of Physics F: Metal Physics* **15**, 851–858 (1985),
 //!   [doi:10.1088/0305-4608/15/4/009](https://doi.org/10.1088/0305-4608/15/4/009).
+
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{arr1, arr2, array, Array1};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//!
+//! // dir is the open surface-normal direction; eta is the retarded
+//! // broadening; None leaves the principal-layer range automatic.
+//! let surface = SurfGreen::from_Model(&model, 0, 1e-3, None)?;
+//!
+//! // The surface k-vector has length DIM - 1.
+//! let k_parallel = arr1(&[0.25]);
+//! let (right, left, bulk) = surface.surf_green_one(&k_parallel, 0.0)?;
+//! assert!(right.is_finite() && left.is_finite() && bulk.is_finite());
+//!
+//! let energies = Array1::linspace(-2.0, 2.0, 41);
+//! let (right, left, bulk) = surface.surf_green_onek(&k_parallel, &energies)?;
+//! assert_eq!(right.len(), 41);
+//!
+//! // Path methods return (left, right, bulk) with shape (nk, n_energy).
+//! let path = arr2(&[[0.0], [0.25], [0.5]]);
+//! let (left, right, bulk) = surface.surf_green_path(&path, -2.0, 2.0, 41)?;
+//! assert_eq!(left.dim(), (3, 41));
+//!
+//! // Plotting writes data and PDFs below the directory named by the first
+//! // argument. The arc-state helper needs a 3D model (surface dim_r == 2), so
+//! // this 2D model uses the path plot.
+//! surface.show_surf_state("surf_state", &path, &["Γ", "M", "Γ"], 41, -2.0, 2.0, 41)?;
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::Model;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};

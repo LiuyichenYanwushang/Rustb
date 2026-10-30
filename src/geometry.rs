@@ -47,6 +47,57 @@
 //! # Ok::<(), Rustb::error::TbError>(())
 //! ```
 
+//!
+//! # Flux, phase batches and Wilson centres
+//!
+//! ```rust
+//! use ndarray::{arr1, arr2, array, Array3};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//! model.set_onsite(&arr1(&[0.3, -0.3]), None);
+//! let occupied = [0usize];
+//!
+//! // Plaquette flux on a grid: shape (nk1, nk2, n_occ), in radians.
+//! let flux = model.berry_flux(
+//!     &occupied,
+//!     &arr1(&[0.0, 0.0]),
+//!     &arr1(&[1.0, 0.0]),
+//!     &arr1(&[0.0, 1.0]),
+//!     11,
+//!     11,
+//! )?;
+//! assert_eq!(flux.dim(), (11, 11, 1));
+//!
+//! // A batch of closed loops, shape (n_loop, n_k, DIM), returns one phase
+//! // per occupied band and loop.
+//! let loop_k = arr2(&[[0.0, 0.0], [0.25, 0.0], [0.5, 0.0], [0.75, 0.0], [1.0, 0.0]]);
+//! let mut loops = Array3::<f64>::zeros((1, 5, 2));
+//! for (i, k) in loop_k.rows().into_iter().enumerate() {
+//!     loops[[0, i, 0]] = k[0];
+//!     loops[[0, i, 1]] = k[1];
+//! }
+//! let phases = model.berry_phase(&occupied, &loops)?;
+//! assert_eq!(phases.dim(), (1, 1));
+//!
+//! // Hybrid Wannier centres, in radians; divide by 2*pi for lattice units.
+//! let centres = model.wannier_centre(
+//!     &occupied,
+//!     &arr1(&[0.0, 0.0]),
+//!     &arr1(&[1.0, 0.0]),
+//!     &arr1(&[0.0, 1.0]),
+//!     11,
+//!     11,
+//! )?;
+//! assert_eq!(centres.dim(), (1, 11));
+//! # Ok(())
+//! # }
+//! ```
+
 use crate::Model;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};

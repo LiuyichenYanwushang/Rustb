@@ -3,6 +3,32 @@
 //! Response functions and self-consistent solvers use the same occupation
 //! convention through [`Occupation`].  Temperatures are expressed in kelvin;
 //! Hamiltonian energies and smearing widths are expressed in electronvolts.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! // Exact zero temperature: a step function with no scalar derivative.
+//! let zero = Occupation::ZeroTemperature;
+//! assert_eq!(zero.energy_width()?, 0.0);
+//! assert_eq!(zero.value(-0.1, 0.0)?, 1.0);
+//! assert_eq!(zero.value(0.1, 0.0)?, 0.0);
+//! assert!(zero.minus_derivative(0.0, 0.0).is_err());
+//!
+//! // Physical temperature in kelvin; energies are eV.
+//! let fermi = Occupation::FermiDirac { temperature_kelvin: 300.0 };
+//! assert!((fermi.value(0.0, 0.0)? - 0.5).abs() < 1e-12);
+//! assert!(fermi.minus_derivative(0.0, 0.0)? > 0.0);
+//!
+//! // A direct energy width for metallic smearing at nominal zero temperature.
+//! let smear = Occupation::FermiSmearing { width: 0.05 };
+//! assert!(smear.value(0.05, 0.0)? < 0.5);
+//! assert_eq!(smear.energy_width()?, 0.05);
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::error::{Result, TbError};
 

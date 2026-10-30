@@ -1,4 +1,37 @@
 //! Physics calculation methods for tight-binding models
+
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{arr1, arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//! model.set_onsite(&arr1(&[0.3, -0.3]), None);
+//!
+//! // H(k) in both gauges, and a batch sharing one Fourier preparation.
+//! let k = arr1(&[0.3, 0.15]);
+//! let h_atom = model.gen_ham(&k, Gauge::Atom);
+//! let h_lattice = model.gen_ham(&k, Gauge::Lattice);
+//! assert_eq!(h_atom.dim(), h_lattice.dim());
+//!
+//! let points = gen_kmesh::<f64>(&arr1(&[11usize, 11]))?;
+//! let hams = model.gen_ham_batch(&points, Gauge::Atom);
+//! assert_eq!(hams.dim(), (121, model.nsta(), model.nsta()));
+//!
+//! // Gaussian-broadened DOS on the same mesh.
+//! let (energy, dos) = model.dos(&arr1(&[11usize, 11]), -3.0, 3.0, 101, 0.05)?;
+//! assert_eq!(energy.len(), 101);
+//! assert_eq!(dos.len(), 101);
+//! assert!(dos.iter().all(|&d| d.is_finite() && d >= 0.0));
+//! # Ok(())
+//! # }
+//! ```
 use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;

@@ -16,6 +16,33 @@
 //! - `openblas-static` / `openblas-system`: OpenBLAS.
 //! - `netlib-static` / `netlib-system`: reference netlib LAPACK.
 
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::arr2;
+//! use ndarray_linalg::UPLO;
+//! use num_complex::Complex;
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let h = arr2(&[
+//!     [Complex::new(2.0, 0.0), Complex::new(0.0, 0.5)],
+//!     [Complex::new(0.0, -0.5), Complex::new(1.0, 0.0)],
+//! ]);
+//!
+//! // Selected eigenpairs in a finite window; rows are kets.
+//! let (energies, kets) = ndarray_lapack::eigh_x(&h, (0.0, 3.0), 0.0, UPLO::Lower)?;
+//! assert_eq!(kets.ncols(), 2);
+//! assert_eq!(energies.len(), kets.nrows());
+//!
+//! // Eigenvalues only.
+//! let all = ndarray_lapack::eigvalsh_x(&h, (0.0, 3.0), 0.0, UPLO::Lower)?;
+//! assert_eq!(all.len(), energies.len());
+//! # Ok(())
+//! # }
+//! ```
+
 #[cfg(any(feature = "intel-mkl-system", feature = "intel-mkl-static"))]
 extern crate intel_mkl_src as _src;
 

@@ -1,4 +1,49 @@
 //! Eigenvalue solver for tight-binding Hamiltonians.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{arr1, arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! for r in [[0, 0], [-1, 0], [0, -1]] {
+//!     model.add_hop(-2.7, 0, 1, &array![r[0], r[1]], None);
+//! }
+//! let k = arr1(&[0.25, 0.0]);
+//!
+//! // Energies ascend independently at every k-point.
+//! let bands = model.solve_band_onek(&k)?;
+//! assert_eq!(bands.len(), model.nsta());
+//! assert!(bands.iter().zip(bands.iter().skip(1)).all(|(a, b)| a <= b));
+//!
+//! // Eigenvectors are row kets: H C^T = C^T diag(E).
+//! let (energies, kets) = model.solve_onek(&k)?;
+//! let h = model.gen_ham(&k, Gauge::Atom);
+//! for (n, energy) in energies.iter().enumerate() {
+//!     let ket = kets.row(n).to_owned();
+//!     let residual = h.dot(&ket) - ket.mapv(|z| z * *energy);
+//!     assert!(residual.iter().all(|z| z.norm() < 1e-10));
+//! }
+//!
+//! // Energy windows are half-open, (low, high], with an absolute tolerance;
+//! // a nonpositive tolerance selects LAPACK's default.
+//! let window = model.solve_band_range_onek(&k, (-1.0, 1.0), 0.0)?;
+//! assert!(window.iter().all(|&e| e > -1.0 && e <= 1.0));
+//!
+//! // Batched solvers share one Fourier preparation and keep input order.
+//! let points = gen_kmesh::<f64>(&arr1(&[8usize, 8]))?;
+//! let batch = model.solve_band_all_parallel(&points)?;
+//! assert_eq!(batch.dim(), (64, model.nsta()));
+//! let (batch_e, batch_c) = model.solve_all_parallel(&points)?;
+//! assert_eq!(batch_e.dim(), (64, model.nsta()));
+//! assert_eq!(batch_c.dim(), (64, model.nsta(), model.nsta()));
+//! # Ok(())
+//! # }
+//! ```
 use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;

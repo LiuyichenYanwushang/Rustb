@@ -11,8 +11,48 @@
 //! [`QuantumGeometry`] exposes reusable band-resolved kernels. The high-level
 //! [`Model::quantum_geometry`] method performs the Brillouin-zone integration
 //! from one [`Parameters`] value.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use ndarray::{arr1, arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! model.add_hop(-1.0, 0, 1, &array![0, 0], None);
+//! model.set_onsite(&arr1(&[0.3, -0.3]), None);
+//!
+//! let k = arr1(&[0.2, 0.1]);
+//! let directions = [[1.0, 0.0], [0.0, 1.0]];
+//!
+//! // Band-resolved geometry at one k-point.
+//! let at_k = model.quantum_geometry_at(&k, directions, 1e-3)?;
+//! assert_eq!(at_k.metric.len(), model.nsta());
+//! assert_eq!(at_k.berry_curvature.len(), model.nsta());
+//!
+//! // The same quantity on a list of k-points.
+//! let points = gen_kmesh::<f64>(&arr1(&[5usize, 5]))?;
+//! let on_mesh = model.quantum_geometry_on(&points, directions, 1e-3)?;
+//! assert_eq!(on_mesh.metric.dim(), (25, model.nsta()));
+//!
+//! // The integrated entry point in `response` weights the bands by the
+//! // occupation selected by Parameters.
+//! let params: Parameters<2> = Parameters {
+//!     conditions: Conditions::fixed(0.0, 0.0, 0.0),
+//!     kmesh: [5, 5],
+//!     integration: Integration::Direct,
+//! };
+//! let integrated = model.quantum_geometry(&params, directions, 1e-3)?;
+//! assert_eq!(integrated.metric.len(), 1);
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::ndarray_lapack::eigh_full;
+
 use ndarray::Data;
 use ndarray::array;
 use ndarray::prelude::*;

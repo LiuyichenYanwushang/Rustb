@@ -30,8 +30,56 @@
 //! |--------|------|---------|
 //! | `extrinsic_nonlinear_hall` | direct sum or energy cut | $\chi^{\rm ext}$ |
 //! | `intrinsic_nonlinear_hall` | direct sum or energy cut | $\sigma\_{\rm int}$ |
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{arr1, arr2, array};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! for r in [[0, 0], [-1, 0], [0, -1]] {
+//!     model.add_hop(-2.7, 0, 1, &array![r[0], r[1]], None);
+//! }
+//! model.set_onsite(&arr1(&[0.15, -0.15]), None);
+//!
+//! // Current first: (current, field_1, field_2).
+//! let directions = [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+//! let params: Parameters<2> = Parameters {
+//!     conditions: Conditions::fixed(30.0, 0.0, 0.0),
+//!     kmesh: [41, 41],
+//!     integration: Integration::Direct,
+//! };
+//!
+//! // The intrinsic response is charge-only and takes no broadening.
+//! let intrinsic = model.intrinsic_nonlinear_hall(&params, directions)?;
+//! assert_eq!(intrinsic.conductivity.len(), 1);
+//!
+//! // The extrinsic response states broadening, spin current and field order.
+//! let ordered = model.extrinsic_nonlinear_hall(
+//!     &params,
+//!     directions,
+//!     1e-3,
+//!     None,
+//!     FieldSymmetry::Ordered,
+//! )?;
+//! let symmetrized = model.extrinsic_nonlinear_hall(
+//!     &params,
+//!     directions,
+//!     1e-3,
+//!     None,
+//!     FieldSymmetry::Symmetrized,
+//! )?;
+//! assert!(ordered.single().is_some() && symmetrized.single().is_some());
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::ndarray_lapack::eigh_full;
+
 use ndarray::array;
 use ndarray::prelude::*;
 use ndarray_linalg::*;

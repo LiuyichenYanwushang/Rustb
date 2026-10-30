@@ -274,6 +274,82 @@
 //!
 //! See also `examples/floquet_chain/main.rs`.
 
+//!
+//! # API guide
+//!
+//! | Entry point | Returned basis | Intended regime |
+//! |---|---|---|
+//! | [`Floquet::floquet_model`] | `nsta * (2*n_max + 1)` | Full truncated Sambe problem, exact in `n_max` |
+//! | [`Model::floquet_effective_model`] | `nsta` | Coherent, off-resonant van Vleck expansion |
+//! | [`Model::floquet_effective_mode_resolved_model`] | `nsta` | Mutually incoherent mode-diagonal correction sum |
+//! | [`Model::floquet_effective_q_model`] | `nsta` | One coherent long-wavelength correction through `O(A^2 q/W)` |
+//!
+//! `LightMode::a_complex` is the complex amplitude of `eA/hbar` in inverse
+//! lattice-length units; its integer harmonic is measured relative to
+//! `FloquetDrive::omega0_ev`. The three effective-model methods take only
+//! [`FloquetEffectiveOptions`] (`order` in 0..=2, `harmonic_max`) and no photon
+//! truncation; [`FloquetTruncation`] controls the Sambe sector count only.
+//! Every entry point returns an ordinary real-space model, so the usual
+//! Hamiltonian and band solvers apply. Eigenvalues are unfolded and
+//! gauge-independent; apply [`fold_quasienergy`] and re-sort when folded
+//! quasienergies are required.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{arr1, arr2, array};
+//! use num_complex::Complex;
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
+//! let mut model = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! for r in [[0, 0], [-1, 0], [0, -1]] {
+//!     model.add_hop(-2.7, 0, 1, &array![r[0], r[1]], None);
+//! }
+//!
+//! // A two-component (circularly polarized) single-harmonic drive.
+//! let drive = FloquetDrive::with_modes(
+//!     0.8,
+//!     vec![LightMode::new(
+//!         1,
+//!         arr1(&[Complex::new(0.1, 0.0), Complex::new(0.0, 0.1)]),
+//!     )],
+//! );
+//!
+//! // Full Sambe model, then ordinary solvers plus folding.
+//! let sambe = model.floquet_model(&drive, &FloquetTruncation::new(1))?;
+//! assert_eq!(sambe.nsta(), model.nsta() * 3);
+//! let k = arr1(&[0.2, 0.1]);
+//! let unfolded = sambe.solve_band_onek(&k)?;
+//! let mut folded: Vec<f64> = unfolded
+//!     .iter()
+//!     .map(|&e| fold_quasienergy(e, drive.omega0_ev))
+//!     .collect();
+//! folded.sort_by(f64::total_cmp);
+//!
+//! // Same-size effective models: order 1 by default, order 2 on request.
+//! let first_order = model.floquet_effective_model(&drive, None)?;
+//! let second_order = model.floquet_effective_model(
+//!     &drive,
+//!     Some(&FloquetEffectiveOptions::new().with_order(2)),
+//! )?;
+//! assert_eq!(first_order.nsta(), model.nsta());
+//! assert_eq!(second_order.nsta(), model.nsta());
+//!
+//! // Incoherent modes: one correction per mode around the static H0.
+//! let incoherent = model.floquet_effective_mode_resolved_model(&drive, None)?;
+//! assert_eq!(incoherent.nsta(), model.nsta());
+//!
+//! // Coherent long-wavelength correction for one Cartesian q.
+//! let q = arr1(&[2.0e-3, 0.0]);
+//! let linear_q = model.floquet_effective_q_model(&drive, None, &q)?;
+//! assert_eq!(linear_q.nsta(), model.nsta());
+//! # Ok(())
+//! # }
+//! ```
+
 #[cfg(test)]
 use crate::Gauge;
 use crate::error::{Result, TbError};

@@ -23,8 +23,42 @@
 //!
 //! [Marching squares]: https://en.wikipedia.org/wiki/Marching_squares
 //! [Marching tetrahedra]: https://en.wikipedia.org/wiki/Marching_tetrahedra
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use ndarray::{arr1, arr2, array, Array2};
+//! use Rustb::*;
+//!
+//! # fn main() -> Result<()> {
+//! // 2D: marching squares, written to a PDF.
+//! let lat = arr2(&[[3.0_f64.sqrt(), -1.0], [3.0_f64.sqrt(), 1.0]]);
+//! let orb = arr2(&[[0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0]]);
+//! let mut graphene = Model::<false, 2>::tb_model(lat, orb, None)?;
+//! for r in [[0, 0], [-1, 0], [0, -1]] {
+//!     graphene.add_hop(-2.7, 0, 1, &array![r[0], r[1]], None);
+//! }
+//! graphene.show_fermi_surface(&arr1(&[101usize, 101]), 0.0, "graphene_fs")?;
+//!
+//! // 3D: marching tetrahedra and BXSF export for FermiSurfer.
+//! let cubic = Model::<false, 3>::tb_model(
+//!     Array2::eye(3),
+//!     array![[0.0, 0.0, 0.0]],
+//!     None,
+//! )?;
+//! cubic.write_bxsf(&[51, 51, 51], 0.0, "cubic_fs")?;
+//!
+//! // A 2D slice of the 3D Brillouin zone at k_z = 0.
+//! let origin = arr1(&[0.0, 0.0, 0.0]);
+//! let v1 = arr1(&[1.0, 0.0, 0.0]);
+//! let v2 = arr1(&[0.0, 1.0, 0.0]);
+//! cubic.show_fermi_surface_plane(&origin, &v1, &v2, 101, 101, 0.0, "cubic_kz0")?;
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::Model;
+
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kplane::gen_kplane;
