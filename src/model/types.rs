@@ -1,6 +1,4 @@
-use serde::de;
-use serde::ser::SerializeStruct;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 /// Gauge choice for the Bloch basis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Gauge {

@@ -18,9 +18,13 @@ pub trait RMatrixData: Clone + std::fmt::Debug + Sync {
     fn as_array4(&self) -> &Array4<Complex<f64>>;
     /// Get a mutable reference to the underlying Array4. Panics for NoRMatrix.
     fn as_array4_mut(&mut self) -> &mut Array4<Complex<f64>>;
-    /// Select axes for the underlying Array4. No-op for NoRMatrix.
-    fn select_axes(&self, axis1: Axis, indices1: &[usize], axis2: Axis, indices2: &[usize])
-    -> Self;
+    fn select(&self, axis: Axis, indices: &[usize]) -> Self {
+        if Self::HAS_RMATRIX {
+            Self::from_array(self.as_array4().select(axis, indices))
+        } else {
+            self.clone()
+    }
+}
 }
 
 /// Position matrix elements are stored. Wraps [`Array4<Complex<f64>>`] with
@@ -52,15 +56,6 @@ impl RMatrixData for HasRMatrix {
     }
     fn as_array4_mut(&mut self) -> &mut Array4<Complex<f64>> {
         &mut self.0
-    }
-    fn select_axes(
-        &self,
-        axis1: Axis,
-        indices1: &[usize],
-        axis2: Axis,
-        indices2: &[usize],
-    ) -> Self {
-        HasRMatrix(self.0.select(axis1, indices1).select(axis2, indices2))
     }
 }
 
@@ -100,14 +95,5 @@ impl RMatrixData for NoRMatrix {
     }
     fn as_array4_mut(&mut self) -> &mut Array4<Complex<f64>> {
         panic!("NoRMatrix has no underlying Array4; only HasRMatrix supports this operation")
-    }
-    fn select_axes(
-        &self,
-        _axis1: Axis,
-        _indices1: &[usize],
-        _axis2: Axis,
-        _indices2: &[usize],
-    ) -> Self {
-        NoRMatrix
     }
 }

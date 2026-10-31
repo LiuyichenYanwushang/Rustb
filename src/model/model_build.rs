@@ -1019,7 +1019,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let new_ham = new_ham.select(Axis(2), &index);
         self.ham = new_ham;
         //开始操作rmatrix
-        self.rmatrix = self.rmatrix.select_axes(Axis(2), &index, Axis(3), &index);
+        self.rmatrix = self.rmatrix.select(Axis(2), &index).select(Axis(3), &index);
         self.validate()?;
         Ok(())
     }
@@ -1216,9 +1216,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
         self.ham = self.ham.select(Axis(1), &new_state_order);
         self.ham = self.ham.select(Axis(2), &new_state_order);
-        self.rmatrix =
-            self.rmatrix
-                .select_axes(Axis(2), &new_state_order, Axis(3), &new_state_order);
+        self.rmatrix =self.rmatrix.select(Axis(2), &new_state_order).select(Axis(3), &new_state_order);
         self.validate()?;
         Ok(())
     }
