@@ -41,7 +41,15 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//!
 
+pub mod types;
+pub mod model_build;
+pub mod model_physics;
+pub mod model_utils;
+
+pub use self::types::{Dimension, Gauge, SpinDirection};
 pub use crate::model_utils::{find_R, remove_col, remove_row};
 
 use crate::atom_struct::{Atom, AtomId, AtomWire, OrbProj, OrbitalId, atoms_from_wire};
@@ -53,6 +61,7 @@ use serde::de;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::{Deref, DerefMut};
+
 
 // ── RMatrix type-level tag ──────────────────────────────────────────────────
 
@@ -352,34 +361,6 @@ impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, D
     }
 }
 
-/// Gauge choice for the Bloch basis.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub enum Gauge {
-    Lattice,
-    Atom,
-}
-
-/// System dimensionality.
-///
-/// Variant names (`one`, `two`, `three`) are kept for backward compatibility
-/// instead of CamelCase renames.
-#[repr(u8)]
-#[allow(non_camel_case_types)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub enum Dimension {
-    one = 1,
-    two = 2,
-    three = 3,
-}
-
-/// Pauli matrix selector for spin-dependent operators.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub enum SpinDirection {
-    X = 1,
-    Y = 2,
-    Z = 3,
-}
 
 // Include Model implementation from submodules
 

@@ -246,9 +246,6 @@ pub mod kpoints;
 pub mod magnetic_field;
 pub mod math;
 pub mod model;
-pub mod model_build;
-pub mod model_physics;
-pub mod model_utils;
 // The only module allowed to call raw BLAS/LAPACK routines.
 #[allow(unsafe_code)]
 pub mod ndarray_lapack;
