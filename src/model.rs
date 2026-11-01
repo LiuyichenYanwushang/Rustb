@@ -52,19 +52,19 @@ pub mod rmatrix;
 pub mod types;
 pub mod validate;
 
+// Serde impls live in a private module; trait impls need no re-export.
+mod wire;
+
 pub use self::access::{AtomView, OrbitalRef};
+pub use self::model_utils::{find_R, remove_col, remove_row};
 pub use self::rmatrix::{HasRMatrix, NoRMatrix, RMatrixData};
 pub use self::types::{Dimension, Gauge, SpinDirection};
-pub use crate::model_utils::{find_R, remove_col, remove_row};
 
-use crate::atom_struct::{Atom, AtomId, AtomWire, OrbProj, OrbitalId, atoms_from_wire};
+use crate::atom_struct::{Atom, OrbProj};
 use crate::error::{Result, TbError};
 use ndarray::*;
 use ndarray_linalg::Inverse;
 use num_complex::Complex;
-use serde::de;
-use serde::ser::SerializeStruct;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 // ── RMatrix type-level tag ──────────────────────────────────────────────────
 
@@ -100,105 +100,6 @@ pub struct Model<const SPIN: bool = false, const DIM: usize = 3, R: RMatrixData 
     pub ham: Array3<Complex<f64>>,
     pub hamR: Array2<isize>,
     pub rmatrix: R,
-}
-
-// Manual Serialize
-impl<const SPIN: bool, const DIM: usize, R: RMatrixData + Serialize> Serialize
-    for Model<SPIN, DIM, R>
-{
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let n_fields = if R::HAS_RMATRIX { 9 } else { 8 };
-        let mut s = serializer.serialize_struct("Model", n_fields)?;
-        s.serialize_field("dim_r", &DIM)?;
-        s.serialize_field("spin", &SPIN)?;
-        s.serialize_field("lat", &self.lat)?;
-        s.serialize_field("orb", &self.orb)?;
-        s.serialize_field("orb_projection", &self.orb_projection)?;
-        s.serialize_field("atoms", &self.atoms)?;
-        s.serialize_field("ham", &self.ham)?;
-        s.serialize_field("hamR", &self.hamR)?;
-        if R::HAS_RMATRIX {
-            s.serialize_field("rmatrix", &self.rmatrix)?;
-        }
-        s.end()
-    }
-}
-
-// Keep the on-disk fields independent of the requested const generics/storage.
-// Serde rejects unknown and duplicate fields before model validation.
-#[derive(Deserialize)]
-#[serde(rename = "Model", deny_unknown_fields)]
-struct ModelWire {
-    dim_r: usize,
-    spin: bool,
-    lat: Array2<f64>,
-    orb: Array2<f64>,
-    orb_projection: Vec<OrbProj>,
-    atoms: Vec<AtomWire>,
-    ham: Array3<Complex<f64>>,
-    hamR: Array2<isize>,
-    #[serde(default, deserialize_with = "deserialize_rmatrix")]
-    rmatrix: Option<HasRMatrix>,
-}
-
-// A missing matrix is allowed for NoRMatrix; a present value must still be an
-// array (including when the caller will discard it), not a null placeholder.
-fn deserialize_rmatrix<'de, De: Deserializer<'de>>(
-    deserializer: De,
-) -> std::result::Result<Option<HasRMatrix>, De::Error> {
-    HasRMatrix::deserialize(deserializer).map(Some)
-}
-
-impl ModelWire {
-    fn into_model<const SPIN: bool, const DIM: usize, R: RMatrixData, E: de::Error>(
-        self,
-        rmatrix: R,
-    ) -> std::result::Result<Model<SPIN, DIM, R>, E> {
-        if self.spin != SPIN {
-            return Err(E::custom(format!(
-                "spin mismatch: file has spin={}, but Model<{}> was requested",
-                self.spin, SPIN
-            )));
-        }
-        if self.dim_r != DIM {
-            return Err(E::custom(format!(
-                "dimension mismatch: file has dim_r={}, but Model<DIM={}> was requested",
-                self.dim_r, DIM
-            )));
-        }
-        let model = Model {
-            lat: self.lat,
-            orb: self.orb,
-            orb_projection: self.orb_projection,
-            atoms: atoms_from_wire(self.atoms).map_err(E::custom)?,
-            ham: self.ham,
-            hamR: self.hamR,
-            rmatrix,
-        };
-        model.validate().map_err(E::custom)?;
-        Ok(model)
-    }
-}
-
-impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, DIM, NoRMatrix> {
-    fn deserialize<De: Deserializer<'de>>(
-        deserializer: De,
-    ) -> std::result::Result<Self, De::Error> {
-        ModelWire::deserialize(deserializer)?.into_model(NoRMatrix)
-    }
-}
-
-impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, DIM, HasRMatrix> {
-    fn deserialize<De: Deserializer<'de>>(
-        deserializer: De,
-    ) -> std::result::Result<Self, De::Error> {
-        let mut wire = ModelWire::deserialize(deserializer)?;
-        let rmatrix = wire
-            .rmatrix
-            .take()
-            .ok_or_else(|| de::Error::missing_field("rmatrix"))?;
-        wire.into_model(rmatrix)
-    }
 }
 
 // Include Model implementation from submodules
@@ -421,6 +322,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 mod angular_momentum_tests {
     use super::*;
     use crate::AtomType;
+    use crate::atom_struct::OrbitalId;
 
     fn atomic<const SPIN: bool, const DIM: usize>(projections: &[OrbProj]) -> Model<SPIN, DIM> {
         let mut model = Model::tb_model(
@@ -696,7 +598,9 @@ mod angular_momentum_tests {
 mod ownership_tests {
     use super::*;
     use crate::AtomType;
+    use crate::atom_struct::{AtomId, OrbitalId};
     use ndarray::array;
+    use serde::{Deserialize, Serialize, de};
 
     #[test]
     fn validation_rejects_singular_lattices_and_nonfinite_operators() {
