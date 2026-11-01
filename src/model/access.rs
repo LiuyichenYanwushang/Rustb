@@ -1,7 +1,7 @@
-use super::{Model,RMatrixData};
-use crate::atom_struct::{Atom,AtomId,OrbProj,OrbitalId};
-use crate::error::{Result,TbError};
-use ndarray::{Array2,ArrayView1};
+use super::{Model, RMatrixData};
+use crate::atom_struct::{Atom, AtomId, OrbProj, OrbitalId};
+use crate::error::{Result, TbError};
+use ndarray::{Array2, ArrayView1};
 /// Borrowed view of one physical orbital in a [`Model`].
 #[derive(Debug)]
 pub struct OrbitalRef<'a> {
@@ -55,7 +55,6 @@ impl<'a> AtomView<'a> {
         &self.orbitals
     }
 }
-
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     #[inline(always)]

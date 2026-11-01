@@ -1216,7 +1216,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         };
         self.ham = self.ham.select(Axis(1), &new_state_order);
         self.ham = self.ham.select(Axis(2), &new_state_order);
-        self.rmatrix =self.rmatrix.select(Axis(2), &new_state_order).select(Axis(3), &new_state_order);
+        self.rmatrix = self
+            .rmatrix
+            .select(Axis(2), &new_state_order)
+            .select(Axis(3), &new_state_order);
         self.validate()?;
         Ok(())
     }

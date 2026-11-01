@@ -44,17 +44,17 @@
 //!
 //!
 
-pub mod types;
-pub mod validate;
-pub mod rmatrix;
 pub mod access;
 pub mod model_build;
 pub mod model_physics;
 pub mod model_utils;
+pub mod rmatrix;
+pub mod types;
+pub mod validate;
 
-pub use self::types::{Dimension, Gauge, SpinDirection};
-pub use self::rmatrix::{HasRMatrix,NoRMatrix,RMatrixData};
 pub use self::access::{AtomView, OrbitalRef};
+pub use self::rmatrix::{HasRMatrix, NoRMatrix, RMatrixData};
+pub use self::types::{Dimension, Gauge, SpinDirection};
 pub use crate::model_utils::{find_R, remove_col, remove_row};
 
 use crate::atom_struct::{Atom, AtomId, AtomWire, OrbProj, OrbitalId, atoms_from_wire};
@@ -66,9 +66,7 @@ use serde::de;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-
 // ── RMatrix type-level tag ──────────────────────────────────────────────────
-
 
 // ── Model struct ────────────────────────────────────────────────────────────
 
@@ -103,7 +101,6 @@ pub struct Model<const SPIN: bool = false, const DIM: usize = 3, R: RMatrixData 
     pub hamR: Array2<isize>,
     pub rmatrix: R,
 }
-
 
 // Manual Serialize
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData + Serialize> Serialize
@@ -204,7 +201,6 @@ impl<'de, const SPIN: bool, const DIM: usize> Deserialize<'de> for Model<SPIN, D
     }
 }
 
-
 // Include Model implementation from submodules
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
@@ -212,7 +208,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     pub fn has_rmatrix(&self) -> bool {
         R::HAS_RMATRIX
     }
-
 
     pub fn dim_r(&self) -> usize {
         DIM

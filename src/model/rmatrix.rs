@@ -1,7 +1,7 @@
-use ndarray::{Array4,Axis,Array2};
+use ndarray::{Array2, Array4, Axis};
 use num_complex::Complex;
-use serde::{Deserialize,Serialize};
-use std::ops::{Deref,DerefMut};
+use serde::{Deserialize, Serialize};
+use std::ops::{Deref, DerefMut};
 
 /// Trait marking whether a model stores position matrix elements.
 pub trait RMatrixData: Clone + std::fmt::Debug + Sync {
@@ -23,8 +23,8 @@ pub trait RMatrixData: Clone + std::fmt::Debug + Sync {
             Self::from_array(self.as_array4().select(axis, indices))
         } else {
             self.clone()
+        }
     }
-}
 }
 
 /// Position matrix elements are stored. Wraps [`Array4<Complex<f64>>`] with
