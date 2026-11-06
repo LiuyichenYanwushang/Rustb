@@ -91,6 +91,89 @@ fn build_large(n: usize) -> Model<false, 2> {
     m.make_supercell(&sc).unwrap()
 }
 
+// Same gapped, genuinely 3D fixture as the intrinsic sign/convergence regressions.
+fn build_intrinsic_3d() -> Model<false, 3> {
+    let m = 2.6;
+    let lambda = 1.0;
+    let lat = array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let orb = array![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+    let mut model = Model::<false, 3>::tb_model(lat, orb, None).unwrap();
+    model.add_onsite(&array![m, -m], None);
+
+    // R = (1,0,0): 0.1 σ₀ − i/2 σ_x + 0.5 σ_z
+    let i2 = Complex::new(0.0, -0.5);
+    model.add_hop(0.1, 0, 0, &array![1, 0, 0], None);
+    model.add_hop(0.1, 1, 1, &array![1, 0, 0], None);
+    model.add_hop(i2, 0, 1, &array![1, 0, 0], None);
+    model.add_hop(i2, 1, 0, &array![1, 0, 0], None);
+    model.add_hop(0.5, 0, 0, &array![1, 0, 0], None);
+    model.add_hop(-0.5, 1, 1, &array![1, 0, 0], None);
+
+    // R = (0,1,0): 0.04 σ₀ − 0.15i σ_x − 0.5i σ_y + 0.325 σ_z
+    model.add_hop(0.04, 0, 0, &array![0, 1, 0], None);
+    model.add_hop(0.04, 1, 1, &array![0, 1, 0], None);
+    model.add_hop(Complex::new(0.0, -0.15), 0, 1, &array![0, 1, 0], None);
+    model.add_hop(Complex::new(0.0, -0.15), 1, 0, &array![0, 1, 0], None);
+    // −0.5i σ_y → H[0,1]=−0.5, H[1,0]=0.5
+    model.add_hop(-0.5, 0, 1, &array![0, 1, 0], None);
+    model.add_hop(0.5, 1, 0, &array![0, 1, 0], None);
+    model.add_hop(0.325, 0, 0, &array![0, 1, 0], None);
+    model.add_hop(-0.325, 1, 1, &array![0, 1, 0], None);
+
+    // R = (0,0,1): 0.03 σ₀ + (0.05λ − 0.10i)σ_x − 0.125i σ_y + 0.225 σ_z
+    model.add_hop(0.03, 0, 0, &array![0, 0, 1], None);
+    model.add_hop(0.03, 1, 1, &array![0, 0, 1], None);
+    model.add_hop(
+        Complex::new(0.05 * lambda, -0.10),
+        0,
+        1,
+        &array![0, 0, 1],
+        None,
+    );
+    model.add_hop(
+        Complex::new(0.05 * lambda, -0.10),
+        1,
+        0,
+        &array![0, 0, 1],
+        None,
+    );
+    // σ_y: −0.125i [[0,−i],[i,0]] → H[0,1]=−0.125, H[1,0]=0.125
+    model.add_hop(-0.125, 0, 1, &array![0, 0, 1], None);
+    model.add_hop(0.125, 1, 0, &array![0, 0, 1], None);
+    model.add_hop(0.225, 0, 0, &array![0, 0, 1], None);
+    model.add_hop(-0.225, 1, 1, &array![0, 0, 1], None);
+
+    // R = (1,1,0): 0.125λ σ_x
+    model.add_hop(0.125 * lambda, 0, 1, &array![1, 1, 0], None);
+    model.add_hop(0.125 * lambda, 1, 0, &array![1, 1, 0], None);
+
+    // R = (1,0,−1): (0.10λ − 0.075i) σ_y
+    // σ_y gives: H[0,1] = −i·hop, H[1,0] = i·hop
+    // −i·hop = −i(0.10λ−0.075i) = −0.10iλ + 0.075i² = −0.075−0.10iλ
+    // i·hop = i(0.10λ−0.075i) = 0.10iλ − 0.075i² = 0.075+0.10iλ
+    model.add_hop(
+        Complex::new(-0.075, -0.10 * lambda),
+        0,
+        1,
+        &array![1, 0, -1],
+        None,
+    );
+    model.add_hop(
+        Complex::new(0.075, 0.10 * lambda),
+        1,
+        0,
+        &array![1, 0, -1],
+        None,
+    );
+
+    // R = (1,1,1): −0.125iλ σ_z
+    let hz = Complex::new(0.0, -0.125 * lambda);
+    model.add_hop(hz, 0, 0, &array![1, 1, 1], None);
+    model.add_hop(-hz, 1, 1, &array![1, 1, 1], None);
+
+    model
+}
+
 // ── Spinless model lists (all Model<false>) ────────────────────────────────
 
 type SpinlessModelFactory = (&'static str, fn() -> Model<false, 2>);
@@ -601,6 +684,182 @@ fn bench_intrinsic_ec_2d(c: &mut Criterion) {
     group.finish();
 }
 
+// Representative end-to-end paths; model and parameter setup is not timed.
+fn bench_response_paths(c: &mut Criterion) {
+    let mut group = c.benchmark_group("response_paths");
+    group.sample_size(20);
+    let medium = build_medium();
+    let eta = 0.05;
+    let xy = [[1.0, 0.0], [0.0, 1.0]];
+    let xxy = [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+
+    for (label, mu_ev) in [
+        ("fixed_mu", Sampling::Fixed(3.0)),
+        ("mu16", Sampling::Values(Array1::linspace(2.5, 4.5, 16))),
+    ] {
+        let params = Parameters {
+            conditions: Conditions {
+                t_kelvin: Sampling::Fixed(150.0),
+                mu_ev,
+                omega_ev: Sampling::Fixed(0.0),
+            },
+            kmesh: [11, 11],
+            integration: Integration::Direct,
+        };
+        group.bench_function(BenchmarkId::new("hall_direct_18", label), |b| {
+            b.iter(|| {
+                black_box(
+                    medium
+                        .hall_conductivity(black_box(&params), xy, eta, None)
+                        .unwrap(),
+                )
+            })
+        });
+    }
+
+    for (label, integration, tensor) in [
+        (
+            "optical_simplex_component_18/omega16",
+            Integration::Simplex,
+            false,
+        ),
+        (
+            "optical_simplex_tensor_18/omega16",
+            Integration::Simplex,
+            true,
+        ),
+        (
+            "optical_direct_tensor_18/omega16",
+            Integration::Direct,
+            true,
+        ),
+    ] {
+        let params = Parameters {
+            conditions: Conditions {
+                t_kelvin: Sampling::Fixed(150.0),
+                mu_ev: Sampling::Fixed(3.0),
+                omega_ev: Sampling::Values(Array1::linspace(4.0, 12.0, 16)),
+            },
+            kmesh: [9, 9],
+            integration,
+        };
+        group.bench_function(label, |b| {
+            b.iter(|| {
+                let result = if tensor {
+                    medium.optical_conductivity_tensor(black_box(&params), eta)
+                } else {
+                    medium.optical_conductivity(black_box(&params), xy, eta)
+                };
+                black_box(result.unwrap())
+            })
+        });
+    }
+
+    let geometry = Parameters {
+        conditions: Conditions {
+            t_kelvin: Sampling::Values(array![0.0, 100.0, 300.0]),
+            mu_ev: Sampling::Fixed(3.0),
+            omega_ev: Sampling::Fixed(0.0),
+        },
+        kmesh: [9, 9],
+        integration: Integration::Simplex,
+    };
+    group.bench_function("geometry_simplex_18/temperature3", |b| {
+        b.iter(|| {
+            black_box(
+                medium
+                    .quantum_geometry(black_box(&geometry), xy, eta)
+                    .unwrap(),
+            )
+        })
+    });
+
+    let spinful = build_small_spinful();
+    for (label, integration, t_kelvin, mu_ev) in [
+        (
+            "extrinsic_direct_spin4/mu16",
+            Integration::Direct,
+            Sampling::Fixed(300.0),
+            Sampling::Values(Array1::linspace(0.5, 2.0, 16)),
+        ),
+        (
+            "extrinsic_cut_spin4/temperature3",
+            Integration::EnergyCut,
+            Sampling::Values(array![0.0, 100.0, 300.0]),
+            Sampling::Fixed(1.2),
+        ),
+    ] {
+        let params = Parameters {
+            conditions: Conditions {
+                t_kelvin,
+                mu_ev,
+                omega_ev: Sampling::Fixed(0.0),
+            },
+            kmesh: [9, 9],
+            integration,
+        };
+        group.bench_function(label, |b| {
+            b.iter(|| {
+                black_box(
+                    spinful
+                        .extrinsic_nonlinear_hall(
+                            black_box(&params),
+                            [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+                            eta,
+                            Some(SpinDirection::Z),
+                            FieldSymmetry::Symmetrized,
+                        )
+                        .unwrap(),
+                )
+            })
+        });
+    }
+
+    let intrinsic_model = build_haldane_2d();
+    let intrinsic = Parameters {
+        conditions: Conditions {
+            t_kelvin: Sampling::Fixed(150.0),
+            mu_ev: Sampling::Values(Array1::linspace(-2.5, 2.5, 16)),
+            omega_ev: Sampling::Fixed(0.0),
+        },
+        kmesh: [11, 11],
+        integration: Integration::Direct,
+    };
+    group.bench_function("intrinsic_direct_2/mu16", |b| {
+        b.iter(|| {
+            black_box(
+                intrinsic_model
+                    .intrinsic_nonlinear_hall(black_box(&intrinsic), xxy)
+                    .unwrap(),
+            )
+        })
+    });
+
+    let intrinsic_3d_model = build_intrinsic_3d();
+    let intrinsic_3d = Parameters {
+        conditions: Conditions {
+            t_kelvin: Sampling::Fixed(0.0),
+            mu_ev: Sampling::Values(Array1::linspace(0.6, 3.0, 16)),
+            omega_ev: Sampling::Fixed(0.0),
+        },
+        kmesh: [8, 8, 8],
+        integration: Integration::EnergyCut,
+    };
+    group.bench_function("intrinsic_cut_3d_2/mu16", |b| {
+        b.iter(|| {
+            black_box(
+                intrinsic_3d_model
+                    .intrinsic_nonlinear_hall(
+                        black_box(&intrinsic_3d),
+                        [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    )
+                    .unwrap(),
+            )
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_gen_ham,
@@ -616,5 +875,6 @@ criterion_group!(
     bench_surfgreen,
     bench_ahc_ec_2d,
     bench_intrinsic_ec_2d,
+    bench_response_paths,
 );
 criterion_main!(benches);
