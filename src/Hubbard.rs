@@ -119,8 +119,8 @@
 
 use crate::error::{Result, TbError};
 
+use crate::model::utils::find_R;
 use crate::model::{Gauge, Model, NoRMatrix, RMatrixData};
-use crate::model_utils::find_R;
 use crate::ndarray_lapack::eigh_full;
 use crate::thermodynamics::{Occupation, fermi_from_width};
 use ndarray::parallel::prelude::*;

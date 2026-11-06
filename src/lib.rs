@@ -28,13 +28,13 @@
 //! | [`hubbard`] | Non-collinear unrestricted Hartree-Fock for on-site Hubbard
 //! |   interactions, with fixed chemical potential or fixed initial filling |
 //! | [`cut`] | [`CutModel`] trait for extracting finite slabs from supercells |
-//! | [`geometry`] | Supercell geometry, dot structures, and related spatial operations |
-//! | [`model_utils`] | Internal utility functions for model manipulation |
+//! | [`model::utils`] | Public lattice-vector lookup (`find_R`) and array row/column removal |
 //!
 //! ### Hamiltonian solving
 //!
 //! | Module | Purpose |
 //! |--------|---------|
+//! | [`model::physics`] | Bloch Hamiltonians (`gen_ham`, `gen_ham_batch`) and density of states (`dos`) |
 //! | [`solve_ham`] | Parallel diagonalization of H(k) over k-point meshes
 //! |   (`solve_all_parallel`, `solve_band_all_parallel`) |
 //! | [`ndarray_lapack`] | LAPACK bindings for ndarray matrices |
@@ -73,8 +73,9 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`model_physics`] | Density of states, Berry curvature, Chern numbers, Wilson loops,
-//! |   and Wannier centers |
+//! | [`geometry`] | Berry phases, Wilson loops, Berry flux, and Wannier centers |
+//! | [`response`] | Berry curvature and Hall responses |
+//! | [`quantum_geometry`] | Quantum geometric tensor and quantum metric |
 //!
 //! ### Surface and defect calculations
 //!

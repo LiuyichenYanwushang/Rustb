@@ -31,11 +31,15 @@ Rustb is a Rust library for tight-binding model calculations in condensed matter
 
 ## Project Structure & Module Organization
 
-Core source lives in `src/`; `src/lib.rs` re-exports the public API and contains
-integration-style tests. `model.rs` defines `Model<SPIN, DIM, R>`,
-`model_build.rs` handles construction and hopping setup, and `model_physics.rs`
-contains DOS and other model observables. Response calculations live in
-`response/` and `quantum_geometry.rs`; `surfgreen.rs` implements surface Green
+Core source lives in `src/`; [lib.rs](<src/lib.rs>) re-exports the public API and
+contains integration-style tests. [model.rs](<src/model.rs>) defines
+`Model<SPIN, DIM, R>`, with implementations under [model/](<src/model/>):
+[build.rs](<src/model/build.rs>) handles construction and hopping setup,
+[edit.rs](<src/model/edit.rs>) handles structural edits, and
+[supercell.rs](<src/model/supercell.rs>) handles supercells.
+[physics.rs](<src/model/physics.rs>) contains Bloch Hamiltonian and DOS methods.
+Response calculations live in [response/](<src/response/>) and
+[quantum_geometry.rs](<src/quantum_geometry.rs>); [surfgreen.rs](<src/surfgreen.rs>) implements surface Green
 functions, and `wannier90.rs` handles Wannier90 input. Examples are declared in
 `Cargo.toml` and stored under `examples/<name>/main.rs`. Test outputs are under
 `tests/`; benchmarks are in `benches/`; rustdoc assets are in `docs/` and
@@ -343,9 +347,17 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 
 | File | Purpose |
 |------|---------|
-| `model.rs` | `Model<SPIN, DIM, R>` struct, `RMatrixData` trait, `HasRMatrix`/`NoRMatrix`, `Gauge`, serde |
-| `model_build.rs` | Model construction: `tb_model()`, `set_hop()`, `make_supercell()`, macros, typed orbital/atom removal and reordering |
-| `model_physics.rs` | `gen_ham()` (Bloch Hamiltonian), `dos()` |
+| [model.rs](<src/model.rs>) | `Model<SPIN, DIM, R>` struct and public facade |
+| [model/types.rs](<src/model/types.rs>) | `Gauge`, `Dimension`, `SpinDirection` |
+| [model/access.rs](<src/model/access.rs>) | `AtomView`, `OrbitalRef`, typed atom/orbital access |
+| [model/rmatrix.rs](<src/model/rmatrix.rs>) | `RMatrixData`, `HasRMatrix`/`NoRMatrix` |
+| [model/validate.rs](<src/model/validate.rs>) | `Model::validate()` and structural invariants |
+| [model/wire.rs](<src/model/wire.rs>) | Private serde wire format and validated deserialization |
+| [model/build.rs](<src/model/build.rs>) | Model construction: `tb_model()`, hopping and on-site setup |
+| [model/edit.rs](<src/model/edit.rs>) | Typed orbital/atom edits, removal and reordering |
+| [model/supercell.rs](<src/model/supercell.rs>) | `make_supercell()`, integer-lattice and gauge-normalization helpers |
+| [model/operators.rs](<src/model/operators.rs>) | Model-basis spin and local orbital-angular-momentum operators |
+| [model/physics.rs](<src/model/physics.rs>) | Bloch Hamiltonians (`gen_ham()`, `gen_ham_batch()`) and `dos()` |
 | `velocity.rs` | `Velocity` trait — `gen_v()` with rmatrix commutator; `gen_v_projected()` fuses direction-weight projection |
 | `response/` | Public parameter/result APIs plus private direct-sum and simplex machinery |
 | `response/primitives.rs` | Internal `compute_velocity_kernel` band-basis velocity elements |
@@ -369,7 +381,7 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `solve_ham.rs` | Parallel diagonalization (`solve_all_parallel`, `solve_range_onek`) |
 | `kpoints.rs`/`kpath.rs`/`kplane.rs` | k-mesh/k-path/k-plane generation |
 | `output.rs` | gnuplot plotting |
-| `model_utils.rs` | Internal: `find_R()` for lattice vector lookup in `hamR` |
+| [model/utils.rs](<src/model/utils.rs>) | Public `find_R()` lattice-vector lookup, `remove_row()` and `remove_col()` |
 | `math.rs` | `comm()`, `anti_comm()`, `gauss()` smearing |
 | `atom_struct.rs` | `Atom` and `OrbProj` types |
 | `crystal_symmetry.rs` | Optional `cryspglib` adapter; structure and field-effective symmetry |
@@ -379,6 +391,11 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `generics.rs` | Numeric abstractions, `SpinDirection::from_index` |
 | `phy_const.rs` | Physical constants: `e`, `ħ`, `μ_B`, `Φ₀`, quantum of conductance |
 | `io.rs` | Text-file output helpers |
+
+Canonical public modules are `Rustb::model::physics` and `Rustb::model::utils`.
+Doc-hidden `model_physics`/`model_utils` aliases remain under both
+`Rustb::model` and the crate root. Root `find_R`/`remove_row`/`remove_col` imports
+and all inherent `Model` calls are unchanged.
 
 ### Conventions
 

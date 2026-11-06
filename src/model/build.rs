@@ -70,12 +70,12 @@
 //! # }
 //! ```
 
+use super::utils::find_R;
 use crate::Model;
 use crate::SpinDirection;
 use crate::atom_struct::{Atom, OrbProj};
 use crate::error::{Result, TbError};
 use crate::model::RMatrixData;
-use crate::model_utils::find_R;
 use ndarray::prelude::*;
 use ndarray::*;
 use num_complex::Complex;

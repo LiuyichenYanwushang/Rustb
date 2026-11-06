@@ -4,6 +4,13 @@ This guide follows the const-generic `Model<SPIN, DIM, R>` API in the current
 source tree. For mathematical definitions and complete error semantics, use the
 generated rustdoc.
 
+Canonical public modules are `Rustb::model::physics` (Bloch Hamiltonians and
+DOS) and `Rustb::model::utils` (lattice-vector lookup and array helpers).
+Doc-hidden `model_physics`/`model_utils` aliases remain under both
+`Rustb::model` and the crate root. Inherent `Model` calls and root
+`find_R`/`remove_row`/`remove_col` imports are unchanged. Berry phases and
+Wilson loops belong to `geometry`; Berry-curvature responses belong to `response`.
+
 `Model::validate()` checks array shapes, finite Hamiltonian/position data,
 an invertible lattice, and atom/orbital references. Deserialization and
 high-level response/DOS entry points run these checks. It does not certify

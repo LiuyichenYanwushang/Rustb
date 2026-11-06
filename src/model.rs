@@ -47,11 +47,11 @@
 pub mod access;
 mod build;
 mod edit;
-pub mod model_physics;
-pub mod model_utils;
+pub mod physics;
 pub mod rmatrix;
 pub(crate) mod supercell;
 pub mod types;
+pub mod utils;
 pub mod validate;
 
 // Serde impls live in a private module; trait impls need no re-export.
@@ -60,9 +60,15 @@ mod wire;
 mod operators;
 
 pub use self::access::{AtomView, OrbitalRef};
-pub use self::model_utils::{find_R, remove_col, remove_row};
 pub use self::rmatrix::{HasRMatrix, NoRMatrix, RMatrixData};
 pub use self::types::{Dimension, Gauge, SpinDirection};
+pub use self::utils::{find_R, remove_col, remove_row};
+
+// Preserve existing module imports while using shorter implementation names.
+#[doc(hidden)]
+pub use self::physics as model_physics;
+#[doc(hidden)]
+pub use self::utils as model_utils;
 
 use crate::atom_struct::{Atom, OrbProj};
 use crate::error::{Result, TbError};

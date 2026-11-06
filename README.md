@@ -229,6 +229,11 @@ are rejected on load. `Model::validate` checks shapes, finite data, an
 invertible lattice and atom/orbital references; the high-level solvers and
 response entry points run it before doing any work.
 
+Canonical public submodules are `Rustb::model::physics` and
+`Rustb::model::utils`. Doc-hidden `model_physics`/`model_utils` aliases remain
+under both `Rustb::model` and the crate root. All inherent `Model` calls and
+root `find_R`/`remove_row`/`remove_col` imports are unchanged.
+
 ```rust
 let h_atom = model.gen_ham(&k, Gauge::Atom);
 let h_lattice = model.gen_ham(&k, Gauge::Lattice);
@@ -244,6 +249,12 @@ The `toml` crate is not re-exported by Rustb; add it to your own dependencies
 (or use another serde format) to reproduce the serialization snippet.
 
 ### Model construction and editing
+
+Implementations live under [model/](<src/model/>) behind the
+[model.rs](<src/model.rs>) facade: [build.rs](<src/model/build.rs>) handles
+construction and hopping setup, [edit.rs](<src/model/edit.rs>) structural
+edits, and [supercell.rs](<src/model/supercell.rs>) supercells. These are
+implementation modules, not new imports required to call `Model` methods.
 
 Build a model with `tb_model`, then fill in hoppings, on-site terms, spin
 decoration, supercells and atom/orbital edits. `set_hop` replaces a block and
@@ -344,7 +355,7 @@ let mesh_bands = model.solve_band_all_parallel(&points)?;
 assert_eq!(mesh_bands.dim(), (points.nrows(), model.nsta()));
 ```
 
-### `model_physics` — Bloch Hamiltonian and DOS
+### `model::physics` — Bloch Hamiltonian and DOS
 
 `gen_ham` builds one `H(k)` in either gauge; `gen_ham_batch` does the same for
 a batch with one shared Fourier sum, without spawning Rayon tasks. `dos`
@@ -915,7 +926,7 @@ let width = Occupation::ZeroTemperature.energy_width()?;
 assert_eq!(width, 0.0);
 ```
 
-### `model_utils` — lattice-vector lookup
+### `model::utils` — lattice-vector lookup
 
 `find_R` locates a lattice vector in `hamR`; `remove_row` and `remove_col`
 return arrays with one index dropped. Surface-Green construction uses the

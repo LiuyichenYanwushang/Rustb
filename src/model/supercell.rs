@@ -5,10 +5,10 @@
 //! The private helpers below implement checked integer linear algebra, quotient
 //! enumeration and the covariant orbital/R-matrix relabeling.
 
+use super::utils::find_R;
 use super::{Model, RMatrixData};
 use crate::atom_struct::{Atom, OrbitalId};
 use crate::error::{Result, TbError};
-use crate::model_utils::find_R;
 use ndarray::*;
 use num_complex::Complex;
 use std::collections::{HashMap, VecDeque};

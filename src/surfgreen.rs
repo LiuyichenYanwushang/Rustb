@@ -179,7 +179,7 @@ use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kpath::*;
 use crate::kpoints::gen_kmesh;
-pub use crate::model_utils::{remove_col, remove_row};
+pub use crate::model::utils::{remove_col, remove_row};
 use gnuplot::Major;
 use gnuplot::{Auto, AutoOption::Fix, AxesCommon, Custom, Figure, Font};
 use ndarray::concatenate;

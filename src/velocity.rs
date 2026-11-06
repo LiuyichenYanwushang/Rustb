@@ -232,7 +232,7 @@ use crate::Gauge;
 use crate::Model;
 use crate::RMatrixData;
 use crate::comm;
-use crate::model_physics::{apply_atom_gauge, fourier_sum};
+use crate::model::physics::{apply_atom_gauge, fourier_sum};
 use ndarray::prelude::*;
 use ndarray::*;
 use num_complex::Complex;

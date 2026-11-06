@@ -354,7 +354,7 @@
 use crate::Gauge;
 use crate::error::{Result, TbError};
 use crate::model::NoRMatrix;
-use crate::model_utils::find_R;
+use crate::model::utils::find_R;
 #[cfg(test)]
 use crate::ndarray_lapack::eigvalsh_v;
 use crate::{Model, OrbitalId, RMatrixData};
