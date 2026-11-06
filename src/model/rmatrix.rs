@@ -18,6 +18,28 @@ pub trait RMatrixData: Clone + std::fmt::Debug + Sync {
     fn as_array4(&self) -> &Array4<Complex<f64>>;
     /// Get a mutable reference to the underlying Array4. Panics for NoRMatrix.
     fn as_array4_mut(&mut self) -> &mut Array4<Complex<f64>>;
+    /// Select entries along an axis.
+    ///
+    /// The default implementation preserves `Self`: [`HasRMatrix`] selects from
+    /// its underlying [`Array4`] and wraps the result; [`NoRMatrix`] clones itself
+    /// without consulting `axis` or `indices` or accessing absent storage.
+    ///
+    /// For generic `R: RMatrixData`, `r.select(...)` resolves to this trait method.
+    /// On concrete [`HasRMatrix`], having [`RMatrixData`] in scope selects this
+    /// wrapper-returning method. Without it, [`Deref`] can expose ndarray's
+    /// `select`, returning `Array4<Complex<f64>>`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::{Array4, Axis};
+    /// use Rustb::{HasRMatrix, NoRMatrix, RMatrixData};
+    ///
+    /// let stored = HasRMatrix(Array4::zeros((2, 1, 1, 1)));
+    /// let selected: HasRMatrix = stored.select(Axis(0), &[1]);
+    /// assert_eq!(selected.0.dim(), (1, 1, 1, 1));
+    /// let _: NoRMatrix = NoRMatrix.select(Axis(99), &[usize::MAX]);
+    /// ```
     fn select(&self, axis: Axis, indices: &[usize]) -> Self {
         if Self::HAS_RMATRIX {
             Self::from_array(self.as_array4().select(axis, indices))

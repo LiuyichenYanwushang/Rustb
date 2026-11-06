@@ -37,6 +37,13 @@ They are intended to run inside a function returning `Rustb::Result<()>`.
 | `DIM: usize` | Real-space dimension, normally 1, 2, or 3 |
 | `R: RMatrixData` | `NoRMatrix` by default; `HasRMatrix` stores position matrix elements |
 
+For concrete `HasRMatrix`, `use Rustb::RMatrixData;` (or `use Rustb::*;`) keeps
+`.select(axis, indices)` wrapper-preserving; without the trait in scope, deref
+calls ndarray's `select`, returning `Array4<Complex<f64>>`. For generic
+`R: RMatrixData`, selection returns `R`: Rustb's `HasRMatrix` wraps the selected
+`Array4`, while `NoRMatrix` has no storage and returns itself. The shared method
+name is intentional.
+
 ```rust
 let lat = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
 let orb = arr2(&[[0.0, 0.0], [0.5, 0.5]]);

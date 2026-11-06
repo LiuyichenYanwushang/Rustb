@@ -162,6 +162,13 @@ Model<SPIN, DIM, R>
 commutator contribution in velocity calculations. `NoRMatrix` is a zero-sized
 type.
 
+`RMatrixData::select` intentionally shares ndarray's method name. For
+`R: RMatrixData` it returns `R`:
+Rustb's `HasRMatrix` wraps the selected `Array4`, while storage-free `NoRMatrix`
+returns itself. For concrete `HasRMatrix`, import `Rustb::RMatrixData` (also in
+`use Rustb::*;`) to preserve the wrapper; without the trait in scope, deref
+selects ndarray's method and returns `Array4<Complex<f64>>`.
+
 Atoms explicitly reference the dense orbital basis through typed `OrbitalId`
 values. The model remains the sole owner of orbital positions, projections, and
 Hamiltonian arrays:
