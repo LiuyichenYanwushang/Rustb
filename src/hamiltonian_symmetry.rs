@@ -493,34 +493,7 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
         context: BasisActionContext<'_, SPIN, R>,
     ) -> std::result::Result<LocalizedBasisAction, BasisRepresentationError> {
         let model = context.model;
-        if !context.position_tolerance.is_finite() || context.position_tolerance <= 0.0 {
-            return Err(BasisRepresentationError::Invalid(
-                "position tolerance must be finite and positive".to_string(),
-            ));
-        }
-        if !context.representation_tolerance.is_finite() || context.representation_tolerance <= 0.0
-        {
-            return Err(BasisRepresentationError::Invalid(
-                "representation tolerance must be finite and positive".to_string(),
-            ));
-        }
-        model
-            .validate()
-            .map_err(|error| BasisRepresentationError::Invalid(error.to_string()))?;
-        if model.atoms.is_empty() {
-            return Err(BasisRepresentationError::Unsupported(
-                "ScalarSiteBasis requires explicit atoms".to_string(),
-            ));
-        }
-
-        let owners = model
-            .orbital_owners()
-            .map_err(|error| BasisRepresentationError::Invalid(error.to_string()))?;
-        if let Some(unowned) = owners.iter().position(Option::is_none) {
-            return Err(BasisRepresentationError::Unsupported(format!(
-                "orbital {unowned} is not owned by an atom"
-            )));
-        }
+        validate_automatic_basis_context(&context, "ScalarSiteBasis")?;
         for (atom_index, atom) in model.atoms.iter().enumerate() {
             if atom.norb() != 1 {
                 return Err(BasisRepresentationError::Unsupported(format!(
@@ -554,39 +527,8 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
         let mut mapped_sites: BTreeMap<[isize; 3], Vec<(usize, usize)>> = BTreeMap::new();
         let mut used_target_atoms = BTreeSet::new();
         for (source_atom, atom) in model.atoms.iter().enumerate() {
-            let source_position = atom.position_ref();
-            let transformed: [f64; 3] = std::array::from_fn(|row| {
-                context.operation.translation[row]
-                    + (0..3)
-                        .map(|column| {
-                            f64::from(context.operation.rotation[row][column])
-                                * source_position[column]
-                        })
-                        .sum::<f64>()
-            });
-            let mut matches = model
-                .atoms
-                .iter()
-                .enumerate()
-                .filter_map(|(target_atom, target)| {
-                    if target.atom_type() != atom.atom_type() {
-                        return None;
-                    }
-                    let displacement =
-                        std::array::from_fn(|axis| transformed[axis] - target.position_ref()[axis]);
-                    integer_shift_if_close(displacement, &model.lat, context.position_tolerance)
-                        .map(|shift| (target_atom, shift))
-                });
-            let Some((target_atom, _atom_shift)) = matches.next() else {
-                return Err(BasisRepresentationError::Invalid(format!(
-                    "operation does not map atom {source_atom} to an atom of the same type"
-                )));
-            };
-            if matches.next().is_some() {
-                return Err(BasisRepresentationError::Ambiguous(format!(
-                    "operation maps atom {source_atom} to more than one atom within tolerance"
-                )));
-            }
+            let target_atom =
+                uniquely_mapped_atom(model, context.operation, source_atom, &context)?;
             if !used_target_atoms.insert(target_atom) {
                 return Err(BasisRepresentationError::Ambiguous(format!(
                     "operation maps more than one source atom onto target atom {target_atom}"
@@ -3047,6 +2989,107 @@ mod tests {
             rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
             translation: [0.5, 0.0, 0.0],
             time_reversal,
+        }
+    }
+
+    #[test]
+    fn scalar_basis_preserves_preflight_error_order() {
+        let operation = identity_operation(false);
+        let resolve =
+            |model: &Model<false, 3, NoRMatrix>, position_tolerance, representation_tolerance| {
+                ScalarSiteBasis.resolve(BasisActionContext {
+                    model,
+                    operation: &operation,
+                    position_tolerance,
+                    representation_tolerance,
+                })
+            };
+        let mut invalid = scalar_cubic();
+        invalid.atoms.clear();
+        invalid.lat[[0, 0]] = f64::NAN;
+        let model_error = invalid.validate().unwrap_err().to_string();
+        for (position, representation, expected) in [
+            (
+                f64::NAN,
+                f64::NAN,
+                "position tolerance must be finite and positive",
+            ),
+            (0.0, 1e-8, "position tolerance must be finite and positive"),
+            (
+                1e-8,
+                f64::INFINITY,
+                "representation tolerance must be finite and positive",
+            ),
+            (
+                1e-8,
+                0.0,
+                "representation tolerance must be finite and positive",
+            ),
+            (1e-8, 1e-8, model_error.as_str()),
+        ] {
+            let error = resolve(&invalid, position, representation).unwrap_err();
+            assert!(
+                matches!(&error, BasisRepresentationError::Invalid(message) if message == expected),
+                "{error:?}"
+            );
+        }
+        invalid.lat = Array2::eye(3);
+        assert!(matches!(resolve(&invalid, 1e-8, 1e-8),
+            Err(BasisRepresentationError::Unsupported(message)) if message == "ScalarSiteBasis requires explicit atoms"));
+
+        let mut unowned = half_translation_model(0.0, 0.0);
+        unowned.atoms.pop();
+        unowned.orb_projection[0] = OrbProj::px;
+        assert!(matches!(resolve(&unowned, 1e-8, 1e-8),
+            Err(BasisRepresentationError::Unsupported(message)) if message == "orbital 1 is not owned by an atom"));
+    }
+
+    #[test]
+    fn scalar_basis_preserves_missing_and_ambiguous_atom_errors() {
+        use BasisRepresentationError::{Ambiguous, Invalid};
+
+        let missing = "operation does not map atom 0 to an atom of the same type";
+        for (target_x, target_type, translation, expected) in [
+            (0.25, AtomType::H, 0.5, Invalid(missing.to_string())),
+            (0.5, AtomType::He, 0.5, Invalid(missing.to_string())),
+            (
+                0.0,
+                AtomType::H,
+                0.0,
+                Ambiguous(
+                    "operation maps atom 0 to more than one atom within tolerance".to_string(),
+                ),
+            ),
+        ] {
+            let model: Model<false, 3, NoRMatrix> = Model::tb_model(
+                Array2::eye(3),
+                array![[0.0, 0.0, 0.0], [target_x, 0.0, 0.0]],
+                Some(vec![
+                    Atom::with_orbitals(array![0.0, 0.0, 0.0], AtomType::H, [OrbitalId::new(0)]),
+                    Atom::with_orbitals(
+                        array![target_x, 0.0, 0.0],
+                        target_type,
+                        [OrbitalId::new(1)],
+                    ),
+                ]),
+            )
+            .unwrap();
+            let mut operation = identity_operation(false);
+            operation.translation[0] = translation;
+            let error = ScalarSiteBasis
+                .resolve(BasisActionContext {
+                    model: &model,
+                    operation: &operation,
+                    position_tolerance: 1e-8,
+                    representation_tolerance: 1e-8,
+                })
+                .unwrap_err();
+            match (error, expected) {
+                (Invalid(actual), Invalid(expected)) | (Ambiguous(actual), Ambiguous(expected)) => {
+                    assert_eq!(actual, expected)
+                }
+                (actual, expected) => panic!("actual={actual:?}, expected={expected:?}"),
+            }
         }
     }
 
