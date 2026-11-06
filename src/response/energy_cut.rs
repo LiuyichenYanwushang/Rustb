@@ -282,32 +282,12 @@ fn accumulate_triangle_dipole_kquad(
     let nsta = sim.vertices[0].band.len();
 
     // Borrow vertex data (no clone).
-    let v0 = &sim.vertices[0];
-    let n0 = v0
-        .nonlinear
-        .as_ref()
-        .expect("nonlinear primitives required");
-    let v1 = &sim.vertices[1];
-    let n1 = v1
-        .nonlinear
-        .as_ref()
-        .expect("nonlinear primitives required");
-    let v2 = &sim.vertices[2];
-    let n2 = v2
-        .nonlinear
-        .as_ref()
-        .expect("nonlinear primitives required");
-    let bands: [&[f64]; 3] = [
-        v0.band.as_slice().unwrap(),
-        v1.band.as_slice().unwrap(),
-        v2.band.as_slice().unwrap(),
-    ];
-    let kmats: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
-    let vdiags: [&[f64]; 3] = [
-        n0.vdiag.as_slice().unwrap(),
-        n1.vdiag.as_slice().unwrap(),
-        n2.vdiag.as_slice().unwrap(),
-    ];
+    let nonlinear = sim
+        .vertices
+        .map(|v| v.nonlinear.as_ref().expect("nonlinear primitives required"));
+    let bands = sim.vertices.map(|v| v.band.as_slice().unwrap());
+    let kmats = sim.vertices.map(|v| &v.k_ab);
+    let vdiags = nonlinear.map(|n| n.vdiag.as_slice().unwrap());
     let mut e_buf = vec![0.0f64; nsta];
     let mut k_buf = vec![Complex::new(0.0, 0.0); nsta];
     for n in 0..nsta {
@@ -519,44 +499,16 @@ fn accumulate_triangle_intrinsic_kquad(
     let volume_scale = sim.volume / area;
     let nsta = sim.vertices[0].band.len();
 
-    let v0 = &sim.vertices[0];
-    let n0 = v0
-        .nonlinear
-        .as_ref()
-        .expect("nonlinear primitives required");
-    let v1 = &sim.vertices[1];
-    let n1 = v1
-        .nonlinear
-        .as_ref()
-        .expect("nonlinear primitives required");
-    let v2 = &sim.vertices[2];
-    let n2 = v2
-        .nonlinear
-        .as_ref()
-        .expect("nonlinear primitives required");
-    let bands: [&[f64]; 3] = [
-        v0.band.as_slice().unwrap(),
-        v1.band.as_slice().unwrap(),
-        v2.band.as_slice().unwrap(),
-    ];
-    let kmat_ab: [&Array2<Complex<f64>>; 3] = [&v0.k_ab, &v1.k_ab, &v2.k_ab];
-    let kmat_bc: [&Array2<Complex<f64>>; 3] = [&n0.k_bc, &n1.k_bc, &n2.k_bc];
-    let kmat_ac: [&Array2<Complex<f64>>; 3] = [&n0.k_ac, &n1.k_ac, &n2.k_ac];
-    let vdiag_c: [&[f64]; 3] = [
-        n0.vdiag.as_slice().unwrap(),
-        n1.vdiag.as_slice().unwrap(),
-        n2.vdiag.as_slice().unwrap(),
-    ];
-    let vdiag_a: [&[f64]; 3] = [
-        n0.vdiag_a.as_slice().unwrap(),
-        n1.vdiag_a.as_slice().unwrap(),
-        n2.vdiag_a.as_slice().unwrap(),
-    ];
-    let vdiag_b: [&[f64]; 3] = [
-        n0.vdiag_b.as_slice().unwrap(),
-        n1.vdiag_b.as_slice().unwrap(),
-        n2.vdiag_b.as_slice().unwrap(),
-    ];
+    let nonlinear = sim
+        .vertices
+        .map(|v| v.nonlinear.as_ref().expect("nonlinear primitives required"));
+    let bands = sim.vertices.map(|v| v.band.as_slice().unwrap());
+    let kmat_ab = sim.vertices.map(|v| &v.k_ab);
+    let kmat_bc = nonlinear.map(|n| &n.k_bc);
+    let kmat_ac = nonlinear.map(|n| &n.k_ac);
+    let vdiag_c = nonlinear.map(|n| n.vdiag.as_slice().unwrap());
+    let vdiag_a = nonlinear.map(|n| n.vdiag_a.as_slice().unwrap());
+    let vdiag_b = nonlinear.map(|n| n.vdiag_b.as_slice().unwrap());
 
     let mut e_buf = vec![0.0f64; nsta];
     let mut k_buf = vec![Complex::new(0.0, 0.0); nsta * 3];
@@ -944,53 +896,16 @@ fn accumulate_tetrahedron_intrinsic_kquad(
     let volume_scale = sim.volume / _vol;
     let nsta = sim.vertices[0].band.len();
 
-    let v0 = &sim.vertices[0];
-    let n0 = v0
-        .nonlinear
-        .as_ref()
-        .expect("nonlinear primitives required");
-    let v1 = &sim.vertices[1];
-    let n1 = v1
-        .nonlinear
-        .as_ref()
-        .expect("nonlinear primitives required");
-    let v2 = &sim.vertices[2];
-    let n2 = v2
-        .nonlinear
-        .as_ref()
-        .expect("nonlinear primitives required");
-    let v3 = &sim.vertices[3];
-    let n3 = v3
-        .nonlinear
-        .as_ref()
-        .expect("nonlinear primitives required");
-    let bands: [&[f64]; 4] = [
-        v0.band.as_slice().unwrap(),
-        v1.band.as_slice().unwrap(),
-        v2.band.as_slice().unwrap(),
-        v3.band.as_slice().unwrap(),
-    ];
-    let kmat_ab: [&Array2<Complex<f64>>; 4] = [&v0.k_ab, &v1.k_ab, &v2.k_ab, &v3.k_ab];
-    let kmat_bc: [&Array2<Complex<f64>>; 4] = [&n0.k_bc, &n1.k_bc, &n2.k_bc, &n3.k_bc];
-    let kmat_ac: [&Array2<Complex<f64>>; 4] = [&n0.k_ac, &n1.k_ac, &n2.k_ac, &n3.k_ac];
-    let vdiag_c: [&[f64]; 4] = [
-        n0.vdiag.as_slice().unwrap(),
-        n1.vdiag.as_slice().unwrap(),
-        n2.vdiag.as_slice().unwrap(),
-        n3.vdiag.as_slice().unwrap(),
-    ];
-    let vdiag_a: [&[f64]; 4] = [
-        n0.vdiag_a.as_slice().unwrap(),
-        n1.vdiag_a.as_slice().unwrap(),
-        n2.vdiag_a.as_slice().unwrap(),
-        n3.vdiag_a.as_slice().unwrap(),
-    ];
-    let vdiag_b: [&[f64]; 4] = [
-        n0.vdiag_b.as_slice().unwrap(),
-        n1.vdiag_b.as_slice().unwrap(),
-        n2.vdiag_b.as_slice().unwrap(),
-        n3.vdiag_b.as_slice().unwrap(),
-    ];
+    let nonlinear = sim
+        .vertices
+        .map(|v| v.nonlinear.as_ref().expect("nonlinear primitives required"));
+    let bands = sim.vertices.map(|v| v.band.as_slice().unwrap());
+    let kmat_ab = sim.vertices.map(|v| &v.k_ab);
+    let kmat_bc = nonlinear.map(|n| &n.k_bc);
+    let kmat_ac = nonlinear.map(|n| &n.k_ac);
+    let vdiag_c = nonlinear.map(|n| n.vdiag.as_slice().unwrap());
+    let vdiag_a = nonlinear.map(|n| n.vdiag_a.as_slice().unwrap());
+    let vdiag_b = nonlinear.map(|n| n.vdiag_b.as_slice().unwrap());
 
     let _n_mu = mu.len();
     let mut e_buf = vec![0.0f64; nsta];
@@ -1832,6 +1747,156 @@ fn thermal_convolution(
 #[cfg(test)]
 mod thermal_tests {
     use super::*;
+    use crate::response::types::{NonlinearKernel, SimplexDiagnostics};
+
+    fn distinct_vertices() -> [VertexKernel; 4] {
+        let bands = [[-0.9, 2.0], [0.3, 2.7], [1.4, 3.5], [2.2, 4.8]];
+        std::array::from_fn(|i| {
+            let x = (i + 1) as f64;
+            let a = Complex::new(0.3 + 0.2 * x, -0.4 + 0.1 * x);
+            let b = Complex::new(-0.6 + 0.3 * x, 0.2 + 0.15 * x);
+            let c = Complex::new(0.8 - 0.07 * x, -0.3 - 0.2 * x);
+            let kernel = |off: Complex<f64>| {
+                array![
+                    [Complex::new(0.0, 0.0), off],
+                    [off.conj(), Complex::new(0.0, 0.0)]
+                ]
+            };
+            VertexKernel {
+                band: Array1::from_vec(bands[i].to_vec()),
+                k_ab: kernel(a * b.conj()),
+                nonlinear: Some(NonlinearKernel {
+                    k_bc: kernel(b * c.conj()),
+                    k_ac: kernel(a * c.conj()),
+                    vdiag: array![0.4 + 0.3 * x, -0.2 - 0.1 * x],
+                    vdiag_a: array![-0.5 + 0.13 * x, 0.7 + 0.2 * x],
+                    vdiag_b: array![0.6 - 0.11 * x, -0.3 + 0.17 * x],
+                }),
+            }
+        })
+    }
+
+    fn assert_cut(actual: &Array1<f64>, expected: &[f64]) {
+        assert_eq!(actual.len(), expected.len());
+        for (&actual, &expected) in actual.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "actual={actual}, expected={expected}"
+            );
+        }
+    }
+
+    // Frozen outputs from the explicit vertex bindings pin field/vertex order,
+    // including the accumulated offset, at zero and finite temperature.
+    #[test]
+    fn triangle_vertex_projections_preserve_distinct_data() {
+        let vertices = distinct_vertices();
+        let sim = TrackedSimplex {
+            vertices: [&vertices[2], &vertices[0], &vertices[1]],
+            coords: [[0.0, 0.0, 0.0], [2.0, 0.25, 0.0], [0.5, 1.5, 0.0]],
+            volume: 0.37,
+            diag: SimplexDiagnostics::default(),
+        };
+        let mu = array![-5.0, -0.2, 0.8, 2.2, 3.4, 4.4, 8.0];
+        for (beta, expected_dipole, expected_intrinsic) in [
+            (
+                0.0,
+                [
+                    0.125,
+                    0.13651662533283176,
+                    0.16105641999309017,
+                    0.12689010237097934,
+                    0.13253279096842613,
+                    0.125,
+                    0.125,
+                ],
+                [
+                    0.125,
+                    0.12067616298790167,
+                    0.12509569263067044,
+                    0.122755609456586,
+                    0.12479274292048291,
+                    0.125,
+                    0.125,
+                ],
+            ),
+            (
+                4.0,
+                [
+                    0.1250000000636322,
+                    0.13984387449196914,
+                    0.15314942873529344,
+                    0.13126537232515864,
+                    0.1338042334570239,
+                    0.12531582263687308,
+                    0.125,
+                ],
+                [
+                    0.12499999994329929,
+                    0.12144878001957717,
+                    0.12395988928967344,
+                    0.1223730184592046,
+                    0.1234739457002749,
+                    0.12495878248514916,
+                    0.125,
+                ],
+            ),
+        ] {
+            let mut dipole = Array1::from_elem(mu.len(), 0.125);
+            let mut intrinsic = dipole.clone();
+            accumulate_triangle_dipole_kquad(&sim, 0.17, &mu, beta, &mut dipole);
+            accumulate_triangle_intrinsic_kquad(&sim, &mu, beta, &mut intrinsic);
+            assert_cut(&dipole, &expected_dipole);
+            assert_cut(&intrinsic, &expected_intrinsic);
+        }
+    }
+
+    #[test]
+    fn tetrahedron_vertex_projections_preserve_distinct_data() {
+        let vertices = distinct_vertices();
+        let sim = TrackedSimplex {
+            vertices: [&vertices[3], &vertices[1], &vertices[0], &vertices[2]],
+            coords: [
+                [0.0, 0.0, 0.0],
+                [2.0, 0.25, 0.0],
+                [0.5, 1.5, 0.0],
+                [0.25, 0.5, 1.25],
+            ],
+            volume: 0.19,
+            diag: SimplexDiagnostics::default(),
+        };
+        let mu = array![-5.0, -0.2, 0.8, 2.2, 3.4, 4.4, 8.0];
+        for (beta, expected) in [
+            (
+                0.0,
+                [
+                    0.125,
+                    0.12438649829008028,
+                    0.1263835970127515,
+                    0.12488124083024488,
+                    0.12443433766048481,
+                    0.1252168841665595,
+                    0.125,
+                ],
+            ),
+            (
+                4.0,
+                [
+                    0.12499999999699546,
+                    0.12454954896888346,
+                    0.12639715222131417,
+                    0.12526197683632456,
+                    0.12443242235305534,
+                    0.1251678845491299,
+                    0.12500000029520406,
+                ],
+            ),
+        ] {
+            let mut intrinsic = Array1::from_elem(mu.len(), 0.125);
+            accumulate_tetrahedron_intrinsic_kquad(&sim, &mu, beta, &mut intrinsic);
+            assert_cut(&intrinsic, &expected);
+        }
+    }
 
     #[test]
     fn nonlinear_cuts_preserve_large_finite_gradients_and_poison_overflow() {
