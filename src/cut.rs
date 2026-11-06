@@ -39,7 +39,7 @@ use crate::Model;
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::find_R;
-use crate::model_build::normalized_to_atoms;
+use crate::model::supercell::normalized_to_atoms;
 use crate::{Atom, OrbitalId};
 use ndarray::prelude::*;
 use num_complex::Complex;
@@ -403,14 +403,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         // New orbital order: (layer, source orbital) — layer i, orbital s
         // at index i*norb + s, so source repeats per layer.
         let source: Vec<usize> = (0..num).flat_map(|_| 0..self.norb()).collect();
-        crate::model_build::set_rmatrix_diagonal_with_displacement::<DIM>(
+        crate::model::supercell::set_rmatrix_diagonal_with_displacement::<DIM>(
             &mut new_rmatrix,
             &new_hamR,
             &new_orb,
             &new_lat,
             &self.orb,
             &self.lat,
-            &crate::model_build::rmatrix_diagonal_cartesian(self),
+            &crate::model::supercell::rmatrix_diagonal_cartesian(self),
             &source,
             SPIN,
         );

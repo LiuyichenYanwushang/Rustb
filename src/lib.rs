@@ -15,8 +15,9 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`model`] | Central [`Model`]<SPIN, DIM, R> struct with lattice, orbital, and hopping data, plus enums
-//! |   [`Gauge`], [`Dimension`], [`SpinDirection`] |
+//! | [`model`] | Central [`Model`]<SPIN, DIM, R> struct with lattice, orbital, and hopping data;
+//! |   constructors (`tb_model`), hopping/on-site setup, structural editing, supercells;
+//! |   plus [`Gauge`], [`Dimension`], [`SpinDirection`] |
 //! | [`atom_struct`] | [`Atom`] and [`OrbProj`] types for describing atomic sites and orbital
 //! |   projections |
 //!
@@ -24,8 +25,6 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`model_build`] | Constructors (`Model::tb_model`), hopping setup (`add_hop`, `set_hop`),
-//! |   on-site energies (`set_onsite`), and supercell building (`make_supercell`) |
 //! | [`hubbard`] | Non-collinear unrestricted Hartree-Fock for on-site Hubbard
 //! |   interactions, with fixed chemical potential or fixed initial filling |
 //! | [`cut`] | [`CutModel`] trait for extracting finite slabs from supercells |

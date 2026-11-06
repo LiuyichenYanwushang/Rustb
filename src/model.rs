@@ -45,10 +45,12 @@
 //!
 
 pub mod access;
-pub mod model_build;
+mod build;
+mod edit;
 pub mod model_physics;
 pub mod model_utils;
 pub mod rmatrix;
+pub(crate) mod supercell;
 pub mod types;
 pub mod validate;
 

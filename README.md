@@ -243,7 +243,7 @@ assert_eq!(restored.ham, model.ham);
 The `toml` crate is not re-exported by Rustb; add it to your own dependencies
 (or use another serde format) to reproduce the serialization snippet.
 
-### `model_build` — construction and editing
+### Model construction and editing
 
 Build a model with `tb_model`, then fill in hoppings, on-site terms, spin
 decoration, supercells and atom/orbital edits. `set_hop` replaces a block and
