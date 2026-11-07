@@ -198,6 +198,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut bands = Vec::new();
         let mut velocities = Vec::new();
         if full_tensor {
+            #[cfg(test)]
+            let prepare_guard = crate::response::config::profile::prepare();
             let directions = Array2::<f64>::eye(DIM);
             let data: Vec<Result<_>> = k_points
                 .outer_iter()
@@ -225,6 +227,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             (eigenvectors, velocities) = vectors_and_velocities
                 .into_iter()
                 .unzip::<_, _, Vec<_>, Vec<_>>();
+            #[cfg(test)]
+            drop(prepare_guard);
+            #[cfg(test)]
+            let track_guard = crate::response::config::profile::track();
             if params.integration == Integration::Simplex {
                 global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
                     bands[index] = bands[index].select(Axis(0), permutation);
@@ -233,7 +239,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         .select(Axis(2), permutation);
                 });
             }
+            #[cfg(test)]
+            drop(track_guard);
         } else {
+            #[cfg(test)]
+            let prepare_guard = crate::response::config::profile::prepare();
             // A single component retains just its kernel, not both dense
             // velocity matrices over the whole mesh.
             let direction_a = direction_pairs[0].row(0).to_owned();
@@ -258,13 +268,21 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .collect::<Result<Vec<_>>>()?
                 .into_iter()
                 .unzip::<_, _, Vec<_>, Vec<_>>();
+            #[cfg(test)]
+            drop(prepare_guard);
+            #[cfg(test)]
+            let track_guard = crate::response::config::profile::track();
             if params.integration == Integration::Simplex {
                 global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
                     vertices[index] = permute_vertex(&vertices[index], permutation);
                 });
             }
+            #[cfg(test)]
+            drop(track_guard);
         }
 
+        #[cfg(test)]
+        let integrate_guard = crate::response::config::profile::integrate();
         for component in 0..direction_pairs.len() {
             if full_tensor {
                 let (a, b) = (component / DIM, component % DIM);
@@ -354,6 +372,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 Integration::EnergyCut => unreachable!("rejected during validation"),
             }
         }
+        #[cfg(test)]
+        drop(integrate_guard);
 
         if conductivity
             .iter()

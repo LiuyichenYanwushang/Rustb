@@ -543,6 +543,121 @@ pub(crate) mod counters {
     }
 }
 
+/// Test-only stage timing for manual response profiling.
+///
+/// This is deliberately not a public probe: it compiles only under
+/// `#[cfg(test)]`, there is no Cargo feature, and disabled guards cost one
+/// relaxed atomic load. Guards are used inside representative response
+/// entry points; the ignored profiling tests in `response::regression_tests`
+/// enable the probe, run one call each, and print the accumulated stage times.
+///
+/// Durations are accumulated atomically because response work may run inside a
+/// Rayon pool. `enable` resets all stages and returns a session that serializes
+/// profiling tests; drop the session before reading the snapshot so no later
+/// profiled call can contribute. Run these tests with `--test-threads=1` so
+/// unrelated tests cannot add response time to the global counters.
+#[cfg(test)]
+pub(crate) mod profile {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Mutex, MutexGuard};
+    use std::time::{Duration, Instant};
+
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum Stage {
+        Prepare = 0,
+        Track = 1,
+        Integrate = 2,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct Snapshot {
+        pub prepare: Duration,
+        pub track: Duration,
+        pub integrate: Duration,
+    }
+
+    impl Snapshot {
+        pub(crate) fn total(self) -> Duration {
+            self.prepare + self.track + self.integrate
+        }
+    }
+
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+    static NANOS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    static PROFILE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// One profiling session. Keeping the mutex guard alive serializes the two
+    /// manual profiling tests; its destructor disables the probe.
+    #[must_use = "keep the profiling session alive for the measured call"]
+    pub(crate) struct Session {
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    pub(crate) fn enable() -> Session {
+        let lock = PROFILE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for stage in &NANOS {
+            stage.store(0, Ordering::Relaxed);
+        }
+        ENABLED.store(true, Ordering::Relaxed);
+        Session { _lock: lock }
+    }
+
+    impl Drop for Session {
+        fn drop(&mut self) {
+            ENABLED.store(false, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn snapshot() -> Snapshot {
+        Snapshot {
+            prepare: Duration::from_nanos(NANOS[Stage::Prepare as usize].load(Ordering::Relaxed)),
+            track: Duration::from_nanos(NANOS[Stage::Track as usize].load(Ordering::Relaxed)),
+            integrate: Duration::from_nanos(
+                NANOS[Stage::Integrate as usize].load(Ordering::Relaxed),
+            ),
+        }
+    }
+
+    pub(crate) fn prepare() -> Guard {
+        Guard::enter(Stage::Prepare)
+    }
+
+    pub(crate) fn track() -> Guard {
+        Guard::enter(Stage::Track)
+    }
+
+    pub(crate) fn integrate() -> Guard {
+        Guard::enter(Stage::Integrate)
+    }
+
+    #[must_use = "bind the guard for the measured scope"]
+    pub(crate) struct Guard {
+        stage: usize,
+        start: Option<Instant>,
+    }
+
+    impl Guard {
+        fn enter(stage: Stage) -> Self {
+            let start = ENABLED.load(Ordering::Relaxed).then(Instant::now);
+            Self {
+                stage: stage as usize,
+                start,
+            }
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            if let Some(start) = self.start {
+                let elapsed = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+                NANOS[self.stage].fetch_add(elapsed, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

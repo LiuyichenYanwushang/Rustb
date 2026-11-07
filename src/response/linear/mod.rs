@@ -474,6 +474,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let samples = resolved.len();
         let conductivity = match params.integration {
             Integration::Direct => {
+                #[cfg(test)]
+                let prepare_guard = crate::response::config::profile::prepare();
                 let kvec: Array2<f64> = crate::kpoints::gen_kmesh(&k_mesh)?;
                 let nk = kvec.nrows();
                 // Validation already happened at the entry point; reuse the
@@ -490,6 +492,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect::<Result<Vec<_>>>()?;
+                #[cfg(test)]
+                drop(prepare_guard);
+                #[cfg(test)]
+                let integrate_guard = crate::response::config::profile::integrate();
                 let values: Vec<f64> = (0..samples)
                     .into_par_iter()
                     .map(|index| {
@@ -511,9 +517,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         sum / nk as f64 / determinant
                     })
                     .collect();
+                #[cfg(test)]
+                drop(integrate_guard);
                 Array1::from_vec(values)
             }
             Integration::EnergyCut => {
+                #[cfg(test)]
+                let prepare_guard = crate::response::config::profile::prepare();
                 let kvec = crate::kpoints::gen_kmesh(&k_mesh)?;
                 let all_pts: Vec<Result<_>> = (0..kvec.nrows())
                     .into_par_iter()
@@ -528,8 +538,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
+                #[cfg(test)]
+                drop(prepare_guard);
+                #[cfg(test)]
+                let track_guard = crate::response::config::profile::track();
                 // Tracked once; every sample reuses the labelled vertices.
                 let all_pts = collect_tracked_vertices(all_pts, &params.kmesh)?;
+                #[cfg(test)]
+                drop(track_guard);
                 let integrate =
                     |chemical_potentials: &Array1<f64>, width: f64| -> Result<Array1<f64>> {
                         Ok(match DIM {
@@ -555,6 +571,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             }
                         })
                     };
+                #[cfg(test)]
+                let integrate_guard = crate::response::config::profile::integrate();
                 let sigma = match &resolved.axis {
                     ResponseAxis::ChemicalPotential(values) => {
                         let occupation = resolved.occupation(0);
@@ -572,6 +590,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         sigma
                     }
                 };
+                #[cfg(test)]
+                drop(integrate_guard);
                 sigma / determinant
             }
             Integration::Simplex => unreachable!("rejected during validation"),

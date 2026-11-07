@@ -1823,4 +1823,129 @@ mod regression_tests {
         check::<false>();
         check::<true>();
     }
+
+    /// Manual stage profile for the two Hall algorithms.
+    ///
+    /// Run with:
+    /// cargo test --release --features openblas-system --lib -- \
+    ///     --ignored --nocapture --test-threads=1 profile_hall_response_stages
+    ///
+    /// The numbers are a coarse split of the real entry point; they are not a
+    /// stable benchmark and must not be used as pass/fail thresholds.
+    #[test]
+    #[ignore = "manual response stage profiling"]
+    fn profile_hall_response_stages() {
+        use crate::response::config::profile;
+
+        let model = sampled_axis_model();
+        let directions = dirs2();
+        let eta = ETA_EV;
+        let kmesh = [24, 24];
+        let direct = Parameters {
+            conditions: Conditions::fixed(300.0, 0.0, 0.0),
+            kmesh,
+            integration: Integration::Direct,
+        };
+        let cut = Parameters {
+            conditions: mu_conditions(&array![-3.0, -2.4, -1.8, -1.4], 0.0),
+            kmesh,
+            integration: Integration::EnergyCut,
+        };
+
+        // Warm up allocator/caches before the measured calls.
+        model
+            .hall_conductivity(&direct, directions, eta, None)
+            .unwrap();
+        model
+            .hall_conductivity(&cut, directions, eta, None)
+            .unwrap();
+
+        macro_rules! report {
+            ($name:expr, $params:expr) => {{
+                let session = profile::enable();
+                let start = std::time::Instant::now();
+                let result = model
+                    .hall_conductivity(&$params, directions, eta, None)
+                    .unwrap();
+                let wall = start.elapsed();
+                drop(session);
+                let stages = profile::snapshot();
+                assert!(
+                    result.conductivity.iter().all(|value| value.is_finite()),
+                    "{} produced nonfinite conductivity",
+                    $name
+                );
+                println!(
+                    "{:<14} wall {:8.3} ms | prepare {:8.3} | track {:8.3} | integrate {:8.3} | other {:8.3}",
+                    $name,
+                    wall.as_secs_f64() * 1e3,
+                    stages.prepare.as_secs_f64() * 1e3,
+                    stages.track.as_secs_f64() * 1e3,
+                    stages.integrate.as_secs_f64() * 1e3,
+                    wall.saturating_sub(stages.total()).as_secs_f64() * 1e3,
+                );
+                stages
+            }};
+        }
+
+        println!("Hall response stage profile, kmesh={kmesh:?}, samples: direct=1, cut=4");
+        let direct_stages = report!("hall_direct", direct);
+        let cut_stages = report!("hall_energy_cut", cut);
+
+        assert!(direct_stages.prepare > std::time::Duration::ZERO);
+        assert!(direct_stages.integrate > std::time::Duration::ZERO);
+        assert!(cut_stages.prepare > std::time::Duration::ZERO);
+        assert!(cut_stages.track > std::time::Duration::ZERO);
+        assert!(cut_stages.integrate > std::time::Duration::ZERO);
+    }
+
+    /// Manual stage profile for the optical simplex tensor.
+    ///
+    /// Run with:
+    /// cargo test --release --features openblas-system --lib -- \
+    ///     --ignored --nocapture --test-threads=1 profile_optical_tensor_stages
+    #[test]
+    #[ignore = "manual response stage profiling"]
+    fn profile_optical_tensor_stages() {
+        use crate::response::config::profile;
+
+        let model = sampled_axis_model();
+        let params = Parameters {
+            conditions: Conditions {
+                t_kelvin: Sampling::Fixed(300.0),
+                mu_ev: Sampling::Fixed(0.0),
+                omega_ev: Sampling::Values(array![0.5, 1.0, 1.5, 2.0]),
+            },
+            kmesh: [16, 16],
+            integration: Integration::Simplex,
+        };
+
+        // Warm up before measuring.
+        model.optical_conductivity_tensor(&params, ETA_EV).unwrap();
+
+        let session = profile::enable();
+        let start = std::time::Instant::now();
+        let result = model.optical_conductivity_tensor(&params, ETA_EV).unwrap();
+        let wall = start.elapsed();
+        drop(session);
+        let stages = profile::snapshot();
+
+        assert!(
+            result.conductivity.iter().all(|value| value.is_finite()),
+            "optical tensor produced nonfinite conductivity"
+        );
+        println!("optical tensor stage profile, kmesh=[16, 16], four frequencies");
+        println!(
+            "{:<14} wall {:8.3} ms | prepare {:8.3} | track {:8.3} | integrate {:8.3} | other {:8.3}",
+            "optical_tensor",
+            wall.as_secs_f64() * 1e3,
+            stages.prepare.as_secs_f64() * 1e3,
+            stages.track.as_secs_f64() * 1e3,
+            stages.integrate.as_secs_f64() * 1e3,
+            wall.saturating_sub(stages.total()).as_secs_f64() * 1e3,
+        );
+        assert!(stages.prepare > std::time::Duration::ZERO);
+        assert!(stages.track > std::time::Duration::ZERO);
+        assert!(stages.integrate > std::time::Duration::ZERO);
+    }
 }
