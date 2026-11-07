@@ -50,6 +50,18 @@ pub(crate) const TET_QUAD_WTS_4: [f64; 4] = [0.25, 0.25, 0.25, 0.25];
 /// vertex band slices (no per-vertex clone).
 pub(crate) fn bary_interp_band_refs(bands: &[&[f64]], lam: &[f64], nsta: usize) -> Vec<f64> {
     let mut out = vec![0.0; nsta];
+    bary_interp_band_refs_into(bands, lam, nsta, &mut out);
+    out
+}
+
+/// Buffer-reusing form of [`bary_interp_band_refs`].
+pub(crate) fn bary_interp_band_refs_into(
+    bands: &[&[f64]],
+    lam: &[f64],
+    nsta: usize,
+    out: &mut [f64],
+) {
+    debug_assert_eq!(out.len(), nsta);
     for n in 0..nsta {
         let origin = bands[0][n];
         // Affine form preserves constant bands exactly, including occupations
@@ -71,17 +83,18 @@ pub(crate) fn bary_interp_band_refs(bands: &[&[f64]], lam: &[f64], nsta: usize) 
                 .sum();
         }
     }
-    out
 }
 
 /// Interpolate a matrix field `mats[d+1]` each `(nsta, nsta)` at
-/// barycentric coords `lam` from borrowed vertex matrices (no per-vertex clone).
-pub(crate) fn bary_interp_matrix_refs(
+/// barycentric coords `lam` from borrowed vertex matrices.
+pub(crate) fn bary_interp_matrix_refs_into(
     mats: &[&Array2<Complex<f64>>],
     lam: &[f64],
-) -> Array2<Complex<f64>> {
+    out: &mut Array2<Complex<f64>>,
+) {
     let n = mats[0].nrows();
-    let mut out = Array2::<Complex<f64>>::zeros((n, n));
+    debug_assert_eq!(out.dim(), (n, n));
+    out.fill(Complex::new(0.0, 0.0));
     for (mat, &w) in mats.iter().zip(lam.iter()) {
         if w == 0.0 {
             continue;
@@ -92,5 +105,4 @@ pub(crate) fn bary_interp_matrix_refs(
             }
         }
     }
-    out
 }

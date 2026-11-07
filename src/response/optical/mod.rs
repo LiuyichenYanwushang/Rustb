@@ -77,8 +77,9 @@ use super::config::{
     occupation_for, validate_broadening, validate_direction_values,
 };
 use super::kernel::{eval_optical_kernel, quadrature_optical_simplex};
-use super::tracking::{build_tetrahedra_3d_diagavg, build_triangles_2d, global_band_track};
+use super::tracking::{build_tetrahedra_3d_diagavg, build_triangles_2d};
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
+use super::{global_band_track, permute_vertex};
 
 /// Optical conductivity for one or more tensor components.
 #[derive(Clone, Debug, PartialEq)]
@@ -259,8 +260,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .unzip::<_, _, Vec<_>, Vec<_>>();
             if params.integration == Integration::Simplex {
                 global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
-                    vertices[index] =
-                        super::tracking::permute_vertex(&vertices[index], permutation);
+                    vertices[index] = permute_vertex(&vertices[index], permutation);
                 });
             }
         }
@@ -794,8 +794,7 @@ mod tests {
         let mut eigenvectors = vec![Array2::eye(2), Array2::eye(2).select(Axis(0), &[1, 0])];
         let mut calls = 0;
         global_band_track(&mut eigenvectors, &[2, 1], |index, permutation| {
-            vertices[index] =
-                crate::response::tracking::permute_vertex(&vertices[index], permutation);
+            vertices[index] = permute_vertex(&vertices[index], permutation);
             calls += 1;
             velocities[index] = velocities[index]
                 .select(Axis(0), permutation)
