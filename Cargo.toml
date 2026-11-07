@@ -75,6 +75,10 @@ criterion = "0.5"
 name = "bench_main"
 harness = false
 
+[[bench]]
+name = "bench_memory"
+harness = false
+
 [features]
 # There is intentionally no default backend; callers must enable exactly one of
 # intel-mkl-static, intel-mkl-system, openblas-static, openblas-system, netlib-static, netlib-system.
