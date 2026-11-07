@@ -3,6 +3,8 @@
 use ndarray::prelude::*;
 use num_complex::Complex;
 
+use crate::error::Result;
+
 use super::types::{NonlinearKernel, SimplexDiagnostics, TrackedSimplex, VertexKernel};
 
 const CUBE_TETS: [[usize; 4]; 5] = [
@@ -80,6 +82,20 @@ pub(crate) fn permute_vertex(v: &VertexKernel, p: &[usize]) -> VertexKernel {
             vdiag_b: n.vdiag_b.select(Axis(0), p),
         }),
     }
+}
+
+/// Collect in input order, then track vertices without retaining eigenvectors.
+pub(crate) fn collect_tracked_vertices(
+    rows: Vec<Result<(VertexKernel, Array2<Complex<f64>>)>>,
+    k_mesh: &[usize],
+) -> Result<Vec<VertexKernel>> {
+    let prepared = rows.into_iter().collect::<Result<Vec<_>>>()?;
+    let (mut vertices, mut eigenvectors): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
+    global_band_track(&mut eigenvectors, k_mesh, |index, permutation| {
+        vertices[index] = permute_vertex(&vertices[index], permutation);
+    });
+    drop(eigenvectors);
+    Ok(vertices)
 }
 
 /// Track row-ket eigenvectors and apply each band permutation to caller data.
@@ -392,4 +408,163 @@ pub(crate) fn build_tetrahedra_3d_diagavg<'a>(
         out[5 + i] = make_tet(tet, cube_vol * TET_VOL_FACTOR[i] * 0.5);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::TbError;
+    use crate::response::config::counters;
+    use ndarray::array;
+    use rayon::prelude::*;
+
+    fn vertex(base: f64) -> VertexKernel {
+        let diagonal = |offset: f64| Array1::from_shape_fn(3, |n| base + offset + n as f64);
+        let matrix = |offset: f64| {
+            Array2::from_shape_fn((3, 3), |(n, m)| {
+                let value = base + offset + (10 * n + m) as f64;
+                Complex::new(value, -value - 0.25)
+            })
+        };
+        VertexKernel {
+            band: array![base + 7.0, base - 2.0, base + 3.0],
+            k_ab: matrix(100.0),
+            nonlinear: Some(NonlinearKernel {
+                k_bc: matrix(200.0),
+                k_ac: matrix(300.0),
+                vdiag: diagonal(10.0),
+                vdiag_a: diagonal(20.0),
+                vdiag_b: diagonal(30.0),
+            }),
+        }
+    }
+
+    fn assert_vertex_permutation(
+        actual: &VertexKernel,
+        original: &VertexKernel,
+        permutation: &[usize; 3],
+    ) {
+        // Independent index lookups, not the production permutation helper.
+        let diagonal = |values: &Array1<f64>| Array1::from_shape_fn(3, |n| values[permutation[n]]);
+        let matrix = |values: &Array2<Complex<f64>>| {
+            Array2::from_shape_fn((3, 3), |(n, m)| values[[permutation[n], permutation[m]]])
+        };
+        assert_eq!(actual.band, diagonal(&original.band));
+        assert_eq!(actual.k_ab, matrix(&original.k_ab));
+        match (&actual.nonlinear, &original.nonlinear) {
+            (Some(actual), Some(original)) => {
+                assert_eq!(actual.k_bc, matrix(&original.k_bc));
+                assert_eq!(actual.k_ac, matrix(&original.k_ac));
+                assert_eq!(actual.vdiag, diagonal(&original.vdiag));
+                assert_eq!(actual.vdiag_a, diagonal(&original.vdiag_a));
+                assert_eq!(actual.vdiag_b, diagonal(&original.vdiag_b));
+            }
+            (None, None) => {}
+            _ => panic!("nonlinear payload presence changed"),
+        }
+    }
+
+    #[test]
+    fn collection_tracks_all_payloads_with_three_band_cycles() {
+        let mut original = [vertex(0.0), vertex(1000.0), vertex(2000.0)];
+        original[2].nonlinear = None;
+        // The noncanonical seed must stay unchanged; the last row also checks
+        // that tracking propagates through the already-permuted middle row.
+        let row_orders = [[1, 2, 0], [2, 0, 1], [0, 1, 2]];
+        let rows = original
+            .iter()
+            .zip(row_orders)
+            .map(|(vertex, order)| Ok((vertex.clone(), Array2::eye(3).select(Axis(0), &order))))
+            .collect();
+        let (eigen, tracking, result) = counters::measure(|| collect_tracked_vertices(rows, &[3]));
+        assert_eq!((eigen, tracking), (0, 1));
+        let tracked = result.unwrap();
+        assert_eq!(tracked.len(), original.len());
+        for (index, permutation) in [[0, 1, 2], [2, 0, 1], [1, 2, 0]].iter().enumerate() {
+            assert_vertex_permutation(&tracked[index], &original[index], permutation);
+        }
+    }
+
+    #[test]
+    fn collection_selects_first_error_after_indexed_parallel_preparation() {
+        for threads in [1, 3] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for first_error in [0usize, 2, 4] {
+                let result = pool.install(|| {
+                    let rows: Vec<_> = (0..6usize)
+                        .into_par_iter()
+                        .map(|index| {
+                            if index == first_error || index == 5 {
+                                Err(TbError::Lapack {
+                                    routine: "tracking_fixture",
+                                    info: index as i32 + 1,
+                                })
+                            } else {
+                                Ok((vertex(index as f64 * 1000.0), Array2::eye(3)))
+                            }
+                        })
+                        .collect();
+                    collect_tracked_vertices(rows, &[6])
+                });
+                assert!(
+                    matches!(
+                        result,
+                        Err(TbError::Lapack { routine: "tracking_fixture", info })
+                            if info == first_error as i32 + 1
+                    ),
+                    "expected row {first_error} to win in the {threads}-thread pool"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn collection_does_not_track_a_successful_prefix_before_error() {
+        // Counters are thread-local: measure separately from the parallel test.
+        let (eigen, tracking, result) = counters::measure(|| {
+            let rows = vec![
+                Ok((vertex(0.0), Array2::eye(3))),
+                Ok((vertex(1000.0), Array2::eye(3))),
+                Err(TbError::Lapack {
+                    routine: "first_failure",
+                    info: 7,
+                }),
+                Err(TbError::SvdComputationFailed),
+            ];
+            collect_tracked_vertices(rows, &[4])
+        });
+        assert!(matches!(
+            result,
+            Err(TbError::Lapack {
+                routine: "first_failure",
+                info: 7,
+            })
+        ));
+        assert_eq!((eigen, tracking), (0, 0));
+    }
+
+    #[test]
+    fn collection_preserves_singleton_and_accepts_empty() {
+        let seed = vertex(0.0);
+        let (eigen, tracking, (empty, singleton)) = counters::measure(|| {
+            (
+                collect_tracked_vertices(Vec::new(), &[0]).unwrap(),
+                collect_tracked_vertices(
+                    vec![Ok((
+                        seed.clone(),
+                        Array2::eye(3).select(Axis(0), &[1, 2, 0]),
+                    ))],
+                    &[1],
+                )
+                .unwrap(),
+            )
+        });
+        assert_eq!((eigen, tracking), (0, 0));
+        assert!(empty.is_empty());
+        assert_eq!(singleton.len(), 1);
+        assert_vertex_permutation(&singleton[0], &seed, &[0, 1, 2]);
+    }
 }

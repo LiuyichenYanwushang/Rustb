@@ -195,7 +195,7 @@ pub use traits::{BandBerryCurvature, BerryCurvature};
 
 // Internal numerical machinery shared with crate-level tests and
 // `quantum_geometry`; it is deliberately not part of the public API.
-pub(crate) use tracking::{global_band_track, permute_vertex};
+pub(crate) use tracking::{collect_tracked_vertices, global_band_track, permute_vertex};
 #[cfg(test)]
 pub(crate) use types::VertexKernel;
 

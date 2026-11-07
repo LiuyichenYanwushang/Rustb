@@ -101,7 +101,7 @@ use super::config::{
 };
 use super::energy_cut::integrate_dipole_energy_cut_2d;
 use super::kernel::intrinsic_inverse_gap;
-use super::tracking::global_band_track;
+use super::tracking::collect_tracked_vertices;
 use super::types::VertexKernel;
 
 /// Nonlinear Hall conductivity on the sampled axis, or at the fixed conditions.
@@ -533,17 +533,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             return NonlinearHallResult::checked(resolved.axis, Array1::from_vec(values), None);
         }
         let vertices: Vec<Result<_>> = k_points.outer_iter().into_par_iter().map(compute).collect();
-        let (mut vertices, mut eigenvectors): (Vec<_>, Vec<_>) = vertices
-            .into_iter()
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .unzip();
         // Tracked once; every sample reuses the labelled vertices.
-        global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
-            vertices[index] =
-                crate::response::tracking::permute_vertex(&vertices[index], permutation);
-        });
-        drop(eigenvectors);
+        let mut vertices = collect_tracked_vertices(vertices, &params.kmesh)?;
         let integrate = |vertices: &[VertexKernel],
                          chemical_potentials: &Array1<f64>,
                          width: f64| {
@@ -890,17 +881,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         Ok(data)
                     })
                     .collect();
-                let (mut vertices, mut eigenvectors): (Vec<_>, Vec<_>) = vertices
-                    .into_iter()
-                    .collect::<Result<Vec<_>>>()?
-                    .into_iter()
-                    .unzip();
                 // Tracked once; every sample reuses the labelled vertices.
-                global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
-                    vertices[index] =
-                        crate::response::tracking::permute_vertex(&vertices[index], permutation);
-                });
-                drop(eigenvectors);
+                let vertices = collect_tracked_vertices(vertices, &params.kmesh)?;
                 let integrate = |chemical_potentials: &Array1<f64>, width: f64| -> Array1<f64> {
                     let values = match DIM {
                         2 => super::energy_cut::integrate_intrinsic_cut_2d(

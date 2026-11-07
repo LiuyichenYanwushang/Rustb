@@ -61,11 +61,11 @@ use num_complex::Complex;
 use rayon::prelude::*;
 
 use crate::error::{Result, TbError};
+use crate::response::collect_tracked_vertices;
 use crate::response::config::{
     Integration, IntegrationDiagnostics, Parameters, ResponseAxis, direction_matrix, mesh_array,
     occupation_for, validate_broadening, validate_direction_values,
 };
-use crate::response::global_band_track;
 use crate::response::linear::integrate_occupied_geometry;
 use crate::thermodynamics::Occupation;
 use crate::velocity::Velocity;
@@ -414,17 +414,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
-                let (mut vertices, mut eigenvectors): (Vec<_>, Vec<_>) = vertices
-                    .into_iter()
-                    .collect::<Result<Vec<_>>>()?
-                    .into_iter()
-                    .unzip();
                 // Tracked once; every sample reuses the labelled vertices.
-                global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
-                    vertices[index] =
-                        crate::response::permute_vertex(&vertices[index], permutation);
-                });
-                drop(eigenvectors);
+                let vertices = collect_tracked_vertices(vertices, &params.kmesh)?;
                 // ponytail: Simplex divides unscaled interpolated primitives.
                 // Certify denominator bounds for every convex vertex mixture;
                 // use Direct outside this range rather than silently clipping to zero.

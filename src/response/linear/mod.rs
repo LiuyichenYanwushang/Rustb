@@ -108,7 +108,7 @@ use super::config::{
 };
 use super::energy_cut::{integrate_fermi_cut_2d, integrate_fermi_cut_3d};
 use super::kernel::quadrature_occupied_geometry_simplex;
-use super::tracking::{build_tetrahedra_3d_diagavg, build_triangles_2d, global_band_track};
+use super::tracking::{build_tetrahedra_3d_diagavg, build_triangles_2d, collect_tracked_vertices};
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 
 /// Hall conductivity on the sampled axis, or at the fixed conditions.
@@ -528,17 +528,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         )
                     })
                     .collect();
-                let (mut all_pts, mut eigenvectors): (Vec<_>, Vec<_>) = all_pts
-                    .into_iter()
-                    .collect::<Result<Vec<_>>>()?
-                    .into_iter()
-                    .unzip();
                 // Tracked once; every sample reuses the labelled vertices.
-                global_band_track(&mut eigenvectors, &params.kmesh, |index, permutation| {
-                    all_pts[index] =
-                        crate::response::tracking::permute_vertex(&all_pts[index], permutation);
-                });
-                drop(eigenvectors);
+                let all_pts = collect_tracked_vertices(all_pts, &params.kmesh)?;
                 let integrate =
                     |chemical_potentials: &Array1<f64>, width: f64| -> Result<Array1<f64>> {
                         Ok(match DIM {
