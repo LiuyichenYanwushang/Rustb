@@ -803,7 +803,7 @@ keys), `real_space_commutator` (two convolutions using ndarray's
 `floquet_effective_model_legacy` (crate-internal k-space reference,
 `pub(crate)` with `FloquetEffectiveOptions::target_hamR`/`with_target_hamR`).
 
-### Graphene circular-light benchmarks (tests in `src/floquet.rs`)
+### Graphene circular-light benchmarks (tests in [floquet/tests.rs](<src/floquet/tests.rs>))
 
 `floquet::tests::graphene_*` pins the implementation against the analytic
 derivation (arXiv:1511.00755 conventions). Drive `a = α(1, i)` for
