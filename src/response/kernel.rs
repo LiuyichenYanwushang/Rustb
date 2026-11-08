@@ -461,11 +461,10 @@ pub(crate) fn quadrature_occupied_geometry_simplex<const NV: usize>(
 ) -> (Array1<f64>, Array1<f64>) {
     let dimension = NV - 1;
     let nsta = sim.vertices[0].band.len();
-    let bands: Vec<&[f64]> = (0..NV)
-        .map(|vertex| sim.vertices[vertex].band.as_slice().unwrap())
-        .collect();
-    let kernels: Vec<&Array2<Complex<f64>>> =
-        (0..NV).map(|vertex| &sim.vertices[vertex].k_ab).collect();
+    let bands: [&[f64]; NV] =
+        std::array::from_fn(|vertex| sim.vertices[vertex].band.as_slice().unwrap());
+    let kernels: [&Array2<Complex<f64>>; NV] =
+        std::array::from_fn(|vertex| &sim.vertices[vertex].k_ab);
     let mut metric = Array1::<f64>::zeros(chemical_potentials.len());
     let mut berry = Array1::<f64>::zeros(chemical_potentials.len());
 
@@ -514,10 +513,8 @@ pub(crate) fn quadrature_optical_simplex<const NV: usize>(
 ) {
     let d = NV - 1;
     let nsta = sim.vertices[0].band.len();
-    let bands: Vec<&[f64]> = (0..NV)
-        .map(|v| sim.vertices[v].band.as_slice().unwrap())
-        .collect();
-    let kmats: Vec<&Array2<Complex<f64>>> = (0..NV).map(|v| &sim.vertices[v].k_ab).collect();
+    let bands: [&[f64]; NV] = std::array::from_fn(|v| sim.vertices[v].band.as_slice().unwrap());
+    let kmats: [&Array2<Complex<f64>>; NV] = std::array::from_fn(|v| &sim.vertices[v].k_ab);
     let mut band_q = vec![0.0; nsta];
     let mut k_ab_q = Array2::<Complex<f64>>::zeros((nsta, nsta));
     let mut occupations = vec![0.0; nsta];
