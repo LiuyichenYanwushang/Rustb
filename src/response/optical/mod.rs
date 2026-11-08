@@ -286,18 +286,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         for component in 0..direction_pairs.len() {
             if full_tensor {
                 let (a, b) = (component / DIM, component % DIM);
-                // Build components only after shared band/velocity tracking;
-                // no placeholder kernel or tracking states survive here.
-                vertices.clear();
-                for (band, velocity) in bands.iter().zip(&velocities) {
-                    vertices.push(VertexKernel {
-                        band: band.clone(),
-                        k_ab: super::primitives::checked_velocity_product(
+                // Build the shared band payload once; later tensor components
+                // only replace the velocity kernel and keep the same vertices.
+                if component == 0 {
+                    vertices.clear();
+                    for (band, velocity) in bands.iter().zip(&velocities) {
+                        vertices.push(VertexKernel {
+                            band: band.clone(),
+                            k_ab: super::primitives::checked_velocity_product(
+                                velocity.index_axis(Axis(0), a),
+                                velocity.index_axis(Axis(0), b),
+                            )?,
+                            nonlinear: None,
+                        });
+                    }
+                } else {
+                    for (vertex, velocity) in vertices.iter_mut().zip(&velocities) {
+                        vertex.k_ab = super::primitives::checked_velocity_product(
                             velocity.index_axis(Axis(0), a),
                             velocity.index_axis(Axis(0), b),
-                        )?,
-                        nonlinear: None,
-                    });
+                        )?;
+                    }
                 }
             }
 
