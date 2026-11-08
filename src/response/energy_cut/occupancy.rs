@@ -34,16 +34,22 @@ fn sub_tri_area_2d(coords: &Array2<f64>, tri: &[[f64; 3]; 3]) -> f64 {
 /// Clip the original triangle by $E_n(k)\le\mu$ and return the occupied
 /// polygon as 1–2 sub‑triangles, each vertex given by its barycentric
 /// coordinates in the original triangle.
-fn clip_triangle(energy_v: [f64; 3], mu: f64) -> Vec<[[f64; 3]; 3]> {
+///
+/// The fixed buffer avoids one heap allocation per partial triangle, band and
+/// chemical potential. The returned count is in `0..=2`; only the first
+/// `count` entries of the buffer are initialized and may be read.
+fn clip_triangle(energy_v: [f64; 3], mu: f64) -> ([[[f64; 3]; 3]; 2], usize) {
     let eps = 1e-12;
     let e_min = energy_v.iter().fold(f64::INFINITY, |a, &b| a.min(b));
     let e_max = energy_v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let mut out = [[[0.0; 3]; 3]; 2];
 
     if mu <= e_min + eps {
-        return vec![];
+        return (out, 0);
     }
     if mu >= e_max - eps {
-        return vec![[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]];
+        out[0] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        return (out, 1);
     }
 
     let mut idx: [usize; 3] = [0, 1, 2];
@@ -73,13 +79,13 @@ fn clip_triangle(energy_v: [f64; 3], mu: f64) -> Vec<[[f64; 3]; 3]> {
 
     if mu <= energy_v[b] + eps {
         // 1 vertex below (a) → sub‑triangle {a, cut(a,b), cut(a,c)}
-        vec![[unit(a), cut(a, b), cut(a, c)]]
+        out[0] = [unit(a), cut(a, b), cut(a, c)];
+        (out, 1)
     } else {
         // 2 vertices below (a,b) → quadrilateral → two sub‑triangles
-        vec![
-            [unit(a), unit(b), cut(a, c)],
-            [unit(b), cut(a, c), cut(b, c)],
-        ]
+        out[0] = [unit(a), unit(b), cut(a, c)];
+        out[1] = [unit(b), cut(a, c), cut(b, c)];
+        (out, 2)
     }
 }
 
@@ -125,9 +131,9 @@ fn triangle_occupied_hybrid(
     }
 
     // Partial occupancy: clipped polygon + K‑quadrature
-    let sub_tris = clip_triangle(e_v, mu);
+    let (sub_tris, n_sub_tris) = clip_triangle(e_v, mu);
     let mut total = 0.0;
-    for sub_tri in &sub_tris {
+    for sub_tri in &sub_tris[..n_sub_tris] {
         let sub_area = sub_tri_area_2d(coords, sub_tri);
         if sub_area < 1e-30 {
             continue;
