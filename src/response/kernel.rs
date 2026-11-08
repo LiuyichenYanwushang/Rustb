@@ -314,30 +314,33 @@ pub(crate) fn eval_optical_kernel(
     thermal_width: f64,
     nsta: usize,
 ) -> Complex<f64> {
+    debug_assert_eq!(band_q.len(), nsta);
+    debug_assert_eq!(k_ab_q.nrows(), nsta);
     let mut total = Complex::new(0.0, 0.0);
     let w_plus_ieta = Complex::new(omega, eta);
-    for n in 0..nsta {
-        let fn_val = fermi(band_q[n], mu, thermal_width);
-        for m in 0..nsta {
+    for (n, &energy_n) in band_q.iter().enumerate() {
+        let fn_val = fermi(energy_n, mu, thermal_width);
+        let kernel_row = k_ab_q.row(n);
+        for (m, (&energy_m, &kernel_nm)) in band_q.iter().zip(kernel_row.iter()).enumerate() {
             if m == n {
                 continue;
             }
-            let d = band_q[n] - band_q[m];
-            if d == 0.0 || k_ab_q[[n, m]] == Complex::new(0.0, 0.0) {
+            let d = energy_n - energy_m;
+            if d == 0.0 || kernel_nm == Complex::new(0.0, 0.0) {
                 continue;
             }
-            let fm_val = fermi(band_q[m], mu, thermal_width);
+            let fm_val = fermi(energy_m, mu, thermal_width);
             // The midpoint derivative avoids cancellation in the divided
             // difference at finite T; its error is O((d/thermal_width)^2).
             let df_over_d = if thermal_width > 0.0 && d.abs() < 1e-5 * thermal_width {
-                -fermi_deriv(band_q[n].midpoint(band_q[m]), mu, thermal_width)
+                -fermi_deriv(energy_n.midpoint(energy_m), mu, thermal_width)
             } else {
                 (fn_val - fm_val) / d
             };
             if df_over_d == 0.0 {
                 continue;
             }
-            total += Complex::new(0.0, -df_over_d) * k_ab_q[[n, m]] / (d + w_plus_ieta);
+            total += Complex::new(0.0, -df_over_d) * kernel_nm / (d + w_plus_ieta);
         }
     }
     total
@@ -406,33 +409,40 @@ fn eval_optical_kernel_occupations_many(
     nsta: usize,
     totals: &mut [Complex<f64>],
 ) {
+    debug_assert_eq!(band_q.len(), nsta);
+    debug_assert_eq!(k_ab_q.nrows(), nsta);
+    debug_assert_eq!(k_ab_q.ncols(), nsta);
     debug_assert!(occupations.len() >= nsta);
     debug_assert_eq!(totals.len(), frequencies.len());
     for total in totals.iter_mut() {
         *total = Complex::new(0.0, 0.0);
     }
-    for n in 0..nsta {
-        let fn_val = occupations[n];
-        for m in 0..nsta {
+    for (n, (&energy_n, &occupation_n)) in band_q.iter().zip(occupations).enumerate() {
+        let kernel_row = k_ab_q.row(n);
+        for (m, ((&energy_m, &occupation_m), &kernel_nm)) in band_q
+            .iter()
+            .zip(occupations)
+            .zip(kernel_row.iter())
+            .enumerate()
+        {
             if m == n {
                 continue;
             }
-            let d = band_q[n] - band_q[m];
-            if d == 0.0 || k_ab_q[[n, m]] == Complex::new(0.0, 0.0) {
+            let d = energy_n - energy_m;
+            if d == 0.0 || kernel_nm == Complex::new(0.0, 0.0) {
                 continue;
             }
-            let fm_val = occupations[m];
             // The midpoint derivative avoids cancellation in the divided
             // difference at finite T; its error is O((d/thermal_width)^2).
             let df_over_d = if thermal_width > 0.0 && d.abs() < 1e-5 * thermal_width {
-                -fermi_deriv(band_q[n].midpoint(band_q[m]), mu, thermal_width)
+                -fermi_deriv(energy_n.midpoint(energy_m), mu, thermal_width)
             } else {
-                (fn_val - fm_val) / d
+                (occupation_n - occupation_m) / d
             };
             if df_over_d == 0.0 {
                 continue;
             }
-            let factor = Complex::new(0.0, -df_over_d) * k_ab_q[[n, m]];
+            let factor = Complex::new(0.0, -df_over_d) * kernel_nm;
             for (total, &omega) in totals.iter_mut().zip(frequencies) {
                 *total += factor / (d + Complex::new(omega, eta));
             }
