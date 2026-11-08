@@ -717,6 +717,30 @@ fn bench_response_paths(c: &mut Criterion) {
         });
     }
 
+    for (label, mu_ev) in [
+        ("fixed_mu", Sampling::Fixed(3.0)),
+        ("mu16", Sampling::Values(Array1::linspace(2.5, 4.5, 16))),
+    ] {
+        let hall_cut = Parameters {
+            conditions: Conditions {
+                t_kelvin: Sampling::Fixed(150.0),
+                mu_ev,
+                omega_ev: Sampling::Fixed(0.0),
+            },
+            kmesh: [11, 11],
+            integration: Integration::EnergyCut,
+        };
+        group.bench_function(BenchmarkId::new("hall_energy_cut_18", label), |b| {
+            b.iter(|| {
+                black_box(
+                    medium
+                        .hall_conductivity(black_box(&hall_cut), xy, eta, None)
+                        .unwrap(),
+                )
+            })
+        });
+    }
+
     for (label, integration, tensor) in [
         (
             "optical_simplex_component_18/omega16",
