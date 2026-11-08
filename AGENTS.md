@@ -366,9 +366,9 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `response/tracking.rs` | Band tracking (overlap → greedy assign → permute) + simplex builders |
 | `response/kernel.rs` | Berry/QGT, optical, dipole kernel evaluators at quadrature points |
 | `response/energy_cut.rs` | 2D/3D energy-cut (AHC, dipole, intrinsic), hybrid + K-quadrature |
-| `response/linear/` | Berry curvature + quantum metric simplex integration |
-| `response/nonlinear/` | Berry dipole + intrinsic/extrinsic NLH |
-| `response/optical/` | Optical conductivity simplex integration |
+| `response/linear.rs` | Berry curvature + quantum metric simplex integration |
+| `response/nonlinear.rs` | Berry dipole + intrinsic/extrinsic NLH |
+| `response/optical.rs` | Optical conductivity simplex integration |
 | `quantum_geometry.rs` | `QuantumGeometry` trait — QGT, quantum metric |
 | `geometry.rs` | `Berry` trait — Berry phase, Wilson loops, Wannier centres |
 | `surfgreen.rs` | Surface Green's function (Sancho-Rubio iterative method) |
@@ -496,9 +496,9 @@ src/response/
 ├── kernel.rs       — Berry/QGT, optical, dipole kernel evaluators
 ├── energy_cut.rs   — 2D/3D energy-cut (AHC, dipole, intrinsic), hybrid + K-quadrature
 ├── primitives.rs   — internal velocity-kernel construction
-├── linear/         — Berry curvature + quantum metric + AHC
-├── nonlinear/      — Berry dipole + intrinsic/extrinsic NLH
-└── optical/        — Optical conductivity
+├── linear.rs       — Berry curvature + quantum metric + AHC
+├── nonlinear.rs    — Berry dipole + intrinsic/extrinsic NLH
+└── optical.rs      — Optical conductivity
 ```
 
 ### Energy-cut design
