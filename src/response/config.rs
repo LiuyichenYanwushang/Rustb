@@ -567,6 +567,11 @@ pub(crate) mod profile {
         Prepare = 0,
         Track = 1,
         Integrate = 2,
+        /// Nested inside Integrate: the thermal convolution calls.
+        Thermal = 3,
+        /// Nested inside Thermal (or inside a zero-temperature integrate
+        /// call): the zero-temperature energy-cut integrator.
+        ZeroT = 4,
     }
 
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -574,16 +579,28 @@ pub(crate) mod profile {
         pub prepare: Duration,
         pub track: Duration,
         pub integrate: Duration,
+        /// Subset of integrate; do not add to total.
+        pub thermal: Duration,
+        /// Subset of thermal (or of integrate at exactly zero width).
+        pub zero_t: Duration,
     }
 
     impl Snapshot {
+        /// Sum of the non-overlapping top-level stages. Thermal and zero_t
+        /// are nested subsets and are intentionally excluded.
         pub(crate) fn total(self) -> Duration {
             self.prepare + self.track + self.integrate
         }
     }
 
     static ENABLED: AtomicBool = AtomicBool::new(false);
-    static NANOS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    static NANOS: [AtomicU64; 5] = [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
     static PROFILE_LOCK: Mutex<()> = Mutex::new(());
 
     /// One profiling session. Keeping the mutex guard alive serializes the two
@@ -617,6 +634,8 @@ pub(crate) mod profile {
             integrate: Duration::from_nanos(
                 NANOS[Stage::Integrate as usize].load(Ordering::Relaxed),
             ),
+            thermal: Duration::from_nanos(NANOS[Stage::Thermal as usize].load(Ordering::Relaxed)),
+            zero_t: Duration::from_nanos(NANOS[Stage::ZeroT as usize].load(Ordering::Relaxed)),
         }
     }
 
@@ -630,6 +649,14 @@ pub(crate) mod profile {
 
     pub(crate) fn integrate() -> Guard {
         Guard::enter(Stage::Integrate)
+    }
+
+    pub(crate) fn thermal() -> Guard {
+        Guard::enter(Stage::Thermal)
+    }
+
+    pub(crate) fn zero_t() -> Guard {
+        Guard::enter(Stage::ZeroT)
     }
 
     #[must_use = "bind the guard for the measured scope"]

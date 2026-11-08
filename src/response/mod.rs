@@ -1948,4 +1948,64 @@ mod regression_tests {
         assert!(stages.track > std::time::Duration::ZERO);
         assert!(stages.integrate > std::time::Duration::ZERO);
     }
+
+    /// Manual nested profile for finite-temperature Hall EnergyCut.
+    ///
+    /// Run with:
+    /// cargo test --release --features openblas-system --lib -- \
+    ///     --ignored --nocapture --test-threads=1 profile_hall_energy_cut_thermal
+    ///
+    /// Thermal and zero_t are subsets of integrate and of thermal respectively;
+    /// they are reported separately and are not added into total.
+    #[test]
+    #[ignore = "manual response stage profiling"]
+    fn profile_hall_energy_cut_thermal() {
+        use crate::response::config::profile;
+
+        let model = sampled_axis_model();
+        let params = Parameters {
+            conditions: mu_conditions(&Array1::linspace(-1.2, 1.1, 8), 150.0),
+            kmesh: [16, 16],
+            integration: Integration::EnergyCut,
+        };
+        let directions = dirs2();
+
+        // Warm up before measuring.
+        model
+            .hall_conductivity(&params, directions, ETA_EV, None)
+            .unwrap();
+
+        let session = profile::enable();
+        let start = std::time::Instant::now();
+        let result = model
+            .hall_conductivity(&params, directions, ETA_EV, None)
+            .unwrap();
+        let wall = start.elapsed();
+        drop(session);
+        let stages = profile::snapshot();
+
+        assert!(
+            result.conductivity.iter().all(|value| value.is_finite()),
+            "Hall EnergyCut produced nonfinite conductivity"
+        );
+        println!("Hall EnergyCut thermal profile, kmesh=[16, 16], samples=8, T=150 K");
+        println!(
+            "{:<20} wall {:8.3} ms | prepare {:8.3} | track {:8.3} | integrate {:8.3} | thermal {:8.3} | zero_t {:8.3} | other {:8.3}",
+            "hall_ec_thermal",
+            wall.as_secs_f64() * 1e3,
+            stages.prepare.as_secs_f64() * 1e3,
+            stages.track.as_secs_f64() * 1e3,
+            stages.integrate.as_secs_f64() * 1e3,
+            stages.thermal.as_secs_f64() * 1e3,
+            stages.zero_t.as_secs_f64() * 1e3,
+            wall.saturating_sub(stages.total()).as_secs_f64() * 1e3,
+        );
+        assert!(stages.prepare > std::time::Duration::ZERO);
+        assert!(stages.track > std::time::Duration::ZERO);
+        assert!(stages.integrate > std::time::Duration::ZERO);
+        assert!(stages.thermal > std::time::Duration::ZERO);
+        assert!(stages.zero_t > std::time::Duration::ZERO);
+        assert!(stages.thermal <= stages.integrate);
+        assert!(stages.zero_t <= stages.thermal);
+    }
 }

@@ -157,6 +157,8 @@ fn integrate_fermi_cut_2d_t0(
     mu: &Array1<f64>,
     eta: f64,
 ) -> Array1<f64> {
+    #[cfg(test)]
+    let _zero_t_guard = crate::response::config::profile::zero_t();
     let (nx, ny) = (k_mesh[0], k_mesh[1]);
     let inv_nx = 1.0 / nx as f64;
     let inv_ny = 1.0 / ny as f64;
@@ -540,6 +542,8 @@ fn integrate_fermi_cut_3d_t0(
     mu: &Array1<f64>,
     eta: f64,
 ) -> Array1<f64> {
+    #[cfg(test)]
+    let _zero_t_guard = crate::response::config::profile::zero_t();
     let (nx, ny, nz) = (k_mesh[0], k_mesh[1], k_mesh[2]);
     let inv_nx = 1.0 / nx as f64;
     let inv_ny = 1.0 / ny as f64;
@@ -712,6 +716,8 @@ pub(super) fn thermal_convolution(
     thermal_width: f64,
     zero_temperature: impl FnOnce(&Array1<f64>) -> Array1<f64>,
 ) -> Array1<f64> {
+    #[cfg(test)]
+    let _thermal_guard = crate::response::config::profile::thermal();
     let dx = 2.0 * FERMI_X_CUT / FERMI_X_STEPS as f64;
     let mut samples = Vec::new();
     for (index, &m) in mu.iter().enumerate() {
