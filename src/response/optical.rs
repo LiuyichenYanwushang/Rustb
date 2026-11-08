@@ -76,7 +76,7 @@ use super::config::{
     Integration, IntegrationDiagnostics, Parameters, ResponseAxis, direction_matrix, mesh_array,
     occupation_for, validate_broadening, validate_direction_values,
 };
-use super::kernel::{eval_optical_kernel, quadrature_optical_simplex};
+use super::kernel::{OpticalQuadratureBuffers, eval_optical_kernel, quadrature_optical_simplex};
 use super::tracking::{build_tetrahedra_3d_diagavg, build_triangles_2d};
 use super::types::{SIMPLEX_GAP_TOL, VertexKernel};
 use super::{global_band_track, permute_vertex};
@@ -210,9 +210,25 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     super::config::counters::count_eigen_decomposition();
                     let (band, evec) = eigh_full(&ham, UPLO::Lower)?;
                     let bra = evec.mapv(|z| z.conj());
-                    let mut velocity = Array3::zeros((DIM, self.nsta(), self.nsta()));
+                    let ket = evec.t();
+                    let nsta = self.nsta();
+                    let mut velocity = Array3::zeros((DIM, nsta, nsta));
+                    let mut scratch = Array2::<Complex<f64>>::zeros((nsta, nsta));
                     for (mut out, v) in velocity.outer_iter_mut().zip(projected.outer_iter()) {
-                        out.assign(&bra.dot(&v.dot(&evec.t())));
+                        ndarray::linalg::general_mat_mul(
+                            Complex::new(1.0, 0.0),
+                            &v,
+                            &ket,
+                            Complex::new(0.0, 0.0),
+                            &mut scratch,
+                        );
+                        ndarray::linalg::general_mat_mul(
+                            Complex::new(1.0, 0.0),
+                            &bra,
+                            &scratch,
+                            Complex::new(0.0, 0.0),
+                            &mut out,
+                        );
                     }
                     Ok((band, (evec, velocity)))
                 })
@@ -426,6 +442,10 @@ fn integrate_simplex(
             .into_par_iter()
             .map(|chunk| {
                 let mut total = Array1::<Complex<f64>>::zeros(frequencies.len());
+                let mut quadrature_buffers = OpticalQuadratureBuffers::new(
+                    vertices.first().map_or(0, |vertex| vertex.band.len()),
+                    frequencies.len(),
+                );
                 let mut unsafe_simplex_count = 0usize;
                 for cell in (chunk * 256)..cell_count.min((chunk + 1).saturating_mul(256)) {
                     match k_mesh.len() {
@@ -450,6 +470,7 @@ fn integrate_simplex(
                                     chemical_potential,
                                     thermal_width,
                                     &mut total,
+                                    &mut quadrature_buffers,
                                 );
                             }
                         }
@@ -477,6 +498,7 @@ fn integrate_simplex(
                                     chemical_potential,
                                     thermal_width,
                                     &mut total,
+                                    &mut quadrature_buffers,
                                 );
                             }
                         }

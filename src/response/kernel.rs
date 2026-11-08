@@ -503,6 +503,29 @@ pub(crate) fn quadrature_occupied_geometry_simplex<const NV: usize>(
     (metric * sim.volume, berry * sim.volume)
 }
 
+/// Reusable scratch buffers for one optical quadrature point.
+///
+/// The simplex loop processes many simplices with the same band and frequency
+/// counts; allocating these buffers once per chunk instead of four times per
+/// simplex removes the remaining non-thermal simplex allocations.
+pub(crate) struct OpticalQuadratureBuffers {
+    band_q: Vec<f64>,
+    k_ab_q: Array2<Complex<f64>>,
+    occupations: Vec<f64>,
+    spectrum: Vec<Complex<f64>>,
+}
+
+impl OpticalQuadratureBuffers {
+    pub(crate) fn new(nsta: usize, frequencies: usize) -> Self {
+        Self {
+            band_q: vec![0.0; nsta],
+            k_ab_q: Array2::zeros((nsta, nsta)),
+            occupations: vec![0.0; nsta],
+            spectrum: vec![Complex::new(0.0, 0.0); frequencies],
+        }
+    }
+}
+
 pub(crate) fn quadrature_optical_simplex<const NV: usize>(
     sim: &TrackedSimplex<'_, NV>,
     frequencies: &Array1<f64>,
@@ -510,34 +533,37 @@ pub(crate) fn quadrature_optical_simplex<const NV: usize>(
     mu: f64,
     thermal_width: f64,
     total: &mut Array1<Complex<f64>>,
+    buffers: &mut OpticalQuadratureBuffers,
 ) {
     let d = NV - 1;
     let nsta = sim.vertices[0].band.len();
     let bands: [&[f64]; NV] = std::array::from_fn(|v| sim.vertices[v].band.as_slice().unwrap());
     let kmats: [&Array2<Complex<f64>>; NV] = std::array::from_fn(|v| &sim.vertices[v].k_ab);
-    let mut band_q = vec![0.0; nsta];
-    let mut k_ab_q = Array2::<Complex<f64>>::zeros((nsta, nsta));
-    let mut occupations = vec![0.0; nsta];
-    let mut spectrum = vec![Complex::new(0.0, 0.0); frequencies.len()];
+    let OpticalQuadratureBuffers {
+        band_q,
+        k_ab_q,
+        occupations,
+        spectrum,
+    } = buffers;
     let frequency_slice = frequencies.as_slice().unwrap();
     let mut accumulate = |lam: &[f64], weight: f64| {
-        bary_interp_band_refs_into(&bands, lam, nsta, &mut band_q);
-        bary_interp_matrix_refs_into(&kmats, lam, &mut k_ab_q);
-        for n in 0..nsta {
-            occupations[n] = fermi(band_q[n], mu, thermal_width);
+        bary_interp_band_refs_into(&bands, lam, nsta, band_q.as_mut_slice());
+        bary_interp_matrix_refs_into(&kmats, lam, k_ab_q);
+        for (occupation, &energy) in occupations.iter_mut().zip(band_q.iter()) {
+            *occupation = fermi(energy, mu, thermal_width);
         }
         eval_optical_kernel_occupations_many(
-            &band_q,
-            &occupations,
-            &k_ab_q,
+            band_q.as_slice(),
+            occupations.as_slice(),
+            k_ab_q,
             frequency_slice,
             eta,
             mu,
             thermal_width,
             nsta,
-            &mut spectrum,
+            spectrum.as_mut_slice(),
         );
-        for (out, value) in total.iter_mut().zip(&spectrum) {
+        for (out, value) in total.iter_mut().zip(spectrum.iter()) {
             *out += weight * sim.volume * *value;
         }
     };
