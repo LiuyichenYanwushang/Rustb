@@ -375,7 +375,10 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `wannier90.rs` | Wannier90 I/O; the requested `R` type controls whether `_r.dat` is loaded |
 | `cut.rs` | `CutModel` trait — slab (`cut_piece`), dot/edge (`cut_dot`) |
 | `fermi_surface.rs` | `FermiSurface`/`FermiSurfacePlane` traits; BXSF export; `write_spin_frmsf` for altermagnets |
-| `floquet.rs` | `Floquet` trait + `Model::floquet_effective_model`; `LightMode`, `FloquetDrive`, `FloquetTruncation`, `IncidentBasis`, `FloquetEffectiveOptions`, `fold_quasienergy` |
+| [floquet.rs](<src/floquet.rs>) | Floquet public types, trait and model-construction facade |
+| [floquet/coefficients.rs](<src/floquet/coefficients.rs>) | Private Peierls coefficients, matching link validation and harmonic cache |
+| [floquet/real_space.rs](<src/floquet/real_space.rs>) | Private real-space block algebra and support handling |
+| [floquet/tests.rs](<src/floquet/tests.rs>) | Floquet unit tests and independent numerical checks |
 | `ndarray_lapack.rs` | LAPACK bindings + safe `zaxpy()` BLAS wrapper |
 | `lib.rs` | Crate root, re-exports, integration tests |
 | `solve_ham.rs` | Parallel diagonalization (`solve_all_parallel`, `solve_range_onek`) |
