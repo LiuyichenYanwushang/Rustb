@@ -343,12 +343,12 @@ pub(crate) fn eval_optical_kernel(
     total
 }
 
-/// Optical kernel with the band occupations pre-computed at the same
-/// quadrature point.
+/// Test-only scalar reference for the pre-computed-occupation kernel.
 ///
 /// `occupations[n]` must equal `fermi(band_q[n], mu, thermal_width)`.
-/// This avoids repeating the occupation evaluation for every frequency when
-/// the same interpolated point is used for a frequency scan.
+/// Production quadrature uses the multi-frequency form; this wrapper keeps the
+/// per-frequency reference used to pin exact equivalence in tests.
+#[cfg(test)]
 fn eval_optical_kernel_with_occupations(
     band_q: &[f64],
     occupations: &[f64],
@@ -387,6 +387,57 @@ fn eval_optical_kernel_with_occupations(
         }
     }
     total
+}
+
+/// Optical kernel for all frequencies at one quadrature point.
+///
+/// All n,m-dependent quantities (occupation difference, gap, kernel and
+/// divided derivative) are computed once and reused across `frequencies`;
+/// each output spectrum still accumulates n,m contributions in the same
+/// order as repeated scalar calls.
+fn eval_optical_kernel_occupations_many(
+    band_q: &[f64],
+    occupations: &[f64],
+    k_ab_q: &Array2<Complex<f64>>,
+    frequencies: &[f64],
+    eta: f64,
+    mu: f64,
+    thermal_width: f64,
+    nsta: usize,
+    totals: &mut [Complex<f64>],
+) {
+    debug_assert!(occupations.len() >= nsta);
+    debug_assert_eq!(totals.len(), frequencies.len());
+    for total in totals.iter_mut() {
+        *total = Complex::new(0.0, 0.0);
+    }
+    for n in 0..nsta {
+        let fn_val = occupations[n];
+        for m in 0..nsta {
+            if m == n {
+                continue;
+            }
+            let d = band_q[n] - band_q[m];
+            if d == 0.0 || k_ab_q[[n, m]] == Complex::new(0.0, 0.0) {
+                continue;
+            }
+            let fm_val = occupations[m];
+            // The midpoint derivative avoids cancellation in the divided
+            // difference at finite T; its error is O((d/thermal_width)^2).
+            let df_over_d = if thermal_width > 0.0 && d.abs() < 1e-5 * thermal_width {
+                -fermi_deriv(band_q[n].midpoint(band_q[m]), mu, thermal_width)
+            } else {
+                (fn_val - fm_val) / d
+            };
+            if df_over_d == 0.0 {
+                continue;
+            }
+            let factor = Complex::new(0.0, -df_over_d) * k_ab_q[[n, m]];
+            for (total, &omega) in totals.iter_mut().zip(frequencies) {
+                *total += factor / (d + Complex::new(omega, eta));
+            }
+        }
+    }
 }
 
 // ── Quadrature over single simplex ──────────────────────────────────────
@@ -460,25 +511,27 @@ pub(crate) fn quadrature_optical_simplex<const NV: usize>(
     let mut band_q = vec![0.0; nsta];
     let mut k_ab_q = Array2::<Complex<f64>>::zeros((nsta, nsta));
     let mut occupations = vec![0.0; nsta];
+    let mut spectrum = vec![Complex::new(0.0, 0.0); frequencies.len()];
+    let frequency_slice = frequencies.as_slice().unwrap();
     let mut accumulate = |lam: &[f64], weight: f64| {
         bary_interp_band_refs_into(&bands, lam, nsta, &mut band_q);
         bary_interp_matrix_refs_into(&kmats, lam, &mut k_ab_q);
         for n in 0..nsta {
             occupations[n] = fermi(band_q[n], mu, thermal_width);
         }
-        for (out, &omega) in total.iter_mut().zip(frequencies) {
-            *out += weight
-                * sim.volume
-                * eval_optical_kernel_with_occupations(
-                    &band_q,
-                    &occupations,
-                    &k_ab_q,
-                    omega,
-                    eta,
-                    mu,
-                    thermal_width,
-                    nsta,
-                );
+        eval_optical_kernel_occupations_many(
+            &band_q,
+            &occupations,
+            &k_ab_q,
+            frequency_slice,
+            eta,
+            mu,
+            thermal_width,
+            nsta,
+            &mut spectrum,
+        );
+        for (out, value) in total.iter_mut().zip(&spectrum) {
+            *out += weight * sim.volume * *value;
         }
     };
     if d == 2 {
@@ -535,6 +588,61 @@ mod tests {
                     3,
                 ),
                 eval_optical_kernel(&band_q, &k_ab_q, omega, eta, mu, thermal_width, 3),
+            );
+        }
+    }
+
+    #[test]
+    fn multi_frequency_kernel_matches_scalar_calls() {
+        let band_q = [0.13, 0.71, 1.93];
+        let k_ab_q = array![
+            [
+                Complex::new(0.0, 0.0),
+                Complex::new(0.3, 0.2),
+                Complex::new(-0.1, 0.05)
+            ],
+            [
+                Complex::new(0.3, -0.2),
+                Complex::new(0.0, 0.0),
+                Complex::new(0.4, -0.03)
+            ],
+            [
+                Complex::new(-0.1, -0.05),
+                Complex::new(0.4, 0.03),
+                Complex::new(0.0, 0.0)
+            ]
+        ];
+        let (eta, mu, thermal_width) = (0.03, 0.62, 0.08);
+        let occupations: Vec<_> = band_q
+            .iter()
+            .map(|&energy| fermi(energy, mu, thermal_width))
+            .collect();
+        let frequencies = [0.11, 0.73, 1.91];
+        let mut totals = vec![Complex::new(0.0, 0.0); frequencies.len()];
+        eval_optical_kernel_occupations_many(
+            &band_q,
+            &occupations,
+            &k_ab_q,
+            &frequencies,
+            eta,
+            mu,
+            thermal_width,
+            3,
+            &mut totals,
+        );
+        for (index, &omega) in frequencies.iter().enumerate() {
+            assert_eq!(
+                totals[index],
+                eval_optical_kernel_with_occupations(
+                    &band_q,
+                    &occupations,
+                    &k_ab_q,
+                    omega,
+                    eta,
+                    mu,
+                    thermal_width,
+                    3,
+                ),
             );
         }
     }
