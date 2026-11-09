@@ -133,8 +133,8 @@ where
 }
 
 fn non_contiguous_model() -> Model<false, 3> {
-    // Orbitals must sit at their parent atom's position (validate()
-    // enforces ORBITAL_ATOM_POSITION_TOLERANCE).
+    // Orbitals are owned explicitly; their positions are near their parent
+    // atoms here, but displaced Wannier centres are accepted with a warning.
     Model::tb_model(
         Array2::eye(3),
         array![[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.0, 0.0]],
@@ -194,9 +194,10 @@ fn rmatrix_diagonal_is_cartesian_orbital_position() {
 }
 
 #[test]
-fn validate_rejects_orbitals_far_from_their_atom() {
-    // An orbital displaced beyond ORBITAL_ATOM_POSITION_TOLERANCE from its
-    // parent atom must be rejected at construction.
+fn validate_warns_but_accepts_orbitals_far_from_their_atom() {
+    // The old hard error was downgraded to a soft warning: displaced Wannier
+    // centres are valid model geometry, while symmetry/irrep algorithms check
+    // atom centring themselves.
     let ok = Model::<false, 3>::tb_model(
         Array2::eye(3),
         array![[0.05, 0.0, 0.0]],
@@ -206,9 +207,9 @@ fn validate_rejects_orbitals_far_from_their_atom() {
             [OrbitalId::new(0)],
         )]),
     );
-    assert!(ok.is_ok(), "deviation within tolerance must pass");
+    assert!(ok.is_ok(), "deviation within threshold must pass");
 
-    let bad = Model::<false, 3>::tb_model(
+    let displaced = Model::<false, 3>::tb_model(
         Array2::eye(3),
         array![[0.15, 0.0, 0.0]],
         Some(vec![Atom::with_orbitals(
@@ -218,14 +219,8 @@ fn validate_rejects_orbitals_far_from_their_atom() {
         )]),
     );
     assert!(
-        matches!(
-            bad,
-            Err(TbError::InvalidModelInvariant {
-                invariant: "orbital_atom_position",
-                ..
-            })
-        ),
-        "deviation beyond tolerance must fail with orbital_atom_position"
+        displaced.is_ok(),
+        "deviation beyond the warning threshold must still construct"
     );
 
     // Periodicity-aware: 0.97 vs 0.03 is 0.06 apart mod 1 (across the

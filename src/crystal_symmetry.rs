@@ -1023,8 +1023,8 @@ mod tests {
     use ndarray_linalg::Inverse;
 
     fn simple_cubic() -> Model<false, 3> {
-        // The orbital must sit at its atom's position (validate() enforces
-        // ORBITAL_ATOM_POSITION_TOLERANCE).
+        // Symmetry acts on the atom; orbital centres may be displaced and are
+        // only a soft validate() warning now.
         Model::tb_model(
             Array2::eye(3),
             array![[0.0, 0.0, 0.0]],

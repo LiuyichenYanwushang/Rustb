@@ -73,20 +73,17 @@ use ndarray::*;
 use ndarray_linalg::Inverse;
 use num_complex::Complex;
 
-/// Maximum allowed distance (fractional coordinates, modulo a lattice vector)
-/// between an orbital and its parent atom's position.
+/// Soft warning threshold for the distance (fractional coordinates, modulo a
+/// lattice vector) between an orbital and its parent atom's position.
 ///
-/// Enforced by [`Model::validate`].  Kept well below 1/2 so supercell image
-/// folding is unambiguous, and below the typical nearest-neighbour distance so
-/// bond-centered orbitals remain representable.
+/// [`Model::validate`] no longer rejects a model that exceeds this distance;
+/// it emits a one-time warning instead. Atom-centred orbital data, the owner
+/// mapping, and all Hamiltonian arrays remain well-defined for displaced
+/// Wannier centres. Symmetry and irrep algorithms that explicitly require
+/// atom-centred orbitals validate that requirement themselves.
 ///
-/// # Known limitation
-///
-/// The check is component-wise on the CURRENT lattice basis and is therefore
-/// not invariant under general `GL(d, Z)` basis changes: a model valid in one
-/// integer basis may be rejected after an arbitrary integer basis transform.
-/// `make_supercell` / `cut_*` re-validate their outputs, so such transforms
-/// fail loudly rather than silently.
+/// The diagnostic is component-wise on the CURRENT lattice basis and is
+/// therefore not invariant under general `GL(d, Z)` basis changes.
 pub const ORBITAL_ATOM_POSITION_TOLERANCE: f64 = 0.1;
 
 /// Tight-binding model structure.

@@ -10,6 +10,10 @@
   point takes a sampling count any more; the time grid survives only as the
   per-link fallback for links beyond the backend's range.  Callers that passed
   a sampling count can drop the second argument and will get the same results.
+- `Model::validate` no longer rejects an orbital or Wannier centre that is
+  farther than `ORBITAL_ATOM_POSITION_TOLERANCE` from its parent atom.  It
+  emits a one-time process-global warning instead; atom-centred symmetry and
+  irrep representations continue to enforce their own strict centring check.
 
 ### Safety and numerical fixes
 
