@@ -11,6 +11,9 @@ use ndarray::*;
 use Rustb::*;
 use num_complex::Complex;
 
+#[path = "fixtures/floquet.rs"]
+mod floquet_fixture;
+
 // ── Model builders (not timed) ──────────────────────────────────────────────
 
 /// 2-orbital graphene-like model (small baseline)
@@ -884,6 +887,28 @@ fn bench_response_paths(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_floquet_effective(c: &mut Criterion) {
+    let mut group = c.benchmark_group("floquet_effective");
+    group.sample_size(20);
+    for &case in floquet_fixture::CASES {
+        let model = case.model();
+        let light = case.light();
+        let options = case.options();
+        floquet_fixture::validate_case(case);
+        group.bench_function(case.name, |b| {
+            // Criterion's iter also times destruction of each returned model.
+            b.iter(|| {
+                black_box(
+                    black_box(&model)
+                        .floquet_effective_model(black_box(&light), Some(black_box(&options)))
+                        .unwrap(),
+                )
+            })
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_gen_ham,
@@ -900,5 +925,6 @@ criterion_group!(
     bench_ahc_ec_2d,
     bench_intrinsic_ec_2d,
     bench_response_paths,
+    bench_floquet_effective,
 );
 criterion_main!(benches);

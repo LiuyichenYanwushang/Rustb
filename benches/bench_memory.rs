@@ -1,4 +1,15 @@
-//! Allocation-counting benchmark for representative response paths.
+//! Allocation-counting benchmark for representative response and Floquet paths.
+//!
+//! No arguments keep the response benchmark. Floquet modes use exact case IDs
+//! from the shared fixture: `--floquet-check` validates all cases and prints
+//! the maximum order-2 correction; `--floquet <exact-id>` warms once, then
+//! measures one construction while retaining its output. Allocation elapsed
+//! excludes output destruction, unlike Criterion's iteration timing.
+//!
+//! `--floquet-rss <exact-id>` constructs once with counting off, without a
+//! warmup or separate fixture validation. Capture peak RSS externally in a
+//! fresh process; it includes process/input/thread/backend overhead and is not
+//! the same metric as allocator-observed net growth.
 //!
 //! Phase timing is not instrumented here: the repository has no public stage
 //! probe and this WSL image has no usable perf/valgrind backend. End-to-end
@@ -24,6 +35,9 @@ use std::time::Instant;
 use Rustb::*;
 use ndarray::*;
 use num_complex::Complex;
+
+#[path = "fixtures/floquet.rs"]
+mod floquet_fixture;
 
 #[cfg(not(any(feature = "mimalloc", feature = "jemalloc")))]
 struct CountingAllocator;
@@ -127,7 +141,115 @@ fn build_medium() -> Model<false, 2> {
         .unwrap()
 }
 
+fn run_floquet(case: floquet_fixture::Case, rss: bool) {
+    // Prime the global Rayon pool once here, before any timed/allocation-counted
+    // construction, so both modes measure construction rather than thread startup.
+    rayon::broadcast(|_| ());
+    let model = case.model();
+    let light = case.light();
+    let options = case.options();
+    println!(
+        "# floquet case={} mode={} nsta={} input_nr={} radius={} order={} harmonic_max={} drive={} omega0_ev={} rayon_threads={}",
+        case.name,
+        if rss { "rss" } else { "allocation" },
+        model.nsta(),
+        model.hamR.nrows(),
+        case.radius,
+        case.order,
+        case.harmonic_max,
+        case.drive,
+        light.omega0_ev,
+        rayon::current_num_threads()
+    );
+
+    if rss {
+        // One public construction only: no warmup or fixture validation here.
+        let output = black_box(
+            black_box(&model)
+                .floquet_effective_model(black_box(&light), Some(black_box(&options)))
+                .unwrap(),
+        );
+        println!(
+            "# output_nr={} counting=off; capture fresh-process peak RSS externally",
+            output.hamR.nrows()
+        );
+        drop(black_box(output));
+        return;
+    }
+
+    drop(black_box(
+        model
+            .floquet_effective_model(&light, Some(&options))
+            .unwrap(),
+    ));
+    let m = measure(|| {
+        black_box(&model)
+            .floquet_effective_model(black_box(&light), Some(black_box(&options)))
+            .unwrap()
+    });
+    black_box(&m.value);
+    println!("# output_nr={}", m.value.hamR.nrows());
+    if !ALLOCATION_COUNTING {
+        println!("# allocator counting disabled under mimalloc/jemalloc features");
+    }
+    println!("path\ttime_ms\tallocs\tallocated_bytes\tpeak_live_bytes");
+    if ALLOCATION_COUNTING {
+        println!(
+            "{}\t{:.3}\t{}\t{}\t{}",
+            case.name,
+            m.elapsed.as_secs_f64() * 1e3,
+            m.allocations,
+            m.allocated_bytes,
+            m.peak_live_bytes
+        );
+    } else {
+        println!(
+            "{}\t{:.3}\tn/a\tn/a\tn/a",
+            case.name,
+            m.elapsed.as_secs_f64() * 1e3
+        );
+    }
+    drop(black_box(m.value));
+}
+
 fn main() {
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    // Cargo supplies --bench even for a harness=false executable. Strip one
+    // such flag; duplicate flags or other unexpected arguments still fail.
+    if let Some(index) = args.iter().position(|arg| arg == "--bench") {
+        args.remove(index);
+    }
+    match args.as_slice() {
+        [] => {}
+        [mode] if mode == "--floquet-check" => {
+            println!("case\tmax_abs_order2_correction");
+            for &case in floquet_fixture::CASES {
+                let correction = floquet_fixture::validate_case(case);
+                println!("{}\t{:.12e}", case.name, correction);
+            }
+            return;
+        }
+        [mode, name] if mode == "--floquet" || mode == "--floquet-rss" => {
+            let case = floquet_fixture::CASES
+                .iter()
+                .find(|case| case.name == name.as_str())
+                .unwrap_or_else(|| {
+                    eprintln!(
+                        "unknown Floquet case: {name}; use --floquet-check to list exact IDs"
+                    );
+                    std::process::exit(2);
+                });
+            run_floquet(*case, mode == "--floquet-rss");
+            return;
+        }
+        _ => {
+            eprintln!(
+                "usage: bench_memory [--floquet-check | --floquet <exact-id> | --floquet-rss <exact-id>]"
+            );
+            std::process::exit(2);
+        }
+    }
+
     let model = build_medium();
     let kmesh = [9, 9];
     let eta = 0.05;
