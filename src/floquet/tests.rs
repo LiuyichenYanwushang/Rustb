@@ -5787,3 +5787,357 @@ fn two_band_exotic_drive_first_order_commutator_is_cubic() {
         "circular-drive commutator should scale as κ² (ratio ≈ 4), got {ratio_circ:.2}"
     );
 }
+
+mod regrouped_order_two {
+    use super::*;
+
+    const BESSEL: PeierlsFourierMethod = PeierlsFourierMethod::Bessel {
+        cutoff_margin: BESSEL_CUTOFF_MARGIN,
+    };
+
+    fn fixture() -> Model<false, 2> {
+        let mut model = Model::<false, 2>::tb_model(
+            array![[1.0, 0.18], [-0.11, 1.2]],
+            array![[0.02, 0.07], [0.31, 0.14], [0.67, 0.43]],
+            None,
+        )
+        .unwrap();
+        model.set_onsite(&array![0.21, -0.33, 0.17], None);
+        for (i, j, r, re, im) in [
+            (0, 1, [0, 0], 0.4, 0.19),
+            (1, 2, [0, 0], -0.23, 0.31),
+            (0, 1, [1, 0], -0.8, 0.27),
+            (1, 2, [0, 1], 0.47, -0.36),
+            (2, 0, [1, 1], 0.29, 0.14),
+        ] {
+            model.set_hop(Complex::new(re, im), i, j, &arr1(&r), None);
+        }
+        model
+    }
+
+    fn drive(omega: f64) -> FloquetDrive {
+        FloquetDrive::with_modes(
+            omega,
+            vec![
+                LightMode::new(
+                    1,
+                    array![Complex::new(0.31, 0.08), Complex::new(-0.11, 0.27)],
+                ),
+                LightMode::new(
+                    2,
+                    array![Complex::new(0.09, -0.04), Complex::new(0.05, 0.07)],
+                ),
+            ],
+        )
+    }
+
+    fn options(n: isize) -> FloquetEffectiveOptions {
+        FloquetEffectiveOptions::new()
+            .with_order(2)
+            .with_harmonic_max(n)
+    }
+
+    fn assert_close(actual: &[Complex<f64>], expected: &[Complex<f64>]) {
+        assert_eq!(actual.len(), expected.len());
+        assert!(
+            actual
+                .iter()
+                .chain(expected)
+                .all(|z| z.re.is_finite() && z.im.is_finite())
+        );
+        let norm = actual
+            .iter()
+            .chain(expected)
+            .map(|z| z.norm())
+            .fold(f64::MIN_POSITIVE, f64::max);
+        for (index, (a, b)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (a - b).norm() <= 2e-11 * norm,
+                "entry {index}: {a} vs {b}, scale={norm:e}"
+            );
+        }
+    }
+
+    fn assert_models_close(actual: &Model<false, 2>, expected: &Model<false, 2>) {
+        assert_eq!(actual.hamR, expected.hamR);
+        assert_close(
+            actual.ham.as_slice().unwrap(),
+            expected.ham.as_slice().unwrap(),
+        );
+    }
+
+    #[test]
+    fn matches_termwise_literal_and_thread_counts() {
+        let serial = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let parallel = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let drive = drive(6.0);
+        for mutated in [false, true] {
+            let mut model = fixture();
+            if mutated {
+                // Storage-valid, deliberately not Hermitian: do not assume H_-n = H_n†.
+                model.ham[[0, 0, 1]] += Complex::new(0.17, -0.09);
+                model.ham[[1, 2, 0]] += Complex::new(0.04, 0.11);
+            }
+            model.validate().unwrap();
+            for n in 0..=3 {
+                let options = options(n);
+                let actual = serial
+                    .install(|| model.floquet_effective_model(&drive, Some(&options)))
+                    .unwrap();
+                let old = serial
+                    .install(|| model.floquet_effective_model_impl(&drive, Some(&options), false))
+                    .unwrap();
+                let threaded = parallel
+                    .install(|| model.floquet_effective_model(&drive, Some(&options)))
+                    .unwrap();
+                assert_models_close(&actual, &old);
+                assert_models_close(&actual, &threaded);
+                let cache = model.floquet_harmonic_cache(&drive, -2 * n, 2 * n, &BESSEL);
+                if n >= 2 {
+                    assert!(can_regroup_order_two(&cache, n, drive.omega0_ev.recip()));
+                }
+                for k in [array![0.0, 0.0], array![0.17, 0.29], array![0.43, 0.81]] {
+                    let mut expected = model
+                        .floquet_effective_ham_onek_lattice(&k, &drive, 2, n, true, &cache)
+                        .unwrap();
+                    if mutated {
+                        // Match only the final real-space Hermitian projection.
+                        expected = (&expected + &hermitian_conjugate(&expected)) * 0.5;
+                    }
+                    let actual = actual.gen_ham(&k, Gauge::Lattice);
+                    assert_close(actual.as_slice().unwrap(), expected.as_slice().unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn extreme_frequencies_preserve_zero_cancellation_and_failure() {
+        let model = fixture();
+        let options = options(2);
+        for omega in [1e-200_f64, 1e200] {
+            let inverse_squared = omega.recip() * omega.recip();
+            assert!(if omega < 1.0 {
+                inverse_squared.is_infinite()
+            } else {
+                inverse_squared == 0.0
+            });
+            let amplitude = array![Complex::new(0.25, 0.125), Complex::new(-0.125, 0.25)];
+            let cancelled = FloquetDrive::with_modes(
+                omega,
+                vec![
+                    LightMode::new(1, amplitude.clone()),
+                    LightMode::new(-1, amplitude.mapv(|z| -z.conj())),
+                ],
+            );
+            let zero = FloquetDrive::with_modes(omega, vec![LightMode::new(1, Array1::zeros(2))]);
+            for drive in [FloquetDrive::new(omega), zero, cancelled] {
+                let actual = model
+                    .floquet_effective_model(&drive, Some(&options))
+                    .unwrap();
+                let old = model
+                    .floquet_effective_model_impl(&drive, Some(&options), false)
+                    .unwrap();
+                assert_models_close(&actual, &old);
+            }
+            let drive = drive(omega);
+            let actual = model.floquet_effective_model(&drive, Some(&options));
+            let old = model.floquet_effective_model_impl(&drive, Some(&options), false);
+            if omega < 1.0 {
+                assert_eq!(
+                    actual.unwrap_err().to_string(),
+                    old.unwrap_err().to_string()
+                );
+            } else {
+                assert_models_close(&actual.unwrap(), &old.unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn jointly_scaled_model_and_frequency_preserve_termwise_outcomes() {
+        for (scale, safe) in [
+            (1e-20, true),
+            (1e20, true),
+            (1e-90, false),
+            (1e90, true),
+            (1e-110, false),
+            (1e110, false),
+        ] {
+            let mut model = fixture();
+            model.ham.mapv_inplace(|z| z * scale);
+            let drive = drive(6.0 * scale);
+            let options = options(2);
+            let cache = model.floquet_harmonic_cache(&drive, -4, 4, &BESSEL);
+            assert_eq!(
+                can_regroup_order_two(&cache, 2, drive.omega0_ev.recip()),
+                safe,
+                "scale={scale:e}"
+            );
+            match (
+                model.floquet_effective_model(&drive, Some(&options)),
+                model.floquet_effective_model_impl(&drive, Some(&options), false),
+            ) {
+                (Ok(actual), Ok(old)) => assert_models_close(&actual, &old),
+                (Err(actual), Err(old)) if !safe => assert_eq!(actual.to_string(), old.to_string()),
+                (actual, old) => panic!("scale={scale:e}: regrouped={actual:?}, termwise={old:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn headroom_guard_rejects_unrepresentable_bounds_and_inverse_squares() {
+        let mut cache = fixture().floquet_harmonic_cache(&drive(6.0), -4, 4, &BESSEL);
+        assert!(can_regroup_order_two(&cache, 2, 1.0 / 6.0));
+        assert!(!can_regroup_order_two(&cache, 0, 1.0));
+        for inverse in [0.0, f64::INFINITY, 1e200, 1e-200, f64::MIN_POSITIVE.sqrt()] {
+            assert!(!can_regroup_order_two(&cache, 2, inverse));
+        }
+        let original = cache.blocks.clone();
+        for scale in [0.0, 1e110, 1e-110] {
+            cache.blocks = original.mapv(|z| z * scale);
+            assert!(!can_regroup_order_two(&cache, 2, 1.0));
+        }
+        cache.blocks = original;
+        for invalid in [f64::INFINITY, f64::NAN] {
+            cache.blocks[[0, 0, 0, 0]] = Complex::new(invalid, 0.0);
+            assert!(!can_regroup_order_two(&cache, 2, 1.0));
+        }
+    }
+
+    #[test]
+    fn exactly_cancelled_grouped_inners_do_not_bypass_tiny_frequency_guard() {
+        let x = array![[0.0, 1.0], [1.0, 0.0]].mapv(|v| Complex::new(v, 0.0));
+        let z = array![[1.0, 0.0], [0.0, -1.0]].mapv(|v| Complex::new(v, 0.0));
+        let mut cache = FloquetHarmonicCache {
+            harmonic_min: -4,
+            harmonic_max: 4,
+            blocks: Array4::zeros((9, 1, 2, 2)),
+        };
+        // H_0 = H_±4 = 0; H_±1 = X; H_±2 = Z; H_±3 = 3X.
+        for n in [-3_isize, -2, -1, 1, 2, 3] {
+            let block = if n.abs() == 2 {
+                z.clone()
+            } else {
+                &x * if n.abs() == 3 { 3.0 } else { 1.0 }
+            };
+            cache
+                .blocks
+                .slice_mut(s![(n + 4) as usize, 0, .., ..])
+                .assign(&block);
+        }
+        let y_one = matrix_commutator(&(&x * 3.0), &z) * -0.5 - matrix_commutator(&z, &x)
+            + matrix_commutator(&x, &z) * 0.5;
+        assert!(y_one.iter().all(|v| v.re == 0.0 && v.im == 0.0));
+        assert!(can_regroup_order_two(&cache, 2, 1.0));
+        assert!(!can_regroup_order_two(&cache, 2, 1e-200_f64.recip()));
+    }
+
+    #[test]
+    fn headroom_guard_protects_outer_underflow_before_frequency_amplification() {
+        let power_of_two = |exponent: i32| f64::from_bits(((1023 + exponent) as u64) << 52);
+        let mut cache = FloquetHarmonicCache {
+            harmonic_min: -6,
+            harmonic_max: 6,
+            blocks: Array4::zeros((13, 1, 4, 4)),
+        };
+        cache.blocks[[6, 0, 3, 3]] = Complex::new(1.0, 0.0);
+        cache.blocks[[7, 0, 2, 0]] = Complex::new(power_of_two(-800), 0.0);
+        cache.blocks[[9, 0, 1, 2]] = Complex::new(power_of_two(-174), 0.0);
+        cache.blocks[[2, 0, 0, 1]] = Complex::new(power_of_two(-100), 0.0);
+        let h_one = cache.blocks.slice(s![7, 0, .., ..]).to_owned();
+        let h_three = cache.blocks.slice(s![9, 0, .., ..]).to_owned();
+        let h_minus_four = cache.blocks.slice(s![2, 0, .., ..]).to_owned();
+        let inner = matrix_commutator(&h_minus_four, &h_three);
+        assert!(grouped_inner_scaling_is_safe(
+            std::slice::from_ref(&inner),
+            1.0 / 3.0
+        ));
+        let old_outer = matrix_commutator(&h_one, &inner);
+        let grouped_outer = matrix_commutator(&h_one, &inner.mapv(|v| v * (1.0 / 3.0)));
+        assert_eq!(old_outer[[2, 2]].re, f64::from_bits(1));
+        assert!(grouped_outer.iter().all(|v| v.re == 0.0 && v.im == 0.0));
+        let inverse = power_of_two(500);
+        let old_correction = old_outer.mapv(|v| v * (-(inverse * inverse) / 9.0));
+        assert!(old_correction[[2, 2]].re.is_normal());
+        // All coarse maximum bounds pass; the small-component guard is what
+        // prevents losing a normal final correction through a tiny raw outer.
+        assert!(!can_regroup_order_two(&cache, 3, inverse));
+        let floor = f64::EPSILON.powi(4);
+        cache.blocks[[7, 0, 2, 0]] = Complex::new(floor, 0.0);
+        assert!(can_regroup_order_two(&cache, 3, inverse));
+        cache.blocks[[7, 0, 2, 0]] = Complex::new(f64::from_bits(floor.to_bits() - 1), 0.0);
+        assert!(!can_regroup_order_two(&cache, 3, inverse));
+    }
+
+    #[test]
+    fn inner_scaling_requires_normal_nonzero_components() {
+        let normal = vec![array![[Complex::new(2.0, -3.0), Complex::new(0.0, 0.0)]]];
+        assert!(grouped_inner_scaling_is_safe(&normal, -0.5));
+        assert!(grouped_inner_scaling_is_safe(&[Array2::zeros((2, 2))], 0.5));
+        for (component, weight) in [
+            (f64::from_bits(1), 1.0),
+            (f64::MIN_POSITIVE, 0.5),
+            (f64::from_bits(1), 0.5),
+            (1e-200, 1e-200),
+            (1e200, 1e200),
+            (f64::INFINITY, 1.0),
+            (f64::NAN, 1.0),
+            (1.0, f64::INFINITY),
+            (1.0, f64::NAN),
+            (1.0, 0.0),
+        ] {
+            for value in [Complex::new(component, 0.0), Complex::new(0.0, component)] {
+                assert!(
+                    !grouped_inner_scaling_is_safe(&[array![[value]]], weight),
+                    "component={component:e}, weight={weight:e}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_family_regrouping_reduces_support_constructions() {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| {
+                let model = fixture();
+                for (n, pure_second) in [(2, false), (1, false), (2, true)] {
+                    let mut drive = drive(6.0);
+                    if pure_second {
+                        drive.modes.retain(|mode| mode.harmonic == 2);
+                    }
+                    let options = options(n);
+                    let results = [false, true].map(|regroup| {
+                        REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.set(0));
+                        let out = model
+                            .floquet_effective_model_impl(&drive, Some(&options), regroup)
+                            .unwrap();
+                        (
+                            out,
+                            REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.get()),
+                        )
+                    });
+                    assert_models_close(&results[0].0, &results[1].0);
+                    let (old, grouped) = (results[0].1, results[1].1);
+                    if n == 2 && !pure_second {
+                        assert_eq!(old, 36, "exercise all twelve mixed-family summands");
+                        assert!(
+                            grouped <= 28 && grouped < old,
+                            "grouped={grouped}, termwise={old}"
+                        );
+                    } else {
+                        assert_eq!(grouped, old, "one signed pair must keep the termwise path");
+                    }
+                }
+            });
+    }
+}

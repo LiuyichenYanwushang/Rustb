@@ -1486,6 +1486,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         drive: &FloquetDrive,
         options: Option<&FloquetEffectiveOptions>,
     ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+        self.floquet_effective_model_impl(drive, options, true)
+    }
+
+    // The false setting retains the termwise reference for regression tests;
+    // production also uses that path when regrouping lacks numerical headroom.
+    fn floquet_effective_model_impl(
+        &self,
+        drive: &FloquetDrive,
+        options: Option<&FloquetEffectiveOptions>,
+        regroup_order_two: bool,
+    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
         self.validate()?;
         let default_options;
         let options = match options {
@@ -1616,6 +1627,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 .filter(|&n| n != 0 && (nonzero(n) || nonzero(-n)))
                 .collect::<Vec<_>>();
 
+            // The grouped B-family path is taken only when the selector asks
+            // for it and the conservative L1 headroom guard accepts.  The
+            // termwise reference below remains the fallback in every other
+            // case, including a selector that forces it for regression tests.
+
             // Each fixed-m contribution is independent.  Accumulate one
             // private real-space map per Rayon job and merge maps only after
             // all nested commutators for that job are complete.  This exposes
@@ -1662,6 +1678,102 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 Ok(())
             };
 
+            // With only one signed pair there is no outer convolution to
+            // reuse. Keep that case (including pure l=2 at N=2) termwise.
+            let regroup = regroup_order_two
+                && signed_harmonics.len() > 2
+                && can_regroup_order_two(&harmonic_cache, harmonic_max, inverse_omega);
+            let accumulate_fixed_index = |partial: &mut RealSpaceBlockMap,
+                                          p: isize|
+             -> Result<()> {
+                if !regroup {
+                    return accumulate_fixed_m(partial, p);
+                }
+
+                // The first family is deliberately unchanged and not fused
+                // with the mixed-family inner sum.
+                if nonzero(p) && nonzero(0) && nonzero(-p) {
+                    let h_zero = harmonic_cache.harmonic_blocks(0);
+                    let h_p = harmonic_cache.harmonic_blocks(p);
+                    let (inner, inner_r) =
+                        real_space_commutator_with_supports(&h_zero, &self.hamR, &h_p, &self.hamR)?;
+                    let h_minus_p = harmonic_cache.harmonic_blocks(-p);
+                    let (outer, outer_r) = real_space_commutator_with_supports(
+                        &h_minus_p, &self.hamR, &inner, &inner_r,
+                    )?;
+                    let scale = inverse_omega_squared / (2.0 * (p as f64).powi(2));
+                    accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
+                }
+                // B needs H_-p, not H_p. Do not assume an adjoint relation for
+                // every storage-valid (possibly hand-mutated) input model.
+                if !nonzero(-p) {
+                    return Ok(());
+                }
+                let h_minus_p = harmonic_cache.harmonic_blocks(-p);
+                let mut inner_sum = RealSpaceBlockMap::new();
+                let mut scaling_safe = true;
+                for &m in &signed_harmonics {
+                    if m == p || !nonzero(m) || !nonzero(p - m) {
+                        continue;
+                    }
+                    let h_difference = harmonic_cache.harmonic_blocks(p - m);
+                    let h_m = harmonic_cache.harmonic_blocks(m);
+                    let (inner, inner_r) = real_space_commutator_with_supports(
+                        &h_difference,
+                        &self.hamR,
+                        &h_m,
+                        &self.hamR,
+                    )?;
+                    let weight = 1.0 / (m as f64);
+                    if !grouped_inner_scaling_is_safe(&inner, weight) {
+                        scaling_safe = false;
+                        break;
+                    }
+                    accumulate_scaled_real_space_blocks(&mut inner_sum, &inner, &inner_r, weight)?;
+                }
+                scaling_safe = scaling_safe
+                    && inner_sum.values().all(|block| {
+                        grouped_inner_scaling_is_safe(std::slice::from_ref(block), 1.0)
+                    });
+                if !scaling_safe {
+                    // Reweighting before the outer product must not erase a
+                    // subnormal that the outer operand could amplify. Stream
+                    // this p termwise instead; do not retain all inner blocks.
+                    drop(inner_sum);
+                    for &m in &signed_harmonics {
+                        if m == p || !nonzero(m) || !nonzero(p - m) {
+                            continue;
+                        }
+                        let h_difference = harmonic_cache.harmonic_blocks(p - m);
+                        let h_m = harmonic_cache.harmonic_blocks(m);
+                        let (inner, inner_r) = real_space_commutator_with_supports(
+                            &h_difference,
+                            &self.hamR,
+                            &h_m,
+                            &self.hamR,
+                        )?;
+                        let (outer, outer_r) = real_space_commutator_with_supports(
+                            &h_minus_p, &self.hamR, &inner, &inner_r,
+                        )?;
+                        let scale = inverse_omega_squared / (3.0 * (m as f64) * (p as f64));
+                        accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
+                    }
+                    return Ok(());
+                }
+                if inner_sum.is_empty() {
+                    return Ok(());
+                }
+                // Y_p = sum_{m != p} [H_(p-m), H_m] / m. Linearity lets one
+                // raw outer commutator replace all mixed-family outer terms.
+                let (rows, inner): (Vec<_>, Vec<_>) = inner_sum.into_iter().unzip();
+                let inner_r =
+                    Array2::from_shape_fn((rows.len(), DIM), |(row, axis)| rows[row][axis]);
+                let (outer, outer_r) =
+                    real_space_commutator_with_supports(&h_minus_p, &self.hamR, &inner, &inner_r)?;
+                let scale = inverse_omega_squared / (3.0 * (p as f64));
+                accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)
+            };
+
             let order_two_blocks = if signed_harmonics.len() > 1 && rayon::current_num_threads() > 1
             {
                 let min_harmonics_per_job =
@@ -1672,7 +1784,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     .try_fold(
                         RealSpaceBlockMap::new,
                         |mut partial, &m| -> Result<RealSpaceBlockMap> {
-                            accumulate_fixed_m(&mut partial, m)?;
+                            accumulate_fixed_index(&mut partial, m)?;
                             Ok(partial)
                         },
                     )
@@ -1682,7 +1794,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             } else {
                 let mut partial = RealSpaceBlockMap::new();
                 for &m in &signed_harmonics {
-                    accumulate_fixed_m(&mut partial, m)?;
+                    accumulate_fixed_index(&mut partial, m)?;
                 }
                 partial
             };
@@ -2100,6 +2212,81 @@ fn effective_cache_max(order: usize, harmonic_max: isize) -> Result<isize> {
         }),
         _ => unreachable!("the effective order must be validated first"),
     }
+}
+
+// Only the mixed-family regrouping scales an inner result before the outer
+// product. Keep subnormal/underflowing components on the original arithmetic
+// order instead of silently losing a contribution that might be amplified.
+fn grouped_inner_scaling_is_safe(blocks: &[Array2<Complex<f64>>], weight: f64) -> bool {
+    weight.is_finite()
+        && blocks.iter().flat_map(|block| block.iter()).all(|value| {
+            [value.re, value.im]
+                .into_iter()
+                .all(|component| component == 0.0 || (component * weight).is_normal())
+        })
+}
+
+// Bound complete convolution L1 norms, not a band gap or amplitude tolerance.
+// If L bounds every harmonic's sum of |re|+|im| over all blocks/entries, then
+// ||[A,B]||_1 <= 2 L^2 and each raw nested term is bounded by 4 L^3.
+// The grouped inner has at most 2N terms with |1/m| <= 1. Keep ample overflow
+// headroom for both the old and grouped arithmetic and their final signed sum.
+// Reject underflowed/coarse bounds as well; the original path remains valid
+// for exact-zero terms even when 1/W^2 itself is not representable.
+fn can_regroup_order_two(
+    cache: &FloquetHarmonicCache,
+    harmonic_max: isize,
+    inverse_omega: f64,
+) -> bool {
+    let inverse_squared = inverse_omega * inverse_omega;
+    if harmonic_max <= 0 || !inverse_squared.is_normal() {
+        return false;
+    }
+    // Guard minima as well as maxima: dividing an inner before the outer
+    // multiplication must not underflow a raw triple product that the final
+    // inverse-frequency scale could amplify. With |m| < 2^63, input nonzero
+    // components >= eps^4 = 2^-208 give a least binary quantum of at least
+    // 2^(-3*(208+52)-(63+52)) = 2^-895 before that final scale, safely above
+    // the normal limit 2^-1022 even after cancellation. This selects the old
+    // arithmetic for smaller components; it never prunes their contributions.
+    let n = harmonic_max as f64;
+    // Splitting a subnormal original coefficient can also change a term that
+    // a large raw outer would amplify. Keep every original A/B scale normal.
+    if !(inverse_squared / (3.0 * n * n)).is_normal() {
+        return false;
+    }
+    let minimum_component = f64::EPSILON.powi(4);
+    let mut l1 = 0.0;
+    for value in &cache.blocks {
+        for component in [value.re, value.im] {
+            let magnitude = component.abs();
+            if magnitude != 0.0 && magnitude < minimum_component {
+                return false;
+            }
+            l1 += magnitude;
+        }
+    }
+    if !l1.is_normal() {
+        return false;
+    }
+    let inner = 2.0 * l1 * l1;
+    let grouped_inner = (2.0 * n) * inner;
+    let raw_outer = 2.0 * l1 * inner;
+    let grouped_outer = 2.0 * l1 * grouped_inner;
+    let first_order = n * inner * inverse_omega;
+    let second_order = (2.0 * n) * (raw_outer + grouped_outer) * inverse_squared;
+    let final_sum = l1 + first_order + second_order;
+    [
+        inner,
+        grouped_inner,
+        raw_outer,
+        grouped_outer,
+        first_order,
+        second_order,
+        final_sum,
+    ]
+    .into_iter()
+    .all(|bound| bound.is_normal() && bound < f64::MAX / 1024.0)
 }
 
 fn validate_effective_cache_layout(cache_max: isize, n_r: usize, nsta: usize) -> Result<()> {
