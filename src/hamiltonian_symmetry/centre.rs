@@ -1168,8 +1168,54 @@ fn pair_project_hamiltonian<R: RMatrixData>(
     }
     hermitize_support_map(&mut projected_a)?;
     hermitize_support_map(&mut projected_b)?;
-    let symmetrized_a = model_with_hamiltonian_support(a, projected_a.clone())?;
-    let symmetrized_b = model_with_hamiltonian_support(b, projected_b.clone())?;
+    let position_a = model_position_support(a);
+    let position_b = model_position_support(b);
+    let projected_positions =
+        if let (Some(position_a), Some(position_b)) = (position_a.as_ref(), position_b.as_ref()) {
+            let domain = projected_a
+                .keys()
+                .chain(projected_b.keys())
+                .copied()
+                .collect::<BTreeSet<_>>();
+            let up_sources = actions
+                .iter()
+                .map(|(operation, action_a, _)| PositionSource {
+                    operation: &operation.spatial,
+                    action: action_a,
+                    support: match operation.channel {
+                        CollinearAction::Preserve => position_a,
+                        CollinearAction::Swap => position_b,
+                    },
+                })
+                .collect::<Vec<_>>();
+            let down_sources = actions
+                .iter()
+                .map(|(operation, _, action_b)| PositionSource {
+                    operation: &operation.spatial,
+                    action: action_b,
+                    support: match operation.channel {
+                        CollinearAction::Preserve => position_b,
+                        CollinearAction::Swap => position_a,
+                    },
+                })
+                .collect::<Vec<_>>();
+            Some((
+                project_position_support_with_sources(a, &domain, &up_sources)?,
+                project_position_support_with_sources(b, &domain, &down_sources)?,
+            ))
+        } else {
+            None
+        };
+    let symmetrized_a = model_with_hamiltonian_support(
+        a,
+        projected_a.clone(),
+        projected_positions.as_ref().map(|(position, _)| position),
+    )?;
+    let symmetrized_b = model_with_hamiltonian_support(
+        b,
+        projected_b.clone(),
+        projected_positions.as_ref().map(|(_, position)| position),
+    )?;
     let change = max_map_change(&model_ham_blocks(a), &model_ham_blocks(&symmetrized_a)).max(
         max_map_change(&model_ham_blocks(b), &model_ham_blocks(&symmetrized_b)),
     );

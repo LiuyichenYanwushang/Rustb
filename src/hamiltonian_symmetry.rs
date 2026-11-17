@@ -2174,9 +2174,242 @@ fn symmetrized_support(
     Ok(averaged)
 }
 
+pub(crate) type PositionSupport = BTreeMap<[isize; 3], Array3<Complex64>>;
+
+pub(crate) struct PositionSource<'a> {
+    pub(crate) operation: &'a CrystalSymmetryOperation,
+    pub(crate) action: &'a LocalizedBasisAction,
+    pub(crate) support: &'a PositionSupport,
+}
+
+fn model_position_support<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+) -> Option<PositionSupport> {
+    if !R::HAS_RMATRIX {
+        return None;
+    }
+    let matrix = model.rmatrix.as_array4();
+    let mut support = BTreeMap::new();
+    for index in 0..model.hamR.nrows() {
+        support.insert(
+            [
+                model.hamR[[index, 0]],
+                model.hamR[[index, 1]],
+                model.hamR[[index, 2]],
+            ],
+            matrix.index_axis(Axis(0), index).to_owned(),
+        );
+    }
+    Some(support)
+}
+
+fn transformed_position_at(
+    support: &PositionSupport,
+    operation: &CrystalSymmetryOperation,
+    action: &LocalizedBasisAction,
+    lattice_vector: [isize; 3],
+    lattice: &Array2<f64>,
+) -> std::result::Result<Array3<Complex64>, BasisRepresentationError> {
+    let rotated =
+        checked_rotation_vector(&operation.rotation, lattice_vector).ok_or_else(|| {
+            BasisRepresentationError::Invalid(
+                "rotated position-matrix lattice vector overflows isize".to_string(),
+            )
+        })?;
+    let dimension = action
+        .sectors
+        .first()
+        .map_or(0, |sector| sector.matrix.nrows());
+    let mut covariance = Array3::<Complex64>::zeros((3, dimension, dimension));
+    for left in &action.sectors {
+        let dagger = left.matrix.t().mapv(|value| value.conj());
+        for right in &action.sectors {
+            let image = [
+                rotated[0]
+                    .checked_add(right.shift[0])
+                    .and_then(|value| value.checked_sub(left.shift[0])),
+                rotated[1]
+                    .checked_add(right.shift[1])
+                    .and_then(|value| value.checked_sub(left.shift[1])),
+                rotated[2]
+                    .checked_add(right.shift[2])
+                    .and_then(|value| value.checked_sub(left.shift[2])),
+            ];
+            let target_cell = [
+                rotated[0].checked_add(right.shift[0]),
+                rotated[1].checked_add(right.shift[1]),
+                rotated[2].checked_add(right.shift[2]),
+            ];
+            let Some(image) = collect_three_options(image) else {
+                return Err(BasisRepresentationError::Invalid(
+                    "translated position-matrix lattice vector overflows isize".to_string(),
+                ));
+            };
+            let Some(target_cell) = collect_three_options(target_cell) else {
+                return Err(BasisRepresentationError::Invalid(
+                    "translated position-matrix cell vector overflows isize".to_string(),
+                ));
+            };
+            let mut block = support
+                .get(&image)
+                .cloned()
+                .unwrap_or_else(|| Array3::<Complex64>::zeros((3, dimension, dimension)));
+            if target_cell == left.shift {
+                let mut target_cartesian = [0.0f64; 3];
+                for axis in 0..3 {
+                    target_cartesian[axis] = (0..3)
+                        .map(|vector| target_cell[vector] as f64 * lattice[[vector, axis]])
+                        .sum();
+                }
+                for alpha in 0..3 {
+                    for orbital in 0..dimension {
+                        block[[alpha, orbital, orbital]] += target_cartesian[alpha];
+                    }
+                }
+            }
+            for alpha in 0..3 {
+                let transformed = dagger
+                    .dot(&block.index_axis(Axis(0), alpha))
+                    .dot(&right.matrix);
+                covariance
+                    .index_axis_mut(Axis(0), alpha)
+                    .scaled_add(Complex64::new(1.0, 0.0), &transformed);
+            }
+        }
+    }
+    if operation.time_reversal {
+        Ok(covariance.mapv(|value| value.conj()))
+    } else {
+        Ok(covariance)
+    }
+}
+
+pub(crate) fn project_position_support_with_sources<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+    domain: &BTreeSet<[isize; 3]>,
+    sources: &[PositionSource<'_>],
+) -> Result<PositionSupport> {
+    if sources.is_empty() {
+        return Err(TbError::TargetMagneticGroupIncompatible {
+            reason: "cannot project a position matrix with no operations".to_string(),
+        });
+    }
+    let nsta = model.nsta();
+    let count = sources.len() as f64;
+    let mut averaged = BTreeMap::new();
+    for &lattice_vector in domain {
+        let mut block = Array3::<Complex64>::zeros((3, nsta, nsta));
+        for source in sources {
+            let operation = source.operation;
+            let action = source.action;
+            let transformed = transformed_position_at(
+                source.support,
+                operation,
+                action,
+                lattice_vector,
+                &model.lat,
+            )
+            .map_err(|error| TbError::TargetMagneticGroupIncompatible {
+                reason: format!("position-matrix transform failed: {error}"),
+            })?;
+            let rotation = cartesian_rotation(model, operation).map_err(|error| {
+                TbError::TargetMagneticGroupIncompatible {
+                    reason: format!("position-matrix Cartesian rotation failed: {error}"),
+                }
+            })?;
+            let rotation = Array2::from_shape_fn((3, 3), |(row, column)| rotation[row][column]);
+            let inverse =
+                rotation
+                    .inv()
+                    .map_err(|error| TbError::TargetMagneticGroupIncompatible {
+                        reason: format!("position-matrix rotation is singular: {error}"),
+                    })?;
+            let mut corrected = transformed;
+            if lattice_vector == [0, 0, 0] {
+                let mut translation = [0.0f64; 3];
+                for axis in 0..3 {
+                    translation[axis] = (0..3)
+                        .map(|vector| operation.translation[vector] * model.lat[[vector, axis]])
+                        .sum();
+                }
+                for alpha in 0..3 {
+                    for orbital in 0..nsta {
+                        corrected[[alpha, orbital, orbital]] -= translation[alpha];
+                    }
+                }
+            }
+            for alpha in 0..3 {
+                for beta in 0..3 {
+                    block.index_axis_mut(Axis(0), alpha).scaled_add(
+                        Complex64::new(inverse[[alpha, beta]], 0.0),
+                        &corrected.index_axis(Axis(0), beta),
+                    );
+                }
+            }
+        }
+        block.mapv_inplace(|value| value / count);
+        averaged.insert(lattice_vector, block);
+    }
+    let mut result = BTreeMap::new();
+    let mut processed = BTreeSet::new();
+    for &lattice_vector in domain {
+        if !processed.insert(lattice_vector) {
+            continue;
+        }
+        let negative = checked_negate(lattice_vector).ok_or_else(|| {
+            TbError::TargetMagneticGroupIncompatible {
+                reason: "position-matrix support vector cannot be negated".to_string(),
+            }
+        })?;
+        processed.insert(negative);
+        let block = averaged
+            .get(&lattice_vector)
+            .cloned()
+            .unwrap_or_else(|| Array3::<Complex64>::zeros((3, nsta, nsta)));
+        let partner = averaged
+            .get(&negative)
+            .cloned()
+            .unwrap_or_else(|| Array3::<Complex64>::zeros((3, nsta, nsta)));
+        let mut hermitian = Array3::<Complex64>::zeros((3, nsta, nsta));
+        let mut partner_hermitian = Array3::<Complex64>::zeros((3, nsta, nsta));
+        for alpha in 0..3 {
+            let partner_dagger = partner
+                .index_axis(Axis(0), alpha)
+                .t()
+                .mapv(|value| value.conj());
+            let value = (&block.index_axis(Axis(0), alpha) + &partner_dagger) * 0.5;
+            hermitian.index_axis_mut(Axis(0), alpha).assign(&value);
+            partner_hermitian
+                .index_axis_mut(Axis(0), alpha)
+                .assign(&value.t().mapv(|entry| entry.conj()));
+        }
+        result.insert(lattice_vector, hermitian);
+        result.insert(negative, partner_hermitian);
+    }
+    Ok(result)
+}
+
+fn project_position_support<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+    support: &PositionSupport,
+    domain: &BTreeSet<[isize; 3]>,
+    operations: &[(CrystalSymmetryOperation, LocalizedBasisAction)],
+) -> Result<PositionSupport> {
+    let sources = operations
+        .iter()
+        .map(|(operation, action)| PositionSource {
+            operation,
+            action,
+            support,
+        })
+        .collect::<Vec<_>>();
+    project_position_support_with_sources(model, domain, &sources)
+}
+
 fn model_with_hamiltonian_support<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
     mut matrices: BTreeMap<[isize; 3], Array2<Complex64>>,
+    position: Option<&PositionSupport>,
 ) -> Result<Model<SPIN, 3, R>> {
     // Rustb's hopping builders treat row zero as the onsite block. Preserve
     // that invariant, retain the input order for existing blocks, and append
@@ -2223,28 +2456,36 @@ fn model_with_hamiltonian_support<const SPIN: bool, R: RMatrixData>(
         }
     }
 
-    // Position-matrix elements are independent operator data, not part of the
-    // Hamiltonian Reynolds projection. Preserve every existing block and add
-    // explicit zeros only for newly generated hopping support.
+    // Position-matrix blocks follow the same support as the Hamiltonian.
+    // When a projected map is supplied, use it; otherwise preserve the input
+    // blocks by lattice vector and leave newly generated blocks zero.
     let mut rmatrix = Array4::zeros((support.len(), 3, model.nsta(), model.nsta()));
     if R::HAS_RMATRIX {
-        let old_indices = (0..model.hamR.nrows())
-            .map(|index| {
-                (
-                    [
-                        model.hamR[[index, 0]],
-                        model.hamR[[index, 1]],
-                        model.hamR[[index, 2]],
-                    ],
-                    index,
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        for (new_index, (lattice_vector, _)) in support.iter().enumerate() {
-            if let Some(&old_index) = old_indices.get(lattice_vector) {
-                rmatrix
-                    .index_axis_mut(Axis(0), new_index)
-                    .assign(&model.rmatrix.as_array4().index_axis(Axis(0), old_index));
+        if let Some(position) = position {
+            for (new_index, (lattice_vector, _)) in support.iter().enumerate() {
+                if let Some(block) = position.get(lattice_vector) {
+                    rmatrix.index_axis_mut(Axis(0), new_index).assign(block);
+                }
+            }
+        } else {
+            let old_indices = (0..model.hamR.nrows())
+                .map(|index| {
+                    (
+                        [
+                            model.hamR[[index, 0]],
+                            model.hamR[[index, 1]],
+                            model.hamR[[index, 2]],
+                        ],
+                        index,
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            for (new_index, (lattice_vector, _)) in support.iter().enumerate() {
+                if let Some(&old_index) = old_indices.get(lattice_vector) {
+                    rmatrix
+                        .index_axis_mut(Axis(0), new_index)
+                        .assign(&model.rmatrix.as_array4().index_axis(Axis(0), old_index));
+                }
             }
         }
     }
@@ -2599,10 +2840,14 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// matrices cause an error instead of returning a plausibly symmetrized
     /// model.
     ///
-    /// `rmatrix`, when present, is independent operator data: existing blocks
-    /// are preserved and newly introduced `hamR` blocks receive zero position
-    /// matrices. This method certifies the returned Hamiltonian, not arbitrary
-    /// auxiliary operators.
+    /// When `rmatrix` is present it is projected as a vector operator, not as
+    /// another scalar Hamiltonian. For each operation the position block is
+    /// rotated by the Cartesian rotation, shifted by the operation translation,
+    /// and conjugated for antiunitary operations; the affine action is then
+    /// averaged and its Hermitian partner is restored. Generated `hamR` blocks
+    /// therefore receive a position block derived from the same projection, not
+    /// an unconditional zero. The final Hamiltonian covariance check remains the
+    /// authority for the returned model.
     ///
     /// Independent basis actions, group-composition checks, real-space
     /// support blocks, and final residuals are evaluated with Rayon. Matrix
@@ -2774,7 +3019,17 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                 reason: format!("failed to apply the target representation: {error}"),
             }
         })?;
-        let symmetrized = model_with_hamiltonian_support(self, averaged)?;
+        let position_support = model_position_support(self);
+        let projected_position = if let Some(position_support) = &position_support {
+            let domain = averaged.keys().copied().collect::<BTreeSet<_>>();
+            let projected =
+                project_position_support(self, position_support, &domain, &operations_and_actions)?;
+            Some(projected)
+        } else {
+            None
+        };
+        let symmetrized =
+            model_with_hamiltonian_support(self, averaged, projected_position.as_ref())?;
         let projected_support =
             validate_hamiltonian(&symmetrized, parameters.tolerances.hermiticity)?;
         let post_projection_residuals = operations_and_actions
@@ -3932,7 +4187,7 @@ mod tests {
     }
 
     #[test]
-    fn symmetrization_adds_missing_support_and_preserves_rmatrix_alignment() {
+    fn symmetrization_zeros_scalar_position_under_cubic_inversion() {
         let mut model: Model<false, 3, HasRMatrix> = Model::tb_model(
             Array2::eye(3),
             array![[0.0, 0.0, 0.0]],
@@ -3946,7 +4201,7 @@ mod tests {
         model.set_hop(3.0_f64, 0, 0, &array![1_isize, 0, 0], None);
         let mut rmatrix = Array4::zeros((model.hamR.nrows(), 3, 1, 1));
         for index in 0..model.hamR.nrows() {
-            if (0..3).all(|axis| model.hamR[[index, axis]] == [1, 0, 0][axis]) {
+            if (0..3).all(|axis| model.hamR[[index, axis]].abs() == [1, 0, 0][axis]) {
                 rmatrix[[index, 0, 0, 0]] = Complex64::new(7.0, 0.0);
             }
         }
@@ -3968,6 +4223,30 @@ mod tests {
             symmetrized.rmatrix.as_array4().len_of(Axis(0)),
             symmetrized.hamR.nrows()
         );
+        for index in 0..symmetrized.hamR.nrows() {
+            let r = [
+                symmetrized.hamR[[index, 0]],
+                symmetrized.hamR[[index, 1]],
+                symmetrized.hamR[[index, 2]],
+            ];
+            let mut max = 0.0f64;
+            for alpha in 0..3 {
+                for i in 0..symmetrized.nsta() {
+                    for j in 0..symmetrized.nsta() {
+                        max = max.max(symmetrized.rmatrix[[index, alpha, i, j]].norm());
+                    }
+                }
+            }
+            if max > 1e-12 {
+                println!(
+                    "R {:?} rmax {max:?} values {:?}",
+                    r,
+                    (0..3)
+                        .map(|a| symmetrized.rmatrix[[index, a, 0, 0]])
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
         for lattice_vector in [[1, 0, 0], [0, 1, 0], [0, 0, 1]] {
             let index = (0..symmetrized.hamR.nrows())
                 .find(|&index| {
@@ -3975,14 +4254,51 @@ mod tests {
                 })
                 .expect("cubic projection must add all axis-related blocks");
             assert!((symmetrized.ham[[index, 0, 0]].re - 1.0).abs() < 1e-10);
-            let expected_r = if lattice_vector == [1, 0, 0] {
-                7.0
-            } else {
-                0.0
-            };
-            assert_eq!(symmetrized.rmatrix[[index, 0, 0, 0]].re, expected_r);
+            assert!(symmetrized.rmatrix[[index, 0, 0, 0]].re.abs() < 1e-12);
         }
         symmetrized.validate().unwrap();
+    }
+
+    #[test]
+    fn position_projection_preserves_an_identity_block() {
+        let mut model: Model<false, 3, HasRMatrix> = Model::tb_model(
+            Array2::eye(3),
+            array![[0.0, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::Si,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        model.set_hop(3.0_f64, 0, 0, &array![1_isize, 0, 0], None);
+        let mut rmatrix = Array4::zeros((model.hamR.nrows(), 3, 1, 1));
+        for index in 0..model.hamR.nrows() {
+            if (0..3).all(|axis| model.hamR[[index, axis]].abs() == [1, 0, 0][axis]) {
+                rmatrix[[index, 0, 0, 0]] = Complex64::new(7.0, 0.0);
+            }
+        }
+        model.rmatrix = HasRMatrix(rmatrix);
+        model.validate().unwrap();
+        let operation = CrystalSymmetryOperation {
+            rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            translation: [0.0; 3],
+            time_reversal: false,
+        };
+        let action = ScalarSiteBasis
+            .resolve(BasisActionContext {
+                model: &model,
+                operation: &operation,
+                position_tolerance: 1e-5,
+                representation_tolerance: 1e-8,
+            })
+            .unwrap();
+        let position = model_position_support(&model).unwrap();
+        let domain = position.keys().copied().collect::<BTreeSet<_>>();
+        let projected =
+            project_position_support(&model, &position, &domain, &[(operation, action)]).unwrap();
+        let block = projected.get(&[1, 0, 0]).expect("projected block");
+        assert!((block[[0, 0, 0]].re - 7.0).abs() < 1e-12);
     }
 
     #[test]

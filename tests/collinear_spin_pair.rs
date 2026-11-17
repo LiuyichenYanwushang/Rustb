@@ -184,3 +184,39 @@ fn mgfe6ge6_collinear_spin_pair_acceptance() {
     );
     assert!(report.pair_covariance_max_absolute < 1e-3);
 }
+
+#[test]
+fn pair_projection_updates_position_matrices() {
+    use Rustb::HasRMatrix;
+
+    let mut up: Model<false, 3, HasRMatrix> = Model::tb_model(
+        Array2::eye(3),
+        array![[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+        Some(vec![
+            Atom::with_orbitals(array![0.0, 0.0, 0.0], AtomType::Fe, [OrbitalId::new(0)]),
+            Atom::with_orbitals(array![0.5, 0.0, 0.0], AtomType::Fe, [OrbitalId::new(1)]),
+        ]),
+    )
+    .unwrap();
+    let mut down = up.clone();
+    up.set_hop(1.0, 0, 0, &array![0, 0, 0], None);
+    down.set_hop(2.0, 0, 0, &array![0, 0, 0], None);
+    up.validate().unwrap();
+    down.validate().unwrap();
+    let moments = [1.0, -1.0];
+    let group = detect_collinear_spin_group(
+        &crystal(),
+        CollinearMoments::Signed(&moments),
+        SpinTolerances::default(),
+    )
+    .unwrap();
+    let report = Model::<false, 3, HasRMatrix>::symmetrize_pair_with_collinear_spin_group(
+        &mut up,
+        &mut down,
+        &group,
+        &CenterResolvedBasis::new(),
+        &HamiltonianSymmetrizationParameters::default(),
+    )
+    .unwrap();
+    assert!(report.pair_covariance_max_absolute < 1e-8);
+}

@@ -32,6 +32,12 @@
   permutation (`Preserve`/`Swap`) is independent of antiunitarity, so a
   unitary Swap no longer conjugates the orbital Hamiltonian. The legacy
   `symmetrize_pair` keeps its original time-reversal interpretation.
+- `HasRMatrix` position matrices are now projected with the Hamiltonian as
+  vector operators: the Cartesian component is rotated, the operation
+  translation is subtracted, the explicit cell-shift contribution is retained
+  in the affine transform, antiunitary operations conjugate, and the Hermitian
+  partner is restored. Newly generated support receives its projected position
+  block instead of an unconditional zero.
 - `BasisSymmetryRepresentation` gains
   `validates_orbital_centres()`; the default remains strict, and
   centre-resolved providers opt out of the per-matrix-element centring gate

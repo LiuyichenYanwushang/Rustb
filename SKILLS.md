@@ -1203,9 +1203,12 @@ a smaller group.
 The projection validates one projective magnetic corepresentation, averages
 the complete real-space support (including nonsymmorphic shifts and
 antiunitary conjugation), adds missing `hamR` partners, enforces Hermiticity,
-and postchecks every covariance equation. For `HasRMatrix`, old position-matrix
-blocks stay aligned by lattice vector and newly generated support receives
-zeros; `rmatrix` is not incorrectly treated as a scalar Hamiltonian.
+and postchecks every covariance equation. For `HasRMatrix`, `rmatrix` is
+projected as a vector operator: its Cartesian component is rotated, the
+operation translation and cell offset are subtracted, antiunitary operations
+conjugate it, and its Hermitian partner is restored. Newly generated support
+therefore receives the projected position block rather than an unconditional
+zero.
 
 For a Wannier gauge whose centres are displaced from their parent atoms, use
 the centre-resolved provider instead of AtomicOrbitalBasis:
