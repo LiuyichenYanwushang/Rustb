@@ -101,9 +101,11 @@
 //! ```
 
 pub mod io;
+pub mod physics;
 
 use crate::error::{Result, TbError};
-use ndarray::{Array1, Array2, Array3};
+use crate::kpath::Kpath;
+use ndarray::{Array1, Array2, Array3, ArrayBase, Data, Ix1, Ix2};
 use ndarray_linalg::Inverse;
 use std::collections::HashMap;
 
@@ -475,6 +477,39 @@ impl<const DIM: usize> Magnon<DIM> {
             }
         }
         Ok(())
+    }
+}
+
+/// Solve magnon (spin-wave) frequencies from the real-space exchange tensors.
+///
+/// The contract mirrors [`Solve`](crate::solve_ham::Solve) on the electronic
+/// side: every method validates the model and the input points, returns
+/// `nspin()` frequencies per q-point in non-decreasing order, and preserves the
+/// input order. The frequencies are the positive paraunitary (Colpa)
+/// eigenvalues of [`Magnon::gen_bdg`], in eV.
+pub trait MagnonSolve {
+    /// Frequencies at one q-point, shape `(nspin,)`, ascending.
+    fn magnon_band_onek<S: Data<Elem = f64>>(&self, q: &ArrayBase<S, Ix1>) -> Result<Array1<f64>>;
+    /// Frequencies at every row of `qs`, shape `(nq, nspin)`.
+    fn magnon_band_all<S: Data<Elem = f64>>(&self, qs: &ArrayBase<S, Ix2>) -> Result<Array2<f64>>;
+    /// Same as [`MagnonSolve::magnon_band_all`], solved in parallel over q-points.
+    fn magnon_band_all_parallel<S: Data<Elem = f64>>(
+        &self,
+        qs: &ArrayBase<S, Ix2>,
+    ) -> Result<Array2<f64>>;
+}
+
+/// Band paths use the same node-preserving sampler as [`Model`](crate::model::Model).
+///
+/// Distances are reciprocal-lattice units without a `2 pi` factor, and the
+/// path is sampled with `nk` points including every node.
+impl<const DIM: usize> Kpath for Magnon<DIM> {
+    fn k_path(
+        &self,
+        path: &Array2<f64>,
+        nk: usize,
+    ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
+        crate::kpath::interpolate_k_path(&self.lat, DIM, path, nk)
     }
 }
 

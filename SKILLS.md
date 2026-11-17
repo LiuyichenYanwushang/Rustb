@@ -1123,10 +1123,31 @@ finite data, positive spins, unit reference axes, unique translations with
 `R = 0` first, the presence of every `-R`, and
 `J_ij^ab(R) = J_ji^ba(-R)`. Direct field edits require re-validating.
 
-Magnon frequencies are not exposed yet. When they are, they follow TB2J: the
-stored landscape `J` is converted to the operator exchange `J / (S_i S_j)`
-before linear spin-wave theory, so a ferromagnetic chain disperses as
-`omega(q) = (2 / S) [J(0) - J(q)]`.
+Spin-wave frequencies follow TB2J: the stored landscape `J` is converted to the
+operator exchange `J / (S_i S_j)` before linear spin-wave theory, so a
+ferromagnetic chain disperses as `omega(q) = (2 / S) [J(0) - J(q)]`.
+
+```rust
+use Rustb::magnon::MagnonSolve;
+
+let q = array![0.25];
+let omega = magnon.magnon_band_onek(&q)?;   // (nspin,), ascending, eV
+let bands = magnon.magnon_band_all(&points)?; // (nq, nspin)
+let h = magnon.gen_bdg(&q)?;                // 2n x 2n Hermitian Bogoliubov matrix
+let jq = magnon.gen_jq(&q)?;                // 3n x 3n J(q), eV
+let (omega_grid, dos) =
+    magnon.magnon_dos(&array![16usize], 0.0, 0.2, 401, 0.002)?;
+```
+
+The `MagnonSolve` trait mirrors `Solve`: `magnon_band_onek`,
+`magnon_band_all` and `magnon_band_all_parallel`. `Magnon` also implements
+`Kpath`, so `magnon.k_path(&path, 101)` samples a band path with the same
+node-preserving rule as `Model`. The solver uses Colpa's method through a
+Hermitian eigenfactorization (not a Cholesky factor), so Goldstone modes stay
+exactly zero; a reference structure that is not a local energy minimum leaves
+the BdG matrix indefinite and returns
+`InvalidMagnonInvariant { invariant: "positive_semidefinite_bdg", .. }` instead
+of a complex frequency.
 
 ## 11. Conventions and build notes
 
