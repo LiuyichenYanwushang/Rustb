@@ -184,6 +184,17 @@ pub enum TbError {
     )]
     MissingHermitianConjugateHopping { r: Array1<isize> },
 
+    #[error(
+        "Magnon model inconsistency: exchange tensor for R={r:?} exists, but its transpose for -R does not."
+    )]
+    MissingHermitianConjugateExchange { r: Array1<isize> },
+
+    #[error("Invalid magnon invariant '{invariant}': {message}")]
+    InvalidMagnonInvariant {
+        invariant: &'static str,
+        message: String,
+    },
+
     #[error("Invalid operation for a zero-dimensional model.")]
     InvalidOperationForZeroDimension,
 

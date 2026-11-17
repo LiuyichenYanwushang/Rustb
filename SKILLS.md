@@ -1076,7 +1076,59 @@ It follows the same node-preserving sampling rules as `k_path`, with distances
 computed from the primitive lattice `transform⁻¹ · supercell.lat`; `nk` must
 be at least the number of path nodes.
 
-## 10. Conventions and build notes
+## 10. Magnon models and exchange I/O
+
+A `Magnon<DIM>` stores TB2J-style real-space exchange tensors: `ham` has shape
+`(nR, 3n, 3n)`, the Cartesian components of magnetic site `i` occupy
+`3i .. 3i + 3`, and row 0 of `hamR` is `R = 0` (single-ion anisotropy lives in
+its diagonal `3x3` blocks). `J` is TB2J's unit-vector coefficient (`|S| = 1`,
+ordered-pair double counting, eV); `spin` holds the spin quantum numbers
+`S_i = |m_i| / 2` in units of `hbar`, and `axis` the reference moment
+directions.
+
+```rust
+use ndarray::{array, Array3};
+use Rustb::magnon::{Magnon, MagnonReference};
+
+let lat = array![[3.0]];
+let orb = array![[0.0]];
+let spin = array![1.5];
+let axis = array![[0.0, 0.0, 1.0]];
+let ham_r = array![[0isize], [1], [-1]];
+let mut ham = Array3::<f64>::zeros((3, 3, 3));
+for d in 0..3 {
+    ham[[1, d, d]] = 0.02; // J(R = +1)
+    ham[[2, d, d]] = 0.02; // J(R = -1)
+}
+let magnon =
+    Magnon::<1>::new(lat, orb, spin, axis, ham, ham_r, MagnonReference::collinear())?;
+magnon.validate()?;
+assert_eq!((magnon.nspin(), magnon.nsta(), magnon.nR()), (1, 3, 3));
+
+// hr round trip: <prefix>_magnon_hr.dat + <prefix>_magnon_meta.toml
+magnon.write_hr("magnon_out", "chain")?;
+let restored = Magnon::<1>::read("magnon_out", "chain")?;
+assert_eq!(restored.ham, magnon.ham);
+```
+
+The `_hr` file is a `nsta nR` header followed by `Rx Ry Rz a b J` lines
+(1-based indices, real `J`, eV, every entry exactly once). The metadata sidecar
+stores the lattice, site positions, spins, reference axes, the `q`/`n`/`uz`
+reference structure, and the `eV` / `hbar` / `unit-vector` conventions.
+`Magnon::from_hr(dir, prefix, lat, orb, spin, axis, reference)` reads the
+matrix alone when the geometry is already known.
+
+`validate()` enforces the invariants the solver and writer rely on: shapes,
+finite data, positive spins, unit reference axes, unique translations with
+`R = 0` first, the presence of every `-R`, and
+`J_ij^ab(R) = J_ji^ba(-R)`. Direct field edits require re-validating.
+
+Magnon frequencies are not exposed yet. When they are, they follow TB2J: the
+stored landscape `J` is converted to the operator exchange `J / (S_i S_j)`
+before linear spin-wave theory, so a ferromagnetic chain disperses as
+`omega(q) = (2 / S) [J(0) - J(q)]`.
+
+## 11. Conventions and build notes
 
 - k-points are fractional reciprocal coordinates.
 - The Bloch phase is `exp(2*pi*i*k·R)`.

@@ -91,6 +91,13 @@
 //! | [`wannier90`] | Read Wannier90 `_hr.dat` and `_r.dat` files |
 //! | [`unfold`] | Band unfolding for supercell calculations (the [`Unfold`] trait) |
 //!
+//! ### Magnetism and spin waves
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`magnon`] | Real-space exchange tensors of a classical spin
+//! |   Hamiltonian, with hr-style `_hr` exchange file input and output |
+//!
 //! ### Magnetic field
 //!
 //! | Module | Purpose |
@@ -244,6 +251,7 @@ pub mod kpath;
 pub mod kplane;
 pub mod kpoints;
 pub mod magnetic_field;
+pub mod magnon;
 pub mod math;
 pub mod model;
 // The only module allowed to call raw BLAS/LAPACK routines.
@@ -294,6 +302,7 @@ pub use crate::kpath::*;
 pub use crate::kplane::*;
 pub use crate::kpoints::*;
 pub use crate::magnetic_field::*;
+pub use crate::magnon::{Magnon, MagnonReference};
 pub use crate::math::*;
 pub use crate::model::*;
 pub use crate::output::*;
