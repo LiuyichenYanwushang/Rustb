@@ -1224,6 +1224,24 @@ two branches are degenerate without the drive, split with opposite signs at
 `K = (1/3, 2/3)` and `K' = (2/3, 1/3)`, and satisfy `omega_up(k) =
 omega_down(-k)` (odd parity, `f`-wave near Gamma).
 
+### AA-stacked bilayer
+
+`magnon::floquet::BilayerExchange::static_limit` gives the bilayer couplings of
+the paper's Supplemental Material: the intralayer `j1`, `j2` and `chirality`
+plus the vertical pair exchange `jperp`, the cross-layer `jcross` and the three
+four-spin coefficients `k1`, `k2`, `k3` on a vertical rectangle.
+
+```rust
+use Rustb::magnon::floquet::{BilayerExchange, BilayerParams};
+
+let bilayer = BilayerExchange::static_limit(&BilayerParams {
+    hopping_ev: 0.1,
+    interlayer_hopping_ev: 0.05,
+    interaction_ev: 1.0,
+})?;
+// t_perp -> 0 reduces to the monolayer: J1 = 4t^2/U - 16t^4/U^3, k1 = k2 = k3 = 0.
+```
+
 ### Floquet–Sambe driving of a magnon model
 
 `Magnon` mirrors the electronic Floquet interface: `MagnonFloquet::floquet_model`
