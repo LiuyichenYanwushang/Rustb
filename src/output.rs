@@ -62,9 +62,46 @@ use ndarray::prelude::*;
 use ndarray::*;
 use std::fs::File;
 use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn utc_timestamp() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    let days = seconds.div_euclid(86_400);
+    let day_seconds = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = day_seconds / 3_600;
+    let minute = (day_seconds % 3_600) / 60;
+    let second = day_seconds % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+// Howard Hinnant civil-from-days, with days counted from 1970-01-01.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    (
+        if month <= 2 { year + 1 } else { year },
+        month as u32,
+        day as u32,
+    )
+}
 
 pub trait OutPut {
     /// Writes the tight-binding model to `wannier90_hr.dat` format.
+    ///
+    /// The first line records the generation time; orbital indices in the
+    /// Hamiltonian records are 1-based, as used by Wannier90 and
+    /// [`crate::Wannier90::from_hr`].
     fn output_hr(&self, path: &str, seedname: &str) -> Result<()>;
     fn output_POSCAR(&self, path: &str) -> Result<()>;
     fn output_win(&self, path: &str, seedname: &str) -> Result<()>;
@@ -81,6 +118,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         let n_R = self.hamR.nrows(); //length of hamR
         let hr_name = format!("{path}{seedname}_hr.dat");
         let mut file = File::create(&hr_name)?;
+        writeln!(file, "#generate by Rustb at time {}", utc_timestamp())?;
         writeln!(file, "{}", self.nsta())?;
         writeln!(file, "{}", n_R)?;
         let mut weight = String::new();
@@ -114,8 +152,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                                     s.push_str(&format!(
                                         "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                         i,
-                                        orb_1,
-                                        orb_2,
+                                        orb_1 + 1,
+                                        orb_2 + 1,
                                         ham[[orb_1, orb_2]].re,
                                         ham[[orb_1, orb_2]].im
                                     ));
@@ -129,8 +167,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                                     s.push_str(&format!(
                                         "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                         i,
-                                        orb_1,
-                                        orb_2,
+                                        orb_1 + 1,
+                                        orb_2 + 1,
                                         ham[[orb_1, orb_2]].re,
                                         -ham[[orb_1, orb_2]].im
                                     ));
@@ -162,8 +200,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                                             "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                             R1,
                                             R2,
-                                            orb_1,
-                                            orb_2,
+                                            orb_1 + 1,
+                                            orb_2 + 1,
                                             ham[[orb_1, orb_2]].re,
                                             ham[[orb_1, orb_2]].im
                                         ));
@@ -178,8 +216,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                                             "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
                                             R1,
                                             R2,
-                                            orb_1,
-                                            orb_2,
+                                            orb_1 + 1,
+                                            orb_2 + 1,
                                             ham[[orb_1, orb_2]].re,
                                             -ham[[orb_1, orb_2]].im
                                         ));
@@ -214,8 +252,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                                                 R1,
                                                 R2,
                                                 R3,
-                                                orb_1,
-                                                orb_2,
+                                                orb_1 + 1,
+                                                orb_2 + 1,
                                                 ham[[orb_1, orb_2]].re,
                                                 ham[[orb_1, orb_2]].im
                                             ));
@@ -231,8 +269,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
                                                 R1,
                                                 R2,
                                                 R3,
-                                                orb_1,
-                                                orb_2,
+                                                orb_1 + 1,
+                                                orb_2 + 1,
                                                 ham[[orb_1, orb_2]].re,
                                                 -ham[[orb_1, orb_2]].im
                                             ));
@@ -689,4 +727,61 @@ pub fn draw_heatmap<A: Data<Elem = f64>>(data: &ArrayBase<A, Ix2>, name: &str) {
     let _axes = axes.set_aspect_ratio(Fix(1.0));
     fg.set_terminal("pdfcairo", name);
     fg.show().expect("Unable to draw heatmap");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    #[test]
+    fn utc_timestamp_has_iso_shape() {
+        let value = utc_timestamp();
+        assert_eq!(value.len(), 20, "{value}");
+        assert_eq!(&value[4..5], "-");
+        assert_eq!(&value[7..8], "-");
+        assert_eq!(&value[10..11], "T");
+        assert_eq!(&value[13..14], ":");
+        assert_eq!(&value[16..17], ":");
+        assert!(value.ends_with('Z'));
+    }
+
+    #[test]
+    fn output_hr_writes_header_and_one_based_orbitals() {
+        let dir = format!("target/test-output/output_hr_{}/", std::process::id());
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut model = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            None,
+        )
+        .unwrap();
+        model.set_hop(1.0, 0, 1, &array![0, 0, 0], None);
+        model.output_hr(&dir, "wannier90").unwrap();
+        let text = std::fs::read_to_string(format!("{dir}wannier90_hr.dat")).unwrap();
+        let lines = text.lines().collect::<Vec<_>>();
+        assert!(
+            lines[0].starts_with("#generate by Rustb at time "),
+            "{}",
+            lines[0]
+        );
+        assert_eq!(lines[1].trim(), "2");
+        let mut saw_one_based_pair = false;
+        for line in &lines[4..] {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            assert_eq!(fields.len(), 7);
+            for index in [fields[3], fields[4]] {
+                let value: usize = index.parse().unwrap();
+                assert!((1..=2).contains(&value), "{line}");
+            }
+            if fields[3] == "1" && fields[4] == "2" {
+                saw_one_based_pair = true;
+            }
+        }
+        assert!(saw_one_based_pair);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

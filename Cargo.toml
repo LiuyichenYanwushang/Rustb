@@ -38,8 +38,8 @@ thiserror = "2.0.12"
 toml = "0.8"
 puruspe = "0.4"
 # 0.2.1 is not on crates.io yet. Pin the public implementation required by the
-# complex-character API; replace git/rev with the version when it is published.
-cryspglib = { git = "https://github.com/LiuyichenYanwushang/cryspglib.git", rev = "8fd276963d1403277f2b625f4d60653b5f45dcfb", version = "0.2.1", optional = true, default-features = false }
+# complex-character and collinear-spin APIs.
+cryspglib = { git = "https://github.com/LiuyichenYanwushang/cryspglib.git", rev = "b8c26065d89a8037f3317753bbc50144d86a8bc3", version = "0.2.1", optional = true, default-features = false }
 
 
 [dependencies.intel-mkl-src]

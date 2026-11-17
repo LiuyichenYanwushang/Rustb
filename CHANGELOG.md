@@ -15,7 +15,37 @@
   emits a one-time process-global warning instead; atom-centred symmetry and
   irrep representations continue to enforce their own strict centring check.
 
+### New APIs
+
+- Add `CenterResolvedBasis`, a `BasisSymmetryRepresentation` that maps
+  displaced Wannier centres through parent-atom images and can optionally
+  refine atom-local frames from the onsite Hamiltonian. Add `Model::symmetrize_centres`,
+  `Model::symmetrize_model_and_centres`, and the associated
+  `Model::symmetrize_pair` for two spinless models. The pair projection
+  enforces the spin-flip relation for anti-unitary target operations; centre
+  warnings are reported instead of silently moving orbitals.
+- Add `Model::symmetrize_pair_with_collinear_spin_group` and
+  `Model::symmetrize_pair_with_unitary_collinear_spin_group` for
+  cryspglib-certified collinear spin groups. Both accept the complete
+  `CollinearSpinGroup`; the first projects its unitary and g A0 antiunitary
+  halves, while the second filters to `kind.is_unitary()` internally. Channel
+  permutation (`Preserve`/`Swap`) is independent of antiunitarity, so a
+  unitary Swap no longer conjugates the orbital Hamiltonian. The legacy
+  `symmetrize_pair` keeps its original time-reversal interpretation.
+- `BasisSymmetryRepresentation` gains
+  `validates_orbital_centres()`; the default remains strict, and
+  centre-resolved providers opt out of the per-matrix-element centring gate
+  while retaining parent-atom and cell-shift validation.
+
 ### Safety and numerical fixes
+
+- `Model::output_hr` now writes a `#generate by Rustb at time ...` comment as
+  the first line and emits 1-based orbital indices in the Hamiltonian records
+  (the Wannier90 index convention).
+
+- Adapt the high-symmetry k-point and character-table adapters to
+  cryspglib's separated CDML/BC labels; Rustb's public `HighSymmetryKPoint`
+  and character-table API keep the CDML labels they exposed before.
 
 - Replace the Floquet and batched Fourier raw GEMM calls with ndarray's
   `general_mat_mul`, with `ndarray/blas` enabled for the selected backend.

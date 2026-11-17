@@ -102,10 +102,16 @@ use crate::crystal_symmetry::{
 use crate::error::{Result, TbError};
 use crate::model::{Model, RMatrixData};
 use ndarray::{Array2, Array3, Array4, Axis};
-use ndarray_linalg::Inverse;
+use ndarray_linalg::{Inverse, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
+
+mod centre;
+pub use centre::{
+    CenterResolvedBasis, CentreDisplacement, CentreSymmetrizationReport, PairSymmetrizationReport,
+    SymmetrizationReport,
+};
 
 /// One cell-shift sector of a localized-basis symmetry action.
 ///
@@ -226,6 +232,19 @@ pub trait BasisSymmetryRepresentation<const SPIN: bool, R: RMatrixData> {
         &self,
         context: BasisActionContext<'_, SPIN, R>,
     ) -> std::result::Result<LocalizedBasisAction, BasisRepresentationError>;
+
+    /// Whether every nonzero action matrix element must connect orbital
+    /// centres that are exactly related by the operation modulo a lattice
+    /// vector.
+    ///
+    /// Atom-centred representations return `true`. A centre-resolved
+    /// representation whose local angular frames are inferred from the
+    /// Hamiltonian may mix orbitals inside one atom/shell; its parent-atom
+    /// mapping and cell shifts are validated separately, so it returns
+    /// `false`.
+    fn validates_orbital_centres(&self) -> bool {
+        true
+    }
 }
 
 impl<const SPIN: bool, R: RMatrixData, F> BasisSymmetryRepresentation<SPIN, R> for F
@@ -2357,13 +2376,15 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                             self.nsta(),
                             request.tolerances.representation,
                         )?;
-                        validate_action_geometry(
-                            self,
-                            operation,
-                            &action,
-                            position_tolerance,
-                            request.tolerances.representation,
-                        )?;
+                        if representation.validates_orbital_centres() {
+                            validate_action_geometry(
+                                self,
+                                operation,
+                                &action,
+                                position_tolerance,
+                                request.tolerances.representation,
+                            )?;
+                        }
                         Ok(action)
                     });
                 match resolved {
@@ -2714,13 +2735,15 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                             self.nsta(),
                             parameters.tolerances.representation,
                         )?;
-                        validate_action_geometry(
-                            self,
-                            operation,
-                            &action,
-                            position_tolerance,
-                            parameters.tolerances.representation,
-                        )?;
+                        if representation.validates_orbital_centres() {
+                            validate_action_geometry(
+                                self,
+                                operation,
+                                &action,
+                                position_tolerance,
+                                parameters.tolerances.representation,
+                            )?;
+                        }
                         Ok(action)
                     })
                     .map_err(|error| TbError::TargetMagneticGroupIncompatible {

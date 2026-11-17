@@ -64,6 +64,7 @@
 use crate::error::{Result, TbError};
 
 use crate::model::{Model, RMatrixData};
+use cryspglib::irrep::LabelConvention;
 use cryspglib::irrep::corep::symmetry_operations_of;
 use cryspglib::irrep::magnetic_summary::{
     MagneticCharacterTableColumns, format_magnetic_character_table_with_columns,
@@ -238,14 +239,14 @@ impl CrystalSymmetryDataset {
         self.ensure_database_symmetry_is_effective()?;
         let sg = self.spacegroup_number as u8;
         let irreps = irreps_of(sg);
-        kpoints_of(sg)
+        kpoints_of(sg, LabelConvention::Cdml)
             .into_iter()
             .map(|point| {
                 let (kx, ky, kz, denominator) = point.coords;
                 if denominator == 0 {
                     return Err(TbError::InvalidCrystalSymmetryInput {
                         parameter: "high_symmetry_coordinate",
-                        message: format!("k-point {} has a zero denominator", point.label),
+                        message: format!("k-point {} has a zero denominator", point.labels.cdml),
                     });
                 }
                 let d = denominator as f64;
@@ -262,7 +263,7 @@ impl CrystalSymmetryDataset {
                     .and_then(|&index| irreps.get(index))
                     .is_some_and(|irrep| irrep.is_point());
                 Ok(HighSymmetryKPoint {
-                    label: point.label,
+                    label: point.labels.cdml.to_string(),
                     canonical_coordinate: canonical,
                     model_coordinate: model,
                     is_point,
@@ -279,9 +280,9 @@ impl CrystalSymmetryDataset {
     pub fn character_table_at(&self, label: &str) -> Result<String> {
         self.ensure_database_symmetry_is_effective()?;
         let sg = self.spacegroup_number as u8;
-        let mut matches = kpoints_of(sg)
+        let mut matches = kpoints_of(sg, LabelConvention::Cdml)
             .into_iter()
-            .filter(|point| point.label == label);
+            .filter(|point| point.labels.cdml == label);
         let point = matches
             .next()
             .ok_or_else(|| TbError::InvalidCrystalSymmetryInput {
@@ -1064,7 +1065,7 @@ mod tests {
         let points = dataset.high_symmetry_kpoints().unwrap();
         assert!(points.iter().any(|point| point.label == "GM"));
         let table = dataset.character_table_at("GM").unwrap();
-        assert!(table.contains("| ML | BC |"));
+        assert!(table.contains("| CDML | BC |"));
         assert!(table.contains("| 1 |"));
         assert_eq!(dataset.character_table_operations().unwrap().len(), 48);
     }

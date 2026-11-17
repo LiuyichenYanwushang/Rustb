@@ -1207,6 +1207,87 @@ and postchecks every covariance equation. For `HasRMatrix`, old position-matrix
 blocks stay aligned by lattice vector and newly generated support receives
 zeros; `rmatrix` is not incorrectly treated as a scalar Hamiltonian.
 
+For a Wannier gauge whose centres are displaced from their parent atoms, use
+the centre-resolved provider instead of AtomicOrbitalBasis:
+
+~~~rust
+use Rustb::{CenterResolvedBasis, HamiltonianSymmetrizationParameters};
+
+let mut model = /* loaded Wannier90 model with displaced _centres.xyz */;
+let target = model.magnetic_crystal_symmetry_from_atoms(&parameters)?;
+let report = model.symmetrize_model_and_centres(
+    &target,
+    &CenterResolvedBasis::new(),
+    &HamiltonianSymmetrizationParameters::default(),
+)?;
+println!("max centre move: {} A", report.centres.max_displacement_angstrom);
+~~~
+
+The provider maps parent atoms and their cell images, selects the source
+orbital from the resolved localized action (largest coefficient in the target
+row), falling back to an OrbProj label match and then to transformed-centre
+distance, and optionally fits the local frame against the onsite Hamiltonian. When the onsite
+block is degenerate or the two onsite spectra do not match, it keeps the global
+cubic angular rotation; that gauge remains undetermined by H alone. Centre-only
+projection is available through Model::symmetrize_centres; its tolerance
+argument is an Angstrom warning threshold, not an error threshold. For two spin
+channels related by a magnetic group, call the associated pair entry point:
+
+~~~rust
+let report = Model::<false, 3>::symmetrize_pair(
+    &mut up,
+    &mut down,
+    &target,
+    &CenterResolvedBasis::new(),
+    &HamiltonianSymmetrizationParameters::default(),
+)?;
+~~~
+
+Unitary target operations project each channel independently; anti-unitary
+(spin-flip) operations couple the channels, and both centres and Hamiltonians
+are projected jointly. The target operations' time_reversal flags must describe
+the actual magnetic group; a wrong flag assignment is a user error, not
+silently repaired.
+
+For a collinear spin group, prefer the cryspglib-certified entries instead of
+hand-building the old magnetic-group flags. `detect_collinear_spin_group`
+returns the complete `CollinearSpinGroup`: its unitary half and the `g A0`
+antiunitary partners are both present. The unitary entry filters that complete
+group internally:
+
+~~~rust
+use Rustb::{CollinearMoments, SpinTolerances, detect_collinear_spin_group};
+
+let group = detect_collinear_spin_group(
+    &crystal,
+    CollinearMoments::Vectors(&moments),
+    SpinTolerances::default(),
+)?;
+
+let report = Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
+    &mut up,
+    &mut down,
+    &group,
+    &CenterResolvedBasis::new(),
+    &HamiltonianSymmetrizationParameters::default(),
+)?;
+
+// Unitary half only: A0 antiunitary partners are filtered out internally.
+let unitary_report =
+    Model::<false, 3>::symmetrize_pair_with_unitary_collinear_spin_group(
+        &mut up,
+        &mut down,
+        &group,
+        &CenterResolvedBasis::new(),
+        &HamiltonianSymmetrizationParameters::default(),
+    )?;
+~~~
+
+`Preserve`/`Swap` selects the source spin channel independently of the
+unitary/antiunitary flag: a unitary Swap exchanges the channels without
+conjugating the orbital Hamiltonian. The full-group average uses `2|G|`
+operations; the unitary-subgroup average uses `|G|`.
+
 Band labels use the model's atom-centred orbital metadata directly:
 
 ```rust

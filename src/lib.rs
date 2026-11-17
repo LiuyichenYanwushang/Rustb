@@ -275,11 +275,13 @@ pub use crate::geometry::*;
 #[cfg(feature = "cryspglib")]
 pub use crate::hamiltonian_symmetry::{
     AtomicOrbitalBasis, BasisActionContext, BasisRepresentationError, BasisSymmetryRepresentation,
-    CellShiftAction, FinalMagneticGroup, HamiltonianCompatibility, HamiltonianResidual,
-    HamiltonianResidualWitness, HamiltonianSymmetrizationParameters, HamiltonianSymmetryCandidates,
+    CellShiftAction, CenterResolvedBasis, CentreDisplacement, CentreSymmetrizationReport,
+    FinalMagneticGroup, HamiltonianCompatibility, HamiltonianResidual, HamiltonianResidualWitness,
+    HamiltonianSymmetrizationParameters, HamiltonianSymmetryCandidates,
     HamiltonianSymmetryCompleteness, HamiltonianSymmetryReport, HamiltonianSymmetryRequest,
     HamiltonianSymmetryTolerances, IdentifiedMagneticSubgroup, LocalizedBasisAction,
-    OperationHamiltonianCheck, OperationHamiltonianStatus, ScalarSiteBasis,
+    OperationHamiltonianCheck, OperationHamiltonianStatus, PairSymmetrizationReport,
+    ScalarSiteBasis, SymmetrizationReport,
 };
 pub use crate::hubbard::*;
 pub use crate::io::*;
@@ -303,6 +305,11 @@ pub use crate::thermodynamics::*;
 pub use crate::unfold::*;
 pub use crate::velocity::*;
 pub use crate::wannier90::*;
+#[cfg(feature = "cryspglib")]
+pub use cryspglib::spin_group::{
+    CollinearAction, CollinearMoments, CollinearSpinGroup, SpinTolerances,
+    detect_collinear_spin_group, validate_collinear_spin_group,
+};
 
 // --- BLAS/LAPACK 后端（互斥，只能开一个） ---
 //
