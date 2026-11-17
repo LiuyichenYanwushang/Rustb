@@ -1242,6 +1242,17 @@ let bilayer = BilayerExchange::static_limit(&BilayerParams {
 // t_perp -> 0 reduces to the monolayer: J1 = 4t^2/U - 16t^4/U^3, k1 = k2 = k3 = 0.
 ```
 
+`BilayerSpinWave::dispersion(q)` diagonalizes the paper's four-band A-type
+antiferromagnet: two spin sectors, each a `4 x 4` Bogoliubov–de Gennes problem
+transcribed from the Supplemental Material's explicit blocks (`epsilon_A`,
+`epsilon_B`, the nearest-neighbour hopping, the interlayer pairing `C(k)` and
+the chirality `+-2 chi S1 S2 s_k`). `sector_bands(q)` keeps the spin labels
+apart; the sectors are exactly degenerate for equal moments, and a nonzero
+`chi` splits them at each valley while swapping them between `K` and `K'`, so
+`omega_up(K) = omega_down(K')` (odd parity). The
+intralayer coupling must be ferromagnetic (`J1 - J_D < 0`) for the A-type
+reference to be a minimum.
+
 ### Floquet–Sambe driving of a magnon model
 
 `Magnon` mirrors the electronic Floquet interface: `MagnonFloquet::floquet_model`

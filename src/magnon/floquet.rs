@@ -168,6 +168,23 @@ pub struct BilayerParams {
 }
 
 impl BilayerExchange {
+    /// Decoupled bilayer whose intralayer part is a given monolayer exchange.
+    ///
+    /// `J_perp`, `J_cross` and the four-spin coefficients vanish, so the two
+    /// layers are independent and each reproduces the monolayer spectrum.
+    pub fn decoupled(monolayer: &DrivenExchange) -> Self {
+        Self {
+            j1: monolayer.j1,
+            j2: monolayer.j2,
+            jperp: 0.0,
+            jcross: 0.0,
+            k1: 0.0,
+            k2: 0.0,
+            k3: 0.0,
+            chirality: monolayer.chirality,
+        }
+    }
+
     /// Static (`lambda = 0`) couplings of the AA-stacked bilayer.
     ///
     /// Reproduces the closed forms printed in the Supplemental Material:
@@ -1600,5 +1617,395 @@ mod sambe_tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("order 0 only"), "{error}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bilayer linear spin-wave theory (paper, Supplemental Material section II D)
+// ---------------------------------------------------------------------------
+
+/// Intralayer blocks `(A1, A2)` and the interlayer pairing `C` at one `q`.
+type LayerBlocks = (
+    Array2<Complex<f64>>,
+    Array2<Complex<f64>>,
+    Array2<Complex<f64>>,
+);
+
+/// Linear spin-wave theory of the AA-stacked bilayer.
+///
+/// Transcribes the explicit blocks of the Supplemental Material for an A-type
+/// antiferromagnet (ferromagnetic inside each layer, antiparallel between the
+/// layers) with `(S_A1, S_B1, S_A2, S_B2) = (S1, S2, S2, S1)`. The two spin
+/// sectors are diagonalized separately through the paraunitary problem, so the
+/// four bands keep their spin labels.
+#[derive(Clone, Copy, Debug)]
+pub struct BilayerSpinWave {
+    /// Exchange coefficients of the bilayer.
+    pub exchange: BilayerExchange,
+    /// Local spin lengths `(S_A1, S_B1, S_A2, S_B2)` in units of `hbar`.
+    pub spins: [f64; 4],
+    /// Easy-axis single-ion anisotropy `K` in eV (negative for an easy axis).
+    pub anisotropy_ev: f64,
+    /// Phenomenological intralayer ferromagnetic direct exchange `J_D > 0` in
+    /// eV, subtracted from `J1` exactly as in the Supplemental Material.
+    pub direct_exchange_ev: f64,
+}
+
+impl BilayerSpinWave {
+    /// Validate the parameters.
+    pub fn validate(&self) -> Result<()> {
+        if self
+            .spins
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "positive_bilayer_spins",
+                message: format!("the local spins must be positive, found {:?}", self.spins),
+            });
+        }
+        if !self.anisotropy_ev.is_finite() || !self.direct_exchange_ev.is_finite() {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_bilayer_parameter",
+                message: "the anisotropy and the direct exchange must be finite".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Structure factors `(gamma, c, s)` at `q` in fractional coordinates.
+    ///
+    /// `gamma = sum_mu exp(i k.delta_mu)`, `c = sum_nu cos(k.b_nu)` and
+    /// `s = sum_nu sin(k.b_nu)` with the vectors of the Supplemental Material.
+    pub fn structure_factors(&self, q: &[f64; 2]) -> (Complex<f64>, f64, f64) {
+        let delta = [
+            [1.0 / 3.0, -2.0 / 3.0],
+            [1.0 / 3.0, 1.0 / 3.0],
+            [-2.0 / 3.0, 1.0 / 3.0],
+        ];
+        let bl = [[1.0, 0.0], [-1.0, 1.0], [0.0, -1.0]];
+        let mut gamma = Complex::new(0.0, 0.0);
+        for d in delta {
+            let phase = std::f64::consts::TAU * (q[0] * d[0] + q[1] * d[1]);
+            gamma += Complex::from_polar(1.0, phase);
+        }
+        let mut c = 0.0;
+        let mut s = 0.0;
+        for b in bl {
+            let phase = std::f64::consts::TAU * (q[0] * b[0] + q[1] * b[1]);
+            c += phase.cos();
+            s += phase.sin();
+        }
+        (gamma, c, s)
+    }
+
+    fn layer_blocks(&self, q: &[f64; 2]) -> Result<LayerBlocks> {
+        self.validate()?;
+        let s = self.spins;
+        let j = self.exchange;
+        let (gamma, c, s_sum) = self.structure_factors(q);
+        let root = (s[0] * s[1]).sqrt();
+        let j1p = j.j1 - self.direct_exchange_ev + j.k1 * s[0] * s[1];
+        let vertical = j.jperp - 3.0 * j.k2 * s[0] * s[1];
+        let diagonal_a = j.jcross - j.k3 * s[1] * s[1];
+        let diagonal_b = j.jcross - j.k3 * s[0] * s[0];
+        let eps_a = (-3.0 * j1p + vertical) * s[1]
+            + 3.0 * diagonal_a * s[0]
+            + 2.0 * j.j2 * s[0] * (c - 3.0)
+            - 2.0 * self.anisotropy_ev * s[0];
+        let eps_b = (-3.0 * j1p + vertical) * s[0]
+            + 3.0 * diagonal_b * s[1]
+            + 2.0 * j.j2 * s[1] * (c - 3.0)
+            - 2.0 * self.anisotropy_ev * s[1];
+        let chirality = 2.0 * j.chirality * s[0] * s[1] * s_sum;
+        let hopping = Complex::new(j1p * root, 0.0) * gamma;
+        let mut a1 = Array2::<Complex<f64>>::zeros((2, 2));
+        a1[[0, 0]] = Complex::new(eps_a - chirality, 0.0);
+        a1[[1, 1]] = Complex::new(eps_b + chirality, 0.0);
+        a1[[0, 1]] = hopping;
+        a1[[1, 0]] = hopping.conj();
+        let mut a2 = Array2::<Complex<f64>>::zeros((2, 2));
+        a2[[0, 0]] = Complex::new(eps_b - chirality, 0.0);
+        a2[[1, 1]] = Complex::new(eps_a + chirality, 0.0);
+        a2[[0, 1]] = hopping;
+        a2[[1, 0]] = hopping.conj();
+        let mut pairing = Array2::<Complex<f64>>::zeros((2, 2));
+        pairing[[0, 0]] = Complex::new(vertical * root, 0.0);
+        pairing[[1, 1]] = Complex::new(vertical * root, 0.0);
+        pairing[[0, 1]] = Complex::new(diagonal_a * s[0], 0.0) * gamma;
+        pairing[[1, 0]] = Complex::new(diagonal_b * s[1], 0.0) * gamma.conj();
+        Ok((a1, a2, pairing))
+    }
+
+    /// Magnon frequencies at `q`, ascending (four bands).
+    ///
+    /// The two spin sectors of the Supplemental Material are diagonalized
+    /// through their `4 x 4` Bogoliubov–de Gennes matrices, keeping the two
+    /// positive-norm modes of each.
+    pub fn dispersion(&self, q: &[f64; 2]) -> Result<Array1<f64>> {
+        let (up, down) = self.sector_bands(q)?;
+        let mut spectra = [up[0], up[1], down[0], down[1]];
+        spectra.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(Array1::from(spectra.to_vec()))
+    }
+
+    /// Spin-resolved bands `(up sector, down sector)` at `q`, each ascending.
+    pub fn sector_bands(&self, q: &[f64; 2]) -> Result<([f64; 2], [f64; 2])> {
+        let (a1, a2, pairing) = self.layer_blocks(q)?;
+        let minus_q = [-q[0], -q[1]];
+        let (a1_neg, a2_neg, pairing_neg) = self.layer_blocks(&minus_q)?;
+        let dagger = |matrix: &Array2<Complex<f64>>| matrix.t().mapv(|value| value.conj());
+        let transpose = |matrix: &Array2<Complex<f64>>| matrix.t().to_owned();
+        let mut up_bands = [0.0f64; 2];
+        let mut down_bands = [0.0f64; 2];
+        // Upper sector: [[A1(k), C(k)], [C^dag(k), A2^T(-k)]].
+        let mut up = Array2::<Complex<f64>>::zeros((4, 4));
+        for i in 0..2 {
+            for k in 0..2 {
+                up[[i, k]] = a1[[i, k]];
+                up[[i, 2 + k]] = pairing[[i, k]];
+                up[[2 + i, k]] = dagger(&pairing)[[i, k]];
+                up[[2 + i, 2 + k]] = transpose(&a2_neg)[[i, k]];
+            }
+        }
+        // Lower sector: [[A2(k), C^T(-k)], [C*(-k), A1^T(-k)]].
+        let mut down = Array2::<Complex<f64>>::zeros((4, 4));
+        for i in 0..2 {
+            for k in 0..2 {
+                down[[i, k]] = a2[[i, k]];
+                down[[i, 2 + k]] = transpose(&pairing_neg)[[i, k]];
+                down[[2 + i, k]] = pairing_neg[[k, i]].conj();
+                down[[2 + i, 2 + k]] = transpose(&a1_neg)[[i, k]];
+            }
+        }
+        for (matrix, target) in [(up, &mut up_bands), (down, &mut down_bands)] {
+            let values = paraunitary_spectrum(&matrix, 2)?;
+            target[0] = values[0];
+            target[1] = values[1];
+        }
+        Ok((up_bands, down_bands))
+    }
+}
+
+/// Positive-norm part of the spectrum of `g H` with `g = diag(1, -1)`.
+///
+/// The bilayer blocks of the paper are not positive definite, so the
+/// eigendecomposition-based Colpa path of `physics.rs` does not apply and the
+/// metric-weighted matrix is diagonalized directly. Degenerate eigenvalues are
+/// handled by diagonalizing the metric inside each eigenspace: at a Goldstone
+/// point the individual LAPACK vectors of the degenerate pair have vanishing
+/// norm, while definite-norm combinations exist.
+fn paraunitary_spectrum(matrix: &Array2<Complex<f64>>, n: usize) -> Result<Array1<f64>> {
+    let size = matrix.nrows();
+    let mut metric = Array1::<f64>::ones(size);
+    for index in n..size {
+        metric[index] = -1.0;
+    }
+    let mut generator = Array2::<Complex<f64>>::zeros((size, size));
+    for row in 0..size {
+        for column in 0..size {
+            generator[[row, column]] = matrix[[row, column]] * metric[row];
+        }
+    }
+    let (values, vectors) = generator.eig()?;
+    let scale = values
+        .iter()
+        .map(|value| value.norm())
+        .fold(0.0, f64::max)
+        .max(1.0);
+    let mut candidates: Vec<(f64, usize)> = Vec::new();
+    for (column, value) in values.iter().enumerate() {
+        if value.im.abs() > 1e-6 * scale {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "real_quasienergies",
+                message: format!(
+                    "the dynamical matrix has a complex eigenvalue {value:?}; the \
+                     reference state is not stable"
+                ),
+            });
+        }
+        candidates.push((value.re, column));
+    }
+    candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut physical: Vec<f64> = Vec::with_capacity(n);
+    let mut start = 0;
+    while start < candidates.len() {
+        let mut end = start + 1;
+        while end < candidates.len()
+            && (candidates[end].0 - candidates[start].0).abs() <= 1e-8 * scale
+        {
+            end += 1;
+        }
+        let cluster = &candidates[start..end];
+        let width = cluster.len();
+        let mut sub = Array2::<Complex<f64>>::zeros((width, width));
+        for (row, (_, column_row)) in cluster.iter().enumerate() {
+            for (column, (_, column_col)) in cluster.iter().enumerate() {
+                let mut value = Complex::new(0.0, 0.0);
+                for index in 0..size {
+                    value += vectors[[index, *column_row]].conj()
+                        * Complex::new(metric[index], 0.0)
+                        * vectors[[index, *column_col]];
+                }
+                sub[[row, column]] = value;
+            }
+        }
+        let (norms, _) = crate::ndarray_lapack::eigh_full(&sub, ndarray_linalg::UPLO::Lower)?;
+        for norm in norms.iter() {
+            if *norm > 1e-9 {
+                physical.push(cluster[0].0);
+            }
+        }
+        start = end;
+    }
+    if physical.len() != n {
+        return Err(TbError::InvalidMagnonInvariant {
+            invariant: "positive_norm_bilayer",
+            message: format!("found {} positive-norm modes, expected {n}", physical.len()),
+        });
+    }
+    physical.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    for value in physical.iter() {
+        if !value.is_finite() {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_bilayer_frequency",
+                message: "a magnon frequency is not finite".into(),
+            });
+        }
+    }
+    Ok(Array1::from(physical))
+}
+
+#[cfg(test)]
+mod bilayer_sw_tests {
+    use super::*;
+
+    fn monolayer() -> DrivenExchange {
+        // A finite `lambda` keeps the chirality non-zero.
+        DrivenExchange::honeycomb(&DrivenHubbardParams {
+            hopping_ev: 0.05,
+            interaction_ev: 1.25,
+            photon_ev: 4.0,
+            lambda: 0.4,
+            helicity: 1.0,
+            harmonic_max: 8,
+        })
+        .unwrap()
+    }
+
+    fn bilayer(exchange: BilayerExchange, spin: f64) -> BilayerSpinWave {
+        // The A-type reference needs a ferromagnetic intralayer coupling, so the
+        // phenomenological direct exchange must dominate the Hubbard J1.
+        BilayerSpinWave {
+            exchange,
+            spins: [spin, spin, spin, spin],
+            anisotropy_ev: 0.0,
+            direct_exchange_ev: 2.0 * exchange.j1,
+        }
+    }
+
+    #[test]
+    fn ferromagnetic_layer_has_a_goldstone_mode() {
+        // Decoupled layers: each is a ferromagnetic honeycomb.
+        let exchange = monolayer();
+        let wave = bilayer(BilayerExchange::decoupled(&exchange), 1.5);
+        for q in [[0.0, 0.0], [1.0 / 3.0, 2.0 / 3.0], [0.5, 0.0]] {
+            let bands = wave.dispersion(&q).unwrap();
+            assert_eq!(bands.len(), 4, "q = {q:?}");
+            assert!(bands.iter().all(|value| value.is_finite()), "q = {q:?}");
+            assert!(bands[0] >= -1e-9, "q = {q:?}: {bands:?}");
+        }
+        // The acoustic mode is exactly gapless at Gamma.
+        let gamma_bands = wave.dispersion(&[0.0, 0.0]).unwrap();
+        assert!(gamma_bands[0].abs() < 1e-9, "{gamma_bands:?}");
+        // Away from Gamma the flat band is lifted.
+        let zone = wave.dispersion(&[0.5, 0.0]).unwrap();
+        assert!(zone[0] > 1e-6, "{zone:?}");
+    }
+
+    #[test]
+    fn coupled_bilayer_is_even_in_momentum_without_chirality() {
+        // A static drive turns the chirality off, and without it the two
+        // sectors must be even in k; this exercises the C(k), C^T(-k) and
+        // A^T(-k) arguments of the sector assembly.
+        let static_exchange = DrivenExchange::honeycomb(&DrivenHubbardParams {
+            hopping_ev: 0.05,
+            interaction_ev: 1.25,
+            photon_ev: 4.0,
+            lambda: 0.0,
+            helicity: 1.0,
+            harmonic_max: 8,
+        })
+        .unwrap();
+        let mut exchange = BilayerExchange::static_limit(&BilayerParams {
+            hopping_ev: 0.05,
+            interlayer_hopping_ev: 0.02,
+            interaction_ev: 1.25,
+        })
+        .unwrap();
+        // Keep the intralayer part of the driven monolayer and add the
+        // interlayer couplings of the bilayer.
+        exchange.j1 = static_exchange.j1;
+        exchange.j2 = static_exchange.j2;
+        exchange.chirality = 0.0;
+        let mut wave = BilayerSpinWave {
+            exchange,
+            spins: [1.5, 1.0, 1.0, 1.5],
+            anisotropy_ev: -0.002,
+            direct_exchange_ev: 2.0 * exchange.j1,
+        };
+        wave.direct_exchange_ev = 2.0 * wave.exchange.j1;
+        for q in [[0.13f64, 0.27], [0.3, 0.1], [0.05, 0.45]] {
+            let forward = wave.dispersion(&q).unwrap();
+            let backward = wave.dispersion(&[-q[0], -q[1]]).unwrap();
+            assert!(forward.iter().all(|value| value.is_finite()), "{forward:?}");
+            for index in 0..4 {
+                assert!(
+                    (forward[index] - backward[index]).abs() < 1e-10,
+                    "q = {q:?}: {forward:?} vs {backward:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chirality_swaps_the_spin_sectors_between_the_valleys() {
+        let exchange = monolayer();
+        // The paper's crossed moment assignment needs S1 != S2 for the sectors
+        // to differ; equal spins make them exactly degenerate.
+        let mut wave = bilayer(BilayerExchange::decoupled(&exchange), 1.5);
+        wave.spins = [1.5, 1.0, 1.0, 1.5];
+        let k = [1.0 / 3.0, 2.0 / 3.0];
+        let k_prime = [2.0 / 3.0, 1.0 / 3.0];
+        let (up_k, down_k) = wave.sector_bands(&k).unwrap();
+        let (up_prime, down_prime) = wave.sector_bands(&k_prime).unwrap();
+        // Odd parity: the up sector at K equals the down sector at K'.
+        for band in 0..2 {
+            assert!(
+                (up_k[band] - down_prime[band]).abs() < 1e-12,
+                "{up_k:?} {down_prime:?}"
+            );
+            assert!(
+                (down_k[band] - up_prime[band]).abs() < 1e-12,
+                "{down_k:?} {up_prime:?}"
+            );
+        }
+        // ... and the sectors are genuinely split at a given valley.
+        assert!((up_k[0] - down_k[0]).abs() > 1e-6, "{up_k:?} {down_k:?}");
+    }
+
+    #[test]
+    fn zero_chirality_keeps_the_valleys_degenerate() {
+        let mut exchange = monolayer();
+        exchange.chirality = 0.0;
+        let wave = bilayer(BilayerExchange::decoupled(&exchange), 1.5);
+        let at_k = wave.dispersion(&[1.0 / 3.0, 2.0 / 3.0]).unwrap();
+        let at_prime = wave.dispersion(&[2.0 / 3.0, 1.0 / 3.0]).unwrap();
+        for index in 0..4 {
+            assert!(
+                (at_k[index] - at_prime[index]).abs() < 1e-9,
+                "{at_k:?} {at_prime:?}"
+            );
+        }
     }
 }
