@@ -77,18 +77,12 @@ fn main() -> Rustb::Result<()> {
     for (index, value) in fe.iter().zip(moments.iter()) {
         println!("  Fe {index}: {value:+.4}");
     }
-    let mut axis = Array2::<f64>::zeros((fe.len(), 3));
-    let mut spin = Array1::<f64>::zeros(fe.len());
-    for (row, &value) in moments.iter().enumerate() {
-        axis[[row, 2]] = if value < 0.0 { -1.0 } else { 1.0 };
-        spin[row] = value.abs() / 2.0;
-    }
-
+    let _ = &moments;
+    // The moments printed above are what the library derives internally from
+    // the two channels, so they are not passed in again.
     let mut params = ExchangeParams::new(0.0, &Array1::from(kmesh.clone()))
         .with_nz(nz)
-        .with_magnetic_atoms(fe.clone())
-        .with_spin(spin)
-        .with_axis(axis);
+        .with_magnetic_atoms(fe.clone());
     if method.eq_ignore_ascii_case("semi") {
         params = params.with_semicircle_contour();
     } else if method.eq_ignore_ascii_case("cfr") {

@@ -1175,10 +1175,17 @@ let magnon = Magnon::<2>::from_collinear(&model_up, &model_dn, &params)?;
 
 Magnetic sites come from the `Atom` metadata: an atom is magnetic when it
 carries a magnetic moment, and its orbitals are the ones it owns
-(`Atom::with_orbitals`). The spin quantum numbers are `S_i = |m_i| / 2` in
-units of `hbar` and the reference axes are the normalized moments; both can be
-overridden with `with_spin` / `with_axis`, and `with_magnetic_atoms` selects the
-sites explicitly. A model without atoms falls back to one site per orbital.
+(`Atom::with_orbitals`); `with_magnetic_atoms` selects them explicitly and a
+model without atoms falls back to one site per orbital.
+
+Moments do not have to be supplied: Wannier90 files store none, so when neither
+`with_spin`/`with_axis` nor the atoms provide them, the extraction derives the
+site magnetization `m_i = Tr(rho_up - rho_dn)` from the two channels (TB2J's
+`spinat`), with `S_i = |m_i| / 2` in units of `hbar` and the axis along `+z` or
+`-z`. A direction supplied by the caller is cross-checked against that
+magnetization: a global spin flip is a symmetry and passes, a per-site
+contradiction raises `moment_direction_consistent` because it would silently
+flip the sign of `J`.
 
 The energy integral uses TB2J's **continued-fraction representation** by
 default (`MagnonContour::Cfr { temperature_kelvin: 600.0 }`), which puts the

@@ -37,10 +37,24 @@
 //! Sites come from the model's [`Atom`] metadata: each atom owns a list of
 //! orbital indices, and an atom is magnetic when it carries a magnetic moment
 //! (or is listed in [`ExchangeParams::magnetic_atoms`]). An orbital-only model
-//! without atoms falls back to one site per orbital. The spin quantum numbers
-//! are `S_i = |m_i| / 2` in units of `hbar` (a `g = 2`, orbital-quenched
-//! moment) and the reference axes are the normalized moments; both can be
-//! overridden through [`ExchangeParams::spin`] and [`ExchangeParams::axis`].
+//! without atoms falls back to one site per orbital.
+//!
+//! Moments are resolved in this order:
+//!
+//! 1. [`ExchangeParams::spin`] together with [`ExchangeParams::axis`];
+//! 2. the atom magnetic moments;
+//! 3. otherwise the **site magnetization of the two channels**,
+//!    `m_i = Tr(rho_up - rho_dn)` over the site's orbitals at zero temperature.
+//!    This is the usual case for Wannier90 input, which stores no moments, and
+//!    it is what TB2J calls `spinat`: `S_i = |m_i| / 2` in units of `hbar`
+//!    (a `g = 2`, orbital-quenched moment) and `axis_i = +z` or `-z` along the
+//!    Hamiltonian's own quantization axis.
+//!
+//! An explicitly supplied direction is cross-checked against that
+//! magnetization. A *global* spin flip is a symmetry of the problem and is
+//! accepted, but a per-site contradiction is rejected with
+//! `moment_direction_consistent`, because it would silently flip the sign of
+//! `J` (the couplings are normalized by `sign(axis_i . axis_j)`).
 
 //! # Examples
 //!
@@ -141,8 +155,14 @@ pub struct ExchangeParams {
     /// Optional pair-distance cutoff in angstrom.
     pub rcut: Option<f64>,
     /// Optional spin quantum numbers `S_i` in units of `hbar`.
+    ///
+    /// When both this and [`Self::axis`] are set they take precedence over the
+    /// atom moments and over the magnetization derived from the two channels.
     pub spin: Option<Array1<f64>>,
     /// Optional reference axes, shape `(n, 3)`, unit rows.
+    ///
+    /// A globally flipped set of axes is accepted, a per-site contradiction
+    /// with the on-site magnetization is rejected.
     pub axis: Option<Array2<f64>>,
     /// Optional explicit magnetic sites, as atom indices.
     pub magnetic_atoms: Option<Vec<usize>>,
@@ -375,7 +395,6 @@ impl<const DIM: usize> Magnon<DIM> {
 
         let n_orb = up.shape()[1];
         let (sites, site_positions) = resolve_sites(atoms, orb, n_orb, params)?;
-        let (spin, axis) = resolve_moments(atoms, &sites, params)?;
         let n_site = sites.len();
 
         let mesh = forced_odd_mesh(&params.kmesh)?;
@@ -419,6 +438,10 @@ impl<const DIM: usize> Magnon<DIM> {
         // contour node: the k -> R transform is then one BLAS product per node.
         let band_up = prepare_channel(ham_r, up, &kpoints)?;
         let band_down = prepare_channel(ham_r, down, &kpoints)?;
+        // The two channels carry no magnetic moments; derive them from the
+        // density matrices and check any caller-supplied direction against them.
+        let magnetization = site_magnetization(&band_up, &band_down, &sites, params.efermi)?;
+        let (spin, axis) = resolve_moments(atoms, &sites, &magnetization, params)?;
         let mut phases = Array2::<Complex<f64>>::zeros((n_box, kpoints.nrows()));
         for i_r in 0..n_box {
             for (index, k) in kpoints.axis_iter(Axis(0)).enumerate() {
@@ -561,6 +584,9 @@ fn pair_distance(
     }
     distance_sq.sqrt()
 }
+
+/// Magnetization magnitude below which a site is treated as non-magnetic.
+const MAGNETIZATION_TOLERANCE: f64 = 1e-6;
 
 /// Boltzmann constant in eV per kelvin.
 const BOLTZMANN_EV_PER_KELVIN: f64 = 8.617_333_262e-5;
@@ -893,9 +919,58 @@ fn site_positions_from_atoms(
     positions
 }
 
+/// Site magnetization `Tr(rho_up - rho_dn)` in units of `mu_B`, evaluated at
+/// zero temperature from the two channel band structures.
+fn site_magnetization(
+    band_up: &ChannelBands,
+    band_down: &ChannelBands,
+    sites: &[Vec<usize>],
+    efermi: f64,
+) -> Result<Array1<f64>> {
+    let n_k = band_up.values.nrows();
+    let n = band_up.values.ncols();
+    if band_down.values.dim() != (n_k, n) {
+        return Err(TbError::InvalidMagnonInvariant {
+            invariant: "matching_basis",
+            message: "the two channels have different band structures".into(),
+        });
+    }
+    let mut magnetization = Array1::<f64>::zeros(sites.len());
+    for k in 0..n_k {
+        for band in 0..n {
+            let occupied_up = band_up.values[[k, band]] < efermi;
+            let occupied_down = band_down.values[[k, band]] < efermi;
+            if !occupied_up && !occupied_down {
+                continue;
+            }
+            for (site, orbitals) in sites.iter().enumerate() {
+                for &orbital in orbitals {
+                    if occupied_up {
+                        magnetization[site] += band_up.vectors[k][[band, orbital]].norm_sqr();
+                    }
+                    if occupied_down {
+                        magnetization[site] -= band_down.vectors[k][[band, orbital]].norm_sqr();
+                    }
+                }
+            }
+        }
+    }
+    Ok(magnetization / n_k as f64)
+}
+
+/// Resolve the reference spins and axes.
+///
+/// Order of precedence: `ExchangeParams::spin`/`::axis`, then the atom magnetic
+/// moments, then — the usual case for Wannier90 input, which stores no moments
+/// — the site magnetization computed from the two channels (`S_i = |m_i| / 2`,
+/// axis `+z` or `-z` along the Hamiltonian's own quantization axis). Whenever an
+/// explicit direction is supplied it is cross-checked against that
+/// magnetization: a per-site disagreement would silently flip `J`, while a
+/// global spin flip is a symmetry and is accepted.
 fn resolve_moments(
     atoms: &[Atom],
     sites: &[Vec<usize>],
+    magnetization: &Array1<f64>,
     params: &ExchangeParams,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
     let n = sites.len();
@@ -910,43 +985,96 @@ fn resolve_moments(
                 ),
             });
         }
+        check_axis_against_hamiltonian(axis, magnetization, "ExchangeParams::axis")?;
         return Ok((spin.clone(), axis.clone()));
     }
-    if atoms.is_empty() {
-        return Err(TbError::InvalidMagnonInvariant {
-            invariant: "missing_moments",
-            message: "an orbital-only model needs explicit ExchangeParams::spin and ::axis".into(),
-        });
+    if !atoms.is_empty() && atoms.iter().any(|atom| atom.has_magnetic_moment()) {
+        let mut spin = Array1::<f64>::zeros(n);
+        let mut axis = Array2::<f64>::zeros((n, SPIN_COMPONENTS));
+        for (index, site) in sites.iter().enumerate() {
+            let atom = atoms
+                .iter()
+                .find(|atom| atom.orbitals().iter().any(|id| id.index() == site[0]));
+            let moment = atom
+                .and_then(|atom| atom.magnetic_moment())
+                .ok_or_else(|| TbError::InvalidMagnonInvariant {
+                    invariant: "missing_moments",
+                    message: format!(
+                        "magnetic site {index} has no moment; attach one to its atom or pass \
+                         ExchangeParams::spin and ::axis"
+                    ),
+                })?;
+            let magnitude =
+                (moment[0] * moment[0] + moment[1] * moment[1] + moment[2] * moment[2]).sqrt();
+            if magnitude <= 0.0 || !magnitude.is_finite() {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "non_zero_moment",
+                    message: format!("magnetic site {index} has a zero or non-finite moment"),
+                });
+            }
+            spin[index] = magnitude / 2.0;
+            for component in 0..SPIN_COMPONENTS {
+                axis[[index, component]] = moment[component] / magnitude;
+            }
+        }
+        check_axis_against_hamiltonian(&axis, magnetization, "the atom magnetic moments")?;
+        return Ok((spin, axis));
     }
+    // Derive the moments from the band structure, as TB2J does.
     let mut spin = Array1::<f64>::zeros(n);
     let mut axis = Array2::<f64>::zeros((n, SPIN_COMPONENTS));
-    for (index, site) in sites.iter().enumerate() {
-        let atom = atoms
-            .iter()
-            .find(|atom| atom.orbitals().iter().any(|id| id.index() == site[0]));
-        let moment = atom
-            .and_then(|atom| atom.magnetic_moment())
-            .ok_or_else(|| TbError::InvalidMagnonInvariant {
-                invariant: "missing_moments",
-                message: format!(
-                    "magnetic site {index} has no moment; attach one to its atom or pass \
-                     ExchangeParams::spin and ::axis"
-                ),
-            })?;
-        let magnitude =
-            (moment[0] * moment[0] + moment[1] * moment[1] + moment[2] * moment[2]).sqrt();
-        if magnitude <= 0.0 || !magnitude.is_finite() {
+    for index in 0..n {
+        let moment = magnetization[index];
+        if !moment.is_finite() || moment.abs() < MAGNETIZATION_TOLERANCE {
             return Err(TbError::InvalidMagnonInvariant {
-                invariant: "non_zero_moment",
-                message: format!("magnetic site {index} has a zero or non-finite moment"),
+                invariant: "non_zero_magnetization",
+                message: format!(
+                    "site {index} carries no magnetization in the two channels; pass \
+                     ExchangeParams::spin and ::axis, or check the Fermi level"
+                ),
             });
         }
-        spin[index] = magnitude / 2.0;
-        for component in 0..SPIN_COMPONENTS {
-            axis[[index, component]] = moment[component] / magnitude;
-        }
+        spin[index] = moment.abs() / 2.0;
+        axis[[index, 2]] = moment.signum();
     }
     Ok((spin, axis))
+}
+
+/// Reject a per-site contradiction between a supplied direction and the
+/// on-site magnetization of the two channels. A uniform global flip is allowed
+/// because it leaves every `sign(axis_i . axis_j)` unchanged.
+fn check_axis_against_hamiltonian(
+    axis: &Array2<f64>,
+    magnetization: &Array1<f64>,
+    source: &str,
+) -> Result<()> {
+    let mut global: Option<f64> = None;
+    for index in 0..magnetization.len() {
+        let moment = magnetization[index];
+        let direction = axis[[index, 2]];
+        if !moment.is_finite() || moment.abs() < MAGNETIZATION_TOLERANCE {
+            continue;
+        }
+        if direction.abs() < 0.5 {
+            continue;
+        }
+        let relative = moment.signum() * direction.signum();
+        match global {
+            None => global = Some(relative),
+            Some(expected) if (expected - relative).abs() > 0.5 => {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "moment_direction_consistent",
+                    message: format!(
+                        "site {index}: the direction from {source} contradicts the on-site \
+                         magnetization of the two channels (they agree for the other sites, \
+                         so this is not a global spin flip)"
+                    ),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -973,8 +1101,8 @@ mod tests {
             Model::<true, 1>::tb_model(array![[1.0]], array![[0.0], [0.5]], Some(atoms)).unwrap();
         model.set_hop(t, 0, 1, &array![0isize], None);
         model.set_hop(t, 1, 0, &array![1isize], None);
-        for i in 0..2 {
-            model.set_onsite_one(delta[i] / 2.0, i, SpinDirection::Z);
+        for (site, splitting) in delta.iter().enumerate() {
+            model.set_onsite_one(splitting / 2.0, site, SpinDirection::Z);
         }
         model
     }
@@ -1198,6 +1326,48 @@ mod tests {
         let contour = cfr_contour(2, 600.0).unwrap();
         assert!(contour.len() >= 3);
         assert!(contour.iter().any(|(_, weight)| weight.norm() > 0.0));
+    }
+
+    #[test]
+    fn test_moments_are_derived_from_the_hamiltonian() {
+        // Wannier90 files carry no moments: clear the atom metadata and let the
+        // two channels provide them (TB2J's `spinat`).
+        let mut model = spinful_model(0.1, [2.0, 2.0], [[0.0, 0.0, 2.0], [0.0, 0.0, 2.0]]);
+        model.atoms[0].clear_magnetic_moment();
+        model.atoms[1].clear_magnetic_moment();
+        let params = ExchangeParams::new(0.0, &array![5usize]);
+        let magnon = Magnon::<1>::from_model(&model, &params).unwrap();
+        // The up level sits above E_F, so each site carries m = -1 mu_B.
+        for site in 0..2 {
+            assert!((magnon.spin[site] - 0.5).abs() < 1e-12, "{:?}", magnon.spin);
+            assert!((magnon.axis[[site, 2]] + 1.0).abs() < 1e-12);
+        }
+        // Same coupling as the explicit-moment path: the global sign cancels.
+        assert!((exchange_value(&magnon, 0, 0, 1) + 2.5774e-3).abs() < 2e-5);
+    }
+
+    #[test]
+    fn test_mixed_axis_directions_are_rejected() {
+        let model = spinful_model(0.1, [2.0, 2.0], [[0.0, 0.0, 2.0], [0.0, 0.0, 2.0]]);
+        let base = ExchangeParams::new(0.0, &array![5usize]);
+        // A global spin flip keeps every sign(axis_i . axis_j) and is accepted.
+        let flipped = base
+            .clone()
+            .with_spin(array![0.5, 0.5])
+            .with_axis(array![[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]);
+        let magnon = Magnon::<1>::from_model(&model, &flipped).unwrap();
+        assert!((exchange_value(&magnon, 0, 0, 1) + 2.5774e-3).abs() < 2e-5);
+        // Flipping only one site contradicts the Hamiltonian and must fail.
+        let mixed = base
+            .with_spin(array![0.5, 0.5])
+            .with_axis(array![[0.0, 0.0, -1.0], [0.0, 0.0, 1.0]]);
+        let error = Magnon::<1>::from_model(&model, &mixed).unwrap_err();
+        match error {
+            TbError::InvalidMagnonInvariant { invariant, .. } => {
+                assert_eq!(invariant, "moment_direction_consistent")
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]
