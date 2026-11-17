@@ -137,13 +137,53 @@ pub struct MagnonReference<const DIM: usize = 3> {
 impl<const DIM: usize> MagnonReference<DIM> {
     /// Collinear/ferromagnetic reference: `q = 0`, `n = x`, `uz = z`.
     ///
-    /// These are TB2J's defaults (`Magnon._Q`, `Magnon._n`, `Magnon._uz`).
+    /// TB2J's `Magnon._Q`/`_uz` defaults are matched, but its rotation axis
+    /// (`_n`) defaults to `z`; this crate uses `x`, which is the transverse
+    /// axis of the default `z`-polarized moments and therefore the physically
+    /// meaningful spiral axis. With `q = 0` the choice is inert.
     pub fn collinear() -> Self {
         Self {
             q: Array1::zeros(DIM),
             rotation_axis: Array1::from(vec![1.0, 0.0, 0.0]),
             quantization_axis: Array1::from(vec![0.0, 0.0, 1.0]),
         }
+    }
+
+    /// Single-Q spiral reference: propagation vector `q`, default axes.
+    ///
+    /// The exchange tensors are rotated by `2 pi R.q` about `rotation_axis`
+    /// when the BdG matrix is built. `rotation_axis = x` keeps the rotation
+    /// transverse to the default `z`-polarized moments; use
+    /// [`Self::with_rotation_axis`] for another spiral axis.
+    pub fn single_q<S: Data<Elem = f64>>(q: &ArrayBase<S, Ix1>) -> Result<Self> {
+        let reference = Self {
+            q: q.to_owned(),
+            rotation_axis: Array1::from(vec![1.0, 0.0, 0.0]),
+            quantization_axis: Array1::from(vec![0.0, 0.0, 1.0]),
+        };
+        reference.validate()?;
+        Ok(reference)
+    }
+
+    /// Replace the global rotation axis of the spiral, checking that it is a
+    /// unit vector.
+    pub fn with_rotation_axis<S: Data<Elem = f64>>(
+        mut self,
+        axis: &ArrayBase<S, Ix1>,
+    ) -> Result<Self> {
+        self.rotation_axis = axis.to_owned();
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Replace the global quantization axis used to build the local frames.
+    pub fn with_quantization_axis<S: Data<Elem = f64>>(
+        mut self,
+        axis: &ArrayBase<S, Ix1>,
+    ) -> Result<Self> {
+        self.quantization_axis = axis.to_owned();
+        self.validate()?;
+        Ok(self)
     }
 
     /// Validate the propagation vector and the two unit axes.

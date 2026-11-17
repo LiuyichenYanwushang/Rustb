@@ -874,6 +874,52 @@ mod tests {
     }
 
     #[test]
+    fn test_single_q_reference_constructors() {
+        use crate::magnon::MagnonReference;
+        // `single_q` stores the propagation vector and the default axes, and
+        // q = 0 is the collinear reference.
+        let reference = MagnonReference::<1>::single_q(&array![0.5]).unwrap();
+        assert_eq!(reference.q, array![0.5]);
+        assert_eq!(reference.rotation_axis, array![1.0, 0.0, 0.0]);
+        assert_eq!(reference.quantization_axis, array![0.0, 0.0, 1.0]);
+        assert_eq!(
+            MagnonReference::<1>::single_q(&array![0.0]).unwrap().q,
+            MagnonReference::<1>::collinear().q
+        );
+        // The builders replace the axes and re-run the shared validation.
+        assert_eq!(
+            reference
+                .clone()
+                .with_rotation_axis(&array![0.0, 1.0, 0.0])
+                .unwrap()
+                .rotation_axis,
+            array![0.0, 1.0, 0.0]
+        );
+        assert_eq!(
+            reference
+                .clone()
+                .with_quantization_axis(&array![0.0, 1.0, 0.0])
+                .unwrap()
+                .quantization_axis,
+            array![0.0, 1.0, 0.0]
+        );
+        // Non-unit axes and a wrong-length q are rejected.
+        assert!(
+            reference
+                .clone()
+                .with_rotation_axis(&array![1.0, 1.0, 0.0])
+                .is_err()
+        );
+        assert!(
+            reference
+                .clone()
+                .with_quantization_axis(&array![0.0, 0.0, 2.0])
+                .is_err()
+        );
+        assert!(MagnonReference::<1>::single_q(&array![0.0, 0.5]).is_err());
+    }
+
+    #[test]
     fn test_dos_normalization() {
         let magnon = chain(0.01, 1.5);
         let (omega, dos) = magnon
