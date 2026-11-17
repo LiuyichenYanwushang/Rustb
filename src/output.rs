@@ -52,6 +52,7 @@
 //! ```
 
 use crate::Model;
+use crate::atom_struct::{AtomType, OrbProj};
 
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
@@ -63,6 +64,47 @@ use ndarray::*;
 use std::fs::File;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+fn projection_token(projection: OrbProj) -> &'static str {
+    match projection {
+        OrbProj::s => "s",
+        OrbProj::px => "px",
+        OrbProj::py => "py",
+        OrbProj::pz => "pz",
+        OrbProj::dxy => "dxy",
+        OrbProj::dxz => "dxz",
+        OrbProj::dyz => "dyz",
+        OrbProj::dz2 => "dz2",
+        OrbProj::dx2y2 => "dx2-y2",
+        OrbProj::fz3 => "fz3",
+        OrbProj::fxz2 => "fxz2",
+        OrbProj::fyz2 => "fyz2",
+        OrbProj::fzx2y2 => "fz(x2-y2)",
+        OrbProj::fxyz => "fxyz",
+        OrbProj::fxx23y2 => "fx(x2-3y2)",
+        OrbProj::fy3x2y2 => "fy(3x2-y2)",
+        OrbProj::sp_1 => "sp-1",
+        OrbProj::sp_2 => "sp-2",
+        OrbProj::sp2_1 => "sp2-1",
+        OrbProj::sp2_2 => "sp2-2",
+        OrbProj::sp2_3 => "sp2-3",
+        OrbProj::sp3_1 => "sp3-1",
+        OrbProj::sp3_2 => "sp3-2",
+        OrbProj::sp3_3 => "sp3-3",
+        OrbProj::sp3_4 => "sp3-4",
+        OrbProj::sp3d_1 => "sp3d-1",
+        OrbProj::sp3d_2 => "sp3d-2",
+        OrbProj::sp3d_3 => "sp3d-3",
+        OrbProj::sp3d_4 => "sp3d-4",
+        OrbProj::sp3d_5 => "sp3d-5",
+        OrbProj::sp3d2_1 => "sp3d2-1",
+        OrbProj::sp3d2_2 => "sp3d2-2",
+        OrbProj::sp3d2_3 => "sp3d2-3",
+        OrbProj::sp3d2_4 => "sp3d2-4",
+        OrbProj::sp3d2_5 => "sp3d2-5",
+        OrbProj::sp3d2_6 => "sp3d2-6",
+    }
+}
 
 fn utc_timestamp() -> String {
     let seconds = SystemTime::now()
@@ -386,10 +428,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
     }
 
     fn output_win(&self, path: &str, seedname: &str) -> Result<()> {
-        //!Output a Wannier90 `.win` file. Note: projections must be added manually,
-        //!since projection data is not stored in the model.
+        //!Output a Wannier90 `.win` file. The projection block is derived from
+        //!the model Atom ownership, `orb_projection`, and the model orbital order.
+        //!Pure and individual hybrid projections are written in that order; no
+        //!empty placeholder or out-of-order compact hybrid expansion is emitted.
         let name = format!("{path}{seedname}.win");
         let mut file = File::create(&name)?;
+        writeln!(file, "num_wann = {}", self.nsta())?;
+        writeln!(
+            file,
+            "spinors = {}",
+            if SPIN { ".true." } else { ".false." }
+        )?;
+        writeln!(file)?;
 
         // Atom positions are stored in fractional lattice coordinates, so the
         // Wannier90 block must be `atoms_frac` (previously `atoms_cart` was
@@ -477,8 +528,62 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         }
         writeln!(file, "end unit_cell_cart")?;
         writeln!(file)?;
-        //TODO: projections still need to be written
         writeln!(file, "begin projections")?;
+        let mut entries = Vec::<(AtomType, Vec<&'static str>, [f64; 3])>::new();
+        for atom in &self.atoms {
+            let mut projections = Vec::with_capacity(atom.norb());
+            for orbital in atom.orbitals() {
+                let projection = *self.orb_projection.get(orbital.index()).ok_or_else(|| {
+                    TbError::InvalidOrbitalProjection(format!(
+                        "orbital {} has no entry in orb_projection",
+                        orbital.index()
+                    ))
+                })?;
+                projections.push(projection);
+            }
+            if projections.is_empty() {
+                continue;
+            }
+            let tokens = projections
+                .iter()
+                .map(|projection| projection_token(*projection))
+                .collect();
+            let source_position = atom.position_ref();
+            let mut position = [0.0f64; 3];
+            for (axis, value) in source_position.iter().take(3).enumerate() {
+                position[axis] = *value;
+            }
+            entries.push((atom.atom_type(), tokens, position));
+        }
+        let mut species = std::collections::BTreeMap::<AtomType, Vec<usize>>::new();
+        for (index, (atom_type, _, _)) in entries.iter().enumerate() {
+            species.entry(*atom_type).or_default().push(index);
+        }
+        let use_species_lines = species.values().all(|indices| {
+            indices.windows(2).all(|pair| pair[1] == pair[0] + 1)
+                && indices
+                    .iter()
+                    .all(|&index| entries[index].1 == entries[indices[0]].1)
+        });
+        if use_species_lines {
+            let mut written = std::collections::BTreeSet::<AtomType>::new();
+            for (atom_type, tokens, _) in &entries {
+                if written.insert(*atom_type) {
+                    writeln!(file, "{}: {}", atom_type.to_str(), tokens.join(","))?;
+                }
+            }
+        } else {
+            for (_atom_type, tokens, position) in &entries {
+                writeln!(
+                    file,
+                    "f={:.8},{:.8},{:.8}: {}",
+                    position[0],
+                    position[1],
+                    position[2],
+                    tokens.join(",")
+                )?;
+            }
+        }
         writeln!(file, "end projections")?;
         Ok(())
     }
@@ -744,6 +849,183 @@ mod tests {
         assert_eq!(&value[13..14], ":");
         assert_eq!(&value[16..17], ":");
         assert!(value.ends_with('Z'));
+    }
+
+    #[test]
+    fn output_win_writes_model_projections() {
+        use crate::{Atom, AtomType, OrbitalId};
+        use ndarray::array;
+
+        let dir = format!("target/test-output/output_win_{}/", std::process::id());
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut model = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![
+                [0.0, 0.0, 0.0],
+                [0.25, 0.25, 0.25],
+                [0.25, 0.25, 0.25],
+                [0.25, 0.25, 0.25],
+                [0.25, 0.25, 0.25]
+            ],
+            Some(vec![
+                Atom::with_orbitals(array![0.0, 0.0, 0.0], AtomType::Si, [OrbitalId::new(0)]),
+                Atom::with_orbitals(
+                    array![0.25, 0.25, 0.25],
+                    AtomType::Fe,
+                    [
+                        OrbitalId::new(1),
+                        OrbitalId::new(2),
+                        OrbitalId::new(3),
+                        OrbitalId::new(4),
+                    ],
+                ),
+            ]),
+        )
+        .unwrap();
+        model.orb_projection = vec![
+            OrbProj::s,
+            OrbProj::s,
+            OrbProj::px,
+            OrbProj::py,
+            OrbProj::pz,
+        ];
+        model.output_win(&dir, "wannier90").unwrap();
+        let text = std::fs::read_to_string(format!("{dir}wannier90.win")).unwrap();
+        assert!(text.contains("num_wann = 5"), "{text}");
+        assert!(text.contains("spinors = .false."), "{text}");
+        assert!(text.contains("Si: s"), "{text}");
+        assert!(text.contains("Fe: s,px,py,pz"), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn output_win_writes_complete_hybrid_sets() {
+        use crate::{Atom, AtomType, OrbitalId};
+        use ndarray::array;
+
+        let dir = format!(
+            "target/test-output/output_win_hybrid_{}/",
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let orbitals = (0..4).map(OrbitalId::new).collect::<Vec<_>>();
+        let mut model = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            Array2::zeros((4, 3)),
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::C,
+                orbitals,
+            )]),
+        )
+        .unwrap();
+        model.orb_projection = vec![
+            OrbProj::sp3_1,
+            OrbProj::sp3_2,
+            OrbProj::sp3_3,
+            OrbProj::sp3_4,
+        ];
+        model.output_win(&dir, "wannier90").unwrap();
+        let text = std::fs::read_to_string(format!("{dir}wannier90.win")).unwrap();
+        assert!(text.contains("C: sp3-1,sp3-2,sp3-3,sp3-4"), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn output_win_does_not_duplicate_equivalent_species_lines() {
+        use crate::{Atom, AtomType, OrbitalId};
+        use ndarray::array;
+
+        let dir = format!(
+            "target/test-output/output_win_duplicate_{}/",
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut model = Model::<false, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+            Some(vec![
+                Atom::with_orbitals(array![0.0, 0.0, 0.0], AtomType::C, [OrbitalId::new(0)]),
+                Atom::with_orbitals(array![0.5, 0.0, 0.0], AtomType::C, [OrbitalId::new(1)]),
+            ]),
+        )
+        .unwrap();
+        model.orb_projection = vec![OrbProj::s, OrbProj::s];
+        model.output_win(&dir, "wannier90").unwrap();
+        let text = std::fs::read_to_string(format!("{dir}wannier90.win")).unwrap();
+        assert_eq!(text.matches("C: s").count(), 1, "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn output_win_marks_spinor_models() {
+        use crate::{Atom, AtomType, OrbitalId};
+        use ndarray::array;
+
+        let dir = format!(
+            "target/test-output/output_win_spinor_{}/",
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut model = Model::<true, 3>::tb_model(
+            Array2::eye(3),
+            array![[0.0, 0.0, 0.0]],
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::Fe,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        model.orb_projection = vec![OrbProj::s];
+        model.output_win(&dir, "wannier90").unwrap();
+        let text = std::fs::read_to_string(format!("{dir}wannier90.win")).unwrap();
+        assert!(text.contains("num_wann = 2"), "{text}");
+        assert!(text.contains("spinors = .true."), "{text}");
+        assert!(text.contains("Fe: s"), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn output_win_handles_low_dimensional_atom_positions() {
+        use crate::{Atom, AtomType, OrbitalId};
+        use ndarray::array;
+
+        let dir = format!(
+            "target/test-output/output_win_lowdim_{}/",
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut two_d = Model::<false, 2>::tb_model(
+            Array2::eye(2),
+            array![[0.0, 0.0], [0.5, 0.0]],
+            Some(vec![
+                Atom::with_orbitals(array![0.0, 0.0], AtomType::C, [OrbitalId::new(0)]),
+                Atom::with_orbitals(array![0.5, 0.0], AtomType::C, [OrbitalId::new(1)]),
+            ]),
+        )
+        .unwrap();
+        two_d.orb_projection = vec![OrbProj::s, OrbProj::px];
+        two_d.output_win(&dir, "two_d").unwrap();
+
+        let mut one_d = Model::<false, 1>::tb_model(
+            array![[1.0]],
+            array![[0.0], [0.5]],
+            Some(vec![
+                Atom::with_orbitals(array![0.0], AtomType::C, [OrbitalId::new(0)]),
+                Atom::with_orbitals(array![0.5], AtomType::C, [OrbitalId::new(1)]),
+            ]),
+        )
+        .unwrap();
+        one_d.orb_projection = vec![OrbProj::s, OrbProj::px];
+        one_d.output_win(&dir, "one_d").unwrap();
+
+        for seed in ["two_d", "one_d"] {
+            let text = std::fs::read_to_string(format!("{dir}{seed}.win")).unwrap();
+            assert!(text.contains("num_wann = 2"), "{text}");
+            assert!(text.contains("f="), "{text}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

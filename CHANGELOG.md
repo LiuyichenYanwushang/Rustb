@@ -45,6 +45,12 @@
 
 ### Safety and numerical fixes
 
+- `Model::output_win` now derives its `begin projections` block from the
+  model Atom ownership, `orb_projection`, and orbital order instead of writing
+  an empty block. It also writes `num_wann = nsta` and an explicit `spinors`
+  flag derived from the model spin type. Pure and individual hybrid projections
+  are emitted in model order; equivalent species are grouped only when their
+  projection lists match.
 - `Model::output_hr` now writes a `#generate by Rustb at time ...` comment as
   the first line and emits 1-based orbital indices in the Hamiltonian records
   (the Wannier90 index convention).
