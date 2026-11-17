@@ -424,6 +424,47 @@ mod tests {
     }
 
     #[test]
+    fn splitting_has_f_wave_angular_dependence() {
+        // Around Gamma the paper predicts Delta omega ∝ cos(3 theta): three
+        // sign changes and a period of 2 pi / 3.
+        let params = DrivenHubbardParams {
+            hopping_ev: 0.05,
+            interaction_ev: 1.25,
+            photon_ev: 4.0,
+            lambda: 0.4,
+            helicity: 1.0,
+            harmonic_max: 8,
+        };
+        let exchange = DrivenExchange::honeycomb(&params).unwrap();
+        let (spin, anisotropy) = (1.5, -0.01);
+        let radius = 0.03f64;
+        let sample = |theta: f64| {
+            let k = [radius * theta.cos(), radius * theta.sin()];
+            let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, &k);
+            up - down
+        };
+        // Three sign changes over [0, 2 pi): cos(3 theta).
+        let mut changes = 0;
+        let steps = 720;
+        let mut previous = sample(0.0);
+        for index in 1..=steps {
+            let theta = std::f64::consts::TAU * index as f64 / steps as f64;
+            let value = sample(theta);
+            if previous != 0.0 && value.signum() != previous.signum() {
+                changes += 1;
+            }
+            previous = value;
+        }
+        assert_eq!(changes, 3, "expected three sign changes, found {changes}");
+        // ... and odd under k -> -k, which on the circle is theta -> theta + pi.
+        for theta in [0.2f64, 1.0, 2.3] {
+            let plus = sample(theta);
+            let opposite = sample(theta + std::f64::consts::PI);
+            assert!((plus + opposite).abs() < 1e-12, "theta = {theta}");
+        }
+    }
+
+    #[test]
     fn gapless_point_is_not_reported_as_nan() {
         let params = DrivenHubbardParams {
             hopping_ev: 0.05,
