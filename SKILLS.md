@@ -1224,6 +1224,21 @@ two branches are degenerate without the drive, split with opposite signs at
 `K = (1/3, 2/3)` and `K' = (2/3, 1/3)`, and satisfy `omega_up(k) =
 omega_down(-k)` (odd parity, `f`-wave near Gamma).
 
+### Worked example: the odd-parity dispersion
+
+`examples/magnon_odd_parity` prints the Gamma-K-M-Gamma dispersion of Eq. (6)
+beside the real-space solver, the valley splitting at `K`/`K'`, the f-wave
+pattern on a circle of fixed Cartesian `|k|`, and the high-frequency Sambe
+check, asserting each residual:
+
+```text
+cargo run --release --features openblas-system --example magnon_odd_parity -- [lambda] [spin] [K_ev] [helicity]
+```
+
+Expected output with the defaults: solver-vs-analytic residual `1e-16`,
+`Delta(K) = +3.6e-5`, `Delta(K') = -3.6e-5`, six f-wave sign changes, and
+`2e-11` for the Sambe-to-effective residual.
+
 ### From the driven-exchange coefficients to a `Magnon`
 
 `DrivenExchange::honeycomb_magnon(spin, anisotropy_ev)` builds a `Magnon` whose

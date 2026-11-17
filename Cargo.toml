@@ -100,6 +100,10 @@ mimalloc = ["dep:mimalloc"]
 jemalloc = ["dep:jemallocator"]
 
 [[example]]
+name = "magnon_odd_parity"
+path = "examples/magnon_odd_parity/main.rs"
+
+[[example]]
 name = "mgfe6ge6_exchange"
 path = "examples/mgfe6ge6_exchange/main.rs"
 
