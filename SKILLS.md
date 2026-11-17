@@ -1224,6 +1224,34 @@ two branches are degenerate without the drive, split with opposite signs at
 `K = (1/3, 2/3)` and `K' = (2/3, 1/3)`, and satisfy `omega_up(k) =
 omega_down(-k)` (odd parity, `f`-wave near Gamma).
 
+### From the driven-exchange coefficients to a `Magnon`
+
+`DrivenExchange::honeycomb_magnon(spin, anisotropy_ev)` builds a `Magnon` whose
+spin-wave solver reproduces `DrivenExchange::honeycomb_dispersion` (the paper's
+Eq. 6), which is the consistency check between the analytic coefficients and the
+generic real-space tensor solver. The landscape mapping is
+
+```text
+J_land   = -(S^2 / 2) J_paper      (J1 and J2)
+SIA_zz   = -K S^2                  (R = 0, i = i block)
+dmi_land = chi S^3 / 2             (next-nearest-neighbour DMI)
+```
+
+The `S^2/2` carries both the spin-operator normalisation and the factor `2` of
+TB2J's `C` term; using `J_land = -S^2 J_paper` doubles every frequency. The
+anisotropy enters only through the longitudinal `C` term, so it keeps a single
+`S^2`. The chirality needs `S^3/2` because the solver's `A1[0,0] - A1[1,1]` is
+`(8/S) sum d sin(k.b)`, and our next-nearest list is `{b1, -b2, b3}`, so the
+paper's `sum_nu sin(k.b_nu)` needs alternating signs `(+1, -1, +1)`. With this
+mapping the solver reproduces Eq. (6) to `1e-9` eV. The reference is the Neel
+state, so `K` must be non-positive and `j1 > 0` (antiferromagnetic).
+
+```rust
+let exchange = DrivenExchange::honeycomb(&params)?;
+let magnon = exchange.honeycomb_magnon(1.5, -0.01)?;
+let bands = magnon.magnon_band_onek(&array![1.0 / 3.0, 2.0 / 3.0])?;
+```
+
 ### AA-stacked bilayer
 
 `magnon::floquet::BilayerExchange::static_limit` gives the bilayer couplings of
