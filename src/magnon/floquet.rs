@@ -535,3 +535,840 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Floquet–Sambe model and quasienergies of a driven magnon Hamiltonian
+// ---------------------------------------------------------------------------
+
+use crate::floquet::{
+    FloquetDrive, FloquetEffectiveOptions, FloquetTruncation, bessel_peierls_coeffs,
+};
+use crate::magnon::Magnon as MagnonModel;
+use ndarray::{Array1, Array2, Array3, Axis};
+use ndarray_linalg::Eig;
+
+/// Floquet–Sambe model of a periodically driven magnon Hamiltonian.
+///
+/// The drive dresses every exchange bond with the Peierls phase the electronic
+/// module uses,
+///
+/// ```text
+/// J_ij(R, t) = J_ij(R) exp[-i a(t).d_ijR],
+/// ```
+///
+/// whose harmonics are the Bessel coefficients `C_m(d)` of the drive. The
+/// quasienergies are obtained from the one-period propagator of the bosonic
+/// Bogoliubov–de Gennes dynamics,
+///
+/// ```text
+/// i d Psi / dt = g H(t) Psi,   g = diag(1, -1),
+/// ```
+///
+/// rather than from a Hermitian diagonalization: only eigenvectors with
+/// positive metric norm are physical, and at a degenerate (Goldstone) mode the
+/// metric-weighted matrix `g H` is defective, so a naive eigen-decomposition of
+/// `g S` splits the photon replicas of a zero mode spuriously.
+pub struct MagnonSambe<const DIM: usize = 3> {
+    magnon: MagnonModel<DIM>,
+    /// Exchange harmonics `J^(m)(R)`, indexed by `m + harmonic_span`.
+    harmonics: Vec<Array3<Complex<f64>>>,
+    omega_ev: f64,
+    n_max: isize,
+    harmonic_span: isize,
+    n_time: usize,
+}
+
+/// Periodic driving of a magnon model, mirroring the electronic
+/// [`crate::floquet::Floquet`] trait.
+pub trait MagnonFloquet {
+    /// Static Sambe-space model produced by [`MagnonFloquet::floquet_model`].
+    type FloquetModel;
+
+    /// Build the Floquet–Sambe model of a periodically driven magnon.
+    fn floquet_model(
+        &self,
+        drive: &FloquetDrive,
+        truncation: &FloquetTruncation,
+    ) -> Result<Self::FloquetModel>;
+}
+
+impl<const DIM: usize> MagnonFloquet for MagnonModel<DIM> {
+    type FloquetModel = MagnonSambe<DIM>;
+
+    fn floquet_model(
+        &self,
+        drive: &FloquetDrive,
+        truncation: &FloquetTruncation,
+    ) -> Result<Self::FloquetModel> {
+        MagnonSambe::new(self, drive, truncation)
+    }
+}
+
+impl<const DIM: usize> MagnonSambe<DIM> {
+    /// Build the Sambe model from an undriven magnon and a drive.
+    pub fn new(
+        magnon: &MagnonModel<DIM>,
+        drive: &FloquetDrive,
+        truncation: &FloquetTruncation,
+    ) -> Result<Self> {
+        magnon.validate()?;
+        // The harmonics below rebuild the exchange without the single-Q
+        // reference rotation that `gen_bdg` applies.
+        if magnon.reference.q.iter().any(|value| value.abs() > 0.0) {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "collinear_reference",
+                message: "the Floquet drive currently needs a collinear reference \
+                          (reference.q = 0)"
+                    .into(),
+            });
+        }
+        crate::floquet::validate_floquet_drive::<DIM>(drive)?;
+        if !drive.omega0_ev.is_finite() || drive.omega0_ev <= 0.0 {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "photon_energy",
+                message: format!(
+                    "the photon energy must be positive, found {}",
+                    drive.omega0_ev
+                ),
+            });
+        }
+        if truncation.n_max < 0 {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "photon_cutoff",
+                message: "the photon cutoff must be non-negative".into(),
+            });
+        }
+        let sectors = truncation.n_sector()?;
+        // The Sambe matrix couples sectors m and n through H^(m-n), so the
+        // harmonics have to reach twice the ladder.
+        let span = truncation
+            .n_max
+            .checked_mul(2)
+            .ok_or(TbError::InvalidMagnonInvariant {
+                invariant: "photon_cutoff",
+                message: "2 * n_max overflows".into(),
+            })?;
+        let harmonic_count = span
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(1))
+            .filter(|&value| value > 0)
+            .ok_or(TbError::InvalidMagnonInvariant {
+                invariant: "photon_cutoff",
+                message: "the harmonic table size overflows".into(),
+            })? as usize;
+        // Cap the enlarged basis like the electronic Sambe validator does.
+        let size = 2usize
+            .checked_mul(magnon.nspin())
+            .and_then(|value| value.checked_mul(sectors))
+            .ok_or(TbError::InvalidMagnonInvariant {
+                invariant: "sambe_allocation",
+                message: "the Sambe basis size overflows".into(),
+            })?;
+        let elements = size
+            .checked_mul(size)
+            .and_then(|value| value.checked_mul(harmonic_count))
+            .ok_or(TbError::InvalidMagnonInvariant {
+                invariant: "sambe_allocation",
+                message: "the Sambe basis size overflows".into(),
+            })?;
+        if elements > 1 << 28 {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "sambe_allocation",
+                message: format!("{elements} complex matrix elements exceed the 2^28 limit"),
+            });
+        }
+        let n = magnon.nspin();
+        let dim = 3 * n;
+        let mut harmonics = Vec::with_capacity(harmonic_count);
+        for index in 0..harmonic_count {
+            let m = index as isize - span;
+            let mut tensor = Array3::<Complex<f64>>::zeros((magnon.nR(), dim, dim));
+            for i_r in 0..magnon.nR() {
+                for i in 0..n {
+                    for j in 0..n {
+                        let displacement = bond_displacement(magnon, i_r, i, j);
+                        let coefficient = bessel_peierls_coeffs(&displacement, drive, m, m, 0)?[0];
+                        for alpha in 0..SC_SPIN {
+                            for beta in 0..SC_SPIN {
+                                let value = magnon.ham[[i_r, 3 * i + alpha, 3 * j + beta]];
+                                tensor[[i_r, 3 * i + alpha, 3 * j + beta]] =
+                                    Complex::new(value, 0.0) * coefficient;
+                            }
+                        }
+                    }
+                }
+            }
+            harmonics.push(tensor);
+        }
+        // The midpoint rule converges as O(n_time^-2); four samples per photon
+        // sector with a floor of 64 is ample for the bandwidths treated here.
+        let n_time = (4 * sectors).max(64);
+        Ok(Self {
+            magnon: magnon.clone(),
+            harmonics,
+            omega_ev: drive.omega0_ev,
+            n_max: truncation.n_max,
+            harmonic_span: span,
+            n_time,
+        })
+    }
+
+    /// The undriven magnon model.
+    pub fn magnon(&self) -> &MagnonModel<DIM> {
+        &self.magnon
+    }
+
+    /// Photon energy `hbar Omega` in eV.
+    pub fn omega_ev(&self) -> f64 {
+        self.omega_ev
+    }
+
+    /// Number of retained photon sectors, `2 n_max + 1`.
+    pub fn n_sector(&self) -> usize {
+        (2 * self.n_max + 1) as usize
+    }
+
+    /// Number of time samples used for the one-period propagator.
+    pub fn n_time(&self) -> usize {
+        self.n_time
+    }
+
+    /// Time-dependent Bogoliubov–de Gennes matrix `H(q, t)`.
+    ///
+    /// The time dependence is applied to the *real-space* exchange tensors,
+    /// where `J_ji(-R, t) = conj(J_ij(R, t))` holds by construction, and the
+    /// BdG matrix is then built once per time step. Building a single Fourier
+    /// harmonic instead would not be Hermitian, because only the pair
+    /// `H^(m), H^(-m)` is adjoint-related.
+    pub fn bdg_at_time(&self, q: &Array1<f64>, time: f64) -> Result<Array2<Complex<f64>>> {
+        let point = self.magnon.check_q(q)?;
+        if !time.is_finite() {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_time",
+                message: format!("the time sample must be finite, found {time}"),
+            });
+        }
+        let n = self.magnon.nspin();
+        let dim = 3 * n;
+        let mut phases = Vec::with_capacity(self.harmonics.len());
+        for index in 0..self.harmonics.len() {
+            let m = index as isize - self.harmonic_span;
+            phases.push(Complex::from_polar(1.0, -(m as f64) * self.omega_ev * time));
+        }
+        let mut jq = Array2::<Complex<f64>>::zeros((dim, dim));
+        let mut j0 = Array2::<Complex<f64>>::zeros((dim, dim));
+        let mut block = Array2::<Complex<f64>>::zeros((dim, dim));
+        for i_r in 0..self.magnon.nR() {
+            block.fill(Complex::new(0.0, 0.0));
+            for (index, phase) in phases.iter().enumerate() {
+                let tensor = self.harmonics[index].index_axis(Axis(0), i_r);
+                for alpha in 0..dim {
+                    for beta in 0..dim {
+                        block[[alpha, beta]] += tensor[[alpha, beta]] * *phase;
+                    }
+                }
+            }
+            let mut phase = 0.0;
+            for (axis, coordinate) in point.iter().enumerate().take(DIM) {
+                phase -= std::f64::consts::TAU * self.magnon.hamR[[i_r, axis]] as f64 * coordinate;
+            }
+            let factor = Complex::from_polar(1.0, phase);
+            for alpha in 0..dim {
+                for beta in 0..dim {
+                    jq[[alpha, beta]] += block[[alpha, beta]] * factor;
+                    // The C term couples to the real instantaneous exchange.
+                    j0[[alpha, beta]] += Complex::new(block[[alpha, beta]].re, 0.0);
+                }
+            }
+        }
+        self.magnon.bdg_from_jq(&jq, &j0)
+    }
+
+    /// One-period propagator `U(T)` of `i dPsi/dt = g H(t) Psi`.
+    pub fn propagator_at(&self, q: &Array1<f64>) -> Result<Array2<Complex<f64>>> {
+        let size = 2 * self.magnon.nspin();
+        let period = std::f64::consts::TAU / self.omega_ev;
+        let step = period / self.n_time as f64;
+        let mut metric = Array1::<f64>::ones(size);
+        for index in self.magnon.nspin()..size {
+            metric[index] = -1.0;
+        }
+        let mut propagator = Array2::<Complex<f64>>::eye(size);
+        for sample in 0..self.n_time {
+            let time = (sample as f64 + 0.5) * step;
+            let h = self.bdg_at_time(q, time)?;
+            let mut generator = Array2::<Complex<f64>>::zeros((size, size));
+            for row in 0..size {
+                for column in 0..size {
+                    generator[[row, column]] =
+                        Complex::new(0.0, -step) * h[[row, column]] * metric[row];
+                }
+            }
+            let factor = matrix_exponential(&generator)?;
+            propagator = factor.dot(&propagator);
+        }
+        Ok(propagator)
+    }
+
+    /// Quasienergies at one `q`, folded into `[-Omega/2, Omega/2)`, ascending.
+    ///
+    /// The one-period propagator is diagonalized and only eigenvectors with
+    /// positive metric norm are kept, so the result has exactly `n_band`
+    /// entries and matches the undriven bands when the drive vanishes.
+    pub fn quasienergies_at(&self, q: &Array1<f64>) -> Result<Array1<f64>> {
+        let n = self.magnon.nspin();
+        let size = 2 * n;
+        let propagator = self.propagator_at(q)?;
+        let (values, vectors) = propagator.eig()?;
+        let mut metric = Array1::<f64>::ones(size);
+        for index in n..size {
+            metric[index] = -1.0;
+        }
+        let mut physical: Vec<(f64, f64)> = Vec::new();
+        for (column, value) in values.iter().enumerate() {
+            let mut norm = 0.0;
+            for row in 0..size {
+                norm += metric[row] * vectors[[row, column]].norm_sqr();
+            }
+            if norm <= 1e-9 {
+                continue;
+            }
+            // A dissipative or parametrically unstable drive leaves |lambda| != 1,
+            // and then the phase alone no longer defines a real quasienergy.
+            if !value.norm().is_finite() {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "driven_system_unstable",
+                    message: "the propagator has a non-finite eigenvalue".into(),
+                });
+            }
+            if (value.norm() - 1.0).abs() > 1e-6 {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "driven_system_unstable",
+                    message: format!(
+                        "the propagator eigenvalue has |lambda| = {:.6}, not one",
+                        value.norm()
+                    ),
+                });
+            }
+            let energy = -value.arg() / (std::f64::consts::TAU) * self.omega_ev;
+            physical.push((energy, norm));
+        }
+        if physical.len() != n {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "positive_norm_quasienergies",
+                message: format!(
+                    "found {} positive-norm quasienergies, expected {n}; a Krein \
+                     collision at a degenerate quasienergy can make the selection \
+                     ambiguous",
+                    physical.len()
+                ),
+            });
+        }
+        physical.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut out = Array1::<f64>::zeros(n);
+        for (index, entry) in physical.iter().enumerate() {
+            out[index] = entry.0;
+        }
+        Ok(out)
+    }
+
+    /// Quasienergies of a list of `q` points, shape `(n_q, n_band)`.
+    pub fn quasienergy_bands(&self, qs: &Array2<f64>) -> Result<Array2<f64>> {
+        if qs.ncols() != DIM {
+            return Err(TbError::DimensionMismatch {
+                context: "magnon q-points".into(),
+                expected: DIM,
+                found: qs.ncols(),
+            });
+        }
+        let n = self.magnon.nspin();
+        let mut out = Array2::<f64>::zeros((qs.nrows(), n));
+        for (row, q) in qs.axis_iter(Axis(0)).enumerate() {
+            let values = self.quasienergies_at(&q.to_owned())?;
+            for (column, value) in values.iter().enumerate() {
+                out[[row, column]] = *value;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Matrix exponential by scaling and squaring with a Taylor series.
+pub(crate) fn matrix_exponential(matrix: &Array2<Complex<f64>>) -> Result<Array2<Complex<f64>>> {
+    let size = matrix.nrows();
+    if matrix.ncols() != size {
+        return Err(TbError::InvalidMagnonInvariant {
+            invariant: "square_matrix",
+            message: "the matrix exponential needs a square matrix".into(),
+        });
+    }
+    let mut norm = 0.0f64;
+    for row in 0..size {
+        let mut row_sum = 0.0;
+        for column in 0..size {
+            row_sum += matrix[[row, column]].norm();
+        }
+        norm = norm.max(row_sum);
+    }
+    if !norm.is_finite() {
+        return Err(TbError::InvalidMagnonInvariant {
+            invariant: "finite_generator",
+            message: "the matrix exponential received a non-finite matrix".into(),
+        });
+    }
+    let mut squarings = 0u32;
+    while norm > 0.5 {
+        norm *= 0.5;
+        squarings += 1;
+    }
+    let scale = 0.5f64.powi(squarings as i32);
+    let scaled = matrix * Complex::new(scale, 0.0);
+    let mut result = Array2::<Complex<f64>>::eye(size);
+    let mut term = Array2::<Complex<f64>>::eye(size);
+    for order in 1..=18 {
+        term = term.dot(&scaled) * Complex::new(1.0 / order as f64, 0.0);
+        result += &term;
+    }
+    for _ in 0..squarings {
+        result = result.dot(&result);
+    }
+    Ok(result)
+}
+
+/// Cartesian displacement `(R + tau_j - tau_i) . L` of the bond `(R, i, j)`.
+fn bond_displacement<const DIM: usize>(
+    magnon: &MagnonModel<DIM>,
+    i_r: usize,
+    i: usize,
+    j: usize,
+) -> Array1<f64> {
+    let fractional: Vec<f64> = (0..DIM)
+        .map(|axis| magnon.hamR[[i_r, axis]] as f64 + magnon.orb[[j, axis]] - magnon.orb[[i, axis]])
+        .collect();
+    let mut cartesian = Array1::<f64>::zeros(DIM);
+    for (component, value) in cartesian.iter_mut().enumerate() {
+        let mut sum = 0.0;
+        for (axis, fraction) in fractional.iter().enumerate() {
+            sum += fraction * magnon.lat[[axis, component]];
+        }
+        *value = sum;
+    }
+    cartesian
+}
+
+/// Spin components of a magnon tensor.
+const SC_SPIN: usize = 3;
+
+impl<const DIM: usize> MagnonModel<DIM> {
+    /// Time-averaged (van Vleck `order = 0`) magnon model of a driven system.
+    ///
+    /// Every exchange bond acquires the Bessel renormalization `J_m(0)(d)` of
+    /// the drive, so the result is an ordinary [`MagnonModel`] with renormalized
+    /// couplings: the same interface as the electronic
+    /// [`crate::Model::floquet_effective_model`]. Higher orders mix particle and
+    /// hole components and are not representable as exchange tensors, so they
+    /// are rejected here; the full propagator spectrum is available through
+    /// [`MagnonSambe::quasienergies_at`].
+    pub fn floquet_effective_model(
+        &self,
+        drive: &FloquetDrive,
+        options: Option<&FloquetEffectiveOptions>,
+    ) -> Result<Self> {
+        let order = options.map(|value| value.order).unwrap_or(0);
+        if order > 0 {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "magnon_effective_order",
+                message: format!(
+                    "the magnon effective model is available at order 0 only; order {order} \
+                     mixes particle and hole components, use MagnonSambe::quasienergies_at"
+                ),
+            });
+        }
+        let sambe = MagnonSambe::<DIM>::new(self, drive, &FloquetTruncation { n_max: 0 })?;
+        let harmonic = &sambe.harmonics[0];
+        let mut ham = Array3::<f64>::zeros(self.ham.dim());
+        let mut largest_imaginary = 0.0f64;
+        for i_r in 0..self.nR() {
+            for alpha in 0..self.ham.shape()[1] {
+                for beta in 0..self.ham.shape()[2] {
+                    let value = harmonic[[i_r, alpha, beta]];
+                    largest_imaginary = largest_imaginary.max(value.im.abs());
+                    ham[[i_r, alpha, beta]] = value.re;
+                }
+            }
+        }
+        let largest_real = ham.iter().map(|value| value.abs()).fold(0.0, f64::max);
+        if largest_imaginary > 1e-8 * largest_real.max(1e-300) {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "complex_time_averaged_exchange",
+                message: format!(
+                    "the time-averaged exchange keeps an imaginary part \
+                     ({largest_imaginary:.3e} eV) that a real exchange tensor cannot \
+                     represent; use MagnonSambe::quasienergies_at"
+                ),
+            });
+        }
+        MagnonModel::<DIM>::new(
+            self.lat.clone(),
+            self.orb.clone(),
+            self.spin.clone(),
+            self.axis.clone(),
+            ham,
+            self.hamR.clone(),
+            self.reference.clone(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod sambe_tests {
+    use super::*;
+    use crate::floquet::{FloquetDrive, FloquetTruncation, LightMode, fold_quasienergy};
+    use crate::magnon::MagnonReference;
+    use crate::magnon::MagnonSolve;
+    use ndarray::{Array3, array};
+
+    fn chain_magnon() -> MagnonModel<1> {
+        let ham_r = array![[0isize], [1], [-1]];
+        let mut ham = Array3::<f64>::zeros((3, 3, 3));
+        for i_r in 1..3 {
+            for component in 0..3 {
+                ham[[i_r, component, component]] = 0.01;
+            }
+        }
+        MagnonModel::<1>::new(
+            array![[1.0]],
+            array![[0.0]],
+            array![1.5],
+            array![[0.0, 0.0, 1.0]],
+            ham,
+            ham_r,
+            MagnonReference::collinear(),
+        )
+        .unwrap()
+    }
+
+    fn linear_drive(omega: f64, amplitude: f64) -> FloquetDrive {
+        FloquetDrive {
+            omega0_ev: omega,
+            modes: vec![LightMode::new(
+                1,
+                array![Complex::new(amplitude, amplitude)],
+            )],
+        }
+    }
+
+    #[test]
+    fn matrix_exponential_matches_diagonal_and_pauli_cases() {
+        use ndarray::array;
+        // Diagonal: exp(diag(a, b)) = diag(e^a, e^b).
+        let diagonal = array![
+            [Complex::new(0.3, 0.0), Complex::new(0.0, 0.0)],
+            [Complex::new(0.0, 0.0), Complex::new(-1.2, 0.0)]
+        ];
+        let exponential = matrix_exponential(&diagonal).unwrap();
+        assert!((exponential[[0, 0]].re - 0.3f64.exp()).abs() < 1e-14);
+        assert!((exponential[[1, 1]].re - (-1.2f64).exp()).abs() < 1e-14);
+        assert!(exponential[[0, 1]].norm() < 1e-16);
+        // exp(i theta sigma_x) = cos theta I + i sin theta sigma_x.
+        let theta = 0.7f64;
+        let generator = array![
+            [Complex::new(0.0, 0.0), Complex::new(0.0, theta)],
+            [Complex::new(0.0, theta), Complex::new(0.0, 0.0)]
+        ];
+        let exponential = matrix_exponential(&generator).unwrap();
+        assert!((exponential[[0, 0]].re - theta.cos()).abs() < 1e-14);
+        assert!((exponential[[0, 1]].im - theta.sin()).abs() < 1e-14);
+        assert!((exponential[[1, 0]].im - theta.sin()).abs() < 1e-14);
+    }
+
+    #[test]
+    fn propagator_is_metric_unitary() {
+        let magnon = chain_magnon();
+        let drive = linear_drive(2.0, 0.03);
+        let sambe = magnon
+            .floquet_model(&drive, &FloquetTruncation { n_max: 1 })
+            .unwrap();
+        let q = array![0.25f64];
+        let propagator = sambe.propagator_at(&q).unwrap();
+        let mut metric = Array2::<Complex<f64>>::eye(2);
+        metric[[1, 1]] = Complex::new(-1.0, 0.0);
+        // U^dagger g U = g.
+        let mut left = propagator.t().mapv(|value| value.conj());
+        left = left.dot(&metric).dot(&propagator);
+        for row in 0..2 {
+            for column in 0..2 {
+                assert!(
+                    (left[[row, column]] - metric[[row, column]]).norm() < 1e-10,
+                    "({row},{column}) = {:?}",
+                    left[[row, column]]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn quasienergies_are_stable_against_the_time_grid() {
+        let magnon = chain_magnon();
+        let drive = linear_drive(0.5, 0.02);
+        let sambe = magnon
+            .floquet_model(&drive, &FloquetTruncation { n_max: 2 })
+            .unwrap();
+        let q = array![0.25f64];
+        let base = sambe.quasienergies_at(&q).unwrap()[0];
+        // The midpoint rule with the default grid must already be converged.
+        assert!(sambe.n_time() >= 64);
+        let coarse = magnon
+            .floquet_model(&drive, &FloquetTruncation { n_max: 0 })
+            .unwrap();
+        let coarse_value = coarse.quasienergies_at(&q).unwrap()[0];
+        assert!(
+            (coarse_value - base).abs() < 5e-3,
+            "coarse {coarse_value} vs base {base}"
+        );
+    }
+
+    #[test]
+    fn rejects_spiral_references_mismatched_drives_and_bad_q() {
+        // A single-Q reference needs the rotation the harmonics do not apply.
+        let mut spiral = chain_magnon();
+        spiral.reference.q = array![0.25];
+        let drive = FloquetDrive {
+            omega0_ev: 1.0,
+            modes: Vec::new(),
+        };
+        let error = match spiral.floquet_model(&drive, &FloquetTruncation { n_max: 1 }) {
+            Err(error) => error,
+            Ok(_) => panic!("a spiral reference must be rejected"),
+        };
+        assert!(error.to_string().contains("collinear reference"), "{error}");
+        // A drive whose amplitude vector does not match DIM.
+        let mismatched = FloquetDrive {
+            omega0_ev: 1.0,
+            modes: vec![LightMode::new(
+                1,
+                array![Complex::new(0.01, 0.0), Complex::new(0.0, 0.0)],
+            )],
+        };
+        assert!(
+            chain_magnon()
+                .floquet_model(&mismatched, &FloquetTruncation { n_max: 1 })
+                .is_err()
+        );
+        // A q point of the wrong length must be reported, not panic.
+        let good = chain_magnon()
+            .floquet_model(&drive, &FloquetTruncation { n_max: 1 })
+            .unwrap();
+        assert!(good.quasienergies_at(&array![0.0, 0.0]).is_err());
+    }
+
+    #[test]
+    fn two_site_complex_drive_keeps_the_hamiltonian_hermitian() {
+        // Two inequivalent bonds and a complex link projection exercise the
+        // C-term harmonic, which must use (J^m + conj(J^-m))/2.
+        let ham_r = array![[0isize], [1], [-1]];
+        let mut ham = Array3::<f64>::zeros((3, 3, 3));
+        ham[[1, 0, 0]] = 0.02;
+        ham[[1, 1, 1]] = 0.015;
+        ham[[1, 2, 2]] = 0.02;
+        ham[[2, 0, 0]] = 0.02;
+        ham[[2, 1, 1]] = 0.015;
+        ham[[2, 2, 2]] = 0.02;
+        let magnon = MagnonModel::<1>::new(
+            array![[1.0]],
+            array![[0.0]],
+            array![1.5],
+            array![[0.0, 0.0, 1.0]],
+            ham,
+            ham_r,
+            MagnonReference::collinear(),
+        )
+        .unwrap();
+        let drive = FloquetDrive {
+            omega0_ev: 0.5,
+            modes: vec![LightMode::new(1, array![Complex::new(0.1, 0.1)])],
+        };
+        let sambe = magnon
+            .floquet_model(&drive, &FloquetTruncation { n_max: 2 })
+            .unwrap();
+        let q = array![0.25f64];
+        // H(t) must be Hermitian at every time.
+        for time in [0.0f64, 0.37, 1.11] {
+            let h = sambe.bdg_at_time(&q, time).unwrap();
+            for row in 0..2 {
+                for column in 0..2 {
+                    let delta = h[[row, column]] - h[[column, row]].conj();
+                    assert!(
+                        delta.norm() < 1e-12,
+                        "t = {time}: ({row},{column}) {delta:?}"
+                    );
+                }
+            }
+        }
+        // ... and the propagator stays metric-unitary.
+        let propagator = sambe.propagator_at(&q).unwrap();
+        let mut metric = Array2::<Complex<f64>>::eye(2);
+        metric[[1, 1]] = Complex::new(-1.0, 0.0);
+        let left = propagator
+            .t()
+            .mapv(|value| value.conj())
+            .dot(&metric)
+            .dot(&propagator);
+        for row in 0..2 {
+            for column in 0..2 {
+                assert!((left[[row, column]] - metric[[row, column]]).norm() < 1e-10);
+            }
+        }
+    }
+
+    /// Two sublattices with distinct positions, so the `tau_j - tau_i` part of
+    /// the bond displacement is exercised.
+    fn two_site_magnon() -> MagnonModel<1> {
+        let ham_r = array![[0isize], [1], [-1]];
+        let mut ham = Array3::<f64>::zeros((3, 6, 6));
+        // A(0)-B(0) and B(0)-A(1): a two-site chain with S = (1.5, 1.2).
+        for component in 0..3 {
+            // Antiferromagnetic coupling for the up/down reference.
+            ham[[0, component, 3 + component]] = -0.02;
+            ham[[0, 3 + component, component]] = -0.02;
+            ham[[1, 3 + component, component]] = -0.02;
+            ham[[2, component, 3 + component]] = -0.02;
+        }
+        MagnonModel::<1>::new(
+            array![[2.0]],
+            array![[0.0], [0.5]],
+            array![1.5, 1.2],
+            array![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]],
+            ham,
+            ham_r,
+            MagnonReference::collinear(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn two_sublattice_model_reproduces_its_bands_without_a_drive() {
+        let magnon = two_site_magnon();
+        let drive = FloquetDrive {
+            omega0_ev: 2.0,
+            modes: Vec::new(),
+        };
+        let sambe = magnon
+            .floquet_model(&drive, &FloquetTruncation { n_max: 1 })
+            .unwrap();
+        let points = array![[0.0], [0.13], [0.31], [0.5]];
+        let bands = magnon.magnon_band_all(&points).unwrap();
+        let quasi = sambe.quasienergy_bands(&points).unwrap();
+        assert_eq!(quasi.dim().1, 2);
+        for row in 0..4 {
+            for band in 0..2 {
+                let expected = fold_quasienergy(bands[[row, band]], drive.omega0_ev);
+                assert!(
+                    (quasi[[row, band]] - expected).abs() < 1e-8,
+                    "q = {}: quasi {} vs undriven {expected}",
+                    points[[row, 0]],
+                    quasi[[row, band]]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_amplitude_effective_model_is_the_undriven_model() {
+        let magnon = two_site_magnon();
+        let drive = FloquetDrive {
+            omega0_ev: 1.0,
+            modes: vec![LightMode::new(1, array![Complex::new(0.0, 0.0)])],
+        };
+        let effective = magnon.floquet_effective_model(&drive, None).unwrap();
+        let difference = (&effective.ham - &magnon.ham)
+            .mapv(f64::abs)
+            .iter()
+            .copied()
+            .fold(0.0, f64::max);
+        assert!(difference < 1e-15, "max deviation {difference:e}");
+    }
+
+    #[test]
+    fn complex_time_average_is_rejected_by_the_effective_model() {
+        // A static (harmonic-zero) drive is time independent, but its Peierls
+        // phase is complex, so the average cannot be a real exchange tensor.
+        let magnon = two_site_magnon();
+        let drive = FloquetDrive {
+            omega0_ev: 1.0,
+            modes: vec![LightMode::new(0, array![Complex::new(0.5, 0.0)])],
+        };
+        let error = match magnon.floquet_effective_model(&drive, None) {
+            Err(error) => error,
+            Ok(_) => panic!("a complex time average must be rejected"),
+        };
+        assert!(error.to_string().contains("imaginary part"), "{error}");
+    }
+
+    #[test]
+    fn zero_drive_reproduces_the_undriven_bands() {
+        let magnon = chain_magnon();
+        let drive = FloquetDrive {
+            omega0_ev: 1.0,
+            modes: Vec::new(),
+        };
+        let sambe = magnon
+            .floquet_model(&drive, &FloquetTruncation { n_max: 2 })
+            .unwrap();
+        assert_eq!(sambe.n_sector(), 5);
+        for q in [0.0f64, 0.125, 0.25, 0.5] {
+            let band = magnon.magnon_band_onek(&array![q]).unwrap()[0];
+            let quasi = sambe.quasienergies_at(&array![q]).unwrap();
+            assert_eq!(quasi.len(), 1);
+            let expected = fold_quasienergy(band, drive.omega0_ev);
+            assert!(
+                (quasi[0] - expected).abs() < 1e-8,
+                "q = {q}: quasi {} vs undriven {expected}",
+                quasi[0]
+            );
+        }
+    }
+
+    #[test]
+    fn high_frequency_limit_matches_the_effective_model() {
+        let magnon = chain_magnon();
+        let drive = linear_drive(50.0, 0.05);
+        let sambe = magnon
+            .floquet_model(&drive, &FloquetTruncation { n_max: 2 })
+            .unwrap();
+        let effective = magnon.floquet_effective_model(&drive, None).unwrap();
+        for q in [0.125f64, 0.25, 0.375] {
+            let quasi = sambe.quasienergies_at(&array![q]).unwrap()[0];
+            let band = effective.magnon_band_onek(&array![q]).unwrap()[0];
+            let expected = fold_quasienergy(band, drive.omega0_ev);
+            assert!(
+                (quasi - expected).abs() < 5e-3,
+                "q = {q}: quasi {quasi} vs effective {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn quasienergies_are_folded_and_the_effective_model_is_guarded() {
+        let magnon = chain_magnon();
+        let drive = linear_drive(0.5, 0.02);
+        let sambe = magnon
+            .floquet_model(&drive, &FloquetTruncation { n_max: 2 })
+            .unwrap();
+        let quasi = sambe.quasienergies_at(&array![0.25]).unwrap();
+        for value in quasi.iter() {
+            assert!(*value >= -0.5 * drive.omega0_ev - 1e-9, "{value}");
+            assert!(*value < 0.5 * drive.omega0_ev + 1e-9, "{value}");
+        }
+        let error = magnon
+            .floquet_effective_model(
+                &drive,
+                Some(&FloquetEffectiveOptions {
+                    order: 1,
+                    ..Default::default()
+                }),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("order 0 only"), "{error}");
+    }
+}

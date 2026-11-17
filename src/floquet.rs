@@ -356,6 +356,7 @@ mod real_space;
 use coefficients::*;
 
 pub(crate) use coefficients::bessel_j;
+pub(crate) use coefficients::bessel_peierls_coeffs;
 use real_space::*;
 
 #[cfg(test)]
@@ -2094,7 +2095,7 @@ fn validate_floquet_input<
     validate_floquet_truncation(trunc)
 }
 
-fn validate_floquet_drive<const DIM: usize>(drive: &FloquetDrive) -> Result<()> {
+pub(crate) fn validate_floquet_drive<const DIM: usize>(drive: &FloquetDrive) -> Result<()> {
     if !drive.omega0_ev.is_finite() || drive.omega0_ev <= 0.0 {
         return Err(TbError::InvalidEnergyRange {
             min: 0.0,

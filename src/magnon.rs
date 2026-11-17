@@ -106,6 +106,7 @@ pub mod io;
 pub mod physics;
 
 pub use self::exchange::{ExchangeParams, MagnonContour};
+pub use self::floquet::{MagnonFloquet, MagnonSambe};
 
 use crate::error::{Result, TbError};
 use crate::kpath::Kpath;

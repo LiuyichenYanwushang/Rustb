@@ -1224,6 +1224,48 @@ two branches are degenerate without the drive, split with opposite signs at
 `K = (1/3, 2/3)` and `K' = (2/3, 1/3)`, and satisfy `omega_up(k) =
 omega_down(-k)` (odd parity, `f`-wave near Gamma).
 
+### Floquet–Sambe driving of a magnon model
+
+`Magnon` mirrors the electronic Floquet interface: `MagnonFloquet::floquet_model`
+builds the photon-dressed model, `Magnon::floquet_effective_model` returns the
+time-averaged one, and `fold_quasienergy` folds a quasienergy into
+`[-Omega/2, Omega/2)`. The drive reuses `FloquetDrive`, `FloquetTruncation` and
+`FloquetEffectiveOptions` unchanged, and dresses every exchange bond with the
+Peierls phase `exp[-i a(t).d]`.
+
+```rust
+use Rustb::floquet::{FloquetDrive, FloquetTruncation, LightMode};
+use Rustb::magnon::{MagnonFloquet, MagnonSolve};
+
+let drive = FloquetDrive {
+    omega0_ev: 0.05,
+    modes: vec![LightMode::new(1, array![Complex::new(0.0, 0.02), Complex::new(0.02, 0.0)])],
+};
+let sambe = magnon.floquet_model(&drive, &FloquetTruncation { n_max: 2 })?;
+let quasi = sambe.quasienergies_at(&array![0.25])?;      // folded, n_band values
+let bands = sambe.quasienergy_bands(&kpoints)?;
+let averaged = magnon.floquet_effective_model(&drive, None)?;  // order 0
+```
+
+The quasienergies come from the **one-period propagator** of the bosonic
+Bogoliubov–de Gennes dynamics `i dPsi/dt = g H(t) Psi`, keeping only
+eigenvectors with positive metric norm. That avoids two traps: an ordinary
+Hermitian diagonalization returns particle *and* hole continua, and at a
+degenerate Goldstone mode the metric-weighted matrix `g H` is defective, so
+decomposing `g S` splits the photon replicas of a zero mode spuriously. The
+time dependence is applied to the *real-space* exchange tensors, where
+`J_ji(-R, t) = conj(J_ij(R, t))` holds by construction, and the BdG matrix is
+built once per time step; building a single Fourier harmonic would not be
+Hermitian.
+
+With no drive the folded quasienergies reproduce the undriven bands exactly; as
+`Omega` exceeds the magnon bandwidth they converge to the `order = 0` effective
+model. Higher van Vleck orders mix particle and hole components, so
+`floquet_effective_model` rejects them with `magnon_effective_order`. The drive
+must satisfy the same amplitude/length checks as the electronic path, and the
+current implementation requires a collinear reference (`reference.q = 0`)
+because the harmonics do not carry the single-Q rotation.
+
 The extraction returns the isotropic part only: `J_ij(R)` multiplies the 3x3
 identity, and the sign is normalized by `sign(axis_i . axis_j)` so that
 `J > 0` stays ferromagnetic. Anisotropic exchange and Dzyaloshinskii-Moriya

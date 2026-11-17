@@ -170,7 +170,7 @@ pub(crate) fn local_frames<const DIM: usize>(
 }
 
 impl<const DIM: usize> Magnon<DIM> {
-    fn check_q<S: Data<Elem = f64>>(&self, q: &ArrayBase<S, Ix1>) -> Result<[f64; 3]> {
+    pub(crate) fn check_q<S: Data<Elem = f64>>(&self, q: &ArrayBase<S, Ix1>) -> Result<[f64; 3]> {
         if q.len() != DIM {
             return Err(TbError::DimensionMismatch {
                 context: "magnon q-point".into(),
