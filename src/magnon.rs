@@ -100,8 +100,11 @@
 //! # }
 //! ```
 
+pub mod exchange;
 pub mod io;
 pub mod physics;
+
+pub use self::exchange::ExchangeParams;
 
 use crate::error::{Result, TbError};
 use crate::kpath::Kpath;

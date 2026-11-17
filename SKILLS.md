@@ -1149,6 +1149,43 @@ the BdG matrix indefinite and returns
 `InvalidMagnonInvariant { invariant: "positive_semidefinite_bdg", .. }` instead
 of a complex frequency.
 
+### TB2J-style exchange extraction from a `Model`
+
+`Magnon::from_model` takes one spinful collinear `Model<true, DIM, R>` and
+splits its spin-major blocks; `Magnon::from_collinear` takes two spinless
+models, one per channel. Both run the LKAG / TB2J extraction (magnetic force
+theorem, local rigid spin rotation, complex-energy Green's function on an
+upper-half-plane semicircle) and return a `Magnon` in the same conventions as
+the hr files.
+
+```rust
+use Rustb::magnon::ExchangeParams;
+
+// 5x5 k-mesh (forced odd), contour from E_F-10 eV to E_F, 65 nodes.
+let params = ExchangeParams::new(0.0, &array![5usize, 5])
+    .with_energy_window(-10.0, 0.0)
+    .with_nz(65);
+
+// One spinful model: [all up orbitals, all down orbitals].
+let magnon = Magnon::<2>::from_model(&model_spinful, &params)?;
+
+// Or two spinless models.
+let magnon = Magnon::<2>::from_collinear(&model_up, &model_dn, &params)?;
+```
+
+Magnetic sites come from the `Atom` metadata: an atom is magnetic when it
+carries a magnetic moment, and its orbitals are the ones it owns
+(`Atom::with_orbitals`). The spin quantum numbers are `S_i = |m_i| / 2` in
+units of `hbar` and the reference axes are the normalized moments; both can be
+overridden with `with_spin` / `with_axis`, and `with_magnetic_atoms` selects the
+sites explicitly. A model without atoms falls back to one site per orbital.
+
+The extraction returns the isotropic part only: `J_ij(R)` multiplies the 3x3
+identity, and the sign is normalized by `sign(axis_i . axis_j)` so that
+`J > 0` stays ferromagnetic. Anisotropic exchange and Dzyaloshinskii-Moriya
+terms need the spinor treatment. Non-collinear input (non-zero spin-off-diagonal
+blocks in the spinful model) is rejected.
+
 ## 11. Conventions and build notes
 
 - k-points are fractional reciprocal coordinates.

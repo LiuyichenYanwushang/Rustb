@@ -302,7 +302,7 @@ pub use crate::kpath::*;
 pub use crate::kplane::*;
 pub use crate::kpoints::*;
 pub use crate::magnetic_field::*;
-pub use crate::magnon::{Magnon, MagnonReference};
+pub use crate::magnon::{Magnon, MagnonReference, exchange::ExchangeParams};
 pub use crate::math::*;
 pub use crate::model::*;
 pub use crate::output::*;
