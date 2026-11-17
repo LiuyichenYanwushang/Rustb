@@ -101,6 +101,7 @@
 //! ```
 
 pub mod exchange;
+pub mod floquet;
 pub mod io;
 pub mod physics;
 

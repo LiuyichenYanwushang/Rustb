@@ -354,6 +354,8 @@ mod coefficients;
 mod real_space;
 
 use coefficients::*;
+
+pub(crate) use coefficients::bessel_j;
 use real_space::*;
 
 #[cfg(test)]

@@ -1195,6 +1195,35 @@ upper-half-plane semicircle instead; it is exact for gapped systems but
 converges slowly as soon as a band crosses `E_F`, because the arc ends on the
 Fermi surface.
 
+### Driven exchange and odd-parity magnons
+
+`magnon::floquet::DrivenExchange::honeycomb` implements the Aharonov--Bohm
+mechanism of the paper *Odd-Parity Magnons*: a half-filled Hubbard model on the
+honeycomb lattice under circularly polarized light is reduced to an effective
+spin Hamiltonian `J1`, `J2`, `chi` by a Floquet--Sambe strong-coupling expansion.
+
+```rust
+use Rustb::magnon::floquet::{DrivenExchange, DrivenHubbardParams};
+
+let params = DrivenHubbardParams {
+    hopping_ev: 0.1,
+    interaction_ev: 1.0,
+    photon_ev: 2.5,   // off-resonant: U, 2U and the photon ladder must not mix
+    lambda: 0.4,      // e E a / (hbar Omega)
+    helicity: 1.0,    // xi = +-1
+    harmonic_max: 12, // Floquet cutoff
+};
+let exchange = DrivenExchange::honeycomb(&params)?;
+let (omega_up, omega_down) = exchange.honeycomb_dispersion(1.5, -0.01, &[1.0 / 3.0, 2.0 / 3.0]);
+```
+
+`J1` and `J2` are even in the helicity while `chi` is odd, so reversing the
+light handedness reverses the splitting. The dispersion is the paper's
+`sqrt((A_k +- D_k)^2 - |B_k|^2)` with `D_k = 2 chi S^2 sum_nu sin(k.b_nu)`; the
+two branches are degenerate without the drive, split with opposite signs at
+`K = (1/3, 2/3)` and `K' = (2/3, 1/3)`, and satisfy `omega_up(k) =
+omega_down(-k)` (odd parity, `f`-wave near Gamma).
+
 The extraction returns the isotropic part only: `J_ij(R)` multiplies the 3x3
 identity, and the sign is normalized by `sign(axis_i . axis_j)` so that
 `J > 0` stays ferromagnetic. Anisotropic exchange and Dzyaloshinskii-Moriya

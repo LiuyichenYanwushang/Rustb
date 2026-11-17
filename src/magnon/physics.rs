@@ -287,9 +287,20 @@ impl<const DIM: usize> Magnon<DIM> {
     }
 
     fn bdg_of(&self, q: &[f64; 3]) -> Result<Array2<Complex<f64>>> {
-        let n = self.nspin();
         let jq = self.jq_of(q)?;
         let j0 = self.jq_of(&[0.0; 3])?;
+        self.bdg_from_jq(&jq, &j0)
+    }
+
+    /// Bogoliubov–de Gennes matrix from an already Fourier-transformed exchange
+    /// tensor. The Floquet module builds its complex harmonics through this
+    /// entry point.
+    pub(crate) fn bdg_from_jq(
+        &self,
+        jq: &Array2<Complex<f64>>,
+        j0: &Array2<Complex<f64>>,
+    ) -> Result<Array2<Complex<f64>>> {
+        let n = self.nspin();
         let jmq = jq.t().to_owned();
         let (u, v) = local_frames(self);
         let spin = &self.spin;
