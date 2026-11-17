@@ -160,7 +160,7 @@ quantization_axis = [0.0, 0.0, 1.0]
 | **M1 完成（共线）** | `gen_jq` / `gen_bdg` / Colpa（本征分解版）/ `MagnonSolve` / `Kpath` / DOS | 一维 FM 解析色散（`4j(1-cos)/S`）、两子格 AFM（`4|j|/S·|sin(pi q)|`）、SIA 能隙（`2K/S`）、120° 环的 3 个精确 Goldstone 零模、DMI 下 BdG Hermitian、串并行一致、DOS 归一 |
 | **M1b 完成** | 非共线参考结构的冻结磁振子（精确 Hessian）交叉验证 | 结论：TB2J `Hq` 没有缺项。3 格点 120° 环在 1D 双分链上本就是**鞍点**（真实基态是 Néel），精确 Hessian 在同一 q 处给出同样的负本征值；改用三角格子单 Q（Q=(1/3,1/3)）后 BdG 处处半正定，磁 Γ 点在化学区折叠到 q=0 与 q=Q 两处为零，q=(0.25,0) 的 ω 与 TB2J 逐位一致（0.08432740427116 eV） |
 | **M2 完成** | TB2J 共线提取：`Magnon::from_model`（自旋分块）与 `Magnon::from_collinear`（up/dn 两个模型）+ `ExchangeParams`（semicircle 等高线 + Simpson） | 两格点反铁磁链的 J(0)、J(±1) 与独立 numpy 实现逐位一致（1e-12）；两个入口互相一致（1e-14）；提取出的 `Magnon` 在磁 Γ 点零模、区界有隙；非共线输入被拒绝 |
-| M3 | CFR 极点积分 + E_F 自动确定 + `emin` 能隙搜索 | 占据数检验；与 M2 交叉验证 |
+| **M3 完成** | CFR 极点积分（`MagnonContour::Cfr`，默认 600 K）+ 半圆可选；`wannier90` 空 projections 时按 Wannier 中心就近分配轨道 | 两格点 gapped 模型：CFR = −2.5774 meV 与 TB2J 逐位一致、精确积分 −2.5771；**真实 MgFe6Ge6（55 WF，1121 R，9×9×5）所有壳层与 TB2J 前 4–5 位一致**（2.631 Å 24 键 +24.78249 对 +24.7825；4.256/4.327/4.556/5.004/5.064/5.261/6.235 全部吻合，5.261 Å 的离散 −0.0087~+0.6901 也一致） |
 | M4 | 非共线 spinor 提取（4×4 A） | 共线极限一致；DMI 符号表 |
 | M5 | 单 Q 旋转（参考结构进入 `gen_jq`）、能带图、示例 | 螺旋结构 Goldstone；文档 |
 | M6 | 对抗式 review 收敛 → 提交 | AGENTS.md 流程 |

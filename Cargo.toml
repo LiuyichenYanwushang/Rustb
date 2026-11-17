@@ -100,6 +100,10 @@ mimalloc = ["dep:mimalloc"]
 jemalloc = ["dep:jemallocator"]
 
 [[example]]
+name = "mgfe6ge6_exchange"
+path = "examples/mgfe6ge6_exchange/main.rs"
+
+[[example]]
 name = "WTe2_kp"
 path = "examples/WTe2_kp/main.rs"
 

@@ -402,6 +402,33 @@ fn parse_win(file: &str) -> Result<WinData> {
                         "dyz" => &[OrbProj::dyz],
                         "dz2" => &[OrbProj::dz2],
                         "dx2-y2" => &[OrbProj::dx2y2],
+                        "fz3" => &[OrbProj::fz3],
+                        "fxz2" => &[OrbProj::fxz2],
+                        "fyz2" => &[OrbProj::fyz2],
+                        "fxyz" => &[OrbProj::fxyz],
+                        "fz(x2-y2)" | "fzx2y2" => &[OrbProj::fzx2y2],
+                        "fx(x2-3y2)" | "fxx2-3y2" => &[OrbProj::fxx23y2],
+                        "fy(3x2-y2)" | "fy3x2-y2" => &[OrbProj::fy3x2y2],
+                        "sp-1" => &[OrbProj::sp_1],
+                        "sp-2" => &[OrbProj::sp_2],
+                        "sp2-1" => &[OrbProj::sp2_1],
+                        "sp2-2" => &[OrbProj::sp2_2],
+                        "sp2-3" => &[OrbProj::sp2_3],
+                        "sp3-1" => &[OrbProj::sp3_1],
+                        "sp3-2" => &[OrbProj::sp3_2],
+                        "sp3-3" => &[OrbProj::sp3_3],
+                        "sp3-4" => &[OrbProj::sp3_4],
+                        "sp3d-1" => &[OrbProj::sp3d_1],
+                        "sp3d-2" => &[OrbProj::sp3d_2],
+                        "sp3d-3" => &[OrbProj::sp3d_3],
+                        "sp3d-4" => &[OrbProj::sp3d_4],
+                        "sp3d-5" => &[OrbProj::sp3d_5],
+                        "sp3d2-1" => &[OrbProj::sp3d2_1],
+                        "sp3d2-2" => &[OrbProj::sp3d2_2],
+                        "sp3d2-3" => &[OrbProj::sp3d2_3],
+                        "sp3d2-4" => &[OrbProj::sp3d2_4],
+                        "sp3d2-5" => &[OrbProj::sp3d2_5],
+                        "sp3d2-6" => &[OrbProj::sp3d2_6],
                         _ => {
                             return Err(TbError::InvalidOrbitalProjection(format!(
                                 "Unrecognized projection '{item}' in seedname.win"
@@ -522,6 +549,63 @@ fn match_orbitals(
     } else {
         &win.atoms
     };
+    if win.projections.is_empty() {
+        // Wannier90 input without a projections block (for example a dataset
+        // written by a code that only records the centres): assign every
+        // Wannier function to its nearest atom. The orbital characters are
+        // unknown, so every projection is reported as `s`; callers that need
+        // the characters must supply a real projections block.
+        let centres = centres.ok_or_else(|| {
+            parse_error(
+                file,
+                "an empty projections block needs _centres.xyz to assign Wannier functions",
+            )
+        })?;
+        let mut per_atom: Vec<Vec<usize>> = vec![Vec::new(); atoms.len()];
+        for (index, centre) in centres.rows().into_iter().enumerate() {
+            let mut best = (usize::MAX, f64::INFINITY);
+            for (atom_index, (_, position)) in atoms.iter().enumerate() {
+                let mut delta = Array1::<f64>::zeros(3);
+                for axis in 0..3 {
+                    delta[axis] = centre[axis] - position[axis];
+                    delta[axis] -= delta[axis].round();
+                }
+                let cartesian = delta.dot(&win.lat);
+                let distance = cartesian
+                    .iter()
+                    .map(|value| value * value)
+                    .sum::<f64>()
+                    .sqrt();
+                if distance < best.1 {
+                    best = (atom_index, distance);
+                }
+            }
+            if best.0 == usize::MAX || best.1 > 1.0 {
+                return Err(parse_error(
+                    file,
+                    format!(
+                        "Wannier function {index} is {:.3} A from the nearest atom",
+                        best.1
+                    ),
+                ));
+            }
+            per_atom[best.0].push(index);
+        }
+        let mut assigned = Vec::new();
+        for (atom_index, (species, position)) in atoms.iter().enumerate() {
+            if per_atom[atom_index].is_empty() {
+                continue;
+            }
+            assigned.push(Atom::with_orbitals(
+                position.clone(),
+                *species,
+                per_atom[atom_index]
+                    .iter()
+                    .map(|&index| OrbitalId::new(index)),
+            ));
+        }
+        return Ok((centres, vec![OrbProj::s; norb], assigned));
+    }
     let mut projections = Vec::new();
     let mut assigned = Vec::new();
     let mut fallback = Array2::zeros((0, 3));
@@ -804,6 +888,75 @@ mod tests {
         let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
         assert_eq!(model.norb(), 1);
         assert_eq!(model.natom(), 1);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_assigns_orbitals_by_centres_without_projections() {
+        // A dataset whose .win has an empty projections block: every Wannier
+        // function is attached to its nearest atom and reported as `s`.
+        let dir = "tests/tmp_w90_no_projections/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin atoms_frac\nC 0.0 0.0 0.0\nC 0.5 0.0 0.0\nend atoms_frac\n\nbegin projections\nend projections\n";
+        let hr = "generated\n2\n1\n1\n0 0 0 1 1 0.0 0.0\n0 0 0 1 2 0.0 0.0\n0 0 0 2 1 0.0 0.0\n0 0 0 2 2 0.0 0.0\n";
+        let xyz =
+            "4\nWannier centres\nX 0.01 0.0 0.0\nX 0.49 0.0 0.0\nC 0.0 0.0 0.0\nC 0.5 0.0 0.0\n";
+        for (suffix, content) in [("_hr.dat", hr), ("_centres.xyz", xyz)] {
+            fs::write(format!("{dir}seedname{suffix}"), content).unwrap();
+        }
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 2);
+        assert_eq!(model.natom(), 2);
+        let first: Vec<usize> = model.atoms[0]
+            .orbitals()
+            .iter()
+            .map(|id| id.index())
+            .collect();
+        let second: Vec<usize> = model.atoms[1]
+            .orbitals()
+            .iter()
+            .map(|id| id.index())
+            .collect();
+        assert_eq!(first, vec![0]);
+        assert_eq!(second, vec![1]);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_assigns_centres_across_the_cell_boundary() {
+        // A centre at 0.95 belongs to the atom at 0.05, not to the one at 0.55.
+        let dir = "tests/tmp_w90_boundary/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\nend unit_cell_cart\n\nbegin projections\nend projections\n";
+        let hr = "generated\n2\n1\n1\n0 0 0 1 1 0.0 0.0\n0 0 0 1 2 0.0 0.0\n0 0 0 2 1 0.0 0.0\n0 0 0 2 2 0.0 0.0\n";
+        let xyz =
+            "4\nWannier centres\nX 0.95 0.0 0.0\nX 0.45 0.0 0.0\nC 0.05 0.0 0.0\nC 0.55 0.0 0.0\n";
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.atoms[0].orbitals().len(), 1);
+        assert_eq!(model.atoms[0].orbitals()[0].index(), 0);
+        assert_eq!(model.atoms[1].orbitals()[0].index(), 1);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_rejects_a_centre_far_from_every_atom() {
+        let dir = "tests/tmp_w90_far_centre/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n10.0 0.0 0.0\n0.0 10.0 0.0\n0.0 0.0 10.0\nend unit_cell_cart\n\nbegin projections\nend projections\n";
+        let hr = "generated\n1\n1\n1\n0 0 0 1 1 0.0 0.0\n";
+        let xyz = "2\nWannier centres\nX 2.5 0.0 0.0\nC 0.0 0.0 0.0\n";
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        let error = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap_err();
+        assert!(error.to_string().contains("nearest atom"), "{error}");
         fs::remove_dir_all(dir).ok();
     }
 

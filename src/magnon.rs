@@ -104,7 +104,7 @@ pub mod exchange;
 pub mod io;
 pub mod physics;
 
-pub use self::exchange::ExchangeParams;
+pub use self::exchange::{ExchangeParams, MagnonContour};
 
 use crate::error::{Result, TbError};
 use crate::kpath::Kpath;

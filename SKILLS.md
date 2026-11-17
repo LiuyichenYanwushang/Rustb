@@ -1180,6 +1180,14 @@ units of `hbar` and the reference axes are the normalized moments; both can be
 overridden with `with_spin` / `with_axis`, and `with_magnetic_atoms` selects the
 sites explicitly. A model without atoms falls back to one site per orbital.
 
+The energy integral uses TB2J's **continued-fraction representation** by
+default (`MagnonContour::Cfr { temperature_kelvin: 600.0 }`), which puts the
+nodes on the imaginary axis within `k_B T` of the Fermi level and stays accurate
+for metals. `ExchangeParams::with_semicircle_contour()` selects the
+upper-half-plane semicircle instead; it is exact for gapped systems but
+converges slowly as soon as a band crosses `E_F`, because the arc ends on the
+Fermi surface.
+
 The extraction returns the isotropic part only: `J_ij(R)` multiplies the 3x3
 identity, and the sign is normalized by `sign(axis_i . axis_j)` so that
 `J > 0` stays ferromagnetic. Anisotropic exchange and Dzyaloshinskii-Moriya
