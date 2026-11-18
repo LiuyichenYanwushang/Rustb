@@ -1,8 +1,10 @@
 use super::{EffectiveSpinModel, StrongCouplingOptions};
+use crate::magnon::MagnonReference;
 use crate::magnon::floquet::{DrivenExchange, DrivenHubbardParams};
 use crate::{FloquetDrive, HubbardModel, LightMode, Model};
 use ndarray::array;
 use num_complex::Complex;
+use std::f64::consts::TAU;
 
 // A(0) to B(R) in counterclockwise ray order; the three positive NNN
 // representatives are delta2-delta3, delta3-delta1, delta1-delta2.
@@ -137,6 +139,63 @@ impl CellDensity {
     }
 }
 
+fn assert_neel_bdg(spin: &EffectiveSpinModel<2>, closed: DrivenExchange, xi: f64, case: &str) {
+    // Fix the right-handed local frames to (x, y, z) on A and (x, -y, -z)
+    // on B. The parallel quantization axis +z gives the same x seed on both.
+    let reference = MagnonReference {
+        quantization_axis: array![0.0, 0.0, 1.0],
+        ..MagnonReference::collinear()
+    };
+    let magnon = spin
+        .magnon(&array![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]], reference)
+        .unwrap();
+    const S: f64 = 0.5;
+    let z = Complex::new(0.0, 0.0);
+    for (q, sine_sign) in [([0.13, 0.27], 1.0), ([0.31, 0.17], -1.0)] {
+        let [x, y] = q.map(|component| TAU * component);
+        // Direct HP expansion in the cell gauge c_R = Σ_q exp(+2πiq·R)c_q/√N.
+        // Each NN bond contributes S*J1 to both number terms and to pair
+        // creation. The latter uses R=(0,0),(0,1),(-1,1), not R+tau_B-tau_A.
+        let b = (Complex::new(1.0, 0.0)
+            + Complex::from_polar(1.0, y)
+            + Complex::from_polar(1.0, y - x))
+            * (S * closed.j1);
+        let a =
+            3.0 * S * closed.j1 + 2.0 * S * closed.j2 * (x.cos() + (y - x).cos() + y.cos() - 3.0);
+        // A CW V is center·(end_next × end_prev). With A as center, its
+        // directed B end bonds run along (+a1, a2-a1, -a2); with B as
+        // center both the end bonds and the spectator moment reverse.
+        // NN chiral terms cancel between adjacent V's. The resulting NNN
+        // HP hopping on these directed bonds is -i*chi*S² on A, +i*chi*S²
+        // on B, giving +d and -d respectively in the particle block.
+        let d = 2.0 * S * S * closed.chirality * (x.sin() + (y - x).sin() - y.sin());
+        let plus = Complex::new(a + d, 0.0);
+        let minus = Complex::new(a - d, 0.0);
+        // Fixed order (a_q, b_q, a†_-q, b†_-q); holes use H_particle(-q)^T.
+        let expected = array![
+            [plus, z, z, b],
+            [z, minus, b.conj(), z],
+            [z, b, minus, z],
+            [b.conj(), z, z, plus],
+        ];
+        let h = magnon.gen_bdg(&array![q[0], q[1]]).unwrap();
+        assert_eq!(h.dim(), (4, 4));
+        for ((row, col), want) in expected.indexed_iter() {
+            let got = h[[row, col]];
+            assert!(
+                (got - *want).norm() < 5e-12,
+                "{case} q={q:?} BdG[{row},{col}]: {got} vs {want} eV"
+            );
+        }
+        assert!(b.im.abs() > 1e-4, "{case} q={q:?}: unresolved pair phase");
+        // The same site labels must reverse their odd shift when xi reverses.
+        assert!(
+            xi * sine_sign * (h[[0, 0]].re - h[[1, 1]].re) > 1e-5,
+            "{case} q={q:?}: wrong or unresolved signed A−B shift"
+        );
+    }
+}
+
 #[test]
 fn driven_honeycomb_matches_the_signed_closed_spin_operator() {
     let root3 = 3.0_f64.sqrt();
@@ -185,7 +244,7 @@ fn driven_honeycomb_matches_the_signed_closed_spin_operator() {
                     h
                 };
                 assert_eq!(spin.diagnostics().active_photon_max, active_m);
-                cell_density(&spin)
+                spin
             };
             let closed = |hopping_ev, harmonic_max| {
                 DrivenExchange::honeycomb(&DrivenHubbardParams {
@@ -204,21 +263,26 @@ fn driven_honeycomb_matches_the_signed_closed_spin_operator() {
             // H=single-jump cutoff, M=cumulative-window cutoff; the closed
             // oracle instead bounds each intermediate m_i by L and allows
             // jumps up to 2L. Converge each scheme before comparing them.
-            let fine = run(4, 8);
-            fine.assert_matches(&run(4, 6), &format!("{case}: (H,M)=(6,12) -> (8,16)"));
+            let spin = run(4, 8);
+            let fine = cell_density(&spin);
+            fine.assert_matches(
+                &cell_density(&run(4, 6)),
+                &format!("{case}: (H,M)=(6,12) -> (8,16)"),
+            );
             let oracle = closed(t, 10);
             expected(oracle).assert_matches(&expected(closed(t, 8)), &format!("{case}: L=8 -> 10"));
-            if lambda != 0.0 {
-                assert!(xi * oracle.chirality > 5e-5, "{case}: unresolved signed χ");
-            }
             // Isolate the closed H2 from its t^2 + t^4 polynomial without
             // reusing the production Bessel cache. The remainder is H4.
             let j1_second = (16.0 * closed(t / 2.0, 10).j1 - oracle.j1) / 3.0;
-            run(2, 8).assert_matches(
+            cell_density(&run(2, 8)).assert_matches(
                 &CellDensity::closed(j1_second, 0.0, 0.0),
                 &format!("{case}: H2"),
             );
             fine.assert_matches(&expected(oracle), &format!("{case}: H2+H4"));
+            if lambda != 0.0 {
+                assert!(xi * oracle.chirality > 5e-5, "{case}: unresolved signed χ");
+                assert_neel_bdg(&spin, oracle, xi, &case);
+            }
         }
     }
 }

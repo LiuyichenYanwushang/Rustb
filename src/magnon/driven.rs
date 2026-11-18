@@ -710,6 +710,15 @@ impl<const DIM: usize, R: RMatrixData> HubbardModel<DIM, R> {
 }
 
 #[cfg(test)]
+#[path = "driven_bilayer_tests.rs"]
+mod bilayer_tests;
+#[cfg(test)]
+#[path = "driven_3d_tests.rs"]
+mod driven_3d_tests;
+#[cfg(test)]
+#[path = "driven_guard_tests.rs"]
+mod guard_tests;
+#[cfg(test)]
 #[path = "driven_honeycomb_tests.rs"]
 mod honeycomb_tests;
 #[cfg(test)]

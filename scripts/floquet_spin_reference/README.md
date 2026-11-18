@@ -271,3 +271,28 @@ Floquet modes in the zero-photon gauge, and checks signed chirality. At
 `t=0.10 eV`, the positive-time plaquette has `κ012≈+4.967e-6 eV`; reversing
 the protocol changes its sign. These values are independent reference results,
 not themselves an end-to-end test of the Rust periodic API.
+
+## Noncoplanar loop with a periodic bridge
+
+```bash
+OPENBLAS_NUM_THREADS=1 python3 -B -W error scripts/floquet_spin_reference/nonplanar_reference.py
+```
+
+The NumPy script recomputes the four-site signed coefficients of the
+noncoplanar ring for both signs of the vertical polarization and with
+that component absent. The periodic reference adds the y-directed bridge
+and its four connected wedges. It derives the labelled finite-q BdG
+matrix directly from spinor flip matrix elements of the dense reference
+blocks, not from the Rust exchange or magnon reduction.
+
+## Three vertical AA rectangles
+
+```bash
+OPENBLAS_NUM_THREADS=1 python3 -B -W error scripts/floquet_spin_reference/aa_rectangle_reference.py
+```
+
+The three in-plane bond directions have different projections of the same
+3D drive. The script reports each rectangle's two-hop exchanges, the four-hop
+diagonal exchange, all three ring coefficients and one oriented chirality.
+It also Fourier-sums the direct spin-flip matrix element at fixed sublattice
+and layer labels. The analytic static AA check is a separate regression.
