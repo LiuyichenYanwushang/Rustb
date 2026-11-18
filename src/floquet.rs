@@ -1986,7 +1986,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ) -> Array1<f64> {
         let mut frac = Array1::<f64>::zeros(DIM);
         for a in 0..DIM {
-            frac[a] = r_vec[a] as f64 + self.orb[[j_orb, a]] - self.orb[[i_orb, a]];
+            let i = self.orb[[i_orb, a]];
+            let j = self.orb[[j_orb, a]];
+            if i.abs().max(j.abs()) < (1_u64 << 53) as f64 {
+                // Cancel integer cell representatives before adding fractional
+                // positions; (R + j) - i can erase a short bond at large R.
+                let cells = r_vec[a] as i128 + j.trunc() as i128 - i.trunc() as i128;
+                let j_frac = j.fract();
+                let i_frac = i.fract();
+                let difference = j_frac - i_frac;
+                if cells != 0 && (-2..=2).contains(&cells) {
+                    // TwoSum residual: retain the part of the fractional
+                    // difference that rounds away before a boundary cancellation.
+                    let recovered = difference - j_frac;
+                    let error = (j_frac - (difference - recovered)) - (i_frac + recovered);
+                    frac[a] = (cells as f64 + difference) + error;
+                } else {
+                    frac[a] = cells as f64 + difference;
+                }
+            } else {
+                frac[a] = r_vec[a] as f64 + j - i;
+            }
         }
         frac.dot(&self.lat)
     }

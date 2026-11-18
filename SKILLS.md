@@ -1301,16 +1301,26 @@ cell (`reference.q=0`); build a magnetic electronic supercell first when needed.
 The ordinary `MagnonSolve` checks stability at each requested momentum. LSWT
 frequencies are not the exact finite-cluster quantum singlet–triplet spectrum.
 
+To overlay a microscopic correction on a static TB2J `Magnon`, call
+`hubbard.floquet_magnon_delta(&drive, &options, &baseline, &site_map, spin_mapping)`.
+The explicit bijection maps each electronic orbital to its magnetic site in
+an identical lattice. Fractional centers can differ by integer cell shifts,
+with an absolute tolerance of `1e-9`. `SpinLengthMapping::SpinHalf` rejects any
+baseline spin other than 1/2; `KeepOperatorCoefficients` opts into a
+phenomenological lift at the supplied spin lengths. The routine adds only the
+light-minus-zero curvature at the same cell-periodic collinear reference. It
+preserves static anisotropy, magnetic geometry and existing translation order.
+The caller must confirm stationarity and stability of the combined reference.
+
 ### Driven exchange and odd-parity magnons
 
-**Scope:** the current microscopic AB generator is the circularly driven,
-monolayer honeycomb closed form. The AA-bilayer code supplies static couplings
-and an analytic LSWT solver; it does not yet generate driven interlayer/ring
-couplings. These APIs are not a general real-space Hubbard strong-coupling
-engine. The accepted DIM=1/2/3 generator and its validation gates are tracked in
-[MAGNON_DRIVEN_PLAN.md](MAGNON_DRIVEN_PLAN.md); proposed APIs there are not yet
-implemented. AC coupling, magnon Berry/Chern/thermal Hall and multi-orbital
-strong-coupling extraction are outside that plan's current scope.
+**Scope of the legacy helpers below:** the honeycomb closed form is specific to
+circular drive and monolayers. The AA-bilayer helper supplies static couplings
+and analytic LSWT; it does not generate driven interlayer/ring couplings.
+For the general periodic reduction use `HubbardModel::floquet_spin_model`
+above; its remaining validation gates are in [the plan](<MAGNON_DRIVEN_PLAN.md>).
+Spatially varying drives, magnon transport/topology, and multiorbital
+strong-coupling extraction are outside this interface.
 
 `magnon::floquet::DrivenExchange::honeycomb` implements the Aharonov--Bohm
 mechanism of the paper *Odd-Parity Magnons*: a half-filled Hubbard model on the

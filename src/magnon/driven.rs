@@ -9,8 +9,10 @@ use std::collections::BTreeMap;
 
 mod aggregate;
 mod cluster;
+mod merge;
 mod operators;
 mod periodic;
+pub use merge::SpinLengthMapping;
 pub use periodic::PeriodicSpinSite;
 
 fn invalid(invariant: &'static str, message: impl Into<String>) -> TbError {
@@ -191,48 +193,23 @@ impl<const DIM: usize> EffectiveSpinModel<DIM> {
         axes: &Array2<f64>,
         reference: MagnonReference<DIM>,
     ) -> Result<Magnon<DIM>> {
+        self.magnon_with_spins(axes, Array1::from_elem(self.orb.nrows(), 0.5), reference)
+    }
+
+    fn magnon_with_spins(
+        &self,
+        axes: &Array2<f64>,
+        spins: Array1<f64>,
+        reference: MagnonReference<DIM>,
+    ) -> Result<Magnon<DIM>> {
         let n = self.orb.nrows();
-        if axes.dim() != (n, 3) || axes.iter().any(|v| !v.is_finite()) {
+        if spins.len() != n || spins.iter().any(|s| !s.is_finite() || *s <= 0.0) {
             return Err(invalid(
-                "collinear_spin_axes",
-                "expected one finite three-component axis per site",
+                "positive_spin",
+                "expected one finite positive spin length per site",
             ));
         }
-        reference.validate()?;
-        if reference.q.iter().any(|q| *q != 0.0) {
-            return Err(invalid(
-                "periodic_collinear_reference",
-                "use a magnetic cell with reference q=0",
-            ));
-        }
-        let mut normalized = axes.clone();
-        for mut row in normalized.rows_mut() {
-            let norm2 = row.iter().map(|x| x * x).sum::<f64>();
-            if (norm2 - 1.0).abs() > 1e-6 {
-                return Err(invalid(
-                    "unit_reference_axis",
-                    "spin axes must be unit vectors",
-                ));
-            }
-            row /= norm2.sqrt();
-        }
-        let direction = normalized.row(0).to_owned();
-        for mut row in normalized.rows_mut() {
-            let cross = [
-                row[1] * direction[2] - row[2] * direction[1],
-                row[2] * direction[0] - row[0] * direction[2],
-                row[0] * direction[1] - row[1] * direction[0],
-            ];
-            if cross.iter().map(|x| x * x).sum::<f64>() > 1e-24 {
-                return Err(invalid(
-                    "collinear_spin_axes",
-                    "noncollinear LSWT is outside this interface",
-                ));
-            }
-            let sign = if row.dot(&direction) < 0.0 { -1.0 } else { 1.0 };
-            // Snap tolerated roundoff tilts to an exactly collinear stationary state.
-            row.zip_mut_with(&direction, |v, axis| *v = sign * axis);
-        }
+        let normalized = collinear_axes(axes, n, &reference)?;
         let size = n
             .checked_mul(3)
             .ok_or_else(|| invalid("spin_matrix_size", "spin matrix size overflow"))?;
@@ -265,6 +242,32 @@ impl<const DIM: usize> EffectiveSpinModel<DIM> {
                 }
                 Ok(())
             };
+        // TB2J uses ordered unit-vector bonds: each direction gets -S_i S_j/2.
+        // Spectator lengths multiply this factor. Reject unusable spin products
+        // rather than silently losing terms or creating a non-finite Hessian.
+        let landscape_coefficient = |sites: &[usize], coefficient: f64| -> Result<f64> {
+            if coefficient == 0.0 {
+                return Ok(0.0);
+            }
+            let factor = sites.iter().try_fold(-0.5_f64, |factor, &i| {
+                let factor = factor * spins[i];
+                if !factor.is_normal() {
+                    return Err(invalid(
+                        "spin_lifting_scale",
+                        "material spin length product is outside normal floating-point range",
+                    ));
+                }
+                Ok(factor)
+            })?;
+            let value = factor * coefficient;
+            if value == 0.0 || !value.is_finite() {
+                return Err(invalid(
+                    "spin_lifting_scale",
+                    "nonzero operator coefficient is not representable at the requested spin lengths",
+                ));
+            }
+            Ok(value)
+        };
         for pair in &self.pairs {
             add_pair(
                 [
@@ -277,23 +280,27 @@ impl<const DIM: usize> EffectiveSpinModel<DIM> {
                         cell: pair.cell,
                     },
                 ],
-                -pair.exchange_ev / 8.0,
+                landscape_coefficient(&[pair.i, pair.j], pair.exchange_ev)?,
                 [0.0; 3],
             )?;
         }
         for term in &self.chiralities {
             let [i, j, k] = term.sites;
+            let scale =
+                landscape_coefficient(&[i.orbital, j.orbital, k.orbital], term.coefficient_ev)?;
             for (pair, spectator) in [([i, j], k), ([j, k], i), ([k, i], j)] {
                 let axis = normalized.row(spectator.orbital);
-                let axial = std::array::from_fn(|a| (-term.coefficient_ev / 16.0) * axis[a]);
+                let axial = std::array::from_fn(|a| scale * axis[a]);
                 add_pair(pair, 0.0, axial)?;
             }
         }
         for term in &self.quartics {
             let [p, q] = term.pairs;
+            let sites = [p[0].orbital, p[1].orbital, q[0].orbital, q[1].orbital];
+            let scale = landscape_coefficient(&sites, term.coefficient_ev)?;
             for (pair, [k, l]) in [(p, q), (q, p)] {
                 let alignment = normalized.row(k.orbital).dot(&normalized.row(l.orbital));
-                add_pair(pair, (-term.coefficient_ev / 32.0) * alignment, [0.0; 3])?;
+                add_pair(pair, scale * alignment, [0.0; 3])?;
             }
         }
         let mut keys: Vec<_> = blocks.keys().copied().collect();
@@ -310,13 +317,62 @@ impl<const DIM: usize> EffectiveSpinModel<DIM> {
         Magnon::new(
             self.lat.clone(),
             self.orb.clone(),
-            Array1::from_elem(n, 0.5),
+            spins,
             normalized,
             ham,
             ham_r,
             reference,
         )
     }
+}
+
+fn collinear_axes<const D: usize>(
+    axes: &Array2<f64>,
+    n: usize,
+    reference: &MagnonReference<D>,
+) -> Result<Array2<f64>> {
+    if n == 0 || axes.dim() != (n, 3) || axes.iter().any(|v| !v.is_finite()) {
+        return Err(invalid(
+            "collinear_spin_axes",
+            "expected one finite three-component axis per site",
+        ));
+    }
+    reference.validate()?;
+    if reference.q.iter().any(|q| *q != 0.0) {
+        return Err(invalid(
+            "periodic_collinear_reference",
+            "use a magnetic cell with reference q=0",
+        ));
+    }
+    let mut normalized = axes.clone();
+    for mut row in normalized.rows_mut() {
+        let norm2 = row.iter().map(|x| x * x).sum::<f64>();
+        if (norm2 - 1.0).abs() > 1e-6 {
+            return Err(invalid(
+                "unit_reference_axis",
+                "spin axes must be unit vectors",
+            ));
+        }
+        row /= norm2.sqrt();
+    }
+    let direction = normalized.row(0).to_owned();
+    for mut row in normalized.rows_mut() {
+        let cross = [
+            row[1] * direction[2] - row[2] * direction[1],
+            row[2] * direction[0] - row[0] * direction[2],
+            row[0] * direction[1] - row[1] * direction[0],
+        ];
+        if cross.iter().map(|x| x * x).sum::<f64>() > 1e-24 {
+            return Err(invalid(
+                "collinear_spin_axes",
+                "noncollinear LSWT is outside this interface",
+            ));
+        }
+        let sign = if row.dot(&direction) < 0.0 { -1.0 } else { 1.0 };
+        // Snap tolerated roundoff tilts to an exactly collinear stationary state.
+        row.zip_mut_with(&direction, |v, axis| *v = sign * axis);
+    }
+    Ok(normalized)
 }
 
 fn negate<const DIM: usize>(r: [isize; DIM]) -> Result<[isize; DIM]> {
@@ -446,11 +502,11 @@ impl<const DIM: usize, R: RMatrixData> HubbardModel<DIM, R> {
             .hop_harmonic_max
             .min(options.intermediate_photon_max);
         let mut active = options.clone();
-        if options.max_hopping_order > 2 {
-            if !drive_has_ac_components(drive) || bonds.is_empty() {
-                active.hop_harmonic_max = 0;
-                active.intermediate_photon_max = 0;
-            } else if options.max_hopping_order == 4 {
+        if !drive_has_ac_components(drive) || bonds.is_empty() {
+            active.hop_harmonic_max = 0;
+            active.intermediate_photon_max = 0;
+        } else if options.max_hopping_order > 2 {
+            if options.max_hopping_order == 4 {
                 let complete = options.hop_harmonic_max.checked_mul(2).ok_or_else(|| {
                     invalid(
                         "complete_photon_window",
@@ -654,8 +710,20 @@ impl<const DIM: usize, R: RMatrixData> HubbardModel<DIM, R> {
 }
 
 #[cfg(test)]
+#[path = "driven_honeycomb_tests.rs"]
+mod honeycomb_tests;
+#[cfg(test)]
+#[path = "driven_merge_tests.rs"]
+mod merge_tests;
+#[cfg(test)]
 #[path = "driven_periodic_tests.rs"]
 mod periodic_tests;
+#[cfg(test)]
+#[path = "driven_square_tests.rs"]
+mod square_tests;
+#[cfg(test)]
+#[path = "driven_supercell_tests.rs"]
+mod supercell_tests;
 #[cfg(test)]
 #[path = "driven_tests.rs"]
 mod tests;

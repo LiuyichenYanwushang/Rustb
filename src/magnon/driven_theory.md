@@ -2,7 +2,8 @@
 
 本页供逐式核对。[`HubbardModel::floquet_spin_model`] 接受 hopping 二至四阶；
 高阶使用周期簇 Möbius 聚合，并在量子算符归约后支持固定自旋半的共线 LSWT。
-材料自旋映射、TB2J 差分合并及动态高阶晶格基准不在这一步的验收范围。
+[`HubbardModel::floquet_magnon_delta`] 将光场减零场的修正叠加到静态 TB2J 模型；
+材料自旋延拓需显式选择，见第 11 节。
 
 > **正向时间迁移：保持输入 Fourier/Peierls 定义，修正 Sambe 投影。**
 > 当前采用正时间基 $e^{+in\Omega t}$ 与 $H^{(m-n)}+nW\delta\_{nm}$。
@@ -487,7 +488,7 @@ $$
 这个 $-K/8$ 与量子 Hamiltonian 的常数 $-K/4$ 是两件不同的事。
 $(S\_i^z)^2=1/4$ 对 spin-half 只是常数；本转换不会凭空加 single-ion gap。
 
-对未来高阶转换，令 $\delta\mathbf S\_i^{\lbrack1\rbrack}$ 是线性 HP 项。
+对高阶转换，令 $\delta\mathbf S\_i^{\lbrack1\rbrack}$ 是线性 HP 项。
 三点项的二次部分含三个 cyclic spectator 替换，不能只选一个 spectator：
 
 $$
@@ -562,18 +563,29 @@ $$
 Jordan 型零模这里只承诺零激发能，不承诺可归一化本征矢；小正 roundoff 不代表真实 gap。
 一次 q 的稳定检查也不等于全 BZ 参考态稳定性的证明。
 
-## 11. 材料自旋与 TB2J：尚未完成的额外假设
+## 11. 材料自旋与 TB2J 差分
 
 微观模型严格给出 spin-half。把量子归约后的系数固定，再把自旋长度替换成
 材料 $S\_i$，是一种**须明确接受的现象学 lifting**，不是唯一的高自旋 Hubbard 推导。
 外加的材料 SIA 也不能冒充单轨道 spin-half 微观生成结果。
 
-计划中的 TB2J 合并应在相同规范、同一站点映射与相同自旋映射下使用
+TB2J 合并在相同规范、同一站点映射与相同自旋映射下使用
 
 $$
 H\_{\mathrm{material}}(a)=H\_{\mathrm{TB2J}}^{\mathrm{static}}
 \+\lbrack H\_{\mathrm{micro}}(a)-H\_{\mathrm{micro}}(0)\rbrack\_{\mathrm{mapped}}.
 $$
+
+`SpinLengthMapping::SpinHalf` 要求目标自旋严格为 1/2；
+`KeepOperatorCoefficients` 采用上面的延拓，二体、三体、四体的单位矢量曲率分别
+乘参与站点的两个、三个、四个自旋长度。若这些乘积超出可用浮点范围，返回错误。
+必须提供 orbital 到磁站点的双射，且晶格矩阵相同。若输入第 i 个中心等于目标中心
+加整数移位 $s_i$，则键从 $R$ 变成 $R+s_j-s_i$；映射保持手性的有序站点顺序。
+先对量子自旋多项式做差，再按基线自旋大小和同一胞内共线参考做 HP 归约。
+算法不调整磁矩轴、保留原有各向异性，并将新平移行追加到原行之后。
+明场与零场分别受同一组数值预算约束；零场只用零光子副本。
+接近共线的数值舍入按基线首个轴判定，修正沿该共线参考计算，不修改输出基线的轴。
+调用者仍须检查合并参考的驻点与稳定性。
 
 不能把完整微观静态交换再加一遍，也不能对同一 AB 光学过程同时应用本修正和
 旧的 phenomenological magnon bond-drive，从而二次计数。

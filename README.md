@@ -404,6 +404,16 @@ let hf_model = hubbard.solve_hartree_fock(&params)?;
 let total_spin = hf_model.spin_moment(&[101], 0.0, params.occupation)?;
 ```
 
+### `magnon::driven` — Floquet–Hubbard spin exchange
+
+`HubbardModel::floquet_spin_model` reduces a half-filled, spin-independent
+single-orbital Hubbard model through hopping order 2, 3 or 4 under a uniform
+Peierls drive. The result keeps exchange, chirality and four-spin operators
+separate before collinear spin-wave conversion. `floquet_magnon_delta` adds
+only the driven-minus-zero correction to an existing static TB2J `Magnon`,
+with explicit site and spin-length mappings. See the
+[usage guide](<SKILLS.md>) and [theory](<src/magnon/driven_theory.md>).
+
 ### `velocity` — velocity operators
 
 `gen_v` returns the Cartesian velocity operators at one k-point together with

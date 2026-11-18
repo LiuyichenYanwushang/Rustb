@@ -23,6 +23,23 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 }
 
 #[test]
+fn peierls_link_keeps_displacement_across_fractional_boundary() {
+    let dx = 2.0_f64.powi(-53);
+    let model =
+        Model::<false, 1>::tb_model(array![[1.0]], array![[-0.125], [0.875 + dx]], None).unwrap();
+    // The fractional difference rounds to 1 before cancellation if the
+    // rounding residual is discarded. The reverse link must agree as well.
+    assert_eq!(
+        model.link_displacement_cartesian(0, 1, &array![-1].view())[0],
+        dx
+    );
+    assert_eq!(
+        model.link_displacement_cartesian(1, 0, &array![1].view())[0],
+        -dx
+    );
+}
+
+#[test]
 fn bessel_j_matches_tabulated_values() {
     // Reference values (NIST DLMF, mpmath 50-digit evaluation).
     let table: [(isize, f64, f64); 12] = [
