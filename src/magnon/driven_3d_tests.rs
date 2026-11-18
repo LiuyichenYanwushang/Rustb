@@ -1,9 +1,11 @@
-//! A driven noncoplanar loop with two layers, not a material bilayer benchmark.
+//! Driven checks on a two-layer noncoplanar loop and a periodic simple-cubic lattice, not material benchmarks.
 use super::{PeriodicSpinSite, StrongCouplingOptions};
+use crate::kpath::Kpath;
 use crate::magnon::{MagnonReference, MagnonSolve};
 use crate::{FloquetDrive, HubbardModel, LightMode, Model};
-use ndarray::{arr1, array};
+use ndarray::{Array2, arr1, array};
 use num_complex::Complex64;
+use std::f64::consts::TAU;
 
 const T: f64 = 0.1;
 const CELLS: [[isize; 3]; 4] = [[0; 3], [0; 3], [0, 0, 1], [0, 0, 1]];
@@ -182,4 +184,127 @@ fn driven_nonplanar_ring_uses_z_polarization_at_fourth_order() {
             }
         }
     }
+}
+
+#[test]
+fn driven_simple_cubic_magnon_path_and_dos_match_analytic_band() {
+    let (u, photon_ev, amplitude) = (4.0, 5.0, 1.5);
+    let hopping = [T, 0.8 * T, 0.6 * T];
+    let mut model =
+        Model::<true, 3>::tb_model(Array2::eye(3), array![[0.0, 0.0, 0.0]], None).unwrap();
+    for (axis, t) in hopping.into_iter().enumerate() {
+        let mut r = [0; 3];
+        r[axis] = 1;
+        model.set_hop(t, 0, 0, &arr1(&r), None);
+    }
+    let drive = FloquetDrive::with_modes(
+        photon_ev,
+        vec![LightMode::new(
+            1,
+            arr1(&[Complex64::new(amplitude, 0.0); 3]),
+        )],
+    );
+    let cutoff = 4;
+    let spin = HubbardModel::with_uniform_u(model, u)
+        .unwrap()
+        .floquet_spin_model(
+            &drive,
+            &StrongCouplingOptions {
+                max_hopping_order: 2,
+                hop_harmonic_max: cutoff,
+                intermediate_photon_max: cutoff,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let magnon = spin
+        .magnon(&array![[0.0, 0.0, 1.0]], MagnonReference::collinear())
+        .unwrap();
+
+    // Independent Peierls quadrature: K_a = 4t_a² Σ_m |C_m|²/(U+mW),
+    // with C_m the Fourier coefficient of exp(-i A cos θ) on each unit bond.
+    let virtual_sum = (-cutoff..=cutoff)
+        .map(|m| {
+            let c = (0..64)
+                .map(|n| {
+                    let theta = TAU * n as f64 / 64.0;
+                    Complex64::from_polar(1.0, m as f64 * theta - amplitude * theta.cos())
+                })
+                .sum::<Complex64>()
+                / 64.0;
+            c.norm_sqr() / (u + m as f64 * photon_ev)
+        })
+        .sum::<f64>();
+    let exchange = hopping.map(|t| 4.0 * t * t * virtual_sum);
+    assert!(exchange.iter().all(|&k| k < 0.0));
+    // The S=1/2 ferromagnet's one-spin-flip band is -Σ_a K_a(1 - cos(2πq_a)).
+    let frequency = |q: [f64; 3]| -> f64 {
+        q.into_iter()
+            .zip(exchange)
+            .map(|(q, k)| -k * (1.0 - (TAU * q).cos()))
+            .sum()
+    };
+
+    // Γ→Z changes only q_z; the distinct exchanges also expose axis swaps.
+    let path = array![[0., 0., 0.], [0., 0., 0.5], [0.5, 0., 0.5], [0.5, 0.5, 0.5]];
+    let (points, distances, nodes) = magnon.k_path(&path, 7).unwrap();
+    assert_eq!(
+        points,
+        array![
+            [0., 0., 0.],
+            [0., 0., 0.25],
+            [0., 0., 0.5],
+            [0.25, 0., 0.5],
+            [0.5, 0., 0.5],
+            [0.5, 0.25, 0.5],
+            [0.5, 0.5, 0.5]
+        ]
+    );
+    assert_eq!(distances, array![0., 0.25, 0.5, 0.75, 1., 1.25, 1.5]);
+    assert_eq!(nodes, array![0., 0.5, 1., 1.5]);
+    let bands = magnon.magnon_band_all(&points).unwrap();
+    assert_eq!(bands.dim(), (7, 1));
+    for (row, q) in points.rows().into_iter().enumerate() {
+        assert_close(bands[[row, 0]], frequency([q[0], q[1], q[2]]), "path band");
+    }
+
+    // Enumerate the discrete rectangular mesh independently, retaining every
+    // q point (including coincident energies) with weight 1/(nx ny nz).
+    let mesh = [2, 3, 4];
+    let [nx, ny, nz] = mesh;
+    let mut energies = Vec::new();
+    for x in 0..nx {
+        for y in 0..ny {
+            for z in 0..nz {
+                energies.push(frequency([
+                    x as f64 / nx as f64,
+                    y as f64 / ny as f64,
+                    z as f64 / nz as f64,
+                ]));
+            }
+        }
+    }
+    let (sigma, bins) = (0.002, 201);
+    let w_min = -8.0 * sigma;
+    let w_max = -2.0 * exchange.iter().sum::<f64>() + 8.0 * sigma;
+    let dw = (w_max - w_min) / (bins - 1) as f64;
+    let (omega, dos) = magnon
+        .magnon_dos(&arr1(&mesh), w_min, w_max, bins, sigma)
+        .unwrap();
+    assert_eq!((omega.len(), dos.len()), (bins, bins));
+    let weight = 1.0 / ((nx * ny * nz) as f64 * sigma * TAU.sqrt());
+    for (i, (&w, &actual)) in omega.iter().zip(&dos).enumerate() {
+        assert_close(w, w_min + i as f64 * dw, "DOS grid");
+        let expected = weight
+            * energies
+                .iter()
+                .map(|&e| (-0.5 * ((w - e) / sigma).powi(2)).exp())
+                .sum::<f64>();
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "DOS at {w:e} eV: {actual:e} vs {expected:e}"
+        );
+    }
+    let total = dos.sum() * dw;
+    assert!((total - 1.0).abs() < 1e-12, "integrated DOS = {total}");
 }

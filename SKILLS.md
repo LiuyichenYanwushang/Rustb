@@ -1270,8 +1270,10 @@ M to check convergence. Without time-dependent modes the higher-order path
 uses the zero replica only.
 Only nonzero retained virtual transitions trigger detuning checks; an unreachable
 2U resonance must not invalidate second order. The ratio bound controls individual
-hopping/detuning amplitudes, not the complete many-body operator norm or an error
-certificate. Cache bytes exclude the backend's separately bounded work buffers.
+one-hop amplitudes divided by detuning and, at fourth order, each active two-hop
+resolvent row norm after summing paths. Neither bounds the full many-body error.
+Cache bytes exclude the backend's separately bounded work buffers; the cluster
+cap is logical numeric payload, not RSS or the cost of the later dense Magnon.
 Sweep H and M: recorded cutoffs/nearest detuning are not a convergence proof.
 
 ```rust

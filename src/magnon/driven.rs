@@ -32,10 +32,11 @@ pub struct StrongCouplingOptions {
     /// Intermediate total photon label $\lvert m\rvert\le M$, independently
     /// of $H$.
     pub intermediate_photon_max: isize,
-    /// Reject an actually coupled virtual charge state closer than this (eV).
+    /// Reject an actually coupled virtual Sambe state closer than this (eV).
     pub min_detuning_ev: f64,
-    /// Upper bound on individual
-    /// $\lvert t^{(m)}\_{ij}/(U+mW)\rvert$, not an accuracy certificate.
+    /// Upper bound on individual one-hop $\lvert t^{(m)}\_{ij}/(U+mW)\rvert$
+    /// and, at fourth order, the Euclidean norm of each coupled two-hop
+    /// resolvent row. These are local checks, not an accuracy certificate.
     pub max_hopping_ratio: f64,
     /// Budget for directed bond/photon contributions and higher-order cluster work.
     pub max_work: usize,
@@ -137,6 +138,7 @@ pub struct StrongCouplingDiagnostics {
     pub nonzero_virtual_terms: usize,
     /// Minimum active one-hop detuning; higher-order poles are checked separately.
     pub nearest_detuning_ev: Option<f64>,
+    /// Largest observed one-hop hopping/detuning ratio.
     pub largest_hopping_ratio: f64,
     /// Number of nontrivial periodic induced clusters expanded through the requested order.
     pub expanded_clusters: usize,
@@ -712,6 +714,9 @@ impl<const DIM: usize, R: RMatrixData> HubbardModel<DIM, R> {
 #[cfg(test)]
 #[path = "driven_bilayer_tests.rs"]
 mod bilayer_tests;
+#[cfg(test)]
+#[path = "driven_cost_tests.rs"]
+mod cost_tests;
 #[cfg(test)]
 #[path = "driven_3d_tests.rs"]
 mod driven_3d_tests;

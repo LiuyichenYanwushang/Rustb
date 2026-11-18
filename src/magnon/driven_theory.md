@@ -596,7 +596,9 @@ $$
 - 单跳截断 $|\Delta m|\le H$ 与累计 $|m\_s|\le M$ 独立；二阶取 min，
   三/四阶必须逐步保留中间 photon 轨迹，不能把缺失 cache bin 当零。
 - 四阶累计 photon 可达 $2H$；有限 M 是空间投影，不是自动的收敛证明。
-- 一跳 $|t^{(m)}/(U+mW)|$ 的阈值不是整体算符范数、协调数或高阶 spin-photon 混合的证书。
+- 除一跳 $|t^{(m)}/(U+mW)|$ 之外，四阶核对相干求和后的第二级中间量 $RT$：
+  对每个可达 Q 态，从 P 的全部列取 Euclidean 行范数并检查 `max_hopping_ratio`。
+  这能拒绝一跳分母都正常、但两跳强烈混入近共振副本的情况；仍不是整体误差界。
 - 代码不按振幅阈值删去小系数，但受 `f64` 运算舍入限制。单次路径乘积在累加前下溢、
   或同一算符块中不同能标跨度过大时，即使理论系数最终可表示，也不保证相对精度。
 - 必须分别扫 H/M、比较 hopping 各阶、检查活跃分母及必要的中间耦合尺度。
@@ -604,5 +606,41 @@ $$
   不能取 Floquet 矩阵最低若干本征值，也不能取折叠后最近零的若干值。
 - 内部稀疏核与相同公式的 dense Sambe 对照，只验证实现；二聚体精确 gap、
   三角静态通量和正向时间传播才提供不同层面的独立物理约束。
-- 正向 Sambe 迁移已有独立电子传播用例；动态高阶自旋手性仍需自己的 forward-time、周期聚合及高阶 HP 端到端验收，不能借用二阶通过结果。
+- 正向 Sambe 迁移由独立电子传播确认；自旋侧另有方环的正向传播和逐系数对照、
+  蜂窝/AA 双层/非共面 3D 的带标签 BdG 对照，以及原胞/双倍超胞逐算符检查。
+  这些固定夹具不证明任意驱动、晶格或能标的收敛性。
 - 以上理论不证明长期无加热、真实系统必占据该低能分支，或材料单轨道近似成立。
+
+## 13. 可运行的四阶共线例子
+
+以下是两站点反铁磁链。能量用 eV，`LightMode` 的振幅用晶格长度的倒数。
+先保留量子多项式，再选反平行参考轴；这里没有人为加入单离子各向异性。
+
+```rust
+use ndarray::array;
+use num_complex::Complex64;
+use Rustb::{FloquetDrive, HubbardModel, LightMode, Model};
+use Rustb::magnon::{MagnonReference, MagnonSolve};
+use Rustb::magnon::driven::StrongCouplingOptions;
+
+fn main() -> Rustb::Result<()> {
+    let mut electron = Model::<true, 1>::tb_model(array![[2.0]], array![[0.0], [0.5]], None)?;
+    electron.set_hop(0.1, 0, 1, &array![0isize], None);
+    electron.set_hop(0.1, 0, 1, &array![-1isize], None);
+    let hubbard = HubbardModel::with_uniform_u(electron, 4.0)?;
+    let light = FloquetDrive::with_modes(5.0, vec![LightMode::new(1, array![Complex64::new(0.3, 0.0)])]);
+    let options = StrongCouplingOptions {
+        max_hopping_order: 4,
+        hop_harmonic_max: 4,
+        intermediate_photon_max: 8,
+        ..Default::default()
+    };
+    let spin = hubbard.floquet_spin_model(&light, &options)?;
+    let axes = array![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]];
+    let magnon = spin.magnon(&axes, MagnonReference::collinear())?;
+    let energies = magnon.magnon_band_onek(&array![0.25])?;
+    assert_eq!(energies.len(), 2);
+    assert!(energies.iter().all(|e| e.is_finite() && *e > 0.0));
+    Ok(())
+}
+```

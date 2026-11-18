@@ -381,6 +381,23 @@ pub(super) fn expand_cluster(
         result.push(h3);
         if options.max_hopping_order >= 4 {
             let rt = apply_r(&t, &energies, &prows, options.min_detuning_ev)?;
+            // The actual two-hop coupling can resolve an intermediate replica
+            // that is far outside the one-hop photon window. Check the row
+            // norm after coherent path summation and P exclusion, not a bare
+            // denominator for a replica that no path couples to.
+            for (row, amplitude) in rt.rows().into_iter().enumerate() {
+                let ratio = amplitude.iter().fold(0.0_f64, |acc, z| acc.hypot(z.norm()));
+                if ratio > options.max_hopping_ratio {
+                    return Err(invalid(
+                        "cluster_two_hop_ratio",
+                        format!(
+                            "two-hop resolvent row norm {ratio:e} exceeds {:e} at |Nd U+mW|={:e} eV",
+                            options.max_hopping_ratio,
+                            energies[row].abs()
+                        ),
+                    ));
+                }
+            }
             scales[2] = gram_scale(&t, &rt)?;
             let mut h4 = gram(&t, &rt);
             let norm = gram(&w, &w);
