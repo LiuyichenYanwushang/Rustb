@@ -2004,13 +2004,27 @@ impl BilayerSpinWave {
 
     /// Spin-resolved bands `(up sector, down sector)` at `q`, each ascending.
     pub fn sector_bands(&self, q: &[f64; 2]) -> Result<([f64; 2], [f64; 2])> {
+        let (up, down) = self.sector_matrices(q)?;
+        let mut up_bands = [0.0f64; 2];
+        let mut down_bands = [0.0f64; 2];
+        for (matrix, target) in [(up, &mut up_bands), (down, &mut down_bands)] {
+            let values = paraunitary_spectrum(&matrix, 2)?;
+            target[0] = values[0];
+            target[1] = values[1];
+        }
+        Ok((up_bands, down_bands))
+    }
+
+    // Keep the production assembly directly testable without exposing raw blocks.
+    fn sector_matrices(
+        &self,
+        q: &[f64; 2],
+    ) -> Result<(Array2<Complex<f64>>, Array2<Complex<f64>>)> {
         let (a1, a2, pairing) = self.layer_blocks(q)?;
         let minus_q = [-q[0], -q[1]];
         let (a1_neg, a2_neg, pairing_neg) = self.layer_blocks(&minus_q)?;
         let dagger = |matrix: &Array2<Complex<f64>>| matrix.t().mapv(|value| value.conj());
         let transpose = |matrix: &Array2<Complex<f64>>| matrix.t().to_owned();
-        let mut up_bands = [0.0f64; 2];
-        let mut down_bands = [0.0f64; 2];
         // Upper sector: [[A1(k), C(k)], [C^dag(k), A2^T(-k)]].
         let mut up = Array2::<Complex<f64>>::zeros((4, 4));
         for i in 0..2 {
@@ -2027,16 +2041,11 @@ impl BilayerSpinWave {
             for k in 0..2 {
                 down[[i, k]] = a2[[i, k]];
                 down[[i, 2 + k]] = transpose(&pairing_neg)[[i, k]];
-                down[[2 + i, k]] = pairing_neg[[k, i]].conj();
+                down[[2 + i, k]] = pairing_neg[[i, k]].conj();
                 down[[2 + i, 2 + k]] = transpose(&a1_neg)[[i, k]];
             }
         }
-        for (matrix, target) in [(up, &mut up_bands), (down, &mut down_bands)] {
-            let values = paraunitary_spectrum(&matrix, 2)?;
-            target[0] = values[0];
-            target[1] = values[1];
-        }
-        Ok((up_bands, down_bands))
+        Ok((up, down))
     }
 }
 
@@ -2155,6 +2164,175 @@ mod bilayer_sw_tests {
             anisotropy_ev: 0.0,
             direct_exchange_ev: 2.0 * exchange.j1,
         }
+    }
+
+    fn coupled_chiral_wave() -> BilayerSpinWave {
+        BilayerSpinWave {
+            exchange: BilayerExchange {
+                j1: 0.008,
+                j2: 0.00002,
+                jperp: 0.0012,
+                jcross: 0.00007,
+                k1: 0.00011,
+                k2: 0.00013,
+                k3: -0.00017,
+                chirality: 0.00009,
+            },
+            spins: [1.5, 1.0, 1.0, 1.5],
+            anisotropy_ev: -0.002,
+            direct_exchange_ev: 0.016,
+        }
+    }
+
+    // Independent explicit S153 matrices: original SM.tex lines 2476–2515
+    // (source attachment 0a3b5777). In particular C is NOT symmetric, and the
+    // lower-left down block is C*(-k), not C^dag(-k). No production block or
+    // structure-factor helper is used to construct this reference.
+    fn s153_matrices(w: &BilayerSpinWave, q: [f64; 2]) -> [Array2<Complex<f64>>; 2] {
+        let j = w.exchange;
+        let (s1, s2) = (w.spins[0], w.spins[1]);
+        let t = std::f64::consts::TAU;
+        let g = Complex::from_polar(1.0, t * (q[0] - 2.0 * q[1]) / 3.0)
+            + Complex::from_polar(1.0, t * (q[0] + q[1]) / 3.0)
+            + Complex::from_polar(1.0, t * (-2.0 * q[0] + q[1]) / 3.0);
+        let c = (t * q[0]).cos() + (t * (q[1] - q[0])).cos() + (t * q[1]).cos();
+        let sine = (t * q[0]).sin() + (t * (q[1] - q[0])).sin() - (t * q[1]).sin();
+        let jp = j.j1 - w.direct_exchange_ev + j.k1 * s1 * s2;
+        let v = Complex::new((j.jperp - 3.0 * j.k2 * s1 * s2) * (s1 * s2).sqrt(), 0.0);
+        let x = (j.jcross - j.k3 * s2 * s2) * s1 * g;
+        let y = (j.jcross - j.k3 * s1 * s1) * s2 * g.conj();
+        let h = jp * (s1 * s2).sqrt() * g;
+        let ea = (-3.0 * jp + j.jperp - 3.0 * j.k2 * s1 * s2) * s2
+            + 3.0 * (j.jcross - j.k3 * s2 * s2) * s1
+            + 2.0 * j.j2 * s1 * (c - 3.0)
+            - 2.0 * w.anisotropy_ev * s1;
+        let eb = (-3.0 * jp + j.jperp - 3.0 * j.k2 * s1 * s2) * s1
+            + 3.0 * (j.jcross - j.k3 * s1 * s1) * s2
+            + 2.0 * j.j2 * s2 * (c - 3.0)
+            - 2.0 * w.anisotropy_ev * s2;
+        let d = 2.0 * j.chirality * s1 * s2 * sine;
+        let a = Complex::new(ea - d, 0.0);
+        let b = Complex::new(eb + d, 0.0);
+        let an = Complex::new(ea + d, 0.0);
+        let bn = Complex::new(eb - d, 0.0);
+        [
+            ndarray::array![
+                [a, h, v, x],
+                [h.conj(), b, y, v],
+                [v, y.conj(), b, h],
+                [x.conj(), v, h.conj(), a]
+            ],
+            ndarray::array![
+                [bn, h, v, y.conj()],
+                [h.conj(), an, x.conj(), v],
+                [v, x, an, h],
+                [y, v, h.conj(), bn]
+            ],
+        ]
+    }
+
+    #[test]
+    fn coupled_chiral_sectors_are_hermitian_and_match_s153() {
+        let wave = coupled_chiral_wave();
+        for q in [[0.13, 0.27], [0.3, 0.1], [0.05, 0.45], [0.0, 0.0]] {
+            let (up, down) = wave.sector_matrices(&q).unwrap();
+            for (label, actual, expected) in [
+                ("up", up, s153_matrices(&wave, q)[0].clone()),
+                ("down", down, s153_matrices(&wave, q)[1].clone()),
+            ] {
+                let mut hermitian = 0.0_f64;
+                let mut oracle = 0.0_f64;
+                for i in 0..4 {
+                    for k in 0..4 {
+                        for z in [actual[[i, k]], expected[[i, k]]] {
+                            assert!(
+                                z.re.is_finite() && z.im.is_finite(),
+                                "{label} at {q:?}: {z:?}"
+                            );
+                        }
+                        hermitian = hermitian.max((actual[[i, k]] - actual[[k, i]].conj()).norm());
+                        oracle = oracle.max((actual[[i, k]] - expected[[i, k]]).norm());
+                    }
+                }
+                println!("S153 q={q:?} sector={label} hermitian={hermitian:e} oracle={oracle:e}");
+                assert!(hermitian < 1e-14, "{label} at {q:?}: {hermitian:e}");
+                assert!(oracle < 1e-14, "{label} at {q:?}: {oracle:e}");
+            }
+        }
+    }
+
+    #[test]
+    fn coupled_chiral_general_momenta_keep_spin_labels() {
+        let wave = coupled_chiral_wave();
+        let mut residual = 0.0_f64;
+        let mut splitting = 0.0_f64;
+        for q in [[0.13, 0.27], [0.3, 0.1], [0.05, 0.45]] {
+            let (up, down) = wave.sector_bands(&q).unwrap();
+            let (up_neg, down_neg) = wave.sector_bands(&[-q[0], -q[1]]).unwrap();
+            for band in 0..2 {
+                residual = residual.max((up[band] - down_neg[band]).abs());
+                residual = residual.max((down[band] - up_neg[band]).abs());
+                splitting = splitting.max((up[band] - down[band]).abs());
+                assert!(up[band] > 0.0 && down[band] > 0.0);
+            }
+        }
+        println!("label residual={residual:e}, splitting={splitting:e}");
+        assert!(residual < 1e-12, "{residual:e}");
+        assert!(splitting > 1e-6, "{splitting:e}");
+    }
+
+    #[test]
+    fn paper_parameter_gamma_has_real_dynamical_spectrum() {
+        // Paper-parameter assembly regression using static interlayer approximation,
+        // NOT a full driven Fig. 3 reproduction. SM.tex 2719–2733 and main.tex
+        // 215–222: t=.05, tp=.015, U=1.25, W=1, lambda=.6, xi=-1, M=7,
+        // JD=.012, (S1,S2)=(1,.8), K=0. Driven interlayer terms are not generated.
+        let mut exchange = BilayerExchange::static_limit(&BilayerParams {
+            hopping_ev: 0.05,
+            interlayer_hopping_ev: 0.015,
+            interaction_ev: 1.25,
+        })
+        .unwrap();
+        let intra = DrivenExchange::honeycomb(&DrivenHubbardParams {
+            hopping_ev: 0.05,
+            interaction_ev: 1.25,
+            photon_ev: 1.0,
+            lambda: 0.6,
+            helicity: -1.0,
+            harmonic_max: 7,
+        })
+        .unwrap();
+        exchange.j1 = intra.j1;
+        exchange.j2 = intra.j2;
+        exchange.chirality = intra.chirality;
+        let wave = BilayerSpinWave {
+            exchange,
+            spins: [1.0, 0.8, 0.8, 1.0],
+            anisotropy_ev: 0.0,
+            direct_exchange_ev: 0.012,
+        };
+        let (up, down) = wave.sector_matrices(&[0.0, 0.0]).unwrap();
+        for (label, mut generator) in [("up", up), ("down", down)] {
+            for row in 2..4 {
+                for column in 0..4 {
+                    generator[[row, column]] *= -1.0;
+                }
+            }
+            let (values, _) = generator.eig().unwrap();
+            assert!(
+                values.iter().all(|z| z.re.is_finite() && z.im.is_finite()),
+                "{label}: {values:?}"
+            );
+            let imaginary = values.iter().map(|z| z.im.abs()).fold(0.0_f64, f64::max);
+            println!("paper-parameter Gamma {label}: {values:?}; max_imag={imaginary:e}");
+            // Absolute eV threshold, independent of the solver's scale floor.
+            assert!(imaginary < 1e-10, "{label}: {values:?}");
+        }
+        let bands = wave.sector_bands(&[0.0, 0.0]);
+        println!("paper-parameter public Gamma sector_bands: {bands:?}");
+        let (up, down) =
+            bands.expect("public Gamma solver must accept the real dynamical spectrum");
+        assert!(up.iter().chain(down.iter()).all(|value| value.is_finite()));
     }
 
     #[test]

@@ -199,14 +199,20 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
 
 ### 当前台账
 
-- T00：verified。plan-review 的 R1–R5 已 ACCEPT；plan-rereview 确认规划 blocker
-  已解决，指南警示和 T30 补充已改；plan-final-review 确认 converged、DAG 无循环。
-  文档验证：cargo fmt --check、git diff --check 均 exit 0；此状态不代表算法实现。
-- T01：review/测试中，由 bilayer-impl 执行（初始 bilayer-fix 在领取任务前失败，
-  已换路由重启），写范围仅为现有双层组装/测试。真实 red：一般 q=(.13,.27)
-  的 down Hermitian/独立 S153 残差 2.1489297416323814e-4 eV，up 为0/~5.69e-19；
-  首轮 bilayer-review 确认共轭索引修复正确、oracle 独立且未改 solver 容差，
-  建议的有限值断言已 ACCEPT。green 与 fresh review 尚未收齐，不算 verified。
+- T00：committed，`6f23dbb`。plan-review 的 R1–R5 已 ACCEPT；plan-rereview
+  确认规划 blocker 已解决；plan-final-review 确认 converged、DAG 无循环。
+  文档验证：cargo fmt --check、git diff --check 均 exit 0；不代表算法实现。
+- T01：verified，由 bilayer-impl 执行，lead 读取 red/green 原日志复核。
+  真实 red：q=(.13,.27) 的 down Hermitian/S153 残差 2.1489297416323814e-4 eV。
+  修复后 release focused `bilayer_sw_tests -- --nocapture` exit0，7/7；
+  Hermitian=0、oracle最大1.7347e-18 eV、标签残差1.3878e-16 eV、split1.3291e-4 eV。
+  Gamma raw最大虚部1.11394e-16 eV，公开sector_bands返回Ok；仍有约4e-11 eV
+  的Goldstone微负值，严格正能/零模语义留T05，不宣称已修复。
+  bilayer-review 的 finite 加固建议 ACCEPT 后，fresh bilayer-rereview-luna 确认
+  converged，无 solver 容差改动。归档：
+  `target/goal-a-archives/task-1-reviewed-green-20261118T1427.tar.gz`（tar/gzip校验exit0）。
+- T03：in_progress，由 lead 接手；frames-impl 两次在领取任务前失败，无代码产物。
+- T10a：只读接口审计中，不代表T10已实现。
 - 其余：pending。实际状态变化在本节逐项补证据，不靠聊天总结覆盖。
 
 ## 7. 数值与性能策略（不可凭“性能不是问题”跳过）
