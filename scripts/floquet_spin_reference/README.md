@@ -294,5 +294,7 @@ OPENBLAS_NUM_THREADS=1 python3 -B -W error scripts/floquet_spin_reference/aa_rec
 The three in-plane bond directions have different projections of the same
 3D drive. The script reports each rectangle's two-hop exchanges, the four-hop
 diagonal exchange, all three ring coefficients and one oriented chirality.
-It also Fourier-sums the direct spin-flip matrix element at fixed sublattice
-and layer labels. The analytic static AA check is a separate regression.
+Explicit cell counting of rectangles, wedges and dimers gives the full
+labelled 8×8 BdG matrix directly from local spin flips. The script checks
+both time directions at two finite q points and two harmonic cutoffs. The
+analytic static AA check is a separate regression.

@@ -162,19 +162,19 @@ fn periodic_aa_bilayer_mixed_drive_matches_powered_rectangles() {
     // Re[a exp(-iθ)] = (0.4 cos θ, 0.3 sin θ, 0.22 cos θ + 0.17 sin θ).
     // No bond family is dark. The relative phase in each vertical rectangle
     // differs, so counting all three rectangles with one weight would fail.
-    let drive = FloquetDrive::with_modes(
-        W,
-        vec![LightMode::new(
-            1,
-            array![
-                Complex64::new(0.4, 0.),
-                Complex64::new(0., 0.3),
-                Complex64::new(0.22, 0.17),
-            ],
-        )],
-    );
     let input = aa_bilayer();
-    let run = |order| {
+    let run = |order, sign| {
+        let drive = FloquetDrive::with_modes(
+            W,
+            vec![LightMode::new(
+                1,
+                array![
+                    Complex64::new(0.4, 0.),
+                    Complex64::new(0., 0.3 * sign),
+                    Complex64::new(0.22, 0.17 * sign),
+                ],
+            )],
+        );
         input
             .floquet_spin_model(
                 &drive,
@@ -187,8 +187,8 @@ fn periodic_aa_bilayer_mixed_drive_matches_powered_rectangles() {
             )
             .unwrap()
     };
-    let second = run(2);
-    let full = run(4);
+    let second = run(2, 1.);
+    let full = run(4, 1.);
     assert_eq!(full.diagnostics().active_photon_max, 8);
 
     // Dense Fock/DFT oracle: scripts/floquet_spin_reference/aa_rectangle_reference.py.
@@ -287,4 +287,58 @@ fn periodic_aa_bilayer_mixed_drive_matches_powered_rectangles() {
     // from their three adjacent rectangles sees the mixed chirality. A03
     // alone does not: the chirality cancels there between its spectators.
     assert_close(bdg[[0, 6]].im, -1.858_469_761_723_3e-7, "Im B02");
+
+    // Full dense Fock oracle at H=4, M=8. Count 3 rectangles and 12 in-plane
+    // V's per cell, subtracting four copies of each in-plane dimer and two
+    // of each vertical dimer. Widening to H=6, M=12 shifts any entry <1e-14 eV.
+    let reversed = run(4, -1.)
+        .magnon(&axes, MagnonReference::collinear())
+        .unwrap();
+    let z = Complex64::new(0., 0.);
+    let v = Complex64::new(3.546_059_900_206e-3, -1.858_469_761_723e-7);
+    for (q, diagonal, off_diagonal) in [
+        (
+            [0.17, 0.29, 0.37],
+            [0.021_140_414_186_816, 0.021_158_125_139_582],
+            [
+                [2.013_689_806_019e-6, 6.760_573_611_416e-6],
+                [8.971_736_023_451e-3, 9.438_543_424_431e-3],
+                [8.972_053_001_157e-3, -9.437_806_663_180e-3],
+            ],
+        ),
+        (
+            [0.31, 0.17, 0.37],
+            [0.021_150_855_916_013, 0.021_127_783_175_955],
+            [
+                [4.576_624_972_150e-6, 3.185_872_252_981e-7],
+                [1.262_041_254_343e-2, 6.044_103_677_383e-4],
+                [1.261_894_074_195e-2, -6.042_035_992_088e-4],
+            ],
+        ),
+    ] {
+        let [a, d] = diagonal.map(|re| Complex64::new(re, 0.));
+        let [f, ab, ba] = off_diagonal.map(|[re, im]| Complex64::new(re, im));
+        let fc = f.conj();
+        // Label order is (A1,B1,A2,B2) for both particles and holes.
+        let expected = array![
+            [a, z, z, f, z, ab, v, z],
+            [z, d, fc, z, ba, z, z, v],
+            [z, f, a, z, v, z, z, ab],
+            [fc, z, z, d, z, v, ba, z],
+            [z, ba.conj(), v.conj(), z, d, z, z, f],
+            [ab.conj(), z, z, v.conj(), z, a, fc, z],
+            [v.conj(), z, z, ba.conj(), z, f, d, z],
+            [z, v.conj(), ab.conj(), z, fc, z, z, a],
+        ];
+        // The separate reversed-drive Sambe run in Python yields
+        // H_rev(q)=H_fwd(-q)*, i.e. a Nambu-sector swap at the same q.
+        for (protocol, model, shift) in [("forward", &magnon, 0), ("reversed", &reversed, 4)] {
+            let got = model.gen_bdg(&arr1(&q)).unwrap();
+            assert_eq!(got.dim(), (8, 8));
+            for ((i, j), value) in got.indexed_iter() {
+                let want = expected[[(i + shift) % 8, (j + shift) % 8]];
+                assert_close((*value - want).norm(), 0., (protocol, q, i, j));
+            }
+        }
+    }
 }
