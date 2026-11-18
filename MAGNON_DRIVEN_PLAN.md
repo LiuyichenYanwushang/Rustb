@@ -202,7 +202,8 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
 | T10 | T00 | G0 输入契约/API 与实空间键提取 | 审计已有类型后写设计决策；维度/自旋独立/U/onsite 拒绝路径；入口定义半满 P，不从 hopping 推断 filling；不新增多余模型层级 |
 | T11 | T10 | 键谐波缓存与周期顶点 canonical key | 共享已验证缓存和 per-link DFT fallback 的最小 crate-private 访问面；reverse-Hermitian；相干模式干涉；椭圆/3D；有限截断和资源算术检查 |
 | T12 | T04,T11 | M1 通用二阶交换和 S=1/2 Magnon | 静态 4|t|²/U；有限光场独立 dimer；2D/3D 的双子格 AFM 稳定参考（允许 Goldstone）；不以单离子 SIA 人为开隙 |
-| T20 | T10 | G1 canonical 展开公式及独立小簇参照 | 推导来源；二聚体 singlet-triplet 4t²/U-16t⁴/U³；从 P 追踪有限驱动 Sambe（含按最低值误选副本的反例）与 t 缩放误差；先于生产 H4 |
+| T20a | T00 | 独立二聚体 ED/有限 Sambe 参照脚本（可与旧基线修复并行，不依赖新Rust API） | 静态精确gap；从P追踪而非最低谱；dense H2/H4含folded；双频非偶谐波二阶反例；截断和t缩放证据；不调用生产公式 |
+| T20 | T10,T20a | G1 canonical 展开公式及独立小簇参照 | 推导来源；二聚体 singlet-triplet 4t²/U-16t⁴/U³；从 P 追踪有限驱动 Sambe（含按最低值误选副本的反例）与 t 缩放误差；先于生产 H4 |
 | T21 | T11,T20 | 小簇 Fock 费米运算和 R/R² | 正则反对易、粒子数、SU(2)、Pauli 符号；Nd=0,m!=0 与 Nd=2；P 排除正确 |
 | T22 | T21 | H2/H3/H4 与折叠矩阵项 | 单独对照小簇矩阵（能量零点/模型空间 gauge 对齐）；Hermitian；triangle odd order；square double-doublon；断开簇可加性 |
 | T23 | T22 | 算符分解 | 重复位点先做完整 S=1/2 量子约简；固定独立基/秩；J/chi/明确四点积；重构残差；等价表达同约简矩阵；端点置换/静态复磁通；禁止丢弃余项 |
@@ -230,7 +231,7 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
   bilayer-review 的 finite 加固建议 ACCEPT 后，fresh bilayer-rereview-luna 确认
   converged，无 solver 容差改动。归档：
   `target/goal-a-archives/task-1-reviewed-green-20261118T1427.tar.gz`（tar/gzip校验exit0）。
-- T02：verified，validation-impl 执行，lead复核最终diff并集成验证。真实red：
+- T02：committed，`8d3f62d`，validation-impl 执行，lead复核最终diff并集成验证。真实red：
   负lambda=-0.4的validate()未返回Err，`validate_rejects_bad_parameters` exit101；
   早先未匹配测试的过滤器不算证据。两个蜂窝辅助函数已改Result，例子/指南同迁移；
   非有限helicity、自旋/动量/系数、生成输出溢出均结构化拒绝。
@@ -253,6 +254,24 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
   后已撤回；fresh frames-final-review 确认 converged。归档：
   `target/goal-a-archives/task-4-final-magnon.tar.gz`、`task-4-final-clippy.tar.gz`，
   均gzip校验exit0；两个red也分别保留压缩证据。
+- T04a：in_progress（task-7，lead，独立示例子任务，不代表整个T04完成）。
+  真实red：旧cart·B导致roundtrip首点[.1385,.0585]而非[.05,0]；逆矩阵修复后
+  两个example helper tests通过。首审example-geometry-review接受几何/周期计数，
+  提出的样本长度、subtraction-noise guard、prime计数注释挑战已ACCEPT并修改。
+  精确版复测及default/zero/reversed-helicity CLI待T05库源冻结；fresh review中。
+- T05：in_progress，solver-safety启动失败后由solver-impl-sol接手（task-6已claim）。
+  已审计并接受归一化后复用现有PSD Colpa路线，非零mode证明用y=gKv、只承诺
+  Goldstone频率不承诺Jordan零模规范本征矢；先red，不能扩大容差/裁负频掩盖失稳。
+- T20a：verified（task-8，独立参照，不代表T20/G1整体或M1完成）。dimer-reference
+  实现6态spin-major Fock/有限Sambe/P追踪与polar规范、dense H2/H4 folded。
+  dimer-review-luna独立静态审查无阻断，确认固定12步/固定光场/M8与10的边界；
+  lead逐段读源并独立OPENBLAS_NUM_THREADS=1 python3 -W error运行exit0，脚本SHA
+  ec9a376fba8cbdd997a129342584b3a31d59c9504524dcb9c494a73d39ab3f9e。
+  静态残差约4.03e-15eV；双方向K2=1.17139565/eV，错单方向0.90528311/eV；
+  H2/H24误差减半比趋向16/64；M8/10在t=.16的canonical矩阵差6.13e-12eV，
+  仅为相对2.51e-5eV阶数误差的截断预算核验，不宣称1e-12绝对精度。
+  NumPy1.20.3标量逆数规避已保留probe的向量warning，不suppress；全部Q逆数校验。
+  lead证据target/goal-a-archives/task-8-lead-check.tar.gz gzip校验通过。
 - T10a：只读审计完成（input-design，task-5 completed），不代表T10已实现。
   确认HubbardModel借用接口可复用、Model::validate不保证厄米/支撑、缓存必须走
   validated facade并保留DFT fallback；具体输入冻结仍是T10 gate。
