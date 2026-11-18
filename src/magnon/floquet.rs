@@ -2129,6 +2129,24 @@ impl BilayerSpinWave {
                 message: "the anisotropy and the direct exchange must be finite".into(),
             });
         }
+        // The analytic blocks use only S1,S2 and assume this exact crossed
+        // assignment; silently ignoring the other two supplied spins is invalid.
+        if self.spins[2] != self.spins[1] || self.spins[3] != self.spins[0] {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "crossed_bilayer_spins",
+                message: "the bilayer requires spins [S1, S2, S2, S1]".into(),
+            });
+        }
+        let j = self.exchange;
+        if [j.j1, j.j2, j.jperp, j.jcross, j.k1, j.k2, j.k3, j.chirality]
+            .iter()
+            .any(|value| !value.is_finite())
+        {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_bilayer_exchange",
+                message: "all bilayer exchange coefficients must be finite".into(),
+            });
+        }
         Ok(())
     }
 
@@ -2160,6 +2178,12 @@ impl BilayerSpinWave {
 
     fn layer_blocks(&self, q: &[f64; 2]) -> Result<LayerBlocks> {
         self.validate()?;
+        if q.iter().any(|value| !value.is_finite()) {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_bilayer_q",
+                message: "bilayer momentum components must be finite".into(),
+            });
+        }
         let s = self.spins;
         let j = self.exchange;
         let (gamma, c, s_sum) = self.structure_factors(q);
@@ -2199,8 +2223,10 @@ impl BilayerSpinWave {
     /// Magnon frequencies at `q`, ascending (four bands).
     ///
     /// The two spin sectors of the Supplemental Material are diagonalized
-    /// through their `4 x 4` Bogoliubov–de Gennes matrices, keeping the two
-    /// positive-norm modes of each.
+    /// through their `4 x 4` Bogoliubov–de Gennes matrices, returning two
+    /// nonnegative stable frequencies per sector, including zero modes. For a
+    /// defective Goldstone mode only its frequency is returned, not a
+    /// normalizable positive-norm eigenvector.
     pub fn dispersion(&self, q: &[f64; 2]) -> Result<Array1<f64>> {
         let (up, down) = self.sector_bands(q)?;
         let mut spectra = [up[0], up[1], down[0], down[1]];
@@ -2209,6 +2235,8 @@ impl BilayerSpinWave {
     }
 
     /// Spin-resolved bands `(up sector, down sector)` at `q`, each ascending.
+    /// Each sector contains two nonnegative stable frequencies, including
+    /// Goldstone zeros; no normalized zero-mode eigenvectors are promised.
     pub fn sector_bands(&self, q: &[f64; 2]) -> Result<([f64; 2], [f64; 2])> {
         let (up, down) = self.sector_matrices(q)?;
         let mut up_bands = [0.0f64; 2];
@@ -2255,98 +2283,296 @@ impl BilayerSpinWave {
     }
 }
 
-/// Positive-norm part of the spectrum of `g H` with `g = diag(1, -1)`.
+/// Stable bosonic frequencies, including PSD Goldstone modes.
 ///
-/// The bilayer blocks of the paper are not positive definite, so the
-/// eigendecomposition-based Colpa path of `physics.rs` does not apply and the
-/// metric-weighted matrix is diagonalized directly. Degenerate eigenvalues are
-/// handled by diagonalizing the metric inside each eigenspace: at a Goldstone
-/// point the individual LAPACK vectors of the degenerate pair have vanishing
-/// norm, while definite-norm combinations exist.
+/// For H=KK† >= 0, the shared Colpa solver diagonalizes M=K†gK, not H.
+/// If Mv=omega*v with omega>0, y=gKv is a gH eigenvector and
+/// y†gy=omega*||v||²>0. Zero frequencies need no normalizable Jordan eigenvector.
 fn paraunitary_spectrum(matrix: &Array2<Complex<f64>>, n: usize) -> Result<Array1<f64>> {
     let size = matrix.nrows();
-    let mut metric = Array1::<f64>::ones(size);
-    for index in n..size {
-        metric[index] = -1.0;
-    }
-    let mut generator = Array2::<Complex<f64>>::zeros((size, size));
-    for row in 0..size {
-        for column in 0..size {
-            generator[[row, column]] = matrix[[row, column]] * metric[row];
-        }
-    }
-    let (values, vectors) = generator.eig()?;
-    let scale = values
-        .iter()
-        .map(|value| value.norm())
-        .fold(0.0, f64::max)
-        .max(1.0);
-    let mut candidates: Vec<(f64, usize)> = Vec::new();
-    for (column, value) in values.iter().enumerate() {
-        if value.im.abs() > 1e-6 * scale {
-            return Err(TbError::InvalidMagnonInvariant {
-                invariant: "real_quasienergies",
-                message: format!(
-                    "the dynamical matrix has a complex eigenvalue {value:?}; the \
-                     reference state is not stable"
-                ),
-            });
-        }
-        candidates.push((value.re, column));
-    }
-    candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let mut physical: Vec<f64> = Vec::with_capacity(n);
-    let mut start = 0;
-    while start < candidates.len() {
-        let mut end = start + 1;
-        while end < candidates.len()
-            && (candidates[end].0 - candidates[start].0).abs() <= 1e-8 * scale
-        {
-            end += 1;
-        }
-        let cluster = &candidates[start..end];
-        let width = cluster.len();
-        let mut sub = Array2::<Complex<f64>>::zeros((width, width));
-        for (row, (_, column_row)) in cluster.iter().enumerate() {
-            for (column, (_, column_col)) in cluster.iter().enumerate() {
-                let mut value = Complex::new(0.0, 0.0);
-                for index in 0..size {
-                    value += vectors[[index, *column_row]].conj()
-                        * Complex::new(metric[index], 0.0)
-                        * vectors[[index, *column_col]];
-                }
-                sub[[row, column]] = value;
-            }
-        }
-        let (norms, _) = crate::ndarray_lapack::eigh_full(&sub, ndarray_linalg::UPLO::Lower)?;
-        for norm in norms.iter() {
-            if *norm > 1e-9 {
-                physical.push(cluster[0].0);
-            }
-        }
-        start = end;
-    }
-    if physical.len() != n {
+    if n == 0 || n.checked_mul(2) != Some(size) || matrix.ncols() != size {
         return Err(TbError::InvalidMagnonInvariant {
-            invariant: "positive_norm_bilayer",
-            message: format!("found {} positive-norm modes, expected {n}", physical.len()),
+            invariant: "bdg_shape",
+            message: format!(
+                "expected a nonempty 2n-square BdG matrix for n={n}, found {:?}",
+                matrix.dim()
+            ),
         });
     }
-    physical.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    for value in physical.iter() {
+    if matrix
+        .iter()
+        .any(|z| !z.re.is_finite() || !z.im.is_finite())
+    {
+        return Err(TbError::InvalidMagnonInvariant {
+            invariant: "finite_bilayer_bdg",
+            message: "all BdG entries must be finite".into(),
+        });
+    }
+    // Component magnitudes avoid overflow of |z| for finite complex entries.
+    // Normalize BEFORE LAPACK: the shared PSD tolerance (including its floor)
+    // is then relative to H, never to an arbitrary 1 eV energy unit.
+    let scale = matrix
+        .iter()
+        .map(|z| z.re.abs().max(z.im.abs()))
+        .fold(0.0, f64::max);
+    if scale == 0.0 {
+        return Ok(Array1::zeros(n));
+    }
+    let normalized = matrix.mapv(|z| z / scale);
+    let roundoff = 64.0 * f64::EPSILON * size as f64;
+    for row in 0..size {
+        for column in 0..size {
+            if (normalized[[row, column]] - normalized[[column, row]].conj()).norm() > roundoff {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "hermitian_bilayer_bdg",
+                    message: "the BdG matrix must be Hermitian".into(),
+                });
+            }
+        }
+    }
+    // The shared solver's legacy 1e-10 PSD tolerance is too permissive for
+    // this boundary. Certify H first at a backward-error-sized threshold;
+    // this eigenspectrum is used ONLY for stability, never as bosonic bands.
+    // Bilayer matrices are just 4x4, so one extra Hermitian solve is modest
+    // and avoids changing unrelated Magnon callers' numerical policy.
+    let (energies, _) = crate::ndarray_lapack::eigh_full(&normalized, ndarray_linalg::UPLO::Lower)?;
+    let spectral_scale = energies.iter().map(|e| e.abs()).fold(0.0, f64::max);
+    let positivity_roundoff = 8.0 * size as f64 * f64::EPSILON * spectral_scale;
+    if energies
+        .iter()
+        .any(|e| !e.is_finite() || *e < -positivity_roundoff)
+    {
+        return Err(TbError::InvalidMagnonInvariant {
+            invariant: "positive_semidefinite_bdg",
+            message: format!(
+                "the bilayer reference has a resolved negative BdG direction: {energies:?}"
+            ),
+        });
+    }
+    let mut frequencies = super::physics::paraunitary_frequencies(&normalized, n)?;
+    for value in &mut frequencies {
+        // A PSD Colpa matrix has at most n negative eigenvalues by inertia.
+        // Thus the largest n eigenvalues are nonnegative; only their negative
+        // floating-point zero residuals may be removed, never actual instability.
+        if !value.is_finite() || *value < -roundoff {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "nonnegative_bilayer_frequency",
+                message: format!("invalid normalized Colpa frequency {value:e}"),
+            });
+        }
+        if *value < 0.0 {
+            *value = 0.0;
+        }
+        *value *= scale;
         if !value.is_finite() {
             return Err(TbError::InvalidMagnonInvariant {
                 invariant: "finite_bilayer_frequency",
-                message: "a magnon frequency is not finite".into(),
+                message: "a magnon frequency overflowed".into(),
             });
         }
     }
-    Ok(Array1::from(physical))
+    Ok(frequencies)
 }
 
 #[cfg(test)]
 mod bilayer_sw_tests {
     use super::*;
+
+    #[test]
+    fn solver_rejects_nonhermitian_input() {
+        let mut h = Array2::<Complex<f64>>::eye(2);
+        h[[0, 1]] = Complex::new(0.2, 0.1);
+        for scale in [1e-200, 1e-12, 1.0, 1e200] {
+            let scaled = h.mapv(|z| z * scale);
+            assert!(
+                paraunitary_spectrum(&scaled, 1).is_err(),
+                "non-Hermitian H accepted at scale={scale:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn solver_rejects_positive_norm_negative_energy() {
+        // gH has a negative-energy eigenvector (1,0) with positive g-norm.
+        let h = -Array2::<Complex<f64>>::eye(2);
+        assert!(
+            paraunitary_spectrum(&h, 1).is_err(),
+            "negative-energy reference accepted"
+        );
+    }
+
+    #[test]
+    fn solver_rejects_tiny_imaginary_spectrum() {
+        let scale = 1e-12;
+        let h = ndarray::array![
+            [Complex::new(0.0, 0.0), Complex::new(scale, 0.0)],
+            [Complex::new(scale, 0.0), Complex::new(0.0, 0.0)]
+        ];
+        assert!(paraunitary_spectrum(&h, 1).is_err());
+    }
+
+    #[test]
+    fn solver_rejects_resolved_tiny_negative_direction() {
+        for scale in [1e-200, 1e-12, 1.0, 1e200] {
+            let h = Array2::from_diag(&ndarray::array![
+                Complex::new(-1e-14 * scale, 0.0),
+                Complex::new(scale, 0.0)
+            ]);
+            assert!(
+                paraunitary_spectrum(&h, 1).is_err(),
+                "scale={scale:e}: resolved negative direction accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn solver_scaled_bosonic_oracles_and_instabilities() {
+        for scale in [1.0, 1e-3, 1e-12, 1e-200, 1e200] {
+            // Independent single-mode oracle: gH has frequencies ±sqrt(A²-|B|²),
+            // NOT the ordinary Hermitian eigenvalues A±|B|. Complex B tests phase.
+            let h = ndarray::array![
+                [Complex::new(5.0, 0.0), Complex::new(0.0, 3.0)],
+                [Complex::new(0.0, -3.0), Complex::new(5.0, 0.0)]
+            ]
+            .mapv(|z| z * scale);
+            let omega = paraunitary_spectrum(&h, 1).unwrap()[0];
+            assert!(
+                (omega / scale - 4.0).abs() < 1e-12,
+                "scale={scale:e}, omega={omega:e}"
+            );
+            // A=0, B=1: exactly imaginary eigenvalues ±i*scale at every scale.
+            let unstable = ndarray::array![
+                [Complex::new(0.0, 0.0), Complex::new(scale, 0.0)],
+                [Complex::new(scale, 0.0), Complex::new(0.0, 0.0)]
+            ];
+            assert!(
+                paraunitary_spectrum(&unstable, 1).is_err(),
+                "scale={scale:e}: imaginary spectrum accepted"
+            );
+            let negative = -Array2::<Complex<f64>>::eye(2) * scale;
+            assert!(paraunitary_spectrum(&negative, 1).is_err());
+            // A small but resolved negative direction in an otherwise positive
+            // H remains unstable; normalization cannot turn it into roundoff.
+            let saddle = Array2::from_diag(&ndarray::array![
+                Complex::new(-1e-8 * scale, 0.0),
+                Complex::new(scale, 0.0)
+            ]);
+            assert!(paraunitary_spectrum(&saddle, 1).is_err());
+            // Close but distinct frequencies must not be replaced by a cluster representative.
+            let diagonal = Array2::from_diag(&ndarray::array![
+                Complex::new(scale, 0.0),
+                Complex::new(scale * (1.0 + 1e-7), 0.0),
+                Complex::new(scale, 0.0),
+                Complex::new(scale * (1.0 + 1e-7), 0.0)
+            ]);
+            let omega = paraunitary_spectrum(&diagonal, 2).unwrap();
+            assert!((omega[0] / scale - 1.0).abs() < 1e-13);
+            assert!(
+                (omega[1] / scale - (1.0 + 1e-7)).abs() < 1e-13,
+                "scale={scale:e}: {omega:?}"
+            );
+            // Singular PSD H has a defective gH: its frequencies are zero, not
+            // two normalizable finite-g-norm eigenvectors of a Jordan block.
+            let goldstone = Array2::from_elem((2, 2), Complex::new(scale, 0.0));
+            let zero = paraunitary_spectrum(&goldstone, 1).unwrap()[0];
+            assert!(
+                zero >= 0.0 && zero / scale < 1e-7,
+                "scale={scale:e}: {zero:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn solver_validates_shape_finiteness_and_zero_matrix() {
+        for shape in [(2, 3), (3, 3), (0, 0)] {
+            assert!(paraunitary_spectrum(&Array2::zeros(shape), 1).is_err());
+        }
+        assert!(paraunitary_spectrum(&Array2::zeros((0, 0)), 0).is_err());
+        assert!(paraunitary_spectrum(&Array2::zeros((2, 2)), usize::MAX).is_err());
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut h = Array2::<Complex<f64>>::eye(2);
+            h[[0, 0]] = Complex::new(value, 0.0);
+            assert!(paraunitary_spectrum(&h, 1).is_err());
+            h[[0, 0]] = Complex::new(1.0, value);
+            assert!(paraunitary_spectrum(&h, 1).is_err());
+        }
+        assert_eq!(
+            paraunitary_spectrum(&Array2::zeros((4, 4)), 2).unwrap(),
+            ndarray::array![0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn bilayer_public_contract_checks_crossed_spins_and_finite_inputs() {
+        let wave = coupled_chiral_wave();
+        let mut invalid = wave;
+        invalid.spins[2] = 1.1;
+        assert!(invalid.validate().is_err());
+        invalid = wave;
+        invalid.spins[3] = 1.6;
+        assert!(invalid.validate().is_err());
+        // S1 < S2 is valid: this is a crossed assignment, not an ordering rule.
+        let mut swapped = wave;
+        swapped.spins = [1.0, 1.5, 1.5, 1.0];
+        assert!(swapped.sector_bands(&[0.13, 0.27]).is_ok());
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for field in 0..8 {
+                let mut invalid = wave;
+                let j = &mut invalid.exchange;
+                let fields = [
+                    &mut j.j1,
+                    &mut j.j2,
+                    &mut j.jperp,
+                    &mut j.jcross,
+                    &mut j.k1,
+                    &mut j.k2,
+                    &mut j.k3,
+                    &mut j.chirality,
+                ];
+                *fields.into_iter().nth(field).unwrap() = value;
+                assert!(invalid.validate().is_err(), "exchange field {field}");
+            }
+            for q in [[value, 0.0], [0.0, value]] {
+                assert!(wave.sector_bands(&q).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn bilayer_public_bands_are_energy_rescaling_covariant() {
+        let base = coupled_chiral_wave();
+        let q = [0.13, 0.27];
+        let (up, down) = base.sector_bands(&q).unwrap();
+        for scale in [1e-200, 1e-12, 1e-3, 1e200] {
+            let mut wave = base;
+            let j = &mut wave.exchange;
+            for value in [
+                &mut j.j1,
+                &mut j.j2,
+                &mut j.jperp,
+                &mut j.jcross,
+                &mut j.k1,
+                &mut j.k2,
+                &mut j.k3,
+                &mut j.chirality,
+                &mut wave.anisotropy_ev,
+                &mut wave.direct_exchange_ev,
+            ] {
+                *value *= scale;
+            }
+            let (scaled_up, scaled_down) = wave.sector_bands(&q).unwrap();
+            for (expected, actual) in up
+                .into_iter()
+                .chain(down)
+                .zip(scaled_up.into_iter().chain(scaled_down))
+            {
+                assert!(
+                    (actual / scale - expected).abs() < 1e-13,
+                    "scale={scale:e}: {actual:e} vs {expected:e}"
+                );
+            }
+        }
+    }
 
     fn monolayer() -> DrivenExchange {
         // A finite `lambda` keeps the chirality non-zero.

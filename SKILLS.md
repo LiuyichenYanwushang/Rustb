@@ -1151,9 +1151,10 @@ The `MagnonSolve` trait mirrors `Solve`: `magnon_band_onek`,
 `magnon_band_all` and `magnon_band_all_parallel`. `Magnon` also implements
 `Kpath`, so `magnon.k_path(&path, 101)` samples a band path with the same
 node-preserving rule as `Model`. The solver uses Colpa's method through a
-Hermitian eigenfactorization (not a Cholesky factor), so Goldstone modes stay
-exactly zero; a reference structure that is not a local energy minimum leaves
-the BdG matrix indefinite and returns
+Hermitian eigenfactorization (not a Cholesky factor), so positive-semidefinite
+Goldstone references do not require a positive-definite matrix. Numerical zero
+modes may retain a small roundoff residual; this is not evidence of a physical
+gap. A reference whose BdG matrix is indefinite beyond tolerance returns
 `InvalidMagnonInvariant { invariant: "positive_semidefinite_bdg", .. }` instead
 of a complex frequency.
 
@@ -1258,9 +1259,19 @@ or non-finite helicity is rejected before Bessel evaluation.
 ### Worked example: the odd-parity dispersion
 
 `examples/magnon_odd_parity` prints the Gamma-K-M-Gamma dispersion of Eq. (6)
-beside the real-space solver, the valley splitting at `K`/`K'`, the f-wave
-pattern on a circle of fixed Cartesian `|k|`, and the high-frequency Sambe
-check, asserting each residual:
+beside the real-space solver, the valley splitting at `K`/`K'`, and the f-wave
+pattern on a fixed Cartesian `|k|` circle. Circle points use `k_frac = k_cart B^-1`
+with the model's own reciprocal lattice; path distances use the shared `Kpath`
+metric (without `2*pi`). Sign counting skips zero samples using a relative
+threshold and a floating-point subtraction-noise floor. Nonzero chirality must
+produce a peak well above that floor before the six-sign-change assertion;
+this guard is not an arbitrary-precision error certificate. Zero chirality
+requires zero splitting, not six sign changes. Example unit tests check the
+Cartesian roundtrip, sample count and cyclic zero handling.
+
+Its final high-frequency propagator check is a separate phenomenological
+exchange-bond drive test, not an additional AB correction or a second material
+illumination step. It asserts that test's numerical residual:
 
 ```text
 cargo run --release --features openblas-system --example magnon_odd_parity -- [lambda] [spin] [K_ev] [helicity]
@@ -1323,9 +1334,22 @@ transcribed from the Supplemental Material's explicit blocks (`epsilon_A`,
 the chirality `+-2 chi S1 S2 s_k`). `sector_bands(q)` keeps the spin labels
 apart; the sectors are exactly degenerate for equal moments, and a nonzero
 `chi` splits them at each valley while swapping them between `K` and `K'`, so
-`omega_up(K) = omega_down(K')` (odd parity). The
-intralayer coupling must be ferromagnetic (`J1 - J_D < 0`) for the A-type
-reference to be a minimum.
+`omega_up(K) = omega_down(K')` (odd parity). This analytic model requires the
+exact crossed assignment `spins = [S1, S2, S2, S1]`; four independently chosen
+moments are rejected, but either ordering of `S1` and `S2` is allowed. Exchange
+coefficients and requested momenta must be finite.
+
+The requested quadratic block must be positive semidefinite within the stated
+numerical tolerance. The solver validates Hermiticity and normalizes by the
+actual energy scale before reusing the Colpa frequency path. A bilayer-only
+preflight rejects negative directions beyond `8*d*EPSILON*max(|lambda(H)|)`
+(`d=4` per sector), rather than inheriting a loose absolute energy floor. It
+does not accept negative-energy modes merely because their metric norm is
+positive. PSD zero
+modes are supported, without claiming normalizable Jordan-zero-mode vectors.
+Checking one momentum does not certify stability over the entire Brillouin zone.
+Net ferromagnetic intralayer coupling is the usual A-type condition; the bare
+`J1 - J_D` alone does not include the ring/cross-coupling corrections.
 
 ### Floquet–Sambe driving of a magnon model
 

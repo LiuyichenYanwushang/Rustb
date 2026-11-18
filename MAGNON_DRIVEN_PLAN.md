@@ -254,15 +254,25 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
   后已撤回；fresh frames-final-review 确认 converged。归档：
   `target/goal-a-archives/task-4-final-magnon.tar.gz`、`task-4-final-clippy.tar.gz`，
   均gzip校验exit0；两个red也分别保留压缩证据。
-- T04a：in_progress（task-7，lead，独立示例子任务，不代表整个T04完成）。
-  真实red：旧cart·B导致roundtrip首点[.1385,.0585]而非[.05,0]；逆矩阵修复后
-  两个example helper tests通过。首审example-geometry-review接受几何/周期计数，
-  提出的样本长度、subtraction-noise guard、prime计数注释挑战已ACCEPT并修改。
-  精确版复测及default/zero/reversed-helicity CLI待T05库源冻结；fresh review中。
-- T05：in_progress，solver-safety启动失败后由solver-impl-sol接手（task-6已claim）。
-  已审计并接受归一化后复用现有PSD Colpa路线，非零mode证明用y=gKv、只承诺
-  Goldstone频率不承诺Jordan零模规范本征矢；先red，不能扩大容差/裁负频掩盖失稳。
-- T20a：verified（task-8，独立参照，不代表T20/G1整体或M1完成）。dimer-reference
+- T04a：verified（task-7，lead，独立示例子任务，不代表整个T04完成）。
+  真实red：旧cart·B导致roundtrip首点[.1385,.0585]而非[.05,0]；逆矩阵修复，
+  复用Kpath，样本长度/subtraction-noise guard/prime注释挑战ACCEPT后fresh
+  example-geometry-rereview收敛。精确版两个helper tests通过；default/zero/reversed
+  CLI均exit0，invalid helicity=0 exit1（预期Err）；默认valley split±3.605676e-5eV、
+  圆上6过零/peak3.159e-8eV、solver残差9.714e-17eV，zero分支0过零/0split。
+  最后toy propagator残差2.275e-11eV，不当作第二层AB光修正。日志task-7/*.log.gz
+  均已校验，示例子任务不是库内旧probe/f-wave测试清理的替代。
+- T05：verified，solver-impl-sol执行。真实red独立触达6类旧缺陷；换成输入校验/
+  实际能标归一化/共享PSD Colpa，非零mode证明y=gKv；只承诺Jordan零模频率。
+  首审solver-review收敛，但fresh solver-review-luna提出共享1e-10 PSD窗口太松；
+  ACCEPT后加bilayer独立8*d*EPS*max|lambda(H)|预检，diag(-1e-14,1)*1e-200
+  的旧接受结果真实red，再四能标green；未改共享physics.rs或以abs处理负频。
+  fresh边界复审收敛。最终focused Floquet39/39；lead release magnon112/112，
+  OpenBLAS与Intel MKL(cargo testall --offline --lib magnon)均exit0；example2/2、
+  fmt/diff-check、clippy exit0。仍有全库96/206 warnings，未宣称lint全净。
+  当前证据task-6-strict-final-focused.tar.gz与task-6/*strict-integration*.log.gz、
+  mkl-integration-magnon.log.gz；旧38/38归档不能代替最终strict版本。
+- T20a：committed，`dcafdba`（task-8，独立参照，不代表T20/G1整体或M1完成）。dimer-reference
   实现6态spin-major Fock/有限Sambe/P追踪与polar规范、dense H2/H4 folded。
   dimer-review-luna独立静态审查无阻断，确认固定12步/固定光场/M8与10的边界；
   lead逐段读源并独立OPENBLAS_NUM_THREADS=1 python3 -W error运行exit0，脚本SHA
