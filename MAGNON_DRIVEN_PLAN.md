@@ -202,7 +202,7 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
 - T00：committed，`6f23dbb`。plan-review 的 R1–R5 已 ACCEPT；plan-rereview
   确认规划 blocker 已解决；plan-final-review 确认 converged、DAG 无循环。
   文档验证：cargo fmt --check、git diff --check 均 exit 0；不代表算法实现。
-- T01：verified，由 bilayer-impl 执行，lead 读取 red/green 原日志复核。
+- T01：committed，`ddc0aa8`；由 bilayer-impl 执行，lead 读取 red/green 原日志复核。
   真实 red：q=(.13,.27) 的 down Hermitian/S153 残差 2.1489297416323814e-4 eV。
   修复后 release focused `bilayer_sw_tests -- --nocapture` exit0，7/7；
   Hermitian=0、oracle最大1.7347e-18 eV、标签残差1.3878e-16 eV、split1.3291e-4 eV。
@@ -211,8 +211,20 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
   bilayer-review 的 finite 加固建议 ACCEPT 后，fresh bilayer-rereview-luna 确认
   converged，无 solver 容差改动。归档：
   `target/goal-a-archives/task-1-reviewed-green-20261118T1427.tar.gz`（tar/gzip校验exit0）。
-- T03：in_progress，由 lead 接手；frames-impl 两次在领取任务前失败，无代码产物。
-- T10a：只读接口审计中，不代表T10已实现。
+- T03：verified，由 lead 接手；frames-impl 两次在领取任务前失败，无代码产物。
+  tilted-uz 的 SIA 虚假不稳定已真实 red，初版修复后 release magnon 102/102；
+  首审 frames-review 发现近平行叉积舍入放大，追加triad测试真实 red（纵向正交
+  断言失败），ACCEPT 后改为归一化前重投影；并补single-Q+XXZ+DMI 的逐元素
+  Nambu规范协变与独立手推色散。最终精确版本release magnon 103/103 exit0，
+  fmt/diff-check exit0，clippy --release --lib --tests exit0，改动文件无lint定位；
+  全库仍有96个lib/206个lib-test warnings（含重复），未宣称全库lint干净。
+  frames-rereview 对投影/手推谱确认无问题，其“0..2未覆盖2x2”的挑战经明确REBUT
+  后已撤回；fresh frames-final-review 确认 converged。归档：
+  `target/goal-a-archives/task-4-final-magnon.tar.gz`、`task-4-final-clippy.tar.gz`，
+  均gzip校验exit0；两个red也分别保留压缩证据。
+- T10a：只读审计完成（input-design，task-5 completed），不代表T10已实现。
+  确认HubbardModel借用接口可复用、Model::validate不保证厄米/支撑、缓存必须走
+  validated facade并保留DFT fallback；具体输入冻结仍是T10 gate。
 - 其余：pending。实际状态变化在本节逐项补证据，不靠聊天总结覆盖。
 
 ## 7. 数值与性能策略（不可凭“性能不是问题”跳过）

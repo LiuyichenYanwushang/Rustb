@@ -96,16 +96,14 @@ fn rotation_about(axis: &[f64; 3], phi: f64) -> Option<[[f64; 3]; 3]> {
     Some(out)
 }
 
-/// Local spin frames (TB2J's `get_rotation_arrays`).
+/// Local spin frames with a fixed physical longitudinal direction.
 ///
-/// Site `i` gets a right-handed triad adapted to its reference moment
-/// `axis[i]`: the complex transverse vector `U_i = e_x + i e_y` and the
-/// quantization vector `V_i = e_z = axis[i]`. `quantization_axis` is TB2J's
-/// `uz`. For a moment parallel to `uz` the general construction degenerates;
-/// this implementation falls back to an orthonormal Gram-Schmidt triad, which
-/// agrees with TB2J's literal fallback for moments along a coordinate axis and
-/// stays orthonormal for any `uz`. Spectra do not depend on that gauge, the
-/// Bogoliubov vectors differ by a phase.
+/// Site `i` gets a right-handed triad with `V_i` along its normalized reference
+/// moment and `U_i = e_x + i e_y`. The reference `quantization_axis` selects
+/// only a transverse gauge via its cross product with the moment. A parallel
+/// reference uses a deterministic Cartesian seed instead. Changing this gauge
+/// multiplies each `U_i` by a phase, never rotates the physical moment or
+/// changes the spectrum. Callers validate nonzero unit moment/reference axes.
 pub(crate) fn local_frames<const DIM: usize>(
     magnon: &Magnon<DIM>,
 ) -> (Array2<Complex<f64>>, Array2<f64>) {
@@ -118,52 +116,44 @@ pub(crate) fn local_frames<const DIM: usize>(
         magnon.reference.quantization_axis[2],
     ];
     for i in 0..n {
-        let m = [
+        let mut m = [
             magnon.axis[[i, 0]],
             magnon.axis[[i, 1]],
             magnon.axis[[i, 2]],
         ];
-        let mut axis = cross(&z, &m);
-        let length = norm(&axis);
-        // `rotation[a][k]` is the `a`-th Cartesian component of local axis `k`.
-        let rotation: [[f64; 3]; 3] = if length > 1e-12 {
-            for component in axis.iter_mut() {
-                *component /= length;
-            }
-            let a = [z, cross(&axis, &z), axis];
-            let b = [m, cross(&axis, &m), axis];
-            // R = A^T B with the rows of A and B holding the triads.
-            let mut r = [[0.0f64; 3]; 3];
-            for row in 0..3 {
-                for column in 0..3 {
-                    r[row][column] = (0..3).map(|k| a[k][row] * b[k][column]).sum();
-                }
-            }
-            r
-        } else {
-            // Moment parallel to the quantization axis: the deterministic triad
-            // TB2J falls back to, with the local axes stored as rows.
-            let mut seed = [1.0, 0.0, 0.0];
-            if norm(&cross(&seed, &m)) < 1e-12 {
-                seed = [0.0, 1.0, 0.0];
-            }
+        // Validation allows tiny norm residuals; frames themselves must be
+        // orthonormal rather than inherit those residuals in the BdG metric.
+        let moment_norm = norm(&m);
+        for component in &mut m {
+            *component /= moment_norm;
+        }
+        let mut e1 = cross(&z, &m);
+        if norm(&e1) <= 1e-12 {
+            let seed = if m[0].abs() > 0.9 {
+                [0.0, 1.0, 0.0]
+            } else {
+                [1.0, 0.0, 0.0]
+            };
             let projection = dot(&seed, &m);
-            let mut e1 = [
-                seed[0] - projection * m[0],
-                seed[1] - projection * m[1],
-                seed[2] - projection * m[2],
-            ];
-            let e1_length = norm(&e1);
-            for component in e1.iter_mut() {
-                *component /= e1_length;
+            for a in 0..SPIN_COMPONENTS {
+                e1[a] = seed[a] - projection * m[a];
             }
-            let e2 = cross(&m, &e1);
-            [e1, e2, m]
-        };
-        // The triad rows are (e_x, e_y, e_z): U_i = e_x + i e_y and V_i = e_z.
+        }
+        // For almost parallel inputs, cancellation in the cross product can
+        // leave an O(epsilon) longitudinal part. Remove it BEFORE dividing by
+        // the tiny transverse norm, which would otherwise amplify that error.
+        let longitudinal = dot(&e1, &m);
         for a in 0..SPIN_COMPONENTS {
-            u[[i, a]] = Complex::new(rotation[0][a], rotation[1][a]);
-            v[[i, a]] = rotation[2][a];
+            e1[a] -= longitudinal * m[a];
+        }
+        let transverse_norm = norm(&e1);
+        for component in &mut e1 {
+            *component /= transverse_norm;
+        }
+        let e2 = cross(&m, &e1);
+        for a in 0..SPIN_COMPONENTS {
+            u[[i, a]] = Complex::new(e1[a], e2[a]);
+            v[[i, a]] = m[a];
         }
     }
     (u, v)
@@ -1016,6 +1006,196 @@ mod tests {
                 deviation < 1e-15,
                 "q = {q}: BdG is not Hermitian ({deviation:e})"
             );
+        }
+    }
+
+    #[test]
+    fn test_local_frames_quantization_axis_keeps_easy_axis_gap() {
+        // A gauge change must not rotate the physical easy axis. This is a
+        // classical landscape test with S > 1/2, not microscopic Hubbard SIA.
+        let mut magnon = single_site_sia(0.01, 1.5);
+        let expected = 2.0 * 0.01 / 1.5;
+        let diagonal = 0.5_f64.sqrt();
+        for axis in [
+            array![0.0, 0.0, 1.0],
+            array![diagonal, diagonal, 0.0],
+            array![0.0, 0.0, -1.0],
+        ] {
+            magnon.reference.quantization_axis = axis;
+            let frequency = magnon.magnon_band_onek(&array![0.0]).unwrap()[0];
+            assert!(
+                (frequency - expected).abs() < 1e-13,
+                "uz={:?}: {frequency:e} vs {expected:e}",
+                magnon.reference.quantization_axis
+            );
+        }
+    }
+
+    #[test]
+    fn test_local_frames_form_right_handed_triads_for_arbitrary_axes() {
+        for moment in [
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, -2.0, 3.0],
+        ] {
+            let length = norm(&moment);
+            let m = moment.map(|value| value / length);
+            let mut magnon = chain(0.01, 1.5);
+            for (a, value) in m.iter().enumerate() {
+                magnon.axis[[0, a]] = *value;
+            }
+            for reference in [
+                [0.0, 0.0, 1.0],
+                [1.0, 1.0, 0.0],
+                m,
+                m.map(|value| -value),
+                [m[0] + 1e-14, m[1] - 1e-14, m[2]],
+                // Above the fallback threshold: cancellation in the cross
+                // product must not become a longitudinal frame component.
+                [m[0] + 4e-11, m[1] + 7e-11, m[2] - 2e-11],
+            ] {
+                let length = norm(&reference);
+                magnon.reference.quantization_axis =
+                    Array1::from_vec(reference.map(|value| value / length).to_vec());
+                magnon.validate().unwrap();
+                let (u, v) = local_frames(&magnon);
+                let x = [u[[0, 0]].re, u[[0, 1]].re, u[[0, 2]].re];
+                let y = [u[[0, 0]].im, u[[0, 1]].im, u[[0, 2]].im];
+                let z = [v[[0, 0]], v[[0, 1]], v[[0, 2]]];
+                assert!(
+                    u.iter()
+                        .all(|value| value.re.is_finite() && value.im.is_finite())
+                );
+                assert!(v.iter().all(|value| value.is_finite()));
+                for axis in [x, y, z] {
+                    assert!((norm(&axis) - 1.0).abs() < 1e-13);
+                }
+                assert!(dot(&x, &y).abs() < 1e-13);
+                assert!(dot(&x, &z).abs() < 1e-13);
+                assert!(dot(&y, &z).abs() < 1e-13);
+                let handed = cross(&x, &y);
+                for a in 0..3 {
+                    assert!((handed[a] - z[a]).abs() < 1e-13);
+                    assert!((z[a] - m[a]).abs() < 1e-13);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_local_frames_gauge_covariance_with_anisotropy_and_dmi() {
+        let mut original = chain_two_site(0.01, 1.0, 1.5, true);
+        original.ham[[0, 2, 2]] = 0.01;
+        original.ham[[0, 5, 5]] = 0.013;
+        // A transverse symmetric anisotropy generates anomalous pairing;
+        // antisymmetric xy exchange gives complex normal hopping.
+        original.ham[[0, 0, 3]] += 0.0002;
+        original.ham[[0, 3, 0]] += 0.0002;
+        original.ham[[0, 0, 4]] = 0.0007;
+        original.ham[[0, 4, 0]] = 0.0007;
+        original.ham[[0, 1, 3]] = -0.0007;
+        original.ham[[0, 3, 1]] = -0.0007;
+        let (before, _) = local_frames(&original);
+        for reference in [[1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [1.0, 2.0, 3.0]] {
+            let mut changed = original.clone();
+            let length = norm(&reference);
+            changed.reference.quantization_axis =
+                Array1::from_vec(reference.map(|value| value / length).to_vec());
+            changed.validate().unwrap();
+            let (after, _) = local_frames(&changed);
+            let phases: Vec<Complex<f64>> = (0..2)
+                .map(|i| {
+                    (0..3)
+                        .map(|a| after[[i, a]] * before[[i, a]].conj())
+                        .sum::<Complex<f64>>()
+                        / 2.0
+                })
+                .collect();
+            for phase in &phases {
+                assert!((phase.norm() - 1.0).abs() < 1e-13);
+            }
+            let diagonal = [phases[0], phases[1], phases[0].conj(), phases[1].conj()];
+            for q in [0.0, 0.13, 0.27, 0.5] {
+                let point = array![q];
+                let h0 = original.gen_bdg(&point).unwrap();
+                let h1 = changed.gen_bdg(&point).unwrap();
+                for i in 0..4 {
+                    for j in 0..4 {
+                        let expected = diagonal[i] * h0[[i, j]] * diagonal[j].conj();
+                        assert!((h1[[i, j]] - expected).norm() < 1e-13);
+                    }
+                }
+                let energies0 = original.magnon_band_onek(&point).unwrap();
+                let energies1 = changed.magnon_band_onek(&point).unwrap();
+                assert!(
+                    energies0
+                        .iter()
+                        .all(|energy| energy.is_finite() && *energy > 0.0)
+                );
+                for band in 0..2 {
+                    assert!((energies0[band] - energies1[band]).abs() < 1e-13);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_local_frames_single_q_gauge_covariance_with_anisotropy_and_dmi() {
+        // A planar spiral minimizes a ferromagnetic XY exchange plus z-DMI.
+        // Jzz < Jxy is easy-plane exchange anisotropy (not on-site SIA).
+        let (j, d, jz, spin) = (0.01_f64, 0.003_f64, 0.005_f64, 1.5_f64);
+        let mut original = chain(j, spin);
+        original.axis = array![[1.0, 0.0, 0.0]];
+        original.reference.rotation_axis = array![0.0, 0.0, 1.0];
+        original.reference.q = array![d.atan2(j) / std::f64::consts::TAU];
+        for (row, sign) in [(1usize, 1.0), (2, -1.0)] {
+            original.ham[[row, 2, 2]] = jz;
+            original.ham[[row, 0, 1]] = sign * d;
+            original.ham[[row, 1, 0]] = -sign * d;
+        }
+        original.validate().unwrap();
+        let (before, _) = local_frames(&original);
+        let effective_xy = j.hypot(d);
+        for reference in [[1.0, 1.0, 0.0], [1.0, 2.0, 3.0], [1.0, 1e-10, -2e-10]] {
+            let mut changed = original.clone();
+            let length = norm(&reference);
+            changed.reference.quantization_axis =
+                Array1::from_vec(reference.map(|value| value / length).to_vec());
+            let (after, _) = local_frames(&changed);
+            let phase: Complex<f64> = (0..3)
+                .map(|a| after[[0, a]] * before[[0, a]].conj())
+                .sum::<Complex<f64>>()
+                / 2.0;
+            assert!((phase.norm() - 1.0).abs() < 1e-13);
+            let gauge = [phase, phase.conj()];
+            for q in [0.07, 0.23, 0.41] {
+                let point = array![q];
+                let h0 = original.gen_bdg(&point).unwrap();
+                let h1 = changed.gen_bdg(&point).unwrap();
+                // Nonzero pairing makes this more than a number-conserving
+                // one-band identity-gauge test.
+                assert!(h0[[0, 1]].norm() > 1e-6);
+                for i in 0..2 {
+                    for k in 0..2 {
+                        let expected = gauge[i] * h0[[i, k]] * gauge[k].conj();
+                        assert!((h1[[i, k]] - expected).norm() < 1e-13);
+                    }
+                }
+                let cosine = (std::f64::consts::TAU * q).cos();
+                let expected = 4.0 / spin
+                    * (effective_xy * (1.0 - cosine) * (effective_xy - jz * cosine)).sqrt();
+                for model in [&original, &changed] {
+                    let energy = model.magnon_band_onek(&point).unwrap()[0];
+                    assert!(energy.is_finite() && energy > 0.0);
+                    assert!(
+                        (energy - expected).abs() < 1e-13,
+                        "q={q}: {energy} vs {expected}"
+                    );
+                }
+            }
         }
     }
 

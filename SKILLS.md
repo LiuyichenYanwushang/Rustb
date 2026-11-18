@@ -1123,6 +1123,14 @@ finite data, positive spins, unit reference axes, unique translations with
 `R = 0` first, the presence of every `-R`, and
 `J_ij^ab(R) = J_ji^ba(-R)`. Direct field edits require re-validating.
 
+`axis[i]` fixes the physical longitudinal spin direction. In contrast,
+`MagnonReference::with_quantization_axis(&uz)` selects only the transverse
+local-frame gauge: any finite unit `uz` must give identical energies (including
+single-Q references and anisotropic exchange). Bogoliubov matrices may change
+by a diagonal Nambu phase transformation. Parallel/antiparallel and nearly
+parallel choices use an orthonormal, right-handed frame; `uz` does not rotate
+the material's anisotropy or moment direction.
+
 Spin-wave frequencies follow TB2J: the stored landscape `J` is converted to the
 operator exchange `J / (S_i S_j)` before linear spin-wave theory, so a
 ferromagnetic chain disperses as `omega(q) = (2 / S) [J(0) - J(q)]`.
