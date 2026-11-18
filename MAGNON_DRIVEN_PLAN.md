@@ -73,6 +73,9 @@ fmt/clippy、rustdoc/SKILLS/示例同步和收敛的对抗式 review。阶段失
 - 本期 E、U、W=hbar*Omega、t、J、chi、四自旋系数均为 eV；a(t) 为晶格长度逆单位。
 - 自旋始终是三分量 Cartesian，DIM 仅表示空间周期维度。
 - 光场模式相干相加再取指数；多模不能分别算修正后相加冒充相干驱动。
+- M1 二阶公式必须从两个 doublon 方向推导。任意多模下 |C_m(d)| 不一定与
+  |C_-m(d)| 相同，不能把圆偏振的单方向4倍公式直接推广；T12须加入同一无向键
+  正反取向和双频相对相位破坏m偶对称的回归。
 
 ### 4.2 有效算符与 Magnon 的转换
 
@@ -117,6 +120,22 @@ Q 必须包含 Nd=0 但光子数非零的态；仅排除回到 P 的中间态。
 
 原文一致不等于实现验证；G1 必须通过二聚体精确展开、独立有限 Sambe
 block-diagonalization/低能拟合才冻结实现。
+
+### 4.4 M1 通用二阶目标公式（推导已核，数值实现仍 pending）
+
+独立 second-order-design 审计与 lead 的两格点费米符号核验一致：在本仓库
+Sambe 对角 +nW、统一 U、共同 onsite 已去掉、自旋无关 hopping 下，一条无向键
+的两个 doublon 方向都需累加：
+
+    K_ij = 2 sum_n (|t_ij^(n)|^2 + |t_ji^(n)|^2) / (U+nW)
+         = 2 sum_n |t_ij^(n)|^2 [1/(U+nW) + 1/(U-nW)]
+    H_ij^(2) = K_ij (Si·Sj - 1/4)
+
+其中 reverse-link 包含反向 R；换元要求 photon 窗口对称。triplet 修正为0、singlet
+为-K，因此输出普通 K Si·Sj 时常数须为-K/4。静态退化为4|t|^2/U与常数-|t|^2/U。
+只有 |t_ij^(n)|=|t_ij^(-n)| 时才可简化成圆偏振常见的单方向4倍式。
+T12 必须以双频相位打破该偶性（例如 a(t)·d=A cos(t)+B sin(2t)）并通过独立
+小簇 oracle 及反向键 invariance 验收；本段推导不代替该数值门槛。
 
 ## 5. 模块与 API 原则
 
@@ -211,7 +230,19 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
   bilayer-review 的 finite 加固建议 ACCEPT 后，fresh bilayer-rereview-luna 确认
   converged，无 solver 容差改动。归档：
   `target/goal-a-archives/task-1-reviewed-green-20261118T1427.tar.gz`（tar/gzip校验exit0）。
-- T03：verified，由 lead 接手；frames-impl 两次在领取任务前失败，无代码产物。
+- T02：verified，validation-impl 执行，lead复核最终diff并集成验证。真实red：
+  负lambda=-0.4的validate()未返回Err，`validate_rejects_bad_parameters` exit101；
+  早先未匹配测试的过滤器不算证据。两个蜂窝辅助函数已改Result，例子/指南同迁移；
+  非有限helicity、自旋/动量/系数、生成输出溢出均结构化拒绝。
+  首审/root接受的平方overflow/underflow用归一化差乘和修复，新增1e±200回归；
+  负能反例明确A<-|B|但平方radicand>0，不能用平方把不稳定参考伪装成实谱。
+  validation-rereview确认converged，F/B/G求和与双层solver容差未变。
+  focused release Floquet31/31；lead最终release magnon104/104、example check、
+  fmt/diff-check、clippy --lib --tests均exit0。全库warning仍为96/206（含重复），
+  不声称全库lint干净。压缩证据：target/goal-a-logs/task-3/T02-negative-red.log.gz、
+  T02-final-focused.log.gz、T02-final-example-check.log.gz、integration-*.log.gz，
+  均gzip校验通过；未运行仍待T04几何修复的示例本体。
+- T03：committed，`4adc8ee`，由 lead 接手；frames-impl 两次在领取任务前失败，无代码产物。
   tilted-uz 的 SIA 虚假不稳定已真实 red，初版修复后 release magnon 102/102；
   首审 frames-review 发现近平行叉积舍入放大，追加triad测试真实 red（纵向正交
   断言失败），ACCEPT 后改为归一化前重投影；并补single-Q+XXZ+DMI 的逐元素

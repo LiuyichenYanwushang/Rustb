@@ -52,7 +52,8 @@ pub struct DrivenHubbardParams {
     pub interaction_ev: f64,
     /// Photon energy `hbar Omega` in eV.
     pub photon_ev: f64,
-    /// Dimensionless Peierls amplitude `lambda = e E a / (hbar Omega)`.
+    /// Nonnegative dimensionless Peierls amplitude `lambda = e E a / (hbar Omega)`;
+    /// negative values are rejected by [`Self::validate`].
     pub lambda: f64,
     /// Optical helicity `xi = +-1`.
     pub helicity: f64,
@@ -68,6 +69,7 @@ impl DrivenHubbardParams {
             ("interaction_ev", self.interaction_ev),
             ("photon_ev", self.photon_ev),
             ("lambda", self.lambda),
+            ("helicity", self.helicity),
         ] {
             if !value.is_finite() {
                 return Err(TbError::InvalidMagnonInvariant {
@@ -75,6 +77,12 @@ impl DrivenHubbardParams {
                     message: format!("{name} must be finite, found {value}"),
                 });
             }
+        }
+        if self.lambda < 0.0 {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "nonnegative_lambda",
+                message: format!("lambda must be non-negative, found {}", self.lambda),
+            });
         }
         if self.interaction_ev <= 0.0 || self.photon_ev <= 0.0 {
             return Err(TbError::InvalidMagnonInvariant {
@@ -288,6 +296,21 @@ impl DrivenExchange {
                 message: "the anisotropy must be finite".into(),
             });
         }
+        if ![self.j1, self.j2, self.chirality]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_exchange_coefficients",
+                message: "j1, j2 and chirality must be finite".into(),
+            });
+        }
+        if self.j1 <= 0.0 {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "positive_nearest_exchange",
+                message: format!("j1 must be positive, found {}", self.j1),
+            });
+        }
         if anisotropy_ev > 0.0 {
             return Err(TbError::InvalidMagnonInvariant {
                 invariant: "easy_axis_anisotropy",
@@ -334,6 +357,12 @@ impl DrivenExchange {
         // on-site block sits at R = 0, where `add` writes the forward and the
         // backward entry into the same place, hence the half here.
         let sia = -0.5 * anisotropy_ev * spin * spin;
+        if [j1, j2, dmi, sia].iter().any(|value| !value.is_finite()) {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_honeycomb_magnon_coefficients",
+                message: "spin-scaled honeycomb coefficients overflowed".into(),
+            });
+        }
         let mut nearest = [[0.0f64; 3]; 3];
         for (component, entry) in nearest.iter_mut().enumerate() {
             entry[component] = j1;
@@ -458,11 +487,22 @@ impl DrivenExchange {
         }
         let j1_g = -24.0 * g_sum;
         let j2_g = 4.0 * g_sum;
-        Ok(Self {
+        let result = Self {
             j1: j1_second + j1_f + j1_b + j1_g,
             j2: j2_f + j2_b + j2_g,
             chirality: chi_f + chi_b,
-        })
+        };
+        if [result.j1, result.j2, result.chirality]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            Ok(result)
+        } else {
+            Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_driven_exchange",
+                message: "the driven exchange coefficients overflowed or became nonfinite".into(),
+            })
+        }
     }
 
     /// Honeycomb spin-wave functions `A_k`, `B_k`, `D_k` of the paper.
@@ -470,12 +510,38 @@ impl DrivenExchange {
     /// `q` is in fractional reciprocal coordinates of the hexagonal cell with
     /// the nearest-neighbour vectors of the Supplemental Material, and the
     /// returned `(a_k, |b_k|, d_k)` uses the units of the couplings (eV).
+    ///
+    /// # Errors
+    /// Returns [`TbError::InvalidMagnonInvariant`] for nonpositive/nonfinite spin,
+    /// nonfinite anisotropy or momentum, invalid exchange coefficients, or a
+    /// nonfinite computed result.
     pub fn honeycomb_functions(
         &self,
         spin: f64,
         anisotropy_ev: f64,
         q: &[f64; 2],
-    ) -> (f64, f64, f64) {
+    ) -> Result<(f64, f64, f64)> {
+        if !spin.is_finite() || spin <= 0.0 {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "positive_finite_spin",
+                message: format!("spin must be finite and positive, found {spin}"),
+            });
+        }
+        if !anisotropy_ev.is_finite() || q.iter().any(|value| !value.is_finite()) {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_honeycomb_input",
+                message: "anisotropy and momentum components must be finite".into(),
+            });
+        }
+        if [self.j1, self.j2, self.chirality]
+            .iter()
+            .any(|value| !value.is_finite())
+        {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_exchange_coefficients",
+                message: "j1, j2 and chirality must be finite".into(),
+            });
+        }
         // The Supplemental Material's vectors in fractional coordinates of the
         // hexagonal cell (a1 = delta2 - delta3, a2 = delta2 - delta1):
         // delta1 = a(0,-1), delta2 = a(sqrt3/2, 1/2), delta3 = a(-sqrt3/2, 1/2),
@@ -502,29 +568,76 @@ impl DrivenExchange {
             - 2.0 * anisotropy_ev * spin;
         let b_k = spin * self.j1 * sum_b;
         let d_k = 2.0 * self.chirality * spin * spin * sum_sin;
-        (a_k, b_k.norm(), d_k)
+        let result = (a_k, b_k.norm(), d_k);
+        if result.0.is_finite() && result.1.is_finite() && result.2.is_finite() {
+            Ok(result)
+        } else {
+            Err(TbError::InvalidMagnonInvariant {
+                invariant: "finite_honeycomb_functions",
+                message: "honeycomb spin-wave functions overflowed".into(),
+            })
+        }
     }
 
     /// Magnon energies of the two spin branches at `q`, in eV.
     ///
-    /// Returns `(omega_up, omega_down)`; a branch whose bracket
-    /// `(A +- D)^2 - |B|^2` is negative is unphysical (unstable reference
-    /// state) and reported as `NaN`.
-    pub fn honeycomb_dispersion(&self, spin: f64, anisotropy_ev: f64, q: &[f64; 2]) -> (f64, f64) {
-        let (a_k, b_abs, d_k) = self.honeycomb_functions(spin, anisotropy_ev, q);
-        let branch = |sign: f64| {
-            let dressed = (a_k + sign * d_k).powi(2);
-            let value = dressed - b_abs * b_abs;
-            if value >= 0.0 {
-                value.sqrt()
-            } else if -value <= 1e-10 * (dressed + b_abs * b_abs).max(f64::MIN_POSITIVE) {
-                // At a gapless point the two squares differ by round-off only.
-                0.0
+    /// Returns `(omega_up, omega_down)`. A branch is stable only when
+    /// `A ± D >= |B|` within an energy-scale-relative roundoff tolerance;
+    /// a negative radicand beyond roundoff is returned as a structured error.
+    ///
+    /// # Errors
+    /// Returns [`TbError::InvalidMagnonInvariant`] for invalid inputs, a
+    /// nonfinite result, or an unstable branch (including a negative-energy
+    /// reference that would otherwise appear stable after squaring).
+    pub fn honeycomb_dispersion(
+        &self,
+        spin: f64,
+        anisotropy_ev: f64,
+        q: &[f64; 2],
+    ) -> Result<(f64, f64)> {
+        let (a_k, b_abs, d_k) = self.honeycomb_functions(spin, anisotropy_ev, q)?;
+        let branch = |sign: f64| -> Result<f64> {
+            let energy = a_k + sign * d_k;
+            let scale = energy.abs().max(b_abs);
+            if !energy.is_finite() || !scale.is_finite() {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "finite_honeycomb_dispersion",
+                    message: "honeycomb branch energy is nonfinite".into(),
+                });
+            }
+            if scale == 0.0 {
+                return Ok(0.0);
+            }
+            // Normalize before comparing or squaring. This avoids overflow at
+            // large energy scales and preserves subnormal-scale spectra.
+            let e = energy / scale;
+            let b = b_abs / scale;
+            let delta = e - b;
+            let tolerance = 1e-10;
+            if delta < -tolerance {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "stable_honeycomb_branch",
+                    message: format!("A ± D = {energy} is below |B| = {b_abs}"),
+                });
+            }
+            let radicand_scaled = delta * (e + b);
+            if !radicand_scaled.is_finite() || radicand_scaled < -tolerance {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "nonnegative_honeycomb_radicand",
+                    message: format!("normalized branch radicand is invalid: {radicand_scaled}"),
+                });
+            }
+            let result = scale * radicand_scaled.max(0.0).sqrt();
+            if result.is_finite() {
+                Ok(result)
             } else {
-                f64::NAN
+                Err(TbError::InvalidMagnonInvariant {
+                    invariant: "finite_honeycomb_dispersion",
+                    message: "honeycomb dispersion overflowed".into(),
+                })
             }
         };
-        (branch(1.0), branch(-1.0))
+        Ok((branch(1.0)?, branch(-1.0)?))
     }
 }
 
@@ -642,13 +755,16 @@ mod tests {
         let spin = 1.5;
         let anisotropy = -0.01;
         // Gamma: |B_k| = 3 S J1, D_k = 0, A_k = 3 S J1 - 2 K S.
-        let (a_k, b_abs, d_k) = exchange.honeycomb_functions(spin, anisotropy, &[0.0, 0.0]);
+        let (a_k, b_abs, d_k) = exchange
+            .honeycomb_functions(spin, anisotropy, &[0.0, 0.0])
+            .unwrap();
         assert!((a_k - (3.0 * spin * exchange.j1 - 2.0 * anisotropy * spin)).abs() < 1e-12);
         assert!((b_abs - 3.0 * spin * exchange.j1).abs() < 1e-12);
         assert!(d_k.abs() < 1e-15);
         // K: |B_k| = 0, D_k = 3 sqrt(3) chi S^2.
-        let (a_k, b_abs, d_k) =
-            exchange.honeycomb_functions(spin, anisotropy, &[1.0 / 3.0, 2.0 / 3.0]);
+        let (a_k, b_abs, d_k) = exchange
+            .honeycomb_functions(spin, anisotropy, &[1.0 / 3.0, 2.0 / 3.0])
+            .unwrap();
         assert!(b_abs.abs() < 1e-12, "|B_K| = {b_abs}");
         assert!(
             (d_k - 3.0 * 3.0f64.sqrt() * exchange.chirality * spin * spin).abs() < 1e-12,
@@ -680,7 +796,7 @@ mod tests {
         let radius = 0.03f64;
         let sample = |theta: f64| {
             let k = [radius * theta.cos(), radius * theta.sin()];
-            let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, &k);
+            let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, &k).unwrap();
             up - down
         };
         // Three sign changes over [0, 2 pi): cos(3 theta).
@@ -781,7 +897,7 @@ mod tests {
         let magnon = build(j1, j2, dmi, sia);
         for k in [[0.0, 0.0], [1.0 / 3.0, 2.0 / 3.0], [0.5, 0.0], [0.2, 0.1]] {
             let bands = magnon.magnon_band_onek(&array![k[0], k[1]]).unwrap();
-            let (up, down) = exchange.honeycomb_dispersion(spin, k_paper, &k);
+            let (up, down) = exchange.honeycomb_dispersion(spin, k_paper, &k).unwrap();
             println!(
                 "k={k:?} solver={:?} paper=({up:.6},{down:.6})",
                 bands.to_vec()
@@ -806,7 +922,7 @@ mod tests {
         let magnon = exchange.honeycomb_magnon(spin, anisotropy).unwrap();
         for k in [[0.0, 0.0], [1.0 / 3.0, 2.0 / 3.0], [0.5, 0.0], [0.2, 0.1]] {
             let bands = magnon.magnon_band_onek(&array![k[0], k[1]]).unwrap();
-            let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, &k);
+            let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, &k).unwrap();
             let expected = if up < down { [up, down] } else { [down, up] };
             for band in 0..2 {
                 assert!(
@@ -935,7 +1051,9 @@ mod tests {
         };
         let exchange = DrivenExchange::honeycomb(&params).unwrap();
         for spin in [0.5, 1.5, 2.5] {
-            let (up, down) = exchange.honeycomb_dispersion(spin, 0.0, &[0.0, 0.0]);
+            let (up, down) = exchange
+                .honeycomb_dispersion(spin, 0.0, &[0.0, 0.0])
+                .unwrap();
             assert!(
                 up.is_finite() && down.is_finite(),
                 "spin {spin}: {up} {down}"
@@ -962,6 +1080,14 @@ mod tests {
             ..base
         };
         assert!(DrivenExchange::honeycomb(&truncated).is_err());
+        // Negative amplitudes are not accepted at the validated API boundary;
+        // otherwise they can reach the Bessel backend's nonnegative-argument contract.
+        let negative_lambda = DrivenHubbardParams {
+            lambda: -0.4,
+            ..base
+        };
+        assert!(negative_lambda.validate().is_err());
+        assert!(DrivenExchange::honeycomb(&negative_lambda).is_err());
         // Non-finite and negative scales.
         assert!(
             DrivenExchange::honeycomb(&DrivenHubbardParams {
@@ -977,6 +1103,84 @@ mod tests {
             })
             .is_err()
         );
+        for helicity in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(DrivenHubbardParams { helicity, ..base }.validate().is_err());
+        }
+        let overflowing_hopping = DrivenHubbardParams {
+            hopping_ev: 1e100,
+            interaction_ev: 1.25,
+            photon_ev: 4.0,
+            lambda: 0.0,
+            helicity: 1.0,
+            harmonic_max: 2,
+        };
+        assert!(overflowing_hopping.validate().is_ok());
+        assert!(DrivenExchange::honeycomb(&overflowing_hopping).is_err());
+    }
+
+    #[test]
+    fn honeycomb_public_functions_reject_invalid_values_and_unstable_energy_signs() {
+        let exchange = DrivenExchange {
+            j1: 1.0,
+            j2: 0.0,
+            chirality: 0.0,
+        };
+        assert!(exchange.honeycomb_functions(0.0, 0.0, &[0.0, 0.0]).is_err());
+        assert!(
+            exchange
+                .honeycomb_functions(f64::NAN, 0.0, &[0.0, 0.0])
+                .is_err()
+        );
+        assert!(
+            exchange
+                .honeycomb_functions(1.0, f64::INFINITY, &[0.0, 0.0])
+                .is_err()
+        );
+        assert!(
+            exchange
+                .honeycomb_functions(1.0, 0.0, &[f64::NAN, 0.0])
+                .is_err()
+        );
+        // A<0 and |B|>0 gives a positive squared radicand at K=4, but is not
+        // a stable positive-energy magnon branch and must not pass by squaring.
+        let (negative_a, b_abs, _) = exchange.honeycomb_functions(1.0, 4.0, &[0.0, 0.0]).unwrap();
+        assert!(negative_a < -b_abs);
+        assert!((negative_a * negative_a - b_abs * b_abs) > 0.0);
+        assert!(
+            exchange
+                .honeycomb_dispersion(1.0, 4.0, &[0.0, 0.0])
+                .is_err()
+        );
+        assert!(exchange.honeycomb_dispersion(1.0, 0.0, &[0.0, 0.0]).is_ok());
+        for coefficient_scale in [1e200, 1e-200] {
+            let scaled = DrivenExchange {
+                j1: coefficient_scale,
+                j2: 0.0,
+                chirality: 0.0,
+            };
+            let (omega, _) = scaled
+                .honeycomb_dispersion(1.0, -coefficient_scale, &[0.0, 0.0])
+                .unwrap();
+            assert!(((omega / coefficient_scale) - 4.0).abs() < 1e-12);
+        }
+        assert!(exchange.honeycomb_magnon(1.0, 0.0).is_ok());
+        assert!(
+            DrivenExchange {
+                j1: 0.0,
+                ..exchange
+            }
+            .honeycomb_magnon(1.0, 0.0)
+            .is_err()
+        );
+        assert!(
+            DrivenExchange {
+                chirality: f64::NAN,
+                ..exchange
+            }
+            .honeycomb_magnon(1.0, 0.0)
+            .is_err()
+        );
+        assert!(exchange.honeycomb_magnon(f64::MAX, 0.0).is_err());
     }
 
     #[test]
@@ -1016,19 +1220,21 @@ mod tests {
         // b1 = delta2 - delta3, b2 = delta3 - delta1.
         let k = [1.0 / 3.0, 2.0 / 3.0];
         let k_prime = [2.0 / 3.0, 1.0 / 3.0];
-        let (up, down) = undriven.honeycomb_dispersion(1.5, -0.01, &k);
+        let (up, down) = undriven.honeycomb_dispersion(1.5, -0.01, &k).unwrap();
         assert!((up - down).abs() < 1e-12, "undriven split {}, {}", up, down);
-        let (up, down) = driven.honeycomb_dispersion(1.5, -0.01, &k);
+        let (up, down) = driven.honeycomb_dispersion(1.5, -0.01, &k).unwrap();
         let split = up - down;
         assert!(split.abs() > 1e-6, "no splitting at K: {split:e}");
         // Opposite signs at the two valleys, and odd parity overall.
-        let (up_prime, down_prime) = driven.honeycomb_dispersion(1.5, -0.01, &k_prime);
+        let (up_prime, down_prime) = driven.honeycomb_dispersion(1.5, -0.01, &k_prime).unwrap();
         let split_prime = up_prime - down_prime;
         assert!(
             (split + split_prime).abs() < 1e-3 * split.abs(),
             "K and K' splits {split:e} {split_prime:e}"
         );
-        let (up_neg, down_neg) = driven.honeycomb_dispersion(1.5, -0.01, &[-k[0], -k[1]]);
+        let (up_neg, down_neg) = driven
+            .honeycomb_dispersion(1.5, -0.01, &[-k[0], -k[1]])
+            .unwrap();
         assert!(
             ((up - down) + (up_neg - down_neg)).abs() < 1e-9 * split.abs().max(1.0),
             "odd parity violated"

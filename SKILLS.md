@@ -1238,7 +1238,7 @@ let params = DrivenHubbardParams {
     harmonic_max: 12, // Floquet cutoff
 };
 let exchange = DrivenExchange::honeycomb(&params)?;
-let (omega_up, omega_down) = exchange.honeycomb_dispersion(1.5, -0.01, &[1.0 / 3.0, 2.0 / 3.0]);
+let (omega_up, omega_down) = exchange.honeycomb_dispersion(1.5, -0.01, &[1.0 / 3.0, 2.0 / 3.0])?;
 ```
 
 `J1` and `J2` are even in the helicity while `chi` is odd, so reversing the
@@ -1247,6 +1247,13 @@ light handedness reverses the splitting. The dispersion is the paper's
 two branches are degenerate without the drive, split with opposite signs at
 `K = (1/3, 2/3)` and `K' = (2/3, 1/3)`, and satisfy `omega_up(k) =
 omega_down(-k)` (odd parity, `f`-wave near Gamma).
+
+`honeycomb_functions` and `honeycomb_dispersion` return `Result`; propagate
+with `?`. They reject non-positive/non-finite spin and non-finite physical
+inputs. A genuinely unstable branch returns a structured error rather than
+`NaN`; only roundoff at a zero mode is tolerated. `DrivenHubbardParams::lambda`
+is a non-negative amplitude (use `helicity` for handedness); a negative value
+or non-finite helicity is rejected before Bessel evaluation.
 
 ### Worked example: the odd-parity dispersion
 

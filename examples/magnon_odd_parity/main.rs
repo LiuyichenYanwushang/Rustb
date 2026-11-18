@@ -77,7 +77,7 @@ fn main() -> Rustb::Result<()> {
     println!("#       kx         ky   distance     omega_up    omega_down     solver");
     let mut worst: f64 = 0.0;
     for (k, path) in points.iter() {
-        let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, k);
+        let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, k)?;
         let bands = magnon.magnon_band_onek(&array![k[0], k[1]])?;
         let mut expected = [up, down];
         expected.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -96,8 +96,10 @@ fn main() -> Rustb::Result<()> {
     );
 
     // Valley splitting at the two inequivalent corners.
-    let (up_k, down_k) = exchange.honeycomb_dispersion(spin, anisotropy, &[1.0 / 3.0, 2.0 / 3.0]);
-    let (up_p, down_p) = exchange.honeycomb_dispersion(spin, anisotropy, &[2.0 / 3.0, 1.0 / 3.0]);
+    let (up_k, down_k) =
+        exchange.honeycomb_dispersion(spin, anisotropy, &[1.0 / 3.0, 2.0 / 3.0])?;
+    let (up_p, down_p) =
+        exchange.honeycomb_dispersion(spin, anisotropy, &[2.0 / 3.0, 1.0 / 3.0])?;
     println!(
         "\n# Delta(K) = {:+.6e} eV, Delta(K') = {:+.6e} eV, sum = {:.3e}",
         up_k - down_k,
@@ -125,7 +127,7 @@ fn main() -> Rustb::Result<()> {
             cart[0] * rec_lat[[0, 0]] + cart[1] * rec_lat[[1, 0]],
             cart[0] * rec_lat[[0, 1]] + cart[1] * rec_lat[[1, 1]],
         ];
-        let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, &k);
+        let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, &k)?;
         splittings.push(up - down);
     }
     let mut zeros = 0;
