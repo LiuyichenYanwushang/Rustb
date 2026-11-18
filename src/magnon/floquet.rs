@@ -1435,6 +1435,7 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         let n = magnon.nspin();
         let dim = 3 * n;
         let mut harmonics = Vec::with_capacity(harmonic_count);
+        let onsite = (0..n).map(|i| magnon.onsite_scalar(i)).collect::<Vec<_>>();
         for index in 0..harmonic_count {
             let m = index as isize - span;
             let mut tensor = Array3::<Complex<f64>>::zeros((magnon.nR(), dim, dim));
@@ -1445,7 +1446,12 @@ impl<const DIM: usize> MagnonSambe<DIM> {
                         let coefficient = bessel_peierls_coeffs(&displacement, drive, m, m, 0)?[0];
                         for alpha in 0..SC_SPIN {
                             for beta in 0..SC_SPIN {
-                                let value = magnon.ham[[i_r, 3 * i + alpha, 3 * j + beta]];
+                                let mut value = magnon.ham[[i_r, 3 * i + alpha, 3 * j + beta]];
+                                if i_r == 0 && i == j && alpha == beta {
+                                    // Onsite is Peierls-inactive. Remove the same
+                                    // fixed-spin constant as in ordinary BdG.
+                                    value -= onsite[i];
+                                }
                                 tensor[[i_r, 3 * i + alpha, 3 * j + beta]] =
                                     Complex::new(value, 0.0) * coefficient;
                             }
@@ -1523,11 +1529,10 @@ impl<const DIM: usize> MagnonSambe<DIM> {
                     }
                 }
             }
-            let mut phase = 0.0;
-            for (axis, coordinate) in point.iter().enumerate().take(DIM) {
-                phase -= std::f64::consts::TAU * self.magnon.hamR[[i_r, axis]] as f64 * coordinate;
-            }
-            let factor = Complex::from_polar(1.0, phase);
+            let turns = (0..DIM)
+                .map(|axis| self.magnon.hamR[[i_r, axis]] as f64 * point[axis])
+                .sum::<f64>();
+            let factor = super::physics::cis_turns(-turns);
             for alpha in 0..dim {
                 for beta in 0..dim {
                     jq[[alpha, beta]] += block[[alpha, beta]] * factor;
@@ -2379,39 +2384,10 @@ fn paraunitary_spectrum(matrix: &Array2<Complex<f64>>, n: usize) -> Result<Array
             }
         }
     }
-    // The shared solver's legacy 1e-10 PSD tolerance is too permissive for
-    // this boundary. Certify H first at a backward-error-sized threshold;
-    // this eigenspectrum is used ONLY for stability, never as bosonic bands.
-    // Bilayer matrices are just 4x4, so one extra Hermitian solve is modest
-    // and avoids changing unrelated Magnon callers' numerical policy.
-    let (energies, _) = crate::ndarray_lapack::eigh_full(&normalized, ndarray_linalg::UPLO::Lower)?;
-    let spectral_scale = energies.iter().map(|e| e.abs()).fold(0.0, f64::max);
-    let positivity_roundoff = 8.0 * size as f64 * f64::EPSILON * spectral_scale;
-    if energies
-        .iter()
-        .any(|e| !e.is_finite() || *e < -positivity_roundoff)
-    {
-        return Err(TbError::InvalidMagnonInvariant {
-            invariant: "positive_semidefinite_bdg",
-            message: format!(
-                "the bilayer reference has a resolved negative BdG direction: {energies:?}"
-            ),
-        });
-    }
-    let mut frequencies = super::physics::paraunitary_frequencies(&normalized, n)?;
+    // The shared Colpa solver also certifies positivity. This entry point
+    // receives an already formed matrix, so there is no A-C formation scale.
+    let mut frequencies = super::physics::paraunitary_frequencies(&normalized, n, &[])?;
     for value in &mut frequencies {
-        // A PSD Colpa matrix has at most n negative eigenvalues by inertia.
-        // Thus the largest n eigenvalues are nonnegative; only their negative
-        // floating-point zero residuals may be removed, never actual instability.
-        if !value.is_finite() || *value < -roundoff {
-            return Err(TbError::InvalidMagnonInvariant {
-                invariant: "nonnegative_bilayer_frequency",
-                message: format!("invalid normalized Colpa frequency {value:e}"),
-            });
-        }
-        if *value < 0.0 {
-            *value = 0.0;
-        }
         *value *= scale;
         if !value.is_finite() {
             return Err(TbError::InvalidMagnonInvariant {

@@ -56,11 +56,6 @@ use ndarray_linalg::UPLO;
 use num_complex::Complex;
 use rayon::prelude::*;
 
-/// Relative tolerance (scaled by the largest `|eigenvalue|`) below which a
-/// negative BdG eigenvalue is treated as round-off rather than an unstable
-/// reference structure. This keeps the check unit-independent.
-const BDG_POSITIVITY_RTOL: f64 = 1e-10;
-
 fn cross(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -77,23 +72,41 @@ fn norm(a: &[f64; 3]) -> f64 {
     dot(a, a).sqrt()
 }
 
+// Reduce before calling libm so exact cardinal turns have exact axis zeros.
+pub(super) fn cis_turns(turns: f64) -> Complex<f64> {
+    let turn = turns % 1.0;
+    let quadrant = (4.0 * turn).round();
+    let (s, c) = (std::f64::consts::TAU * (turn - 0.25 * quadrant)).sin_cos();
+    match (quadrant as i32).rem_euclid(4) {
+        0 => Complex::new(c, s),
+        1 => Complex::new(-s, c),
+        2 => Complex::new(-c, -s),
+        _ => Complex::new(s, -c),
+    }
+}
+
+fn rotation_about(axis: &[f64; 3], turns: f64) -> Option<([[f64; 3]; 3], [[f64; 3]; 3])> {
 /// Rotation matrix `R = I + sin(phi) K + (1 - cos(phi)) K^2` about `axis`.
-fn rotation_about(axis: &[f64; 3], phi: f64) -> Option<[[f64; 3]; 3]> {
     let length = norm(axis);
-    if !length.is_finite() || length <= 1e-15 || !phi.is_finite() {
+    if !length.is_finite() || length <= 1e-15 || !turns.is_finite() || turns % 1.0 == 0.0 {
         return None;
     }
     let n = [axis[0] / length, axis[1] / length, axis[2] / length];
-    let (sin, cos) = phi.sin_cos();
+    let Complex { re: cos, im: sin } = cis_turns(turns);
     let k = [[0.0, -n[2], n[1]], [n[2], 0.0, -n[0]], [-n[1], n[0], 0.0]];
-    let mut out = [[0.0f64; 3]; 3];
+    let mut out = [[0.0; 3]; 3];
+    let mut scale = [[0.0; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
-            let k2 = (0..3).map(|m| k[i][m] * k[m][j]).sum::<f64>();
-            out[i][j] = if i == j { 1.0 } else { 0.0 } + sin * k[i][j] + (1.0 - cos) * k2;
+            let products = k[i].into_iter().zip(k).map(|(a, row)| a * row[j]);
+            let k2 = products.clone().sum::<f64>();
+            let delta = if i == j { 1.0 } else { 0.0 };
+            let linear = sin * k[i][j];
+            out[i][j] = delta + linear + (1.0 - cos) * k2;
+            scale[i][j] = delta + linear.abs() + (1.0 - cos) * products.map(f64::abs).sum::<f64>();
         }
     }
-    Some(out)
+    Some((out, scale))
 }
 
 /// Local spin frames with a fixed physical longitudinal direction.
@@ -193,10 +206,26 @@ impl<const DIM: usize> Magnon<DIM> {
     /// returned unchanged: this is the landscape `J(q)`, not `J(q)/(S_i S_j)`.
     pub fn gen_jq(&self, q: &Array1<f64>) -> Result<Array2<Complex<f64>>> {
         self.validate()?;
-        self.jq_of(&self.check_q(q)?)
+        Ok(self.jq_of(&self.check_q(q)?, false).0)
     }
 
-    fn jq_of(&self, q: &[f64; 3]) -> Result<Array2<Complex<f64>>> {
+    /// A scalar on a site's onsite tensor adds only a constant for fixed-length spins.
+    pub(super) fn onsite_scalar(&self, i: usize) -> f64 {
+        let start = SPIN_COMPONENTS * i;
+        let diag = std::array::from_fn::<_, 3, _>(|a| self.ham[[0, start + a, start + a]]);
+        let smallest = diag.into_iter().fold(f64::INFINITY, f64::min);
+        let largest = diag.into_iter().fold(f64::NEG_INFINITY, f64::max);
+        // Remove the common offset without increasing any diagonal magnitude.
+        // This also leaves previously representable intermediate contractions
+        // alone when the diagonal terms already straddle zero.
+        if smallest > 0.0 {
+            smallest
+        } else {
+            largest.min(0.0)
+        }
+    }
+
+    fn jq_of(&self, q: &[f64; 3], for_bdg: bool) -> (Array2<Complex<f64>>, Vec<f64>) {
         let n = self.nspin();
         let nsta = self.nsta();
         let ordering = if self.has_ordering() {
@@ -214,52 +243,111 @@ impl<const DIM: usize> Magnon<DIM> {
             self.reference.rotation_axis[2],
         ];
         let mut out = Array2::<Complex<f64>>::zeros((nsta, nsta));
+        let mut corrections = for_bdg.then(|| Array2::<Complex<f64>>::zeros((nsta, nsta)));
+        let accumulate = |sum: &mut f64, correction: &mut f64, value: f64| {
+            let next = *sum + value;
+            *correction += if sum.abs() >= value.abs() {
+                (*sum - next) + value
+            } else {
+                (value - next) + *sum
+            };
+            *sum = next;
+        };
+        let projections = for_bdg.then(|| {
+            let (u, v) = local_frames(self);
+            let onsite = (0..n).map(|i| self.onsite_scalar(i)).collect::<Vec<_>>();
+            (u.mapv(|z| z.norm()), v.mapv(f64::abs), onsite)
+        });
+        let mut fourier_noise = if for_bdg { vec![0.0; n] } else { Vec::new() };
         for i_r in 0..self.nR() {
             let mut r = [0.0f64; 3];
             for (axis, slot) in r.iter_mut().enumerate().take(DIM) {
                 *slot = self.hamR[[i_r, axis]] as f64;
             }
-            let phase = -std::f64::consts::TAU * dot(&r, q);
-            let factor = Complex::from_polar(1.0, phase);
+            let factor = cis_turns(-dot(&r, q));
             let rotation = match ordering {
-                Some(q_ref) => {
-                    rotation_about(&rotation_axis, std::f64::consts::TAU * dot(&r, &q_ref))
-                }
-                None => None,
+                Some(q_ref) if i_r != 0 => rotation_about(&rotation_axis, dot(&r, &q_ref)),
+                _ => None,
             };
             for i in 0..n {
                 for j in 0..n {
                     for a in 0..SPIN_COMPONENTS {
                         for b in 0..SPIN_COMPONENTS {
-                            let value = match &rotation {
-                                None => {
+                            let (mut value, rotation_noise) = match &rotation {
+                                None => (
                                     self.ham
-                                        [[i_r, SPIN_COMPONENTS * i + a, SPIN_COMPONENTS * j + b]]
-                                }
-                                Some(matrix) => (0..SPIN_COMPONENTS)
-                                    .map(|c| {
-                                        self.ham[[
+                                        [[i_r, SPIN_COMPONENTS * i + a, SPIN_COMPONENTS * j + b]],
+                                    None,
+                                ),
+                                Some((matrix, scale)) => {
+                                    let mut sum = 0.0;
+                                    let mut noise = 0.0;
+                                    for (c, row) in matrix.iter().enumerate() {
+                                        let source = self.ham[[
                                             i_r,
                                             SPIN_COMPONENTS * i + a,
                                             SPIN_COMPONENTS * j + c,
-                                        ]] * matrix[c][b]
-                                    })
-                                    .sum(),
+                                        ]];
+                                        sum += source * row[b];
+                                        noise += (source.abs() * f64::EPSILON) * scale[c][b];
+                                    }
+                                    (sum, Some(noise))
+                                }
                             };
-                            out[[SPIN_COMPONENTS * i + a, SPIN_COMPONENTS * j + b]] +=
-                                factor * Complex::new(value, 0.0);
+                            if let Some((u, v, onsite)) = &projections {
+                                // Subtract the fixed-length onsite scalar before
+                                // projecting and before adding the Fourier terms.
+                                if i_r == 0 && i == j && a == b {
+                                    value -= onsite[i];
+                                }
+                                // Include only terms entering the local-frame projections.
+                                // Scale before summing so the roundoff estimate stays finite
+                                // even if the sum of absolute exchange magnitudes does not.
+                                let eps =
+                                    rotation_noise.unwrap_or(0.0) + value.abs() * f64::EPSILON;
+                                let transverse = u[[i, a]] * u[[j, b]] * eps
+                                    / (self.spin[i] * self.spin[j]).sqrt();
+                                let longitudinal = 2.0 * v[[i, a]] * v[[j, b]] * eps;
+                                fourier_noise[i] += transverse + longitudinal / self.spin[i];
+                                if i != j {
+                                    // Hermitization also supplies this raw term to C_j.
+                                    fourier_noise[j] += transverse + longitudinal / self.spin[j];
+                                }
+                            }
+                            let key = [SPIN_COMPONENTS * i + a, SPIN_COMPONENTS * j + b];
+                            let term = factor * Complex::new(value, 0.0);
+                            let sum = &mut out[key];
+                            if let Some(corrections) = &mut corrections {
+                                let c = &mut corrections[key];
+                                accumulate(&mut sum.re, &mut c.re, term.re);
+                                accumulate(&mut sum.im, &mut c.im, term.im);
+                            } else {
+                                *sum += term;
+                            }
                         }
                     }
                 }
             }
+        }
+        if let Some(corrections) = corrections {
+            out += &corrections;
         }
         // The single-Q rotation multiplies every stored block on the same side,
         // so a tensor that does not commute with the rotation makes the raw
         // Fourier sum non-Hermitian. Only its Hermitian part enters the
         // classical energy (a real quadratic form is blind to the antisymmetric
         // part), so symmetrize before the spin-wave construction.
-        let adjoint = out.t().mapv(|value| value.conj());
-        Ok((&out + &adjoint) * Complex::new(0.5, 0.0))
+        for i in 0..nsta {
+            out[[i, i]].im = 0.0;
+            for j in 0..i {
+                let a = out[[i, j]];
+                let b = out[[j, i]].conj();
+                let mean = Complex::new(a.re.midpoint(b.re), a.im.midpoint(b.im));
+                out[[i, j]] = mean;
+                out[[j, i]] = mean.conj();
+            }
+        }
+        (out, fourier_noise)
     }
 
     /// Bogoliubov-de Gennes matrix of the spin-wave problem at `q`, shape
@@ -273,13 +361,16 @@ impl<const DIM: usize> Magnon<DIM> {
     pub fn gen_bdg(&self, q: &Array1<f64>) -> Result<Array2<Complex<f64>>> {
         self.validate()?;
         let point = self.check_q(q)?;
-        self.bdg_of(&point)
+        Ok(self.bdg_of(&point)?.0)
     }
 
-    fn bdg_of(&self, q: &[f64; 3]) -> Result<Array2<Complex<f64>>> {
-        let jq = self.jq_of(q)?;
-        let j0 = self.jq_of(&[0.0; 3])?;
-        self.bdg_from_jq(&jq, &j0)
+    fn bdg_of(&self, q: &[f64; 3]) -> Result<(Array2<Complex<f64>>, Vec<f64>)> {
+        let (jq, mut noise) = self.jq_of(q, true);
+        let (j0, noise_0) = self.jq_of(&[0.0; 3], true);
+        for (q, zero) in noise.iter_mut().zip(noise_0) {
+            *q = q.max(zero);
+        }
+        Ok((self.bdg_from_jq(&jq, &j0)?, noise))
     }
 
     /// Bogoliubov–de Gennes matrix from an already Fourier-transformed exchange
@@ -290,8 +381,29 @@ impl<const DIM: usize> Magnon<DIM> {
         jq: &Array2<Complex<f64>>,
         j0: &Array2<Complex<f64>>,
     ) -> Result<Array2<Complex<f64>>> {
+        let h = self.assemble_bdg(jq, j0, 1.0);
+        // Retry only on overflow, so a huge projection-null exchange term
+        // does not force a small, active term to be scaled away.
+        if h.iter().any(|z| !z.re.is_finite() || !z.im.is_finite())
+            && jq
+                .iter()
+                .chain(j0)
+                .any(|z| z.re.abs().max(z.im.abs()) > 2.0_f64.powi(900))
+        {
+            return Ok(self.assemble_bdg(jq, j0, 2.0_f64.powi(256)));
+        }
+        Ok(h)
+    }
+
+    fn assemble_bdg(
+        &self,
+        jq: &Array2<Complex<f64>>,
+        j0: &Array2<Complex<f64>>,
+        scale: f64,
+    ) -> Array2<Complex<f64>> {
         let n = self.nspin();
-        let jmq = jq.t().to_owned();
+        let jmq = jq.t();
+        let inv_scale = scale.recip();
         let (u, v) = local_frames(self);
         let spin = &self.spin;
 
@@ -308,7 +420,8 @@ impl<const DIM: usize> Magnon<DIM> {
                 );
                 for a in 0..SPIN_COMPONENTS {
                     for bb in 0..SPIN_COMPONENTS {
-                        let m = jmq[[SPIN_COMPONENTS * i + a, SPIN_COMPONENTS * j + bb]];
+                        let m =
+                            jmq[[SPIN_COMPONENTS * i + a, SPIN_COMPONENTS * j + bb]] * inv_scale;
                         sum_a1 += u[[i, a]] * m * u[[j, bb]].conj();
                         sum_a2 += u[[i, a]].conj() * m * u[[j, bb]];
                         sum_b += u[[i, a]] * m * u[[j, bb]];
@@ -330,14 +443,16 @@ impl<const DIM: usize> Magnon<DIM> {
                 for a in 0..SPIN_COMPONENTS {
                     for bb in 0..SPIN_COMPONENTS {
                         t += v[[i, a]]
-                            * j0[[SPIN_COMPONENTS * i + a, SPIN_COMPONENTS * j + bb]].re
+                            * (j0[[SPIN_COMPONENTS * i + a, SPIN_COMPONENTS * j + bb]].re
+                                * inv_scale)
                             * v[[j, bb]];
                     }
                 }
-                sum += 2.0 * t;
+                sum += t;
             }
-            // The 2 S_j/(S_i S_j) factor of TB2J reduces to 2/S_i.
-            c[i] = -sum / spin[i];
+            // Divide by S_i before doubling, so a finite C does not require
+            // a representable 2 * J_zz intermediate.
+            c[i] = -2.0 * (sum / spin[i]);
         }
 
         let size = 2 * n;
@@ -352,7 +467,10 @@ impl<const DIM: usize> Magnon<DIM> {
             h[[i, i]] -= Complex::new(c[i], 0.0);
             h[[size - n + i, size - n + i]] -= Complex::new(c[i], 0.0);
         }
-        Ok(h)
+        if scale != 1.0 {
+            h.mapv_inplace(|z| z * scale);
+        }
+        h
     }
 
     /// Density of states `g(omega) = (1/N_q) sum_{q,n} N(omega; omega_n(q), sigma)`
@@ -409,8 +527,8 @@ impl<const DIM: usize> MagnonSolve for Magnon<DIM> {
     fn magnon_band_onek<S: Data<Elem = f64>>(&self, q: &ArrayBase<S, Ix1>) -> Result<Array1<f64>> {
         self.validate()?;
         let point = self.check_q(q)?;
-        let h = self.bdg_of(&point)?;
-        paraunitary_frequencies(&h, self.nspin())
+        let (h, scale) = self.bdg_of(&point)?;
+        paraunitary_frequencies(&h, self.nspin(), &scale)
     }
 
     fn magnon_band_all<S: Data<Elem = f64>>(&self, qs: &ArrayBase<S, Ix2>) -> Result<Array2<f64>> {
@@ -426,8 +544,9 @@ impl<const DIM: usize> MagnonSolve for Magnon<DIM> {
         let mut out = Array2::<f64>::zeros((qs.nrows(), n));
         for (row, q) in qs.axis_iter(Axis(0)).enumerate() {
             let point = self.check_q(&q)?;
-            let h = self.bdg_of(&point)?;
-            out.row_mut(row).assign(&paraunitary_frequencies(&h, n)?);
+            let (h, scale) = self.bdg_of(&point)?;
+            out.row_mut(row)
+                .assign(&paraunitary_frequencies(&h, n, &scale)?);
         }
         Ok(out)
     }
@@ -450,8 +569,8 @@ impl<const DIM: usize> MagnonSolve for Magnon<DIM> {
             .par_iter()
             .map(|q| {
                 let point = self.check_q(q)?;
-                let h = self.bdg_of(&point)?;
-                paraunitary_frequencies(&h, n)
+                let (h, scale) = self.bdg_of(&point)?;
+                paraunitary_frequencies(&h, n, &scale)
             })
             .collect();
         let mut out = Array2::<f64>::zeros((qs.nrows(), n));
@@ -468,36 +587,52 @@ impl<const DIM: usize> MagnonSolve for Magnon<DIM> {
 /// Hermitian eigenfactorization `H = U L U^dagger` gives `K = U L^(1/2)` and
 /// the spectrum of the Hermitian `K^dagger g K`; zero eigenvalues of `H`
 /// produce exact zero frequencies.
-pub(crate) fn paraunitary_frequencies(h: &Array2<Complex<f64>>, n: usize) -> Result<Array1<f64>> {
+pub(crate) fn paraunitary_frequencies(
+    h: &Array2<Complex<f64>>,
+    n: usize,
+    formation_noise: &[f64],
+) -> Result<Array1<f64>> {
     let size = h.nrows();
-    if size != 2 * n || h.ncols() != size {
+    if n == 0 || n.checked_mul(2) != Some(size) || h.ncols() != size {
         return Err(TbError::InvalidMagnonInvariant {
             invariant: "bdg_shape",
             message: format!(
-                "expected a {} x {} BdG matrix, found {:?}",
-                2 * n,
-                2 * n,
+                "expected a nonempty {n}-site BdG matrix, found {:?}",
                 h.dim()
             ),
         });
     }
-    let (values, vectors) = eigh_full(h, UPLO::Lower)?;
-    let lowest = values.iter().cloned().fold(f64::INFINITY, f64::min);
-    let largest = values
-        .iter()
-        .map(|value| value.abs())
-        .fold(0.0, |acc: f64, value| acc.max(value));
-    // Relative tolerance plus a tiny absolute floor: at a pure Goldstone point
-    // the whole matrix is zero and a purely relative bound would vanish.
-    let tolerance = BDG_POSITIVITY_RTOL * largest + 1e-13;
-    if !lowest.is_finite() || lowest < -tolerance {
+    if (!formation_noise.is_empty() && formation_noise.len() != n)
+        || formation_noise.iter().any(|x| !x.is_finite() || *x < 0.0)
+        || h.iter().any(|z| !z.re.is_finite() || !z.im.is_finite())
+    {
         return Err(TbError::InvalidMagnonInvariant {
-            invariant: "positive_semidefinite_bdg",
-            message: format!(
-                "the reference structure is not a local energy minimum: \
-                 lowest BdG eigenvalue {lowest:e} eV"
-            ),
+            invariant: "finite_bdg",
+            message: "non-finite BdG data or invalid formation scale".into(),
         });
+    }
+    let (values, vectors) = eigh_full(h, UPLO::Lower)?;
+    let largest = values.iter().map(|value| value.abs()).fold(0.0, f64::max);
+    let relative = 8.0 * size as f64 * f64::EPSILON;
+    for (mode, &value) in values.iter().enumerate().take_while(|(_, e)| **e < 0.0) {
+        // Numerical eigensolver uncertainty is spectral. Formation noise is
+        // local: a cancellation on one site need not excuse a negative mode
+        // on a different one. Test every negative eigenpair independently.
+        let formation = formation_noise
+            .iter()
+            .enumerate()
+            .map(|(i, &noise)| {
+                (vectors[[mode, i]].norm_sqr() + vectors[[mode, i + n]].norm_sqr()) * noise
+            })
+            .sum::<f64>();
+        if value / largest < -relative && -value > 8.0 * size as f64 * formation {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "positive_semidefinite_bdg",
+                message: format!(
+                    "the reference structure is not a local energy minimum: BdG eigenvalue {value:e} eV"
+                ),
+            });
+        }
     }
     // Vectors are stored as rows (ket coefficients): u[n, alpha] = <alpha|n>.
     let mut metric = Array2::<Complex<f64>>::zeros((size, size));
@@ -523,8 +658,15 @@ pub(crate) fn paraunitary_frequencies(h: &Array2<Complex<f64>>, n: usize) -> Res
     }
     let (spectrum, _) = eigh_full(&m, UPLO::Lower)?;
     let mut out = Array1::<f64>::zeros(n);
-    for (index, value) in spectrum.iter().skip(size - n).enumerate() {
-        out[index] = *value;
+    for (index, &value) in spectrum.iter().skip(size - n).enumerate() {
+        // A PSD input has at most n negative Colpa eigenvalues by inertia.
+        if value < 0.0 && value / largest < -relative {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "nonnegative_magnon_energy",
+                message: format!("invalid positive-branch magnon energy {value:e} eV"),
+            });
+        }
+        out[index] = value.max(0.0);
     }
     Ok(out)
 }
@@ -559,6 +701,242 @@ mod tests {
             MagnonReference::collinear(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn positivity_guard_retains_goldstone_formation_roundoff() {
+        let gamma = array![0.0];
+        let fm = chain(0.05, 2.5);
+        assert!(fm.magnon_band_onek(&gamma).unwrap()[0] <= 1e-15);
+        let mut rotated = chain(0.5, 1.5);
+        rotated.axis = array![[0.6, 0.0, 0.8]];
+        assert!(rotated.magnon_band_onek(&gamma).unwrap()[0] <= 1e-14);
+        assert!(matches!(
+            single_site_sia(-1e-14, 1.0).magnon_band_onek(&gamma),
+            Err(TbError::InvalidMagnonInvariant {
+                invariant: "positive_semidefinite_bdg",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn positivity_scale_excludes_onsite_gauge_but_includes_fourier_cancellation() {
+        let mut afm = chain(-2.0_f64.powi(-52), 1.0);
+        let q = array![0.5];
+        let h = afm.gen_bdg(&q).unwrap();
+        afm.ham
+            .slice_mut(ndarray::s![0, .., ..])
+            .assign(&isotropic(1.0));
+        assert_eq!(afm.gen_bdg(&q).unwrap(), h);
+        assert!(matches!(
+            afm.magnon_band_onek(&q),
+            Err(TbError::InvalidMagnonInvariant {
+                invariant: "positive_semidefinite_bdg",
+                ..
+            })
+        ));
+
+        let mut fm = chain(1.0, 1.0);
+        fm.hamR = array![[0isize], [1], [-1], [2], [-2], [3], [-3], [4], [-4]];
+        fm.ham = Array3::zeros((9, 3, 3));
+        for (r, j) in [1.0, 2.0_f64.powi(-55), -1.0, -2.0_f64.powi(-56)]
+            .into_iter()
+            .enumerate()
+        {
+            fm.ham[[2 * r + 1, 2, 2]] = j;
+            fm.ham[[2 * r + 2, 2, 2]] = j;
+        }
+        // Exact longitudinal sum is positive; naive f64 accumulation
+        // loses ±2^-55 when it cancels the two O(1) contributions.
+        let q = array![0.0];
+        assert!(fm.magnon_band_onek(&q).is_ok());
+    }
+
+    #[test]
+    fn torque_only_exchange_cannot_mask_a_resolved_negative_curvature() {
+        let mut magnon = single_site_sia(-1e-8, 1.0);
+        magnon.hamR = array![[0], [1], [-1], [2], [-2]];
+        magnon.ham = Array3::zeros((5, 3, 3));
+        magnon.ham[[0, 2, 2]] = -1e-8;
+        for (offset, value) in [1e7, 1e7, -1e7, -1e7].into_iter().enumerate() {
+            magnon.ham[[offset + 1, 0, 2]] = value;
+            magnon.ham[[offset + 1, 2, 0]] = value;
+        }
+        // The linear torques cancel at q=0. Neither mixed component enters
+        // the quadratic fluctuation for a parallel z reference.
+        let q = array![0.25];
+        let h = magnon.gen_bdg(&q).unwrap();
+        assert_eq!(h, Array2::eye(2) * Complex::new(-2e-8, 0.0));
+        assert!(matches!(
+            magnon.magnon_band_onek(&q),
+            Err(TbError::InvalidMagnonInvariant {
+                invariant: "positive_semidefinite_bdg",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn onsite_demotion_preserves_large_finite_anisotropy_and_sambe_limit() {
+        use crate::floquet::{FloquetDrive, FloquetTruncation};
+        use crate::magnon::floquet::MagnonSambe;
+
+        let mut magnon = chain(0.125, 1.0);
+        magnon
+            .ham
+            .slice_mut(ndarray::s![0, .., ..])
+            .assign(&isotropic(2.0_f64.powi(54)));
+        let q = array![0.5];
+        let expected = Array2::<Complex<f64>>::eye(2);
+        assert_eq!(magnon.gen_bdg(&q).unwrap(), expected);
+        let sambe =
+            MagnonSambe::new(&magnon, &FloquetDrive::new(3.0), &FloquetTruncation::new(0)).unwrap();
+        assert_eq!(sambe.bdg_at_time(&q, 0.0).unwrap(), expected);
+
+        let mut magnon = single_site_sia(5e307, 2.0);
+        magnon.ham[[0, 0, 0]] = -5e307;
+        let omega = magnon.magnon_band_onek(&array![0.0]).unwrap()[0];
+        assert!((omega / 1e308 - 0.5_f64.sqrt()).abs() < 1e-14);
+
+        // Deflation must not increase intermediate magnitudes where the
+        // onsite anisotropy already has a zero component.
+        let q = array![0.0];
+        let mut longitudinal = chain(0.0, 2.0);
+        let mut transverse = chain(0.0, 2.0);
+        transverse.ham[[0, 2, 2]] = 4e307;
+        for a in 0..2 {
+            longitudinal.ham[[0, a, a]] = -4e307;
+            transverse.ham[[0, a, a]] = 1e307;
+            for row in 1..=2 {
+                transverse.ham[[row, a, a]] = -4.5e307;
+            }
+        }
+        longitudinal.ham[[0, 2, 2]] = -1e307;
+        for row in 1..=2 {
+            longitudinal.ham[[row, 2, 2]] = 4.5e307;
+        }
+        for model in [longitudinal, transverse] {
+            let omega = model.magnon_band_onek(&q).unwrap()[0];
+            assert!((omega / 1.2e308 - 1.0).abs() < 1e-14);
+        }
+    }
+
+    #[test]
+    fn fourier_cancellation_keeps_finite_compensated_curvatures() {
+        let longitudinal_chain = |spin, couplings: &[f64]| {
+            let mut magnon = chain(0.0, spin);
+            magnon.ham = Array3::zeros((2 * couplings.len() + 1, 3, 3));
+            magnon.hamR = Array2::zeros((2 * couplings.len() + 1, 1));
+            for (i, &j) in couplings.iter().enumerate() {
+                let r = i as isize + 1;
+                magnon.hamR[[2 * i + 1, 0]] = r;
+                magnon.hamR[[2 * i + 2, 0]] = -r;
+                magnon.ham[[2 * i + 1, 2, 2]] = j;
+                magnon.ham[[2 * i + 2, 2, 2]] = j;
+            }
+            magnon
+        };
+        let q = array![0.0];
+        let huge = longitudinal_chain(2.0, &[3e307, -3e307, 3e307]);
+        assert!((huge.magnon_band_onek(&q).unwrap()[0] / 6e307 - 1.0).abs() < 1e-14);
+        let mut many = vec![1.0];
+        many.extend(std::iter::repeat_n(2.0_f64.powi(-53), 256));
+        many.extend([-1.0, -2.0_f64.powi(-46)]);
+        let bands = longitudinal_chain(1.0, &many).magnon_band_onek(&q).unwrap();
+        assert!((bands[0] / 2.0_f64.powi(-44) - 1.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn formation_uncertainty_does_not_leak_to_an_uncoupled_site() {
+        let mut magnon = chain_two_site(0.0, 1.0, 1.0, true);
+        magnon.hamR = Array2::zeros((33, 1));
+        magnon.ham = Array3::zeros((33, 6, 6));
+        // Site 0 has exact cancellation of large longitudinal terms.
+        for i in 0..16 {
+            let r = i as isize + 1;
+            let j = if i < 8 { 1.0 } else { -1.0 };
+            for (row, cell) in [(2 * i + 1, r), (2 * i + 2, -r)] {
+                magnon.hamR[[row, 0]] = cell;
+                magnon.ham[[row, 2, 2]] = j;
+            }
+        }
+        magnon.ham[[0, 5, 5]] = -1e-13;
+        assert!(matches!(
+            magnon.magnon_band_onek(&array![0.0]),
+            Err(TbError::InvalidMagnonInvariant {
+                invariant: "positive_semidefinite_bdg",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn spiral_hermitization_shares_longitudinal_roundoff_with_partner_site() {
+        let mut magnon = chain_two_site(0.0, 1.0, 1.0, true);
+        magnon.axis = array![[0., 1., 0.], [0., 0., 1.]];
+        magnon.reference.rotation_axis = array![0., 1., 0.];
+        magnon.reference.q = array![0.125];
+        magnon.hamR = array![[0], [1], [-1], [3], [-3]];
+        magnon.ham = Array3::zeros((5, 6, 6));
+        let k = 2.0_f64.powi(-16);
+        magnon.ham[[0, 1, 1]] = k;
+        magnon.ham[[0, 4, 4]] = -k;
+        for (row, partner, value) in [
+            (1, 2, -0.0625),
+            (2, 1, 0.0625),
+            (3, 4, 0.0625),
+            (4, 3, -0.0625),
+        ] {
+            magnon.ham[[row, 1, 3]] = value;
+            magnon.ham[[partner, 3, 1]] = value;
+        }
+        // At Γ the sine terms cancel analytically. The BdG Hessian has
+        // one zero eigenvalue, and the uncoupled finite band is 2 K.
+        let bands = magnon.magnon_band_onek(&array![0.0]).unwrap();
+        assert!(bands[0].abs() < 1e-10);
+        assert!((bands[1] - 2.0 * k).abs() < 1e-14);
+    }
+
+    #[test]
+    fn rotation_cancellation_keeps_the_spiral_zero_mode() {
+        let mut magnon = chain(0.0, 1.0);
+        let block = array![[-1., 0., -1.], [0., 0., 0.], [1., 0., -1.]];
+        magnon.ham.slice_mut(ndarray::s![1, .., ..]).assign(&block);
+        magnon
+            .ham
+            .slice_mut(ndarray::s![2, .., ..])
+            .assign(&block.t());
+        magnon.reference.q = array![0.125];
+        magnon.reference.rotation_axis = array![0., 1., 0.];
+        let gamma = array![0.0];
+        assert!(magnon.magnon_band_onek(&gamma).unwrap()[0] < 1e-14);
+
+        // At integer and half-integer turns, the DMI block stays entirely
+        // in the mixed longitudinal/transverse sector, with zero curvature.
+        let dmi = array![[0., 0., -0.1], [0., 0., 0.], [0.1, 0., 0.]];
+        magnon.ham.slice_mut(ndarray::s![1, .., ..]).assign(&dmi);
+        magnon
+            .ham
+            .slice_mut(ndarray::s![2, .., ..])
+            .assign(&dmi.t());
+        magnon.hamR = array![[0], [2], [-2]];
+        for turns in [0.25, 0.5] {
+            magnon.reference.q = array![turns];
+            assert_eq!(magnon.magnon_band_onek(&gamma).unwrap()[0], 0.0);
+        }
+
+        // A half-turn around x+z swaps x and z. Its Rxx coefficient
+        // cancels in the rotation matrix itself, not in the dot product.
+        let diagonal = std::f64::consts::FRAC_1_SQRT_2;
+        magnon.reference.rotation_axis = array![diagonal, 0., diagonal];
+        magnon.hamR = array![[0], [1], [-1]];
+        magnon.ham.fill(0.0);
+        magnon.ham[[0, 0, 2]] = 0.1;
+        magnon.ham[[0, 2, 0]] = 0.1;
+        magnon.ham[[1, 0, 0]] = -0.1;
+        magnon.ham[[2, 0, 0]] = -0.1;
+        assert!(magnon.magnon_band_onek(&gamma).unwrap()[0] < 1e-14);
     }
 
     /// Two-site chain: `parallel` moments (ferromagnet) or +z / -z (antiferromagnet).

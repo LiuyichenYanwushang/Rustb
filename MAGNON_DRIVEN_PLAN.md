@@ -2,7 +2,7 @@
 
 > 创建：2026-11-18。用户已要求按本计划逐步实现。
 > 本文件是新方案 A 的执行入口；MAGNON_PLAN.md 是旧模块历史记录，不是新目标的完成证明。
-> 状态：公开二至四阶、周期 Möbius 聚合、固定 S=1/2 共线 HP 和 TB2J 驱动差分已接通。驱动方环、蜂窝带标签 BdG、AA 双层、非共面 3D 和原胞/双倍超胞均已有针对性回归通过；完整发布与剩余的成本、参数范围验收仍待进行。
+> 状态：方案 A 的公开二至四阶、周期 Möbius 聚合、固定 S=1/2 共线 HP 和 TB2J 驱动差分已接通。独立小簇、周期晶格、带标签 BdG、成本与共振边界均有验收证据；双后端全库及文档验证见 §6 台账。此处记录本地代码验收，不代表已推送或发布新版本。
 > **正向时间迁移：** C_q正号积分搭配旧H^(n−m)+nW实际代表H(−t)。现改为H^(m−n)+nW，并同步一阶van Vleck和linear-q。旧Sambe误差4.10e−3 eV且匹配倒序协议；新Sambe与独立正向传播差1.56e−10 eV，电子Floquet OpenBLAS/MKL各164通过。公开二阶pair因双方向权重偶对称而不敏感；不能用电子传播代替动态高阶自旋验收。四阶M≥2H由断连带限参照与推导固定：M=1假项5.22e−2 eV，M=2消至5.92e−17 eV。详见[理论文档](<src/magnon/driven_theory.md>)。
 > 持久目标 ID：`goal-c6dd9882-7e8e-4c0a-af53-a8ddc7ea8c8b`；恢复时先 get_goal
 > 读取最新 revision/activation，不把文档中的状态当成执行授权。
@@ -313,7 +313,8 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
 - T42：扩展到沿三个方向都有真实周期耦合的受驱动简单立方。独立 64 点 Peierls DFT 和单翻转公式核对 Γ→Z→M→R 带路径；2×3×4 网格的 DOS 逐点及积分分别对照直接高斯叠加和单位带权重。
 - T50：Rayon 1/4 线程、逆序插键和共享工作阈值验收后，量化一维周期 z=2/4 的 H=1/2、M=2H。z=2 展开 2 簇，精确工作计数 1552/4588；z=4 展开 7 簇，对应 16994/50286。z=4,H=2 时簇逻辑载荷预算 1 MiB 拒绝、2 MiB 通过；不是 RSS 或 wall time。另核对四阶才可达的单占据非零副本，以及一跳 `ratio<.022` 但两跳强混合的三站反例：原实现跑红，四阶新判据取 RV RVP 的活跃行范数并拒绝，远离极点的对照通过。日志 `target/goal-a-logs/release/round-{3,4,5}-*.log.gz`。
 - T42 AA 动态整块：独立图枚举及稠密 Fock/Sambe 对两个非高对称 q、两种时间方向的带标签 8×8 BdG 共 256 个复矩阵元素逐项比较，不使用排序谱。扩大 `(H,M)=(4,8)→(6,12)` 后最大变化 `9.444e−15 eV`，矩阵反转的粒子/空穴扇区置换残差 ≤`3.123e−17 eV`。`target/goal-a-logs/task-30/aa-full-matrix.json.gz` 与 `target/goal-a-logs/release/round-8-final-*.log.gz`；OpenBLAS 和 MKL 均通过。
-- 待结：发布审计检出普通 Magnon 的弱能标负曲率被绝对门槛夹零；普通/时变 BdG 的舍入与 onsite 能量常数处理已着手，仍需复审以及同一冻结提交的全库发布门槛。
+- T41 最后稳定性门槛：保留 `round-3-weak-saddle-red.log.gz` 的真实失败。修复后拒绝解析曲率 `−2e−14 eV` 的平行鞍点并保留 Γ 零模；普通/时变 BdG 一致消去 onsite 常数，原始交换不变。以投影前旋转与 Fourier 的误差尺度、配对站点各自的 `2/S` 权重、补偿求和与共同 Colpa 判据区分数值相消和可分辨负曲率。最后的双站点螺旋负对照有 `−1.39e−17 eV` 的舍入残差，仅给单端计误差会误拒；复核确认新双端预算覆盖该残差，有限频率仍独立锁定为 `2K`。
+- T51 本地发布门槛：`target/goal-a-logs/release/round-9-*.log.gz`。OpenBLAS 和 MKL release 全库分别 **583 passed、0 failed、3 ignored**（原有手动 profiling）；两个后端各有 4 项活跃 integration 通过，cryspglib 专属项未开启。`fmt --all --check`、release Clippy `--all-targets`（有仓库既有警告）、odd-parity example、doctest（66 普通 + 4 harness）、带 KaTeX header 的 rustdoc 均退出 0。六份独立 Python 数值参照用 `-B -W error` 重跑并即时 gzip 校验。`partner-final-review` 收敛；提交仅包含核对同执行版本的数值代码、回归和对应说明，不夹带工作树中的独立排版变更。
 
 ## 7. 数值与性能策略（不可凭“性能不是问题”跳过）
 

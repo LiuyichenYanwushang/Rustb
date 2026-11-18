@@ -1,7 +1,34 @@
 use super::StrongCouplingOptions;
+use crate::magnon::{MagnonReference, MagnonSolve};
 use crate::{FloquetDrive, HubbardModel, LightMode, Model, TbError};
 use ndarray::array;
 use num_complex::Complex;
+
+#[test]
+fn weak_antiferromagnetic_hopping_still_rejects_parallel_saddle() {
+    let mut electron = Model::<true, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+    electron.set_hop(1e-7, 0, 0, &array![1], None);
+    let spin = HubbardModel::with_uniform_u(electron, 4.0)
+        .unwrap()
+        .floquet_spin_model(&FloquetDrive::new(3.0), &StrongCouplingOptions::default())
+        .unwrap();
+    let magnon = spin
+        .magnon(&array![[0., 0., 1.]], MagnonReference::collinear())
+        .unwrap();
+    // SU(2) gives an exact zero at Γ, but at the zone boundary both
+    // curvatures are -2 K = -2e-14 eV, independent of an eigensolver.
+    assert_eq!(magnon.magnon_band_onek(&array![0.]).unwrap()[0], 0.0);
+    let q = array![0.5];
+    let h = magnon.gen_bdg(&q).unwrap();
+    assert!((h[[0, 0]].re + 2e-14).abs() < 1e-28);
+    assert!(matches!(
+        magnon.magnon_band_onek(&q),
+        Err(TbError::InvalidMagnonInvariant {
+            invariant: "positive_semidefinite_bdg",
+            ..
+        })
+    ));
+}
 
 #[test]
 fn fourth_order_is_deterministic_and_charges_periodic_expansion_budgets() {
