@@ -781,8 +781,8 @@ mod tests {
 
     #[test]
     fn splitting_has_f_wave_angular_dependence() {
-        // Around Gamma the paper predicts Delta omega ∝ cos(3 theta): three
-        // sign changes and a period of 2 pi / 3.
+        // Around Gamma the splitting is cubic and C3-invariant: six sign
+        // changes on a physical Cartesian circle, not a fractional-coordinate ellipse.
         let params = DrivenHubbardParams {
             hopping_ev: 0.05,
             interaction_ev: 1.25,
@@ -793,114 +793,88 @@ mod tests {
         };
         let exchange = DrivenExchange::honeycomb(&params).unwrap();
         let (spin, anisotropy) = (1.5, -0.01);
-        let radius = 0.03f64;
-        let sample = |theta: f64| {
-            let k = [radius * theta.cos(), radius * theta.sin()];
-            let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, &k).unwrap();
+        let magnon = exchange.honeycomb_magnon(spin, anisotropy).unwrap();
+        // B = 2pi (lat^T)^-1, hence q_frac = k_cart lat^T / 2pi.
+        // Read the actual model lattice, including its length scale.
+        let fractional = |radius: f64, theta: f64| {
+            let cart = [radius * theta.cos(), radius * theta.sin()];
+            let q = [
+                (cart[0] * magnon.lat[[0, 0]] + cart[1] * magnon.lat[[0, 1]])
+                    / std::f64::consts::TAU,
+                (cart[0] * magnon.lat[[1, 0]] + cart[1] * magnon.lat[[1, 1]])
+                    / std::f64::consts::TAU,
+            ];
+            // Independent 2x2 inverse recovers Cartesian k and checks the radius.
+            let det =
+                magnon.lat[[0, 0]] * magnon.lat[[1, 1]] - magnon.lat[[0, 1]] * magnon.lat[[1, 0]];
+            let x = std::f64::consts::TAU * (q[0] * magnon.lat[[1, 1]] - q[1] * magnon.lat[[0, 1]])
+                / det;
+            let y = std::f64::consts::TAU * (q[1] * magnon.lat[[0, 0]] - q[0] * magnon.lat[[1, 0]])
+                / det;
+            assert!((x.hypot(y) - radius).abs() < 1e-15);
+            q
+        };
+        let sample = |couplings: &DrivenExchange, radius: f64, theta: f64| {
+            let q = fractional(radius, theta);
+            let (up, down) = couplings
+                .honeycomb_dispersion(spin, anisotropy, &q)
+                .unwrap();
+            assert!(up.is_finite() && down.is_finite());
             up - down
         };
-        // Three sign changes over [0, 2 pi): cos(3 theta).
-        let mut changes = 0;
+        let radius = 0.03;
         let steps = 720;
-        let mut previous = sample(0.0);
-        for index in 1..=steps {
-            let theta = std::f64::consts::TAU * index as f64 / steps as f64;
-            let value = sample(theta);
-            if previous != 0.0 && value.signum() != previous.signum() {
-                changes += 1;
-            }
-            previous = value;
-        }
-        assert_eq!(changes, 3, "expected three sign changes, found {changes}");
-        // ... and odd under k -> -k, which on the circle is theta -> theta + pi.
+        let values: Vec<_> = (0..steps)
+            .map(|index| {
+                sample(
+                    &exchange,
+                    radius,
+                    std::f64::consts::TAU * index as f64 / steps as f64,
+                )
+            })
+            .collect();
+        assert_eq!(values.len(), steps);
+        let peak = values.iter().map(|x| x.abs()).fold(0.0, f64::max);
+        assert!(peak > 1e-9, "no resolved splitting: {peak:e}");
+        // Remove near-zero samples first, then close the sign cycle. A node
+        // landing exactly on the mesh must neither add nor lose a crossing.
+        let signs: Vec<_> = values
+            .iter()
+            .filter(|x| x.abs() > peak * 1e-8)
+            .map(|x| x.signum())
+            .collect();
+        assert!(signs.len() > steps - 12);
+        let changes = signs
+            .iter()
+            .zip(signs.iter().cycle().skip(1))
+            .take(signs.len())
+            .filter(|(left, right)| left != right)
+            .count();
+        assert_eq!(changes, 6);
         for theta in [0.2f64, 1.0, 2.3] {
-            let plus = sample(theta);
-            let opposite = sample(theta + std::f64::consts::PI);
-            assert!((plus + opposite).abs() < 1e-12, "theta = {theta}");
+            let plus = sample(&exchange, radius, theta);
+            let opposite = sample(&exchange, radius, theta + PI);
+            let rotated = sample(&exchange, radius, theta + std::f64::consts::TAU / 3.0);
+            assert!((plus + opposite).abs() < peak * 1e-7);
+            assert!((plus - rotated).abs() < peak * 1e-7);
+            let half = sample(&exchange, radius / 2.0, theta);
+            assert!(
+                (plus / half - 8.0).abs() < 0.03,
+                "not cubic: {plus:e}/{half:e}"
+            );
         }
-    }
-
-    #[test]
-    fn probe_honeycomb_mapping() {
-        use crate::magnon::{MagnonReference, MagnonSolve};
-        use ndarray::{Array1, Array2, Array3, array};
-        let params = DrivenHubbardParams {
-            hopping_ev: 0.05,
-            interaction_ev: 1.25,
-            photon_ev: 4.0,
-            lambda: 0.4,
-            helicity: 1.0,
-            harmonic_max: 8,
+        let zero_chi = DrivenExchange {
+            chirality: 0.0,
+            ..exchange
         };
-        let exchange = DrivenExchange::honeycomb(&params).unwrap();
-        let spin = 1.5f64;
-        let k_paper = -0.01f64;
-        let build = |j1: f64, j2: f64, dmi: f64, sia: f64| {
-            let orb = array![[0.0, 0.0], [1.0 / 3.0, -2.0 / 3.0]];
-            let translations: Vec<[isize; 2]> =
-                vec![[0, 0], [0, 1], [-1, 1], [1, -1], [0, -1], [1, 0], [-1, 0]];
-            let mut ham_r = Array2::<isize>::zeros((translations.len(), 2));
-            for (row, v) in translations.iter().enumerate() {
-                ham_r[[row, 0]] = v[0];
-                ham_r[[row, 1]] = v[1];
-            }
-            let mut ham = Array3::<f64>::zeros((translations.len(), 6, 6));
-            let idx = |r: [isize; 2]| translations.iter().position(|v| *v == r).unwrap();
-            let mut add = |i: usize, j: usize, r: [isize; 2], t: [[f64; 3]; 3]| {
-                let p = idx([-r[0], -r[1]]);
-                let m = idx(r);
-                for al in 0..3 {
-                    for be in 0..3 {
-                        ham[[m, 3 * i + al, 3 * j + be]] += t[al][be];
-                        ham[[p, 3 * j + be, 3 * i + al]] += t[al][be];
-                    }
-                }
-            };
-            for r in [[0, 0], [0, 1], [-1, 1]] {
-                let mut t = [[0.0; 3]; 3];
-                for c in 0..3 {
-                    t[c][c] = j1;
-                }
-                add(0, 1, r, t);
-            }
-            for site in 0..2 {
-                for r in [[1, 0], [1, -1], [0, -1]] {
-                    let mut t = [[0.0; 3]; 3];
-                    for c in 0..3 {
-                        t[c][c] = j2;
-                    }
-                    t[0][1] = -dmi;
-                    t[1][0] = dmi;
-                    add(site, site, r, t);
-                }
-                let mut t = [[0.0; 3]; 3];
-                t[2][2] = sia;
-                add(site, site, [0, 0], t);
-            }
-            MagnonModel::<2>::new(
-                array![[5.0, 0.0], [2.5, 4.33]],
-                orb,
-                Array1::from(vec![spin, spin]),
-                array![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]],
-                ham,
-                ham_r,
-                MagnonReference::collinear(),
-            )
-            .unwrap()
-        };
-        // Landscape convention: J_land = -S^2/2 J_paper, SIA_zz = -K S^2,
-        // chirality as a DMI scaled by S^4.
-        let j1 = -0.5 * spin * spin * exchange.j1;
-        let j2 = -0.5 * spin * spin * exchange.j2;
-        let dmi = exchange.chirality * spin.powi(4);
-        let sia = -k_paper * spin * spin / 2.0;
-        let magnon = build(j1, j2, dmi, sia);
-        for k in [[0.0, 0.0], [1.0 / 3.0, 2.0 / 3.0], [0.5, 0.0], [0.2, 0.1]] {
-            let bands = magnon.magnon_band_onek(&array![k[0], k[1]]).unwrap();
-            let (up, down) = exchange.honeycomb_dispersion(spin, k_paper, &k).unwrap();
-            println!(
-                "k={k:?} solver={:?} paper=({up:.6},{down:.6})",
-                bands.to_vec()
+        for index in 0..steps {
+            assert_eq!(
+                sample(
+                    &zero_chi,
+                    radius,
+                    std::f64::consts::TAU * index as f64 / steps as f64
+                ),
+                0.0
             );
         }
     }
@@ -920,7 +894,71 @@ mod tests {
         let exchange = DrivenExchange::honeycomb(&params).unwrap();
         let (spin, anisotropy) = (1.5, -0.01);
         let magnon = exchange.honeycomb_magnon(spin, anisotropy).unwrap();
-        for k in [[0.0, 0.0], [1.0 / 3.0, 2.0 / 3.0], [0.5, 0.0], [0.2, 0.1]] {
+        for k in [
+            [0.0, 0.0],
+            [1.0 / 3.0, 2.0 / 3.0],
+            [0.5, 0.0],
+            [0.2, 0.1],
+            [0.13, 0.27],
+        ] {
+            // Independent SM geometry in Cartesian coordinates, not
+            // honeycomb_functions (which discards the phase of B).
+            let k_cart = [
+                std::f64::consts::TAU * k[0] / 5.0,
+                std::f64::consts::TAU * (2.0 * k[1] - k[0]) / (5.0 * 3.0f64.sqrt()),
+            ];
+            let phase = |d: [f64; 2]| k_cart[0] * d[0] + k_cart[1] * d[1];
+            let delta = [
+                [0.0, -5.0 / 3.0f64.sqrt()],
+                [2.5, 2.5 / 3.0f64.sqrt()],
+                [-2.5, 2.5 / 3.0f64.sqrt()],
+            ];
+            let b_atomic: Complex<f64> = delta
+                .into_iter()
+                .map(|d| Complex::from_polar(spin * exchange.j1, phase(d)))
+                .sum();
+            let nnn = [
+                [5.0, 0.0],
+                [-2.5, 2.5 * 3.0f64.sqrt()],
+                [-2.5, -2.5 * 3.0f64.sqrt()],
+            ];
+            let a = 3.0 * spin * exchange.j1 - 2.0 * spin * anisotropy
+                + 2.0
+                    * spin
+                    * exchange.j2
+                    * (nnn.iter().map(|&d| phase(d).cos()).sum::<f64>() - 3.0);
+            let d = 2.0
+                * exchange.chirality
+                * spin
+                * spin
+                * nnn.iter().map(|&d| phase(d).sin()).sum::<f64>();
+            // SM B uses embedded delta bonds; Magnon uses cell-periodic R.
+            // Remove exp(i k.tau_B), tau_B=delta_1, without conjugating B.
+            let b = b_atomic * Complex::from_polar(1.0, -phase(delta[0]));
+            let z = Complex::new(0.0, 0.0);
+            // Fixed Nambu order (a_q, b_q, a†_-q, b†_-q):
+            // up=(0,3) carries A+D, down=(1,2) carries A-D.
+            // No sorted eigenvalue comparison can establish these labels.
+            let expected_h = array![
+                [Complex::new(a + d, 0.0), z, z, b],
+                [z, Complex::new(a - d, 0.0), b.conj(), z],
+                [z, b, Complex::new(a - d, 0.0), z],
+                [b.conj(), z, z, Complex::new(a + d, 0.0)],
+            ];
+            let h = magnon.gen_bdg(&array![k[0], k[1]]).unwrap();
+            assert_eq!(h.dim(), (4, 4));
+            for ((row, col), expected) in expected_h.indexed_iter() {
+                assert!(
+                    (h[[row, col]] - expected).norm() < 1e-12,
+                    "q={k:?} Nambu[{row},{col}]: {} != {expected}",
+                    h[[row, col]]
+                );
+            }
+            if k == [0.13, 0.27] {
+                assert!(b.im.abs() > 1e-3, "oracle must resolve complex B");
+                assert!(d.abs() > 1e-6, "oracle must resolve labelled splitting");
+                assert!((h[[0, 0]].re - h[[1, 1]].re - 2.0 * d).abs() < 1e-12);
+            }
             let bands = magnon.magnon_band_onek(&array![k[0], k[1]]).unwrap();
             let (up, down) = exchange.honeycomb_dispersion(spin, anisotropy, &k).unwrap();
             let expected = if up < down { [up, down] } else { [down, up] };
@@ -941,9 +979,9 @@ mod tests {
         // Odd parity swaps the spin branches between the valleys, so the
         // *sorted* spectrum is identical at K and K' while it is split. A
         // global sign flip of `chirality` is not observable in a sorted
-        // frequency spectrum (the branches only swap labels), so this test
-        // pins `|chi|`; the sign is fixed by the analytic `D_k` in
-        // `dispersion_matches_the_analytic_values_at_gamma_and_k`.
+        // frequency spectrum (the branches only swap labels). This final
+        // spectral check pins |chi|; the labelled 4x4 oracle above pins the
+        // mapping's chirality sign as well as the complex pairing phase.
         assert!(at_k[1] - at_k[0] > 1e-6, "{at_k:?}");
         for band in 0..2 {
             assert!(
@@ -960,22 +998,27 @@ mod tests {
         let params = BilayerParams {
             hopping_ev: 0.1,
             interlayer_hopping_ev: 0.05,
-            interaction_ev: 1.0,
+            interaction_ev: 1.7,
         };
         let bilayer = BilayerExchange::static_limit(&params).unwrap();
-        let (t, tp, u) = (0.1, 0.05, 1.0);
+        let (t, tp, u) = (
+            params.hopping_ev,
+            params.interlayer_hopping_ev,
+            params.interaction_ev,
+        );
+        let u3 = u * u * u;
         let t2 = t * t;
         let tp2 = tp * tp;
         assert!(
-            (bilayer.j1 - (4.0 * t2 / u - (16.0 * t2 * t2 + 4.0 * t2 * tp2) / u)).abs() < 1e-15
+            (bilayer.j1 - (4.0 * t2 / u - (16.0 * t2 * t2 + 4.0 * t2 * tp2) / u3)).abs() < 1e-15
         );
-        assert!((bilayer.j2 - 4.0 * t2 * t2 / u).abs() < 1e-18);
+        assert!((bilayer.j2 - 4.0 * t2 * t2 / u3).abs() < 1e-18);
         assert!(
-            (bilayer.jperp - (4.0 * tp2 / u - (16.0 * tp2 * tp2 + 12.0 * t2 * tp2) / u)).abs()
+            (bilayer.jperp - (4.0 * tp2 / u - (16.0 * tp2 * tp2 + 12.0 * t2 * tp2) / u3)).abs()
                 < 1e-15
         );
-        assert!((bilayer.jcross - 4.0 * t2 * tp2 / u).abs() < 1e-18);
-        assert!((bilayer.k1 - 80.0 * t2 * tp2 / u).abs() < 1e-17);
+        assert!((bilayer.jcross - 4.0 * t2 * tp2 / u3).abs() < 1e-18);
+        assert!((bilayer.k1 - 80.0 * t2 * tp2 / u3).abs() < 1e-17);
         assert!((bilayer.k2 - bilayer.k1).abs() < 1e-18);
         assert!((bilayer.k3 + bilayer.k1).abs() < 1e-18);
         assert_eq!(bilayer.chirality, 0.0);
@@ -1024,7 +1067,7 @@ mod tests {
         .unwrap();
         let monolayer = params.hopping_ev;
         assert!(
-            (single.j1 - (4.0 * monolayer * monolayer / u - 16.0 * monolayer.powi(4) / u)).abs()
+            (single.j1 - (4.0 * monolayer * monolayer / u - 16.0 * monolayer.powi(4) / u3)).abs()
                 < 1e-15
         );
         assert_eq!(single.jperp, 0.0);
@@ -1185,10 +1228,16 @@ mod tests {
 
     #[test]
     fn static_limit_reproduces_the_perturbative_exchange() {
-        let p = params(0.0, 1.0);
+        // U != 1 distinguishes the fourth-order U^-3 law from U^-1.
+        // At lambda=0 only m1=m2=m3=0 survives: F gives J2=-4t^4/U^3,
+        // folded G gives +8t^4/U^3; their sum is +4t^4/U^3.
+        let p = DrivenHubbardParams {
+            interaction_ev: 2.0,
+            ..params(0.0, 1.0)
+        };
         let exchange = DrivenExchange::honeycomb(&p).unwrap();
-        let expected_j1 = 4.0 * 0.01 / 1.0 - 16.0 * 1e-4 / 1.0;
-        let expected_j2 = 4.0 * 1e-4 / 1.0;
+        let expected_j1 = 0.0198;
+        let expected_j2 = 0.00005;
         assert!(
             (exchange.j1 - expected_j1).abs() < 1e-15,
             "J1 = {} expected {expected_j1}",
