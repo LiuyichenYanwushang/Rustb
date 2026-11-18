@@ -6141,3 +6141,64 @@ mod regrouped_order_two {
             });
     }
 }
+
+#[test]
+fn validated_harmonic_cache_checks_budget_range_and_coherent_coefficients() {
+    let mut model = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+    model.set_hop(1.0, 0, 0, &array![1], None);
+    let static_cache = model
+        .validated_harmonic_cache(&FloquetDrive::new(1.0), 1, 1 << 20)
+        .unwrap();
+    let hopping = find_R(&model.hamR, &array![1]).unwrap();
+    assert_eq!(
+        static_cache.harmonic_blocks(0)[[hopping, 0, 0]],
+        model.ham[[hopping, 0, 0]]
+    );
+    assert_eq!(
+        static_cache.harmonic_blocks(1)[[hopping, 0, 0]],
+        Complex::new(0.0, 0.0)
+    );
+
+    let drive = FloquetDrive::with_modes(
+        1.0,
+        vec![
+            LightMode::new(1, array![Complex::new(0.2, 0.0)]),
+            LightMode::new(1, array![Complex::new(-0.2, 0.0)]),
+        ],
+    );
+    assert!(model.validated_harmonic_cache(&drive, 1, 1).is_err());
+    let cache = model.validated_harmonic_cache(&drive, 1, 1 << 20).unwrap();
+    assert_eq!((cache.harmonic_min, cache.harmonic_max), (-1, 1));
+    for r in 0..model.hamR.nrows() {
+        assert_eq!(cache.harmonic_blocks(0)[[r, 0, 0]], model.ham[[r, 0, 0]]);
+        assert_eq!(cache.harmonic_blocks(1)[[r, 0, 0]], Complex::new(0.0, 0.0));
+        assert_eq!(cache.harmonic_blocks(-1)[[r, 0, 0]], Complex::new(0.0, 0.0));
+    }
+    assert!(model.validated_harmonic_cache(&drive, -1, 1 << 20).is_err());
+
+    let active =
+        FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.2, 0.1)])]);
+    let active_cache = model.validated_harmonic_cache(&active, 2, 1 << 20).unwrap();
+    let forward = find_R(&model.hamR, &array![1]).unwrap();
+    let reverse = find_R(&model.hamR, &array![-1]).unwrap();
+    for n in -2..=2 {
+        let difference = active_cache.harmonic_blocks(n)[[forward, 0, 0]]
+            - active_cache.harmonic_blocks(-n)[[reverse, 0, 0]].conj();
+        assert!(difference.norm() < 1e-13);
+    }
+}
+
+#[test]
+fn validated_harmonic_cache_rejects_unresolvable_fallback_link() {
+    let mut model = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+    model.set_hop(1.0, 0, 0, &array![1], None);
+    let drive = FloquetDrive::with_modes(
+        1.0,
+        vec![LightMode::new(1, array![Complex::new(1.0e8, 0.0)])],
+    );
+    assert!(
+        model
+            .validated_harmonic_cache(&drive, 1, usize::MAX)
+            .is_err()
+    );
+}

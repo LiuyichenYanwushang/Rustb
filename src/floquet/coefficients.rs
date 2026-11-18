@@ -38,7 +38,7 @@ pub(crate) enum PeierlsFourierMethod {
 /// Index `[i_n, i_r, i, j]` stores the `n = harmonic_min + i_n` Fourier component of hopping
 /// from orbital `j` in cell `R = hamR[i_r]` to orbital `i` at the origin.
 /// This is independent of `k` and reusable across the entire k-mesh.
-pub(super) struct FloquetHarmonicCache {
+pub(crate) struct FloquetHarmonicCache {
     pub(super) harmonic_min: isize,
     pub(super) harmonic_max: isize,
     pub(super) blocks: Array4<Complex<f64>>,
@@ -57,7 +57,7 @@ impl FloquetHarmonicCache {
     }
 
     #[inline]
-    pub(super) fn harmonic_blocks(&self, n: isize) -> ArrayView3<'_, Complex<f64>> {
+    pub(crate) fn harmonic_blocks(&self, n: isize) -> ArrayView3<'_, Complex<f64>> {
         self.blocks.index_axis(Axis(0), self.harmonic_index(n))
     }
 }

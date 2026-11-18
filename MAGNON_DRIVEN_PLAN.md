@@ -282,9 +282,27 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
   仅为相对2.51e-5eV阶数误差的截断预算核验，不宣称1e-12绝对精度。
   NumPy1.20.3标量逆数规避已保留probe的向量warning，不suppress；全部Q逆数校验。
   lead证据target/goal-a-archives/task-8-lead-check.tar.gz gzip校验通过。
-- T10a：只读审计完成（input-design，task-5 completed），不代表T10已实现。
-  确认HubbardModel借用接口可复用、Model::validate不保证厄米/支撑、缓存必须走
-  validated facade并保留DFT fallback；具体输入冻结仍是T10 gate。
+- T04b：verified（task-9）。移除无assert/错误映射probe；库内f-wave改Cartesian真圆、
+  6过零/odd/C3/cubic与零chi；U=2静态系数；非对称complex B经orb相位转cell规范，
+  固定Nambu标签逐4x4元素核对。baseline-final-review独立审查收敛；实施focused12/12，
+  lead已在包含M1的整合版本重跑全部magnon。仅测试变动，不改生产闭式公式。
+- T10/T11/T12（M1）：verified，通用二阶入口/实空间键系数/固定S=1/2共线LSWT已实现，
+  非逐晶格硬编码。max_hopping_order目前仅2，3/4显式Err。复用HubbardModel借用接口、
+  FloquetDrive及受验证共享Bessel/DFT cache；max_cache_bytes先checked尺寸再分配。
+  输入严格spin-major scalar blocks、HC、共同实onsite与uniform U>0；site恒为orbital行，
+  empty Atom不加spin、unassigned orbital也是site，multi-orb Atom明确拒绝。
+  核心含两个doublon方向，直接(t/sqrt|U+mW|)^2避免t²溢出与(t/U)^2*U下溢，
+  W.mul_add(m,U)算分母；不以HF推断半满，实际非零虚跃迁才检查detuning。
+  G0元数据语义挑战ACCEPT并明示后，m1-final-review与cache-final-review分别收敛。
+  cache实施曾误write覆盖tests.rs，已恢复HEAD原文再追加；lead与reviewer核实
+  diff只有61新增/0删除、无旧测试丢失。字段/index保持pub(super)，只cache读取crate可见。
+  lead release新core8/8、cache2/2、all magnon119/119、floquet162/162均exit0；
+  fmt/diff-check/clippy exit0，无新core lint定位，全库96/204 warnings仍未清零。
+  双频dimer与独立DFT锚定、重编号/双方向、K=4e-292极小可表示值、H/M限制、
+  1D AFM链与3D BCC解析LSWT均覆盖。日志target/goal-a-logs/m1/*.log.gz已校验。
+  这些只验二阶，不代表三/四阶、周期高阶簇、四自旋、material lifting/TB2J merge完成。
+- T20b：in_progress（task-12，triangle-reference），独立三角H3/flux/chi/P-polar参照，
+  不依赖新Rust高阶API，不代表M2已实现。
 - 其余：pending。实际状态变化在本节逐项补证据，不靠聊天总结覆盖。
 
 ## 7. 数值与性能策略（不可凭“性能不是问题”跳过）

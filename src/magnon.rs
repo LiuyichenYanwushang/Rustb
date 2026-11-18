@@ -100,6 +100,7 @@
 //! # }
 //! ```
 
+pub mod driven;
 pub mod exchange;
 pub mod floquet;
 pub mod io;

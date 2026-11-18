@@ -355,8 +355,8 @@ mod real_space;
 
 use coefficients::*;
 
-pub(crate) use coefficients::bessel_j;
 pub(crate) use coefficients::bessel_peierls_coeffs;
+pub(crate) use coefficients::{FloquetHarmonicCache, bessel_j};
 use real_space::*;
 
 #[cfg(test)]
@@ -694,6 +694,41 @@ fn q_linear_frequency_scale(harmonic: isize, photon_energy_ev: f64) -> f64 {
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
+    /// Build a validated, reusable Peierls harmonic cache for internal consumers.
+    pub(crate) fn validated_harmonic_cache(
+        &self,
+        drive: &FloquetDrive,
+        harmonic_max: isize,
+        max_bytes: usize,
+    ) -> Result<FloquetHarmonicCache> {
+        self.validate()?;
+        validate_floquet_drive::<DIM>(drive)?;
+        if harmonic_max < 0 {
+            return Err(TbError::Other(format!(
+                "Floquet harmonic_max must be non-negative, got {harmonic_max}"
+            )));
+        }
+        let harmonic_min = harmonic_max
+            .checked_neg()
+            .ok_or_else(|| TbError::Other("Floquet harmonic range overflows".into()))?;
+        let cache_bytes =
+            validate_effective_cache_layout(harmonic_max, self.hamR.nrows(), self.nsta())?;
+        if cache_bytes > max_bytes {
+            return Err(TbError::Other(format!(
+                "Floquet harmonic cache requires {cache_bytes} bytes, budget is {max_bytes}"
+            )));
+        }
+        validate_link_resolvability(self, drive, harmonic_min, harmonic_max)?;
+        Ok(self.floquet_harmonic_cache(
+            drive,
+            harmonic_min,
+            harmonic_max,
+            &PeierlsFourierMethod::Bessel {
+                cutoff_margin: BESSEL_CUTOFF_MARGIN,
+            },
+        ))
+    }
+
     /// Build the coherent finite-wavevector effective model through first
     /// order in one common Cartesian light wavevector.
     ///
@@ -2292,7 +2327,7 @@ fn can_regroup_order_two(
     .all(|bound| bound.is_normal() && bound < f64::MAX / 1024.0)
 }
 
-fn validate_effective_cache_layout(cache_max: isize, n_r: usize, nsta: usize) -> Result<()> {
+fn validate_effective_cache_layout(cache_max: isize, n_r: usize, nsta: usize) -> Result<usize> {
     let harmonic_count = cache_max
         .checked_mul(2)
         .and_then(|value| value.checked_add(1))
@@ -2321,7 +2356,7 @@ fn validate_effective_cache_layout(cache_max: isize, n_r: usize, nsta: usize) ->
             "the effective harmonic cache byte size exceeds isize::MAX".to_string(),
         ));
     }
-    Ok(())
+    Ok(bytes)
 }
 
 fn drive_has_ac_components(drive: &FloquetDrive) -> bool {

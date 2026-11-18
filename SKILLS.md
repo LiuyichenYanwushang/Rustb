@@ -1204,6 +1204,76 @@ upper-half-plane semicircle instead; it is exact for gapped systems but
 converges slowly as soon as a band crosses `E_F`, because the arc ends on the
 Fermi surface.
 
+### Generic Floquet–Hubbard spin reduction (currently second order)
+
+`HubbardModel::floquet_spin_model(&drive, &options)` uses the bare electronic
+hopping, not an electronic van Vleck Hamiltonian or an inferred magnon hopping.
+It returns `magnon::driven::EffectiveSpinModel<DIM>` with quantum pair coefficients,
+a per-cell constant, geometry and observed diagnostics. It does not duplicate
+band/DOS solvers. DIM=1/2/3 and coherent commensurate Peierls modes use the existing
+validated Bessel cache, including its per-link DFT fallback.
+
+This entry defines half filling: P has one electron per input orbital and photon
+zero. It does not solve HF or infer the filling. It strictly requires uniform
+positive U, identical spin-major up/down hopping blocks, zero spin flips, exact
+real-space Hermiticity and a common real scalar onsite (removed as an energy
+origin). Every orbital row is a spin-half site. Atom metadata with multiple
+orbitals per atom is rejected; empty atoms add no spins, and unassigned orbitals
+remain sites. These checks do not certify a material downfolding. SOC/Hund,
+nonuniform U/onsite energies, AC driving and automatic material-spin promotion
+are not supported.
+
+For each undirected bond, counted once per primitive cell,
+
+```text
+K_ij = 2 sum_m (|t_ij^(m)(R)|^2 + |t_ji^(m)(-R)|^2)/(U+m W)
+H_ij = K_ij (S_i . S_j - 1/4),   S=1/2.
+```
+
+Static K is `4|t|^2/U`. General two-frequency drives need both doublon directions:
+`|C_m|` need not equal `|C_-m|`. A blind four-times-one-direction formula fails.
+The coefficient calculation divides by `sqrt(|U+mW|)` before squaring, avoiding
+both a raw `t*t` overflow and an underflowing `(t/U)^2*U` intermediate.
+
+`StrongCouplingOptions` is required. Currently `max_hopping_order=2` is the only
+implemented order; 3/4 return an explicit error, not a lower-order substitute.
+Defaults: `hop_harmonic_max=8`, `intermediate_photon_max=8`,
+`min_detuning_ev=1e-8`, `max_hopping_ratio=0.25`, `max_work=2^24`,
+`max_cache_bytes=256 MiB`. H bounds each hop's Fourier change; M bounds the
+intermediate total photon label. At order two their intersection is `min(H,M)`.
+Only nonzero retained virtual transitions trigger detuning checks; an unreachable
+2U resonance must not invalidate second order. The ratio bound controls individual
+hopping/detuning amplitudes, not the complete many-body operator norm or an error
+certificate. Cache bytes exclude the backend's separately bounded work buffers.
+Sweep H and M: recorded cutoffs/nearest detuning are not a convergence proof.
+
+```rust
+use Rustb::{HubbardModel, Model};
+use Rustb::floquet::{FloquetDrive, LightMode};
+use Rustb::magnon::{MagnonReference, MagnonSolve};
+use Rustb::magnon::driven::StrongCouplingOptions;
+use ndarray::array;
+use num_complex::Complex;
+
+let mut electron = Model::<true, 1>::tb_model(
+    array![[2.0]], array![[0.0], [0.5]], None)?;
+electron.set_hop(0.2, 0, 1, &array![0isize], None);
+electron.set_hop(0.2, 0, 1, &array![-1isize], None);
+let hubbard = HubbardModel::with_uniform_u(electron, 4.0)?;
+let drive = FloquetDrive::with_modes(3.0, vec![
+    LightMode::new(1, array![Complex::new(0.8, 0.0)])]);
+let spin = hubbard.floquet_spin_model(&drive, &StrongCouplingOptions::default())?;
+let axes = array![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]];
+let magnon = spin.magnon(&axes, MagnonReference::collinear())?;
+let bands = magnon.magnon_band_onek(&array![0.25])?;
+```
+
+`magnon` keeps S=1/2 and maps each ordered unit-vector landscape block to `-K/8`.
+It adds no single-ion gap. Axes must be collinear and periodic within the supplied
+cell (`reference.q=0`); build a magnetic electronic supercell first when needed.
+The ordinary `MagnonSolve` checks stability at each requested momentum. LSWT
+frequencies are not the exact finite-cluster quantum singlet–triplet spectrum.
+
 ### Driven exchange and odd-parity magnons
 
 **Scope:** the current microscopic AB generator is the circularly driven,
