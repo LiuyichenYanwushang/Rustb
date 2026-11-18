@@ -650,7 +650,7 @@ requested inverse-frequency order 0, 1, or 2—and, when `order >= 1`, adds
 
 ```math
 \delta_qH_{\rm eff}
-=-\sum_{1\le n\le n_{\rm max}}\frac{q_a a_{ni}a^*_{nj}}{8nW}
+=+\sum_{1\le n\le n_{\rm max}}\frac{q_a a_{ni}a^*_{nj}}{8nW}
 \,D_a\{D_iH_0,D_jH_0\},
 \qquad W=\hbar\Omega_0.
 ```
@@ -761,10 +761,12 @@ H^{(n)}_{ij}(k) = Σ_R t_{ij}(R) C_n(d_{ijR}) e^{i2πk·R}
 ```
 
 ```math
-[H_F(k)]_{in,jm} = H^{(n−m)}_{ij}(k) + nΩ₀ δ_{nm}δ_{ij}
+[H_F(k)]_{in,jm} = H^{(m−n)}_{ij}(k) + nW δ_{nm}δ_{ij},\qquad W=ħΩ₀.
 ```
 
-Quasienergies can be folded to `[−Ω₀/2, Ω₀/2)` via `fold_quasienergy`.
+This is the projection of `H(t)-iħ∂t` in the positive-time basis
+`u(t)=Σ_n u_n exp(+inΩ₀t)`, with `H(t)=Σ_q H^(q) exp(-iqΩ₀t)`.
+Quasienergies (eV) can be folded to `[−W/2, W/2)` via `fold_quasienergy`.
 
 ### Real-space Bessel backend (main path of `floquet_effective_model`)
 
@@ -777,7 +779,7 @@ T_eff(R) = T_0(R) + Σ_{n=1}^{harmonic_max} comm_n(R) / (n W),
 comm_n(R) = (AB)(R) − (BA)(R),
 ```
 
-with `A_R = T_n(R)`, `B_R = T_{−n}(R)` and BOTH discrete convolutions
+with `A_R = T_{−n}(R)`, `B_R = T_n(R)` and BOTH discrete convolutions
 `(AB)(R) = Σ A_{R−R'}B_{R'}` and `(BA)(R) = Σ B_{R−R'}A_{R'}` (the "P − P†"
 single-convolution simplification is wrong for non-commuting blocks).
 For `order = 2`, the implementation additionally evaluates
@@ -791,12 +793,18 @@ with the origin first and remaining rows in lexicographic order;
 `target_hamR` is rejected. Hermiticity
 `T(R) = T(−R)†` is enforced exactly on the final signed sum.
 
-**Commutator-order convention (verified against the literature):** the code
-uses `[H^(n), H^(−n)]/(nħΩ)`, opposite to the literature's
-`[H^{(−n)}, H^{(n)}]/(nħω)`. Combined with our k-convention
-`H(k) = Σ t(R)e^{+i2πk·R}` being the literature's mirror (`H_n(k) = H_n^lit(−k)`),
-the two sign flips cancel for the TR-odd first-order terms — the results match
-the literature pointwise. Do not "fix" either sign in isolation.
+**Forward-time convention and migration:** first order is
+`[H^(−n), H^(n)]/(nW)` (negative harmonic first, positive second).
+The old `H^(n−m)+nW` assembly described `H(-t)`, not the declared `H(t)`.
+The historical claim that a spatial k mirror cancels the commutator sign is
+not a physical proof. Input mode amplitudes, Peierls phases and Fourier
+coefficients are unchanged; old helicity-sensitive CPL outputs must be
+recomputed, not all quasienergies uniformly negated. The two `W^-2` families
+above do not acquire an overall sign flip. The linear-q term has the positive
+sign shown above, from the midpoint expansion of the `H_n: k→k+q` and
+`H_-n: k→k−q` paths. An independent two-colour two-state Peierls forward
+propagator distinguishes the old reversed protocol and passes with the
+migrated Sambe; this is not full-suite or high-order spin-workflow acceptance.
 
 Machinery: `bessel_peierls_coeffs` (recursive one-mode convolutions,
 adaptive tail truncation, `cutoff_margin ∈ [0,48]`, all integer arithmetic
@@ -823,8 +831,10 @@ closed form gives `C_n(e_l) = J_n(α)e^{i2πnl/3}`.
   higher photon sectors). At K the `n ≡ 0 (mod 3)` harmonics vanish and
   `n ≡ 1 (mod 3)` survive with amplitude `3jJ_n(α)` (nilpotent).
 - **D**: order-1 `d_z(k) = 2K_eff Σ_j sin(2πk·b_j)` with
-  `K_eff = −(2J²/ħω) Σ J_n²(α)/n·sin(2πn/3)`; `n = 3m` terms vanish exactly;
-  a sign-flipped implementation fails the test.
+  `K_eff = +(2J²/W) Σ J_n²(α)/n·sin(2πn/3)` in the forward-time convention;
+  `n = 3m` terms vanish exactly. This signed mass is opposite to the old
+  reversed-protocol expectation; the harmonic k mirror in **A** alone does
+  not establish its physical sign.
 
 Second-order van Vleck is enabled by `FloquetEffectiveOptions::with_order(2)`
 and cross-validated against both the legacy k-space path and the full Sambe

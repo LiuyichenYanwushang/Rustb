@@ -1343,7 +1343,8 @@ fn true_fallback_nonzero_bins_preserve_negative_carrier_and_coherent_residual_ph
             .unwrap();
         for left in 0..3 {
             for right in 0..3 {
-                let n = left as isize - right as isize;
+                // Positive-time basis: the Fourier harmonic is source minus target.
+                let n = right as isize - left as isize;
                 let m = -n / carrier;
                 let bessel = j[m.unsigned_abs()] * if m < 0 && m % 2 != 0 { -1.0 } else { 1.0 };
                 let expected = Complex::new(0.0, -1.0).powi(m as i32)
@@ -2290,7 +2291,9 @@ fn weak_sambe_drive_matches_the_analytic_bessel_series() {
         let bloch = Complex::new(0.0, TAU * 0.21).exp();
         for i in 0..3 {
             for j in 0..3 {
-                let harmonic = i as i32 - j as i32;
+                // <e^{+inθ}|H|e^{+imθ}> selects h_(m-n), since
+                // h_l = <e^{+ilθ} H(θ)>; -i∂t still contributes +nW.
+                let harmonic = j as i32 - i as i32;
                 let mut expected = -bessel_j(harmonic as isize, amplitude)
                     * ((-Complex::<f64>::i()).powi(harmonic) * bloch
                         + Complex::<f64>::i().powi(harmonic) * bloch.conj());
@@ -3199,7 +3202,10 @@ fn independent_q_linear_commutator_odd_part(
             &minus_q,
             &amplitude_conjugate,
         );
-        (positive_minus.dot(&negative_minus) - negative_plus.dot(&positive_plus))
+        // Forward-time elimination gives [h_-n,h_n]/(nW). The
+        // intermediate electron momentum fixes the two center shifts:
+        // h_-n h_n passes through k+q, h_n h_-n through k-q.
+        (negative_plus.dot(&positive_plus) - positive_minus.dot(&negative_minus))
             * Complex::new(1.0 / ((harmonic as f64) * photon_energy_ev), 0.0)
     };
     (commutator_at(1.0) - commutator_at(-1.0)) * Complex::new(0.5, 0.0)
@@ -3342,7 +3348,9 @@ fn floquet_effective_q_model_rejects_finite_arithmetic_overflow() {
 
     let subnormal_scale = q_linear_frequency_scale(2, 1.0e308);
     assert!(
-        subnormal_scale.is_finite() && subnormal_scale < 0.0,
+        // The forward-time q correction has +1/(8nW), including when
+        // the representable reciprocal-frequency factor is subnormal.
+        subnormal_scale.is_finite() && subnormal_scale > 0.0,
         "representable inverse-frequency scale was lost: {subnormal_scale}"
     );
 }
@@ -4225,7 +4233,8 @@ fn graphene_harmonics_match_literature_fourier_components() {
     // equals the literature H_n(−k) — asserted elementwise to 1e-12.
     // This pins the Peierls phase sign, the Bessel phase δ_l
     // (including the (−1)^n structure from e^{±in(θ_l+π)}), and the
-    // H_{−n} = H_n† pairing.
+    // H_{−n} = H_n† pairing. This spatial k-mirror identity alone
+    // says nothing about the sign of -i∂t in the Sambe projection.
     let j = -1.0;
     let model = graphene_model(j);
     for alpha in [0.3, 0.8] {
@@ -4278,7 +4287,7 @@ fn graphene_dirac_gap_matches_exact_rotating_frame() {
     // spectrum also contains near-zero states from higher photon
     // sectors (the "minimal spacing" would pick those instead of the
     // physical branch gap).  The outer branches must simultaneously
-    // agree with the first-order van Vleck mass d_z(K) = 3√3·|K_eff|
+    // agree with the first-order van Vleck mass |d_z(K)| = 3√3·|K_eff|
     // (Benchmark D's series), tying the Sambe construction to the
     // real-space effective model.
     let j = -1.0;
@@ -4298,7 +4307,9 @@ fn graphene_dirac_gap_matches_exact_rotating_frame() {
 
     // First-order van Vleck mass at K (Benchmark D series).
     let n_cut = 8;
-    let k_eff = -(2.0 * j * j / w)
+    // [h_-n,h_n]_AA = |q_-n|² - |q_n|²; the signed mass at
+    // K is negative for this fixed drive and sublattice ordering.
+    let k_eff = (2.0 * j * j / w)
         * (1..=n_cut)
             .map(|n| bessel_j(n, alpha).powi(2) / (n as f64) * (TAU * (n as f64) / 3.0).sin())
             .sum::<f64>();
@@ -4344,17 +4355,16 @@ fn graphene_haldane_mass_matches_full_bessel_series() {
     // Benchmark D: the order-1 effective model's mass term must equal
     //
     //   d_z(k) = 2·K_eff·Σ_j sin(2πk·b_j),
-    //   K_eff  = −(2J²/ħω)·Σ_{n=1..N} J_n²(α)/n · sin(2πn/3),
+    //   K_eff  = +(2J²/ħω)·Σ_{n=1..N} J_n²(α)/n · sin(2πn/3),
     //
     // with N the harmonic_max truncation (n = 3m terms vanish exactly).
-    //
-    // Convention note: the van Vleck commutator order here is
-    // [H_n, H_{−n}]/(nħω), opposite to the literature's
-    // [H_{−n}, H_n]/(nħω); combined with our k-convention being the
-    // literature's mirror (H_n(k) = H_n^lit(−k)) the two sign flips
-    // cancel for the TR-odd Haldane term — our d_z(k) equals the
-    // literature's pointwise, and the Dirac-point mass reproduces
-    // the exact rotating-frame leading order +g²/(ħω).
+    // This follows directly from [h_-n,h_n]_AA = |q_-n|² - |q_n|²:
+    // pairing directed bonds e_l,e_l' leaves their sine differences,
+    // with b_j oriented below. At K this gives -g²/(ħω) at weak field.
+    // The spatial identity h_n(k)=h_n^lit(-k) only checks Fourier bond
+    // phases; it cannot change the temporal projection or certify the
+    // commutator order. Forward propagation is checked separately in
+    // time_direction_tests.
     let j = -1.0;
     let model = graphene_model(j);
     let alpha = 0.5;
@@ -4371,12 +4381,12 @@ fn graphene_haldane_mass_matches_full_bessel_series() {
     // b_3 = e_1 − e_0.
     let b_int = [[1, 1], [1, -2], [-2, 1]];
     let k_eff_series = |n_cut: isize| -> f64 {
-        -(2.0 * j * j / w)
+        (2.0 * j * j / w)
             * (1..=n_cut)
                 .map(|n| bessel_j(n, alpha).powi(2) / (n as f64) * (TAU * (n as f64) / 3.0).sin())
                 .sum::<f64>()
     };
-    let d_z_lit = |k: &[f64; 2], n_cut: isize| -> f64 {
+    let d_z_series = |k: &[f64; 2], n_cut: isize| -> f64 {
         2.0 * k_eff_series(n_cut)
             * b_int
                 .iter()
@@ -4405,14 +4415,14 @@ fn graphene_haldane_mass_matches_full_bessel_series() {
         let d_z = ((h[[0, 0]] - h[[1, 1]]).re) / 2.0;
         let d_z_2 = ((h2[[0, 0]] - h2[[1, 1]]).re) / 2.0;
         assert!(
-            (d_z - d_z_lit(&k, 8)).abs() < 1e-8,
+            (d_z - d_z_series(&k, 8)).abs() < 1e-8,
             "k = {k:?}: d_z {d_z} vs series {expect}",
-            expect = d_z_lit(&k, 8)
+            expect = d_z_series(&k, 8)
         );
         assert!(
-            (d_z_2 - d_z_lit(&k, 2)).abs() < 1e-8,
+            (d_z_2 - d_z_series(&k, 2)).abs() < 1e-8,
             "k = {k:?}: harmonic_max = 2: d_z {d_z_2} vs series {}",
-            d_z_lit(&k, 2)
+            d_z_series(&k, 2)
         );
         // The neglected tail (n = 3m vanishes; n = 4, 5 are the
         // next contributors at ~1e-8 for α = 0.5).
@@ -5261,7 +5271,8 @@ fn floquet_weak_drive_matches_first_order_peierls() {
 
     let nsta = model.nsta();
     let sector = |n: isize| -> usize { (n + trunc.n_max) as usize };
-    let h_q1 = hf[[sector(0) * nsta, sector(-1) * nsta]];
+    // Row n=0, column m=+1 selects h_+1 in the positive-time basis.
+    let h_q1 = hf[[sector(0) * nsta, sector(1) * nsta]];
     let expected = -amp * (TAU * k[0]).sin();
     assert!(
         (h_q1.re - expected).abs() < 1e-9,
@@ -5392,8 +5403,8 @@ fn floquet_incident_basis_public_api_example() {
 //
 // Two independent analytic predictions are checked (fractional-k units,
 // Ω = ħω in eV, κ = |e|A₀/ħ):
-//   Level I  (exact in field): d_eff = d_0 + (2i/Ω) Σ_{n>0} (d_n × d_{−n})/n
-//   Level II (weak field):     δd_CPL = (A_x A_y / 4π²Ω)(∂_x d × ∂_y d),
+//   Level I  (exact in field): d_eff = d_0 + (2i/Ω) Σ_{n>0} (d_{−n} × d_n)/n
+//   Level II (weak field):     δd_CPL = -(A_x A_y / 4π²Ω)(∂_x d × ∂_y d),
 //                              δd_A²  = (κ² / 16π²)(∂_x² + ∂_y²) d.
 
 /// Two-band QWZ-type model on a rectangular lattice `lat` (rows = lattice
@@ -5510,7 +5521,9 @@ fn independent_heff(
     for n in 1..=harmonic_max {
         let hp = independent_dressed_harmonic(model, k, drive, n, n_time);
         let hm = independent_dressed_harmonic(model, k, drive, -n, n_time);
-        let comm = hp.dot(&hm) - hm.dot(&hp);
+        // The zero-photon Schur complement pairs intermediate ±n
+        // denominators ∓nW into [h_-n,h_n]/(nW).
+        let comm = hm.dot(&hp) - hp.dot(&hm);
         let scale = Complex::new(1.0 / ((n as f64) * drive.omega0_ev), 0.0);
         h_eff.scaled_add(scale, &comm);
     }
@@ -5585,7 +5598,7 @@ fn exotic_drive(kappa: f64, alpha: f64, omega: f64) -> FloquetDrive {
 #[test]
 fn two_band_level1_matches_independent_integration() {
     // Level I: for a general two-band model the first-order van Vleck
-    // effective model must equal H^(0) + Σ_{n≥1} [H^(n),H^(−n)]/(nΩ) with
+    // effective model must equal H^(0) + Σ_{n≥1} [H^(−n),H^(n)]/(nΩ) with
     // H^(n) the dressed harmonics — checked against an independent
     // time-integration of the dressed Hamiltonian, for circular, elliptical
     // and exotic drives on both square and rectangular lattices.
@@ -5628,8 +5641,11 @@ fn two_band_level1_matches_independent_integration() {
 fn two_band_weak_field_matches_cross_product() {
     // Level II: in the weak-field limit the helicity-odd and -even parts of
     // δd obey (fractional k, lat = I)
-    //   δd_CPL = η (κ²/4π²Ω) (∂_x d × ∂_y d),
-    //   δd_A²  =   (κ²/16π²) (∂_x² + ∂_y²) d.
+    //   δd_CPL = -η (κ²/4π²Ω) (∂_x d × ∂_y d),
+    //   δd_A²  =    (κ²/16π²) (∂_x² + ∂_y²) d.
+    // Indeed h_±1 = -κ(D_x H ± iη D_y H)/2, so
+    // [h_-1,h_+1] = iηκ²[D_x H,D_y H]/2
+    // = -ηκ²(D_x d × D_y d)·σ. The time average is unchanged.
     // They are isolated from the exact (all-κ) code result by a two-point
     // Richardson extrapolation in κ, removing the O(κ⁴) truncation error.
     let (tx, ty, tz, m) = (1.0, 0.7, 0.5, 0.8);
@@ -5691,12 +5707,12 @@ fn two_band_weak_field_matches_cross_product() {
     let cpl_coeff = richardson(cpl(kappa1), cpl(kappa1 / 2.0), kappa1);
     let a2_coeff = richardson(a2(kappa1), a2(kappa1 / 2.0), kappa1);
 
-    // Predicted coefficients (η = +1): cross/(4π²Ω) = cross/(TAU²Ω),
+    // Predicted coefficients (η = +1): -cross/(4π²Ω) = -cross/(TAU²Ω),
     // lap/(16π²) = lap/(4·TAU²).
     let cpl_pred = [
-        cross[0] / (TAU * TAU * omega),
-        cross[1] / (TAU * TAU * omega),
-        cross[2] / (TAU * TAU * omega),
+        -cross[0] / (TAU * TAU * omega),
+        -cross[1] / (TAU * TAU * omega),
+        -cross[2] / (TAU * TAU * omega),
     ];
     let a2_pred = [
         lap[0] / (4.0 * TAU * TAU),
@@ -5719,7 +5735,7 @@ fn two_band_weak_field_matches_cross_product() {
         );
     }
 
-    // Elliptical generalization: δd_CPL = (A_x A_y / 4π²Ω) (∂_x d × ∂_y d).
+    // Elliptical generalization: δd_CPL = -(A_x A_y / 4π²Ω) (∂_x d × ∂_y d).
     // Isolate the helicity-odd part by A_y → −A_y; the O(κ⁴) truncation
     // error is ~ (A δ)² relative ≈ 3e-3, i.e. ~1e-6 absolute — below the
     // 1e-5 tolerance.
@@ -5737,7 +5753,7 @@ fn two_band_weak_field_matches_cross_product() {
         (dp[2] - dm[2]) / 2.0,
     ];
     for comp in 0..3 {
-        let pred = ax * ay * cross[comp] / (TAU * TAU * omega);
+        let pred = -ax * ay * cross[comp] / (TAU * TAU * omega);
         assert!(
             (cpl_ell[comp] - pred).abs() < 1e-5,
             "elliptical CPL[{comp}]: {:.6} vs analytic {:.6}",

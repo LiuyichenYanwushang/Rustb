@@ -64,7 +64,7 @@ def sambe(u, w, a, b, m):
     for i, n in enumerate(photons):
         for j, k in enumerate(photons):
             v[6*i:6*i+6, 6*j:6*j+6] = (
-                cf[int(n-k)] * forward + cb[int(n-k)] * forward.conj().T)
+                cf[int(k-n)] * forward + cb[int(k-n)] * forward.conj().T)
     p = np.zeros((len(h0), 4), complex)
     p[6*m:6*m+6] = p6
     q = np.real(np.diag(np.eye(len(h0)) - p @ p.conj().T)) > .5
@@ -77,6 +77,28 @@ def sambe(u, w, a, b, m):
     require(np.all(np.isfinite(r)) and np.max(np.abs(h0[q]*r[q]+1)) < 3e-16,
             'invalid Q inverse or denominator inversion residual')
     return h0, v, p, r, cf, cb, states
+
+
+def temporal_projection_check(v, a, b, m):
+    # Direct temporal inner product, independent of coefficient/block indexing.
+    # Positive-time basis e^(+in theta) has -i W d_theta eigenvalue +nW.
+    # This verifies the Fourier projection only, not a forward propagator oracle.
+    _, forward, _, _ = fock()
+    theta = 2 * np.pi * np.arange(4096) / 4096
+    drive = np.exp(-1j * (a*np.cos(theta) + b*np.sin(2*theta)))
+    n, k = 1, 0
+    h_time = (drive[:, None, None] * forward +
+              drive.conj()[:, None, None] * forward.conj().T)
+    projected = np.mean(np.exp(1j*(k-n)*theta)[:, None, None] * h_time, axis=0)
+    actual = v[6*(n+m):6*(n+m)+6, 6*(k+m):6*(k+m)+6]
+    wrong = np.mean(np.exp(1j*(n-k)*theta)[:, None, None] * h_time, axis=0)
+    residual = float(np.linalg.norm(actual-projected))
+    wrong_residual = float(np.linalg.norm(actual-wrong))
+    require(residual < 1e-13 and wrong_residual > .1,
+            'positive-time temporal projection/sign negative control')
+    return dict(basis='exp(+in theta)', block='h_(m-n)+nW',
+                projection_residual=residual, reversed_index_residual=wrong_residual,
+                physical_boundary='projection check, not forward-evolution certification')
 
 
 def dense_orders(v, p, r):
@@ -167,15 +189,18 @@ def run(report):
         report['static'].append(dict(t=t, gap=gap, exact_residual=residual, **diagnostic))
         require(residual < 2e-13, 'independent analytic static gap mismatch')
     h0, v, p, r, cf, cb, states = sambe(u, w, .8, .45, 10)
+    report['temporal_convention'] = temporal_projection_check(v, .8, .45, 10)
     h2, h4, chain, folded = dense_orders(v, p, r)
     hermitian = float(np.linalg.norm(v-v.conj().T))
     require(hermitian < 1e-13, 'reverse link/Sambe hermiticity')
     c2 = coefficients(.8, .45, 20, 4096)
     dft_residual = max(abs(cf[n]-c2[n]) for n in cf)
     require(dft_residual < 1e-14, 'DFT grid convergence')
-    k2 = 2*sum((abs(cf[n])**2+abs(cb[n])**2)/(u+n*w) for n in range(-10, 11))
-    wrong = 4*sum(abs(cf[n])**2/(u+n*w) for n in range(-10, 11))
-    reverse = 4*sum(abs(cb[n])**2/(u+n*w) for n in range(-10, 11))
+    # h_n connects zero photon to -n: R denominator is U-nW here.
+    # Equivalently relabel by destination m and use |C_-m|^2/(U+mW).
+    k2 = 2*sum((abs(cf[n])**2+abs(cb[n])**2)/(u-n*w) for n in range(-10, 11))
+    wrong = 4*sum(abs(cf[n])**2/(u-n*w) for n in range(-10, 11))
+    reverse = 4*sum(abs(cb[n])**2/(u-n*w) for n in range(-10, 11))
     q = np.any(np.abs(p) > 0, axis=1) == False
     report['denominators'] = dict(min_abs_Q=float(np.min(np.abs(h0[q]))),
         inverse_residual=float(np.max(np.abs(h0[q]*r[q]+1))),

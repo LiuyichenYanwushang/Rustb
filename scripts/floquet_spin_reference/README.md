@@ -40,8 +40,11 @@ reference, not a general solver's convergence policy.
   `t exp[-i phase(theta)]`, multiplying `c_0sigma^dag c_1sigma`; its reverse
   uses the conjugate phase and reversed fermion operator. Both are independently
   quadrature-sampled, not constructed by a Bessel library.
-- `C_n=mean(exp(+in theta) exp(-i phase))`.
-  Sambe block `(n,m)=V^(n-m)+delta_nm(U Nd+nW)`, n,m in [-M,M].
+- `C_q=mean(exp(+iq theta) exp(-i phase))`, so `H(theta)=sum_q h_q exp(-iq theta)`.
+  In the positive-time basis `exp(+in theta)`, temporal projection gives
+  Sambe block `(n,m)=V^(m-n)+delta_nm(U Nd+nW)`, n,m in [-M,M].
+  The derivative `-i W d/dtheta` supplies `+nW`; an `h_q` hop changes photon
+  `m -> m-q`. Neither the coefficients nor the resolvent `-1/(Nd U+nW)` change.
   All differences up to 2M are sampled: there is no accidental single-hop
   cutoff M inside the finite Sambe matrix.
 - P is zero-photon, one electron per site, in tensor spin basis
@@ -69,7 +72,13 @@ reference, not a general solver's convergence policy.
 The expansion convention follows the plan's canonical Hermitian Lowdin/SW
 contract; that formula alone is not an independent proof. Here exact numerical
 block diagonalization and the static analytic gap are separate oracles. There
-is no fit to infer H2/H4 from the exact energies.
+is no fit to infer H2/H4 from the exact energies. Dense perturbation theory and
+finite-Sambe ED are independent of the Rust sparse implementation, **not** an
+independent forward-time physical certification: they share the same temporal
+projection. The direct time-quadrature projection check rejects the old reversed
+index, but is not a propagator. The driven dimer's scalar exchange can be blind
+to time reversal; forward evolution must be checked separately (root's electronic
+forward-propagation oracle), not inferred from this dimer's unchanged K2/H4.
 
 ## Recorded validation and negative controls
 
@@ -82,8 +91,8 @@ values (small LAPACK/platform-dependent last-bit differences are expected):
 | Static exact matrix vs `(sqrt(U^2+16t^2)-U)/2` singlet gap, max residual | 4.03e-15 eV |
 | Static H2 / H4 coefficients | `4/U`, `-16/U^3` |
 | Two-direction K2 (unit t) | 1.1713956489238915 /eV |
-| Wrong `4 sum |C_n(+d)|^2/(U+nW)` | .9052831117188355 /eV |
-| Same wrong formula on reverse direction | 1.4375081861289474 /eV |
+| Wrong `4 sum |C_q(+d)|^2/(U-qW)` | 1.4375081861289476 /eV |
+| Same wrong formula on reverse direction | .9052831117188354 /eV |
 | max difference `|C_n|-|C_-n|` | .1663085000701247 |
 | Dense H2 vs two-direction exchange matrix | 2.22e-16 /eV |
 | DFT 2048 vs 4096 maximum coefficient difference | 6.94e-17 |
@@ -92,7 +101,10 @@ values (small LAPACK/platform-dependent last-bit differences are expected):
 | Lowest four raw eigenvectors' total P weight | 2.92e-19 |
 
 The correct exchange is
-`K2=2 sum_n (|C_n(+d)|^2+|C_n(-d)|^2)/(U+nW)`.
+`K2=2 sum_q (|C_q(+d)|^2+|C_q(-d)|^2)/(U-qW)`.
+Equivalently, relabel by destination photon n and use `C_-n` over `U+nW`.
+The summed K2 is unchanged by this migration because both link directions are
+included; the individually wrong one-direction values exchange places.
 Swapping directions leaves it invariant. The wrong expressions average to K2
 but individually fail: arbitrary scalar two-frequency phases need both
 intermediate doublon directions, not a blind four-times-one-direction rule.
@@ -115,7 +127,24 @@ not a claim of absolute 1e-12 accuracy. Unscaled coefficient differences are
 M10 at t=.16 is 3.18e-14. Tested bounds are 1e-9 eV for exact matrix change,
 1e-8/1e-7 for coefficient changes, and 1e-8 for M8 boundary weight. Smallest
 reported sixth-order residual remains well above numerical eigensolve noise
-(max 3.98e-14 eV).
+(max 4.39e-14 eV in the positive-time rerun).
+
+## Positive-time migration evidence (task-16)
+
+The old `h_(n-m)+nW` assembly was an internally consistent reversed-time
+reference, not a physical forward-time certificate. On 2026-11-18 it was replaced
+by the explicit positive-time temporal projection above; no old logs were
+rewritten. The strict-warning rerun is retained in
+[positive-time JSON](../../target/goal-a-logs/task-16/dimer-positive-time.json)
+and its [gzip-tested archive](../../target/goal-a-logs/task-16/dimer-positive-time.json.gz).
+Source SHA-256 is
+`87d18eb7914be85514b06149d112b3bd3242e8b7f85d857dae14a727cd8bbf8c`.
+`OPENBLAS_NUM_THREADS=1 python3 -W error scripts/floquet_spin_reference/dimer_reference.py --self-check`
+exits 0. Direct time-quadrature projection residual is `1.62e-15`, while the old
+reversed index gives `.47039147`; K2 remains `1.1713956489238915 /eV`.
+H2/H24 halving ratios remain `15.52/15.87` and `61.34/63.30`.
+This evidence is a refreshed independent implementation check, not an extension
+of the dimer's physical coverage to a helicity-sensitive forward propagator.
 
 ## Retained failures and handoff
 
@@ -131,3 +160,114 @@ They are runtime evidence, not committed golden fixtures.
 
 Source is handed to lead for independent review. No claim of a completed T20,
 M1, production generality, or review convergence is made by this script.
+
+---
+
+# Independent Hubbard triangle reference (T20b only)
+
+This is a separate static, finite-state NumPy reference for the triangular
+three-site strong-coupling term. It does not alter the dimer oracle, production
+Rust, or claim T20/M2 completion.
+
+## Reproduce
+
+```sh
+mkdir -p target/goal-a-logs/task-12
+OPENBLAS_NUM_THREADS=1 python3 -W error scripts/floquet_spin_reference/triangle_reference.py --self-check > target/goal-a-logs/task-12/self-check-review2.json 2>&1
+status=$?
+gzip -c target/goal-a-logs/task-12/self-check-review2.json > target/goal-a-logs/task-12/self-check-review2.json.gz
+gzip -t target/goal-a-logs/task-12/self-check-review2.json.gz
+test "$status" -eq 0
+```
+
+The script requires only Python/NumPy, uses the fixed small `U=4`, `Phi=.41`,
+`t=.1,.05,.025` workload (20 Fock states, P dimension 8, 11 continuation
+steps), and emits parameters, diagnostics, residuals, source hash and software
+versions. Failures are retained as traceback JSON; warnings are errors. No
+sweeps, broad tolerances, cargo, or fitted coefficients are involved.
+
+## Convention and checks
+
+- Three fermions occupy six **spin-major** modes `(up0,up1,up2,down0,down1,down2)`;
+  the complete `C(6,3)=20` basis is explicitly generated and creation/annihilation
+  signs are applied at each operator. P consists of one fermion per site. Its
+  tensor order is `(s0,s1,s2)` and each Fock sign is computed from creator-order
+  inversions, not hard-coded by visual intuition.
+- The directed matrix-element labels are `t_01=t_12=t_20=exp(i Phi/3)` and
+  reverse links are their conjugates, so the index cycle product
+  `t_01 t_12 t_20=exp(i Phi)`. Each `t_ij` multiplies `c_i^dag c_j`, so the
+  **electron arrows run oppositely**, `1->0, 2->1, 0->2`. This fixes the flux
+  orientation and the reported chirality sign. The dimensionless hopping matrix
+  has unit amplitude; t is the external expansion parameter.
+- `H0=U*N_d`, `Q=1-P`, and the dense scalar resolvent is `R=Q/(0-H0)`,
+  evaluated elementwise with checked finite, nonzero denominators. The only
+  virtual states are the 12 non-P states in this canonical N=3 sector.
+  Independently evaluated matrix products are `H2=P V R V P` and
+  `H3=P V R V R V P`; the physical retained block is `t^2 H2+t^3 H3`.
+- An independently assembled 64-element product-Pauli basis uses
+  `S=(I,X/2,Y/2,Z/2)`. Every matrix is projected with its diagonal
+  Hilbert-Schmidt Gram normalization `Tr(T_a^dag T_b)/8` and reconstructed;
+  residuals are reported. Chirality is explicitly
+  `chi_012=S0 dot (S1 cross S2)` and its coefficient is independently obtained
+  by `Tr(chi H3)/Tr(chi^2)`. Fock-to-tensor signs and the spin-half chi norm are
+  checked. The full reported H3 tensor coefficients expose the pair/three-site
+  terms, rather than labeling every nonzero term “chirality.”
+- The zero-flux cancellation has an independent particle-hole proof, not just
+  a numerical assertion. On the fixed `N=L=3` sector, the canonical unitary
+  `C c_{i sigma} C^dagger=c^dagger_{i sigma}` maps
+  `U n_{i up}n_{i down}` to itself plus `U(1-n_i)`; summed over sites the extra
+  term is `U(L-N)=0`. It preserves P and Q. For `i != j`, it maps
+  `c_i^dag c_j` to `-c_j^dag c_i`, hence real hopping `V` to `-V`.
+  Meanwhile `C S C^dagger=(-Sx,+Sy,-Sz)`, a proper global pi rotation about y.
+  Since `R=Q/(0-H0)` is invariant, `C(P V R V R V P)C^dagger=-H3`; but this
+  block is SU(2)-invariant, so it is also unchanged by that pi rotation. Thus
+  the full `H3` matrix vanishes at Phi=0: no real-cosine cyclic scalar or pair
+  term may be retained. The script checks the whole computed matrix norm.
+- At nonzero flux, particle-hole maps `V(Phi)` to `-V(-Phi)`, so the
+  SU(2)-invariant third-order block is flux-odd. For the stated index product
+  and opposite electron-arrow convention, all three starting sites and both
+  orientations give the measured chirality coefficient `-24 sin(Phi)/U^2`:
+  the two negative resolvent denominators multiply positively and fermionic
+  spin-permutation signs fix the remaining sign. The script checks this 24
+  factor and sign against the independent Fock trace projection.
+- Exact ED diagonalizes the full 20-state `H0+tV`, follows the P8 subspace from
+  t=0 by rolling overlap with the previous P8 frame (not repeated P-weight
+  selection or lowest-energy labels); it separately reports P-sector overlap.
+  It checks minimum continuation overlap and spectral separation, then forms
+  `Psi polar(P^dagger Psi)^dagger`. Hermitization first measures and bounds the
+  anti-Hermitian residual. The JSON reports isometry, polar positivity/Hermiticity,
+  and tracked-subspace eigen residuals. Halving ratios must lie in strict windows
+  for `||H_exact-t^2 H2||=O(t^3)` and
+  `||H_exact-t^2 H2-t^3 H3||=O(t^4)`; these checks are not a fit.
+
+The exact finite-system test and tensor trace decomposition are separate
+validation paths. This is a reference, not by itself production acceptance.
+
+## Disconnected driven dimers: a fourth-order window counterexample
+
+```bash
+OPENBLAS_NUM_THREADS=1 python3 -B -W error scripts/floquet_spin_reference/disconnected_reference.py --self-check
+```
+
+With strictly band-limited hopping (`H=1`), two disconnected dimers must have
+an additive fourth-order spin operator. An intermediate window of `M=1`
+incorrectly removes some signed `m=±2` paths without removing the folded term:
+`||H4_AB−H4_A⊗I−I⊗H4_B||_F ≈ 0.0522 eV`. A complete window `M=2` reduces the
+residual below `6e-17 eV`. Independent time projection anchors the block sign;
+no Rust kernel is called. This is a check of window consistency, not of
+convergence in the physical drive harmonic cutoff.
+
+## Four-site plaquette: static ED and forward time propagation
+
+```bash
+OPENBLAS_NUM_THREADS=1 python3 -B -W error scripts/floquet_spin_reference/square_reference.py --self-check
+```
+
+The static check uses NumPy (`--static-only`); SciPy is needed for the driven
+ODE. The full 70-state ED tests the fourth-order polar-aligned spin matrix,
+including the effects of omitting folded terms or two doublons. The driven
+case integrates the time-dependent electron Hamiltonian, aligns the periodic
+Floquet modes in the zero-photon gauge, and checks signed chirality. At
+`t=0.10 eV`, the positive-time plaquette has `κ012≈+4.967e-6 eV`; reversing
+the protocol changes its sign. These values are independent reference results,
+not themselves an end-to-end test of the Rust periodic API.

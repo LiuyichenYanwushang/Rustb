@@ -1,16 +1,17 @@
-//! Real-space, half-filled single-orbital Floquet–Hubbard spin reduction.
-//!
-//! The initial implementation retains hopping order two only. It does not use
-//! an electronic van Vleck Hamiltonian or infer hopping/U from a static magnon.
-//! Every input orbital is one spin-half site. A common scalar onsite energy is
-//! removed; reported constants are relative to the singly occupied manifold.
+#![doc = include_str!("driven_theory.md")]
 
 use super::{Magnon, MagnonReference};
-use crate::floquet::{FloquetDrive, validate_floquet_drive};
+use crate::floquet::{FloquetDrive, drive_has_ac_components, validate_floquet_drive};
 use crate::{HubbardModel, RMatrixData, Result, TbError};
 use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex;
 use std::collections::BTreeMap;
+
+mod aggregate;
+mod cluster;
+mod operators;
+mod periodic;
+pub use periodic::PeriodicSpinSite;
 
 fn invalid(invariant: &'static str, message: impl Into<String>) -> TbError {
     TbError::InvalidMagnonInvariant {
@@ -22,20 +23,24 @@ fn invalid(invariant: &'static str, message: impl Into<String>) -> TbError {
 /// Hopping expansion and numerical budgets, not inverse-frequency order.
 #[derive(Clone, Debug)]
 pub struct StrongCouplingOptions {
-    /// Highest hopping order. Currently only 2 is implemented; others fail.
+    /// Highest retained hopping order (2, 3 or 4).
     pub max_hopping_order: usize,
-    /// Single-hop Fourier change |delta m| <= H.
+    /// Single-hop Fourier change $\lvert\Delta m\rvert\le H$.
     pub hop_harmonic_max: isize,
-    /// Intermediate total photon label |m| <= M, independently of H.
+    /// Intermediate total photon label $\lvert m\rvert\le M$, independently
+    /// of $H$.
     pub intermediate_photon_max: isize,
     /// Reject an actually coupled virtual charge state closer than this (eV).
     pub min_detuning_ev: f64,
-    /// Upper bound on individual |t_ij^(m)/(U+mW)|, not an accuracy certificate.
+    /// Upper bound on individual
+    /// $\lvert t^{(m)}\_{ij}/(U+mW)\rvert$, not an accuracy certificate.
     pub max_hopping_ratio: f64,
-    /// Budget for directed bond/photon contributions (backend has its own caps).
+    /// Budget for directed bond/photon contributions and higher-order cluster work.
     pub max_work: usize,
     /// Budget for the shared Peierls coefficient cache, in bytes.
     pub max_cache_bytes: usize,
+    /// Budget for higher-order cluster numeric payload, excluding the cache and BLAS scratch.
+    pub max_cluster_bytes: usize,
 }
 
 impl Default for StrongCouplingOptions {
@@ -48,16 +53,17 @@ impl Default for StrongCouplingOptions {
             max_hopping_ratio: 0.25,
             max_work: 1 << 24,
             max_cache_bytes: 256 << 20,
+            max_cluster_bytes: 256 << 20,
         }
     }
 }
 
 impl StrongCouplingOptions {
     pub fn validate(&self) -> Result<()> {
-        if self.max_hopping_order != 2 {
+        if !(2..=4).contains(&self.max_hopping_order) {
             return Err(invalid(
                 "supported_hopping_order",
-                "only hopping order two is implemented",
+                "supported hopping orders are 2, 3 and 4",
             ));
         }
         if self.hop_harmonic_max < 0 || self.intermediate_photon_max < 0 {
@@ -81,7 +87,7 @@ impl StrongCouplingOptions {
                 "max_hopping_ratio must lie strictly between zero and one",
             ));
         }
-        if self.max_work == 0 || self.max_cache_bytes == 0 {
+        if self.max_work == 0 || self.max_cache_bytes == 0 || self.max_cluster_bytes == 0 {
             return Err(invalid(
                 "positive_expansion_budgets",
                 "work and cache budgets must be positive",
@@ -91,7 +97,8 @@ impl StrongCouplingOptions {
     }
 }
 
-/// One undirected quantum interaction K S_i(0).S_j(R), counted once per cell.
+/// One undirected quantum interaction
+/// $K\\,\mathbf S\_i(\mathbf 0)\cdot\mathbf S\_j(\mathbf R)$, counted once per cell.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpinPair<const DIM: usize> {
     pub i: usize,
@@ -101,29 +108,50 @@ pub struct SpinPair<const DIM: usize> {
     pub exchange_ev: f64,
 }
 
+/// A scalar chirality $\mathbf S\_i\cdot(\mathbf S\_j\times\mathbf S\_k)$ with the given site order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpinChirality<const DIM: usize> {
+    pub sites: [PeriodicSpinSite<DIM>; 3],
+    pub coefficient_ev: f64,
+}
+
+/// A product $(\mathbf S\_i\cdot\mathbf S\_j)(\mathbf S\_k\cdot\mathbf S\_l)$ on four distinct sites.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpinQuartic<const DIM: usize> {
+    pub pairs: [[PeriodicSpinSite<DIM>; 2]; 2],
+    pub coefficient_ev: f64,
+}
+
 /// Observed diagnostics. No cutoff-convergence error is claimed without a sweep.
 #[derive(Clone, Debug)]
 pub struct StrongCouplingDiagnostics {
     pub hopping_order: usize,
     pub hop_harmonic_max: isize,
     pub intermediate_photon_max: isize,
-    /// At second order both cutoffs constrain the same single virtual label.
+    /// Effective intermediate photon window; static higher-order expansions use zero.
     pub active_photon_max: isize,
+    /// Number of terms examined in the direct second-order pair sum.
     pub virtual_terms_visited: usize,
     pub nonzero_virtual_terms: usize,
+    /// Minimum active one-hop detuning; higher-order poles are checked separately.
     pub nearest_detuning_ev: Option<f64>,
     pub largest_hopping_ratio: f64,
+    /// Number of nontrivial periodic induced clusters expanded through the requested order.
+    pub expanded_clusters: usize,
 }
 
 /// Quantum spin-half coefficients; not a second band/geometry solver hierarchy.
 ///
-/// The constant includes -K/4 for each pair, so the isolated triplet has zero
-/// shift. Use `magnon` for a periodic collinear LSWT reference in this same cell.
+/// The constant is relative to the bare singly occupied manifold. At second
+/// order each bond has constant $-K/4$. Higher orders may also contribute
+/// chiral and four-spin operators.
 #[derive(Clone, Debug)]
 pub struct EffectiveSpinModel<const DIM: usize> {
     lat: Array2<f64>,
     orb: Array2<f64>,
     pairs: Vec<SpinPair<DIM>>,
+    chiralities: Vec<SpinChirality<DIM>>,
+    quartics: Vec<SpinQuartic<DIM>>,
     constant_ev: f64,
     diagnostics: StrongCouplingDiagnostics,
 }
@@ -138,6 +166,12 @@ impl<const DIM: usize> EffectiveSpinModel<DIM> {
     pub fn pairs(&self) -> &[SpinPair<DIM>] {
         &self.pairs
     }
+    pub fn chiralities(&self) -> &[SpinChirality<DIM>] {
+        &self.chiralities
+    }
+    pub fn quartics(&self) -> &[SpinQuartic<DIM>] {
+        &self.quartics
+    }
     pub fn constant_ev(&self) -> f64 {
         self.constant_ev
     }
@@ -145,10 +179,11 @@ impl<const DIM: usize> EffectiveSpinModel<DIM> {
         &self.diagnostics
     }
 
-    /// Convert quantum pairs to ordinary unit-vector-landscape `Magnon`.
+    /// Convert the reduced spin polynomial to a collinear quadratic `Magnon`.
     ///
-    /// Spins remain S=1/2; no single-ion gap or material-spin promotion is added.
-    /// Axes must be collinear and periodic in the supplied cell (reference q=0).
+    /// Spins remain $S=1/2$; no single-ion gap or material-spin promotion is
+    /// added. Axes must be collinear and periodic in the supplied cell
+    /// (reference $\mathbf q=\mathbf 0$).
     /// Build a magnetic electronic supercell first when needed. The ordinary
     /// magnon solver, not this conversion, tests stability at each momentum.
     pub fn magnon(
@@ -181,8 +216,8 @@ impl<const DIM: usize> EffectiveSpinModel<DIM> {
             }
             row /= norm2.sqrt();
         }
-        let direction = normalized.row(0);
-        for row in normalized.rows() {
+        let direction = normalized.row(0).to_owned();
+        for mut row in normalized.rows_mut() {
             let cross = [
                 row[1] * direction[2] - row[2] * direction[1],
                 row[2] * direction[0] - row[0] * direction[2],
@@ -194,23 +229,71 @@ impl<const DIM: usize> EffectiveSpinModel<DIM> {
                     "noncollinear LSWT is outside this interface",
                 ));
             }
+            let sign = if row.dot(&direction) < 0.0 { -1.0 } else { 1.0 };
+            // Snap tolerated roundoff tilts to an exactly collinear stationary state.
+            row.zip_mut_with(&direction, |v, axis| *v = sign * axis);
         }
         let size = n
             .checked_mul(3)
             .ok_or_else(|| invalid("spin_matrix_size", "spin matrix size overflow"))?;
         let mut blocks = BTreeMap::new();
         blocks.insert([0; DIM], Array2::<f64>::zeros((size, size)));
-        for pair in &self.pairs {
-            let reverse = negate(pair.cell)?;
-            // Ordered landscape pairs: E=-sum e_i J_ij e_j, S_i=S_j=1/2.
-            let value = -pair.exchange_ev / 8.0;
-            for (cell, i, j) in [(pair.cell, pair.i, pair.j), (reverse, pair.j, pair.i)] {
-                let block = blocks
-                    .entry(cell)
-                    .or_insert_with(|| Array2::zeros((size, size)));
-                for component in 0..3 {
-                    block[[3 * i + component, 3 * j + component]] += value;
+        // Each undirected operator contributes two transposed landscape blocks.
+        let mut add_pair =
+            |[i, j]: [PeriodicSpinSite<DIM>; 2], scalar: f64, axial: [f64; 3]| -> Result<()> {
+                let mut cell = [0; DIM];
+                for (a, value) in cell.iter_mut().enumerate() {
+                    *value = j.cell[a].checked_sub(i.cell[a]).ok_or_else(|| {
+                        invalid(
+                            "translation_overflow",
+                            "magnon pair relative cell overflows",
+                        )
+                    })?;
                 }
+                let [x, y, z] = axial;
+                let tensor = [[scalar, z, -y], [-z, scalar, x], [y, -x, scalar]];
+                for (r, transpose) in [(cell, false), (negate(cell)?, true)] {
+                    let block = blocks
+                        .entry(r)
+                        .or_insert_with(|| Array2::zeros((size, size)));
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            let (row, col) = (3 * i.orbital + a, 3 * j.orbital + b);
+                            block[if transpose { [col, row] } else { [row, col] }] += tensor[a][b];
+                        }
+                    }
+                }
+                Ok(())
+            };
+        for pair in &self.pairs {
+            add_pair(
+                [
+                    PeriodicSpinSite {
+                        orbital: pair.i,
+                        cell: [0; DIM],
+                    },
+                    PeriodicSpinSite {
+                        orbital: pair.j,
+                        cell: pair.cell,
+                    },
+                ],
+                -pair.exchange_ev / 8.0,
+                [0.0; 3],
+            )?;
+        }
+        for term in &self.chiralities {
+            let [i, j, k] = term.sites;
+            for (pair, spectator) in [([i, j], k), ([j, k], i), ([k, i], j)] {
+                let axis = normalized.row(spectator.orbital);
+                let axial = std::array::from_fn(|a| (-term.coefficient_ev / 16.0) * axis[a]);
+                add_pair(pair, 0.0, axial)?;
+            }
+        }
+        for term in &self.quartics {
+            let [p, q] = term.pairs;
+            for (pair, [k, l]) in [(p, q), (q, p)] {
+                let alignment = normalized.row(k.orbital).dot(&normalized.row(l.orbital));
+                add_pair(pair, (-term.coefficient_ev / 32.0) * alignment, [0.0; 3])?;
             }
         }
         let mut keys: Vec<_> = blocks.keys().copied().collect();
@@ -251,23 +334,24 @@ struct Bond<const DIM: usize> {
     j: usize,
     cell: [isize; DIM],
     block: usize,
-    reverse_block: usize,
 }
 
 impl<const DIM: usize, R: RMatrixData> HubbardModel<DIM, R> {
     /// Generate half-filled single-orbital quantum spin coefficients in real space.
     ///
-    /// This defines P (one electron/site, photon zero), not an HF/filling check.
-    /// Uniform U>0, a common real onsite, strict spin independence and Hermitian
-    /// hopping are required. Provided Atom metadata must not describe multiple
+    /// This defines $P$ (one electron/site, photon zero), not an HF/filling
+    /// check. Uniform $U>0$, a common real onsite, strict spin independence and
+    /// Hermitian hopping are required. Provided Atom metadata must not describe multiple
     /// orbitals per atom. Site identity is always the orbital row: empty atoms
     /// add no spins, and unassigned orbitals are independent sites just as in
     /// orbital-only models. Metadata checks cannot certify a material downfolding.
-    /// No SOC/Hund or phenomenological S>1/2 lifting.
+    /// No SOC/Hund or phenomenological $S>1/2$ lifting.
     ///
-    /// Only hopping order 2 is currently supported. The Peierls cache, coherent
-    /// modes, Bessel backend and per-link DFT fallback are the existing backend.
-    /// Requested cutoffs are not a convergence certificate: sweep H and M.
+    /// Orders 3 and 4 use periodic induced clusters and Möbius subtraction.
+    /// For time-dependent fourth order, the intermediate window must be at least
+    /// twice the single-hop harmonic cutoff to preserve disconnected cancellation.
+    /// Requested cutoffs are not a convergence certificate: sweep the harmonic
+    /// cutoff and allow the intermediate window to grow with it.
     pub fn floquet_spin_model(
         &self,
         drive: &FloquetDrive,
@@ -352,9 +436,6 @@ impl<const DIM: usize, R: RMatrixData> HubbardModel<DIM, R> {
                             j,
                             cell: *cell,
                             block: *block,
-                            reverse_block: reverse_block.ok_or_else(|| {
-                                invalid("hermitian_hopping", "missing reverse hopping block")
-                            })?,
                         });
                     }
                 }
@@ -364,20 +445,53 @@ impl<const DIM: usize, R: RMatrixData> HubbardModel<DIM, R> {
         let cut = options
             .hop_harmonic_max
             .min(options.intermediate_photon_max);
+        let mut active = options.clone();
+        if options.max_hopping_order > 2 {
+            if !drive_has_ac_components(drive) || bonds.is_empty() {
+                active.hop_harmonic_max = 0;
+                active.intermediate_photon_max = 0;
+            } else if options.max_hopping_order == 4 {
+                let complete = options.hop_harmonic_max.checked_mul(2).ok_or_else(|| {
+                    invalid(
+                        "complete_photon_window",
+                        "fourth-order photon window overflows",
+                    )
+                })?;
+                if options.intermediate_photon_max < complete {
+                    return Err(invalid(
+                        "complete_photon_window",
+                        format!("driven fourth order needs a photon window M >= 2H = {complete}"),
+                    ));
+                }
+                active.intermediate_photon_max = complete;
+            } else {
+                // Two interior photon labels can differ by as much as 2M.
+                // A third-order path may use (+1,-2,+1) even when M=1.
+                active.hop_harmonic_max = options.hop_harmonic_max.min(cut.saturating_mul(2));
+                active.intermediate_photon_max = cut;
+            }
+        } else {
+            active.hop_harmonic_max = cut;
+            active.intermediate_photon_max = cut;
+        }
+        let cut = active.hop_harmonic_max.min(active.intermediate_photon_max);
         let mut diagnostics = StrongCouplingDiagnostics {
-            hopping_order: 2,
+            hopping_order: options.max_hopping_order,
             hop_harmonic_max: options.hop_harmonic_max,
             intermediate_photon_max: options.intermediate_photon_max,
-            active_photon_max: cut,
+            active_photon_max: active.intermediate_photon_max,
             virtual_terms_visited: 0,
             nonzero_virtual_terms: 0,
             nearest_detuning_ev: None,
             largest_hopping_ratio: 0.0,
+            expanded_clusters: 0,
         };
         let mut result = EffectiveSpinModel {
             lat: model.lat.clone(),
             orb: model.orb.clone(),
             pairs: Vec::new(),
+            chiralities: Vec::new(),
+            quartics: Vec::new(),
             constant_ev: 0.0,
             diagnostics: diagnostics.clone(),
         };
@@ -403,14 +517,20 @@ impl<const DIM: usize, R: RMatrixData> HubbardModel<DIM, R> {
                 ),
             ));
         }
-        let cache = model.validated_harmonic_cache(drive, cut, options.max_cache_bytes)?;
+        let cache = model.validated_harmonic_cache(
+            drive,
+            active.hop_harmonic_max,
+            options.max_cache_bytes,
+        )?;
         for bond in bonds {
             let mut exchange = 0.0;
             for photon in -cut..=cut {
-                let block = cache.harmonic_blocks(photon);
+                // From source sector 0 to target m in the positive-time basis.
+                // Construct the reverse by conjugation, exactly as in the cluster kernel.
+                let index = [bond.block, bond.i, bond.j];
                 for coefficient in [
-                    block[[bond.block, bond.i, bond.j]],
-                    block[[bond.reverse_block, bond.j, bond.i]],
+                    cache.harmonic_blocks(-photon)[index],
+                    cache.harmonic_blocks(photon)[index].conj(),
                 ] {
                     diagnostics.virtual_terms_visited += 1;
                     let magnitude = coefficient.norm();
@@ -471,6 +591,57 @@ impl<const DIM: usize, R: RMatrixData> HubbardModel<DIM, R> {
                 exchange_ev,
             });
         }
+        if options.max_hopping_order > 2 {
+            let mut work_used = work;
+            let correction = aggregate::aggregate_clusters(
+                model,
+                &rows,
+                &cache,
+                u,
+                drive.omega0_ev,
+                &active,
+                options.max_cluster_bytes,
+                &mut work_used,
+            )?;
+            diagnostics.expanded_clusters = correction.visited_clusters;
+            result.constant_ev += correction.constant_ev;
+            let mut pairs = BTreeMap::new();
+            for pair in result.pairs.drain(..).chain(correction.pairs) {
+                let sum = pairs.entry((pair.i, pair.j, pair.cell)).or_insert(0.0);
+                *sum += pair.exchange_ev;
+                if !sum.is_finite() {
+                    return Err(invalid(
+                        "finite_spin_exchange",
+                        "periodic pair exchange overflowed",
+                    ));
+                }
+            }
+            result.pairs = pairs
+                .into_iter()
+                .map(|((i, j, cell), exchange_ev)| SpinPair {
+                    i,
+                    j,
+                    cell,
+                    exchange_ev,
+                })
+                .collect();
+            result.chiralities = correction
+                .chirality
+                .into_iter()
+                .map(|(sites, coefficient_ev)| SpinChirality {
+                    sites,
+                    coefficient_ev,
+                })
+                .collect();
+            result.quartics = correction
+                .quartic
+                .into_iter()
+                .map(|(pairs, coefficient_ev)| SpinQuartic {
+                    pairs,
+                    coefficient_ev,
+                })
+                .collect();
+        }
         if !result.constant_ev.is_finite() {
             return Err(invalid(
                 "finite_spin_constant",
@@ -482,6 +653,9 @@ impl<const DIM: usize, R: RMatrixData> HubbardModel<DIM, R> {
     }
 }
 
+#[cfg(test)]
+#[path = "driven_periodic_tests.rs"]
+mod periodic_tests;
 #[cfg(test)]
 #[path = "driven_tests.rs"]
 mod tests;

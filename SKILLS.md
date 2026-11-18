@@ -891,7 +891,12 @@ plotting failures propagate as errors.
 ## 7. Floquet driven systems
 
 `LightMode::a_complex` is the rescaled vector potential `eA/hbar`, in inverse
-lattice-length units.
+lattice-length units. The unchanged input is `a(t)=Re sum_l a_l exp(-ilΩt)`
+with Peierls phase `exp(-i a(t)·d)` and `H(t)=sum_q H^(q) exp(-iqΩt)`.
+Positive-time basis `exp(+inΩt)` gives Sambe blocks `H^(m-n)+nW`,
+`W=omega0_ev=hbar*Ω`. The first van Vleck correction is
+`sum_(n>0) [H^(-n),H^(n)]/(nW)` (negative harmonic first);
+the two `W^-2` double-commutator families are unchanged by this migration.
 
 ```rust
 let drive = FloquetDrive::with_modes(
@@ -999,8 +1004,10 @@ can change floating-point rounding.
 For a Cartesian bond `d = (R + tau_j - tau_i) * lat`, it represents
 `D_a H_0` by the real-space block `i*d_a*t(R)`.  It constructs
 `G_n = a_n·D H_0`, forms `{G_n,G_n†}` by real-space convolution, and applies
-`q·D` by multiplying every resulting output hopping by `i*q·d_out`.  The
-same-harmonic complex amplitudes are summed coherently.  Both
+`q·D` by multiplying every resulting output hopping by `i*q·d_out`. The
+correction is `+sum_(n>0) (q·D){G_n,G_n†}/(8nW)`: the positive sign follows
+from the midpoint expansion of the `H_n: k→k+q` and `H_-n: k→k−q` paths.
+The same-harmonic complex amplitudes are summed coherently.  Both
 `|a_n·d| << 1` and `|q·d| << 1` are required; distinct coherent wavevectors
 need a graded or commensurate-supercell treatment rather than this method.
 The correction includes only positive harmonics through the effective
@@ -1204,12 +1211,27 @@ upper-half-plane semicircle instead; it is exact for gapped systems but
 converges slowly as soon as a band crosses `E_F`, because the arc ends on the
 Fermi surface.
 
-### Generic Floquet–Hubbard spin reduction (currently second order)
+### Generic Floquet–Hubbard spin reduction through fourth order
+
+Detailed LaTeX theory is included in `Rustb::magnon::driven` rustdoc from
+[the theory text](<src/magnon/driven_theory.md>). It distinguishes completed and
+pending stages and derives the canonical fourth-order normalization.
+**Forward-time migration:** with `H^(q)=<exp(+iqΩt)H(t)>`, current electronic
+Sambe and private Fock kernels use `exp(+inΩt)` basis and `H^(m-n)+nW`,
+`W=hbar*Ω`; a harmonic q sends total photon label m to m−q.
+The old `H^(n-m)+nW` matrix described `H(-t)`, not the declared forward protocol.
+Mode amplitudes and the Peierls/Fourier definitions are unchanged. Old
+helicity-sensitive CPL outputs must be recomputed, not uniformly negated;
+a spatial k mirror is not a physical proof that the old signs were correct.
+The two-direction second-order pair weight is even in m and cannot detect this
+error. An independent two-colour two-state Peierls forward-propagation case
+passes after migration. This electronic test does not certify dynamic high-order
+spin chirality; the periodic and spin-wave paths have separate tests.
 
 `HubbardModel::floquet_spin_model(&drive, &options)` uses the bare electronic
 hopping, not an electronic van Vleck Hamiltonian or an inferred magnon hopping.
-It returns `magnon::driven::EffectiveSpinModel<DIM>` with quantum pair coefficients,
-a per-cell constant, geometry and observed diagnostics. It does not duplicate
+It returns `magnon::driven::EffectiveSpinModel<DIM>` with `pairs()`,
+`chiralities()`, `quartics()`, a per-cell constant, geometry and observed diagnostics. It does not duplicate
 band/DOS solvers. DIM=1/2/3 and coherent commensurate Peierls modes use the existing
 validated Bessel cache, including its per-link DFT fallback.
 
@@ -1220,8 +1242,8 @@ real-space Hermiticity and a common real scalar onsite (removed as an energy
 origin). Every orbital row is a spin-half site. Atom metadata with multiple
 orbitals per atom is rejected; empty atoms add no spins, and unassigned orbitals
 remain sites. These checks do not certify a material downfolding. SOC/Hund,
-nonuniform U/onsite energies, AC driving and automatic material-spin promotion
-are not supported.
+nonuniform U/onsite energies, spatially varying fields and automatic material-spin
+promotion are not supported.
 
 For each undirected bond, counted once per primitive cell,
 
@@ -1235,12 +1257,17 @@ Static K is `4|t|^2/U`. General two-frequency drives need both doublon direction
 The coefficient calculation divides by `sqrt(|U+mW|)` before squaring, avoiding
 both a raw `t*t` overflow and an underflowing `(t/U)^2*U` intermediate.
 
-`StrongCouplingOptions` is required. Currently `max_hopping_order=2` is the only
-implemented order; 3/4 return an explicit error, not a lower-order substitute.
+`StrongCouplingOptions::max_hopping_order` accepts 2, 3 or 4 (default 2).
 Defaults: `hop_harmonic_max=8`, `intermediate_photon_max=8`,
 `min_detuning_ev=1e-8`, `max_hopping_ratio=0.25`, `max_work=2^24`,
-`max_cache_bytes=256 MiB`. H bounds each hop's Fourier change; M bounds the
-intermediate total photon label. At order two their intersection is `min(H,M)`.
+`max_cache_bytes=256 MiB`, `max_cluster_bytes=256 MiB`. H bounds each hop's
+Fourier change; M bounds the intermediate total photon label. At order two
+their intersection is `min(H,M)`. A third-order step can change the label by
+`2M` between two retained intermediate replicas. Time-dependent fourth order
+requires `M >= 2H` for disconnected cancellation; increasing M beyond `2H`
+does not add four-hop paths at fixed H. Increase H together with its required
+M to check convergence. Without time-dependent modes the higher-order path
+uses the zero replica only.
 Only nonzero retained virtual transitions trigger detuning checks; an unreachable
 2U resonance must not invalidate second order. The ratio bound controls individual
 hopping/detuning amplitudes, not the complete many-body operator norm or an error

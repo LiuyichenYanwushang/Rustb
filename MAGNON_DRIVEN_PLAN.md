@@ -2,7 +2,8 @@
 
 > 创建：2026-11-18。用户已要求按本计划逐步实现。
 > 本文件是新方案 A 的执行入口；MAGNON_PLAN.md 是旧模块历史记录，不是新目标的完成证明。
-> 状态：规划与 M0.1 执行中。M1–M6 尚未实现，不得沿用旧目标的 complete 状态。
+> 状态：M0/M1 已实现。公开二至四阶、周期 Möbius 聚合和固定 S=1/2 共线 HP 已接通；方格静态、三角静态/驱动截断、带符号 BdG 矩阵回归通过。材料自旋/TB2J、蜂窝及双层/3D/超胞和最终收敛验收仍未完成。
+> **正向时间迁移：** C_q正号积分搭配旧H^(n−m)+nW实际代表H(−t)。现改为H^(m−n)+nW，并同步一阶van Vleck和linear-q。旧Sambe误差4.10e−3 eV且匹配倒序协议；新Sambe与独立正向传播差1.56e−10 eV，电子Floquet OpenBLAS/MKL各164通过。公开二阶pair因双方向权重偶对称而不敏感；不能用电子传播代替动态高阶自旋验收。四阶M≥2H由断连带限参照与推导固定：M=1假项5.22e−2 eV，M=2消至5.92e−17 eV。详见[理论文档](<src/magnon/driven_theory.md>)。
 > 持久目标 ID：`goal-c6dd9882-7e8e-4c0a-af53-a8ddc7ea8c8b`；恢复时先 get_goal
 > 读取最新 revision/activation，不把文档中的状态当成执行授权。
 
@@ -287,7 +288,7 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
   固定Nambu标签逐4x4元素核对。baseline-final-review独立审查收敛；实施focused12/12，
   lead已在包含M1的整合版本重跑全部magnon。仅测试变动，不改生产闭式公式。
 - T10/T11/T12（M1）：verified，通用二阶入口/实空间键系数/固定S=1/2共线LSWT已实现，
-  非逐晶格硬编码。max_hopping_order目前仅2，3/4显式Err。复用HubbardModel借用接口、
+  非逐晶格硬编码。此阶段提交 `22716ce` 当时仅开放二阶；本页顶部及下方记录后续接线。复用HubbardModel借用接口、
   FloquetDrive及受验证共享Bessel/DFT cache；max_cache_bytes先checked尺寸再分配。
   输入严格spin-major scalar blocks、HC、共同实onsite与uniform U>0；site恒为orbital行，
   empty Atom不加spin、unassigned orbital也是site，multi-orb Atom明确拒绝。
@@ -301,9 +302,10 @@ verified 必须附命令、退出码、测试数量/残差、review 处理和具
   双频dimer与独立DFT锚定、重编号/双方向、K=4e-292极小可表示值、H/M限制、
   1D AFM链与3D BCC解析LSWT均覆盖。日志target/goal-a-logs/m1/*.log.gz已校验。
   这些只验二阶，不代表三/四阶、周期高阶簇、四自旋、material lifting/TB2J merge完成。
-- T20b：in_progress（task-12，triangle-reference），独立三角H3/flux/chi/P-polar参照，
-  不依赖新Rust高阶API，不代表M2已实现。
-- 其余：pending。实际状态变化在本节逐项补证据，不靠聊天总结覆盖。
+- T20b：verified。独立三角固定非零磁通，精确 ED 正交对齐；H2 残差减半比约 8，H2+H3 约 16；零磁通单独验粒子–空穴抵消。淘汰把零磁通误判三阶斜率的宽窗口，`-W error` 自检通过。
+- T21–T23、T30 聚合及 T40 固定自旋半接线：公开二至四阶与普通 Magnon 共线转换。逐实际子集嵌入，统一正向 Sambe 和厄米逆键，保留不同晶胞的物理站点。静态方格 K1/K2/K3、三组四自旋系数、非零晶胞三角手性（H=2,M=1 的 ±2 单跳）、严格带标签 χ/四点 BdG、子集预算均通过；不代表原胞/超胞或双层全门槛已完成。已处理相消前尺度、FMA、稀疏工作量与极小系数 Gram 归一化。
+- 本轮证据：`target/goal-a-logs/m2/round-8-*.log.gz` 中 OpenBLAS magnon147/147、floquet164/164，fmt/clippy/rustdoc exit0；最终 `final-driven-{openblas,mkl}.log.gz` 各 38/38，二进制尺度复审收敛。二聚体、三角、断连和方环独立参照均在 `-B -W error` 下通过；方环同时验证静态真 ED 与动态正向传播的手性方向，尚未作为 Rust 动态方环的逐算符对照。
+- 待验收：高阶方环正向传播对生产对照、蜂窝/双层/3D/超胞与收敛，材料自旋/TB2J（差分测试夹具待接入）。实际状态以本节证据为准。
 
 ## 7. 数值与性能策略（不可凭“性能不是问题”跳过）
 

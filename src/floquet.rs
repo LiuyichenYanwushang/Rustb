@@ -5,6 +5,18 @@
 //! introduced through a Peierls phase on every hopping link, then Fourier
 //! transformed into a commensurate Sambe Hamiltonian.
 //!
+//! # Fourier and forward-time convention
+//!
+//! With `H^(q) = <exp(+iq Omega t) H(t)>`, the inverse is
+//! `H(t) = sum_q H^(q) exp(-iq Omega t)`. In the periodic basis
+//! `exp(+in Omega t)`, `H(t) - i hbar d/dt` has blocks `H^(m-n) + n W`.
+//! Earlier code combined `H^(n-m)` with `+n W` and therefore described `H(-t)`.
+//! The Sambe assembly and first-order van Vleck/linear-q terms are migrated
+//! together; Peierls phases and Fourier coefficients are unchanged.
+//! See [`crate::magnon::driven`] for the projection derivation and scope.
+//! A forward-time propagator regression, not a spatial k mirror or an unsigned
+//! gap comparison, fixes this physical time direction.
+//!
 //! # Physical scope
 //!
 //! This module implements the **long-wavelength Peierls coupling** of a
@@ -150,12 +162,12 @@
 //!
 //! ```math
 //! \left[H_F(\mathbf k)\right]_{i n,j m} =
-//! H^{(n-m)}_{ij}(\mathbf k)
+//! H^{(m-n)}_{ij}(\mathbf k)
 //! +
-//! n\Omega_0\,\delta_{nm}\delta_{ij}.
+//! nW\,\delta_{nm}\delta_{ij},\qquad W=\hbar\Omega_0.
 //! ```
 //!
-//! The photon energy `Omega_0` is stored as `FloquetDrive::omega0_ev` in eV, so
+//! The photon energy `W` is stored as `FloquetDrive::omega0_ev` in eV, so
 //! the returned Floquet eigenvalues are also in eV.
 //!
 //! Build the real-space Sambe model with [`Floquet::floquet_model`], then use
@@ -165,16 +177,16 @@
 //!
 //! ```math
 //! \varepsilon_F =
-//! \left(\varepsilon+\frac{\Omega_0}{2}\right)\bmod \Omega_0
+//! \left(\varepsilon+\frac{W}{2}\right)\bmod W
 //! -
-//! \frac{\Omega_0}{2}.
+//! \frac{W}{2}.
 //! ```
 //! The implementation compares distances after taking a signed remainder,
-//! avoiding overflow in the equivalent expression `epsilon + Omega_0/2`.
+//! avoiding overflow in the equivalent expression `epsilon + W/2`.
 //!
 //! # Van Vleck effective model (high-frequency expansion)
 //!
-//! When `Omega_0` is large compared to the bandwidth, the photon-dressed bands
+//! When the photon energy `W = hbar Omega_0` is large compared to the bandwidth, the photon-dressed bands
 //! are well separated and the physics can be captured by a **same-size** static
 //! model obtained through the van Vleck expansion:
 //!
@@ -185,7 +197,7 @@
 //! H^{(0)}(\mathbf k)
 //! +
 //! \sum_{n=1}^{n_{\max}}
-//! \frac{[H^{(n)}(\mathbf k), H^{(-n)}(\mathbf k)]}{nW}
+//! \frac{[H^{(-n)}(\mathbf k), H^{(n)}(\mathbf k)]}{nW}
 //! +
 //! H_{\mathrm{eff}}^{(2)}(\mathbf k)
 //! +O(W^{-3}).
@@ -196,7 +208,7 @@
 //!
 //! The Fourier blocks `H^{(n)}(k)` are defined in the [Peierls phase
 //! section](#peierls-phase-and-fourier-blocks) above.  Each commutator term
-//! `[H^(n), H^(-n)]` captures a virtual photon-exchange process where the
+//! `[H^(-n), H^(n)]` captures a virtual photon-exchange process where the
 //! system absorbs a photon of energy `n W` and immediately re-emits it,
 //! staying in the same photon sector but acquiring an effective hopping
 //! correction of order `1/W`.
@@ -352,6 +364,8 @@
 
 mod coefficients;
 mod real_space;
+#[cfg(test)]
+mod time_direction_tests;
 
 use coefficients::*;
 
@@ -380,7 +394,8 @@ use std::f64::consts::TAU;
 /// One commensurate Fourier component of the vector potential.
 ///
 /// `a_complex` stores the complex amplitude of
-/// `a(t) = Re[a_complex * exp(-i * harmonic * omega0 * t)]`, where
+/// `a(t) = Re[a_complex * exp(-i * harmonic * Omega0 * t)]`, where
+/// `Omega0 = W/hbar` is the base angular frequency and
 /// `a = e A / hbar` has units of inverse length matching `Model::lat`.
 ///
 /// In formulas,
@@ -417,11 +432,11 @@ impl LightMode {
 /// \operatorname{Re}\sum_\alpha
 /// \mathbf a_\alpha e^{-il_\alpha\Omega_0 t}. $$
 ///
-/// `omega0_ev` is the photon energy `Omega_0` in eV.  All `LightMode::harmonic`
-/// values are integer multiples of this base frequency.
+/// `omega0_ev` is the photon energy $W=\hbar\Omega_0$ in eV. Each
+/// `LightMode::harmonic` multiplies the base angular frequency $\Omega_0$.
 #[derive(Clone, Debug)]
 pub struct FloquetDrive {
-    /// Base photon energy `Omega_0` in eV.
+    /// Base photon energy $W=\hbar\Omega_0$ in eV.
     pub omega0_ev: f64,
     /// Harmonic components of the drive.
     pub modes: Vec<LightMode>,
@@ -690,7 +705,7 @@ fn coherent_positive_harmonic_amplitudes<const DIM: usize>(
 
 #[inline]
 fn q_linear_frequency_scale(harmonic: isize, photon_energy_ev: f64) -> f64 {
-    -photon_energy_ev.recip() / (8.0 * (harmonic as f64))
+    photon_energy_ev.recip() / (8.0 * (harmonic as f64))
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
@@ -750,15 +765,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// ```math
     /// \delta_q H_{\rm eff}
-    /// =-\sum_{n>0}\frac{q_a a_{ni}a^*_{nj}}{8nW}
+    /// =+\sum_{n>0}\frac{q_a a_{ni}a^*_{nj}}{8nW}
     /// \partial_{k_a}\{H_i,H_j\},
     /// \qquad H_i=\partial_{k_i}H_0,
     /// ```
     ///
-    /// with `W = drive.omega0_ev`.  The minus sign and factor `1/8` follow
-    /// this module's conventions `exp[-i a(t)·d]`,
-    /// `a(t) = Re[a exp(-in Omega t)]`, and
-    /// `[H^(n), H^(-n)]/(n W)`.  Cartesian derivatives are evaluated
+    /// with `W = drive.omega0_ev`. The positive sign and factor `1/8`
+    /// follow from `[H^(-n), H^(n)]/(n W)`: the two closed momentum paths
+    /// sample `k+q/2` and `k-q/2`, respectively, for the declared
+    /// `exp(+i q·r-in Omega t)` field.  Cartesian derivatives are evaluated
     /// analytically in the fixed Wannier/atomic basis from the full bond
     /// displacement; no finite difference of band eigenvectors is used.
     ///
@@ -774,7 +789,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// A single ordinary periodic model cannot retain interference between
     /// coherent beams with distinct wavevectors.  Such beams therefore need
     /// separate calls (or a future graded/supercell API); this method models
-    /// one common propagation wavevector exactly to linear order.
+    /// one common propagation wavevector through the retained `O(A^2 q / W)` term.
     pub fn floquet_effective_q_model(
         &self,
         drive: &FloquetDrive,
@@ -1089,9 +1104,9 @@ pub trait Floquet {
     ///
     /// ```math
     /// \langle i,n;\mathbf 0|H_F|j,m;\mathbf R\rangle =
-    /// t_{ij}(\mathbf R) C_{n-m}(\mathbf d_{ij\mathbf R})
+    /// t_{ij}(\mathbf R) C_{m-n}(\mathbf d_{ij\mathbf R})
     /// +
-    /// n\Omega_0\delta_{nm}\delta_{ij}\delta_{\mathbf R,0}.
+    /// nW\delta_{nm}\delta_{ij}\delta_{\mathbf R,0},\qquad W=\hbar\Omega_0.
     /// ```
     ///
     /// The result preserves the input model's `SPIN` const generic.  Photon
@@ -1178,7 +1193,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
                             let row = basis_indices[in_sec][i];
                             for (im_sec, &m) in sectors.iter().enumerate() {
                                 let hopping = harmonic_cache.blocks
-                                    [[harmonic_cache.harmonic_index(n - m), i_r, i, j]];
+                                    [[harmonic_cache.harmonic_index(m - n), i_r, i, j]];
                                 if hopping.re == 0.0 && hopping.im == 0.0 {
                                     continue;
                                 }
@@ -1272,7 +1287,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         for (in_sec, n) in trunc.sectors()?.enumerate() {
             for (im_sec, m) in trunc.sectors()?.enumerate() {
-                let harmonic = n - m;
+                let harmonic = m - n;
                 let block = &harmonics[(harmonic - harmonic_min) as usize];
                 for i in 0..nsta {
                     for j in 0..nsta {
@@ -1317,7 +1332,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// H^{(0)}(\mathbf k)
     /// +
     /// \sum_{n=1}^{n_{\max}}
-    /// \frac{[H^{(n)}(\mathbf k),H^{(-n)}(\mathbf k)]}{nW}
+    /// \frac{[H^{(-n)}(\mathbf k),H^{(n)}(\mathbf k)]}{nW}
     /// +H_{\mathrm{eff}}^{(2)}(\mathbf k)
     /// +O(W^{-3}), $$
     ///
@@ -1464,13 +1479,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// =
     /// T_0(R)
     /// +
-    /// \sum_{n=1}^{n_{\max}} \frac{[T_n,T_{-n}](R)}{n\,W}
+    /// \sum_{n=1}^{n_{\max}} \frac{[T_{-n},T_n](R)}{n\,W}
     /// +T_{\mathrm{eff}}^{(2)}(R),\qquad W=\hbar\Omega_0,
     /// ```
     ///
     /// where `T_0(R) = t(R)·C_0(d)` are the Peierls-dressed static blocks
     /// and `comm_n(R)` are the two-convolution commutator blocks of the
-    /// internal real-space commutator for the harmonic pair `(T_n, T_{−n})`.
+    /// internal real-space commutator for the harmonic pair `(T_{−n}, T_n)`.
     /// The second-order term is
     ///
     /// ```math
@@ -1649,7 +1664,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 let positive = harmonic_cache.harmonic_blocks(n);
                 let negative = harmonic_cache.harmonic_blocks(-n);
                 let (comm_blocks, comm_r) =
-                    real_space_commutator(&positive, &negative, &self.hamR)?;
+                    real_space_commutator(&negative, &positive, &self.hamR)?;
                 let scale = inverse_omega / (n as f64);
                 accumulate_scaled_real_space_blocks(&mut blocks, &comm_blocks, &comm_r, scale)?;
             }
@@ -1893,7 +1908,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let inverse_omega = drive.omega0_ev.recip();
         if order >= 1 && has_time_dependence {
             for n in 1..=harmonic_max {
-                let comm = matrix_commutator(harmonic(n), harmonic(-n));
+                let comm = matrix_commutator(harmonic(-n), harmonic(n));
                 accumulate_scaled_matrix(&mut h_eff, &comm, inverse_omega / (n as f64))?;
             }
         }
@@ -2359,7 +2374,7 @@ fn validate_effective_cache_layout(cache_max: isize, n_r: usize, nsta: usize) ->
     Ok(bytes)
 }
 
-fn drive_has_ac_components(drive: &FloquetDrive) -> bool {
+pub(crate) fn drive_has_ac_components(drive: &FloquetDrive) -> bool {
     // Cartesian cancellation cannot certify link-local cancellation: a rounded
     // zero could erase an ordinary physical phase. Let the scalar backend sum
     // all nonzero AC modes after projection instead.

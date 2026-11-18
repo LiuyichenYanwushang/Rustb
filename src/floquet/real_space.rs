@@ -123,8 +123,7 @@ pub(super) fn merge_real_space_block_maps(
     left
 }
 
-/// Real-space commutator blocks `comm_n(R) = (AB)(R) − (BA)(R)` for the
-/// harmonic pair `A_R = T_n(R)` and `B_R = T_{−n}(R)`:
+/// Real-space commutator blocks `[A,B](R) = (AB)(R) − (BA)(R)`:
 ///
 /// ```math
 /// (AB)(R) = \sum_{R'} A_{R-R'}\, B_{R'}, \qquad

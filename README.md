@@ -713,6 +713,12 @@ and `floquet_effective_q_model` adds the coherent long-wavelength
 `O(A^2 q/W)` correction. All results are ordinary `Model` values; fold
 eigenvalues with `fold_quasienergy`.
 
+With `H(t) = sum_q H^(q) exp(-iqΩt)`, Sambe uses `H^(m-n) + nW δ_nm`
+in the positive-time basis, and first-order van Vleck uses `[H^(-n), H^(n)]/(nW)`.
+Earlier builds used the time-reversed protocol; recompute helicity-sensitive
+results rather than negating all quasienergies. The input light amplitudes and
+Peierls phase have not changed. See the [projection and migration notes](<src/magnon/driven_theory.md>) for the derivation.
+
 ```rust
 let drive = FloquetDrive::with_modes(
     0.8,

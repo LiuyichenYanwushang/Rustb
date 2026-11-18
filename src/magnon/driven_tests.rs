@@ -128,7 +128,7 @@ fn tiny_exchange_survives_extreme_energy_scale_and_uniform_rescaling() {
 #[test]
 fn double_frequency_dimer_matches_independent_oracle_and_site_reindexing() {
     // DFT reference in scripts/floquet_spin_reference/dimer_reference.py.
-    // It includes both doublon directions: the one-direction result is 0.90528311,
+    // The two one-direction shortcuts are 0.90528311 and 1.43750819,
     // while the correct coefficient is 1.1713956489238915 eV^-1.
     let expected_k = 1.1713956489238915;
     let u = 4.0;
@@ -147,7 +147,9 @@ fn double_frequency_dimer_matches_independent_oracle_and_site_reindexing() {
     relative_close(only_pair(&forward), t * t * expected_k, 2e-9);
     relative_close(only_pair(&reverse), only_pair(&forward), 2e-9);
     relative_close(forward.constant_ev(), -only_pair(&forward) / 4.0, 1e-12);
-    assert!((only_pair(&forward) / (t * t) - 0.90528311).abs() > 0.1);
+    for wrong in [0.90528311, 1.43750819] {
+        assert!((only_pair(&forward) / (t * t) - wrong).abs() > 0.1);
+    }
 }
 
 #[test]
