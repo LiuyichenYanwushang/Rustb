@@ -1463,6 +1463,24 @@ must satisfy the same amplitude/length checks as the electronic path, and the
 current implementation requires a collinear reference (`reference.q = 0`)
 because the harmonics do not carry the single-Q rotation.
 
+### Aharonov–Casher drive for collinear magnets
+
+`MagnonSambe::new_aharonov_casher(&magnon, &electric, spin_axis, &truncation)`
+adds a different drive: the directed transverse `S_i^- S_j^+` term acquires
+`exp[-i (electric(t) × spin_axis) · d_ij]`. Longitudinal and onsite terms are
+not driven. The input must conserve spin around a common unit `spin_axis`,
+with the cell-periodic reference moments parallel or antiparallel to that axis.
+The three components of each `electric` mode are Cartesian and multiplied by
+`g μ_B/(ℏ c²)` already, in inverse ångström, even for lower-dimensional models.
+This is neither an electron vector potential nor a second dressing of AB exchange.
+
+Use `.with_time_steps(steps)?` to converge the midpoint integration separately
+from the harmonic cutoff. `ac_spin_quasienergies_at(&q)` returns the folded
+energies in the `(-1, +1)` spin sectors; sorting within a sector does not track
+bands or unwrap the Floquet zone. Check the undriven reference for stability
+before interpreting driven dispersions. Unstable and unresolved propagator
+modes are reported as errors rather than treated as real bands.
+
 ## 11. Conventions and build notes
 
 - k-points are fractional reciprocal coordinates.

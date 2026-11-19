@@ -2,29 +2,44 @@
 //!
 //! ```text
 //! cargo run --release --features openblas-system --example mgfe6ge6_exchange -- \
-//!     <dir with up/ and dn/> [kmesh kx ky kz] [nz]
+//!     <input_dir> [kx ky kz [nz [cfr|semi]]]
+//! cargo run --release --features openblas-system --example mgfe6ge6_exchange -- \
+//!     <input_dir> 5 5 5 64 cfr <output_dir>
 //! ```
 //!
-//! Both HR files are expected to be shifted by the same amount so that
-//! `E_F = 0`. The third argument to `Model::from_hr` is the energy to subtract
-//! on import; it is `0.0` here because the files are already shifted.
+//! `input_dir` contains the `up/` and `dn/` Wannier90 directories.
+//!
+//! Both HR files must already have the same original Fermi energy subtracted,
+//! so their common `E_F = 0`. Import subtracts `0.0` eV; do not align each spin
+//! channel independently.
+//!
+//! With `output_dir` (after explicit mesh, `nz` and contour arguments), write or
+//! replace the `mgfe6ge6_static` magnon HR/metadata pair and check the unmodified
+//! isotropic reference at selected fractional q-points.
 
-use Rustb::magnon::{ExchangeParams, Magnon};
+use Rustb::magnon::{ExchangeParams, Magnon, MagnonSolve};
 use Rustb::ndarray_lapack::eigh_x;
 use Rustb::wannier90::Wannier90;
-use Rustb::{AtomType, Model};
+use Rustb::{AtomType, Model, TbError};
 use ndarray::{Array1, Array2};
 use ndarray_linalg::UPLO;
 
 fn main() -> Rustb::Result<()> {
+    let usage = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "usage: <input_dir> [kx ky kz [nz [cfr|semi [output_dir]]]]",
+        )
+    };
     let mut args = std::env::args().skip(1);
-    let dir = args
-        .next()
-        .expect("usage: <dir with up/ dn/> [kx ky kz] [nz]");
+    let dir = args.next().ok_or_else(usage)?;
+    let rest: Vec<String> = args.collect();
+    if !matches!(rest.len(), 0 | 3..=6) || rest.get(5).is_some_and(String::is_empty) {
+        return Err(usage().into());
+    }
     let mut kmesh = Array1::from_vec(vec![9usize, 9, 5]);
     let mut nz = 100usize;
     let mut method = String::from("cfr");
-    let rest: Vec<String> = args.collect();
     if rest.len() >= 3 {
         for (slot, value) in kmesh.iter_mut().zip(rest.iter()) {
             *slot = value.parse().expect("kmesh components must be integers");
@@ -75,13 +90,11 @@ fn main() -> Rustb::Result<()> {
     }
 
     let moments = site_moments(&up, &down, &fe, &kmesh)?;
-    println!("Wannier magnetic moments (mu_B):");
+    println!("Wannier magnetic moments on the requested mesh (mu_B):");
     for (index, value) in fe.iter().zip(moments.iter()) {
         println!("  Fe {index}: {value:+.4}");
     }
-    let _ = &moments;
-    // The moments printed above are what the library derives internally from
-    // the two channels, so they are not passed in again.
+    // Extraction derives the moments independently on its odd k-mesh.
     let mut params = ExchangeParams::new(&kmesh)
         .with_nz(nz)
         .with_magnetic_atoms(fe.clone());
@@ -93,6 +106,12 @@ fn main() -> Rustb::Result<()> {
         panic!("unknown contour method '{method}', use 'cfr' or 'semi'");
     }
 
+    println!(
+        "exchange input: assumes both HRs share E_F=0 eV (import subtracts 0.0 eV); \
+         requested kmesh={:?} (even components rounded up for exchange), nz={nz}, contour={:?}",
+        kmesh.to_vec(),
+        params.contour
+    );
     let started = std::time::Instant::now();
     let magnon = Magnon::<3>::from_collinear(&up, &down, &params)?;
     println!(
@@ -101,6 +120,31 @@ fn main() -> Rustb::Result<()> {
         magnon.nspin(),
         magnon.nR()
     );
+
+    if let Some(output_dir) = rest.get(5) {
+        let files = magnon.write_hr(output_dir, "mgfe6ge6_static")?;
+        println!("saved {} and {}", files.hr.display(), files.meta.display());
+
+        println!("static isotropic check (fractional q; Γ–A and two general points):");
+        for q in [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.125],
+            [0.0, 0.0, 0.25],
+            [0.0, 0.0, 0.375],
+            [0.0, 0.0, 0.5],
+            [0.17, 0.24, 0.31],
+            [0.13, 0.29, 0.09],
+        ] {
+            match magnon.magnon_band_onek(&Array1::from_vec(q.to_vec())) {
+                Ok(energies) => println!("  q={q:?}: {:.6?} meV", energies.mapv(|ev| 1000.0 * ev)),
+                Err(TbError::InvalidMagnonInvariant {
+                    invariant: "positive_semidefinite_bdg",
+                    message,
+                }) => println!("  q={q:?}: unstable ({message})"),
+                Err(error) => return Err(error),
+            }
+        }
+    }
 
     // Collect directed Fe-Fe pairs and group them by distance.
     let n = magnon.nspin();

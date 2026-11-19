@@ -1331,6 +1331,7 @@ pub struct MagnonSambe<const DIM: usize = 3> {
     n_max: isize,
     harmonic_span: isize,
     n_time: usize,
+    ac_axis: Option<[f64; 3]>,
 }
 
 /// Periodic driving of a magnon model, mirroring the electronic
@@ -1366,6 +1367,34 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         drive: &FloquetDrive,
         truncation: &FloquetTruncation,
     ) -> Result<Self> {
+        Self::build(magnon, drive, truncation, None)
+    }
+
+    /// Build a transverse Aharonov–Casher drive of a collinear magnet.
+    ///
+    /// `electric_drive` has three Cartesian components in inverse ångström:
+    /// the electric field already multiplied by the magnetic moment factor
+    /// `g μ_B/(ℏ c²)`. With the common unit spin axis `n`, the directed
+    /// `S_i^- S_j^+` term gets `exp(-i (electric(t) × n) · d_ij)`.
+    /// Only transverse intersite exchange is dressed. The static model must
+    /// conserve spin about `n`; onsite and longitudinal terms are unchanged.
+    /// In dimensions below three the lattice is embedded in the first `DIM`
+    /// Cartesian coordinates. No charge hopping or Hubbard U is involved.
+    pub fn new_aharonov_casher(
+        magnon: &MagnonModel<DIM>,
+        electric_drive: &FloquetDrive,
+        spin_axis: [f64; 3],
+        truncation: &FloquetTruncation,
+    ) -> Result<Self> {
+        Self::build(magnon, electric_drive, truncation, Some(spin_axis))
+    }
+
+    fn build(
+        magnon: &MagnonModel<DIM>,
+        drive: &FloquetDrive,
+        truncation: &FloquetTruncation,
+        ac_axis: Option<[f64; 3]>,
+    ) -> Result<Self> {
         magnon.validate()?;
         // The harmonics below rebuild the exchange without the single-Q
         // reference rotation that `gen_bdg` applies.
@@ -1377,7 +1406,30 @@ impl<const DIM: usize> MagnonSambe<DIM> {
                     .into(),
             });
         }
-        crate::floquet::validate_floquet_drive::<DIM>(drive)?;
+        let ac_axis = if let Some(axis) = ac_axis {
+            crate::floquet::validate_floquet_drive::<3>(drive)?;
+            let norm2 = axis.iter().map(|v| v * v).sum::<f64>();
+            if !norm2.is_finite() || (norm2 - 1.0).abs() > 1e-8 {
+                return Err(ac_error(
+                    "ac_spin_axis",
+                    "the AC spin axis must be a unit vector",
+                ));
+            }
+            let unit = axis.map(|v| v / norm2.sqrt());
+            for moment in magnon.axis.rows() {
+                let projection = moment.iter().zip(unit).map(|(v, n)| v * n).sum::<f64>();
+                if (0..3).any(|a| (moment[a] - projection * unit[a]).abs() > 1e-8) {
+                    return Err(ac_error(
+                        "ac_collinear_axis",
+                        "all moments must be parallel or antiparallel to the AC spin axis",
+                    ));
+                }
+            }
+            Some(unit)
+        } else {
+            crate::floquet::validate_floquet_drive::<DIM>(drive)?;
+            None
+        };
         if !drive.omega0_ev.is_finite() || drive.omega0_ev <= 0.0 {
             return Err(TbError::InvalidMagnonInvariant {
                 invariant: "photon_energy",
@@ -1434,33 +1486,39 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         }
         let n = magnon.nspin();
         let dim = 3 * n;
-        let mut harmonics = Vec::with_capacity(harmonic_count);
         let onsite = (0..n).map(|i| magnon.onsite_scalar(i)).collect::<Vec<_>>();
-        for index in 0..harmonic_count {
-            let m = index as isize - span;
-            let mut tensor = Array3::<Complex<f64>>::zeros((magnon.nR(), dim, dim));
-            for i_r in 0..magnon.nR() {
-                for i in 0..n {
-                    for j in 0..n {
-                        let displacement = bond_displacement(magnon, i_r, i, j);
-                        let coefficient = bessel_peierls_coeffs(&displacement, drive, m, m, 0)?[0];
-                        for alpha in 0..SC_SPIN {
-                            for beta in 0..SC_SPIN {
-                                let mut value = magnon.ham[[i_r, 3 * i + alpha, 3 * j + beta]];
-                                if i_r == 0 && i == j && alpha == beta {
-                                    // Onsite is Peierls-inactive. Remove the same
-                                    // fixed-spin constant as in ordinary BdG.
-                                    value -= onsite[i];
+        let harmonics = if let Some(axis) = ac_axis {
+            ac_harmonics(magnon, drive, axis, span, harmonic_count, &onsite)?
+        } else {
+            let mut harmonics = Vec::with_capacity(harmonic_count);
+            for index in 0..harmonic_count {
+                let m = index as isize - span;
+                let mut tensor = Array3::<Complex<f64>>::zeros((magnon.nR(), dim, dim));
+                for i_r in 0..magnon.nR() {
+                    for i in 0..n {
+                        for j in 0..n {
+                            let displacement = bond_displacement(magnon, i_r, i, j);
+                            let coefficient =
+                                bessel_peierls_coeffs(&displacement, drive, m, m, 0)?[0];
+                            for alpha in 0..SC_SPIN {
+                                for beta in 0..SC_SPIN {
+                                    let mut value = magnon.ham[[i_r, 3 * i + alpha, 3 * j + beta]];
+                                    if i_r == 0 && i == j && alpha == beta {
+                                        // Onsite is Peierls-inactive. Remove the same
+                                        // fixed-spin constant as in ordinary BdG.
+                                        value -= onsite[i];
+                                    }
+                                    tensor[[i_r, 3 * i + alpha, 3 * j + beta]] =
+                                        Complex::new(value, 0.0) * coefficient;
                                 }
-                                tensor[[i_r, 3 * i + alpha, 3 * j + beta]] =
-                                    Complex::new(value, 0.0) * coefficient;
                             }
                         }
                     }
                 }
+                harmonics.push(tensor);
             }
-            harmonics.push(tensor);
-        }
+            harmonics
+        };
         // The midpoint rule converges as O(n_time^-2); four samples per photon
         // sector with a floor of 64 is ample for the bandwidths treated here.
         let n_time = (4 * sectors).max(64);
@@ -1471,6 +1529,7 @@ impl<const DIM: usize> MagnonSambe<DIM> {
             n_max: truncation.n_max,
             harmonic_span: span,
             n_time,
+            ac_axis,
         })
     }
 
@@ -1494,6 +1553,19 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         self.n_time
     }
 
+    /// Set the midpoint integration steps per period, independently of the
+    /// harmonic cutoff. Converge both controls for quantitative results.
+    pub fn with_time_steps(mut self, steps: usize) -> Result<Self> {
+        if !(1..=(1 << 20)).contains(&steps) {
+            return Err(ac_error(
+                "floquet_time_steps",
+                "time steps must be in 1..=2^20",
+            ));
+        }
+        self.n_time = steps;
+        Ok(self)
+    }
+
     /// Time-dependent Bogoliubov–de Gennes matrix `H(q, t)`.
     ///
     /// The time dependence is applied to the *real-space* exchange tensors,
@@ -1511,10 +1583,18 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         }
         let n = self.magnon.nspin();
         let dim = 3 * n;
+        let angle = self.omega_ev * time;
         let mut phases = Vec::with_capacity(self.harmonics.len());
         for index in 0..self.harmonics.len() {
             let m = index as isize - self.harmonic_span;
-            phases.push(Complex::from_polar(1.0, -(m as f64) * self.omega_ev * time));
+            let phase = if m == 0 { 0.0 } else { -(m as f64) * angle };
+            if !phase.is_finite() {
+                return Err(ac_error(
+                    "finite_floquet_phase",
+                    "the Floquet harmonic time phase is not finite",
+                ));
+            }
+            phases.push(Complex::from_polar(1.0, phase));
         }
         let mut jq = Array2::<Complex<f64>>::zeros((dim, dim));
         let mut j0 = Array2::<Complex<f64>>::zeros((dim, dim));
@@ -1632,7 +1712,79 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         Ok(out)
     }
 
-    /// Quasienergies of a list of `q` points, shape `(n_q, n_band)`.
+    /// Folded AC quasienergies sorted separately by spin `(-1, +1)` along the AC axis.
+    ///
+    /// The ordering within each sector does not track Floquet bands or unfold
+    /// photon replicas. Match the corresponding branches before computing a splitting.
+    pub fn ac_spin_quasienergies_at(&self, q: &Array1<f64>) -> Result<[Array1<f64>; 2]> {
+        let n_axis = self.ac_axis.ok_or_else(|| {
+            ac_error(
+                "ac_spin_axis",
+                "spin sectors require an Aharonov–Casher model",
+            )
+        })?;
+        let n = self.magnon.nspin();
+        let propagator = self.propagator_at(q)?;
+        let mut sectors = [Vec::new(), Vec::new()];
+        for (i, moment) in self.magnon.axis.rows().into_iter().enumerate() {
+            let eta = moment.iter().zip(n_axis).map(|(v, a)| v * a).sum::<f64>();
+            // A Holstein–Primakoff creation on a moment +n lowers S_n.
+            let particle = usize::from(eta < 0.0);
+            sectors[particle].push(i);
+            sectors[1 - particle].push(i + n);
+        }
+        for &a in &sectors[0] {
+            for &b in &sectors[1] {
+                if [propagator[[a, b]], propagator[[b, a]]]
+                    .iter()
+                    .any(|z| !z.norm().is_finite() || z.norm() > 1e-8)
+                {
+                    return Err(ac_error(
+                        "ac_sector_leakage",
+                        "the propagator does not preserve the AC spin sectors",
+                    ));
+                }
+            }
+        }
+        let mut out = [Array1::zeros(0), Array1::zeros(0)];
+        for (keys, result) in sectors.iter().zip(&mut out) {
+            let matrix = Array2::from_shape_fn((keys.len(), keys.len()), |(a, b)| {
+                propagator[[keys[a], keys[b]]]
+            });
+            let (values, vectors) = matrix.eig()?;
+            let mut energies = Vec::new();
+            for (column, value) in values.iter().enumerate() {
+                if !value.norm().is_finite() || (value.norm() - 1.0).abs() > 1e-6 {
+                    return Err(ac_error(
+                        "driven_system_unstable",
+                        format!("AC sector propagator eigenvalue {value:?} is off the unit circle"),
+                    ));
+                }
+                let norm = keys
+                    .iter()
+                    .enumerate()
+                    .map(|(row, &key)| {
+                        vectors[[row, column]].norm_sqr() * if key < n { 1.0 } else { -1.0 }
+                    })
+                    .sum::<f64>();
+                if norm > 1e-9 {
+                    let energy = (-value.arg() / std::f64::consts::TAU) * self.omega_ev;
+                    energies.push(crate::floquet::fold_quasienergy(energy, self.omega_ev));
+                }
+            }
+            if energies.len() != keys.iter().filter(|&&key| key < n).count() {
+                return Err(ac_error(
+                    "positive_norm_quasienergies",
+                    "could not resolve the physical branches of an AC spin sector",
+                ));
+            }
+            energies.sort_by(f64::total_cmp);
+            *result = Array1::from_vec(energies);
+        }
+        Ok(out)
+    }
+
+    /// Quasienergies of a list of $\mathbf q$ points, shape `(n_q, n_band)`.
     pub fn quasienergy_bands(&self, qs: &Array2<f64>) -> Result<Array2<f64>> {
         if qs.ncols() != DIM {
             return Err(TbError::DimensionMismatch {
@@ -1651,6 +1803,163 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         }
         Ok(out)
     }
+}
+
+fn ac_error(invariant: &'static str, message: impl Into<String>) -> TbError {
+    TbError::InvalidMagnonInvariant {
+        invariant,
+        message: message.into(),
+    }
+}
+
+fn ac_harmonics<const DIM: usize>(
+    magnon: &MagnonModel<DIM>,
+    drive: &FloquetDrive,
+    n: [f64; 3],
+    span: isize,
+    count: usize,
+    onsite: &[f64],
+) -> Result<Vec<Array3<Complex<f64>>>> {
+    if magnon
+        .ham
+        .len()
+        .checked_mul(count)
+        .is_none_or(|len| len > 1 << 27)
+    {
+        return Err(ac_error(
+            "ac_harmonic_allocation",
+            "AC exchange harmonic table exceeds 2^27 complex elements",
+        ));
+    }
+    let cross = [[0.0, -n[2], n[1]], [n[2], 0.0, -n[0]], [-n[1], n[0], 0.0]];
+    let mut harmonics = vec![Array3::<Complex<f64>>::zeros(magnon.ham.raw_dim()); count];
+    let translations: std::collections::HashMap<Vec<isize>, usize> = magnon
+        .hamR
+        .rows()
+        .into_iter()
+        .enumerate()
+        .map(|(r, row)| (row.to_vec(), r))
+        .collect();
+    for (r, cell) in magnon.hamR.rows().into_iter().enumerate() {
+        let reverse = translations[&cell.iter().map(|&x| -x).collect::<Vec<_>>()];
+        if r > reverse {
+            continue;
+        }
+        for (i, &scalar) in onsite.iter().enumerate() {
+            for j in 0..magnon.nspin() {
+                if r == reverse && i > j {
+                    continue;
+                }
+                let onsite_block = r == 0 && i == j;
+                let forward = magnon.jtensor(i, j, r)?;
+                let backward = magnon.jtensor(j, i, reverse)?;
+                let raw: [[f64; 3]; 3] = std::array::from_fn(|a| {
+                    std::array::from_fn(|b| {
+                        let mean = f64::midpoint(forward[a][b], backward[b][a]);
+                        mean - if onsite_block && a == b { scalar } else { 0.0 }
+                    })
+                });
+                let scale = raw.iter().flatten().map(|x| x.abs()).fold(0.0, f64::max);
+                if scale == 0.0 {
+                    continue;
+                }
+                // A rotation of one endpoint preserves real reciprocity only
+                // when the original bond commutes with rotations about n.
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let difference: f64 = (0..3)
+                            .map(|k| {
+                                (raw[a][k] / scale) * cross[k][b]
+                                    - cross[a][k] * (raw[k][b] / scale)
+                            })
+                            .sum();
+                        if difference.abs() > 1e-10 {
+                            return Err(ac_error(
+                                "ac_spin_conservation",
+                                format!(
+                                    "exchange block (row {r}, sites {i},{j}) does not conserve spin about the AC axis"
+                                ),
+                            ));
+                        }
+                    }
+                }
+                let index = |a, b| [r, 3 * i + a, 3 * j + b];
+                if onsite_block {
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            harmonics[span as usize][index(a, b)] = raw[a][b].into();
+                        }
+                    }
+                    continue;
+                }
+                let generator: [[f64; 3]; 3] = raw
+                    .map(|row| std::array::from_fn(|b| (0..3).map(|k| row[k] * cross[k][b]).sum()));
+                let longitudinal: [[f64; 3]; 3] = raw.map(|row| {
+                    let along = row.iter().zip(n).map(|(v, x)| v * x).sum::<f64>();
+                    n.map(|x| along * x)
+                });
+                // A longitudinal-only bond has no AC phase, even for a
+                // field that would exceed the harmonic backend on other bonds.
+                if generator.iter().flatten().all(|&value| value == 0.0) {
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            harmonics[span as usize][index(a, b)] = raw[a][b].into();
+                            harmonics[span as usize][[reverse, 3 * j + b, 3 * i + a]] =
+                                raw[a][b].into();
+                        }
+                    }
+                    continue;
+                }
+                let d = crate::floquet::link_displacement_cartesian(
+                    &magnon.lat,
+                    magnon.orb.row(i),
+                    magnon.orb.row(j),
+                    magnon.hamR.row(r),
+                );
+                // (electric × n) · d = electric · (n × d), in Cartesian coordinates.
+                let projected = Array1::from_iter(
+                    cross
+                        .iter()
+                        .map(|row| row.iter().zip(&d).map(|(v, x)| v * x).sum::<f64>()),
+                );
+                if projected.iter().any(|x| !x.is_finite()) {
+                    return Err(ac_error(
+                        "ac_bond_displacement",
+                        format!("non-finite AC link (row {r}, sites {i},{j})"),
+                    ));
+                }
+                let coeffs = bessel_peierls_coeffs(&projected, drive, -span, span, 0)?;
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let longitudinal = longitudinal[a][b];
+                        let generator = generator[a][b];
+                        for h in 0..count {
+                            let minus = coeffs[h];
+                            let plus = coeffs[count - 1 - h].conj();
+                            let cos = 0.5 * (minus + plus);
+                            let sin_minus = Complex::new(0.0, -0.5) * (minus - plus);
+                            let val = (raw[a][b] - longitudinal) * cos
+                                + generator * sin_minus
+                                + if h == span as usize {
+                                    longitudinal
+                                } else {
+                                    0.0
+                                };
+                            if !val.re.is_finite() || !val.im.is_finite() {
+                                return Err(ac_error(
+                                    "finite_ac_exchange",
+                                    "AC exchange harmonic is non-finite",
+                                ));
+                            }
+                            harmonics[h][index(a, b)] = val;
+                            harmonics[h][[reverse, 3 * j + b, 3 * i + a]] = val;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(harmonics)
 }
 
 /// Matrix exponential by scaling and squaring with a Taylor series.
