@@ -4,8 +4,9 @@
 //! present, `seedname_centres.xyz` centres and `seedname_wsvec.dat` weights.
 //! Position matrices are read from `seedname_r.dat` only for a
 //! `Model<SPIN, 3, HasRMatrix>` target, and are then required;
-//! `Model<SPIN, 3, NoRMatrix>` never opens that file. The importer validates
-//! declared record counts, indices, weights, sizes and energy shifts before
+//! `Model<SPIN, 3, NoRMatrix>` never opens that file. The two files must declare
+//! exactly the same set of translations, but block order can differ. The importer
+//! validates declared record counts, indices, weights, sizes and energy shifts before
 //! assembling the model, and rejects truncated or inconsistent files instead of
 //! guessing.
 //!
@@ -226,8 +227,18 @@ fn parse_rmatrix(file: &str, hr: &HrData) -> Result<Array4<Complex64>> {
         file,
         "R count",
     )?;
-    if nsta != hr.ham.shape()[1] || nr == 0 {
-        return Err(parse_error(file, "Position-matrix state/R count mismatch"));
+    if nsta != hr.ham.shape()[1] {
+        return Err(parse_error(file, "Position-matrix state count mismatch"));
+    }
+    // A zero weight marks an origin row synthesized by Rustb, not by _hr.dat.
+    let expected_nr = hr.weights.iter().filter(|&&weight| weight > 0).count();
+    if nr != expected_nr {
+        return Err(parse_error(
+            file,
+            format!(
+                "Position-matrix R count mismatch: _r.dat declares {nr}, _hr.dat declares {expected_nr}"
+            ),
+        ));
     }
     let records = matrix_size(file, nr, nsta, 1)?;
     matrix_size(file, hr.translations.nrows(), nsta, 3)?;
@@ -238,19 +249,31 @@ fn parse_rmatrix(file: &str, hr: &HrData) -> Result<Array4<Complex64>> {
     if rows[records..].iter().any(|row| !row.trim().is_empty()) {
         return Err(parse_error(file, "Extra position-matrix records"));
     }
-    // Preserve sparse position support: only its own declared blocks are
-    // required; HR translations absent from this file start with zero entries.
     let mut result = Array4::zeros((hr.translations.nrows(), 3, nsta, nsta));
-    let mut seen = HashSet::new();
+    // Equal counts plus unique blocks found in _hr.dat enforce set equality.
+    let mut seen_translations = HashSet::new();
+    let mut seen_orbitals = HashSet::new();
     for block in rows[..records].chunks(nsta * nsta) {
         let (translation, _, _) = record_key(&mut block[0].split_whitespace(), file, nsta)?;
+        if !seen_translations.insert(translation) {
+            return Err(parse_error(
+                file,
+                format!("Duplicate position-matrix R block {translation:?}"),
+            ));
+        }
         let index = find_R(&hr.translations, &Array1::from_vec(translation.to_vec()))
             .filter(|&i| hr.weights[i] > 0)
-            .ok_or_else(|| parse_error(file, "R vector not found in Hamiltonian"))?;
+            .ok_or_else(|| {
+                parse_error(
+                    file,
+                    format!("Position-matrix R vector {translation:?} not found in _hr.dat"),
+                )
+            })?;
+        seen_orbitals.clear();
         for row in block {
             let mut fields = row.split_whitespace();
             let (r, i, j) = record_key(&mut fields, file, nsta)?;
-            if r != translation || !seen.insert((r, i, j)) {
+            if r != translation || !seen_orbitals.insert((i, j)) {
                 return Err(parse_error(
                     file,
                     "Inconsistent R block or duplicate orbital record",
@@ -794,8 +817,9 @@ fn assemble_model<const SPIN: bool, const DIM: usize, R: RMatrixData>(
 
 /// Trait for loading a tight-binding model from Wannier90 output files.
 ///
-/// `DIM` must be 3. `HasRMatrix` requires `_r.dat` (`write_rmn=true`), while
-/// `NoRMatrix` skips it. `_centres.xyz` and `_wsvec.dat` are optional; without
+/// `DIM` must be 3. `HasRMatrix` requires `_r.dat` (`write_rmn=true`) with
+/// exactly the same translations as `_hr.dat`, in any block order. `NoRMatrix`
+/// skips `_r.dat`. `_centres.xyz` and `_wsvec.dat` are optional; without
 /// centres, the atomic positions from `.win` supply the orbital positions.
 pub trait Wannier90 {
     fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Self>
@@ -852,7 +876,8 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM, HasRMatrix> {
     ///
     /// # Errors
     ///
-    /// Returns `TbError::FileCreation` if `_r.dat` is missing.
+    /// Returns `TbError::FileCreation` if `_r.dat` is missing, or
+    /// `TbError::FileParse` if its declared translations do not match `_hr.dat`.
     pub fn from_hr_with_rmatrix(path: &str, file_name: &str, zero_energy: f64) -> Result<Self> {
         <Self as Wannier90>::from_hr(path, file_name, zero_energy)
     }
@@ -1400,6 +1425,53 @@ mod tests {
                 Complex64::new(5.0, 2.0 * sign)
             );
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn from_hr_requires_matching_declared_position_translations() {
+        let dir = "tests/tmp_w90_position_translations/";
+        write_minimal_dataset(dir, "C");
+        // Neither file declares R=0. Rustb's synthetic origin must not count.
+        fs::write(
+            format!("{dir}seedname_hr.dat"),
+            "generated\n1\n2\n1 1\n-1 0 0 1 1 2 0\n1 0 0 1 1 2 0\n",
+        )
+        .unwrap();
+        let rfile = format!("{dir}seedname_r.dat");
+        let minus = "-1 0 0 1 1 3 0 0 0 0 0\n";
+        let plus = "1 0 0 1 1 3 0 0 0 0 0\n";
+        let origin = "0 0 0 1 1 0 0 0 0 0 0\n";
+        for (count, blocks, expected) in [
+            (1, vec![minus], "_r.dat declares 1, _hr.dat declares 2"),
+            (
+                3,
+                vec![minus, plus, origin],
+                "_r.dat declares 3, _hr.dat declares 2",
+            ),
+            (2, vec![minus, origin], "[0, 0, 0] not found in _hr.dat"),
+            (
+                2,
+                vec![minus, minus],
+                "Duplicate position-matrix R block [-1, 0, 0]",
+            ),
+        ] {
+            fs::write(
+                &rfile,
+                format!("generated\n1\n{count}\n{}", blocks.concat()),
+            )
+            .unwrap();
+            let error = Model::<false, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0).unwrap_err();
+            assert!(matches!(error, TbError::FileParse { file, message }
+                if file == rfile && message.contains(expected)));
+            Model::<false, 3>::from_hr(dir, "seedname", 0.0).unwrap();
+        }
+        fs::write(&rfile, format!("generated\n1\n2\n{plus}{minus}")).unwrap();
+        let model = Model::<false, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.hamR, array![[0, 0, 0], [-1, 0, 0], [1, 0, 0]]);
+        assert_eq!(model.rmatrix[[0, 0, 0, 0]], Complex64::new(0.0, 0.0));
+        assert_eq!(model.rmatrix[[1, 0, 0, 0]], Complex64::new(3.0, 0.0));
+        assert_eq!(model.rmatrix[[2, 0, 0, 0]], Complex64::new(3.0, 0.0));
         fs::remove_dir_all(dir).unwrap();
     }
 

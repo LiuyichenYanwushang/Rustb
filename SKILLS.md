@@ -151,9 +151,9 @@ let model_with_r: Model<false, 3, HasRMatrix> =
 ```
 
 The `HasRMatrix` form includes position-matrix contributions in velocity
-operators. The importer reads the declared HR, position, and wsvec record
-counts and rejects truncation, invalid indices, zero weights, and overflowing
-sizes. `zero_energy` must be finite. Element labels are matched
+operators. `_r.dat` and `_hr.dat` must declare the same set of translations;
+block order can differ. The importer rejects truncation, invalid indices, zero
+weights, and overflowing sizes. `zero_energy` must be finite. Element labels are matched
 case-insensitively, so the species token of a `.win` projection line, the
 `atoms_cart`/`atoms_frac` labels and the extra-atom labels of `_centres.xyz`
 may be spelled `v`/`V` or `cl`/`Cl`; the orbital token after `:` remains

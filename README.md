@@ -806,8 +806,9 @@ assert_eq!(weight.dim(), (101, 101));
 
 `Wannier90::from_hr` reads `_hr.dat` and, when present, `_centres.xyz` and
 `_wsvec.dat`. `_r.dat` is read only for a `HasRMatrix` model, and is then
-required; `NoRMatrix` models never open it. Declared record counts, indices,
-weights and sizes are validated before the model is assembled.
+required; `NoRMatrix` models never open it. The translations declared in
+`_r.dat` and `_hr.dat` must match exactly, regardless of block order. Declared
+record counts, indices, weights and sizes are validated before assembly.
 
 ```rust
 let wannier: Model<false, 3> = Model::from_hr("path/to/seedname/", "wannier90", 0.0)?;
