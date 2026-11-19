@@ -1,9 +1,8 @@
-//! Real-space Peierls-Floquet utilities.
+//! Real-space electronic Floquet utilities.
 //!
-//! The implementation works directly with the real-space hopping blocks stored
-//! in [`Model::ham`] and [`Model::hamR`].  A spatially uniform light field is
-//! introduced through a Peierls phase on every hopping link, then Fourier
-//! transformed into a commensurate Sambe Hamiltonian.
+//! A commensurate uniform drive dresses hopping blocks stored in [`Model::ham`]
+//! and [`Model::hamR`]. Models without a position matrix use Peierls phases;
+//! models with one use its full projected position operator at weak field.
 //!
 //! # Fourier and forward-time convention
 //!
@@ -18,17 +17,35 @@
 //!
 //! # Physical scope
 //!
-//! This module implements the **long-wavelength Peierls coupling** of a
-//! periodic tight-binding model to a classical, spatially uniform light field.
-//! It is appropriate when the optical wavelength is much larger than the unit
-//! cell and the dominant coupling is through hopping phases.  In this first
-//! implementation the light field must be commensurate with one base frequency
-//! `omega0_ev`; arbitrary mixtures of integer harmonics of that base frequency
-//! are supported.
+//! This module couples a periodic tight-binding model to a classical, spatially
+//! uniform light field. The drive must be commensurate with one base frequency
+//! `omega0_ev`; arbitrary mixtures of integer harmonics are supported.
 //!
-//! The current implementation does **not** add the length-gauge dipole term
-//! `-e E(t) r` from Wannier90 `rmatrix` data.  That should be added later as a
-//! separate coupling option rather than mixed silently with Peierls phases.
+//! [`crate::NoRMatrix`] uses the all-orders point-orbital Peierls coupling
+//! described below. [`crate::HasRMatrix`] instead uses the uniform projected
+//! position coupling through second order in the vector-potential amplitude.
+//! In lattice gauge the position operator is `X_i = i ∂_i + A_i(k)`, where
+//! `A_i` is the Fourier transform of the full Cartesian `rmatrix` and `∂_i`
+//! differentiates physical Cartesian momentum. The periodic transformation
+//! `U = exp(i a·X)` of `H_L = H + hbar dot(a)·X` gives
+//!
+//! ```math
+//! H_V(t) = H - a_i D_i H + \tfrac12 a_i a_j D_i D_j H
+//!          - \tfrac{\hbar}{2} a_i \dot a_j F_{ij} + O(a^3),
+//! \qquad D_i B = \partial_i B + i[B,A_i],\quad
+//! F_{ij} = \partial_i A_j - \partial_j A_i - i[A_i,A_j].
+//! ```
+//!
+//! The curvature term is needed because projected position components need
+//! not commute. For diagonal position centres this reduces to the corresponding
+//! Taylor expansion of the Peierls result. Use the position path only within
+//! the weak-field regime; photon convergence alone does not control its field
+//! truncation. Nonzero `q` with `HasRMatrix` is not implemented.
+//!
+//! Output models keep the input position data type. Stored position blocks
+//! follow translation rows, with zero blocks on generated rows. Sambe
+//! replicates them on the photon diagonal. These are undressed position data
+//! in the output basis, not optical-gauge- or micromotion-dressed observables.
 //!
 //! # Real-space hopping convention
 //!
@@ -205,19 +222,20 @@
 //! where `order = 2` includes both nested-commutator families through
 //! $O(W^{-2})$ documented on [`Model::floquet_effective_model`].
 //!
-//! The Fourier blocks `H^{(n)}(k)` are defined in the [Peierls phase
-//! section](#peierls-phase-and-fourier-blocks) above.  Each commutator term
+//! The Fourier blocks `H^{(n)}(k)` follow the coupling selected by the input
+//! model's position data type. Each commutator term
 //! `[H^(-n), H^(n)]` captures a virtual photon-exchange process where the
 //! system absorbs a photon of energy `n W` and immediately re-emits it,
 //! staying in the same photon sector but acquiring an effective hopping
 //! correction of order `1/W`.
 //!
-//! Use [`Model::floquet_effective_model`] for this path.  It builds the
-//! effective hopping blocks entirely in real space (generalized Bessel
-//! backend — no k-mesh), returning a [`Model`]`<SPIN, DIM, NoRMatrix>` with
-//! the same number of bands as the input model.  The k-space reference
-//! implementation (uniform k-mesh + inverse Fourier transform) is kept as
-//! a crate-internal `floquet_effective_model_legacy` for cross-validation.
+//! [`Model::floquet_effective_model`] builds the effective hopping blocks in
+//! real space (no k-mesh), returning a `Model<SPIN, DIM, R>` with the input
+//! band count. With `HasRMatrix`, the van Vleck products keep only terms
+//! through second order in field amplitude: a commutator uses two linear
+//! vertices, and the second-order nested commutator additionally uses bare
+//! `H` as its static vertex. The time average retains the quadratic terms
+//! independently of `harmonic_max`.
 //!
 //! # API overview
 //!
@@ -290,7 +308,7 @@
 //!
 //! | Entry point | Returned basis | Intended regime |
 //! |---|---|---|
-//! | [`Floquet::floquet_model`] | `nsta * (2*n_max + 1)` | Full truncated Sambe problem, exact in `n_max` |
+//! | [`Floquet::floquet_model`] | `nsta * (2*n_max + 1)` | Sambe problem for the selected coupling, truncated in photon sectors |
 //! | [`Model::floquet_effective_model`] | `nsta` | Coherent, off-resonant van Vleck expansion |
 //! | [`Model::floquet_effective_mode_resolved_model`] | `nsta` | Mutually incoherent mode-diagonal correction sum |
 //! | [`Model::floquet_effective_q_model`] | `nsta` | One coherent long-wavelength correction through `O(A^2 q/W)` |
@@ -362,6 +380,9 @@
 //! ```
 
 mod coefficients;
+mod position;
+#[cfg(test)]
+mod position_tests;
 mod real_space;
 #[cfg(test)]
 mod time_direction_tests;
@@ -375,6 +396,7 @@ use real_space::*;
 #[cfg(test)]
 use crate::Gauge;
 use crate::error::{Result, TbError};
+#[cfg(test)]
 use crate::model::NoRMatrix;
 use crate::model::utils::find_R;
 #[cfg(test)]
@@ -478,9 +500,9 @@ impl FloquetDrive {
 /// N_{\mathrm{Sambe}} = N_{\mathrm{state}}(2N+1).
 /// $$
 ///
-/// Both Floquet paths evaluate the Peierls coefficients `C_n(d)` with the
-/// exact, grid-free Bessel backend, so no entry point takes a sampling count:
-/// this truncation carries the photon cutoff and nothing else.
+/// Neither the Peierls nor the position-matrix path takes a sampling count:
+/// this truncation carries only the photon cutoff. In the `NoRMatrix` path
+/// the Peierls coefficients `C_n(d)` are evaluated with the Bessel backend.
 ///
 /// Links beyond the Bessel backend's exact range fall back to a per-link
 /// time-grid DFT whose resolution is sized from the link's own spectral
@@ -582,8 +604,7 @@ impl IncidentBasis {
 
 /// Optional controls for building a same-size high-frequency Floquet
 /// effective model, shared by [`Model::floquet_effective_model`]
-/// (real-space Bessel backend) and the crate-internal legacy k-space
-/// reference path.
+/// and the crate-internal legacy Peierls reference.
 ///
 /// `order` and `harmonic_max` control the high-frequency expansion on both paths.
 /// `target_hamR` (crate-internal) applies only to the legacy path, whose
@@ -609,9 +630,9 @@ pub struct FloquetEffectiveOptions {
     /// through `O(omega^0)`, `O(omega^-1)`, and `O(omega^-2)`, respectively.
     pub order: usize,
     /// Signed-harmonic cutoff for commutator sums. Defaults to `2`,
-    /// independently of any Sambe photon cutoff. At order 2 the mixed component
-    /// `H_(m'-m)` is
-    /// evaluated up to `|m'-m| = 2 * harmonic_max` automatically.
+    /// independently of any Sambe photon cutoff. In the all-orders Peierls
+    /// path, order 2 evaluates `H_(m'-m)` up to `2 * harmonic_max` automatically.
+    /// In the weak-field position path, the cutoff does not affect the time average.
     pub harmonic_max: isize,
     /// Optional target real-space hopping vectors for the legacy path's
     /// inverse Fourier transform.  Rejected by the real-space path.
@@ -822,12 +843,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// coherent beams with distinct wavevectors.  Such beams therefore need
     /// separate calls (or a future graded/supercell API); this method models
     /// one common propagation wavevector through the retained `O(A^2 q / W)` term.
+    /// Nonzero `q` is only supported for models without a position matrix;
+    /// exactly zero `q` uses the uniform path for either model type.
     pub fn floquet_effective_q_model(
         &self,
         drive: &FloquetDrive,
         options: Option<&FloquetEffectiveOptions>,
         wavevector_cartesian: &Array1<f64>,
-    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+    ) -> Result<Model<SPIN, DIM, R>> {
         self.floquet_effective_q_linear_model(drive, wavevector_cartesian, options)
     }
 
@@ -836,7 +859,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         drive: &FloquetDrive,
         wavevector_cartesian: &Array1<f64>,
         options: Option<&FloquetEffectiveOptions>,
-    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+    ) -> Result<Model<SPIN, DIM, R>> {
         if wavevector_cartesian.len() != DIM {
             return Err(TbError::DimensionMismatch {
                 context: "floquet_effective_q_model wavevector_cartesian".to_string(),
@@ -851,10 +874,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             ));
         }
 
-        let mut effective = self.floquet_effective_model(drive, options)?;
         if wavevector_cartesian.iter().all(|value| *value == 0.0) {
-            return Ok(effective);
+            return self.floquet_effective_model(drive, options);
         }
+        if R::HAS_RMATRIX {
+            return Err(TbError::Other(
+                "floquet_effective_q_model does not support nonzero q with HasRMatrix".into(),
+            ));
+        }
+        let mut effective = self.floquet_effective_model(drive, options)?;
 
         let default_options;
         let options = match options {
@@ -976,7 +1004,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         &self,
         drive: &FloquetDrive,
         options: Option<&FloquetEffectiveOptions>,
-    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+    ) -> Result<Model<SPIN, DIM, R>> {
         let default_options;
         let options = match options {
             Some(options) => options,
@@ -1000,7 +1028,22 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 target.nrows()
             )));
         }
-        effective_harmonic_max(options)?;
+        let harmonic_max = effective_harmonic_max(options)?;
+        if R::HAS_RMATRIX {
+            self.validate()?;
+            self.validate_floquet_position()?;
+            let mut corrections = RealSpaceBlockMap::new();
+            for mode in &drive.modes {
+                if mode.a_complex.iter().all(|a| a.re == 0.0 && a.im == 0.0) {
+                    continue;
+                }
+                let isolated = FloquetDrive::with_modes(drive.omega0_ev, vec![mode.clone()]);
+                let single =
+                    self.position_effective_corrections(&isolated, options.order, harmonic_max)?;
+                corrections = merge_real_space_block_maps(corrections, single);
+            }
+            return self.position_effective_output(corrections);
+        }
         let nsta = self.nsta();
         let active_modes = drive
             .modes
@@ -1012,17 +1055,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             })
             .collect::<Vec<_>>();
         if active_modes.is_empty() {
-            let mut static_model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
-                self.lat.clone(),
-                self.orb.clone(),
-                Some(self.atoms.clone()),
-            )?;
-            static_model.ham = self.ham.clone();
-            static_model.hamR = self.hamR.clone();
-            static_model.orb_projection = self.orb_projection.clone();
-            place_origin_first(&mut static_model.ham, &mut static_model.hamR)?;
-            static_model.validate()?;
-            return Ok(static_model);
+            self.validate()?;
+            let mut ham = self.ham.clone();
+            let mut ham_r = self.hamR.clone();
+            place_origin_first(&mut ham, &mut ham_r)?;
+            return self.floquet_effective_output(ham, ham_r);
         }
         if active_modes.len() == 1 {
             let single_drive =
@@ -1058,17 +1095,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
 
-        let mut effective = Model::<SPIN, DIM, NoRMatrix>::tb_model(
-            self.lat.clone(),
-            self.orb.clone(),
-            Some(self.atoms.clone()),
-        )?;
-        effective.orb_projection = self.orb_projection.clone();
-        effective.hamR = Array2::zeros((blocks.len(), DIM));
-        effective.ham = Array3::zeros((blocks.len(), nsta, nsta));
+        let mut ham_r = Array2::zeros((blocks.len(), DIM));
+        let mut ham = Array3::zeros((blocks.len(), nsta, nsta));
         for (i_r, (row, block)) in blocks.into_iter().enumerate() {
             for axis in 0..DIM {
-                effective.hamR[[i_r, axis]] = row[axis];
+                ham_r[[i_r, axis]] = row[axis];
             }
             if block
                 .iter()
@@ -1078,16 +1109,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     "floquet_effective_mode_resolved_model produced non-finite hopping values at support row {i_r}"
                 )));
             }
-            effective.ham.index_axis_mut(Axis(0), i_r).assign(&block);
+            ham.index_axis_mut(Axis(0), i_r).assign(&block);
         }
-        place_origin_first(&mut effective.ham, &mut effective.hamR)?;
-        enforce_real_space_hermiticity(&mut effective.ham, &effective.hamR)?;
-        effective.validate()?;
-        Ok(effective)
+        place_origin_first(&mut ham, &mut ham_r)?;
+        enforce_real_space_hermiticity(&mut ham, &ham_r)?;
+        self.floquet_effective_output(ham, ham_r)
     }
 }
 
-/// Peierls-Floquet Sambe construction for tight-binding models.
+/// Electronic Floquet–Sambe construction for tight-binding models.
 ///
 /// The only construction entry point returns a real-space model. The removed
 /// single-k shortcuts are deliberately not compatibility APIs; use the returned
@@ -1119,8 +1149,8 @@ pub trait Floquet {
 
     /// Build an enlarged static tight-binding model in Sambe space.
     ///
-    /// The returned model has the same spatial lattice and hopping range as
-    /// the original model, but its internal basis is enlarged from
+    /// The returned model has the same spatial lattice as the original,
+    /// but its internal basis is enlarged from
     /// `N_state` to
     ///
     /// ```math
@@ -1132,7 +1162,7 @@ pub trait Floquet {
     /// models preserve the usual Rustb spin layout and are ordered as
     /// `(spin, photon sector, orbital)`.
     ///
-    /// The real-space matrix elements are
+    /// For Peierls coupling the real-space matrix elements are
     ///
     /// ```math
     /// \langle i,n;\mathbf 0|H_F|j,m;\mathbf R\rangle =
@@ -1141,8 +1171,11 @@ pub trait Floquet {
     /// nW\delta_{nm}\delta_{ij}\delta_{\mathbf R,0},\qquad W=\hbar\Omega_0.
     /// ```
     ///
-    /// The result preserves the input model's `SPIN` const generic.  Photon
-    /// sectors are encoded as additional orbitals; if the input model is
+    /// With `HasRMatrix`, replace `t C_{m-n}` by the full projected-position
+    /// Fourier block through second order in field amplitude. The hopping
+    /// support can grow; the bare position blocks are remapped and replicated
+    /// on the photon diagonal. Both `SPIN` and the position data type are
+    /// preserved. Photon sectors are encoded as additional orbitals; if the input model is
     /// spinful, physical spin remains the `Model<true, DIM, _>` spin degree of
     /// freedom rather than being flattened away.
     ///
@@ -1162,7 +1195,7 @@ pub trait Floquet {
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN, DIM, R> {
-    type FloquetModel = Model<SPIN, DIM, NoRMatrix>;
+    type FloquetModel = Model<SPIN, DIM, R>;
 
     fn floquet_model(
         &self,
@@ -1182,17 +1215,22 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
         let harmonic_min = -2 * trunc.n_max;
         let harmonic_max = 2 * trunc.n_max;
-        // The Sambe path shares the exact, grid-free Bessel backend with the
-        // effective-model path; links beyond the backend's range fall back to a
-        // self-sized per-link grid inside the cache.
-        let harmonic_cache = self.floquet_harmonic_cache(
-            drive,
-            harmonic_min,
-            harmonic_max,
-            &PeierlsFourierMethod::Bessel {
-                cutoff_margin: BESSEL_CUTOFF_MARGIN,
-            },
-        );
+        let (mut ham_r, harmonic_cache) = if R::HAS_RMATRIX {
+            self.position_sambe_cache(drive, harmonic_max, total)?
+        } else {
+            // Scalar links past the Bessel backend's range use a per-link grid.
+            (
+                self.hamR.clone(),
+                self.floquet_harmonic_cache(
+                    drive,
+                    harmonic_min,
+                    harmonic_max,
+                    &PeierlsFourierMethod::Bessel {
+                        cutoff_margin: BESSEL_CUTOFF_MARGIN,
+                    },
+                ),
+            )
+        };
 
         let mut orb = Array2::<f64>::zeros((new_norb, DIM));
         for isec in 0..n_sector {
@@ -1202,7 +1240,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
             }
         }
 
-        let mut ham_r = self.hamR.clone();
         let mut ham = Array3::<Complex<f64>>::zeros((ham_r.nrows(), total, total));
         ham.axis_iter_mut(Axis(0))
             .into_par_iter()
@@ -1261,13 +1298,24 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
                 })
             })
             .collect();
-        let mut model =
-            Model::<SPIN, DIM, NoRMatrix>::tb_model(self.lat.clone(), orb, Some(atoms))?;
-        model.ham = ham;
-        model.hamR = ham_r;
-        model.orb_projection = (0..n_sector)
-            .flat_map(|_| (0..norb).map(|i| self.orb_projection[i]))
-            .collect();
+        if R::HAS_RMATRIX {
+            enforce_real_space_hermiticity(&mut ham, &ham_r)?;
+        }
+        let rmatrix = self.floquet_output_position(&ham_r, total, Some(&basis_indices))?;
+        let model = Model {
+            lat: self.lat.clone(),
+            orb,
+            atoms,
+            ham,
+            hamR: ham_r,
+            orb_projection: (0..n_sector)
+                .flat_map(|_| (0..norb).map(|i| self.orb_projection[i]))
+                .collect(),
+            rmatrix,
+        };
+        if R::HAS_RMATRIX {
+            model.validate()?;
+        }
 
         if model
             .ham
@@ -1492,19 +1540,20 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(model)
     }
 
-    /// Real-space van Vleck effective model through `O(omega^-2)` via the
-    /// generalized Bessel backend. The numerical controls are
-    /// [`FloquetEffectiveOptions`]; no photon cutoff, time-sampling count,
-    /// or `k_mesh` is required. Links whose amplitude exceeds the Bessel range
-    /// (beyond the backend's range) fall back to a per-link time-grid DFT whose resolution is
-    /// sized from the link's own spectral bandwidth and the requested
-    /// harmonic range.
+    /// Real-space van Vleck effective model through `O(omega^-2)`.
+    /// [`FloquetEffectiveOptions`] controls the expansion; no photon cutoff,
+    /// time-sampling count, or k-mesh is required.
     ///
-    /// This is the main entry point.  The crate-internal
-    /// `floquet_effective_model_legacy` is the k-space reference
-    /// implementation, kept for cross-validation tests.
+    /// `HasRMatrix` uses the projected position coupling and consistently
+    /// retains terms only through second order in field amplitude. The
+    /// quadratic time average is included at every frequency order. The
+    /// van Vleck corrections use only linear nonzero-harmonic vertices,
+    /// with bare `H` in the middle of the `1/W²` nested commutator. The
+    /// result carries the bare position matrix remapped to the new `hamR`.
     ///
-    /// The effective hopping blocks are built entirely in real space:
+    /// For `NoRMatrix`, the all-orders Peierls path uses generalized Bessel
+    /// coefficients (with automatic time-grid fallback beyond the backend's
+    /// range). In this path the effective hopping blocks are:
     ///
     /// ```math
     /// T_{\mathrm{eff}}(R)
@@ -1570,7 +1619,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         &self,
         drive: &FloquetDrive,
         options: Option<&FloquetEffectiveOptions>,
-    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+    ) -> Result<Model<SPIN, DIM, R>> {
         self.floquet_effective_model_impl(drive, options, true)
     }
 
@@ -1581,7 +1630,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         drive: &FloquetDrive,
         options: Option<&FloquetEffectiveOptions>,
         regroup_order_two: bool,
-    ) -> Result<Model<SPIN, DIM, NoRMatrix>> {
+    ) -> Result<Model<SPIN, DIM, R>> {
         self.validate()?;
         let default_options;
         let options = match options {
@@ -1610,6 +1659,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let harmonic_max = effective_harmonic_max(options)?;
 
         let nsta = self.nsta();
+        if R::HAS_RMATRIX {
+            self.validate_floquet_position()?;
+            let corrections =
+                self.position_effective_corrections(drive, options.order, harmonic_max)?;
+            return self.position_effective_output(corrections);
+        }
         let has_time_dependence = drive_has_ac_components(drive);
         let static_drive;
         let cache_drive = if has_time_dependence {
@@ -1900,14 +1955,24 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         place_origin_first(&mut ham, &mut ham_r)?;
         enforce_real_space_hermiticity(&mut ham, &ham_r)?;
 
-        let mut model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
-            self.lat.clone(),
-            self.orb.clone(),
-            Some(self.atoms.clone()),
-        )?;
-        model.ham = ham;
-        model.hamR = ham_r;
-        model.orb_projection = self.orb_projection.clone();
+        self.floquet_effective_output(ham, ham_r)
+    }
+
+    fn floquet_effective_output(
+        &self,
+        ham: Array3<Complex<f64>>,
+        ham_r: Array2<isize>,
+    ) -> Result<Model<SPIN, DIM, R>> {
+        let rmatrix = self.floquet_output_position(&ham_r, self.nsta(), None)?;
+        let model = Model {
+            lat: self.lat.clone(),
+            orb: self.orb.clone(),
+            atoms: self.atoms.clone(),
+            orb_projection: self.orb_projection.clone(),
+            ham,
+            hamR: ham_r,
+            rmatrix,
+        };
         model.validate()?;
         Ok(model)
     }
@@ -2234,15 +2299,28 @@ fn validate_sambe_allocation<const SPIN: bool, const DIM: usize, R: RMatrixData>
         .checked_mul(n_sector)
         .ok_or_else(|| TbError::Other("Floquet matrix dimension overflows".into()))?;
     let harmonic_count = (4 * trunc.n_max + 1) as usize; // checked by truncation validation
-    let n_r = model
-        .hamR
-        .nrows()
+    validate_sambe_layout::<DIM, R>(model.hamR.nrows(), total, model.nsta(), harmonic_count)?;
+    if R::HAS_RMATRIX {
+        model.validate_floquet_position()
+    } else {
+        validate_link_resolvability(model, drive, -2 * trunc.n_max, 2 * trunc.n_max)
+    }
+}
+
+fn validate_sambe_layout<const DIM: usize, R: RMatrixData>(
+    n_r: usize,
+    total: usize,
+    nsta: usize,
+    harmonic_count: usize,
+) -> Result<()> {
+    let n_r = n_r
         .checked_add(1)
         .ok_or_else(|| TbError::Other("Floquet translation count overflows".into()))?;
     for shape in [
         vec![n_r, total, total],
-        vec![harmonic_count, n_r, model.nsta(), model.nsta()],
+        vec![harmonic_count, n_r, nsta, nsta],
         vec![total, DIM],
+        vec![if R::HAS_RMATRIX { n_r } else { 0 }, DIM, total, total],
     ] {
         shape
             .into_iter()
@@ -2252,14 +2330,7 @@ fn validate_sambe_allocation<const SPIN: bool, const DIM: usize, R: RMatrixData>
                 TbError::Other("Floquet array size exceeds the addressable range".into())
             })?;
     }
-    if model
-        .ham
-        .iter()
-        .any(|z| !z.re.is_finite() || !z.im.is_finite())
-    {
-        return Err(TbError::Other("Floquet Hamiltonian must be finite".into()));
-    }
-    validate_link_resolvability(model, drive, -2 * trunc.n_max, 2 * trunc.n_max)
+    Ok(())
 }
 
 fn validate_floquet_time_samples(n_time: usize) -> Result<()> {

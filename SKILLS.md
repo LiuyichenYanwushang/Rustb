@@ -891,12 +891,10 @@ plotting failures propagate as errors.
 ## 7. Floquet driven systems
 
 `LightMode::a_complex` is the rescaled vector potential `eA/hbar`, in inverse
-lattice-length units. The unchanged input is `a(t)=Re sum_l a_l exp(-ilΩt)`
-with Peierls phase `exp(-i a(t)·d)` and `H(t)=sum_q H^(q) exp(-iqΩt)`.
-Positive-time basis `exp(+inΩt)` gives Sambe blocks `H^(m-n)+nW`,
-`W=omega0_ev=hbar*Ω`. The first van Vleck correction is
-`sum_(n>0) [H^(-n),H^(n)]/(nW)` (negative harmonic first);
-the two `W^-2` double-commutator families are unchanged by this migration.
+lattice-length units. The drive is `a(t) = Re sum_l a_l exp(-ilΩt)`, and
+`H(t) = sum_l H^(l) exp(-ilΩt)`. The positive-time basis `exp(+inΩt)` gives
+Sambe blocks `H^(m-n) + nW δ_nm`, where `W = omega0_ev = hbar*Ω`. The first
+van Vleck correction is `sum_(n>0) [H^(-n), H^(n)]/(nW)` (negative harmonic first).
 
 ```rust
 let drive = FloquetDrive::with_modes(
@@ -931,16 +929,15 @@ let options = FloquetEffectiveOptions::new()
 let effective_incoherent =
     model.floquet_effective_mode_resolved_model(&drive, Some(&options))?;
 
-// Retain the complete van Vleck correction through O(omega^-2).
+// Keep van Vleck terms through O(W^-2), subject to the field truncation.
 let second_order_options = FloquetEffectiveOptions::new().with_order(2);
 let effective_second_order = model.floquet_effective_model(
     &drive,
     Some(&second_order_options),
 )?;
 
-// One coherent plane wave with a Cartesian wavevector (inverse-length units).
-// This returns the same number of states as `model` and adds the analytic
-// weak-field O(A^2 q / W) correction to the ordinary q=0 result.
+// Nonzero q requires NoRMatrix. Use one common Cartesian wavevector in
+// inverse-length units to add the weak-field O(a^2 q/W) correction.
 let q_cartesian = arr1(&[2.0e-3, 0.0]);
 let effective_linear_q = model.floquet_effective_q_model(
     &drive,
@@ -951,36 +948,54 @@ let effective_linear_q = model.floquet_effective_q_model(
 
 | API | Basis size | Intended regime |
 |---|---:|---|
-| `floquet_model` | `nsta * (2*n_max + 1)` | Full truncated real-space Sambe model |
-| `floquet_effective_model` | `nsta` | Off-resonant, high-frequency expansion |
+| `floquet_model` | `nsta * (2*n_max + 1)` | Real-space Sambe model with a photon cutoff |
+| `floquet_effective_model` | `nsta` | Coherent off-resonant, high-frequency expansion |
 | `floquet_effective_mode_resolved_model` | `nsta` | Mode-diagonal mutually incoherent correction sum |
-| `floquet_effective_q_model` | `nsta` | One coherent common `q`, through `O(A^2 q/W)` |
+| `floquet_effective_q_model` | `nsta` | One coherent common `q`, through `O(a² q/W)`; nonzero `q` requires `NoRMatrix` |
 
-All public Floquet construction paths return an ordinary real-space `Model`.
-Build the Sambe model once and reuse `gen_ham`, `gen_ham_batch` or the ordinary
-`Solve` methods across a k-path. The single-k Floquet shortcuts have been removed.
-Band solvers return unfolded, gauge-independent energies; fold with
-`fold_quasienergy` and sort afterwards if ascending quasienergies are required.
+All these methods return an ordinary real-space `Model<SPIN, DIM, R>`
+with the input `R` type. Build the Sambe model once and reuse `gen_ham`,
+`gen_ham_batch` or the ordinary `Solve` methods across a k-path. Use
+`fold_quasienergy` on the unfolded energies and sort afterwards if ascending
+quasienergies are required.
 
-`floquet_effective_model` uses the real-space generalized-Bessel backend:
-no `k_mesh` and no `target_hamR` — the effective hopping support is
-determined automatically: up to the double Minkowski sum for the default
-`order = 1`, and up to the triple Minkowski sum for `order = 2`.
-All three effective-model APIs use `FloquetEffectiveOptions`, whose defaults
-are `order = 1` and `harmonic_max = 2`. The harmonic cutoff is a concrete
-nonnegative integer, independent of the Sambe photon cutoff. These APIs take
-no `FloquetTruncation`: out-of-range links fall back to a per-link
-time-grid DFT sized from the link's own bandwidth and the requested
-harmonic range. The fallback projects onto the link before time evolution,
-sums coherent carriers, and factors the real DC phase outside the sampled AC
-signal. A conservative work estimate never alone rejects a drive: the actual
-Bessel backend is checked before an otherwise unresolvable fallback is refused.
+For `NoRMatrix`, Sambe and effective models still use the all-orders Peierls
+phase `exp(-i a(t)·d)` with generalized-Bessel coefficients (or a per-link
+DFT fallback). With `HasRMatrix` and a uniform drive, Sambe and both coherent
+and mode-resolved effective models instead Taylor-expand the velocity-gauge
+transform of the projected length-gauge Hamiltonian through `O(a²)`. If
+`r_i(k)` is the lattice-gauge Fourier transform of the full `r_i(R)`, the
+covariant derivative is `D_i B = ∂_i B + i[B, r_i(k)]`. The expansion includes
+the projected-position curvature term proportional to `a_i * dot(a_j)`. Use
+this path in the weak-field regime; it is not an all-orders Peierls dressing.
 
-`FloquetTruncation` controls the photon cutoff `n_max` only, and only for the
-full Sambe APIs; the coefficients are grid-free. To preserve an old effective-model call's implicit harmonic
-range during migration, pass `.with_harmonic_max(2 * old_n_max)` explicitly.
+The returned `HasRMatrix` carries the bare projected position embedding,
+remapped by lattice translation with new rows zero-filled. Sambe places a
+copy on each photon diagonal: the basis order is `(photon, orbital)` for
+spinless models and `(spin, photon, orbital)` for spinful models. The
+embedding is not a micromotion-dressed observable; applying ordinary
+response methods to the result does not establish physical Floquet transport.
 
-Cost of one link, with `R = |a·d|` and `K` the requested harmonic range: a
+All three effective-model APIs use `FloquetEffectiveOptions` (defaults:
+`order = 1`, `harmonic_max = 2`). `order = 0` keeps the time average; orders
+`1` and `2` add van Vleck terms through `1/W` and `1/W²`, respectively. For
+`HasRMatrix`, this inverse-frequency truncation is independent of the field
+truncation: the assembled result keeps only terms through `O(a²)`.
+`harmonic_max` is a nonnegative integer that cuts only the static van Vleck
+correction sums, not the time average. Effective methods take no `k_mesh`
+or `target_hamR`; hopping support is determined automatically.
+`FloquetTruncation` controls only the Sambe photon cutoff `n_max`. To preserve
+an old effective-model call's implicit harmonic range during migration, pass
+`.with_harmonic_max(2 * old_n_max)` explicitly.
+
+For `NoRMatrix`, the effective hopping support can reach the double Minkowski
+sum at `order = 1` and the triple sum at `order = 2`. The per-link DFT fallback
+is sized from the link's bandwidth and requested harmonic range. It projects
+onto the link before summing coherent carriers and factors the real DC phase
+outside the sampled AC signal. The actual Bessel backend is checked before
+an otherwise unresolvable fallback is refused.
+
+Cost of one Peierls link, with `R = |a·d|` and `K` the requested harmonic range: a
 single nonzero harmonic is `O(R + K)` and exact up to `R = 16384`; two carriers
 enumerate the resonance sum in `O(K·min(M))` and reach the same amplitude;
 three or more fold one-mode convolutions, which is exact only up to `R = 128`
@@ -993,27 +1008,25 @@ large bond can reach the fallback.
 
 For multiple mutually incoherent modes,
 `floquet_effective_mode_resolved_model` computes
-`H0 + sum_alpha (H_eff[a_alpha] - H0)`.  It never combines the modes inside one
-Peierls exponential, skips exact-zero modes, and unions all generated hopping
-supports.  This is the leading weak-field random-phase result, not an exact
-all-orders phase average: higher-order cross-intensity terms are omitted.
-The correction sum uses ordinary `f64` arithmetic, so changing the mode order
-can change floating-point rounding.
+`H0 + sum_alpha (H_eff[a_alpha] - H0)`. It evaluates each nonzero mode on its
+own and unions the hopping supports. This agrees with random-phase averaging
+at `O(a²)`; it is not an exact all-orders phase average because higher-order
+cross-intensity terms are omitted. Changing the mode order can change
+floating-point rounding.
 
-`floquet_effective_q_model` does not use numerical momentum differences.
-For a Cartesian bond `d = (R + tau_j - tau_i) * lat`, it represents
-`D_a H_0` by the real-space block `i*d_a*t(R)`.  It constructs
-`G_n = a_n·D H_0`, forms `{G_n,G_n†}` by real-space convolution, and applies
-`q·D` by multiplying every resulting output hopping by `i*q·d_out`. The
-correction is `+sum_(n>0) (q·D){G_n,G_n†}/(8nW)`: the positive sign follows
-from the midpoint expansion of the `H_n: k→k+q` and `H_-n: k→k−q` paths.
-The same-harmonic complex amplitudes are summed coherently.  Both
+For either `R` type, `floquet_effective_q_model` with `q = 0` is identical to
+`floquet_effective_model`. Nonzero `q` is an error for `HasRMatrix`. For
+`NoRMatrix`, the linear-`q` correction uses ordinary Cartesian momentum
+derivatives, not numerical differences: for a bond
+`d = (R + tau_j - tau_i) * lat`, `∂_a H_0` is represented by `i*d_a*t(R)`.
+It builds `G_n = a_n·∂ H_0`, forms `{G_n, G_n†}` by real-space convolution,
+and adds `+sum_(n>0) (q·∂){G_n, G_n†}/(8nW)` by multiplying the output
+blocks by `i*q·d_out`. Same-harmonic amplitudes are summed coherently. Both
 `|a_n·d| << 1` and `|q·d| << 1` are required; distinct coherent wavevectors
-need a graded or commensurate-supercell treatment rather than this method.
-The correction includes only positive harmonics through the effective
-`harmonic_max`; active nonpositive harmonics are rejected for nonzero `q` when
-`order >= 1`.  `order = 0` adds no linear-`q` term, and `q = 0` follows the
-ordinary `floquet_effective_model` path exactly.
+need a graded or commensurate-supercell treatment. `order = 0` adds no
+linear-`q` term; higher orders include the same `O(a² q/W)` correction.
+For this nonzero-`q` correction, the sum runs through `harmonic_max` and
+active nonpositive harmonics are rejected.
 
 For three-dimensional illumination, `IncidentBasis::from_direction` constructs
 two transverse polarization vectors from a propagation direction.

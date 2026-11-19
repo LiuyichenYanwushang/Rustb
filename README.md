@@ -716,20 +716,38 @@ cubic.write_bxsf(&[11, 11, 11], 0.0, "fermi_surface")?;
 
 ### `floquet` — periodically driven systems
 
-`FloquetDrive` holds the base photon energy and one or more `LightMode` values
-(integer harmonics and complex amplitudes of `eA/hbar`). `floquet_model`
-builds the enlarged real-space Sambe Hamiltonian; `floquet_effective_model`
-returns a same-size van Vleck model from the real-space Bessel backend.
-`floquet_effective_mode_resolved_model` treats modes as mutually incoherent,
-and `floquet_effective_q_model` adds the coherent long-wavelength
-`O(A^2 q/W)` correction. All results are ordinary `Model` values; fold
-eigenvalues with `fold_quasienergy`.
+`FloquetDrive` holds the base photon energy and `LightMode` values (integer
+harmonics and complex amplitudes of `a = eA/hbar`). `floquet_model` builds the
+real-space Sambe model; `floquet_effective_model` and
+`floquet_effective_mode_resolved_model` build same-size van Vleck models for
+coherent and mutually incoherent modes, respectively. All return ordinary
+`Model` values preserving the input `R` type. Use `fold_quasienergy` to fold
+Sambe eigenvalues.
+
+`NoRMatrix` keeps the all-orders Bessel Peierls path. For uniform drives,
+`HasRMatrix` uses the velocity-gauge Taylor expansion of the projected
+length-gauge Hamiltonian through `O(a²)`. It uses the full `r_i(R)` in the
+covariant derivative `D_i` and includes the curvature term proportional to
+`a_i * dot(a_j)`, with `dot(a_j)` the time derivative. This weak-field
+approximation applies to Sambe and effective models; it is not the exact
+Peierls exponential.
+The effective methods separately truncate van Vleck at `order = 0`, `1`, or `2`,
+keeping only terms through `O(a²)` for `HasRMatrix`. `harmonic_max` cuts the
+van Vleck correction sums, not the time average.
+
+`floquet_effective_q_model` adds the coherent long-wavelength `O(a² q/W)`
+correction for `NoRMatrix`; nonzero `q` with `HasRMatrix` returns an error.
+For either type, `q = 0` is identical to `floquet_effective_model`.
+The returned position matrix is the bare projected embedding: blocks are
+remapped by lattice translation, with new rows zero-filled, and Sambe copies
+are photon-diagonal in spin-major order. It is not a micromotion-dressed
+observable and does not establish physical Floquet transport.
 
 With `H(t) = sum_q H^(q) exp(-iqΩt)`, Sambe uses `H^(m-n) + nW δ_nm`
 in the positive-time basis, and first-order van Vleck uses `[H^(-n), H^(n)]/(nW)`.
 Earlier builds used the time-reversed protocol; recompute helicity-sensitive
-results rather than negating all quasienergies. The input light amplitudes and
-Peierls phase have not changed. See the [electronic Floquet conventions](<src/floquet.rs>) for details.
+results rather than negating all quasienergies. See the
+[Floquet usage guide](<SKILLS.md#7-floquet-driven-systems>) for details.
 
 ```rust
 let drive = FloquetDrive::with_modes(
