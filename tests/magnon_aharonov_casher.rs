@@ -387,3 +387,93 @@ fn probe_mgfe6ge6_ac() -> Rustb::Result<()> {
     }
     Ok(())
 }
+
+// This scan avoids a branch assignment: it tests the sum over all positive
+// modes in each spin sector, modulo W, at locally stable dark momenta only.
+#[test]
+#[ignore = "requires an external MgFe6Ge6 TB2J export"]
+fn scan_mgfe6ge6_ac_helicity() -> Rustb::Result<()> {
+    use rayon::prelude::*;
+    use std::f64::consts::TAU;
+
+    const W_MATERIAL: f64 = 0.001;
+    const N_PHI: usize = 36;
+    const RADIUS: f64 = 0.40; // Å^-1, Cartesian
+    const A: f64 = 0.01; // normalized AC field, not a fitted material value
+    let dir = std::env::var("MGFE6GE6_MAGNON_DIR").expect("provide MGFE6GE6_MAGNON_DIR");
+    let dark = Magnon::<3>::read(&dir, "mgfe6ge6_static")?;
+    let build = |sign, cutoff, steps| {
+        let amplitudes = array![
+            Complex::new(A, 0.0),
+            Complex::new(0.0, sign * A),
+            Complex::new(0.0, 0.0)
+        ];
+        let drive = FloquetDrive::with_modes(W_MATERIAL, vec![LightMode::new(1, amplitudes)]);
+        MagnonSambe::new_aharonov_casher(&dark, &drive, AXIS, &FloquetTruncation::new(cutoff))?
+            .with_time_steps(steps)
+    };
+    let primary = [build(1.0, 3, 512)?, build(-1.0, 3, 512)?];
+    let more_steps = [build(1.0, 3, 1024)?, build(-1.0, 3, 1024)?];
+    let more_harmonics = [build(1.0, 5, 512)?, build(-1.0, 5, 512)?];
+    let spin_sum = |ac: &MagnonSambe<3>, q| -> Rustb::Result<f64> {
+        let [down, up] = ac.ac_spin_quasienergies_at(q)?;
+        assert_eq!([down.len(), up.len()], [3, 3]);
+        Ok(up.sum() - down.sum())
+    };
+    let helicity_odd = |pair: &[MagnonSambe<3>; 2], q| -> Rustb::Result<f64> {
+        let diff = spin_sum(&pair[0], q)? - spin_sum(&pair[1], q)?;
+        Ok(0.5 * fold_quasienergy(diff, W_MATERIAL))
+    };
+    let mut points = Vec::new();
+    // Include kz=0, where the leading k-wave contrast must vanish, and
+    // opposite kz values to test the expected reflection-odd sign.
+    for qz in [-0.15, 0.0, 0.15] {
+        for i in 0..N_PHI {
+            let phi = TAU * i as f64 / N_PHI as f64;
+            let kc = array![RADIUS * phi.cos(), RADIUS * phi.sin(), 0.0];
+            let mut q = dark.lat.dot(&kc) / TAU;
+            q[2] = qz; // z is the hexagonal lattice c direction in this export
+            points.push((qz, i, phi, q));
+        }
+    }
+    println!(
+        "# input={dir}, radius={RADIUS} 1/angstrom, photon={W_MATERIAL} eV, normalized field={A} 1/angstrom"
+    );
+    let values = points
+        .par_iter()
+        .map(|(qz, i, phi, q)| -> Rustb::Result<_> {
+            dark.magnon_band_onek(q)?;
+            let value = helicity_odd(&primary, q)?;
+            // Include the extremes of the measured C6 residual (3 and 9).
+            let refinement = if matches!(i, 0 | 3 | 9) {
+                Some((
+                    helicity_odd(&more_steps, q)?,
+                    helicity_odd(&more_harmonics, q)?,
+                ))
+            } else {
+                None
+            };
+            Ok((qz, i, phi, value, refinement))
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "# fractional_qz, azimuth_index, phi_rad, helicity_odd_spin_sum_ev, more_steps_ev, more_harmonics_ev"
+    );
+    let mut failed = Vec::new();
+    for ((qz, i, _, q), entry) in points.iter().zip(values) {
+        match entry {
+            Ok((qz, i, phi, value, Some((time, photons)))) => {
+                println!("AC_CSV,{qz},{i},{phi:.15e},{value:.15e},{time:.15e},{photons:.15e}")
+            }
+            Ok((qz, i, phi, value, None)) => println!("AC_CSV,{qz},{i},{phi:.15e},{value:.15e},,"),
+            Err(error) => failed.push(format!("qz={qz}, index={i}, q={q:?}: {error}")),
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{} of {} requested points unresolved: {failed:#?}",
+        failed.len(),
+        points.len()
+    );
+    Ok(())
+}
