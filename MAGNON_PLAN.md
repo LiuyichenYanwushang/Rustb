@@ -86,8 +86,8 @@ trait MagnonSolve { magnon_band_onek, magnon_band_all }
 impl Kpath for Magnon<DIM>;               // 复用 k_path
 magnon.dos(kmesh, wmin, wmax, nw, sigma)?;
 
-// M2-M4
-magnon::exchange::ExchangeParams { efermi, kmesh, emin, emax, contour, .. }
+// M2-M4: electronic inputs must already have E_F = 0.
+let params = ExchangeParams::new(&kmesh);
 Magnon::from_model(&Model<true, DIM, R>, &params)?;
 Magnon::from_collinear(&Model<false>, &Model<false>, &params)?;
 
@@ -99,11 +99,11 @@ Magnon::<DIM>::from_hr(dir, prefix, lat, orb, spin, axis, reference)?;
 
 ## 5. TB2J 算法映射
 
-共线情形（`Δ_i = H↑_{ii} - H↓_{ii}`，on-site 全轨道块）：
+共线情形（先把两个电子通道共同对齐到 `E_F = 0`；`Δ_i = H↑_{ii} - H↓_{ii}` 是 on-site 全轨道块）：
 
 ```
-J_ij(R) = (1/4π) Im ∫_{-∞}^{E_F} dε Tr[ Δ_i G↑_ij(R,ε) Δ_j G↓_ji(-R,ε) ]
-G^σ_ij(R,ε) = (1/Nk) Σ_k [(ε+E_F) S - H^σ(k)]^{-1}_{ij} e^{-2πi k·R}
+J_ij(R) = (1/4π) Im ∫_{-∞}^0 dε Tr[ Δ_i G↑_ij(R,ε) Δ_j G↓_ji(-R,ε) ]
+G^σ_ij(R,z) = (1/Nk) Σ_k [z I - H^σ(k)]^{-1}_{ij} e^{-2πi k·R}
 ```
 
 实现步骤：
@@ -112,11 +112,9 @@ G^σ_ij(R,ε) = (1/Nk) Σ_k [(ε+E_F) S - H^σ(k)]^{-1}_{ij} e^{-2πi k·R}
 2. 每个 k 做一次本征分解，`G(k,z) = Σ_n C_n C_n† / (z - ε_n)`（不需求逆）；
 3. 傅里叶变换到 R；
 4. 能量积分：
-   - `Contour::Semicircle { npoints }`：上半平面圆弧，`∫_{arc} = ∫_{emin}^{E_F}`，
-     Gauss-Legendre 权重 × `dz`；
-   - `Contour::ContinuedFraction { t_kelvin, nz }`：费米函数 CFR 极点求和；
-   - `emin` 自动落到能隙里；
-5. 组装 4×4 A 张量（非共线）或标量（共线），提取 J/DMI/Jani；
+   - `MagnonContour::Cfr { temperature_kelvin }`（默认）：费米函数 CFR 极点求和；
+   - `MagnonContour::Semicircle`：上半平面圆弧，使用 `emin`、`emax` 和 `nz` 做 Simpson 求积；
+5. 共线入口提取各向同性 J；下文的非共线 J/DMI/Jani 是独立的规划；
 6. 写回 `Magnon`（`(i,j,R)`/`(j,i,-R)` 都填）。
 
 非共线（spinor）情形（M4）：

@@ -6,6 +6,8 @@
 //!   its spin-major blocks into the up and down channels;
 //! * [`Magnon::from_collinear`] takes two spinless models, one per channel.
 //!
+//! Both require the input Hamiltonians to be referenced to the Fermi level:
+//! subtract the original Fermi energy from both spin channels before extraction.
 //! Both run the same extraction, which follows the magnetic force theorem with
 //! a local rigid spin rotation (LKAG / TB2J):
 //!
@@ -17,13 +19,13 @@
 //! site `i`, and
 //!
 //! ```text
-//! G^s_ij(R, z) = (1/N_k) sum_k [ (z + E_F) I - H^s(k) ]^{-1}_{ij} exp(-2 pi i k.R).
+//! G^s_ij(R, z) = (1/N_k) sum_k [ z I - H^s(k) ]^{-1}_{ij} exp(-2 pi i k.R).
 //! ```
 //!
-//! The energy integral runs on the upper-half-plane semicircle that connects
-//! `E_F + emax` and `E_F + emin`; the integrand is analytic there, so the arc
-//! integral equals the real-axis integral. A composite Simpson rule provides the
-//! nodes and weights.
+//! The default energy integral uses the continued-fraction representation of
+//! the Fermi function. The optional upper-half-plane semicircle connects
+//! `emax` and `emin`, relative to the zero Fermi energy, and uses the composite
+//! Simpson rule.
 //!
 //! The result is the TB2J **unit-vector landscape coefficient** in eV: `J > 0`
 //! is ferromagnetic, and the sign is fixed by `sign(axis_i . axis_j)` so that an
@@ -76,7 +78,7 @@
 //! model.set_onsite_one(0.5, 0, SpinDirection::Z);
 //! model.set_onsite_one(0.5, 1, SpinDirection::Z);
 //!
-//! let params = ExchangeParams::new(0.0, &array![3usize]).with_nz(33);
+//! let params = ExchangeParams::new(&array![3usize]).with_nz(33);
 //! let magnon = Magnon::from_model(&model, &params)?;
 //! assert_eq!(magnon.nspin(), 2);
 //! // S = 3 mu_B / 2 = 1.5 hbar, moments along +z.
@@ -103,16 +105,15 @@ pub enum MagnonContour {
     ///
     /// The integrand is analytic in the upper half plane, so the arc integral
     /// equals the real-axis integral. Accurate for gapped systems, but the arc
-    /// ends on the real axis at `E_F + emax`, which sits on the Fermi surface of
-    /// a metal and makes the quadrature converge only slowly there.
+    /// ends on the real axis at `emax`. For a metal, ending at zero can put
+    /// nodes near band energies and slow convergence.
     Semicircle,
     /// TB2J's continued-fraction representation of the Fermi function.
     ///
-    /// The poles and residues come from the tridiagonal matrix of the continued
-    /// fraction and lie on the imaginary axis within `k_B T` of `E_F`, so no
-    /// node approaches a band energy. The `-pi/2` conversion factor is applied
-    /// to the accumulated sum, exactly as TB2J does. This is the default because
-    /// it is also stable for metals.
+    /// The tridiagonal continued-fraction matrix gives poles and residues.
+    /// Integration nodes lie off the real energy axis at finite temperature,
+    /// avoiding real-axis poles in metals. The `-pi/2` conversion factor is
+    /// applied to the accumulated sum as in TB2J. This is the default.
     Cfr {
         /// Electronic temperature of the representation, in kelvin.
         temperature_kelvin: f64,
@@ -136,13 +137,11 @@ impl Default for MagnonContour {
 /// `R_i in [-(n_i-1)/2, (n_i-1)/2]` closed under `R -> -R`.
 #[derive(Clone, Debug)]
 pub struct ExchangeParams {
-    /// Fermi energy in eV (absolute, not relative).
-    pub efermi: f64,
     /// k-point mesh; every component is rounded up to the next odd integer.
     pub kmesh: Array1<usize>,
-    /// Lower end of the energy contour, relative to `efermi`, in eV.
+    /// Lower end of the semicircle contour in eV, relative to the zero Fermi level.
     pub emin: f64,
-    /// Upper end of the energy contour, relative to `efermi`, in eV.
+    /// Upper end of the semicircle contour in eV, relative to the zero Fermi level.
     pub emax: f64,
     /// Number of contour nodes; interpretation depends on [`Self::contour`].
     ///
@@ -169,10 +168,10 @@ pub struct ExchangeParams {
 }
 
 impl ExchangeParams {
-    /// Default parameters (`emin = -10`, `emax = 0`, `nz = 65`).
-    pub fn new<S: Data<Elem = usize>>(efermi: f64, kmesh: &ArrayBase<S, Ix1>) -> Self {
+    /// Default parameters (`emin = -10`, `emax = 0`, `nz = 101`).
+    /// The electronic Hamiltonian must already be referenced to its Fermi level.
+    pub fn new<S: Data<Elem = usize>>(kmesh: &ArrayBase<S, Ix1>) -> Self {
         Self {
-            efermi,
             kmesh: kmesh.to_owned(),
             emin: -10.0,
             emax: 0.0,
@@ -185,7 +184,8 @@ impl ExchangeParams {
         }
     }
 
-    /// Set the contour window relative to the Fermi energy.
+    /// Set the semicircle window relative to the zero Fermi level.
+    /// The default continued-fraction contour does not use this window.
     pub fn with_energy_window(mut self, emin: f64, emax: f64) -> Self {
         self.emin = emin;
         self.emax = emax;
@@ -239,6 +239,7 @@ impl ExchangeParams {
 impl<const DIM: usize> Magnon<DIM> {
     /// Extract exchange parameters from one spinful collinear model.
     ///
+    /// Shift the electronic Hamiltonian so its Fermi level is at zero first.
     /// The spinful basis is spin-major (`[orb_0_up, ..., orb_{n-1}_up,
     /// orb_0_down, ...]`), so the two channels are the diagonal `norb x norb`
     /// blocks of every hopping matrix. A model with non-negligible off-diagonal
@@ -286,11 +287,12 @@ impl<const DIM: usize> Magnon<DIM> {
 
     /// Extract exchange parameters from an up/down pair of spinless models.
     ///
-    /// The two models must describe the same lattice and translation list; only
-    /// their hopping matrices may differ. They are independent Wannier
-    /// calculations, so slightly different centres are accepted with a warning
-    /// (the up channel then supplies the geometry); a permuted orbital order
-    /// cannot be detected and would silently change the result.
+    /// Shift both channels by the same original Fermi energy so their common
+    /// Fermi level is zero. The two models must describe the same lattice and
+    /// translation list; only their hopping matrices may differ. Independent
+    /// Wannier calculations can have slightly different centres; these are
+    /// accepted with a warning (the up channel supplies the geometry). A
+    /// permuted orbital order cannot be detected and would change the result.
     pub fn from_collinear<R1: RMatrixData, R2: RMatrixData>(
         up: &Model<false, DIM, R1>,
         down: &Model<false, DIM, R2>,
@@ -386,13 +388,6 @@ impl<const DIM: usize> Magnon<DIM> {
                 found: params.kmesh.len(),
             });
         }
-        if !params.efermi.is_finite() {
-            return Err(TbError::InvalidMagnonInvariant {
-                invariant: "finite_efermi",
-                message: "the Fermi energy must be finite".into(),
-            });
-        }
-
         let n_orb = up.shape()[1];
         let (sites, site_positions) = resolve_sites(atoms, orb, n_orb, params)?;
         let n_site = sites.len();
@@ -440,7 +435,7 @@ impl<const DIM: usize> Magnon<DIM> {
         let band_down = prepare_channel(ham_r, down, &kpoints)?;
         // The two channels carry no magnetic moments; derive them from the
         // density matrices and check any caller-supplied direction against them.
-        let magnetization = site_magnetization(&band_up, &band_down, &sites, params.efermi)?;
+        let magnetization = site_magnetization(&band_up, &band_down, &sites)?;
         let (spin, axis) = resolve_moments(atoms, &sites, &magnetization, params)?;
         let mut phases = Array2::<Complex<f64>>::zeros((n_box, kpoints.nrows()));
         for i_r in 0..n_box {
@@ -455,8 +450,8 @@ impl<const DIM: usize> Magnon<DIM> {
         }
         let mut accumulator = Array3::<Complex<f64>>::zeros((n_box, n_site, n_site));
         for (energy, weight) in contour.iter() {
-            let g_up = greens_on_box(&band_up, &phases, *energy, params.efermi)?;
-            let g_down = greens_on_box(&band_down, &phases, *energy, params.efermi)?;
+            let g_up = greens_on_box(&band_up, &phases, *energy)?;
+            let g_down = greens_on_box(&band_down, &phases, *energy)?;
             for i_r in 0..n_box {
                 let j_r = negative[i_r];
                 for i in 0..n_site {
@@ -742,7 +737,6 @@ fn greens_on_box(
     bands: &ChannelBands,
     phases: &Array2<Complex<f64>>,
     energy: Complex<f64>,
-    efermi: f64,
 ) -> Result<Array3<Complex<f64>>> {
     let n_k = bands.values.nrows();
     let n = bands.values.ncols();
@@ -751,7 +745,7 @@ fn greens_on_box(
     for k in 0..n_k {
         let vectors = &bands.vectors[k];
         for band in 0..n {
-            let denominator = energy + efermi - bands.values[[k, band]];
+            let denominator = energy - bands.values[[k, band]];
             if denominator.norm() < 1e-14 {
                 return Err(TbError::InvalidMagnonInvariant {
                     invariant: "contour_hits_eigenvalue",
@@ -925,7 +919,6 @@ fn site_magnetization(
     band_up: &ChannelBands,
     band_down: &ChannelBands,
     sites: &[Vec<usize>],
-    efermi: f64,
 ) -> Result<Array1<f64>> {
     let n_k = band_up.values.nrows();
     let n = band_up.values.ncols();
@@ -938,8 +931,8 @@ fn site_magnetization(
     let mut magnetization = Array1::<f64>::zeros(sites.len());
     for k in 0..n_k {
         for band in 0..n {
-            let occupied_up = band_up.values[[k, band]] < efermi;
-            let occupied_down = band_down.values[[k, band]] < efermi;
+            let occupied_up = band_up.values[[k, band]] < 0.0;
+            let occupied_down = band_down.values[[k, band]] < 0.0;
             if !occupied_up && !occupied_down {
                 continue;
             }
@@ -1142,7 +1135,7 @@ mod tests {
         // (numpy), t = 0.3, delta = (1, -1), E_F = 0, 5x5x5 box in 1D (kmesh 5),
         // contour nodes nz = 257.
         let model = spinful_model(0.3, [1.0, -1.0], [[0.0, 0.0, 3.0], [0.0, 0.0, -3.0]]);
-        let params = ExchangeParams::new(0.0, &array![5usize])
+        let params = ExchangeParams::new(&array![5usize])
             .with_nz(257)
             .with_semicircle_contour();
         let magnon = Magnon::<1>::from_model(&model, &params).unwrap();
@@ -1160,7 +1153,7 @@ mod tests {
     fn test_spinful_and_collinear_extractions_agree() {
         let delta = [1.0, -1.0];
         let moments = [[0.0, 0.0, 3.0], [0.0, 0.0, -3.0]];
-        let params = ExchangeParams::new(0.0, &array![5usize]).with_nz(65);
+        let params = ExchangeParams::new(&array![5usize]).with_nz(65);
         let from_model =
             Magnon::<1>::from_model(&spinful_model(0.3, delta, moments), &params).unwrap();
         let (up, down) = collinear_models(0.3, delta, moments);
@@ -1180,7 +1173,7 @@ mod tests {
         // Two-sublattice antiferromagnet; the contour choice only shifts the
         // couplings, and the semicircle keeps this reference a minimum.
         let model = spinful_model(0.3, [1.0, -1.0], [[0.0, 0.0, 3.0], [0.0, 0.0, -3.0]]);
-        let params = ExchangeParams::new(0.0, &array![5usize])
+        let params = ExchangeParams::new(&array![5usize])
             .with_nz(65)
             .with_semicircle_contour();
         let magnon = Magnon::<1>::from_model(&model, &params).unwrap();
@@ -1203,7 +1196,7 @@ mod tests {
         // splitting 2 eV, E_F = 0, kmesh 5 1 1, CFR with the 600 K default):
         // Fe1-Fe2 at R = 0 -> -2.5774 meV, Fe1-Fe1 at R = +1 -> +0.0197 meV.
         let model = spinful_model(0.1, [2.0, 2.0], [[0.0, 0.0, 2.0], [0.0, 0.0, 2.0]]);
-        let params = ExchangeParams::new(0.0, &array![5usize]);
+        let params = ExchangeParams::new(&array![5usize]);
         let magnon = Magnon::<1>::from_model(&model, &params).unwrap();
         let cross = exchange_value(&magnon, 0, 0, 1);
         let self_term = exchange_value(&magnon, 1, 0, 0);
@@ -1237,7 +1230,7 @@ mod tests {
         model.set_hop(0.2, 1, 2, &array![0isize], None);
         model.set_onsite_one(1.0, 0, SpinDirection::Z);
         model.set_onsite_one(-1.0, 2, SpinDirection::Z);
-        let params = ExchangeParams::new(0.0, &array![3usize]);
+        let params = ExchangeParams::new(&array![3usize]);
         let magnon = Magnon::<1>::from_model(&model, &params).unwrap();
         assert_eq!(magnon.nspin(), 2);
         assert!((magnon.orb[[0, 0]] - 0.0).abs() < 1e-12);
@@ -1283,7 +1276,7 @@ mod tests {
         for orbital in 0..4 {
             model.set_onsite_one(1.0, orbital, SpinDirection::Z);
         }
-        let params = ExchangeParams::new(0.0, &array![3usize]);
+        let params = ExchangeParams::new(&array![3usize]);
         let magnon = Magnon::<1>::from_model(&model, &params).unwrap();
         assert_eq!(magnon.nspin(), 2);
         assert_eq!(magnon.orb.dim(), (2, 1));
@@ -1335,7 +1328,7 @@ mod tests {
         let mut model = spinful_model(0.1, [2.0, 2.0], [[0.0, 0.0, 2.0], [0.0, 0.0, 2.0]]);
         model.atoms[0].clear_magnetic_moment();
         model.atoms[1].clear_magnetic_moment();
-        let params = ExchangeParams::new(0.0, &array![5usize]);
+        let params = ExchangeParams::new(&array![5usize]);
         let magnon = Magnon::<1>::from_model(&model, &params).unwrap();
         // The up level sits above E_F, so each site carries m = -1 mu_B.
         for site in 0..2 {
@@ -1344,12 +1337,23 @@ mod tests {
         }
         // Same coupling as the explicit-moment path: the global sign cancels.
         assert!((exchange_value(&magnon, 0, 0, 1) + 2.5774e-3).abs() < 2e-5);
+
+        // A common onsite shift leaves the spin splitting unchanged, but
+        // now both channels lie above zero and neither site has a moment.
+        model.add_onsite(&array![4.0, 4.0], None);
+        assert!(matches!(
+            Magnon::<1>::from_model(&model, &params),
+            Err(TbError::InvalidMagnonInvariant {
+                invariant: "non_zero_magnetization",
+                ..
+            })
+        ));
     }
 
     #[test]
     fn test_mixed_axis_directions_are_rejected() {
         let model = spinful_model(0.1, [2.0, 2.0], [[0.0, 0.0, 2.0], [0.0, 0.0, 2.0]]);
-        let base = ExchangeParams::new(0.0, &array![5usize]);
+        let base = ExchangeParams::new(&array![5usize]);
         // A global spin flip keeps every sign(axis_i . axis_j) and is accepted.
         let flipped = base
             .clone()
@@ -1374,16 +1378,16 @@ mod tests {
     fn test_extraction_rejects_inconsistent_inputs() {
         let model = spinful_model(0.3, [1.0, -1.0], [[0.0, 0.0, 3.0], [0.0, 0.0, -3.0]]);
         // Even meshes are rounded up to odd, a wrong dimension is rejected.
-        let params = ExchangeParams::new(0.0, &array![4usize]).with_nz(65);
+        let params = ExchangeParams::new(&array![4usize]).with_nz(65);
         let magnon = Magnon::<1>::from_model(&model, &params).unwrap();
         assert_eq!(magnon.hamR.nrows(), 5);
-        let params = ExchangeParams::new(0.0, &array![4usize, 4]).with_nz(65);
+        let params = ExchangeParams::new(&array![4usize, 4]).with_nz(65);
         let error = Magnon::<1>::from_model(&model, &params).unwrap_err();
         assert!(matches!(error, TbError::DimensionMismatch { .. }));
         // A non-collinear model is rejected.
         let mut spinor = spinful_model(0.3, [1.0, -1.0], [[0.0, 0.0, 3.0], [0.0, 0.0, -3.0]]);
         spinor.set_hop(0.05, 0, 0, &array![0isize], SpinDirection::X);
-        let params = ExchangeParams::new(0.0, &array![3usize]).with_nz(65);
+        let params = ExchangeParams::new(&array![3usize]).with_nz(65);
         let error = Magnon::<1>::from_model(&spinor, &params).unwrap_err();
         match error {
             TbError::InvalidMagnonInvariant { invariant, .. } => {

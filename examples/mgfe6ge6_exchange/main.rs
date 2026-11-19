@@ -5,7 +5,9 @@
 //!     <dir with up/ and dn/> [kmesh kx ky kz] [nz]
 //! ```
 //!
-//! The HR files are expected to be already shifted so that `E_F = 0`.
+//! Both HR files are expected to be shifted by the same amount so that
+//! `E_F = 0`. The third argument to `Model::from_hr` is the energy to subtract
+//! on import; it is `0.0` here because the files are already shifted.
 
 use Rustb::magnon::{ExchangeParams, Magnon};
 use Rustb::ndarray_lapack::eigh_x;
@@ -19,7 +21,7 @@ fn main() -> Rustb::Result<()> {
     let dir = args
         .next()
         .expect("usage: <dir with up/ dn/> [kx ky kz] [nz]");
-    let mut kmesh = vec![9usize, 9, 5];
+    let mut kmesh = Array1::from_vec(vec![9usize, 9, 5]);
     let mut nz = 100usize;
     let mut method = String::from("cfr");
     let rest: Vec<String> = args.collect();
@@ -72,7 +74,7 @@ fn main() -> Rustb::Result<()> {
         );
     }
 
-    let moments = site_moments(&up, &down, &fe, &Array1::from(kmesh.clone()))?;
+    let moments = site_moments(&up, &down, &fe, &kmesh)?;
     println!("Wannier magnetic moments (mu_B):");
     for (index, value) in fe.iter().zip(moments.iter()) {
         println!("  Fe {index}: {value:+.4}");
@@ -80,7 +82,7 @@ fn main() -> Rustb::Result<()> {
     let _ = &moments;
     // The moments printed above are what the library derives internally from
     // the two channels, so they are not passed in again.
-    let mut params = ExchangeParams::new(0.0, &Array1::from(kmesh.clone()))
+    let mut params = ExchangeParams::new(&kmesh)
         .with_nz(nz)
         .with_magnetic_atoms(fe.clone());
     if method.eq_ignore_ascii_case("semi") {

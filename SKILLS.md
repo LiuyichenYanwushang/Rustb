@@ -1170,17 +1170,20 @@ of a complex frequency.
 `Magnon::from_model` takes one spinful collinear `Model<true, DIM, R>` and
 splits its spin-major blocks; `Magnon::from_collinear` takes two spinless
 models, one per channel. Both run the LKAG / TB2J extraction (magnetic force
-theorem, local rigid spin rotation, complex-energy Green's function on an
-upper-half-plane semicircle) and return a `Magnon` in the same conventions as
-the hr files.
+theorem, local rigid spin rotation, complex-energy Green's functions) and
+return a `Magnon` in the same conventions as the hr files.
+
+Shift the input model to `E_F = 0` before extraction. For unshifted Wannier90
+files, pass the original Fermi energy as `Model::from_hr`'s third argument
+(`zero_energy`, the energy subtracted on import). Use the same shift for both
+spin channels, or `0.0` for files already shifted to `E_F = 0`.
 
 ```rust
 use Rustb::magnon::ExchangeParams;
 
-// 5x5 k-mesh (forced odd), contour from E_F-10 eV to E_F, 65 nodes.
-let params = ExchangeParams::new(0.0, &array![5usize, 5])
-    .with_energy_window(-10.0, 0.0)
-    .with_nz(65);
+// 5x5 k-mesh (forced odd), 65 nodes with the default CFR contour.
+let kmesh = array![5usize, 5];
+let params = ExchangeParams::new(&kmesh).with_nz(65);
 
 // One spinful model: [all up orbitals, all down orbitals].
 let magnon = Magnon::<2>::from_model(&model_spinful, &params)?;
@@ -1204,12 +1207,12 @@ contradiction raises `moment_direction_consistent` because it would silently
 flip the sign of `J`.
 
 The energy integral uses TB2J's **continued-fraction representation** by
-default (`MagnonContour::Cfr { temperature_kelvin: 600.0 }`), which puts the
-nodes on the imaginary axis within `k_B T` of the Fermi level and stays accurate
-for metals. `ExchangeParams::with_semicircle_contour()` selects the
-upper-half-plane semicircle instead; it is exact for gapped systems but
-converges slowly as soon as a band crosses `E_F`, because the arc ends on the
-Fermi surface.
+default (`MagnonContour::Cfr { temperature_kelvin: 600.0 }`). CFR uses nodes
+on the imaginary axis and does not use the energy window. To use a window set
+by `with_energy_window`, select the upper-half-plane semicircle with
+`ExchangeParams::with_semicircle_contour()`. Choose a window that covers the
+occupied spectrum and avoids band energies at both endpoints. The Simpson
+quadrature can converge slowly in metals when the arc ends at `E_F = 0`.
 
 ### Generic Floquet–Hubbard spin reduction through fourth order
 
