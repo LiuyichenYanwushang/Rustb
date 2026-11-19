@@ -404,15 +404,17 @@ let hf_model = hubbard.solve_hartree_fock(&params)?;
 let total_spin = hf_model.spin_moment(&[101], 0.0, params.occupation)?;
 ```
 
-### `magnon::driven` — Floquet–Hubbard spin exchange
+### `magnon` — Floquet superexchange on an existing spin model
 
-`HubbardModel::floquet_spin_model` reduces a half-filled, spin-independent
-single-orbital Hubbard model through hopping order 2, 3 or 4 under a uniform
-Peierls drive. The result keeps exchange, chirality and four-spin operators
-separate before collinear spin-wave conversion. `floquet_magnon_delta` adds
-only the driven-minus-zero correction to an existing static TB2J `Magnon`,
-with explicit site and spin-length mappings. See the
-[usage guide](<SKILLS.md>) and [theory](<src/magnon/driven_theory.md>).
+`Magnon::floquet_superexchange(&drive, u_ev, harmonic_max)` returns a new
+`Magnon` with a second-order light-dressing factor applied independently to
+`trace(J)/3` on each non-onsite exchange bond. Dzyaloshinskii–Moriya exchange,
+traceless anisotropy and onsite terms are unchanged. Supply `U` in eV and use
+this approximation only if the isotropic exchange being dressed can be treated
+as half-filled single-orbital superexchange. Increase `harmonic_max` until
+converged. This method neither generates helicity-odd chirality nor solves a
+magnon Sambe problem. See the [usage guide](<SKILLS.md#floquet-superexchange>)
+and [theory](<src/magnon/driven_theory.md>).
 
 ### `velocity` — velocity operators
 
@@ -727,7 +729,7 @@ With `H(t) = sum_q H^(q) exp(-iqΩt)`, Sambe uses `H^(m-n) + nW δ_nm`
 in the positive-time basis, and first-order van Vleck uses `[H^(-n), H^(n)]/(nW)`.
 Earlier builds used the time-reversed protocol; recompute helicity-sensitive
 results rather than negating all quasienergies. The input light amplitudes and
-Peierls phase have not changed. See the [projection and migration notes](<src/magnon/driven_theory.md>) for the derivation.
+Peierls phase have not changed. See the [electronic Floquet conventions](<src/floquet.rs>) for details.
 
 ```rust
 let drive = FloquetDrive::with_modes(

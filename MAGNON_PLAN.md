@@ -2,13 +2,10 @@
 
 状态：历史设计与里程碑记录，以下“完成”仅描述当时的局部交付，不代表通用 Floquet 算法已完成。
 
-**2026-11-18 范围纠正**：新的方案 A 目标、依赖与验收见
-[MAGNON_DRIVEN_PLAN.md](MAGNON_DRIVEN_PLAN.md)。现有蜂窝圆偏振 AB 闭式、双层解析
-LSWT 与唯象交换键驱动是不同路径；目前没有通用实空间 Hubbard 三/四阶生成器。
-`MagnonSambe` 以周期传播子求准能量，不等于电子侧返回光子扩展 `Model` 的接口；
-磁振子有效模型目前只支持 order 0，不能声称高阶 van Vleck 已完成。
-下表及附录含过时的 f-wave 过零计数、归一化探索与待核验推测，不作为当前实现或
-验收的权威说明。新工作先修复已报告的双层扇区共轭、局域标架及测试缺陷，再推进生成器。
+当前通用微观近似改为 `Magnon::floquet_superexchange`，对已有实空间交换施加二阶逐键修正；
+旧 Hubbard 高阶方案及撤换说明见 [MAGNON_DRIVEN_PLAN.md](<MAGNON_DRIVEN_PLAN.md>)。
+蜂窝闭式、双层解析 LSWT 和用周期传播子求准能量的唯象 `MagnonSambe` 是独立路径。
+下表及附录不作为当前实现或验收的权威说明。
 
 ## 1. 目标与范围
 

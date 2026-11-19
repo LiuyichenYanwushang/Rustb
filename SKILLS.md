@@ -1214,118 +1214,76 @@ by `with_energy_window`, select the upper-half-plane semicircle with
 occupied spectrum and avoids band energies at both endpoints. The Simpson
 quadrature can converge slowly in metals when the arc ends at `E_F = 0`.
 
-### Generic Floquet–Hubbard spin reduction through fourth order
+The extraction returns only isotropic exchange: `J_ij(R)` multiplies the
+`3 × 3` identity. The sign is normalized by `sign(axis_i · axis_j)` so that
+`J > 0` is ferromagnetic. Anisotropic exchange and Dzyaloshinskii–Moriya terms
+would require spinor extraction; spin-off-diagonal blocks in a spinful input
+model are rejected.
 
-Detailed LaTeX theory is included in `Rustb::magnon::driven` rustdoc from
-[the theory text](<src/magnon/driven_theory.md>). It distinguishes completed and
-pending stages and derives the canonical fourth-order normalization.
-**Forward-time migration:** with `H^(q)=<exp(+iqΩt)H(t)>`, current electronic
-Sambe and private Fock kernels use `exp(+inΩt)` basis and `H^(m-n)+nW`,
-`W=hbar*Ω`; a harmonic q sends total photon label m to m−q.
-The old `H^(n-m)+nW` matrix described `H(-t)`, not the declared forward protocol.
-Mode amplitudes and the Peierls/Fourier definitions are unchanged. Old
-helicity-sensitive CPL outputs must be recomputed, not uniformly negated;
-a spatial k mirror is not a physical proof that the old signs were correct.
-The two-direction second-order pair weight is even in m and cannot detect this
-error. An independent two-colour two-state Peierls forward-propagation case
-passes after migration. This electronic test does not certify dynamic high-order
-spin chirality; the periodic and spin-wave paths have separate tests.
+### Floquet superexchange
 
-`HubbardModel::floquet_spin_model(&drive, &options)` uses the bare electronic
-hopping, not an electronic van Vleck Hamiltonian or an inferred magnon hopping.
-It returns `magnon::driven::EffectiveSpinModel<DIM>` with `pairs()`,
-`chiralities()`, `quartics()`, a per-cell constant, geometry and observed diagnostics. It does not duplicate
-band/DOS solvers. DIM=1/2/3 and coherent commensurate Peierls modes use the existing
-validated Bessel cache, including its per-link DFT fallback.
+Start with an undriven `Magnon<DIM>` (for example, one read from exchange files
+or extracted with TB2J). `magnon.floquet_superexchange(&drive, u_ev, harmonic_max)`
+returns a new `Magnon<DIM>` on the same lattice and exchange support, retaining
+its spin lengths and reference directions. The `FloquetDrive` is spatially
+uniform; its commensurate modes are summed coherently before the Peierls
+exponential. `u_ev` is a single positive interaction energy in eV, not a
+quantity inferred from the input exchange tensors.
 
-This entry defines half filling: P has one electron per input orbital and photon
-zero. It does not solve HF or infer the filling. It strictly requires uniform
-positive U, identical spin-major up/down hopping blocks, zero spin flips, exact
-real-space Hermiticity and a common real scalar onsite (removed as an energy
-origin). Every orbital row is a spin-half site. Atom metadata with multiple
-orbitals per atom is rejected; empty atoms add no spins, and unassigned orbitals
-remain sites. These checks do not certify a material downfolding. SOC/Hund,
-nonuniform U/onsite energies, spatially varying fields and automatic material-spin
-promotion are not supported.
-
-For each undirected bond, counted once per primitive cell,
+Each non-onsite bond is dressed independently in parallel. For its Cartesian
+bond vector `d = (R + tau_j - tau_i) · lat`, let `C_m(d)` be the `m`th Fourier
+coefficient of `exp[-i a(t) · d]` and `W = drive.omega0_ev = hbar*Omega`. The
+second-order Aharonov–Bohm exchange correction is
 
 ```text
-K_ij = 2 sum_m (|t_ij^(m)(R)|^2 + |t_ji^(m)(-R)|^2)/(U+m W)
-H_ij = K_ij (S_i . S_j - 1/4),   S=1/2.
+J_iso   = trace(J) / 3
+F_N     = 1 + sum_{m=1..N} (|C_m(d)|² + |C_-m(d)|²) (mW)² / (U² - (mW)²)
+J_light = J + (F_N - 1) J_iso I
 ```
 
-Static K is `4|t|^2/U`. General two-frequency drives need both doublon directions:
-`|C_m|` need not equal `|C_-m|`. A blind four-times-one-direction formula fails.
-The coefficient calculation divides by `sqrt(|U+mW|)` before squaring, avoiding
-both a raw `t*t` overflow and an underflowing `(t/U)^2*U` intermediate.
+`N = harmonic_max` is a nonnegative `isize`. Only the correction is truncated:
+Parseval's identity retains the static `1`. Pairing both signs of `m` gives
+identical factors for forward and reverse bonds even when `|C_m| ≠ |C_-m|`.
+The method leaves the Dzyaloshinskii–Moriya and traceless symmetric parts
+unchanged, as well as the entire onsite block (`i = j`, `R = 0`). It cannot
+produce helicity-odd chirality or higher-order multispin terms.
 
-`StrongCouplingOptions::max_hopping_order` accepts 2, 3 or 4 (default 2).
-Defaults: `hop_harmonic_max=8`, `intermediate_photon_max=8`,
-`min_detuning_ev=1e-8`, `max_hopping_ratio=0.25`, `max_work=2^24`,
-`max_cache_bytes=256 MiB`, `max_cluster_bytes=256 MiB`. H bounds each hop's
-Fourier change; M bounds the intermediate total photon label. At order two
-their intersection is `min(H,M)`. A third-order step can change the label by
-`2M` between two retained intermediate replicas. Time-dependent fourth order
-requires `M >= 2H` for disconnected cancellation; increasing M beyond `2H`
-does not add four-hop paths at fixed H. Increase H together with its required
-M to check convergence. Without time-dependent modes the higher-order path
-uses the zero replica only.
-Only nonzero retained virtual transitions trigger detuning checks; an unreachable
-2U resonance must not invalidate second order. The ratio bound controls individual
-one-hop amplitudes divided by detuning and, at fourth order, each active two-hop
-resolvent row norm after summing paths. Neither bounds the full many-body error.
-Cache bytes exclude the backend's separately bounded work buffers; the cluster
-cap is logical numeric payload, not RSS or the cost of the later dense Magnon.
-Sweep H and M: recorded cutoffs/nearest detuning are not a convergence proof.
+The caller must justify treating every isotropic exchange component being
+dressed as half-filled, single-orbital superexchange in the off-resonant
+strong-coupling regime. This is a dressing of supplied exchange, not a way to
+extract hopping, infer `U`, or identify and dress just one channel of a mixed
+exchange. Increase `harmonic_max` and compare the exchange tensors and the
+observables of interest until they converge. Rejection near a retained pole
+is a numerical guard, not a verification of the material's charge gap or
+absence of resonances. The method does not compute a quantum state or
+establish stability of the retained magnetic reference.
 
 ```rust
-use Rustb::{HubbardModel, Model};
 use Rustb::floquet::{FloquetDrive, LightMode};
-use Rustb::magnon::{MagnonReference, MagnonSolve};
-use Rustb::magnon::driven::StrongCouplingOptions;
+use Rustb::magnon::{Magnon, MagnonSolve};
 use ndarray::array;
 use num_complex::Complex;
 
-let mut electron = Model::<true, 1>::tb_model(
-    array![[2.0]], array![[0.0], [0.5]], None)?;
-electron.set_hop(0.2, 0, 1, &array![0isize], None);
-electron.set_hop(0.2, 0, 1, &array![-1isize], None);
-let hubbard = HubbardModel::with_uniform_u(electron, 4.0)?;
-let drive = FloquetDrive::with_modes(3.0, vec![
-    LightMode::new(1, array![Complex::new(0.8, 0.0)])]);
-let spin = hubbard.floquet_spin_model(&drive, &StrongCouplingOptions::default())?;
-let axes = array![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]];
-let magnon = spin.magnon(&axes, MagnonReference::collinear())?;
-let bands = magnon.magnon_band_onek(&array![0.25])?;
+let dark = Magnon::<2>::read("exchange", "insulator")?;
+let drive = FloquetDrive::with_modes(7.0, vec![
+    LightMode::new(1, array![Complex::new(0.08, 0.0), Complex::new(0.0, 0.04)])]);
+let dressed = dark.floquet_superexchange(&drive, 4.0, 8)?;
+// Check that increasing the cutoff leaves the relevant tensors/bands unchanged
+// within your tolerance before using the result.
+let higher_cutoff = dark.floquet_superexchange(&drive, 4.0, 12)?;
+let q = array![0.25, 0.0];
+let bands = dressed.magnon_band_onek(&q)?;
+let bands_check = higher_cutoff.magnon_band_onek(&q)?;
 ```
 
-`magnon` keeps S=1/2 and maps each ordered unit-vector landscape block to `-K/8`.
-It adds no single-ion gap. Axes must be collinear and periodic within the supplied
-cell (`reference.q=0`); build a magnetic electronic supercell first when needed.
-The ordinary `MagnonSolve` checks stability at each requested momentum. LSWT
-frequencies are not the exact finite-cluster quantum singlet–triplet spectrum.
-
-To overlay a microscopic correction on a static TB2J `Magnon`, call
-`hubbard.floquet_magnon_delta(&drive, &options, &baseline, &site_map, spin_mapping)`.
-The explicit bijection maps each electronic orbital to its magnetic site in
-an identical lattice. Fractional centers can differ by integer cell shifts,
-with an absolute tolerance of `1e-9`. `SpinLengthMapping::SpinHalf` rejects any
-baseline spin other than 1/2; `KeepOperatorCoefficients` opts into a
-phenomenological lift at the supplied spin lengths. The routine adds only the
-light-minus-zero curvature at the same cell-periodic collinear reference. It
-preserves static anisotropy, magnetic geometry and existing translation order.
-The caller must confirm stationarity and stability of the combined reference.
+See the [theory](<src/magnon/driven_theory.md>) for the bond factor and its scope.
 
 ### Driven exchange and odd-parity magnons
 
-**Scope of the legacy helpers below:** the honeycomb closed form is specific to
-circular drive and monolayers. The AA-bilayer helper supplies static couplings
-and analytic LSWT; it does not generate driven interlayer/ring couplings.
-For the general periodic reduction use `HubbardModel::floquet_spin_model`
-above; its remaining validation gates are in [the plan](<MAGNON_DRIVEN_PLAN.md>).
-Spatially varying drives, magnon transport/topology, and multiorbital
-strong-coupling extraction are outside this interface.
+These are independent, lattice-specific tools, not wrappers around
+`Magnon::floquet_superexchange`. The honeycomb closed form is specific to
+circularly driven monolayers. The AA-bilayer helper supplies static couplings
+and analytic LSWT; it does not generate driven interlayer or ring couplings.
 
 `magnon::floquet::DrivenExchange::honeycomb` implements the Aharonov--Bohm
 mechanism of the paper *Odd-Parity Magnons*: a half-filled Hubbard model on the
@@ -1335,9 +1293,7 @@ The microscopic single-orbital half-filled model has `S = 1/2`. The `S = 1.5`
 examples below are phenomenological uses of the resulting spin-polynomial
 coefficients, not a microscopic derivation for larger moments. Their easy-axis
 anisotropy is an external spin-model input, not generated by the SU(2)-invariant
-Hubbard reduction (`(S_z)^2` is constant for spin half). These legacy helpers do
-not yet implement the explicit material-mapping acceptance contract required
-by the new generic-generator plan.
+Hubbard reduction (`(S_z)^2` is constant for spin half).
 
 ```rust
 use Rustb::magnon::floquet::{DrivenExchange, DrivenHubbardParams};
@@ -1465,15 +1421,14 @@ Net ferromagnetic intralayer coupling is the usual A-type condition; the bare
 
 ### Floquet–Sambe driving of a magnon model
 
-This is a **phenomenological exchange-bond drive**, not the microscopic AB
-Hubbard reduction described above. Do not apply both to count the same optical
-process twice. It reuses electronic Floquet parameter types, but is not the
-same model-returning Sambe API: `MagnonFloquet::floquet_model` returns a
-propagator-based solver, `Magnon::floquet_effective_model` returns the
-time-averaged model (order 0 only), and `fold_quasienergy` folds a quasienergy into
-`[-Omega/2, Omega/2)`. The drive reuses `FloquetDrive`, `FloquetTruncation` and
-`FloquetEffectiveOptions` unchanged, and dresses every exchange bond with the
-Peierls phase `exp[-i a(t).d]`.
+The existing `MagnonFloquet` API applies a **phenomenological exchange-bond
+drive**, not the Aharonov–Bohm superexchange dressing above. It is not a
+required second step: do not use both to model the same optical process. It
+reuses electronic Floquet parameter types, but the outputs differ:
+`MagnonFloquet::floquet_model` returns the propagator-based `MagnonSambe` solver;
+`Magnon::floquet_effective_model` returns the time-averaged model (order 0 only).
+`fold_quasienergy` folds into `[-W/2, W/2)`, where `W = drive.omega0_ev`. The
+phenomenological drive dresses exchange bonds with `exp[-i a(t) · d]`.
 
 ```rust
 use Rustb::floquet::{FloquetDrive, FloquetTruncation, LightMode};
@@ -1507,12 +1462,6 @@ model. Higher van Vleck orders mix particle and hole components, so
 must satisfy the same amplitude/length checks as the electronic path, and the
 current implementation requires a collinear reference (`reference.q = 0`)
 because the harmonics do not carry the single-Q rotation.
-
-The extraction returns the isotropic part only: `J_ij(R)` multiplies the 3x3
-identity, and the sign is normalized by `sign(axis_i . axis_j)` so that
-`J > 0` stays ferromagnetic. Anisotropic exchange and Dzyaloshinskii-Moriya
-terms need the spinor treatment. Non-collinear input (non-zero spin-off-diagonal
-blocks in the spinful model) is rejected.
 
 ## 11. Conventions and build notes
 

@@ -13,7 +13,6 @@
 //! Earlier code combined `H^(n-m)` with `+n W` and therefore described `H(-t)`.
 //! The Sambe assembly and first-order van Vleck/linear-q terms are migrated
 //! together; Peierls phases and Fourier coefficients are unchanged.
-//! See [`crate::magnon::driven`] for the projection derivation and scope.
 //! A forward-time propagator regression, not a spatial k mirror or an unsigned
 //! gap comparison, fixes this physical time direction.
 //!
@@ -703,14 +702,47 @@ fn coherent_positive_harmonic_amplitudes<const DIM: usize>(
     Ok(amplitudes)
 }
 
+/// Cartesian Peierls link `(R + tau_j - tau_i) · lat`.
+pub(crate) fn link_displacement_cartesian(
+    lat: &Array2<f64>,
+    i: ArrayView1<'_, f64>,
+    j: ArrayView1<'_, f64>,
+    cell: ArrayView1<'_, isize>,
+) -> Array1<f64> {
+    let mut frac = Array1::<f64>::zeros(cell.len());
+    for a in 0..cell.len() {
+        if i[a].abs().max(j[a].abs()) < (1_i128 << 126) as f64 {
+            // Cancel integer cell representatives before adding fractional
+            // positions; (R + j) - i can erase a short bond at large R.
+            let cells = cell[a] as i128 + j[a].trunc() as i128 - i[a].trunc() as i128;
+            let j_frac = j[a].fract();
+            let i_frac = i[a].fract();
+            let difference = j_frac - i_frac;
+            if cells != 0 && (-2..=2).contains(&cells) {
+                // TwoSum residual: retain the part of the fractional
+                // difference that rounds away before a boundary cancellation.
+                let recovered = difference - j_frac;
+                let error = (j_frac - (difference - recovered)) - (i_frac + recovered);
+                frac[a] = (cells as f64 + difference) + error;
+            } else {
+                frac[a] = cells as f64 + difference;
+            }
+        } else {
+            frac[a] = (j[a] - i[a]) + cell[a] as f64;
+        }
+    }
+    frac.dot(lat)
+}
+
 #[inline]
 fn q_linear_frequency_scale(harmonic: isize, photon_energy_ev: f64) -> f64 {
     photon_energy_ev.recip() / (8.0 * (harmonic as f64))
 }
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
-    /// Build a validated, reusable Peierls harmonic cache for internal consumers.
-    pub(crate) fn validated_harmonic_cache(
+    /// Exercise the cache's validation in focused backend tests.
+    #[cfg(test)]
+    fn validated_harmonic_cache(
         &self,
         drive: &FloquetDrive,
         harmonic_max: isize,
@@ -1984,31 +2016,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         j_orb: usize,
         r_vec: &ArrayView1<'_, isize>,
     ) -> Array1<f64> {
-        let mut frac = Array1::<f64>::zeros(DIM);
-        for a in 0..DIM {
-            let i = self.orb[[i_orb, a]];
-            let j = self.orb[[j_orb, a]];
-            if i.abs().max(j.abs()) < (1_u64 << 53) as f64 {
-                // Cancel integer cell representatives before adding fractional
-                // positions; (R + j) - i can erase a short bond at large R.
-                let cells = r_vec[a] as i128 + j.trunc() as i128 - i.trunc() as i128;
-                let j_frac = j.fract();
-                let i_frac = i.fract();
-                let difference = j_frac - i_frac;
-                if cells != 0 && (-2..=2).contains(&cells) {
-                    // TwoSum residual: retain the part of the fractional
-                    // difference that rounds away before a boundary cancellation.
-                    let recovered = difference - j_frac;
-                    let error = (j_frac - (difference - recovered)) - (i_frac + recovered);
-                    frac[a] = (cells as f64 + difference) + error;
-                } else {
-                    frac[a] = cells as f64 + difference;
-                }
-            } else {
-                frac[a] = r_vec[a] as f64 + j - i;
-            }
-        }
-        frac.dot(&self.lat)
+        link_displacement_cartesian(&self.lat, self.orb.row(i_orb), self.orb.row(j_orb), *r_vec)
     }
 
     /// Real-space blocks of `a_i partial_{k_i} H_0` in the fixed Wannier
