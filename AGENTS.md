@@ -990,8 +990,11 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   the complete symmetry-generated support, restore Hermiticity, and keep
   `R=0` at row zero. For `HasRMatrix`, project `rmatrix` as a vector operator
   and derive the final centres from its onsite diagonal. Postcheck covariance
-  and return a new model. The centre-only and two-channel entry points also
-  borrow their inputs and return new models with their reports.
+  and return a new model. `symmetrize_centres` and
+  `symmetrize_model_and_centres` borrow their input and return `Result<Self>`;
+  all three `symmetrize_pair*` methods borrow their inputs and return
+  `Result<(Self, Self)>` in input order. These projections do not return
+  reports; use `check_hamiltonian_symmetry` for separate diagnostics.
 - **Band coreps diagnose rather than hide broken symmetry**: call
   `Model::calculate_irrep(options)` to detect the Atom-defined/field-effective
   magnetic group, or `calculate_irrep_for_group(target, options)` for an

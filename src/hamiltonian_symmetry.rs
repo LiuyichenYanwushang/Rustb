@@ -108,10 +108,7 @@ use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod centre;
-pub use centre::{
-    CenterResolvedBasis, CentreDisplacement, CentreSymmetrizationReport, PairSymmetrizationReport,
-    SymmetrizationReport,
-};
+pub use centre::CenterResolvedBasis;
 
 /// One cell-shift sector of a localized-basis symmetry action.
 ///

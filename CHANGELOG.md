@@ -17,14 +17,13 @@
   emits a one-time process-global warning instead; atom-centred symmetry and
   irrep representations continue to enforce their own strict centring check.
 - `Model::symmetrize_centres` and `Model::symmetrize_model_and_centres` now
-  borrow `&self` and return `Result<(Self, report)>` rather than mutating and
-  returning only a report. `Model::symmetrize_pair`,
+  borrow `&self` and return `Result<Self>`. `Model::symmetrize_pair`,
   `Model::symmetrize_pair_with_collinear_spin_group`, and
   `Model::symmetrize_pair_with_unitary_collinear_spin_group` now take shared
-  references (`&up, &dn`) and return `Result<(up_sym, dn_sym, report)>` in input
-  order. Keep the returned models; the inputs stay unchanged on success or
-  error. Displacement warnings and Hamiltonian-change and covariance reports
-  are retained.
+  references (`&up, &dn`) and return `Result<(Self, Self)>` in input order.
+  Keep the returned models; the inputs stay unchanged on success or error.
+  These projections no longer return reports or warn about centre displacement.
+  Validation and the separate `Model::check_hamiltonian_symmetry` API are unchanged.
 - `Model::shift_to_atom` and its alias `Model::move_to_atom` now borrow `&self`
   and return `Result<Self>` rather than editing in place. Keep the returned
   model (e.g. `let aligned = model.shift_to_atom()?;`). Only the coordinates
@@ -39,8 +38,7 @@
   refine atom-local frames from the onsite Hamiltonian. Add `Model::symmetrize_centres`,
   `Model::symmetrize_model_and_centres`, and the associated
   `Model::symmetrize_pair` for two spinless models. The pair projection
-  enforces the spin-flip relation for anti-unitary target operations and
-  reports centre displacement warnings.
+  enforces the spin-flip relation for anti-unitary target operations.
 - Add `Model::symmetrize_pair_with_collinear_spin_group` and
   `Model::symmetrize_pair_with_unitary_collinear_spin_group` for
   cryspglib-certified collinear spin groups. Both accept the complete
@@ -60,10 +58,10 @@
   inputs unchanged. Position covariance and centre consistency use the position
   tolerance (or `symprec`) in Å. `NoRMatrix` skips the position-matrix checks.
 - Standalone `Model::symmetrize_centres` changes only the returned model's
-  centres, not `H` or `r`. With `HasRMatrix`, it rejects a mismatch with the
-  unchanged onsite `r` diagonal in the same cell representative beyond the
-  caller-supplied tolerance in Å. The same tolerance sets the displacement
-  warning threshold. `NoRMatrix` skips the diagonal check.
+  centres, not `H` or `r`. The caller-supplied tolerance in Å must be finite
+  and nonnegative. With `HasRMatrix`, it rejects a mismatch with the unchanged
+  onsite `r` diagonal in the same cell representative beyond that tolerance.
+  `NoRMatrix` skips the diagonal check.
 - `BasisSymmetryRepresentation` gains
   `validates_orbital_centres()`; the default remains strict, and
   centre-resolved providers opt out of the per-matrix-element centring gate

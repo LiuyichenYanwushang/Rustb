@@ -58,8 +58,7 @@ fn full_collinear_spin_group_projects_the_channel_average() {
         SpinTolerances::default(),
     )
     .unwrap();
-    println!("complete group len {}", group.operations().len());
-    let (up, down, report) = Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
+    let (up, down) = Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
         &input_up,
         &input_down,
         &group,
@@ -67,15 +66,6 @@ fn full_collinear_spin_group_projects_the_channel_average() {
         &HamiltonianSymmetrizationParameters::default(),
     )
     .unwrap();
-    println!(
-        "full covariance {:?} up {:?}/{:?} down {:?}/{:?}",
-        report.pair_covariance_max_absolute,
-        onsite(&up, 0),
-        onsite(&up, 1),
-        onsite(&down, 0),
-        onsite(&down, 1)
-    );
-    assert!(report.pair_covariance_max_absolute < 1e-8);
     assert!((onsite(&up, 0) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
     assert!((onsite(&up, 1) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
     assert!((onsite(&down, 0) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
@@ -95,7 +85,7 @@ fn unitary_collinear_subgroup_is_accepted_separately() {
         SpinTolerances::default(),
     )
     .unwrap();
-    let (up, down, report) = Model::<false, 3>::symmetrize_pair_with_unitary_collinear_spin_group(
+    let (up, down) = Model::<false, 3>::symmetrize_pair_with_unitary_collinear_spin_group(
         &input_up,
         &input_down,
         &group,
@@ -103,15 +93,6 @@ fn unitary_collinear_subgroup_is_accepted_separately() {
         &HamiltonianSymmetrizationParameters::default(),
     )
     .unwrap();
-    println!(
-        "unitary covariance {:?} up {:?}/{:?} down {:?}/{:?}",
-        report.pair_covariance_max_absolute,
-        onsite(&up, 0),
-        onsite(&up, 1),
-        onsite(&down, 0),
-        onsite(&down, 1)
-    );
-    assert!(report.pair_covariance_max_absolute < 1e-8);
     assert!((onsite(&up, 0) - Complex64::new(2.0, 0.0)).norm() < 1e-10);
     assert!((onsite(&down, 0) - Complex64::new(2.0, 0.0)).norm() < 1e-10);
     assert_eq!(input_up.ham, two_site_model(1.0).ham);
@@ -122,7 +103,6 @@ fn unitary_collinear_subgroup_is_accepted_separately() {
 #[ignore = "loads the external MgFe6Ge6 Wannier90 dataset"]
 fn mgfe6ge6_collinear_spin_pair_acceptance() {
     use Rustb::Wannier90;
-    use std::time::Instant;
 
     let base = "/mnt/e/vasp计算结果/altermagnetic/odd_parity_wave/material/MgFe6Ge6/data_new";
     let up =
@@ -168,9 +148,7 @@ fn mgfe6ge6_collinear_spin_pair_acceptance() {
         SpinTolerances::default(),
     )
     .unwrap();
-    println!("real complete group {}", group.operations().len());
-    let started = Instant::now();
-    let (_, _, report) = Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
+    Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
         &up,
         &down,
         &group,
@@ -178,15 +156,6 @@ fn mgfe6ge6_collinear_spin_pair_acceptance() {
         &HamiltonianSymmetrizationParameters::default(),
     )
     .unwrap();
-    println!(
-        "real full report: change {:e} covariance {:e} centre up {:e} down {:e} elapsed {:?}",
-        report.hamiltonian_change_max_absolute,
-        report.pair_covariance_max_absolute,
-        report.up_centres.max_displacement_angstrom,
-        report.down_centres.max_displacement_angstrom,
-        started.elapsed()
-    );
-    assert!(report.pair_covariance_max_absolute < 1e-3);
 }
 
 #[test]
@@ -219,16 +188,14 @@ fn pair_projection_updates_position_matrices() {
         SpinTolerances::default(),
     )
     .unwrap();
-    let (up, down, report) =
-        Model::<false, 3, HasRMatrix>::symmetrize_pair_with_collinear_spin_group(
-            &input_up,
-            &input_down,
-            &group,
-            &CenterResolvedBasis::new(),
-            &HamiltonianSymmetrizationParameters::default(),
-        )
-        .unwrap();
-    assert!(report.pair_covariance_max_absolute < 1e-8);
+    let (up, down) = Model::<false, 3, HasRMatrix>::symmetrize_pair_with_collinear_spin_group(
+        &input_up,
+        &input_down,
+        &group,
+        &CenterResolvedBasis::new(),
+        &HamiltonianSymmetrizationParameters::default(),
+    )
+    .unwrap();
     for projected in [&up, &down] {
         assert!(projected.rmatrix[[0, 1, 0, 1]].norm() < 1e-10);
     }

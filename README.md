@@ -874,16 +874,16 @@ assert!(summary.is_some());
 ```
 
 For spinless 3D models, `symmetrize_centres` and
-`symmetrize_model_and_centres` now borrow `&self` and return
-`Result<(Self, report)>`. The former projects only orbital centres, leaving
-`H` and `r` unchanged; the latter projects the centres and Hamiltonian (and
-`r` when present). For two spinless channels, all three `symmetrize_pair*`
-methods now take `&up, &dn` and return `Result<(up_sym, dn_sym, report)>`
-in input order. Use the returned models for subsequent calculations; the
-inputs are unchanged on success or error. The reports still carry centre
-displacement warnings and, for joint and pair projections, Hamiltonian change
-and covariance diagnostics. See the [symmetry usage guide](<SKILLS.md#optional-cryspglib-symmetry>)
-for examples and the position-matrix consistency checks.
+`symmetrize_model_and_centres` borrow `&self` and return `Result<Self>`.
+The former projects only orbital centres, leaving `H` and `r` unchanged;
+the latter projects the centres and Hamiltonian (and `r` when present).
+For two spinless channels, all three `symmetrize_pair*` methods take
+`&up, &dn` and return `Result<(Self, Self)>` in input order. Use the
+returned models for subsequent calculations; the inputs are unchanged on
+success or error. The projections return no reports; use
+`check_hamiltonian_symmetry` for separate Hamiltonian diagnostics. See the
+[symmetry usage guide](<SKILLS.md#optional-cryspglib-symmetry>) for examples
+and the position-matrix consistency checks.
 
 ### `irrep_analysis` — magnetic band irreps and coreps
 

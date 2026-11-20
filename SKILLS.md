@@ -1678,13 +1678,12 @@ operation. If action resolution, centre consistency, or covariance fails, the
 call returns an error. The input models are unchanged on success and error.
 Position covariance and centre consistency use `parameters.tolerances.position`
 (or `parameters.structural_parameters.symprec` if unset), in Cartesian Å.
-Joint and pair projections warn on displacements above three times that length.
 `NoRMatrix` models skip the position-matrix checks.
 
 For a spinless 3D Wannier model whose centres are displaced from their parent
 atoms, use `CenterResolvedBasis` instead of `AtomicOrbitalBasis`. Both
-`symmetrize_model_and_centres` and `symmetrize_centres` now borrow `&self` and
-return `(projected_model, report)` on success, rather than editing in place.
+`symmetrize_model_and_centres` and `symmetrize_centres` borrow `&self` and
+return `Result<Self>` rather than editing in place.
 The joint method first projects the centres, then resolves the actions on
 those centres before projecting the Hamiltonian and any position matrix:
 
@@ -1693,17 +1692,16 @@ use Rustb::{CenterResolvedBasis, HamiltonianSymmetrizationParameters, SymmetryPa
 
 let target = model.magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())?;
 let basis = CenterResolvedBasis::new();
-let (model_sym, report) = model.symmetrize_model_and_centres(
+let model_sym = model.symmetrize_model_and_centres(
     &target,
     &basis,
     &HamiltonianSymmetrizationParameters::default(),
 )?;
-println!("max centre move: {} A", report.centres.max_displacement_angstrom);
 ~~~
 
-The joint report also gives the maximum absolute Hamiltonian change and
-final covariance residual. Use `model_sym` for calculations on the projected
-model.
+Use `model_sym` for calculations on the projected model. The projections do
+not return reports; use `check_hamiltonian_symmetry` for separate Hamiltonian
+diagnostics.
 
 The provider maps parent atoms and their cell images, selects the source
 orbital from the resolved localized action (largest coefficient in the target
@@ -1716,24 +1714,23 @@ alone.
 For a centre-only projection, use `symmetrize_centres` instead:
 
 ~~~rust
-let (centred, centre_report) = model.symmetrize_centres(&target, &basis, 0.05)?;
+let centred = model.symmetrize_centres(&target, &basis, 0.05)?;
 ~~~
 
-This changes only the returned model's orbital centres, not `H` or `r`. For
-`HasRMatrix`, the proposed centres must match the unchanged onsite `r` diagonal
-in the same cell representative within the supplied `tolerance` in Å; a
-missing onsite block or a mismatch is an error. `tolerance` also sets the
-displacement warning threshold; exceeding it for a displacement alone is not
-an error. `NoRMatrix` skips the diagonal check.
+This changes only the returned model's orbital centres, not `H` or `r`. The
+supplied `tolerance` in Å must be finite and nonnegative. For `HasRMatrix`,
+the proposed centres must match the unchanged onsite `r` diagonal in the
+same cell representative within that tolerance; a missing onsite block or a
+mismatch is an error. `NoRMatrix` skips the diagonal check.
 
 For two spin channels related by a magnetic group, start with spinless 3D
 models `up` and `dn` with matching lattices, atom ordering, orbital projections,
-and position-matrix storage types. All three `symmetrize_pair*` methods now
-take shared references and return `(up_sym, dn_sym, report)` in input order.
+and position-matrix storage types. All three `symmetrize_pair*` methods
+take shared references and return `Result<(Self, Self)>` in input order.
 Use the returned models instead of the unchanged inputs:
 
 ~~~rust
-let (up_sym, dn_sym, report) = Model::symmetrize_pair(
+let (up_sym, dn_sym) = Model::symmetrize_pair(
     &up,
     &dn,
     &target,
@@ -1746,9 +1743,7 @@ Unitary target operations project each channel independently; anti-unitary
 (spin-flip) operations couple the channels, and both centres and Hamiltonians
 are projected jointly. The target operations' `time_reversal` flags must
 describe the actual magnetic group; a wrong flag assignment is a user error,
-not silently repaired. The pair report contains centre displacement diagnostics
-(including warnings) for both channels, the maximum absolute Hamiltonian
-change, and the final pair covariance residual.
+not silently repaired.
 
 For a collinear spin group, prefer the cryspglib-certified entries instead of
 hand-building the old magnetic-group flags. `detect_collinear_spin_group`
@@ -1765,7 +1760,7 @@ let group = detect_collinear_spin_group(
     SpinTolerances::default(),
 )?;
 
-let (up_sym, dn_sym, report) = Model::symmetrize_pair_with_collinear_spin_group(
+let (up_sym, dn_sym) = Model::symmetrize_pair_with_collinear_spin_group(
     &up,
     &dn,
     &group,
@@ -1774,7 +1769,7 @@ let (up_sym, dn_sym, report) = Model::symmetrize_pair_with_collinear_spin_group(
 )?;
 
 // Unitary half only: A0 antiunitary partners are filtered out internally.
-let (up_unitary, dn_unitary, unitary_report) =
+let (up_unitary, dn_unitary) =
     Model::symmetrize_pair_with_unitary_collinear_spin_group(
         &up,
         &dn,

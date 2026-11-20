@@ -73,68 +73,6 @@ impl CenterResolvedBasis {
     }
 }
 
-/// One orbital-centre displacement reported by centre symmetrization.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CentreDisplacement {
-    /// Global orbital index.
-    pub orbital: usize,
-    /// Parent atom index.
-    pub atom: usize,
-    /// Centre before projection, in fractional coordinates.
-    pub old_fractional: [f64; 3],
-    /// Centre after projection, in fractional coordinates.
-    pub new_fractional: [f64; 3],
-    /// Torus displacement in Angstrom, using the model lattice.
-    pub displacement_angstrom: f64,
-}
-
-/// Result of projecting orbital centres onto a target magnetic group.
-///
-/// A displacement larger than the caller threshold is reported through
-/// `warnings` and `moved_over_tolerance`; it is not an error. This keeps the
-/// projection usable when the input Wannier gauge is intentionally rough while
-/// still making a large change visible.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CentreSymmetrizationReport {
-    /// One entry per orbital, in global orbital order.
-    pub displacements: Vec<CentreDisplacement>,
-    /// Largest torus displacement in Angstrom.
-    pub max_displacement_angstrom: f64,
-    /// Orbital indices whose displacement exceeds `tolerance_angstrom`.
-    pub moved_over_tolerance: Vec<usize>,
-    /// Caller-supplied warning threshold in Angstrom.
-    pub tolerance_angstrom: f64,
-    /// Human-readable warnings; empty when every displacement is below the
-    /// threshold.
-    pub warnings: Vec<String>,
-}
-
-/// Joint centre and Hamiltonian symmetrization report.
-///
-/// The centre field compares the input and final orbital centres. The two
-/// Hamiltonian numbers describe the maximum element-wise change from the input
-/// and the maximum final covariance residual over every target operation.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SymmetrizationReport {
-    pub centres: CentreSymmetrizationReport,
-    pub hamiltonian_change_max_absolute: f64,
-    pub final_covariance_max_absolute: f64,
-}
-
-/// Two spin-channel symmetrization report.
-///
-/// The up and down centre reports compare the input and final orbital centres.
-/// The pair covariance residual compares each Hamiltonian with its own image
-/// for Preserve operations and with the other channel's image for Swap
-/// operations, independently of antiunitarity.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PairSymmetrizationReport {
-    pub up_centres: CentreSymmetrizationReport,
-    pub down_centres: CentreSymmetrizationReport,
-    pub hamiltonian_change_max_absolute: f64,
-    pub pair_covariance_max_absolute: f64,
-}
-
 fn projection_matrix_unchecked<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
     atom_index: usize,
@@ -611,58 +549,28 @@ fn check_centre_image<R: RMatrixData>(
     Ok(())
 }
 
-fn centre_report(
-    old_centres: &Array2<f64>,
-    new_centres: &Array2<f64>,
-    atoms: &[crate::Atom],
-    lattice: &Array2<f64>,
-    tolerance: f64,
-) -> CentreSymmetrizationReport {
-    let mut displacements = Vec::with_capacity(old_centres.nrows());
-    let mut moved = Vec::new();
-    let mut max = 0.0f64;
-    for orbital in 0..old_centres.nrows() {
-        let old = [
-            old_centres[[orbital, 0]],
-            old_centres[[orbital, 1]],
-            old_centres[[orbital, 2]],
-        ];
-        let new = [
-            new_centres[[orbital, 0]],
-            new_centres[[orbital, 1]],
-            new_centres[[orbital, 2]],
-        ];
-        let delta = minimum_image_delta(&new, &old, lattice);
-        let displacement = cartesian_norm(&delta, lattice);
-        if displacement > tolerance {
-            moved.push(orbital);
-        }
-        max = max.max(displacement);
-        let atom = atoms
-            .iter()
-            .position(|atom| atom.orbitals().iter().any(|id| id.index() == orbital))
-            .unwrap_or(usize::MAX);
-        displacements.push(CentreDisplacement {
-            orbital,
-            atom,
-            old_fractional: old,
-            new_fractional: new,
-            displacement_angstrom: displacement,
+fn validate_centre_tolerance(tolerance: f64) -> Result<()> {
+    if !tolerance.is_finite() || tolerance < 0.0 {
+        return Err(TbError::InvalidResponseParameter {
+            parameter: "tolerance",
+            message: "centre tolerance must be finite and non-negative".into(),
         });
     }
-    let mut warnings = Vec::new();
-    if max > tolerance {
-        warnings.push(format!(
-            "maximum centre displacement {max:.6e} A exceeds threshold {tolerance:.6e} A"
-        ));
-    }
-    CentreSymmetrizationReport {
-        displacements,
-        max_displacement_angstrom: max,
-        moved_over_tolerance: moved,
-        tolerance_angstrom: tolerance,
-        warnings,
-    }
+    Ok(())
+}
+
+fn max_centre_step(old: &Array2<f64>, new: &Array2<f64>, lattice: &Array2<f64>) -> f64 {
+    old.rows()
+        .into_iter()
+        .zip(new.rows())
+        .fold(0.0_f64, |max, (a, b)| {
+            let from = std::array::from_fn(|axis| a[axis]);
+            let to = std::array::from_fn(|axis| b[axis]);
+            max.max(cartesian_norm(
+                &minimum_image_delta(&to, &from, lattice),
+                lattice,
+            ))
+        })
 }
 
 impl<R: RMatrixData> Model<false, 3, R> {
@@ -690,20 +598,18 @@ impl<R: RMatrixData> Model<false, 3, R> {
     /// spatial part to one model alone.
     ///
     /// A target operation that cannot map the atom structure returns
-    /// [`crate::TbError::TargetMagneticGroupIncompatible`]. A maximum
-    /// displacement above `tolerance` produces warning entries in the returned
-    /// report but does not fail the projection. The argument is measured in
-    /// Angstrom. If a position matrix is present, the projected centres must
-    /// agree with its unchanged onsite diagonal within the same tolerance.
-    /// Returns a new model and a displacement report. Only its orbital centres
-    /// differ; the input, Hamiltonian, and position matrix are unchanged.
+    /// [`crate::TbError::TargetMagneticGroupIncompatible`]. If a position matrix
+    /// is present, the projected centres must agree with its unchanged onsite
+    /// diagonal within `tolerance` in Å. Only the returned model's orbital
+    /// centres can differ; the input, Hamiltonian, and position matrix are unchanged.
     pub fn symmetrize_centres(
         &self,
         target_group: &MagneticCrystalSymmetry,
         basis: &impl BasisSymmetryRepresentation<false, R>,
         tolerance: f64,
-    ) -> Result<(Self, CentreSymmetrizationReport)> {
-        let projected = self.project_geometrical_centres(target_group, basis, tolerance)?;
+    ) -> Result<Self> {
+        validate_centre_tolerance(tolerance)?;
+        let projected = self.project_geometrical_centres(target_group, basis)?;
         projected.validate()?;
         if !R::HAS_RMATRIX {
             for operation in &target_group.operations {
@@ -712,14 +618,7 @@ impl<R: RMatrixData> Model<false, 3, R> {
             }
         }
         validate_position_centres(&projected, tolerance)?;
-        let report = centre_report(
-            &self.orb,
-            &projected.orb,
-            &projected.atoms,
-            &projected.lat,
-            tolerance,
-        );
-        Ok((projected, report))
+        Ok(projected)
     }
 
     // The joint projection uses these centres to resolve its input actions;
@@ -728,14 +627,7 @@ impl<R: RMatrixData> Model<false, 3, R> {
         &self,
         target_group: &MagneticCrystalSymmetry,
         basis: &impl BasisSymmetryRepresentation<false, R>,
-        tolerance: f64,
     ) -> Result<Self> {
-        if !tolerance.is_finite() || tolerance < 0.0 {
-            return Err(crate::TbError::InvalidResponseParameter {
-                parameter: "tolerance",
-                message: "centre tolerance must be finite and non-negative".into(),
-            });
-        }
         self.validate()?;
         if target_group.operations.is_empty() {
             return Err(crate::TbError::TargetMagneticGroupIncompatible {
@@ -744,8 +636,7 @@ impl<R: RMatrixData> Model<false, 3, R> {
         }
         let mut projected = self.clone();
         for _ in 0..64 {
-            let report = projected.symmetrize_centres_once(target_group, basis, tolerance)?;
-            if report.max_displacement_angstrom < 1e-10 {
+            if projected.symmetrize_centres_once(target_group, basis)? < 1e-10 {
                 break;
             }
         }
@@ -756,9 +647,8 @@ impl<R: RMatrixData> Model<false, 3, R> {
         &mut self,
         target_group: &MagneticCrystalSymmetry,
         basis: &impl BasisSymmetryRepresentation<false, R>,
-        tolerance: f64,
-    ) -> Result<CentreSymmetrizationReport> {
-        let old = self.orb.clone();
+    ) -> Result<f64> {
+        let old = &self.orb;
         let mut accumulated: Vec<(f64, [f64; 3])> = Vec::new();
         accumulated.resize(self.norb(), (0.0, [0.0; 3]));
         for operation in &target_group.operations {
@@ -786,75 +676,23 @@ impl<R: RMatrixData> Model<false, 3, R> {
                 new[[orbital, axis]] += sum[axis] / count;
             }
         }
-        let report = centre_report(&old, &new, &self.atoms, &self.lat, tolerance);
+        let step = max_centre_step(old, &new, &self.lat);
         self.orb = new;
-        Ok(report)
+        Ok(step)
     }
 }
 
-fn model_ham_blocks<R: RMatrixData>(
-    model: &Model<false, 3, R>,
-) -> BTreeMap<[isize; 3], Array2<Complex64>> {
-    let mut blocks = BTreeMap::new();
-    for index in 0..model.hamR.nrows() {
-        blocks.insert(
-            [
-                model.hamR[[index, 0]],
-                model.hamR[[index, 1]],
-                model.hamR[[index, 2]],
-            ],
-            model.ham.index_axis(Axis(0), index).to_owned(),
-        );
-    }
-    blocks
-}
-
-fn max_map_change(
-    old: &BTreeMap<[isize; 3], Array2<Complex64>>,
-    new: &BTreeMap<[isize; 3], Array2<Complex64>>,
-) -> f64 {
-    let mut keys: BTreeSet<[isize; 3]> = old.keys().copied().collect();
-    keys.extend(new.keys().copied());
-    let mut max = 0.0f64;
-    for key in keys {
-        let left = old.get(&key);
-        let right = new.get(&key);
-        let rows = left
-            .map_or(0, Array2::nrows)
-            .max(right.map_or(0, Array2::nrows));
-        let columns = left
-            .map_or(0, Array2::ncols)
-            .max(right.map_or(0, Array2::ncols));
-        let zero = Complex64::new(0.0, 0.0);
-        for row in 0..rows {
-            for column in 0..columns {
-                let a = left
-                    .and_then(|matrix| matrix.get((row, column)))
-                    .copied()
-                    .unwrap_or(zero);
-                let b = right
-                    .and_then(|matrix| matrix.get((row, column)))
-                    .copied()
-                    .unwrap_or(zero);
-                max = max.max((a - b).norm());
-            }
-        }
-    }
-    max
-}
-
-fn target_covariance_max<R: RMatrixData>(
+fn validate_joint_projection<R: RMatrixData>(
     model: &Model<false, 3, R>,
     target: &MagneticCrystalSymmetry,
     basis: &impl BasisSymmetryRepresentation<false, R>,
     parameters: &HamiltonianSymmetrizationParameters,
-) -> Result<f64> {
+) -> Result<()> {
     let support = validate_hamiltonian(model, parameters.tolerances.hermiticity)?;
     let position_tolerance = parameters
         .tolerances
         .position
         .unwrap_or(parameters.structural_parameters.symprec);
-    let mut max = 0.0f64;
     for operation in &target.operations {
         let action = basis
             .resolve(BasisActionContext {
@@ -870,16 +708,16 @@ fn target_covariance_max<R: RMatrixData>(
             .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
                 reason: format!("post-projection action is invalid: {error}"),
             })?;
-        let residual = hamiltonian_residual(&support, operation, &action, parameters.tolerances)
-            .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
+        hamiltonian_residual(&support, operation, &action, parameters.tolerances).map_err(
+            |error| crate::TbError::TargetMagneticGroupIncompatible {
                 reason: format!("post-projection residual failed: {error}"),
-            })?;
+            },
+        )?;
         if !R::HAS_RMATRIX {
             check_centre_image(model, &model.orb, operation, &action, position_tolerance)?;
         }
-        max = max.max(residual.max_absolute);
     }
-    Ok(max)
+    Ok(())
 }
 
 fn validate_pair_group(
@@ -912,8 +750,7 @@ fn pair_centre_average<R: RMatrixData>(
     down_centres: &Array2<f64>,
     operations: &[PairOperation],
     basis: &impl BasisSymmetryRepresentation<false, R>,
-    tolerance: f64,
-) -> Result<CentreSymmetrizationReport> {
+) -> Result<()> {
     if operations.is_empty() {
         return Err(crate::TbError::TargetMagneticGroupIncompatible {
             reason: "target group has no operations".into(),
@@ -950,9 +787,8 @@ fn pair_centre_average<R: RMatrixData>(
             new[[orbital, axis]] += sums[orbital][axis] / counts[orbital] as f64;
         }
     }
-    let report = centre_report(&old, &new, &target.atoms, &target.lat, tolerance);
     target.orb = new;
-    Ok(report)
+    Ok(())
 }
 
 fn resolve_pair_actions<R: RMatrixData>(
@@ -1076,7 +912,7 @@ fn pair_project_hamiltonian<R: RMatrixData>(
     operations: &[PairOperation],
     basis: &impl BasisSymmetryRepresentation<false, R>,
     parameters: &HamiltonianSymmetrizationParameters,
-) -> Result<(Model<false, 3, R>, Model<false, 3, R>, f64, f64)> {
+) -> Result<(Model<false, 3, R>, Model<false, 3, R>)> {
     let support_a = validate_hamiltonian(a, parameters.tolerances.hermiticity)?;
     let support_b = validate_hamiltonian(b, parameters.tolerances.hermiticity)?;
     if R::HAS_RMATRIX {
@@ -1218,9 +1054,6 @@ fn pair_project_hamiltonian<R: RMatrixData>(
         parameters,
     )?;
     validate_pair_corepresentations(&symmetrized_a, &symmetrized_b, &actions, parameters)?;
-    let change = max_map_change(&model_ham_blocks(a), &model_ham_blocks(&symmetrized_a)).max(
-        max_map_change(&model_ham_blocks(b), &model_ham_blocks(&symmetrized_b)),
-    );
     let position_a = model_position_support(&symmetrized_a);
     let position_b = model_position_support(&symmetrized_b);
     let target_a = (&symmetrized_a, &support_a, position_a.as_ref());
@@ -1306,7 +1139,7 @@ fn pair_project_hamiltonian<R: RMatrixData>(
             ),
         });
     }
-    Ok((symmetrized_a, symmetrized_b, change, pair_residual))
+    Ok((symmetrized_a, symmetrized_b))
 }
 
 fn validate_pair_models<R: RMatrixData>(
@@ -1385,11 +1218,7 @@ fn symmetrize_pair_with_operations<R: RMatrixData>(
     operations: &[PairOperation],
     basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
     parameters: &HamiltonianSymmetrizationParameters,
-) -> Result<(
-    Model<false, 3, R>,
-    Model<false, 3, R>,
-    PairSymmetrizationReport,
-)> {
+) -> Result<(Model<false, 3, R>, Model<false, 3, R>)> {
     validate_tolerances(parameters.tolerances)?;
     validate_pair_models(a, b)?;
     if operations.is_empty() {
@@ -1429,23 +1258,12 @@ fn symmetrize_pair_with_operations<R: RMatrixData>(
             }
         }
     }
-    let margin = position_tolerance * 3.0;
     let mut up = a.clone();
     let mut down = b.clone();
-    let mut up_centres = up.orb.clone();
-    let mut down_centres = down.orb.clone();
     for _ in 0..64 {
-        let old_up = up_centres.clone();
-        let old_down = down_centres.clone();
-        pair_centre_average(
-            &mut up,
-            PairSide::Up,
-            &old_up,
-            &old_down,
-            operations,
-            basis,
-            margin,
-        )?;
+        let old_up = up.orb.clone();
+        let old_down = down.orb.clone();
+        pair_centre_average(&mut up, PairSide::Up, &old_up, &old_down, operations, basis)?;
         pair_centre_average(
             &mut down,
             PairSide::Down,
@@ -1453,43 +1271,14 @@ fn symmetrize_pair_with_operations<R: RMatrixData>(
             &old_down,
             operations,
             basis,
-            margin,
         )?;
-        let delta = centre_report(&old_up, &up.orb, &up.atoms, &up.lat, margin)
-            .max_displacement_angstrom
-            .max(
-                centre_report(&old_down, &down.orb, &down.atoms, &down.lat, margin)
-                    .max_displacement_angstrom,
-            );
-        up_centres = up.orb.clone();
-        down_centres = down.orb.clone();
+        let delta = max_centre_step(&old_up, &up.orb, &up.lat)
+            .max(max_centre_step(&old_down, &down.orb, &down.lat));
         if delta < 1e-9 {
             break;
         }
     }
-    let (projected_up, projected_down, change, pair_covariance) =
-        pair_project_hamiltonian(&up, &down, operations, basis, parameters)?;
-    let up_centres = centre_report(
-        &a.orb,
-        &projected_up.orb,
-        &projected_up.atoms,
-        &projected_up.lat,
-        margin,
-    );
-    let down_centres = centre_report(
-        &b.orb,
-        &projected_down.orb,
-        &projected_down.atoms,
-        &projected_down.lat,
-        margin,
-    );
-    let report = PairSymmetrizationReport {
-        up_centres,
-        down_centres,
-        hamiltonian_change_max_absolute: change,
-        pair_covariance_max_absolute: pair_covariance,
-    };
-    Ok((projected_up, projected_down, report))
+    pair_project_hamiltonian(&up, &down, operations, basis, parameters)
 }
 
 impl<R: RMatrixData> Model<false, 3, R> {
@@ -1499,42 +1288,26 @@ impl<R: RMatrixData> Model<false, 3, R> {
     /// 2. Resolve the localized actions again on the projected centres.
     /// 3. Run the strict Reynolds projection, taking the final centres from the
     ///    projected onsite position matrix when one is present.
-    /// 4. Report the resulting centre displacements and Hamiltonian covariance.
+    /// 4. Check the final model and return it without modifying the input.
     ///
-    /// The centre warning threshold is three times
-    /// `parameters.tolerances.position` (a Cartesian length in Angstrom,
-    /// falling back to `symprec`). The target group is still checked against the model's
-    /// atoms, moments, and external-field context by the underlying
-    /// [`Self::symmetrize_hamiltonian`] call. The input model is left unchanged
-    /// on success or error; the projected model is returned alongside its report.
+    /// The target group is checked against the model's atoms, moments, and
+    /// external-field context by [`Self::symmetrize_hamiltonian`].
     pub fn symmetrize_model_and_centres(
         &self,
         target_group: &MagneticCrystalSymmetry,
         basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
         parameters: &HamiltonianSymmetrizationParameters,
-    ) -> Result<(Self, SymmetrizationReport)> {
-        let margin = parameters
-            .tolerances
-            .position
-            .unwrap_or(parameters.structural_parameters.symprec)
-            * 3.0;
-        let working = self.project_geometrical_centres(target_group, basis, margin)?;
+    ) -> Result<Self> {
+        validate_centre_tolerance(
+            parameters
+                .tolerances
+                .position
+                .unwrap_or(parameters.structural_parameters.symprec),
+        )?;
+        let working = self.project_geometrical_centres(target_group, basis)?;
         let symmetrized = working.symmetrize_hamiltonian(target_group, basis, parameters)?;
-        let centres = centre_report(
-            &self.orb,
-            &symmetrized.orb,
-            &symmetrized.atoms,
-            &symmetrized.lat,
-            margin,
-        );
-        let change = max_map_change(&model_ham_blocks(self), &model_ham_blocks(&symmetrized));
-        let covariance = target_covariance_max(&symmetrized, target_group, basis, parameters)?;
-        let report = SymmetrizationReport {
-            centres,
-            hamiltonian_change_max_absolute: change,
-            final_covariance_max_absolute: covariance,
-        };
-        Ok((symmetrized, report))
+        validate_joint_projection(&symmetrized, target_group, basis, parameters)?;
+        Ok(symmetrized)
     }
 
     /// Project two spinless models that represent the two spin channels of a
@@ -1565,7 +1338,7 @@ impl<R: RMatrixData> Model<false, 3, R> {
     /// lattice, and orbital projections. Channel swaps require a common
     /// Wannier gauge and corresponding centre differences below half a cell
     /// in each fractional component. Returns two new models in input order
-    /// followed by their report, without modifying either input. Use the spin-flip flag [`crate::CrystalSymmetryOperation::time_reversal`]
+    /// without modifying either input. Use [`crate::CrystalSymmetryOperation::time_reversal`]
     /// in the target group to identify anti-unitary pair operations.
     ///
     /// This legacy entry maps `time_reversal = true` to a simultaneous channel
@@ -1579,7 +1352,7 @@ impl<R: RMatrixData> Model<false, 3, R> {
         target_group: &MagneticCrystalSymmetry,
         basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
         parameters: &HamiltonianSymmetrizationParameters,
-    ) -> Result<(Self, Self, PairSymmetrizationReport)> {
+    ) -> Result<(Self, Self)> {
         validate_tolerances(parameters.tolerances)?;
         validate_pair_models(a, b)?;
         let target_group = validate_pair_group(target_group, parameters.tolerances.operation)?;
@@ -1601,14 +1374,14 @@ impl<R: RMatrixData> Model<false, 3, R> {
     /// [`Self::symmetrize_pair`]. The operation group is already geometrically
     /// certified by cryspglib; Rustb still resolves and validates the localized
     /// orbital actions and checks the final pair covariance. Returns two new
-    /// models in input order followed by the report, leaving the inputs unchanged.
+    /// models in input order, leaving the inputs unchanged.
     pub fn symmetrize_pair_with_collinear_spin_group(
         a: &Self,
         b: &Self,
         group: &CollinearSpinGroup,
         basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
         parameters: &HamiltonianSymmetrizationParameters,
-    ) -> Result<(Self, Self, PairSymmetrizationReport)> {
+    ) -> Result<(Self, Self)> {
         validate_tolerances(parameters.tolerances)?;
         validate_pair_models(a, b)?;
         let operations = pair_operations_from_spin_group(group);
@@ -1624,14 +1397,14 @@ impl<R: RMatrixData> Model<false, 3, R> {
     /// unitary operations are projected; the A0 antiunitary partners are
     /// filtered out. Use it when orbital time-reversal breaking is known or
     /// when only the unitary subgroup should be imposed. Returns two new models
-    /// in input order followed by the report, leaving the inputs unchanged.
+    /// in input order, leaving the inputs unchanged.
     pub fn symmetrize_pair_with_unitary_collinear_spin_group(
         a: &Self,
         b: &Self,
         group: &CollinearSpinGroup,
         basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
         parameters: &HamiltonianSymmetrizationParameters,
-    ) -> Result<(Self, Self, PairSymmetrizationReport)> {
+    ) -> Result<(Self, Self)> {
         validate_tolerances(parameters.tolerances)?;
         validate_pair_models(a, b)?;
         let operations = pair_operations_from_unitary_spin_group(group);
@@ -1688,7 +1461,6 @@ mod tests {
             &source_down.orb,
             &operations,
             &CenterResolvedBasis::new(),
-            0.05,
         )
         .unwrap();
         pair_centre_average(
@@ -1698,7 +1470,6 @@ mod tests {
             &source_up.orb,
             &operations,
             &CenterResolvedBasis::new(),
-            0.05,
         )
         .unwrap();
         let basis = CenterResolvedBasis::new();
@@ -1987,19 +1758,27 @@ mod tests {
             .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())
             .unwrap();
         let parameters = HamiltonianSymmetrizationParameters::default();
-        let (only_centres, _) = model
+        let only_centres = model
             .symmetrize_centres(&group, &ScalarSiteBasis, 1e-10)
             .unwrap();
-        let (joint, _) = model
+        let joint = model
             .symmetrize_model_and_centres(&group, &ScalarSiteBasis, &parameters)
             .unwrap();
-        let (up, down, _) =
+        let (up, down) =
             Model::symmetrize_pair(&model, &model, &group, &ScalarSiteBasis, &parameters).unwrap();
-        let original_h = model_ham_blocks(&model);
         let k = array![0.25, 0.0, 0.0];
         for projected in [only_centres, joint, up, down] {
             assert_eq!(projected.orb, model.orb);
-            assert!(max_map_change(&original_h, &model_ham_blocks(&projected)) < 1e-12);
+            // Check both supports; an absent block is zero regardless of row order.
+            for (left, right) in [(&model, &projected), (&projected, &model)] {
+                for (r, vector) in left.hamR.rows().into_iter().enumerate() {
+                    let matching = crate::find_R(&right.hamR, &vector);
+                    for ((i, j), &hop) in left.ham.index_axis(ndarray::Axis(0), r).indexed_iter() {
+                        let other = matching.map_or(Complex64::default(), |s| right.ham[[s, i, j]]);
+                        assert!((hop - other).norm() < 1e-12);
+                    }
+                }
+            }
             let hab = projected.gen_ham(&k, crate::Gauge::Lattice)[[0, 1]];
             assert!((hab.norm() - 2.0_f64.sqrt()).abs() < 1e-12);
         }
@@ -2085,7 +1864,7 @@ mod tests {
         ];
         let original_up = up.clone();
         let original_down = down.clone();
-        let (projected_up, projected_down, report) = symmetrize_pair_with_operations(
+        let (projected_up, projected_down) = symmetrize_pair_with_operations(
             &up,
             &down,
             &operations,
@@ -2093,17 +1872,9 @@ mod tests {
             &HamiltonianSymmetrizationParameters::default(),
         )
         .unwrap();
-        for (model, centres, sign) in [
-            (&projected_up, &report.up_centres, 1.0),
-            (&projected_down, &report.down_centres, -1.0),
-        ] {
+        for (model, sign) in [(&projected_up, 1.0), (&projected_down, -1.0)] {
             assert!((model.orb[[0, 0]] - sign * 0.125).abs() < 1e-12);
             assert!((model.rmatrix[[0, 0, 0, 0]].re - sign * 0.25).abs() < 1e-12);
-            assert_eq!(
-                centres.displacements[0].new_fractional[0],
-                model.orb[[0, 0]]
-            );
-            assert!((centres.max_displacement_angstrom - 0.25).abs() < 1e-12);
             let plus = model
                 .hamR
                 .rows()
@@ -2113,7 +1884,6 @@ mod tests {
             assert!((model.ham[[plus, 0, 0]] - Complex64::new(0.0, sign)).norm() < 1e-12);
             assert!((model.rmatrix[[plus, 0, 0, 0]] - dipole).norm() < 1e-12);
         }
-        assert!(report.pair_covariance_max_absolute < 1e-12);
         for (input, original) in [(&up, &original_up), (&down, &original_down)] {
             assert_eq!(input.orb, original.orb);
             assert_eq!(input.ham, original.ham);
@@ -2129,18 +1899,26 @@ mod tests {
         let group = model
             .magnetic_crystal_symmetry_from_atoms(&crate::SymmetryParameters::default())
             .unwrap();
-        let (projected, first) = model
+        let projected = model
             .symmetrize_centres(&group, &CenterResolvedBasis::new(), 0.05)
             .unwrap();
-        assert!(first.max_displacement_angstrom > 1e-3);
+        assert!(
+            (&projected.orb - &original_orb)
+                .iter()
+                .any(|d| d.abs() > 1e-3)
+        );
         assert_eq!(model.orb, original_orb);
         assert!(projected.orb.iter().all(|value| value.abs() < 1e-8));
         assert_eq!(projected.ham, model.ham);
         assert_eq!(projected.hamR, model.hamR);
-        let (_, second) = projected
+        let projected_again = projected
             .symmetrize_centres(&group, &CenterResolvedBasis::new(), 0.05)
             .unwrap();
-        assert!(second.max_displacement_angstrom < 1e-8);
+        assert!(
+            (&projected_again.orb - &projected.orb)
+                .iter()
+                .all(|d| d.abs() < 1e-8)
+        );
     }
 
     #[test]
@@ -2175,21 +1953,40 @@ mod tests {
     }
 
     #[test]
+    fn joint_symmetrization_rejects_nonfinite_tolerance_before_resolving_basis() {
+        let model = displaced_p_model();
+        let group = model
+            .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())
+            .unwrap();
+        let mut parameters = HamiltonianSymmetrizationParameters::default();
+        parameters.tolerances.position = Some(f64::NAN);
+        let basis = |_: BasisActionContext<'_, false, crate::NoRMatrix>| -> std::result::Result<LocalizedBasisAction, BasisRepresentationError> {
+            panic!("invalid tolerance must be rejected before basis resolution")
+        };
+        assert!(matches!(
+            model.symmetrize_model_and_centres(&group, &basis, &parameters),
+            Err(TbError::InvalidResponseParameter {
+                parameter: "tolerance",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn joint_symmetrization_accepts_center_resolved_zero_hamiltonian() {
         let model = displaced_p_model();
         let original = model.clone();
         let group = model
             .magnetic_crystal_symmetry_from_atoms(&crate::SymmetryParameters::default())
             .unwrap();
-        let (projected, report) = model
+        let projected = model
             .symmetrize_model_and_centres(
                 &group,
                 &CenterResolvedBasis::new(),
                 &HamiltonianSymmetrizationParameters::default(),
             )
             .unwrap();
-        assert!(report.final_covariance_max_absolute < 1e-10);
-        assert!(report.hamiltonian_change_max_absolute < 1e-12);
+        assert!(projected.ham.iter().all(|hop| hop.norm() < 1e-12));
         assert_eq!(model.orb, original.orb);
         assert_eq!(model.ham, original.ham);
         assert_eq!(model.hamR, original.hamR);
@@ -2286,11 +2083,10 @@ mod tests {
         dn: &Model<false, 3>,
         group: &MagneticCrystalSymmetry,
         kpoints: &Array2<f64>,
-    ) -> (f64, f64, f64) {
+    ) -> f64 {
         let (e_up, _) = up.solve_all_parallel(kpoints).unwrap();
         let (e_dn, _) = dn.solve_all_parallel(kpoints).unwrap();
         let mut max = 0.0f64;
-        let mut band_change = 0.0f64;
         for operation in &group.operations {
             if !operation.time_reversal {
                 continue;
@@ -2325,8 +2121,7 @@ mod tests {
                 }
             }
         }
-        band_change = 0.0;
-        (max, band_change, 0.0)
+        max
     }
 
     #[test]
@@ -2334,7 +2129,7 @@ mod tests {
     fn mgfe6ge6_pair_acceptance() {
         let (before_up, before_dn, group) = real_pair_models();
         let params = HamiltonianSymmetrizationParameters::default();
-        let (up, dn, report) = Model::<false, 3>::symmetrize_pair(
+        let (up, dn) = Model::<false, 3>::symmetrize_pair(
             &before_up,
             &before_dn,
             &group,
@@ -2351,7 +2146,7 @@ mod tests {
             [0.0, 0.25, 0.0],
             [0.0, 0.0, 0.25],
         ];
-        let (spectrum_error, _spectrum_change, _) = spectrum_pair_error(&up, &dn, &group, &kpoints);
+        let spectrum_error = spectrum_pair_error(&up, &dn, &group, &kpoints);
         let (before_up_e, _) = before_up.solve_all_parallel(&kpoints).unwrap();
         let (before_dn_e, _) = before_dn.solve_all_parallel(&kpoints).unwrap();
         let (after_up_e, _) = up.solve_all_parallel(&kpoints).unwrap();
@@ -2371,7 +2166,7 @@ mod tests {
         for band in 0..gamma_up.ncols() {
             gamma = gamma.max((gamma_up[[0, band]] - gamma_dn[[0, band]]).abs());
         }
-        let (up_again, dn_again, _) = Model::<false, 3>::symmetrize_pair(
+        let (up_again, dn_again) = Model::<false, 3>::symmetrize_pair(
             &up,
             &dn,
             &group,
@@ -2388,6 +2183,10 @@ mod tests {
                     .max((dn.orb[[orbital, axis]] - dn_again.orb[[orbital, axis]]).abs());
             }
         }
+        assert_eq!(up.hamR, up_again.hamR);
+        assert_eq!(dn.hamR, dn_again.hamR);
+        assert_eq!(up.ham.dim(), up_again.ham.dim());
+        assert_eq!(dn.ham.dim(), dn_again.ham.dim());
         for (left, right) in up.ham.iter().zip(up_again.ham.iter()) {
             ham_change = ham_change.max((left - right).norm());
         }
@@ -2397,25 +2196,13 @@ mod tests {
         assert_eq!(up_again.lat, before_up.lat);
         assert_eq!(dn_again.lat, before_dn.lat);
         assert_eq!(up_again.atoms.len(), before_up.atoms.len());
-        println!(
-            "REAL centre displacement up {:.6e} dn {:.6e}",
-            report.up_centres.max_displacement_angstrom,
-            report.down_centres.max_displacement_angstrom
-        );
         println!("REAL centre covariance {centre_error:.6e} A");
         println!("REAL spectrum error {spectrum_error:.6e} eV, Gamma {gamma:.6e} eV");
-        println!(
-            "REAL band change {band_change:.6e} eV, H change {:.6e}",
-            report.hamiltonian_change_max_absolute
-        );
-        println!(
-            "REAL pair covariance {:.6e}, idempotent orb {orb_change:.3e} ham {ham_change:.3e}",
-            report.pair_covariance_max_absolute
-        );
+        println!("REAL band change {band_change:.6e} eV");
+        println!("REAL idempotent orb {orb_change:.3e} ham {ham_change:.3e}");
         assert!(centre_error < 1e-8);
         assert!(spectrum_error < 1e-5);
         assert!(gamma < 1e-10);
-        assert!(report.pair_covariance_max_absolute < 1e-6);
         assert!(orb_change < 1e-9);
         assert!(ham_change < 1e-8);
     }
@@ -2428,7 +2215,7 @@ mod tests {
         let group = up
             .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())
             .unwrap();
-        let (projected_up, projected_down, report) = Model::<false, 3>::symmetrize_pair(
+        let (projected_up, projected_down) = Model::<false, 3>::symmetrize_pair(
             &up,
             &down,
             &group,
@@ -2436,11 +2223,10 @@ mod tests {
             &HamiltonianSymmetrizationParameters::default(),
         )
         .unwrap();
-        assert!(report.pair_covariance_max_absolute < 1e-10);
-        assert!(report.hamiltonian_change_max_absolute < 1e-12);
         assert_eq!(up.orb, original_orb);
         assert_eq!(down.orb, original_orb);
         for projected in [&projected_up, &projected_down] {
+            assert!(projected.ham.iter().all(|hop| hop.norm() < 1e-12));
             assert!(projected.orb.iter().all(|value| value.abs() < 1e-8));
         }
     }
@@ -2463,7 +2249,7 @@ mod tests {
         });
         group.field_preserving_operations = group.operations.clone();
         assert_eq!(group.operations.len(), 4);
-        let (model, _) = model
+        let model = model
             .symmetrize_centres(&group, &CenterResolvedBasis::new(), 0.05)
             .unwrap();
         let operation = group

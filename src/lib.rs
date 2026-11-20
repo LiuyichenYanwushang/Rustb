@@ -89,9 +89,9 @@
 - **Check or project a Hamiltonian:** [`check_hamiltonian_symmetry`](Model::check_hamiltonian_symmetry)
   returns a report; [`symmetrize_hamiltonian`](Model::symmetrize_hamiltonian) returns a new model.
 - **Projections from shared references** (spinless models; inputs unchanged):
-  - Centres, returning `(model, report)`: [`symmetrize_centres`](Model::symmetrize_centres),
+  - Centres, returning `Result<Self>`: [`symmetrize_centres`](Model::symmetrize_centres),
     [`symmetrize_model_and_centres`](Model::symmetrize_model_and_centres).
-  - Two channels, returning `(up_sym, dn_sym, report)` in input order:
+  - Two channels, returning `Result<(Self, Self)>` in input order:
     [`symmetrize_pair`](Model::symmetrize_pair),
     [`symmetrize_pair_with_collinear_spin_group`](Model::symmetrize_pair_with_collinear_spin_group),
     [`symmetrize_pair_with_unitary_collinear_spin_group`](Model::symmetrize_pair_with_unitary_collinear_spin_group).
@@ -260,13 +260,11 @@ pub use crate::geometry::*;
 #[cfg(feature = "cryspglib")]
 pub use crate::hamiltonian_symmetry::{
     AtomicOrbitalBasis, BasisActionContext, BasisRepresentationError, BasisSymmetryRepresentation,
-    CellShiftAction, CenterResolvedBasis, CentreDisplacement, CentreSymmetrizationReport,
-    FinalMagneticGroup, HamiltonianCompatibility, HamiltonianResidual, HamiltonianResidualWitness,
-    HamiltonianSymmetrizationParameters, HamiltonianSymmetryCandidates,
-    HamiltonianSymmetryCompleteness, HamiltonianSymmetryReport, HamiltonianSymmetryRequest,
-    HamiltonianSymmetryTolerances, IdentifiedMagneticSubgroup, LocalizedBasisAction,
-    OperationHamiltonianCheck, OperationHamiltonianStatus, PairSymmetrizationReport,
-    ScalarSiteBasis, SymmetrizationReport,
+    CellShiftAction, CenterResolvedBasis, FinalMagneticGroup, HamiltonianCompatibility,
+    HamiltonianResidual, HamiltonianResidualWitness, HamiltonianSymmetrizationParameters,
+    HamiltonianSymmetryCandidates, HamiltonianSymmetryCompleteness, HamiltonianSymmetryReport,
+    HamiltonianSymmetryRequest, HamiltonianSymmetryTolerances, IdentifiedMagneticSubgroup,
+    LocalizedBasisAction, OperationHamiltonianCheck, OperationHamiltonianStatus, ScalarSiteBasis,
 };
 pub use crate::hubbard::*;
 pub use crate::io::*;
