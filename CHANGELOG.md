@@ -4,6 +4,8 @@
 
 ### Breaking changes
 
+- Remove `Model::from_hr_with_rmatrix`. Import the `Wannier90` trait and use
+  `Model::<SPIN, 3, HasRMatrix>::from_hr` to load `_r.dat`.
 - `FloquetTruncation::new(n_max, n_time)` is now `FloquetTruncation::new(n_max)`
   and the `n_time` field is gone.  Both Floquet paths evaluate the Peierls
   coefficients with the exact, grid-free Bessel backend, so no public entry
@@ -51,9 +53,11 @@
   flag derived from the model spin type. Pure and individual hybrid projections
   are emitted in model order; equivalent species are grouped only when their
   projection lists match.
-- `Model::output_hr` now writes a `#generate by Rustb at time ...` comment as
-  the first line and emits 1-based orbital indices in the Hamiltonian records
-  (the Wannier90 index convention).
+- `Model::output_hr` writes Wannier90 `5I5,2F12.6` records and unit
+  degeneracies. `HasRMatrix` models can write Cartesian Å position matrices
+  with `output_r` (`5I5,6F12.6`, no degeneracy table). Both use 1-based
+  indices and the stored `hamR` order without adding conjugate blocks.
+  Matrix import also accepts adjacent fixed-width fields.
 
 - Adapt the high-symmetry k-point and character-table adapters to
   cryspglib's separated CDML/BC labels; Rustb's public `HighSymmetryKPoint`

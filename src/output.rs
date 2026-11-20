@@ -51,18 +51,19 @@
 //! # }
 //! ```
 
-use crate::Model;
 use crate::atom_struct::{AtomType, OrbProj};
+use crate::{HasRMatrix, Model};
 
 use crate::RMatrixData;
 use crate::error::{Result, TbError};
 use crate::kpath::*;
-use crate::model::find_R;
 use crate::solve_ham::Solve;
 use ndarray::prelude::*;
 use ndarray::*;
+use num_complex::Complex64;
+use std::collections::HashSet;
 use std::fs::File;
-use std::io::Write;
+use std::io::{self, BufWriter, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn projection_token(projection: OrbProj) -> &'static str {
@@ -138,12 +139,121 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     )
 }
 
-pub trait OutPut {
-    /// Writes the tight-binding model to `wannier90_hr.dat` format.
+fn write_wannier_matrix<const DIM: usize>(
+    name: &str,
+    ham_r: &Array2<isize>,
+    nsta: usize,
+    matrix: ArrayView4<'_, Complex64>,
+    position: bool,
+) -> Result<()> {
+    if !(1..=3).contains(&DIM) {
+        return Err(TbError::InvalidDimension {
+            dim: DIM,
+            supported: vec![1, 2, 3],
+        });
+    }
+    let invalid =
+        |message: String| io::Error::new(io::ErrorKind::InvalidInput, format!("{name}: {message}"));
+    let nr = ham_r.nrows();
+    let stored_components = if position { DIM } else { 1 };
+    if nr == 0 || ham_r.ncols() != DIM || matrix.dim() != (nr, stored_components, nsta, nsta) {
+        return Err(invalid("matrix shape does not match hamR and the model basis".into()).into());
+    }
+    if !(1..=99_999).contains(&nsta) {
+        return Err(invalid(format!(
+            "state count {nsta} is outside the I5 index range 1..=99999"
+        ))
+        .into());
+    }
+
+    // Validate before opening the file so unrepresentable data cannot truncate it.
+    let mut seen = HashSet::with_capacity(nr);
+    for r in ham_r.rows() {
+        let r = [
+            r[0],
+            r.get(1).copied().unwrap_or(0),
+            r.get(2).copied().unwrap_or(0),
+        ];
+        if r.iter().any(|x| !(-9_999..=99_999).contains(x)) {
+            return Err(invalid(format!("translation {r:?} exceeds I5")).into());
+        }
+        if !seen.insert(r) {
+            return Err(invalid(format!("duplicate translation {r:?}")).into());
+        }
+    }
+    for (index, z) in matrix.indexed_iter() {
+        for value in [z.re, z.im] {
+            // Only values near or outside the limits need a formatted width check.
+            if !value.is_finite()
+                || (!(-9_999.0..=99_999.0).contains(&value) && format!("{value:.6}").len() > 12)
+            {
+                return Err(
+                    invalid(format!("value {value} at {index:?} does not fit F12.6")).into(),
+                );
+            }
+        }
+    }
+
+    let mut file = BufWriter::new(File::create(name)?);
+    writeln!(file, "#generate by Rustb at time {}", utc_timestamp())?;
+    writeln!(file, "{nsta}\n{nr}")?;
+    if !position {
+        for start in (0..nr).step_by(15) {
+            for _ in 0..(nr - start).min(15) {
+                write!(file, "    1")?;
+            }
+            writeln!(file)?;
+        }
+    }
+    let components = if position { 3 } else { 1 };
+    for (index, r) in ham_r.rows().into_iter().enumerate() {
+        let [rx, ry, rz] = [
+            r[0],
+            r.get(1).copied().unwrap_or(0),
+            r.get(2).copied().unwrap_or(0),
+        ];
+        for n in 0..nsta {
+            for m in 0..nsta {
+                write!(file, "{rx:>5}{ry:>5}{rz:>5}{:>5}{:>5}", m + 1, n + 1)?;
+                for axis in 0..components {
+                    let z = if axis < stored_components {
+                        matrix[[index, axis, m, n]]
+                    } else {
+                        Complex64::new(0.0, 0.0)
+                    };
+                    write!(file, "{:>12.6}{:>12.6}", z.re, z.im)?;
+                }
+                writeln!(file)?;
+            }
+        }
+    }
+    file.flush()?;
+    Ok(())
+}
+
+impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM, HasRMatrix> {
+    /// Writes Cartesian position matrices (Å) to `{seedname}_r.dat` as `5I5,6F12.6`.
     ///
-    /// The first line records the generation time; orbital indices in the
-    /// Hamiltonian records are 1-based, as used by Wannier90 and
-    /// [`crate::Wannier90::from_hr`].
+    /// Uses the same `hamR` order and 1-based indices as [`OutPut::output_hr`],
+    /// without a degeneracy section. Absent Cartesian axes are padded with zero.
+    /// Non-finite values and fields that do not fit are rejected.
+    pub fn output_r(&self, path: &str, seedname: &str) -> Result<()> {
+        write_wannier_matrix::<DIM>(
+            &format!("{path}{seedname}_r.dat"),
+            &self.hamR,
+            self.nsta(),
+            self.rmatrix.view(),
+            true,
+        )
+    }
+}
+
+pub trait OutPut {
+    /// Writes the Hamiltonian to `{seedname}_hr.dat` as `5I5,2F12.6`.
+    ///
+    /// Records use the stored `hamR` order, unit degeneracies, and 1-based
+    /// indices. No conjugate blocks are added. Non-finite values and fields
+    /// that do not fit are rejected.
     fn output_hr(&self, path: &str, seedname: &str) -> Result<()>;
     fn output_POSCAR(&self, path: &str) -> Result<()>;
     fn output_win(&self, path: &str, seedname: &str) -> Result<()>;
@@ -157,178 +267,13 @@ pub trait OutPut {
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, DIM, R> {
     fn output_hr(&self, path: &str, seedname: &str) -> Result<()> {
-        let n_R = self.hamR.nrows(); //length of hamR
-        let hr_name = format!("{path}{seedname}_hr.dat");
-        let mut file = File::create(&hr_name)?;
-        writeln!(file, "#generate by Rustb at time {}", utc_timestamp())?;
-        writeln!(file, "{}", self.nsta())?;
-        writeln!(file, "{}", n_R)?;
-        let mut weight = String::new();
-        let lines = n_R.div_euclid(15);
-        let last_lines = n_R % 15;
-        if lines != 0 {
-            for _i in 0..lines {
-                weight.push_str(
-                    "    1    1    1    1    1    1    1    1    1    1    1    1    1    1    1\n",
-                );
-            }
-        }
-        for _i in 0..last_lines {
-            weight.push_str("    1");
-        }
-        writeln!(file, "{}", weight)?;
-        //接下来我们进行数据的写入
-        match self.dim_r() {
-            1 => {
-                let max_R1 = self.hamR.outer_iter().map(|x| x[[0]].abs()).max().unwrap();
-                let mut s = String::new();
-                for i in -max_R1..=max_R1 {
-                    match (
-                        find_R(&self.hamR, &array![i as isize]),
-                        find_R(&self.hamR, &(-array![i as isize])),
-                    ) {
-                        (Some(r0), _) => {
-                            let ham = self.ham.slice(s![r0, .., ..]);
-                            for orb_2 in 0..self.nsta() {
-                                for orb_1 in 0..self.nsta() {
-                                    s.push_str(&format!(
-                                        "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
-                                        i,
-                                        orb_1 + 1,
-                                        orb_2 + 1,
-                                        ham[[orb_1, orb_2]].re,
-                                        ham[[orb_1, orb_2]].im
-                                    ));
-                                }
-                            }
-                        }
-                        (None, Some(r0)) => {
-                            let ham = self.ham.slice(s![r0, .., ..]);
-                            for orb_2 in 0..self.nsta() {
-                                for orb_1 in 0..self.nsta() {
-                                    s.push_str(&format!(
-                                        "{:>3}    0    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
-                                        i,
-                                        orb_1 + 1,
-                                        orb_2 + 1,
-                                        ham[[orb_1, orb_2]].re,
-                                        -ham[[orb_1, orb_2]].im
-                                    ));
-                                }
-                            }
-                        }
-                        (None, None) => {}
-                    }
-                }
-                writeln!(file, "{}", s)?;
-            }
-            2 => {
-                let max_values = self
-                    .hamR
-                    .fold_axis(Axis(0), isize::min_value(), |max, &value| {
-                        *max.max(&value.abs())
-                    });
-                let mut s = String::new();
-                for R1 in -max_values[[0]]..=max_values[[0]] {
-                    for R2 in -max_values[[1]]..=max_values[[1]] {
-                        let R0 = array![R1 as isize, R2 as isize];
-                        let R0_inv = -array![R1 as isize, R2 as isize];
-                        match (find_R(&self.hamR, &R0), find_R(&self.hamR, &R0_inv)) {
-                            (Some(r0), _) => {
-                                let ham = self.ham.slice(s![r0, .., ..]);
-                                for orb_2 in 0..self.nsta() {
-                                    for orb_1 in 0..self.nsta() {
-                                        s.push_str(&format!(
-                                            "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
-                                            R1,
-                                            R2,
-                                            orb_1 + 1,
-                                            orb_2 + 1,
-                                            ham[[orb_1, orb_2]].re,
-                                            ham[[orb_1, orb_2]].im
-                                        ));
-                                    }
-                                }
-                            }
-                            (None, Some(r0)) => {
-                                let ham = self.ham.slice(s![r0, .., ..]);
-                                for orb_2 in 0..self.nsta() {
-                                    for orb_1 in 0..self.nsta() {
-                                        s.push_str(&format!(
-                                            "{:>3}  {:>3}    0    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
-                                            R1,
-                                            R2,
-                                            orb_1 + 1,
-                                            orb_2 + 1,
-                                            ham[[orb_1, orb_2]].re,
-                                            -ham[[orb_1, orb_2]].im
-                                        ));
-                                    }
-                                }
-                            }
-                            (None, None) => {}
-                        }
-                    }
-                }
-                writeln!(file, "{}", s)?;
-            }
-            3 => {
-                let max_values = self
-                    .hamR
-                    .fold_axis(Axis(0), isize::min_value(), |max, &value| {
-                        *max.max(&value.abs())
-                    });
-                let mut s = String::new();
-                for R1 in -max_values[[0]]..=max_values[[0]] {
-                    for R2 in -max_values[[1]]..=max_values[[1]] {
-                        for R3 in -max_values[[2]]..=max_values[[2]] {
-                            let R0 = array![R1 as isize, R2 as isize, R3 as isize];
-                            let R0_inv = -array![R1 as isize, R2 as isize, R3 as isize];
-                            match (find_R(&self.hamR, &R0), find_R(&self.hamR, &R0_inv)) {
-                                (Some(r0), _) => {
-                                    let ham = self.ham.slice(s![r0, .., ..]);
-                                    for orb_2 in 0..self.nsta() {
-                                        for orb_1 in 0..self.nsta() {
-                                            s.push_str(&format!(
-                                                "{:>3}  {:>3}  {:>3}    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
-                                                R1,
-                                                R2,
-                                                R3,
-                                                orb_1 + 1,
-                                                orb_2 + 1,
-                                                ham[[orb_1, orb_2]].re,
-                                                ham[[orb_1, orb_2]].im
-                                            ));
-                                        }
-                                    }
-                                }
-                                (None, Some(r0)) => {
-                                    let ham = self.ham.slice(s![r0, .., ..]);
-                                    for orb_2 in 0..self.nsta() {
-                                        for orb_1 in 0..self.nsta() {
-                                            s.push_str(&format!(
-                                                "{:>3}  {:>3}  {:>3}    {:>3}    {:>3}    {:>15.8}    {:>15.8}\n",
-                                                R1,
-                                                R2,
-                                                R3,
-                                                orb_1 + 1,
-                                                orb_2 + 1,
-                                                ham[[orb_1, orb_2]].re,
-                                                -ham[[orb_1, orb_2]].im
-                                            ));
-                                        }
-                                    }
-                                }
-                                (None, None) => {}
-                            }
-                        }
-                    }
-                }
-                writeln!(file, "{}", s)?;
-            }
-            _ => unreachable!(),
-        }
-        Ok(())
+        write_wannier_matrix::<DIM>(
+            &format!("{path}{seedname}_hr.dat"),
+            &self.hamR,
+            self.nsta(),
+            self.ham.view().insert_axis(Axis(1)),
+            false,
+        )
     }
 
     fn output_POSCAR(&self, path: &str) -> Result<()> {
@@ -588,127 +533,37 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
         Ok(())
     }
     fn output_xyz(&self, path: &str, seedname: &str) -> Result<()> {
-        //!Output a Wannier90 `_centres.xyz` file. Note: projections must be added
-        //!manually, since projection data is not stored in the model.
         if self.natom() == 0 {
             return Err(TbError::MissingAtomicStructure);
         }
+        if !(1..=3).contains(&DIM) {
+            return Err(TbError::InvalidDimension {
+                dim: DIM,
+                supported: vec![1, 2, 3],
+            });
+        }
         let name = format!("{path}{seedname}_centres.xyz");
-        let mut file = File::create(&name)?;
-        let number = self.nsta() + self.natom();
+        let mut file = BufWriter::new(File::create(&name)?);
         let orb_real = self.orb.dot(&self.lat);
         let atom_position_real = self.atom_position().dot(&self.lat);
-        writeln!(file, "{}", number)?;
+        writeln!(file, "{}", self.nsta() + self.natom())?;
         writeln!(file, "Wannier centres, written by Rustb")?;
-        let s = match self.dim_r() {
-            3 => {
-                let mut s = String::new();
-                for i in 0..self.norb() {
-                    s.push_str(&format!(
-                        "X{:>20.8}{:>17.8}{:>17.8}\n",
-                        orb_real[[i, 0]],
-                        orb_real[[i, 1]],
-                        orb_real[[i, 2]]
-                    ));
-                }
-                if SPIN {
-                    for i in 0..self.norb() {
-                        s.push_str(&format!(
-                            "X{:>20.8}{:>17.8}{:>17.8}\n",
-                            orb_real[[i, 0]],
-                            orb_real[[i, 1]],
-                            orb_real[[i, 2]]
-                        ));
-                    }
-                }
-                for i in 0..self.natom() - 1 {
-                    s.push_str(&format!(
-                        "{}{:>19.8}{:>17.8}{:>17.8}\n",
-                        self.atoms[i].atom_type(),
-                        atom_position_real[[i, 0]],
-                        atom_position_real[[i, 1]],
-                        atom_position_real[[i, 2]]
-                    ));
-                }
-                let i = self.natom() - 1;
-                s.push_str(&format!(
-                    "{}{:>19.8}{:>17.8}{:>17.8}",
-                    self.atoms[i].atom_type(),
-                    atom_position_real[[i, 0]],
-                    atom_position_real[[i, 1]],
-                    atom_position_real[[i, 2]]
-                ));
-                s
-            }
-            2 => {
-                let mut s = String::new();
-                for i in 0..self.norb() {
-                    s.push_str(&format!(
-                        "X{:>20.8}{:>17.8}       0.00000000\n",
-                        orb_real[[i, 0]],
-                        orb_real[[i, 1]]
-                    ));
-                }
-                if SPIN {
-                    for i in 0..self.norb() {
-                        s.push_str(&format!(
-                            "X{:>20.8}{:>17.8}       0.00000000\n",
-                            orb_real[[i, 0]],
-                            orb_real[[i, 1]]
-                        ));
-                    }
-                }
-                for i in 0..self.natom() - 1 {
-                    s.push_str(&format!(
-                        "{}{:>19.8}{:>17.8}       0.00000000\n",
-                        self.atoms[i].atom_type(),
-                        atom_position_real[[i, 0]],
-                        atom_position_real[[i, 1]]
-                    ));
-                }
-                let i = self.natom() - 1;
-                s.push_str(&format!(
-                    "{}{:>19.8}{:>17.8}       0.00000000",
-                    self.atoms[i].atom_type(),
-                    atom_position_real[[i, 0]],
-                    atom_position_real[[i, 1]]
-                ));
-                s
-            }
-            1 => {
-                let mut s = String::new();
-                for i in 0..self.norb() {
-                    s.push_str(&format!(
-                        "X{:>20.8}       0.00000000       0.00000000\n",
-                        orb_real[[i, 0]]
-                    ));
-                }
-                if SPIN {
-                    for i in 0..self.norb() {
-                        s.push_str(&format!(
-                            "X{:>20.8}       0.00000000       0.00000000\n",
-                            orb_real[[i, 0]]
-                        ));
-                    }
-                }
-                for i in 0..self.natom() - 1 {
-                    s.push_str(&format!(
-                        "{}{:>19.8}       0.00000000       0.00000000\n",
-                        self.atoms[i].atom_type(),
-                        atom_position_real[[i, 0]]
-                    ));
-                }
-                let i = self.natom() - 1;
-                s.push_str(&format!(
-                    "{}{:>19.8}       0.00000000       0.00000000",
-                    self.atoms[i].atom_type(),
-                    atom_position_real[[i, 0]]
-                ));
-                s
-            }
-            _ => unreachable!(),
+
+        let mut write_row = |symbol: &str, position: ArrayView1<'_, f64>| {
+            let x = position[0];
+            let y = position.get(1).copied().unwrap_or(0.0);
+            let z = position.get(2).copied().unwrap_or(0.0);
+            writeln!(file, "{symbol:<2} {x:>18.8} {y:>16.8} {z:>16.8}")
         };
-        writeln!(file, "{}", s)?;
+        for _ in 0..(1 + usize::from(SPIN)) {
+            for position in orb_real.rows() {
+                write_row("X", position)?;
+            }
+        }
+        for (atom, position) in self.atoms.iter().zip(atom_position_real.rows()) {
+            write_row(atom.atom_type().to_str(), position)?;
+        }
+        file.flush()?;
         Ok(())
     }
 
@@ -849,6 +704,47 @@ mod tests {
         assert_eq!(&value[13..14], ":");
         assert_eq!(&value[16..17], ":");
         assert!(value.ends_with('Z'));
+    }
+
+    #[test]
+    fn output_xyz_aligns_centres_and_atoms() {
+        use crate::{Atom, OrbitalId};
+
+        let dir = format!("target/test-output/output_xyz_{}/", std::process::id());
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = Model::<true, 2>::tb_model(
+            array![[2.0, 0.5], [0.0, 1.0]],
+            array![[0.0, 0.625], [-0.25, 0.375], [0.5, -1_000_000.25]],
+            Some(vec![
+                Atom::with_orbitals(array![0.0, 0.5], AtomType::Sr, [OrbitalId::new(0)]),
+                Atom::with_orbitals(array![-0.25, 0.25], AtomType::Mn, [OrbitalId::new(1)]),
+                Atom::with_orbitals(
+                    array![0.5, -1_000_000.375],
+                    AtomType::O,
+                    [OrbitalId::new(2)],
+                ),
+            ]),
+        )
+        .unwrap();
+        model.output_xyz(&dir, "wannier90").unwrap();
+        let text = std::fs::read_to_string(format!("{dir}wannier90_centres.xyz")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            [
+                "9",
+                "Wannier centres, written by Rustb",
+                "X          0.00000000       0.62500000       0.00000000",
+                "X         -0.50000000       0.25000000       0.00000000",
+                "X          1.00000000 -1000000.00000000       0.00000000",
+                "X          0.00000000       0.62500000       0.00000000",
+                "X         -0.50000000       0.25000000       0.00000000",
+                "X          1.00000000 -1000000.00000000       0.00000000",
+                "Sr         0.00000000       0.50000000       0.00000000",
+                "Mn        -0.50000000       0.12500000       0.00000000",
+                "O          1.00000000 -1000000.12500000       0.00000000",
+            ],
+        );
     }
 
     #[test]
@@ -1029,41 +925,136 @@ mod tests {
     }
 
     #[test]
-    fn output_hr_writes_header_and_one_based_orbitals() {
-        let dir = format!("target/test-output/output_hr_{}/", std::process::id());
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut model = Model::<false, 3>::tb_model(
-            Array2::eye(3),
-            array![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-            None,
-        )
-        .unwrap();
-        model.set_hop(1.0, 0, 1, &array![0, 0, 0], None);
-        model.output_hr(&dir, "wannier90").unwrap();
-        let text = std::fs::read_to_string(format!("{dir}wannier90_hr.dat")).unwrap();
-        let lines = text.lines().collect::<Vec<_>>();
-        assert!(
-            lines[0].starts_with("#generate by Rustb at time "),
-            "{}",
-            lines[0]
+    fn wannier_matrix_writers_use_fixed_width_and_the_stored_support() {
+        let dir = format!(
+            "target/test-output/wannier-fixed-width-{}/",
+            std::process::id()
         );
-        assert_eq!(lines[1].trim(), "2");
-        let mut saw_one_based_pair = false;
-        for line in &lines[4..] {
-            if line.trim().is_empty() {
-                continue;
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut model =
+            Model::<false, 3, HasRMatrix>::tb_model(Array2::eye(3), Array2::zeros((2, 3)), None)
+                .unwrap();
+        model.hamR = Array2::from_shape_fn((16, 3), |(b, d)| match b {
+            0 => 0,
+            1 => [-9_999, 99_999, 0][d],
+            2 => [3, -1, 3][d],
+            3 => [2, -1, 3][d],
+            _ => [b as isize, -1, 3][d],
+        });
+        model.ham = Array3::from_shape_fn((16, 2, 2), |(b, m, n)| {
+            let key = (100 * b + 10 * m + n) as f64;
+            if (b, m, n) == (1, 1, 0) {
+                Complex64::new(-9_999.999_999, 99_999.999_999)
+            } else {
+                Complex64::new(key + 0.123_456_7, -key - 0.765_432_1)
             }
-            let fields = line.split_whitespace().collect::<Vec<_>>();
-            assert_eq!(fields.len(), 7);
-            for index in [fields[3], fields[4]] {
-                let value: usize = index.parse().unwrap();
-                assert!((1..=2).contains(&value), "{line}");
+        });
+        model.rmatrix = HasRMatrix(Array4::from_shape_fn((16, 3, 2, 2), |(b, d, m, n)| {
+            let key = (100 * b + 10 * m + n + 2 * d) as f64;
+            Complex64::new(key + 0.234_567_8, -key - 0.876_543_2)
+        }));
+        model.output_hr(&dir, "wannier90").unwrap();
+        model.output_r(&dir, "wannier90").unwrap();
+        for (suffix, fields) in [("hr", 2), ("r", 6)] {
+            let text = std::fs::read_to_string(format!("{dir}wannier90_{suffix}.dat")).unwrap();
+            let mut lines = text.lines();
+            assert!(
+                lines
+                    .next()
+                    .unwrap()
+                    .starts_with("#generate by Rustb at time ")
+            );
+            assert_eq!(lines.next().unwrap().trim(), "2");
+            assert_eq!(lines.next().unwrap().trim(), "16");
+            if suffix == "hr" {
+                assert_eq!(lines.next().unwrap(), "    1".repeat(15));
+                assert_eq!(lines.next().unwrap(), "    1");
             }
-            if fields[3] == "1" && fields[4] == "2" {
-                saw_one_based_pair = true;
+            for b in 0..16 {
+                for n in 0..2 {
+                    for m in 0..2 {
+                        let line = lines.next().unwrap();
+                        assert_eq!(line.len(), 25 + 12 * fields, "{line}");
+                        let i5 =
+                            |k: usize| line[5 * k..5 * (k + 1)].trim().parse::<isize>().unwrap();
+                        let f12 = |k: usize| {
+                            line[25 + 12 * k..25 + 12 * (k + 1)]
+                                .trim()
+                                .parse::<f64>()
+                                .unwrap()
+                        };
+                        assert_eq!(
+                            [i5(0), i5(1), i5(2)],
+                            [model.hamR[[b, 0]], model.hamR[[b, 1]], model.hamR[[b, 2]]]
+                        );
+                        assert_eq!([i5(3), i5(4)], [m as isize + 1, n as isize + 1]);
+                        for d in 0..fields / 2 {
+                            let key = (100 * b + 10 * m + n + 2 * d) as f64;
+                            let (re, im) = if suffix == "r" {
+                                (key + 0.234_568, -key - 0.876_543)
+                            } else if (b, m, n) == (1, 1, 0) {
+                                (-9_999.999_999, 99_999.999_999)
+                            } else {
+                                (key + 0.123_457, -key - 0.765_432)
+                            };
+                            assert!((f12(2 * d) - re).abs() < 1e-10, "{line}");
+                            assert!((f12(2 * d + 1) - im).abs() < 1e-10, "{line}");
+                        }
+                    }
+                }
             }
+            assert!(lines.next().is_none());
         }
-        assert!(saw_one_based_pair);
-        std::fs::remove_dir_all(&dir).unwrap();
+        println!("Fixed-width fixtures: {dir}");
+    }
+
+    #[test]
+    fn wannier_writers_reject_overflow_without_touching_existing_files() {
+        let dir = format!(
+            "target/test-output/wannier-overflow-{}/",
+            std::process::id()
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut model =
+            Model::<false, 1, HasRMatrix>::tb_model(array![[1.0]], array![[0.5]], None).unwrap();
+        model.output_hr(&dir, "seed").unwrap();
+        model.output_r(&dir, "seed").unwrap();
+        let hr_path = format!("{dir}seed_hr.dat");
+        let r_path = format!("{dir}seed_r.dat");
+        let hr = std::fs::read_to_string(&hr_path).unwrap();
+        let r = std::fs::read_to_string(&r_path).unwrap();
+        assert_eq!(
+            r.lines().last().unwrap(),
+            format!(
+                "{:>5}{:>5}{:>5}{:>5}{:>5}{:>12.6}{}",
+                0,
+                0,
+                0,
+                1,
+                1,
+                0.5,
+                "    0.000000".repeat(5)
+            )
+        );
+
+        // Rounding to six fractional places itself can overflow the field.
+        model.ham[[0, 0, 0]].re = 99_999.999_999_9;
+        let error = model.output_hr(&dir, "seed").unwrap_err().to_string();
+        assert!(error.contains("F12.6"), "{error}");
+        for value in [-9_999.999_999_9, f64::NAN] {
+            model.rmatrix[[0, 0, 0, 0]].im = value;
+            let error = model.output_r(&dir, "seed").unwrap_err().to_string();
+            assert!(error.contains("F12.6"), "{error}");
+        }
+        model.rmatrix = HasRMatrix(Array4::zeros((2, 1, 1, 1)));
+        assert!(
+            matches!(model.output_r(&dir, "seed"), Err(TbError::Io(err)) if err.kind() == io::ErrorKind::InvalidInput)
+        );
+        assert_eq!(std::fs::read_to_string(&r_path).unwrap(), r);
+        model.hamR[[0, 0]] = -10_000;
+        let error = model.output_hr(&dir, "seed").unwrap_err().to_string();
+        assert!(error.contains("I5"), "{error}");
+        assert_eq!(std::fs::read_to_string(hr_path).unwrap(), hr);
+        assert_eq!(std::fs::read_to_string(r_path).unwrap(), r);
     }
 }

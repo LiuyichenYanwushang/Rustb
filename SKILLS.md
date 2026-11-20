@@ -139,10 +139,12 @@ the Bloch-state orbital magnetic moment or bulk orbital magnetization.
 
 ### Wannier90 import
 
-`from_hr` reads three-dimensional Wannier90 data. The model type controls
-whether `_r.dat` is required:
+Use `Wannier90::from_hr` for both model types. It reads three-dimensional
+Wannier90 data and requires `_r.dat` only for `HasRMatrix`:
 
 ```rust
+use Rustb::{HasRMatrix, Model, Wannier90};
+
 let model: Model<false, 3> =
     Model::from_hr("path/to/files/", "wannier90", 0.0)?;
 
@@ -159,6 +161,20 @@ case-insensitively, so the species token of a `.win` projection line, the
 may be spelled `v`/`V` or `cl`/`Cl`; the orbital token after `:` remains
 case-sensitive. Optional centres/wsvec files and coordinate unit conversion
 retain their existing behavior.
+
+Export both matrix files from the same model so they share the stored `hamR`
+order. No missing conjugate blocks are added:
+
+```rust
+use Rustb::OutPut;
+
+model_with_r.output_hr("out/", "wannier90")?; // 5I5,2F12.6; unit weights
+model_with_r.output_r("out/", "wannier90")?;  // 5I5,6F12.6; Cartesian Å, no weights
+```
+
+The files round to six decimal places. Use the in-memory model or a full-precision
+serialization for smaller symmetry residuals. Non-finite and over-width fields
+are rejected before the destination file is opened.
 
 ### Numeric bounds and serialized models
 

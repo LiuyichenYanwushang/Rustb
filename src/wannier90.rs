@@ -34,12 +34,12 @@
 
 use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
 use crate::error::{Result, TbError};
-use crate::{HasRMatrix, Model, RMatrixData, find_R};
+use crate::{Model, RMatrixData, find_R};
 use ndarray::prelude::*;
 use ndarray_linalg::Inverse;
 use num_complex::Complex64;
 use std::collections::HashSet;
-use std::str::{FromStr, SplitWhitespace};
+use std::str::FromStr;
 
 const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_67;
 
@@ -66,7 +66,11 @@ fn read_required(file: &str) -> Result<String> {
     })
 }
 
-fn field<T: FromStr>(fields: &mut SplitWhitespace<'_>, file: &str, name: &str) -> Result<T> {
+fn field<'a, T: FromStr>(
+    fields: &mut impl Iterator<Item = &'a str>,
+    file: &str,
+    name: &str,
+) -> Result<T> {
     let token = fields
         .next()
         .ok_or_else(|| parse_error(file, format!("Missing {name}")))?;
@@ -81,7 +85,7 @@ fn data_line<'a>(lines: &mut impl Iterator<Item = &'a str>, file: &str) -> Resul
         .ok_or_else(|| parse_error(file, "Truncated file"))
 }
 
-fn finite_field(fields: &mut SplitWhitespace<'_>, file: &str) -> Result<f64> {
+fn finite_field<'a>(fields: &mut impl Iterator<Item = &'a str>, file: &str) -> Result<f64> {
     let value: f64 = field(fields, file, "numeric component")?;
     if !value.is_finite() {
         return Err(parse_error(file, "Non-finite numeric component"));
@@ -89,8 +93,8 @@ fn finite_field(fields: &mut SplitWhitespace<'_>, file: &str) -> Result<f64> {
     Ok(value)
 }
 
-fn record_key(
-    fields: &mut SplitWhitespace<'_>,
+fn record_key<'a>(
+    fields: &mut impl Iterator<Item = &'a str>,
     file: &str,
     nsta: usize,
 ) -> Result<([isize; 3], usize, usize)> {
@@ -108,6 +112,53 @@ fn record_key(
         ));
     }
     Ok((translation, i - 1, j - 1))
+}
+
+fn matrix_record<const N: usize>(
+    row: &str,
+    file: &str,
+    nsta: usize,
+) -> Result<(([isize; 3], usize, usize), [Complex64; N])> {
+    fn parse<'a, const N: usize>(
+        mut fields: impl Iterator<Item = &'a str>,
+        file: &str,
+        nsta: usize,
+    ) -> Result<(([isize; 3], usize, usize), [Complex64; N])> {
+        let key = record_key(&mut fields, file, nsta)?;
+        let mut values = [Complex64::new(0.0, 0.0); N];
+        for value in &mut values {
+            *value = Complex64::new(
+                finite_field(&mut fields, file)?,
+                finite_field(&mut fields, file)?,
+            );
+        }
+        Ok((key, values))
+    }
+
+    // Keep the existing whitespace interpretation, including scientific notation.
+    let error = match parse(row.split_whitespace(), file, nsta) {
+        Ok(record) => return Ok(record),
+        Err(error) => error,
+    };
+    // A full-width field can abut its predecessor in 5I5,2F12.6 or 5I5,6F12.6.
+    // Only slice ASCII records of the expected length, retaining leading padding.
+    let row = row.trim_end();
+    if row.len() != 25 + 24 * N || !row.is_ascii() {
+        return Err(error);
+    }
+    let integers = (0..5).map(|i| row[i * 5..(i + 1) * 5].trim_start_matches(' '));
+    let floats = (0..2 * N).map(|i| &row[25 + i * 12..25 + (i + 1) * 12]);
+    if !floats.clone().all(|field| {
+        let bytes = field.as_bytes();
+        bytes[5] == b'.' && bytes[6..].iter().all(u8::is_ascii_digit)
+    }) {
+        return Err(error);
+    }
+    parse(
+        integers.chain(floats.map(|field| field.trim_start_matches(' '))),
+        file,
+        nsta,
+    )
 }
 
 fn matrix_size(file: &str, nr: usize, nsta: usize, components: usize) -> Result<usize> {
@@ -179,7 +230,9 @@ fn parse_hr(file: &str) -> Result<HrData> {
     let mut seen_translations = HashSet::new();
     for (block, weight) in weights.into_iter().enumerate() {
         let start = block * nsta * nsta;
-        let (translation, _, _) = record_key(&mut rows[start].split_whitespace(), file, nsta)?;
+        let block = &rows[start..start + nsta * nsta];
+        let first = matrix_record::<1>(block[0], file, nsta)?;
+        let ((translation, _, _), _) = first;
         if !seen_translations.insert(translation) {
             return Err(parse_error(file, "Duplicate R block"));
         }
@@ -194,9 +247,11 @@ fn parse_hr(file: &str) -> Result<HrData> {
         };
         data.weights[index] = weight;
         let mut seen = HashSet::new();
-        for row in &rows[start..start + nsta * nsta] {
-            let mut fields = row.split_whitespace();
-            let (r, i, j) = record_key(&mut fields, file, nsta)?;
+        let rest = block[1..]
+            .iter()
+            .map(|row| matrix_record::<1>(row, file, nsta));
+        for record in std::iter::once(Ok(first)).chain(rest) {
+            let ((r, i, j), [value]) = record?;
             if r != translation || !seen.insert((i, j)) {
                 return Err(parse_error(
                     file,
@@ -204,10 +259,7 @@ fn parse_hr(file: &str) -> Result<HrData> {
                 ));
             }
             // The first Wannier90 index is the matrix row, regardless of record order.
-            data.ham[[index, i, j]] = Complex64::new(
-                finite_field(&mut fields, file)?,
-                finite_field(&mut fields, file)?,
-            ) / weight as f64;
+            data.ham[[index, i, j]] = value / weight as f64;
         }
     }
     Ok(data)
@@ -254,7 +306,8 @@ fn parse_rmatrix(file: &str, hr: &HrData) -> Result<Array4<Complex64>> {
     let mut seen_translations = HashSet::new();
     let mut seen_orbitals = HashSet::new();
     for block in rows[..records].chunks(nsta * nsta) {
-        let (translation, _, _) = record_key(&mut block[0].split_whitespace(), file, nsta)?;
+        let first = matrix_record::<3>(block[0], file, nsta)?;
+        let ((translation, _, _), _) = first;
         if !seen_translations.insert(translation) {
             return Err(parse_error(
                 file,
@@ -270,20 +323,19 @@ fn parse_rmatrix(file: &str, hr: &HrData) -> Result<Array4<Complex64>> {
                 )
             })?;
         seen_orbitals.clear();
-        for row in block {
-            let mut fields = row.split_whitespace();
-            let (r, i, j) = record_key(&mut fields, file, nsta)?;
+        let rest = block[1..]
+            .iter()
+            .map(|row| matrix_record::<3>(row, file, nsta));
+        for record in std::iter::once(Ok(first)).chain(rest) {
+            let ((r, i, j), values) = record?;
             if r != translation || !seen_orbitals.insert((i, j)) {
                 return Err(parse_error(
                     file,
                     "Inconsistent R block or duplicate orbital record",
                 ));
             }
-            for axis in 0..3 {
-                result[[index, axis, i, j]] = Complex64::new(
-                    finite_field(&mut fields, file)?,
-                    finite_field(&mut fields, file)?,
-                ) / hr.weights[index] as f64;
+            for (axis, value) in values.into_iter().enumerate() {
+                result[[index, axis, i, j]] = value / hr.weights[index] as f64;
             }
         }
     }
@@ -867,25 +919,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Wannier90 for Model<SPI
     }
 }
 
-impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM, HasRMatrix> {
-    /// Load a tight-binding model from Wannier90 files including position matrix elements.
-    ///
-    /// This is a convenience wrapper around [`Wannier90::from_hr`] that requires
-    /// the Wannier90 `_r.dat` file to be present. Returns `Model<SPIN, DIM, HasRMatrix>`
-    /// with position matrix elements (`rmatrix`) populated.
-    ///
-    /// # Errors
-    ///
-    /// Returns `TbError::FileCreation` if `_r.dat` is missing, or
-    /// `TbError::FileParse` if its declared translations do not match `_hr.dat`.
-    pub fn from_hr_with_rmatrix(path: &str, file_name: &str, zero_energy: f64) -> Result<Self> {
-        <Self as Wannier90>::from_hr(path, file_name, zero_energy)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HasRMatrix;
     use std::fs;
     use std::io::Write;
 
@@ -914,6 +951,47 @@ mod tests {
         assert_eq!(model.norb(), 1);
         assert_eq!(model.natom(), 1);
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_loads_adjacent_fixed_width_matrix_fields() {
+        let dir = "tests/tmp_w90_adjacent_fields/";
+        write_minimal_dataset(dir, "C");
+        let minus = "-1234-2345    0    1    1";
+        let plus = " 1234 2345    0    1    1";
+        let hr = format!(
+            "generated\n1\n3\n2 1 2\n{minus}12345.000000-1234.000000\n0 0 0 1 1 2.5e0 0E0\n{plus}12345.000000 1234.000000\n"
+        );
+        let hr_file = format!("{dir}seedname_hr.dat");
+        fs::write(&hr_file, &hr).unwrap();
+        fs::write(
+            format!("{dir}seedname_r.dat"),
+            format!(
+                "generated\n1\n3\n{plus}12345.000000 1234.00000023456.000000 2345.00000034567.000000 3456.000000\n0 0 0 1 1 1e0 0 2E0 0 3e0 0\n{minus}12345.000000-1234.00000023456.000000-2345.00000034567.000000-3456.000000\n"
+            ),
+        )
+        .unwrap();
+        let model = Model::<false, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(
+            model.hamR,
+            array![[0, 0, 0], [-1234, -2345, 0], [1234, 2345, 0]]
+        );
+        assert_eq!(model.ham[[0, 0, 0]], Complex64::new(2.5, 0.0));
+        assert_eq!(model.ham[[1, 0, 0]], Complex64::new(6172.5, -617.0));
+        for (axis, (re, im)) in [(6172.5, -617.0), (11728.0, -1172.5), (17283.5, -1728.0)]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(model.rmatrix[[1, axis, 0, 0]], Complex64::new(re, im));
+        }
+
+        // Keep the byte width but place a multibyte character across the first field boundary.
+        fs::write(&hr_file, hr.replacen("4-", "é", 1)).unwrap();
+        assert!(matches!(
+            Model::<false, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0),
+            Err(TbError::FileParse { .. })
+        ));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
