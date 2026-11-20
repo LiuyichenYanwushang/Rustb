@@ -953,9 +953,9 @@ fn pair_project_hamiltonian<R: RMatrixData>(
         domain.insert(negative);
     }
     let normalizer = actions.len() as f64;
-    let mut projected_a = BTreeMap::new();
-    let mut projected_b = BTreeMap::new();
-    for lattice_vector in domain {
+    let domain = domain.into_iter().collect::<Vec<_>>();
+    let blocks = project_real_space_blocks(domain, |lattice_vector| {
+        // Keep the original operation order within each block.
         let mut matrix_a = Array2::zeros((a.nsta(), a.nsta()));
         let mut matrix_b = Array2::zeros((b.nsta(), b.nsta()));
         for (operation, action_a, action_b) in &actions {
@@ -984,8 +984,15 @@ fn pair_project_hamiltonian<R: RMatrixData>(
                 reason: format!("pair projection failed: {error}"),
             })?;
         }
-        projected_a.insert(lattice_vector, matrix_a.mapv(|value| value / normalizer));
-        projected_b.insert(lattice_vector, matrix_b.mapv(|value| value / normalizer));
+        matrix_a.mapv_inplace(|value| value / normalizer);
+        matrix_b.mapv_inplace(|value| value / normalizer);
+        Ok((lattice_vector, matrix_a, matrix_b))
+    })?;
+    let mut projected_a = BTreeMap::new();
+    let mut projected_b = BTreeMap::new();
+    for (lattice_vector, matrix_a, matrix_b) in blocks {
+        projected_a.insert(lattice_vector, matrix_a);
+        projected_b.insert(lattice_vector, matrix_b);
     }
     hermitize_support_map(&mut projected_a)?;
     hermitize_support_map(&mut projected_b)?;

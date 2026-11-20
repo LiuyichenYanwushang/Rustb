@@ -2280,6 +2280,26 @@ fn transformed_position_at(
     }
 }
 
+// The input is in sorted R order. Keep the same first error in either mode.
+fn project_real_space_blocks<T: Send>(
+    vectors: Vec<[isize; 3]>,
+    project: impl Fn([isize; 3]) -> Result<T> + Send + Sync,
+) -> Result<Vec<T>> {
+    // Reference Netlib CBLAS uses process globals and need not be reentrant.
+    if cfg!(any(feature = "netlib-static", feature = "netlib-system"))
+        || rayon::current_num_threads() == 1
+    {
+        vectors.into_iter().map(project).collect()
+    } else {
+        vectors
+            .into_par_iter()
+            .map(project)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .collect()
+    }
+}
+
 pub(crate) fn project_position_support_with_sources<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
     domain: &BTreeSet<[isize; 3]>,
@@ -2292,8 +2312,9 @@ pub(crate) fn project_position_support_with_sources<const SPIN: bool, R: RMatrix
     }
     let nsta = model.nsta();
     let count = sources.len() as f64;
-    let mut averaged = BTreeMap::new();
-    for &lattice_vector in domain {
+    let vectors = domain.iter().copied().collect::<Vec<_>>();
+    let averaged: BTreeMap<_, _> = project_real_space_blocks(vectors, |lattice_vector| {
+        // Independent R blocks; preserve the original operation order inside each block.
         let mut block = Array3::<Complex64>::zeros((3, nsta, nsta));
         for source in sources {
             let operation = source.operation;
@@ -2344,8 +2365,10 @@ pub(crate) fn project_position_support_with_sources<const SPIN: bool, R: RMatrix
             }
         }
         block.mapv_inplace(|value| value / count);
-        averaged.insert(lattice_vector, block);
-    }
+        Ok((lattice_vector, block))
+    })?
+    .into_iter()
+    .collect();
     let mut result = BTreeMap::new();
     let mut processed = BTreeSet::new();
     for &lattice_vector in domain {

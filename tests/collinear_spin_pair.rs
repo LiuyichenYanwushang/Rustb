@@ -160,23 +160,52 @@ fn mgfe6ge6_collinear_spin_pair_acceptance() {
 
 #[test]
 fn pair_projection_updates_position_matrices() {
-    use Rustb::HasRMatrix;
+    use Rustb::{HasRMatrix, OrbProj, find_R};
 
+    // Two complete s+p shells exercise dense BLAS as well as Rayon scheduling.
     let mut input_up: Model<false, 3, HasRMatrix> = Model::tb_model(
         Array2::eye(3),
-        array![[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+        Array2::from_shape_fn((8, 3), |(i, j)| if i >= 4 && j == 0 { 0.5 } else { 0.0 }),
         Some(vec![
-            Atom::with_orbitals(array![0.0, 0.0, 0.0], AtomType::Fe, [OrbitalId::new(0)]),
-            Atom::with_orbitals(array![0.5, 0.0, 0.0], AtomType::Fe, [OrbitalId::new(1)]),
+            Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::Fe,
+                (0..4).map(OrbitalId::new),
+            ),
+            Atom::with_orbitals(
+                array![0.5, 0.0, 0.0],
+                AtomType::Fe,
+                (4..8).map(OrbitalId::new),
+            ),
         ]),
     )
     .unwrap();
+    input_up.set_projection(&[OrbProj::s, OrbProj::px, OrbProj::py, OrbProj::pz].repeat(2));
     let mut input_down = input_up.clone();
     input_up.set_hop(1.0, 0, 0, &array![0, 0, 0], None);
     input_down.set_hop(2.0, 0, 0, &array![0, 0, 0], None);
     // A y-directed dipole is odd under the mirror fixing both sites.
-    input_up.rmatrix[[0, 1, 0, 1]] = Complex64::new(0.125, 0.0);
-    input_up.rmatrix[[0, 1, 1, 0]] = Complex64::new(0.125, 0.0);
+    input_up.rmatrix[[0, 1, 0, 4]] = Complex64::new(0.125, 0.0);
+    input_up.rmatrix[[0, 1, 4, 0]] = Complex64::new(0.125, 0.0);
+    // Seed two distinct offsite shells in both channels, with Hermitian R/-R partners.
+    for (shell, hop, dipole) in [(1, 0.23, 0.13), (2, -0.31, 0.17)] {
+        let r = array![0, shell, 0];
+        for (model, site, hop, dipole) in [
+            (&mut input_up, 0, hop, Complex64::new(dipole, 0.07)),
+            (
+                &mut input_down,
+                4,
+                hop * 0.7,
+                Complex64::new(dipole * 0.6, -0.03),
+            ),
+        ] {
+            model.set_hop(hop, site, site, &r, None);
+            let forward = find_R(&model.hamR, &r).unwrap();
+            let reverse = find_R(&model.hamR, &(-&r)).unwrap();
+            model.rmatrix[[forward, 1, site, 4 - site]] = dipole;
+            model.rmatrix[[reverse, 1, 4 - site, site]] = dipole.conj();
+        }
+    }
     input_up.validate().unwrap();
     input_down.validate().unwrap();
     let original_up = input_up.clone();
@@ -188,16 +217,51 @@ fn pair_projection_updates_position_matrices() {
         SpinTolerances::default(),
     )
     .unwrap();
-    let (up, down) = Model::<false, 3, HasRMatrix>::symmetrize_pair_with_collinear_spin_group(
-        &input_up,
-        &input_down,
-        &group,
-        &CenterResolvedBasis::new(),
-        &HamiltonianSymmetrizationParameters::default(),
-    )
-    .unwrap();
-    for projected in [&up, &down] {
-        assert!(projected.rmatrix[[0, 1, 0, 1]].norm() < 1e-10);
+    let project = |workers| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap()
+            .install(|| {
+                Model::symmetrize_pair_with_collinear_spin_group(
+                    &input_up,
+                    &input_down,
+                    &group,
+                    &CenterResolvedBasis::new(),
+                    &HamiltonianSymmetrizationParameters::default(),
+                )
+                .unwrap()
+            })
+    };
+    let (up, down) = project(1);
+    let (up_parallel, down_parallel) = project(4);
+    let bits = |z: Complex64| (z.re.to_bits(), z.im.to_bits());
+    for (channel, serial, parallel) in [("up", &up, &up_parallel), ("down", &down, &down_parallel)]
+    {
+        assert_eq!(serial.hamR, parallel.hamR, "{channel} hamR");
+        assert_eq!(
+            serial.ham.mapv(bits),
+            parallel.ham.mapv(bits),
+            "{channel} H"
+        );
+        assert_eq!(
+            serial.rmatrix.mapv(bits),
+            parallel.rmatrix.mapv(bits),
+            "{channel} r"
+        );
+        assert_eq!(
+            serial.orb.mapv(f64::to_bits),
+            parallel.orb.mapv(f64::to_bits),
+            "{channel} orb"
+        );
+    }
+    for (projected, site) in [(&up, 0), (&down, 4)] {
+        assert!(projected.rmatrix[[0, 1, 0, 4]].norm() < 1e-10);
+        for shell in [1, 2] {
+            let index = find_R(&projected.hamR, &array![0, shell, 0]).unwrap();
+            assert!(projected.ham[[index, site, site]].norm() > 1e-10);
+            assert!(projected.rmatrix[[index, 1, site, 4 - site]].norm() > 1e-10);
+        }
     }
     for (input, original) in [(&input_up, &original_up), (&input_down, &original_down)] {
         assert_eq!(input.orb, original.orb);

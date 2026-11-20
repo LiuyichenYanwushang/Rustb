@@ -1680,6 +1680,21 @@ Position covariance and centre consistency use `parameters.tolerances.position`
 (or `parameters.structural_parameters.symprec` if unset), in Cartesian Å.
 `NoRMatrix` models skip the position-matrix checks.
 
+Rayon parallelizes pair Hamiltonian (`H`) projection and the position-matrix
+(`r`) projection shared by the single-model and pair paths across independent
+real-space `R` blocks. Each block accumulates symmetry operations in the
+original order. The public API is unchanged; final pair covariance checks and
+iterative centre projection still run serially. Set `RAYON_NUM_THREADS` to
+control the outer pool and keep BLAS at one thread (e.g. `MKL_NUM_THREADS=1`
+or `OPENBLAS_NUM_THREADS=1`) to avoid oversubscription. The two projection
+kernels stay serial with the Netlib features because reference Netlib CBLAS
+is not reentrant; use `RAYON_NUM_THREADS=1` with reference Netlib for the
+existing parallel validation steps as well. OpenBLAS must support concurrent
+calls: if it was built with `USE_THREAD=0`, it needs `USE_LOCKING=1`
+([OpenBLAS FAQ](https://github.com/OpenMathLib/OpenBLAS/blob/v0.3.32/docs/faq.md#multi-threaded)).
+For an unlocked build, use `RAYON_NUM_THREADS=1`; setting only
+`OPENBLAS_NUM_THREADS=1` does not make the library reentrant.
+
 For a spinless 3D Wannier model whose centres are displaced from their parent
 atoms, use `CenterResolvedBasis` instead of `AtomicOrbitalBasis`. Both
 `symmetrize_model_and_centres` and `symmetrize_centres` borrow `&self` and
