@@ -100,6 +100,100 @@ fn unitary_collinear_subgroup_is_accepted_separately() {
 }
 
 #[test]
+fn pair_projection_reports_the_same_first_final_covariance_error() {
+    use Rustb::{
+        BasisActionContext, CellShiftAction, CrystalSymmetryOperation, HasRMatrix,
+        LocalizedBasisAction, TbError,
+    };
+
+    // Distinct orthorhombic axes: every point operation acts on x by a sign.
+    let lattice = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 4.0]];
+    let crystal = Crystal::new(lattice, vec![[0.0; 3]], vec![26]).unwrap();
+    let group = detect_collinear_spin_group(
+        &crystal,
+        CollinearMoments::Signed(&[1.0]),
+        SpinTolerances::default(),
+    )
+    .unwrap();
+    let make_channel = |dipole| {
+        let mut model = Model::<false, 3, HasRMatrix>::tb_model(
+            ndarray::arr2(&lattice),
+            Array2::zeros((2, 3)),
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::Fe,
+                (0..2).map(OrbitalId::new),
+            )]),
+        )
+        .unwrap();
+        model.set_hop(1.0, 0, 1, &array![0, 0, 0], None);
+        model.rmatrix[[0, 0, 0, 1]] = Complex64::new(dipole, 0.0);
+        model.rmatrix[[0, 0, 1, 0]] = Complex64::new(dipole, 0.0);
+        model
+    };
+    let up = make_channel(0.125);
+    let down = make_channel(0.25);
+
+    // The initial action has opposite x parities when x is reversed. Its
+    // average removes the onsite H mixing but preserves the x dipole. On the
+    // projected H, switch to the also-valid trivial action, which fails r covariance.
+    let basis = |context: BasisActionContext<'_, false, HasRMatrix>| {
+        let mut matrix = Array2::eye(2);
+        if context.model.ham[[0, 0, 1]].norm() > 0.5 {
+            matrix[[1, 1]] = Complex64::new(f64::from(context.operation.rotation[0][0]), 0.0);
+        }
+        Ok(LocalizedBasisAction {
+            sectors: vec![CellShiftAction {
+                shift: [0; 3],
+                matrix,
+            }],
+        })
+    };
+    let first = group
+        .operations()
+        .iter()
+        .find(|op| op.kind.is_unitary() && op.rotation[0][0] == -1)
+        .unwrap();
+    let expected_operation = CrystalSymmetryOperation {
+        rotation: first.rotation,
+        translation: first.translation,
+        time_reversal: false,
+    };
+    let reject = |workers| {
+        let error = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap()
+            .install(|| {
+                Model::symmetrize_pair_with_unitary_collinear_spin_group(
+                    &up,
+                    &down,
+                    &group,
+                    &basis,
+                    &HamiltonianSymmetrizationParameters::default(),
+                )
+            })
+            .unwrap_err();
+        match error {
+            TbError::TargetMagneticGroupIncompatible { reason } => reason,
+            other => panic!("unexpected pair projection error: {other}"),
+        }
+    };
+    let serial = reject(1);
+    // Both channels fail for every x reversal. The up dipole gives the first
+    // residual, 2 * 0.125, distinct from the down channel's 2 * 0.25.
+    assert!(
+        serial.starts_with("position matrix covariance residual 2.5e-1 Å at R=[0, 0, 0]"),
+        "{serial}"
+    );
+    assert!(
+        serial.ends_with(&format!("for operation {expected_operation:?}")),
+        "{serial}"
+    );
+    assert_eq!(serial, reject(4));
+}
+
+#[test]
 #[ignore = "loads the external MgFe6Ge6 Wannier90 dataset"]
 fn mgfe6ge6_collinear_spin_pair_acceptance() {
     use Rustb::Wannier90;

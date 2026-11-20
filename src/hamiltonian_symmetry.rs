@@ -2280,20 +2280,20 @@ fn transformed_position_at(
     }
 }
 
-// The input is in sorted R order. Keep the same first error in either mode.
-fn project_real_space_blocks<T: Send>(
-    vectors: Vec<[isize; 3]>,
-    project: impl Fn([isize; 3]) -> Result<T> + Send + Sync,
+// Inspect results in input order so the first error matches the serial path.
+fn symmetry_ordered_map<I: Send, T: Send>(
+    tasks: Vec<I>,
+    run: impl Fn(I) -> Result<T> + Send + Sync,
 ) -> Result<Vec<T>> {
     // Reference Netlib CBLAS uses process globals and need not be reentrant.
     if cfg!(any(feature = "netlib-static", feature = "netlib-system"))
         || rayon::current_num_threads() == 1
     {
-        vectors.into_iter().map(project).collect()
+        tasks.into_iter().map(run).collect()
     } else {
-        vectors
+        tasks
             .into_par_iter()
-            .map(project)
+            .map(run)
             .collect::<Vec<_>>()
             .into_iter()
             .collect()
@@ -2313,7 +2313,7 @@ pub(crate) fn project_position_support_with_sources<const SPIN: bool, R: RMatrix
     let nsta = model.nsta();
     let count = sources.len() as f64;
     let vectors = domain.iter().copied().collect::<Vec<_>>();
-    let averaged: BTreeMap<_, _> = project_real_space_blocks(vectors, |lattice_vector| {
+    let averaged: BTreeMap<_, _> = symmetry_ordered_map(vectors, |lattice_vector| {
         // Independent R blocks; preserve the original operation order inside each block.
         let mut block = Array3::<Complex64>::zeros((3, nsta, nsta));
         for source in sources {

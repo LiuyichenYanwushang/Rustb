@@ -954,7 +954,7 @@ fn pair_project_hamiltonian<R: RMatrixData>(
     }
     let normalizer = actions.len() as f64;
     let domain = domain.into_iter().collect::<Vec<_>>();
-    let blocks = project_real_space_blocks(domain, |lattice_vector| {
+    let blocks = symmetry_ordered_map(domain, |lattice_vector| {
         // Keep the original operation order within each block.
         let mut matrix_a = Array2::zeros((a.nsta(), a.nsta()));
         let mut matrix_b = Array2::zeros((b.nsta(), b.nsta()));
@@ -1065,20 +1065,29 @@ fn pair_project_hamiltonian<R: RMatrixData>(
     let position_b = model_position_support(&symmetrized_b);
     let target_a = (&symmetrized_a, &support_a, position_a.as_ref());
     let target_b = (&symmetrized_b, &support_b, position_b.as_ref());
-    let mut pair_residual = 0.0f64;
-    for (operation, action_a, action_b) in &actions {
-        let (source_a, source_b) = match operation.channel {
-            CollinearAction::Preserve => (target_a, target_b),
-            CollinearAction::Swap => (target_b, target_a),
-        };
-        for (
+    let checks = actions
+        .iter()
+        .flat_map(|(operation, action_a, action_b)| {
+            let (source_a, source_b) = match operation.channel {
+                CollinearAction::Preserve => (target_a, target_b),
+                CollinearAction::Swap => (target_b, target_a),
+            };
+            [
+                (operation, target_a, source_a, action_a),
+                (operation, target_b, source_b, action_b),
+            ]
+        })
+        .collect();
+    // Each check visits the same sorted support and does H before r or centres.
+    let pair_residuals = symmetry_ordered_map(
+        checks,
+        |(
+            operation,
             (target_model, target_support, target_position),
             (source_model, source_support, source_position),
             action,
-        ) in [
-            (target_a, source_a, action_a),
-            (target_b, source_b, action_b),
-        ] {
+        )| {
+            let mut pair_residual = 0.0f64;
             let mut domain = transformed_support_domain(source_support, &operation.spatial, action)
                 .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
                     reason: format!("pair residual failed: {error}"),
@@ -1135,8 +1144,10 @@ fn pair_project_hamiltonian<R: RMatrixData>(
                     position_tolerance,
                 )?;
             }
-        }
-    }
+            Ok(pair_residual)
+        },
+    )?;
+    let pair_residual = pair_residuals.into_iter().fold(0.0_f64, f64::max);
     let acceptance = parameters.tolerances.absolute
         + parameters.tolerances.relative * support_a.max_element.max(support_b.max_element);
     if pair_residual > acceptance {
