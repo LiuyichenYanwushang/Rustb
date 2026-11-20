@@ -103,8 +103,11 @@ use crate::error::{Result, TbError};
 use crate::kpoints::gen_kmesh;
 use crate::model::{Model, RMatrixData};
 use crate::ndarray_lapack::eigh_full;
-use ndarray::{Array1, Array2, Array3, ArrayBase, ArrayView1, ArrayView3, Axis, Data, Ix1, s};
+use ndarray::{
+    Array1, Array2, Array3, ArrayBase, ArrayView1, ArrayView3, Axis, Data, Ix1, IxDyn, s,
+};
 use ndarray_linalg::UPLO;
+use ndrustfft::{FftHandler, ndfft_inplace_par};
 use num_complex::Complex;
 use rayon::prelude::*;
 
@@ -404,6 +407,7 @@ impl<const DIM: usize> Magnon<DIM> {
         let n_site = sites.len();
 
         let mesh = forced_odd_mesh(&params.kmesh)?;
+        validate_exchange_buffer_sizes(&mesh, n_orb, n_site)?;
         let kpoints: Array2<f64> = gen_kmesh::<f64>(&mesh)?;
         let r_box = reciprocal_box::<DIM>(&mesh);
         let n_box = r_box.nrows();
@@ -440,29 +444,18 @@ impl<const DIM: usize> Magnon<DIM> {
                 -0.5 * std::f64::consts::PI,
             ),
         };
-        // One eigendecomposition per k-point and channel, reused by every
-        // contour node: the k -> R transform is then one BLAS product per node.
+        // Reuse both the eigendecompositions and FFT plans at every contour node.
         let band_up = prepare_channel(ham_r, up, &kpoints)?;
         let band_down = prepare_channel(ham_r, down, &kpoints)?;
         // The two channels carry no magnetic moments; derive them from the
         // density matrices and check any caller-supplied direction against them.
         let magnetization = site_magnetization(&band_up, &band_down, &sites)?;
         let (spin, axis) = resolve_moments(atoms, &sites, &magnetization, params)?;
-        let mut phases = Array2::<Complex<f64>>::zeros((n_box, kpoints.nrows()));
-        for i_r in 0..n_box {
-            for (index, k) in kpoints.axis_iter(Axis(0)).enumerate() {
-                let phase = -std::f64::consts::TAU
-                    * (0..r_box.ncols())
-                        .map(|axis| r_box[[i_r, axis]] as f64 * k[axis])
-                        .sum::<f64>();
-                phases[[i_r, index]] =
-                    Complex::from_polar(1.0, phase) / Complex::new(kpoints.nrows() as f64, 0.0);
-            }
-        }
+        let fft = ExchangeFft::new(&mesh, &r_box);
         let mut accumulator = Array3::<Complex<f64>>::zeros((n_box, n_site, n_site));
         for (energy, weight) in contour.iter() {
-            let g_up = greens_on_box(&band_up, &phases, *energy)?;
-            let g_down = greens_on_box(&band_down, &phases, *energy)?;
+            let g_up = greens_on_box(&band_up, &fft, *energy)?;
+            let g_down = greens_on_box(&band_down, &fft, *energy)?;
             for i_r in 0..n_box {
                 let j_r = negative[i_r];
                 for i in 0..n_site {
@@ -519,6 +512,28 @@ pub(crate) fn forced_odd_mesh(kmesh: &Array1<usize>) -> Result<Array1<usize>> {
         return Err(TbError::InvalidKmeshDimensions(kmesh.clone()));
     }
     Ok(kmesh.mapv(|n| if n % 2 == 1 { n } else { n + 1 }))
+}
+
+/// Reject unrepresentable buffers before constructing the uniform mesh.
+fn validate_exchange_buffer_sizes(mesh: &Array1<usize>, n_orb: usize, n_site: usize) -> Result<()> {
+    let points = mesh.iter().try_fold(1usize, |n, &m| n.checked_mul(m));
+    let fits = |shape: &[usize], elem_size| {
+        points
+            .and_then(|points| {
+                shape
+                    .iter()
+                    .try_fold(points, |len, &dim| len.checked_mul(dim))
+            })
+            .and_then(|len| len.checked_mul(elem_size))
+            .is_some_and(|bytes| bytes <= isize::MAX as usize)
+    };
+    if !fits(&[3], size_of::<isize>())
+        || !fits(&[n_orb, n_orb], size_of::<Complex<f64>>())
+        || !fits(&[n_site, 3, n_site, 3], size_of::<f64>())
+    {
+        return Err(TbError::InvalidKmeshDimensions(mesh.clone()));
+    }
+    Ok(())
 }
 
 /// Commensurate real-space box of an odd mesh, with `R = 0` first.
@@ -750,24 +765,58 @@ fn prepare_channel(
     Ok(ChannelBands { values, vectors })
 }
 
+/// Reusable k-to-R transform on the uniform mesh. The last axis of the
+/// FFT input is a batch of orbital pairs, not a transform axis.
+struct ExchangeFft {
+    mesh: Vec<usize>,
+    plans: Vec<FftHandler<f64>>,
+    rows: Vec<usize>,
+}
+
+impl ExchangeFft {
+    fn new(mesh: &Array1<usize>, r_box: &Array2<isize>) -> Self {
+        let mesh = mesh.to_vec();
+        let plans = mesh.iter().map(|&len| FftHandler::new(len)).collect();
+        let rows = r_box
+            .rows()
+            .into_iter()
+            .map(|r| {
+                // gen_kmesh uses last-axis-fastest order; FFT output stores the
+                // negative translations by periodic index, not by signed order.
+                r.iter().zip(&mesh).fold(0, |index, (&r, &len)| {
+                    index * len + r.rem_euclid(len as isize) as usize
+                })
+            })
+            .collect();
+        Self { mesh, plans, rows }
+    }
+
+    fn transform(&self, gmat: &mut Array2<Complex<f64>>) -> Result<()> {
+        let n_k = gmat.nrows();
+        let mut shape = self.mesh.clone();
+        shape.push(gmat.ncols());
+        let mut lanes = gmat.view_mut().into_shape_with_order(IxDyn(&shape))?;
+        for (axis, plan) in self.plans.iter().enumerate() {
+            // Forward FFT has the negative phase of the existing k-to-R sum.
+            if self.mesh[axis] > 1 {
+                ndfft_inplace_par(&mut lanes, plan, axis);
+            }
+        }
+        // Forward transforms are unnormalised; divide by the full mesh once.
+        let weight = 1.0 / n_k as f64;
+        gmat.mapv_inplace(|v| v * weight);
+        Ok(())
+    }
+}
+
 /// Real-space Green's function on the requested box for one contour node.
-///
-///
-/// $$
-/// \text{phases}\lbrack i\_R,\mathbf k\rbrack
-/// = e^{-2\pi i\\,\mathbf k\cdot\mathbf R}/N\_k,
-/// $$
-///
-/// so the whole box transform is a single matrix product
-/// `phases.dot(gmat)`.
 fn greens_on_box(
     bands: &ChannelBands,
-    phases: &Array2<Complex<f64>>,
+    fft: &ExchangeFft,
     energy: Complex<f64>,
 ) -> Result<Array3<Complex<f64>>> {
     let n_k = bands.values.nrows();
     let n = bands.values.ncols();
-    let n_box = phases.nrows();
     let mut gmat = Array2::<Complex<f64>>::zeros((n_k, n * n));
     for k in 0..n_k {
         let vectors = &bands.vectors[k];
@@ -788,16 +837,9 @@ fn greens_on_box(
             }
         }
     }
-    let transformed = phases.dot(&gmat);
-    let mut out = Array3::<Complex<f64>>::zeros((n_box, n, n));
-    for i_r in 0..n_box {
-        for alpha in 0..n {
-            for beta in 0..n {
-                out[[i_r, alpha, beta]] = transformed[[i_r, alpha * n + beta]];
-            }
-        }
-    }
-    Ok(out)
+    fft.transform(&mut gmat)?;
+    let periodic = gmat.into_shape_with_order((n_k, n, n))?;
+    Ok(periodic.select(Axis(0), &fft.rows))
 }
 
 fn hamiltonian_at(
@@ -1112,6 +1154,99 @@ mod tests {
     use crate::atom_struct::{Atom, AtomType, OrbitalId};
     use crate::model::SpinDirection;
     use ndarray::array;
+
+    #[test]
+    fn exchange_fft_matches_direct_complex_transform() -> Result<()> {
+        fn check<const DIM: usize>(shape: [usize; DIM]) -> Result<()> {
+            let mesh = Array1::from_vec(shape.to_vec());
+            let ks: Array2<f64> = gen_kmesh(&mesh)?;
+            let rs = reciprocal_box::<DIM>(&mesh);
+            let fft = ExchangeFft::new(&mesh, &rs);
+            let data = Array2::from_shape_fn((ks.nrows(), 4), |(k, o)| {
+                let x = (k * 7 + o * 11 + 1) as f64;
+                Complex::new((0.41 * x).sin(), (0.19 * x).cos())
+            });
+            let mut actual = data.clone();
+            fft.transform(&mut actual)?;
+            for (row, r) in rs.rows().into_iter().enumerate() {
+                for o in 0..data.ncols() {
+                    let expected = ks
+                        .rows()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(k, point)| {
+                            let phase = -std::f64::consts::TAU
+                                * r.iter()
+                                    .zip(point)
+                                    .map(|(&r, &k)| r as f64 * k)
+                                    .sum::<f64>();
+                            Complex::from_polar(1.0, phase) * data[[k, o]]
+                        })
+                        .sum::<Complex<f64>>()
+                        / ks.nrows() as f64;
+                    assert!(
+                        (actual[[fft.rows[row], o]] - expected).norm() < 2e-13,
+                        "mesh {shape:?}, R={r:?}, orbital pair {o}"
+                    );
+                }
+            }
+            Ok(())
+        }
+        check([1])?;
+        check([5])?;
+        check([3, 5])?;
+        check([3, 1, 7])?;
+        check([3, 5, 7])
+    }
+
+    #[test]
+    fn greens_on_box_preserves_orbital_order_and_signed_translations() -> Result<()> {
+        let mesh = array![3, 5];
+        let ks: Array2<f64> = gen_kmesh(&mesh)?;
+        let rs = reciprocal_box::<2>(&mesh);
+        let fft = ExchangeFft::new(&mesh, &rs);
+        let t = 0.37;
+        let inv_sqrt2 = 1.0 / 2.0_f64.sqrt();
+        // H_01(k) = t exp(2πi k·[1,-2]), H_10(k) = H_01(k)*.
+        let vectors = ks
+            .rows()
+            .into_iter()
+            .map(|k| {
+                let phase =
+                    Complex::from_polar(inv_sqrt2, std::f64::consts::TAU * (k[0] - 2.0 * k[1]));
+                let v = Complex::new(inv_sqrt2, 0.0);
+                array![[-phase, v], [phase, v]]
+            })
+            .collect();
+        let bands = ChannelBands {
+            values: Array2::from_shape_fn((ks.nrows(), 2), |(_, b)| [-t, t][b]),
+            vectors,
+        };
+        let z = Complex::new(0.27, 0.61);
+        let g = greens_on_box(&bands, &fft, z)?;
+        let d = z * z - t * t;
+        for (row, r) in rs.rows().into_iter().enumerate() {
+            for a in 0..2 {
+                for b in 0..2 {
+                    let want = match (a, b, r[0], r[1]) {
+                        (0, 0, 0, 0) | (1, 1, 0, 0) => z / d,
+                        (0, 1, 1, -2) | (1, 0, -1, 2) => t / d,
+                        _ => Complex::new(0.0, 0.0),
+                    };
+                    assert!((g[[row, a, b]] - want).norm() < 2e-13);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exchange_rejects_unrepresentable_buffers() {
+        assert!(validate_exchange_buffer_sizes(&array![21, 21, 13], 55, 6).is_ok());
+        assert!(validate_exchange_buffer_sizes(&array![isize::MAX as usize, 3], 1, 1).is_err());
+        assert!(validate_exchange_buffer_sizes(&array![3], usize::MAX, 1).is_err());
+        assert!(validate_exchange_buffer_sizes(&array![3], 1, usize::MAX).is_err());
+    }
 
     fn atoms() -> Vec<Atom> {
         vec![
