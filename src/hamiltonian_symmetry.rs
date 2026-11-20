@@ -101,7 +101,7 @@ use crate::crystal_symmetry::{
 };
 use crate::error::{Result, TbError};
 use crate::model::{Model, RMatrixData};
-use ndarray::{Array2, Array3, Array4, Axis};
+use ndarray::{Array2, Array3, Array4, ArrayView3, Axis};
 use ndarray_linalg::{Inverse, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -2175,16 +2175,17 @@ fn symmetrized_support(
 }
 
 pub(crate) type PositionSupport = BTreeMap<[isize; 3], Array3<Complex64>>;
+type PositionBlocks<'a> = BTreeMap<[isize; 3], ArrayView3<'a, Complex64>>;
 
 pub(crate) struct PositionSource<'a> {
     pub(crate) operation: &'a CrystalSymmetryOperation,
     pub(crate) action: &'a LocalizedBasisAction,
-    pub(crate) support: &'a PositionSupport,
+    pub(crate) support: &'a PositionBlocks<'a>,
 }
 
 fn model_position_support<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
-) -> Option<PositionSupport> {
+) -> Option<PositionBlocks<'_>> {
     if !R::HAS_RMATRIX {
         return None;
     }
@@ -2197,14 +2198,14 @@ fn model_position_support<const SPIN: bool, R: RMatrixData>(
                 model.hamR[[index, 1]],
                 model.hamR[[index, 2]],
             ],
-            matrix.index_axis(Axis(0), index).to_owned(),
+            matrix.index_axis(Axis(0), index),
         );
     }
     Some(support)
 }
 
 fn transformed_position_at(
-    support: &PositionSupport,
+    support: &PositionBlocks<'_>,
     operation: &CrystalSymmetryOperation,
     action: &LocalizedBasisAction,
     lattice_vector: [isize; 3],
@@ -2250,30 +2251,28 @@ fn transformed_position_at(
                     "translated position-matrix cell vector overflows isize".to_string(),
                 ));
             };
-            let mut block = support
-                .get(&image)
-                .cloned()
-                .unwrap_or_else(|| Array3::<Complex64>::zeros((3, dimension, dimension)));
-            if target_cell == left.shift {
-                let mut target_cartesian = [0.0f64; 3];
-                for axis in 0..3 {
-                    target_cartesian[axis] = (0..3)
-                        .map(|vector| target_cell[vector] as f64 * lattice[[vector, axis]])
-                        .sum();
-                }
+            if let Some(block) = support.get(&image) {
                 for alpha in 0..3 {
-                    for orbital in 0..dimension {
-                        block[[alpha, orbital, orbital]] += target_cartesian[alpha];
-                    }
+                    let transformed = dagger
+                        .dot(&block.index_axis(Axis(0), alpha))
+                        .dot(&right.matrix);
+                    covariance
+                        .index_axis_mut(Axis(0), alpha)
+                        .scaled_add(Complex64::new(1.0, 0.0), &transformed);
                 }
             }
-            for alpha in 0..3 {
-                let transformed = dagger
-                    .dot(&block.index_axis(Axis(0), alpha))
-                    .dot(&right.matrix);
-                covariance
-                    .index_axis_mut(Axis(0), alpha)
-                    .scaled_add(Complex64::new(1.0, 0.0), &transformed);
+            // The cell offset multiplies the sector overlap, even if the position
+            // block itself vanishes. Skip dense products for all other absent blocks.
+            if target_cell == left.shift && target_cell != [0; 3] {
+                let overlap = dagger.dot(&right.matrix);
+                for alpha in 0..3 {
+                    let offset = (0..3)
+                        .map(|vector| target_cell[vector] as f64 * lattice[[vector, alpha]])
+                        .sum();
+                    covariance
+                        .index_axis_mut(Axis(0), alpha)
+                        .scaled_add(Complex64::new(offset, 0.0), &overlap);
+                }
             }
         }
     }
@@ -2391,7 +2390,7 @@ pub(crate) fn project_position_support_with_sources<const SPIN: bool, R: RMatrix
 
 fn project_position_support<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
-    support: &PositionSupport,
+    support: &PositionBlocks<'_>,
     domain: &BTreeSet<[isize; 3]>,
     operations: &[(CrystalSymmetryOperation, LocalizedBasisAction)],
 ) -> Result<PositionSupport> {
@@ -2404,6 +2403,131 @@ fn project_position_support<const SPIN: bool, R: RMatrixData>(
         })
         .collect::<Vec<_>>();
     project_position_support_with_sources(model, domain, &sources)
+}
+
+/// Check the stored centre in the same cell representative as the real onsite
+/// position diagonal. A lattice-vector difference is not a match in this gauge.
+fn validate_position_centres<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+    tolerance: f64,
+) -> Result<()> {
+    if !R::HAS_RMATRIX {
+        return Ok(());
+    }
+    if !tolerance.is_finite() || tolerance < 0.0 {
+        return Err(TbError::InvalidHamiltonianSymmetryInput {
+            parameter: "position_tolerance",
+            message: "position consistency requires a finite non-negative Cartesian tolerance"
+                .into(),
+        });
+    }
+    let onsite = model
+        .rmatrix
+        .as_array4()
+        .index_axis(Axis(0), position_origin(model)?);
+    let centres = model.orb.dot(&model.lat);
+    for state in 0..model.nsta() {
+        let orbital = state % model.norb();
+        let residual = (0..3).fold(0.0_f64, |length, axis| {
+            length.hypot(
+                (Complex64::new(centres[[orbital, axis]], 0.0) - onsite[[axis, state, state]])
+                    .norm(),
+            )
+        });
+        if !residual.is_finite() || residual > tolerance {
+            return Err(TbError::TargetMagneticGroupIncompatible {
+                reason: format!(
+                    "Wannier centre of state {state} disagrees with the onsite position diagonal by {residual:e} Å (tolerance {tolerance:e} Å)"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn position_origin<const SPIN: bool, R: RMatrixData>(model: &Model<SPIN, 3, R>) -> Result<usize> {
+    model
+        .hamR
+        .rows()
+        .into_iter()
+        .position(|row| row.iter().all(|&v| v == 0))
+        .ok_or_else(|| TbError::TargetMagneticGroupIncompatible {
+            reason: "position matrix has no R=0 block for Wannier centres".into(),
+        })
+}
+
+// Called on a private projection result before any caller-owned model is updated.
+fn synchronize_position_centres<const SPIN: bool, R: RMatrixData>(
+    model: &mut Model<SPIN, 3, R>,
+    tolerance: f64,
+) -> Result<()> {
+    if !R::HAS_RMATRIX {
+        return Ok(());
+    }
+    let onsite = model
+        .rmatrix
+        .as_array4()
+        .index_axis(Axis(0), position_origin(model)?);
+    let cartesian = Array2::from_shape_fn((model.norb(), 3), |(i, axis)| onsite[[axis, i, i]].re);
+    model.orb = cartesian.dot(&model.lat.inv()?);
+    // A spinful Model has only one centre per spin-major orbital pair. Validate
+    // both states; the second spin block must not silently disagree with the first.
+    validate_position_centres(model, tolerance)
+}
+
+/// Check K_g(r_source)(R) = Q_g r_target(R) + t_g I delta(R, 0).
+/// The caller includes every inverse-transformed source block in the domain.
+fn validate_position_covariance<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+    target: &PositionBlocks<'_>,
+    source: PositionSource<'_>,
+    mut domain: BTreeSet<[isize; 3]>,
+    tolerance: f64,
+) -> Result<()> {
+    let error = |reason| TbError::TargetMagneticGroupIncompatible { reason };
+    let rotation = cartesian_rotation(model, source.operation).map_err(|e| {
+        error(format!(
+            "position covariance Cartesian rotation failed: {e}"
+        ))
+    })?;
+    let translation: [f64; 3] = std::array::from_fn(|axis| {
+        (0..3)
+            .map(|vector| source.operation.translation[vector] * model.lat[[vector, axis]])
+            .sum()
+    });
+    domain.extend(target.keys().copied());
+    domain.insert([0; 3]);
+    for vector in domain {
+        let transformed = transformed_position_at(
+            source.support,
+            source.operation,
+            source.action,
+            vector,
+            &model.lat,
+        )
+        .map_err(|e| error(format!("position covariance at R={vector:?} failed: {e}")))?;
+        let block = target.get(&vector);
+        for ((alpha, i, j), &value) in transformed.indexed_iter() {
+            let mut expected = if vector == [0; 3] && i == j {
+                Complex64::new(translation[alpha], 0.0)
+            } else {
+                Complex64::new(0.0, 0.0)
+            };
+            if let Some(block) = block {
+                for beta in 0..3 {
+                    expected += rotation[alpha][beta] * block[[beta, i, j]];
+                }
+            }
+            let residual = (value - expected).norm();
+            if !residual.is_finite() || residual > tolerance {
+                return Err(error(format!(
+                    "position matrix covariance residual {residual:e} Å at R={vector:?}, Cartesian component {alpha}, states ({i}, {j}) exceeds {tolerance:e} Å for operation {:?}",
+                    source.operation
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn model_with_hamiltonian_support<const SPIN: bool, R: RMatrixData>(
@@ -2845,9 +2969,13 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// rotated by the Cartesian rotation, shifted by the operation translation,
     /// and conjugated for antiunitary operations; the affine action is then
     /// averaged and its Hermitian partner is restored. Generated `hamR` blocks
-    /// therefore receive a position block derived from the same projection, not
-    /// an unconditional zero. The final Hamiltonian covariance check remains the
-    /// authority for the returned model.
+    /// therefore receive a position block derived from the same projection.
+    /// The input must store the onsite (`R = 0`) position block. Its projected
+    /// real diagonal sets the final Wannier centres without wrapping, and a
+    /// spinful model must agree with both spin-major blocks. Actions are
+    /// re-resolved on that model before checking both Hamiltonian and position
+    /// covariance. Position checks use the Cartesian basis-matching tolerance
+    /// in Å, not the Hamiltonian energy tolerance.
     ///
     /// Independent basis actions, group-composition checks, real-space
     /// support blocks, and final residuals are evaluated with Rayon. Matrix
@@ -2963,75 +3091,90 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
             .tolerances
             .position
             .unwrap_or(parameters.structural_parameters.symprec);
-        let operations_and_actions = normalized_target_operations
-            .par_iter()
-            .enumerate()
-            .map(|(index, operation)| {
-                let action = representation
-                    .resolve(BasisActionContext {
-                        model: self,
-                        operation,
-                        position_tolerance,
-                        representation_tolerance: parameters.tolerances.representation,
-                    })
-                    .and_then(|action| {
-                        let action = validate_action(
-                            action,
-                            self.nsta(),
-                            parameters.tolerances.representation,
-                        )?;
-                        if representation.validates_orbital_centres() {
-                            validate_action_geometry(
-                                self,
-                                operation,
-                                &action,
-                                position_tolerance,
+        let resolve_actions = |model: &Self| -> Result<Vec<_>> {
+            let operations_and_actions = normalized_target_operations
+                .par_iter()
+                .enumerate()
+                .map(|(index, operation)| {
+                    let action = representation
+                        .resolve(BasisActionContext {
+                            model,
+                            operation,
+                            position_tolerance,
+                            representation_tolerance: parameters.tolerances.representation,
+                        })
+                        .and_then(|action| {
+                            let action = validate_action(
+                                action,
+                                model.nsta(),
                                 parameters.tolerances.representation,
                             )?;
-                        }
-                        Ok(action)
-                    })
-                    .map_err(|error| TbError::TargetMagneticGroupIncompatible {
-                        reason: format!(
-                            "operation {index} has no compatible localized-basis action: {error}"
-                        ),
-                    })?;
-                Ok((*operation, action))
-            })
-            .collect::<Vec<Result<_>>>()
-            .into_iter()
-            .collect::<Result<Vec<_>>>()?;
+                            if representation.validates_orbital_centres() {
+                                validate_action_geometry(
+                                    model,
+                                    operation,
+                                    &action,
+                                    position_tolerance,
+                                    parameters.tolerances.representation,
+                                )?;
+                            }
+                            Ok(action)
+                        })
+                        .map_err(|error| TbError::TargetMagneticGroupIncompatible {
+                            reason: format!(
+                                "operation {index} has no compatible localized-basis action: {error}"
+                            ),
+                        })?;
+                    Ok((*operation, action))
+                })
+                .collect::<Vec<Result<_>>>()
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?;
 
-        validate_projective_corepresentation(
-            self,
-            &operations_and_actions,
-            parameters.tolerances.operation,
-            parameters.tolerances.representation,
-        )
-        .map_err(|error| TbError::TargetMagneticGroupIncompatible {
-            reason: format!(
-                "localized basis actions do not form the target corepresentation: {error}"
-            ),
-        })?;
+            validate_projective_corepresentation(
+                model,
+                &operations_and_actions,
+                parameters.tolerances.operation,
+                parameters.tolerances.representation,
+            )
+            .map_err(|error| TbError::TargetMagneticGroupIncompatible {
+                reason: format!(
+                    "localized basis actions do not form the target corepresentation: {error}"
+                ),
+            })?;
+            Ok(operations_and_actions)
+        };
+        let operations_and_actions = resolve_actions(self)?;
 
         let averaged = symmetrized_support(&support, &operations_and_actions).map_err(|error| {
             TbError::TargetMagneticGroupIncompatible {
                 reason: format!("failed to apply the target representation: {error}"),
             }
         })?;
+        if R::HAS_RMATRIX {
+            position_origin(self)?;
+        }
         let position_support = model_position_support(self);
         let projected_position = if let Some(position_support) = &position_support {
-            let domain = averaged.keys().copied().collect::<BTreeSet<_>>();
+            let mut domain = averaged.keys().copied().collect::<BTreeSet<_>>();
+            domain.insert([0; 3]);
             let projected =
                 project_position_support(self, position_support, &domain, &operations_and_actions)?;
             Some(projected)
         } else {
             None
         };
-        let symmetrized =
+        let mut symmetrized =
             model_with_hamiltonian_support(self, averaged, projected_position.as_ref())?;
+        synchronize_position_centres(&mut symmetrized, position_tolerance)?;
         let projected_support =
             validate_hamiltonian(&symmetrized, parameters.tolerances.hermiticity)?;
+        let operations_and_actions = if R::HAS_RMATRIX {
+            resolve_actions(&symmetrized)?
+        } else {
+            operations_and_actions
+        };
+        let position = model_position_support(&symmetrized);
         let post_projection_residuals = operations_and_actions
             .par_iter()
             .enumerate()
@@ -3053,6 +3196,33 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
                         residual.max_absolute, residual.acceptance_threshold
                     ),
                 });
+            }
+        }
+        if let Some(position) = &position {
+            let checks = operations_and_actions
+                .par_iter()
+                .map(|(operation, action)| {
+                    let domain = transformed_support_domain(&projected_support, operation, action)
+                        .map_err(|error| TbError::TargetMagneticGroupIncompatible {
+                            reason: format!(
+                                "post-projection position support check failed: {error}"
+                            ),
+                        })?;
+                    validate_position_covariance(
+                        &symmetrized,
+                        position,
+                        PositionSource {
+                            operation,
+                            action,
+                            support: position,
+                        },
+                        domain,
+                        position_tolerance,
+                    )
+                })
+                .collect::<Vec<_>>();
+            for check in checks {
+                check?;
             }
         }
         Ok(symmetrized)
@@ -4190,7 +4360,7 @@ mod tests {
     fn symmetrization_zeros_scalar_position_under_cubic_inversion() {
         let mut model: Model<false, 3, HasRMatrix> = Model::tb_model(
             Array2::eye(3),
-            array![[0.0, 0.0, 0.0]],
+            array![[0.03, 0.0, 0.0]],
             Some(vec![Atom::with_orbitals(
                 array![0.0, 0.0, 0.0],
                 AtomType::Si,
@@ -4213,11 +4383,13 @@ mod tests {
         let symmetrized = model
             .symmetrize_hamiltonian(
                 &target,
-                &ScalarSiteBasis,
+                &CenterResolvedBasis::new(),
                 &HamiltonianSymmetrizationParameters::default(),
             )
             .unwrap();
 
+        assert!(symmetrized.orb.iter().all(|value| value.abs() < 1e-12));
+        assert_eq!(model.orb[[0, 0]], 0.03);
         assert_eq!(symmetrized.hamR.row(0).to_vec(), vec![0, 0, 0]);
         assert_eq!(
             symmetrized.rmatrix.as_array4().len_of(Axis(0)),
@@ -4257,6 +4429,78 @@ mod tests {
             assert!(symmetrized.rmatrix[[index, 0, 0, 0]].re.abs() < 1e-12);
         }
         symmetrized.validate().unwrap();
+    }
+
+    #[test]
+    fn position_covariance_includes_fractional_translation_and_cell_offset() {
+        let mut model = Model::<false, 3, HasRMatrix>::tb_model(
+            Array2::eye(3),
+            array![[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+            None,
+        )
+        .unwrap();
+        let operation = CrystalSymmetryOperation {
+            rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            translation: [0.5, 0.0, 0.0],
+            time_reversal: false,
+        };
+        let action = LocalizedBasisAction {
+            sectors: vec![
+                CellShiftAction {
+                    shift: [0, 0, 0],
+                    matrix: array![[0.0, 0.0], [1.0, 0.0]].mapv(Complex64::from),
+                },
+                CellShiftAction {
+                    shift: [1, 0, 0],
+                    matrix: array![[0.0, 1.0], [0.0, 0.0]].mapv(Complex64::from),
+                },
+            ],
+        };
+        let check = |model: &Model<false, 3, HasRMatrix>| {
+            let blocks = model_position_support(model).unwrap();
+            validate_position_covariance(
+                model,
+                &blocks,
+                PositionSource {
+                    operation: &operation,
+                    action: &action,
+                    support: &blocks,
+                },
+                BTreeSet::from([[-1, 0, 0], [0; 3], [1, 0, 0]]),
+                1e-12,
+            )
+        };
+        check(&model).unwrap();
+        model.rmatrix[[0, 0, 1, 1]].re += 0.125;
+        assert!(
+            check(&model)
+                .unwrap_err()
+                .to_string()
+                .contains("position matrix covariance residual")
+        );
+    }
+
+    #[test]
+    fn synchronize_position_centres_preserves_cell_and_checks_both_spin_blocks() {
+        let mut model = Model::<true, 3, HasRMatrix>::tb_model(
+            array![[2.0, 0.5, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]],
+            array![[0.0, 0.0, 0.0]],
+            None,
+        )
+        .unwrap();
+        for i in 0..2 {
+            model.rmatrix[[0, 0, i, i]].re = 2.5;
+            model.rmatrix[[0, 1, i, i]].re = 0.625;
+        }
+        synchronize_position_centres(&mut model, 1e-12).unwrap();
+        assert_eq!(model.orb, array![[1.25, 0.0, 0.0]]);
+        model.rmatrix[[0, 0, 1, 1]].re += 0.01;
+        assert!(
+            synchronize_position_centres(&mut model, 1e-12)
+                .unwrap_err()
+                .to_string()
+                .contains("state 1")
+        );
     }
 
     #[test]

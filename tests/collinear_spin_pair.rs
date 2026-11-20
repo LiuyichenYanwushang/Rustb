@@ -49,8 +49,8 @@ fn crystal() -> Crystal {
 
 #[test]
 fn full_collinear_spin_group_projects_the_channel_average() {
-    let mut up = two_site_model(1.0);
-    let mut down = two_site_model(2.0);
+    let input_up = two_site_model(1.0);
+    let input_down = two_site_model(2.0);
     let moments = [1.0, -1.0];
     let group = detect_collinear_spin_group(
         &crystal(),
@@ -59,9 +59,9 @@ fn full_collinear_spin_group_projects_the_channel_average() {
     )
     .unwrap();
     println!("complete group len {}", group.operations().len());
-    let report = Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
-        &mut up,
-        &mut down,
+    let (up, down, report) = Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
+        &input_up,
+        &input_down,
         &group,
         &CenterResolvedBasis::new(),
         &HamiltonianSymmetrizationParameters::default(),
@@ -80,12 +80,14 @@ fn full_collinear_spin_group_projects_the_channel_average() {
     assert!((onsite(&up, 1) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
     assert!((onsite(&down, 0) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
     assert!((onsite(&down, 1) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
+    assert_eq!(input_up.ham, two_site_model(1.0).ham);
+    assert_eq!(input_down.ham, two_site_model(2.0).ham);
 }
 
 #[test]
 fn unitary_collinear_subgroup_is_accepted_separately() {
-    let mut up = two_site_model(1.0);
-    let mut down = two_site_model(3.0);
+    let input_up = two_site_model(1.0);
+    let input_down = two_site_model(3.0);
     let moments = [1.0, -1.0];
     let group = detect_collinear_spin_group(
         &crystal(),
@@ -93,9 +95,9 @@ fn unitary_collinear_subgroup_is_accepted_separately() {
         SpinTolerances::default(),
     )
     .unwrap();
-    let report = Model::<false, 3>::symmetrize_pair_with_unitary_collinear_spin_group(
-        &mut up,
-        &mut down,
+    let (up, down, report) = Model::<false, 3>::symmetrize_pair_with_unitary_collinear_spin_group(
+        &input_up,
+        &input_down,
         &group,
         &CenterResolvedBasis::new(),
         &HamiltonianSymmetrizationParameters::default(),
@@ -112,6 +114,8 @@ fn unitary_collinear_subgroup_is_accepted_separately() {
     assert!(report.pair_covariance_max_absolute < 1e-8);
     assert!((onsite(&up, 0) - Complex64::new(2.0, 0.0)).norm() < 1e-10);
     assert!((onsite(&down, 0) - Complex64::new(2.0, 0.0)).norm() < 1e-10);
+    assert_eq!(input_up.ham, two_site_model(1.0).ham);
+    assert_eq!(input_down.ham, two_site_model(3.0).ham);
 }
 
 #[test]
@@ -121,10 +125,10 @@ fn mgfe6ge6_collinear_spin_pair_acceptance() {
     use std::time::Instant;
 
     let base = "/mnt/e/vasp计算结果/altermagnetic/odd_parity_wave/material/MgFe6Ge6/data_new";
-    let mut up =
+    let up =
         <Model<false, 3> as Wannier90>::from_hr(&format!("{base}/up/"), "wannier90", 7.62075874)
             .unwrap();
-    let mut down =
+    let down =
         <Model<false, 3> as Wannier90>::from_hr(&format!("{base}/dn/"), "wannier90", 7.62075874)
             .unwrap();
     let lattice: [[f64; 3]; 3] =
@@ -166,9 +170,9 @@ fn mgfe6ge6_collinear_spin_pair_acceptance() {
     .unwrap();
     println!("real complete group {}", group.operations().len());
     let started = Instant::now();
-    let report = Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
-        &mut up,
-        &mut down,
+    let (_, _, report) = Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
+        &up,
+        &down,
         &group,
         &CenterResolvedBasis::new(),
         &HamiltonianSymmetrizationParameters::default(),
@@ -189,7 +193,7 @@ fn mgfe6ge6_collinear_spin_pair_acceptance() {
 fn pair_projection_updates_position_matrices() {
     use Rustb::HasRMatrix;
 
-    let mut up: Model<false, 3, HasRMatrix> = Model::tb_model(
+    let mut input_up: Model<false, 3, HasRMatrix> = Model::tb_model(
         Array2::eye(3),
         array![[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
         Some(vec![
@@ -198,11 +202,16 @@ fn pair_projection_updates_position_matrices() {
         ]),
     )
     .unwrap();
-    let mut down = up.clone();
-    up.set_hop(1.0, 0, 0, &array![0, 0, 0], None);
-    down.set_hop(2.0, 0, 0, &array![0, 0, 0], None);
-    up.validate().unwrap();
-    down.validate().unwrap();
+    let mut input_down = input_up.clone();
+    input_up.set_hop(1.0, 0, 0, &array![0, 0, 0], None);
+    input_down.set_hop(2.0, 0, 0, &array![0, 0, 0], None);
+    // A y-directed dipole is odd under the mirror fixing both sites.
+    input_up.rmatrix[[0, 1, 0, 1]] = Complex64::new(0.125, 0.0);
+    input_up.rmatrix[[0, 1, 1, 0]] = Complex64::new(0.125, 0.0);
+    input_up.validate().unwrap();
+    input_down.validate().unwrap();
+    let original_up = input_up.clone();
+    let original_down = input_down.clone();
     let moments = [1.0, -1.0];
     let group = detect_collinear_spin_group(
         &crystal(),
@@ -210,13 +219,23 @@ fn pair_projection_updates_position_matrices() {
         SpinTolerances::default(),
     )
     .unwrap();
-    let report = Model::<false, 3, HasRMatrix>::symmetrize_pair_with_collinear_spin_group(
-        &mut up,
-        &mut down,
-        &group,
-        &CenterResolvedBasis::new(),
-        &HamiltonianSymmetrizationParameters::default(),
-    )
-    .unwrap();
+    let (up, down, report) =
+        Model::<false, 3, HasRMatrix>::symmetrize_pair_with_collinear_spin_group(
+            &input_up,
+            &input_down,
+            &group,
+            &CenterResolvedBasis::new(),
+            &HamiltonianSymmetrizationParameters::default(),
+        )
+        .unwrap();
     assert!(report.pair_covariance_max_absolute < 1e-8);
+    for projected in [&up, &down] {
+        assert!(projected.rmatrix[[0, 1, 0, 1]].norm() < 1e-10);
+    }
+    for (input, original) in [(&input_up, &original_up), (&input_down, &original_down)] {
+        assert_eq!(input.orb, original.orb);
+        assert_eq!(input.ham, original.ham);
+        assert_eq!(input.hamR, original.hamR);
+        assert_eq!(input.rmatrix.0, original.rmatrix.0);
+    }
 }

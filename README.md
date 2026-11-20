@@ -238,8 +238,9 @@ response entry points run it before doing any work.
 
 Canonical public submodules are `Rustb::model::physics` and
 `Rustb::model::utils`. Doc-hidden `model_physics`/`model_utils` aliases remain
-under both `Rustb::model` and the crate root. All inherent `Model` calls and
-root `find_R`/`remove_row`/`remove_col` imports are unchanged.
+under both `Rustb::model` and the crate root. This module reorganization does
+not change how inherent `Model` methods are imported or where root
+`find_R`/`remove_row`/`remove_col` are available.
 
 ```rust
 let h_atom = model.gen_ham(&k, Gauge::Atom);
@@ -277,6 +278,13 @@ chain.add_onsite(&arr1(&[0.4]), None);
 let doubled = chain.make_supercell(&arr2(&[[2.0]]))?;
 assert_eq!(doubled.norb(), 2);
 ```
+
+`shift_to_atom` (also `move_to_atom`) now borrows `&self` and returns
+`Result<Self>` instead of editing in place. Keep the returned model:
+`let aligned = silicon.shift_to_atom()?;`. Only orbitals owned by atoms are
+moved, to their parent atoms' fractional coordinates; the real-space
+Hamiltonian and position matrix are unchanged. Explicit edits such as
+`set_*`, `add_hop`, `remove_*`, and `reorder_atom` still mutate in place.
 
 ### `atom_struct` — atoms and orbital metadata
 
@@ -864,6 +872,18 @@ let symmetrized = silicon.symmetrize_hamiltonian(
 assert_eq!(symmetrized.nsta(), silicon.nsta());
 assert!(summary.is_some());
 ```
+
+For spinless 3D models, `symmetrize_centres` and
+`symmetrize_model_and_centres` now borrow `&self` and return
+`Result<(Self, report)>`. The former projects only orbital centres, leaving
+`H` and `r` unchanged; the latter projects the centres and Hamiltonian (and
+`r` when present). For two spinless channels, all three `symmetrize_pair*`
+methods now take `&up, &dn` and return `Result<(up_sym, dn_sym, report)>`
+in input order. Use the returned models for subsequent calculations; the
+inputs are unchanged on success or error. The reports still carry centre
+displacement warnings and, for joint and pair projections, Hamiltonian change
+and covariance diagnostics. See the [symmetry usage guide](<SKILLS.md#optional-cryspglib-symmetry>)
+for examples and the position-matrix consistency checks.
 
 ### `irrep_analysis` — magnetic band irreps and coreps
 

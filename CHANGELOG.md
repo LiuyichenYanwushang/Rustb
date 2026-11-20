@@ -16,6 +16,21 @@
   farther than `ORBITAL_ATOM_POSITION_TOLERANCE` from its parent atom.  It
   emits a one-time process-global warning instead; atom-centred symmetry and
   irrep representations continue to enforce their own strict centring check.
+- `Model::symmetrize_centres` and `Model::symmetrize_model_and_centres` now
+  borrow `&self` and return `Result<(Self, report)>` rather than mutating and
+  returning only a report. `Model::symmetrize_pair`,
+  `Model::symmetrize_pair_with_collinear_spin_group`, and
+  `Model::symmetrize_pair_with_unitary_collinear_spin_group` now take shared
+  references (`&up, &dn`) and return `Result<(up_sym, dn_sym, report)>` in input
+  order. Keep the returned models; the inputs stay unchanged on success or
+  error. Displacement warnings and Hamiltonian-change and covariance reports
+  are retained.
+- `Model::shift_to_atom` and its alias `Model::move_to_atom` now borrow `&self`
+  and return `Result<Self>` rather than editing in place. Keep the returned
+  model (e.g. `let aligned = model.shift_to_atom()?;`). Only the coordinates
+  of atom-owned orbitals change; the real-space Hamiltonian and position
+  matrix are unchanged. Explicit edits (`set_*`, `add_hop`, `remove_*`,
+  `reorder_atom`) still mutate in place.
 
 ### New APIs
 
@@ -24,8 +39,8 @@
   refine atom-local frames from the onsite Hamiltonian. Add `Model::symmetrize_centres`,
   `Model::symmetrize_model_and_centres`, and the associated
   `Model::symmetrize_pair` for two spinless models. The pair projection
-  enforces the spin-flip relation for anti-unitary target operations; centre
-  warnings are reported instead of silently moving orbitals.
+  enforces the spin-flip relation for anti-unitary target operations and
+  reports centre displacement warnings.
 - Add `Model::symmetrize_pair_with_collinear_spin_group` and
   `Model::symmetrize_pair_with_unitary_collinear_spin_group` for
   cryspglib-certified collinear spin groups. Both accept the complete
@@ -34,12 +49,21 @@
   permutation (`Preserve`/`Swap`) is independent of antiunitarity, so a
   unitary Swap no longer conjugates the orbital Hamiltonian. The legacy
   `symmetrize_pair` keeps its original time-reversal interpretation.
-- `HasRMatrix` position matrices are now projected with the Hamiltonian as
-  vector operators: the Cartesian component is rotated, the operation
-  translation is subtracted, the explicit cell-shift contribution is retained
-  in the affine transform, antiunitary operations conjugate, and the Hermitian
-  partner is restored. Newly generated support receives its projected position
-  block instead of an unconditional zero.
+- Full Hamiltonian and pair symmetrization, including both collinear-spin
+  variants, project `HasRMatrix` position matrices as affine vector operators,
+  with Cartesian rotation, operation translation, explicit cell shifts, and
+  antiunitary conjugation. Hermiticity is restored, and newly generated support
+  receives projected position blocks. Final centres come from the real onsite
+  `r` diagonal in the same cell representative (no wrapping); shared spinful
+  centres must agree with both spin-major blocks. Rustb re-resolves actions on
+  the final models and checks covariance of both `H` and `r`. Failure leaves the
+  inputs unchanged. Position covariance and centre consistency use the position
+  tolerance (or `symprec`) in Å. `NoRMatrix` skips the position-matrix checks.
+- Standalone `Model::symmetrize_centres` changes only the returned model's
+  centres, not `H` or `r`. With `HasRMatrix`, it rejects a mismatch with the
+  unchanged onsite `r` diagonal in the same cell representative beyond the
+  caller-supplied tolerance in Å. The same tolerance sets the displacement
+  warning threshold. `NoRMatrix` skips the diagonal check.
 - `BasisSymmetryRepresentation` gains
   `validates_orbital_centres()`; the default remains strict, and
   centre-resolved providers opt out of the per-matrix-element centring gate

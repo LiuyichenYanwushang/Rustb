@@ -3,8 +3,8 @@
 //! Orbital removal and reordering also select or permute the Hamiltonian,
 //! position-matrix state axes, projections and ownership references. Metadata-only
 //! edits leave the dense basis unchanged. `shift_to_atom` and its alias
-//! `move_to_atom` only overwrite owned orbital positions; they do not transform
-//! Hamiltonian or position-matrix elements.
+//! `move_to_atom` return a new model with changed orbital positions, without
+//! transforming Hamiltonian or position-matrix elements.
 
 use super::{Model, RMatrixData};
 use crate::atom_struct::OrbitalId;
@@ -12,9 +12,10 @@ use crate::error::{Result, TbError};
 use ndarray::Axis;
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
-    /// Move the orbital positions to the positions of their parent atoms.
+    /// Return a new model with the owned orbital positions at their parent atoms.
     ///
-    /// Sets each orbital's fractional-coordinate position to the
+    /// This changes only the centres, not the Hamiltonian or position matrix.
+    /// It sets each owned orbital's fractional-coordinate position to the
     /// fractional-coordinate position of the atom it belongs to. Useful
     /// when orbitals are initially at their Wannier centers but you want to
     /// align them with atomic positions for Slater-Koster parametrization
@@ -35,23 +36,27 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///     Atom::with_orbitals(arr1(&[0.0, 0.0, 0.0]), AtomType::H, [OrbitalId::new(0)]),
     ///     Atom::with_orbitals(arr1(&[0.5, 0.5, 0.0]), AtomType::H, [OrbitalId::new(1)]),
     /// ];
-    /// let mut model = Model::<false>::tb_model(lat, orb, Some(atoms)).unwrap();
-    /// model.shift_to_atom().unwrap();
+    /// let model = Model::<false>::tb_model(lat, orb, Some(atoms)).unwrap();
+    /// let aligned = model.shift_to_atom().unwrap();
+    /// assert_eq!(aligned.orb, array![[0.0, 0.0, 0.0], [0.5, 0.5, 0.0]]);
+    /// assert_eq!(model.orb, array![[0.1, 0.1, 0.0], [0.6, 0.6, 0.0]]);
     /// ```
-    pub fn shift_to_atom(&mut self) -> Result<()> {
+    pub fn shift_to_atom(&self) -> Result<Self> {
         self.validate()?;
+        let mut aligned = self.clone();
         for atom in &self.atoms {
             for &orbital in atom.orbitals() {
-                self.orb
+                aligned
+                    .orb
                     .row_mut(orbital.index())
                     .assign(atom.position_ref());
             }
         }
-        Ok(())
+        Ok(aligned)
     }
 
     /// Alias for [`Self::shift_to_atom`].
-    pub fn move_to_atom(&mut self) -> Result<()> {
+    pub fn move_to_atom(&self) -> Result<Self> {
         self.shift_to_atom()
     }
 
