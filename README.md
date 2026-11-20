@@ -912,9 +912,13 @@ The `OutPut` trait writes band-structure PDFs (`show_band`), Wannier90
 `_hr.dat`/`_win`/`_centres.xyz` files and POSCAR structures. `draw_heatmap`
 renders a 2D array. Plotting requires the `gnuplot` executable with the
 `pdfcairo` terminal. Models with `HasRMatrix` also provide `output_r` for
-`_r.dat`. Both matrix writers follow Wannier90 fixed-width records and use
-the same stored `hamR` order without adding translations. The six decimal
-places are for interchange, not high-precision symmetry diagnostics.
+`_r.dat`. Both matrix writers follow Wannier90 fixed-width records and emit
+the stored translation blocks in ascending lexicographic `(Rx, Ry, Rz)` order
+(`Rz` varies fastest). The block order is identical when both files are
+written from the same model. Only the file block order changes: 1-based
+matrix indexing and the physics are unchanged. Neither writer modifies the
+model or synthesizes missing conjugate blocks. The six decimal places are
+for interchange, not high-precision symmetry diagnostics.
 
 ```rust
 let path = arr2(&[[0.0, 0.0], [2.0 / 3.0, 1.0 / 3.0], [0.0, 0.0]]);

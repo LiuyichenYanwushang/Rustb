@@ -163,8 +163,11 @@ may be spelled `v`/`V` or `cl`/`Cl`; the orbital token after `:` remains
 case-sensitive. Optional centres/wsvec files and coordinate unit conversion
 retain their existing behavior.
 
-Export both matrix files from the same model so they share the stored `hamR`
-order. No missing conjugate blocks are added:
+When exported from the same model, `_hr.dat` and `_r.dat` have identical
+translation block order: ascending lexicographic `(Rx, Ry, Rz)`, with `Rz`
+varying fastest. Only the file block order changes; 1-based matrix indexing
+and the physics are unchanged. Neither writer modifies the model or
+synthesizes missing conjugate blocks:
 
 ```rust
 use Rustb::OutPut;
@@ -1021,8 +1024,13 @@ an old effective-model call's implicit harmonic range during migration, pass
 `.with_harmonic_max(2 * old_n_max)` explicitly.
 
 For `NoRMatrix`, the effective hopping support can reach the double Minkowski
-sum at `order = 1` and the triple sum at `order = 2`. The per-link DFT fallback
-is sized from the link's bandwidth and requested harmonic range. It projects
+sum at `order = 1` and the triple sum at `order = 2`. For large, compact
+supports, direct convolution assigns each output `R` to one task and uses
+a dense translation-index table to find matching input blocks. It keeps the
+serial pairwise accumulation order within each output block and avoids
+merging per-worker coefficient maps. Small or sparse supports and the Netlib
+backend still use the original kernel. The full Minkowski support is retained. The per-link
+DFT fallback is sized from the link's bandwidth and requested harmonic range. It projects
 onto the link before summing coherent carriers and factors the real DC phase
 outside the sampled AC signal. The actual Bessel backend is checked before
 an otherwise unresolvable fallback is refused.
@@ -1683,12 +1691,14 @@ Position covariance and centre consistency use `parameters.tolerances.position`
 Rayon parallelizes pair Hamiltonian (`H`) projection and the position-matrix
 (`r`) projection shared by the single-model and pair paths across independent
 real-space `R` blocks. Each block accumulates symmetry operations in the
-original order. The public API is unchanged; final pair covariance checks and
-iterative centre projection still run serially. Set `RAYON_NUM_THREADS` to
-control the outer pool and keep BLAS at one thread (e.g. `MKL_NUM_THREADS=1`
-or `OPENBLAS_NUM_THREADS=1`) to avoid oversubscription. The two projection
-kernels stay serial with the Netlib features because reference Netlib CBLAS
-is not reentrant; use `RAYON_NUM_THREADS=1` with reference Netlib for the
+original order. Final pair covariance checks run in parallel by operation
+and target channel, preserving the original error order. The public API is
+unchanged; iterative centre projection still runs serially. Set
+`RAYON_NUM_THREADS` to control the outer pool and keep BLAS at one thread
+(e.g. `MKL_NUM_THREADS=1` or `OPENBLAS_NUM_THREADS=1`) to avoid
+oversubscription. These projections and pair covariance checks stay serial
+with the Netlib features because reference Netlib CBLAS is not reentrant;
+use `RAYON_NUM_THREADS=1` with reference Netlib for the
 existing parallel validation steps as well. OpenBLAS must support concurrent
 calls: if it was built with `USE_THREAD=0`, it needs `USE_LOCKING=1`
 ([OpenBLAS FAQ](https://github.com/OpenMathLib/OpenBLAS/blob/v0.3.32/docs/faq.md#multi-threaded)).

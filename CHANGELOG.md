@@ -77,8 +77,11 @@
   projection lists match.
 - `Model::output_hr` writes Wannier90 `5I5,2F12.6` records and unit
   degeneracies. `HasRMatrix` models can write Cartesian Å position matrices
-  with `output_r` (`5I5,6F12.6`, no degeneracy table). Both use 1-based
-  indices and the stored `hamR` order without adding conjugate blocks.
+  with `output_r` (`5I5,6F12.6`, no degeneracy table). Both write stored
+  translation blocks in ascending lexicographic `(Rx, Ry, Rz)` order (`Rz`
+  varies fastest), with identical block order for the same model. This changes
+  only the file block order, not 1-based matrix indexing or the physics.
+  Neither writer modifies the model or synthesizes missing conjugate blocks.
   Matrix import also accepts adjacent fixed-width fields.
 
 - Adapt the high-symmetry k-point and character-table adapters to
@@ -88,6 +91,11 @@
 - Replace the Floquet and batched Fourier raw GEMM calls with ndarray's
   `general_mat_mul`, with `ndarray/blas` enabled for the selected backend.
   Restrict crate-owned `unsafe` to the existing `ndarray_lapack` module.
+- Reuse the `-m` second-order van Vleck terms as the adjoints of the `+m`
+  terms in both effective-model paths. Hopping builders store both `(i,j,R)`
+  and `(j,i,-R)` with conjugate amplitudes and the Peierls coefficients obey
+  `C_-n = C_n^*`, so `H_-m(R) = H_m(-R)^dagger` and `H_0` is Hermitian. No
+  public API change.
 - Use ordinary `f64` accumulation for mode-resolved Floquet models. Remove
   the custom exact accumulator, per-mode block storage, and its extreme-range
   tests; mode reordering may now change floating-point rounding.
