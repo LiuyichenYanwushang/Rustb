@@ -198,6 +198,32 @@ where
     real_space_two_product_sum_with_supports(a_blocks, a_r, b_blocks, b_r, -1.0, "commutator")
 }
 
+/// Adjoint of a real-space block map: `A^dagger(R) = A(-R)^dagger`, with the
+/// input support and its order preserved.
+pub(super) fn real_space_adjoint(
+    blocks: &[Array2<Complex<f64>>],
+    support: &Array2<isize>,
+) -> Result<RealSpaceBlocks> {
+    debug_assert_eq!(blocks.len(), support.nrows());
+    let mut index = std::collections::BTreeMap::new();
+    for (i, row) in support.outer_iter().enumerate() {
+        index.insert(row.to_vec(), i);
+    }
+    let mut out = Vec::with_capacity(blocks.len());
+    for row in support.outer_iter() {
+        let opposite = row
+            .iter()
+            .map(|x| x.checked_neg())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| TbError::Other("real-space translation cannot be negated".into()))?;
+        let j = *index
+            .get(&opposite)
+            .ok_or_else(|| TbError::MissingHermitianConjugateHopping { r: row.to_owned() })?;
+        out.push(hermitian_conjugate(&blocks[j]));
+    }
+    Ok((out, support.clone()))
+}
+
 /// Real-space anticommutator `{A,B} = AB + BA` on one common support.
 ///
 /// When `B = A^dagger`, as in the finite-`q` weak-field kernel, the result is
@@ -240,6 +266,114 @@ where
 thread_local! {
     // Per-test-thread count: assert bounded work without flaky timing thresholds.
     pub(super) static REAL_SPACE_SUPPORT_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+// A compact bounding box lets each output R look up R - Ra without building a
+// list of every pair. The pairwise path handles small or sparse boxes.
+fn gather_real_space_products<A, B>(
+    a: &A,
+    a_r: &Array2<isize>,
+    b: &B,
+    b_r: &Array2<isize>,
+    n: usize,
+    reverse_scale: f64,
+) -> Option<RealSpaceBlocks>
+where
+    A: RealSpaceBlockSource + ?Sized,
+    B: RealSpaceBlockSource + ?Sized,
+{
+    let dim = a_r.ncols();
+    if !(1..=3).contains(&dim) || dim != b_r.ncols() || n < 8 {
+        return None;
+    }
+    let bounds = |rows: &Array2<isize>| -> Option<([isize; 3], [isize; 3], [usize; 3])> {
+        let (mut lo, mut hi) = ([0; 3], [0; 3]);
+        let mut shape = [1; 3];
+        for axis in 0..dim {
+            let col = rows.column(axis);
+            lo[axis] = *col.iter().min()?;
+            hi[axis] = *col.iter().max()?;
+            shape[axis] = usize::try_from(hi[axis].checked_sub(lo[axis])?)
+                .ok()?
+                .checked_add(1)?;
+        }
+        Some((lo, hi, shape))
+    };
+    let (lo_a, hi_a, shape_a) = bounds(a_r)?;
+    let (lo_b, hi_b, shape_b) = bounds(b_r)?;
+    let mut origin = [0; 3];
+    let mut out_shape = [1; 3];
+    for axis in 0..dim {
+        origin[axis] = lo_a[axis].checked_add(lo_b[axis])?;
+        // Only the offset span matters; reject unrepresentable extremes.
+        hi_a[axis].checked_add(hi_b[axis])?;
+        out_shape[axis] = shape_a[axis].checked_add(shape_b[axis])? - 1;
+        isize::try_from(out_shape[axis] - 1).ok()?;
+    }
+    let volume = |shape: [usize; 3]| shape.into_iter().try_fold(1_usize, usize::checked_mul);
+    let out_count = volume(out_shape)?;
+    // Bound gather work relative to the number of input pairs. Never allocate
+    // dense coefficient storage for the holes of a sparse output box.
+    if out_count > b_r.nrows().saturating_mul(16) || out_count > 262_144 {
+        return None;
+    }
+    let offset = |row: ndarray::ArrayView1<'_, isize>, lo: [isize; 3]| {
+        std::array::from_fn::<_, 3, _>(|axis| {
+            if axis < dim {
+                (row[axis] - lo[axis]) as usize
+            } else {
+                0
+            }
+        })
+    };
+    let flat = |[x, y, z]: [usize; 3]| (x * shape_b[1] + y) * shape_b[2] + z;
+    let mut lookup = vec![usize::MAX; volume(shape_b)?];
+    for (ib, row) in b_r.outer_iter().enumerate() {
+        let slot = &mut lookup[flat(offset(row, lo_b))];
+        if *slot != usize::MAX {
+            return None;
+        }
+        *slot = ib;
+    }
+    let a_offsets: Vec<_> = a_r.outer_iter().map(|row| offset(row, lo_a)).collect();
+    let one = Complex::new(1.0, 0.0);
+    let reverse_scale = Complex::new(reverse_scale, 0.0);
+    let yz = out_shape[1] * out_shape[2];
+    let compute = |k: usize| {
+        let output = [k / yz, k % yz / out_shape[2], k % out_shape[2]];
+        let mut block = None;
+        // Follow the original A-major order per R, alternating AB and BA.
+        // Packing multiple ABs before BA can erase small commutators.
+        for (ia, &[ax, ay, az]) in a_offsets.iter().enumerate() {
+            let [x, y, z] = [
+                output[0].wrapping_sub(ax),
+                output[1].wrapping_sub(ay),
+                output[2].wrapping_sub(az),
+            ];
+            if x >= shape_b[0] || y >= shape_b[1] || z >= shape_b[2] {
+                continue;
+            }
+            let ib = lookup[flat([x, y, z])];
+            if ib == usize::MAX {
+                continue;
+            }
+            let dst = block.get_or_insert_with(|| Array2::zeros((n, n)));
+            let (a, b) = (a.block(ia), b.block(ib));
+            ndarray::linalg::general_mat_mul(one, &a, &b, one, dst);
+            ndarray::linalg::general_mat_mul(reverse_scale, &b, &a, one, dst);
+        }
+        block.map(|matrix| (output, matrix))
+    };
+    let output: Vec<_> = if rayon::current_num_threads() == 1 {
+        (0..out_count).map(compute).collect()
+    } else {
+        (0..out_count).into_par_iter().map(compute).collect()
+    };
+    let (offsets, blocks): (Vec<_>, Vec<_>) = output.into_iter().flatten().unzip();
+    let rows = Array2::from_shape_fn((blocks.len(), dim), |(i, axis)| {
+        origin[axis] + offsets[i][axis] as isize
+    });
+    Some((blocks, rows))
 }
 
 /// Accumulate `AB + reverse_scale * BA` for operands with independent
@@ -306,6 +440,15 @@ where
         .checked_mul(n_b)
         .ok_or_else(|| TbError::Other(format!("real-space {operation} pair count overflow")))?;
 
+    if !skip_products
+        && pair_count >= 4096
+        && !cfg!(any(feature = "netlib-static", feature = "netlib-system"))
+        && let Some(result) =
+            gather_real_space_products(a_blocks, a_r, b_blocks, b_r, nsta, reverse_scale.re)
+    {
+        return Ok(result);
+    }
+
     let accumulate_pair = |accumulated: &mut RealSpaceBlockMap, pair_index: usize| -> Result<()> {
         let i_a = pair_index / n_b;
         let i_b = pair_index % n_b;
@@ -336,9 +479,12 @@ where
     // the deterministic lexicographic output pass below.  Small and exact-zero
     // products stay serial to avoid scheduling and per-worker allocation cost.
     const PARALLEL_PAIR_THRESHOLD: usize = 128;
+    // Reference Netlib CBLAS may use process globals; keep this fan-out
+    // serial there, matching the gather kernel and the symmetry policy.
     let accumulated = if !skip_products
         && pair_count >= PARALLEL_PAIR_THRESHOLD
         && rayon::current_num_threads() > 1
+        && !cfg!(any(feature = "netlib-static", feature = "netlib-system"))
     {
         // Rounding up can prevent Rayon's last binary split (e.g. 575²
         // pairs on eight threads), leaving half the workers without a job.

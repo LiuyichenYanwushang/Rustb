@@ -2798,6 +2798,184 @@ fn real_space_products_match_explicit_oracle_across_storage_layouts() {
 }
 
 #[test]
+fn real_space_gathered_products_match_pairwise_scalar_oracle() {
+    // 63 × 72 pairs of 8 × 8 blocks in a compact 16 × 15 output bounding box
+    // exercise output-owned convolution. Omit A's upper corner and reverse B's row order.
+    let n = 8;
+    let a_r = Array2::from_shape_fn((63, 2), |(i, axis)| {
+        if axis == 0 {
+            (i / 8) as isize - 4
+        } else {
+            (i % 8) as isize - 3
+        }
+    });
+    let b_r = Array2::from_shape_fn((72, 2), |(i, axis)| {
+        let i = 71 - i;
+        if axis == 0 {
+            (i / 8) as isize - 3
+        } else {
+            (i % 8) as isize - 5
+        }
+    });
+    let zero = Complex::new(0.0, 0.0);
+    let a = Array3::from_shape_fn((a_r.nrows(), n, n), |(r, i, j)| {
+        if r == 0 {
+            return zero; // The only A block contributing to the lower output corner.
+        }
+        Complex::new(
+            ((3 * r + 2 * i + j) % 17) as f64 / 19.0 - 0.4,
+            ((r + i + 3 * j) % 13) as f64 / 23.0 - 0.2,
+        )
+    });
+    let b = Array3::from_shape_fn((b_r.nrows(), n, n), |(r, i, j)| {
+        Complex::new(
+            ((r + i + 2 * j) % 11) as f64 / 17.0 - 0.3,
+            ((2 * r + 3 * i + j) % 19) as f64 / 29.0 - 0.3,
+        )
+    });
+
+    // Enumerate pairs, inserting keys even for zero products. Accumulate AB and
+    // BA separately with complex scalars (no packing, GEMM, or support helper).
+    let mut oracle = std::collections::BTreeMap::<_, [Array2<Complex<f64>>; 2]>::new();
+    for (ia, ra) in a_r.outer_iter().enumerate() {
+        for (ib, rb) in b_r.outer_iter().enumerate() {
+            let r = [ra[0] + rb[0], ra[1] + rb[1]];
+            let [ab, ba] = oracle
+                .entry(r)
+                .or_insert_with(|| [Array2::zeros((n, n)), Array2::zeros((n, n))]);
+            for ((i, j), ab_ij) in ab.indexed_iter_mut() {
+                for k in 0..n {
+                    *ab_ij += a[[ia, i, k]] * b[[ib, k, j]];
+                    ba[[i, j]] += b[[ib, i, k]] * a[[ia, k, j]];
+                }
+            }
+        }
+    }
+    assert!(!oracle.contains_key(&[8, 6]), "missing upper corner");
+    assert!(
+        oracle
+            .values()
+            .any(|[ab, ba]| { ab.iter().zip(ba).any(|(&ab, &ba)| (ab - ba).norm() > 1e-3) })
+    );
+    let expected_r = Array2::from_shape_vec(
+        (oracle.len(), 2),
+        oracle.keys().flatten().copied().collect(),
+    )
+    .unwrap();
+    for (swapped, (lhs, lhs_r, rhs, rhs_r)) in
+        [(false, (&a, &a_r, &b, &b_r)), (true, (&b, &b_r, &a, &a_r))]
+    {
+        for (sign, operation) in [(-1.0, "commutator"), (1.0, "anticommutator")] {
+            let (blocks, support) =
+                real_space_two_product_sum_with_supports(lhs, lhs_r, rhs, rhs_r, sign, operation)
+                    .unwrap();
+            assert_eq!(support, expected_r);
+            assert_eq!(blocks.len(), oracle.len());
+            for ((r, [ab, ba]), block) in oracle.iter().zip(&blocks) {
+                assert_eq!(block.dim(), (n, n));
+                if *r == [-7, -8] {
+                    assert!(
+                        block.iter().all(|&value| value == zero),
+                        "zero block at {r:?}"
+                    );
+                }
+                let (forward, reverse) = if swapped { (ba, ab) } else { (ab, ba) };
+                for ((i, j), &actual) in block.indexed_iter() {
+                    let expected = forward[[i, j]] + sign * reverse[[i, j]];
+                    assert!(
+                        (actual - expected).norm() < 1e-12 * (1.0 + expected.norm()),
+                        "{operation}, swapped={swapped}, R={r:?}, ({i},{j}): {actual} vs {expected}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn real_space_large_products_preserve_pairwise_cancellation() {
+    let n_r = 64;
+    let support = Array2::from_shape_fn((n_r, 1), |(r, _)| r as isize);
+    let mut a = Array3::zeros((n_r, 8, 8));
+    let mut b = Array3::zeros(a.raw_dim());
+    // Geometry alone qualifies for grouping, but summing four AB products at
+    // once would overflow on the diagonal before BA cancels them. Pairwise
+    // evaluation is finite and still gives a nonzero off-diagonal commutator.
+    let large = 2.0_f64.powi(511);
+    for r in 0..n_r {
+        a[[r, 0, 0]] = Complex::new(large, 0.0);
+        b[[r, 0, 0]] = a[[r, 0, 0]];
+        b[[r, 0, 1]] = Complex::new(0.0, 1.0);
+    }
+
+    let (blocks, actual_r) =
+        real_space_commutator_with_supports(&a, &support, &b, &support).unwrap();
+    let n_out = 2 * n_r - 1;
+    let expected_r = Array2::from_shape_fn((n_out, 1), |(r, _)| r as isize);
+    assert_eq!(actual_r, expected_r);
+    assert_eq!(blocks.len(), n_out);
+    for (r, block) in blocks.iter().enumerate() {
+        let pair_count = (r + 1).min(n_out - r);
+        let mut expected = Array2::zeros((8, 8));
+        expected[[0, 1]] = Complex::new(0.0, pair_count as f64 * large);
+        assert_eq!(block, &expected, "R={r}");
+    }
+}
+
+#[test]
+fn output_owned_convolution_keeps_small_commutators_after_cancellation() {
+    let support = Array2::from_shape_fn((64, 1), |(r, _)| r as isize);
+    let mut a = Array3::zeros((64, 8, 8));
+    let mut b = Array3::zeros(a.raw_dim());
+    let large = 2.0_f64.powi(27);
+    for i in 0..8 {
+        a[[0, i, i]] = Complex::new(large, 0.0);
+        a[[1, i, i]] = Complex::new(large, 0.0);
+    }
+    a[[1, 0, 0]].re += large * f64::EPSILON;
+    b[[63, 0, 1]] = Complex::new(large, 0.0);
+    b[[62, 0, 1]] = b[[63, 0, 1]];
+    let (blocks, rows) = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap()
+        .install(|| real_space_commutator_with_supports(&a, &support, &b, &support).unwrap());
+    // Summing both AB terms before subtracting BA would round this to zero.
+    assert_eq!(rows[[63, 0]], 63);
+    assert_eq!(blocks[63][[0, 1]], Complex::new(4.0, 0.0));
+}
+
+#[test]
+fn adjoint_maps_translations_to_conjugate_transposes() {
+    let support = array![[0_isize, 0], [1, 0], [-1, 0]];
+    // Non-symmetric blocks: a conjugation without the transpose fails here.
+    let a = vec![
+        array![
+            [Complex::new(1.0, 2.0), Complex::new(-0.5, 0.25)],
+            [Complex::new(0.75, -0.125), Complex::new(0.0, 0.5)]
+        ],
+        array![
+            [Complex::new(0.5, -0.25), Complex::new(0.125, 0.0)],
+            [Complex::new(-0.25, 0.5), Complex::new(1.0, -1.0)]
+        ],
+        array![
+            [Complex::new(-0.75, 0.125), Complex::new(0.25, 0.75)],
+            [Complex::new(0.0, -0.5), Complex::new(0.5, 0.25)]
+        ],
+    ];
+    // expected(R) = a(-R)^dagger, spelled out independently of hermitian_conjugate.
+    let dagger = |block: &Array2<Complex<f64>>| {
+        Array2::from_shape_fn((block.ncols(), block.nrows()), |(i, j)| {
+            block[[j, i]].conj()
+        })
+    };
+    let expected = vec![dagger(&a[0]), dagger(&a[2]), dagger(&a[1])];
+    let (adjoint, adjoint_r) = real_space_adjoint(&a, &support).unwrap();
+    assert_eq!(adjoint_r, support);
+    assert_eq!(adjoint, expected);
+}
+
+#[test]
 fn real_space_commutator_with_different_supports_matches_k_space() {
     // Nested van Vleck terms feed a pair-support inner commutator into a
     // primitive-support outer commutator.  This oracle uses deliberately
@@ -5910,13 +6088,8 @@ mod regrouped_order_two {
             .build()
             .unwrap();
         let drive = drive(6.0);
-        for mutated in [false, true] {
-            let mut model = fixture();
-            if mutated {
-                // Storage-valid, deliberately not Hermitian: do not assume H_-n = H_n†.
-                model.ham[[0, 0, 1]] += Complex::new(0.17, -0.09);
-                model.ham[[1, 2, 0]] += Complex::new(0.04, 0.11);
-            }
+        {
+            let model = fixture();
             model.validate().unwrap();
             for n in 0..=3 {
                 let options = options(n);
@@ -5924,7 +6097,9 @@ mod regrouped_order_two {
                     .install(|| model.floquet_effective_model(&drive, Some(&options)))
                     .unwrap();
                 let old = serial
-                    .install(|| model.floquet_effective_model_impl(&drive, Some(&options), false))
+                    .install(|| {
+                        model.floquet_effective_model_impl(&drive, Some(&options), false, false)
+                    })
                     .unwrap();
                 let threaded = parallel
                     .install(|| model.floquet_effective_model(&drive, Some(&options)))
@@ -5939,10 +6114,6 @@ mod regrouped_order_two {
                     let mut expected = model
                         .floquet_effective_ham_onek_lattice(&k, &drive, 2, n, true, &cache)
                         .unwrap();
-                    if mutated {
-                        // Match only the final real-space Hermitian projection.
-                        expected = (&expected + &hermitian_conjugate(&expected)) * 0.5;
-                    }
                     let actual = actual.gen_ham(&k, Gauge::Lattice);
                     assert_close(actual.as_slice().unwrap(), expected.as_slice().unwrap());
                 }
@@ -5975,13 +6146,13 @@ mod regrouped_order_two {
                     .floquet_effective_model(&drive, Some(&options))
                     .unwrap();
                 let old = model
-                    .floquet_effective_model_impl(&drive, Some(&options), false)
+                    .floquet_effective_model_impl(&drive, Some(&options), false, false)
                     .unwrap();
                 assert_models_close(&actual, &old);
             }
             let drive = drive(omega);
             let actual = model.floquet_effective_model(&drive, Some(&options));
-            let old = model.floquet_effective_model_impl(&drive, Some(&options), false);
+            let old = model.floquet_effective_model_impl(&drive, Some(&options), false, false);
             if omega < 1.0 {
                 assert_eq!(
                     actual.unwrap_err().to_string(),
@@ -6015,7 +6186,7 @@ mod regrouped_order_two {
             );
             match (
                 model.floquet_effective_model(&drive, Some(&options)),
-                model.floquet_effective_model_impl(&drive, Some(&options), false),
+                model.floquet_effective_model_impl(&drive, Some(&options), false, false),
             ) {
                 (Ok(actual), Ok(old)) => assert_models_close(&actual, &old),
                 (Err(actual), Err(old)) if !safe => assert_eq!(actual.to_string(), old.to_string()),
@@ -6136,6 +6307,48 @@ mod regrouped_order_two {
     }
 
     #[test]
+    fn h0_adjoint_family_halves_convolutions_and_matches() {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| {
+                let model = fixture();
+                let drive = drive(6.0);
+                for n in [1, 2] {
+                    let options = options(n);
+                    // Production groups the mixed family; cover that combination too.
+                    for regroup in [false, true] {
+                        let results = [false, true].map(|adjoint| {
+                            REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.set(0));
+                            let out = model
+                                .floquet_effective_model_impl(
+                                    &drive,
+                                    Some(&options),
+                                    regroup,
+                                    adjoint,
+                                )
+                                .unwrap();
+                            (
+                                out,
+                                REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.get()),
+                            )
+                        });
+                        assert_models_close(&results[0].0, &results[1].0);
+                        let (termwise, adjoint) = (results[0].1, results[1].1);
+                        println!(
+                            "order-two convolutions: n={n} regroup={regroup} termwise={termwise} adjoint={adjoint}"
+                        );
+                        assert!(
+                            adjoint < termwise,
+                            "n={n}, regroup={regroup}: adjoint={adjoint}, termwise={termwise}"
+                        );
+                    }
+                }
+            });
+    }
+
+    #[test]
     fn mixed_family_regrouping_reduces_support_constructions() {
         rayon::ThreadPoolBuilder::new()
             .num_threads(1)
@@ -6152,7 +6365,7 @@ mod regrouped_order_two {
                     let results = [false, true].map(|regroup| {
                         REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.set(0));
                         let out = model
-                            .floquet_effective_model_impl(&drive, Some(&options), regroup)
+                            .floquet_effective_model_impl(&drive, Some(&options), regroup, false)
                             .unwrap();
                         (
                             out,

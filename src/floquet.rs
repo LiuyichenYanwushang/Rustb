@@ -1038,8 +1038,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     continue;
                 }
                 let isolated = FloquetDrive::with_modes(drive.omega0_ev, vec![mode.clone()]);
-                let single =
-                    self.position_effective_corrections(&isolated, options.order, harmonic_max)?;
+                let single = self.position_effective_corrections(
+                    &isolated,
+                    options.order,
+                    harmonic_max,
+                    true,
+                )?;
                 corrections = merge_real_space_block_maps(corrections, single);
             }
             return self.position_effective_output(corrections);
@@ -1620,7 +1624,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         drive: &FloquetDrive,
         options: Option<&FloquetEffectiveOptions>,
     ) -> Result<Model<SPIN, DIM, R>> {
-        self.floquet_effective_model_impl(drive, options, true)
+        self.floquet_effective_model_impl(drive, options, true, true)
     }
 
     // The false setting retains the termwise reference for regression tests;
@@ -1630,6 +1634,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         drive: &FloquetDrive,
         options: Option<&FloquetEffectiveOptions>,
         regroup_order_two: bool,
+        adjoint_h0_family: bool,
     ) -> Result<Model<SPIN, DIM, R>> {
         self.validate()?;
         let default_options;
@@ -1661,8 +1666,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let nsta = self.nsta();
         if R::HAS_RMATRIX {
             self.validate_floquet_position()?;
-            let corrections =
-                self.position_effective_corrections(drive, options.order, harmonic_max)?;
+            let corrections = self.position_effective_corrections(
+                drive,
+                options.order,
+                harmonic_max,
+                adjoint_h0_family,
+            )?;
             return self.position_effective_output(corrections);
         }
         let has_time_dependence = drive_has_ac_components(drive);
@@ -1772,6 +1781,36 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             // termwise reference below remains the fallback in every other
             // case, including a selector that forces it for regression tests.
 
+            // The H_0 family pairs each m with -m. Hopping builders store both
+            // (i,j,R) and (j,i,-R) with conjugate amplitudes and the Peierls
+            // coefficients satisfy C_-n = C_n^*, so H_-m(R) = H_m(-R)^dagger
+            // and H_0 is Hermitian. The -m term is then the adjoint of the +m
+            // term and one positive m needs two convolutions instead of four.
+            let h0_family_adjoint = adjoint_h0_family;
+            let accumulate_h0_family = |partial: &mut RealSpaceBlockMap, m: isize| -> Result<()> {
+                if !nonzero(m) || !nonzero(0) || !nonzero(-m) {
+                    return Ok(());
+                }
+                if h0_family_adjoint && m < 0 {
+                    // Generated as the adjoint of the corresponding +m term.
+                    return Ok(());
+                }
+                let h_zero = harmonic_cache.harmonic_blocks(0);
+                let h_m = harmonic_cache.harmonic_blocks(m);
+                let (inner, inner_r) =
+                    real_space_commutator_with_supports(&h_zero, &self.hamR, &h_m, &self.hamR)?;
+                let h_minus_m = harmonic_cache.harmonic_blocks(-m);
+                let (outer, outer_r) =
+                    real_space_commutator_with_supports(&h_minus_m, &self.hamR, &inner, &inner_r)?;
+                let scale = inverse_omega_squared / (2.0 * (m as f64).powi(2));
+                accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
+                if !h0_family_adjoint {
+                    return Ok(());
+                }
+                let (adjoint, adjoint_r) = real_space_adjoint(&outer, &outer_r)?;
+                accumulate_scaled_real_space_blocks(partial, &adjoint, &adjoint_r, scale)
+            };
+
             // Each fixed-m contribution is independent.  Accumulate one
             // private real-space map per Rayon job and merge maps only after
             // all nested commutators for that job are complete.  This exposes
@@ -1782,17 +1821,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     return Ok(());
                 }
                 let h_m = harmonic_cache.harmonic_blocks(m);
-                if nonzero(0) && nonzero(-m) {
-                    let h_zero = harmonic_cache.harmonic_blocks(0);
-                    let (inner, inner_r) =
-                        real_space_commutator_with_supports(&h_zero, &self.hamR, &h_m, &self.hamR)?;
-                    let h_minus_m = harmonic_cache.harmonic_blocks(-m);
-                    let (outer, outer_r) = real_space_commutator_with_supports(
-                        &h_minus_m, &self.hamR, &inner, &inner_r,
-                    )?;
-                    let scale = inverse_omega_squared / (2.0 * (m as f64).powi(2));
-                    accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
-                }
+                accumulate_h0_family(partial, m)?;
 
                 for &m_prime in &signed_harmonics {
                     if m_prime == m || !nonzero(-m_prime) || !nonzero(m_prime - m) {
@@ -1830,20 +1859,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     return accumulate_fixed_m(partial, p);
                 }
 
-                // The first family is deliberately unchanged and not fused
-                // with the mixed-family inner sum.
-                if nonzero(p) && nonzero(0) && nonzero(-p) {
-                    let h_zero = harmonic_cache.harmonic_blocks(0);
-                    let h_p = harmonic_cache.harmonic_blocks(p);
-                    let (inner, inner_r) =
-                        real_space_commutator_with_supports(&h_zero, &self.hamR, &h_p, &self.hamR)?;
-                    let h_minus_p = harmonic_cache.harmonic_blocks(-p);
-                    let (outer, outer_r) = real_space_commutator_with_supports(
-                        &h_minus_p, &self.hamR, &inner, &inner_r,
-                    )?;
-                    let scale = inverse_omega_squared / (2.0 * (p as f64).powi(2));
-                    accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
-                }
+                // The first family is not fused with the mixed-family inner sum.
+                accumulate_h0_family(partial, p)?;
                 // B needs H_-p, not H_p. Do not assume an adjoint relation for
                 // every storage-valid (possibly hand-mutated) input model.
                 if !nonzero(-p) {

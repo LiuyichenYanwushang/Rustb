@@ -380,6 +380,63 @@ fn position_quadratic_coupling_balances_extreme_amplitude_and_matrix_scales() {
 }
 
 #[test]
+fn position_h0_family_adjoint_matches_termwise() {
+    use super::real_space::REAL_SPACE_SUPPORT_CONSTRUCTIONS;
+
+    let mut model = Model::<false, 2, HasRMatrix>::tb_model(
+        array![[1.0, 0.0], [0.0, 1.0]],
+        array![[0.0, 0.0], [0.35, 0.1]],
+        None,
+    )
+    .unwrap();
+    model.set_onsite(&array![0.4, -0.2], None);
+    model.set_hop(0.25, 0, 1, &array![0, 0], None);
+    model.set_hop(-0.13, 1, 0, &array![1, 0], None);
+    model.rmatrix[[0, 0, 0, 1]] = C::from(0.3);
+    model.rmatrix[[0, 0, 1, 0]] = C::from(0.3);
+    model.rmatrix[[0, 1, 0, 0]] = C::from(-0.17);
+    model.rmatrix[[0, 1, 1, 1]] = C::from(-0.17);
+    model.validate().unwrap();
+
+    let drive = FloquetDrive::with_modes(
+        4.0,
+        vec![
+            LightMode::new(1, array![C::from(0.2), C::from(0.05)]),
+            LightMode::new(2, array![C::from(-0.07), C::from(0.11)]),
+        ],
+    );
+    let options = FloquetEffectiveOptions::new()
+        .with_order(2)
+        .with_harmonic_max(2);
+    let results = [false, true].map(|adjoint| {
+        REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.set(0));
+        let out = model
+            .floquet_effective_model_impl(&drive, Some(&options), false, adjoint)
+            .unwrap();
+        (
+            out,
+            REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.get()),
+        )
+    });
+    assert_eq!(results[0].0.hamR, results[1].0.hamR);
+    let scale = results[0]
+        .0
+        .ham
+        .iter()
+        .chain(results[1].0.ham.iter())
+        .map(|z| z.norm())
+        .fold(f64::MIN_POSITIVE, f64::max);
+    for (a, b) in results[0].0.ham.iter().zip(results[1].0.ham.iter()) {
+        assert!((a - b).norm() <= 2e-11 * scale, "{a} vs {b}");
+    }
+    println!(
+        "position order-two convolutions: termwise={} adjoint={}",
+        results[0].1, results[1].1
+    );
+    assert!(results[1].1 < results[0].1, "adjoint path was not taken");
+}
+
+#[test]
 fn position_floquet_public_branches_reject_nonhermitian_blocks_and_unnegatable_translation() {
     use crate::TbError;
 

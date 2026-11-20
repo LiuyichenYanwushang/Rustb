@@ -509,6 +509,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         drive: &FloquetDrive,
         order: usize,
         harmonic_max: isize,
+        adjoint_h0_family: bool,
     ) -> Result<RealSpaceBlockMap> {
         let (mut linear, mut quadratic) =
             self.position_harmonics(drive, if order == 0 { 0 } else { harmonic_max }, 0)?;
@@ -545,7 +546,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             let (first, support) = commutator(&minus, &plus)?;
             accumulate_scaled_real_space_blocks(&mut result, &first, &support, inverse)?;
             if let Some(h) = &h {
-                for (a, b) in [(&minus, &plus), (&plus, &minus)] {
+                // Bare H is Hermitian (checked above) and the position harmonics
+                // pair as minus = plus^dagger, so the -n term is the adjoint of
+                // the +n term.
+                let paired = adjoint_h0_family;
+                for (index, &(a, b)) in [(&minus, &plus), (&plus, &minus)].iter().enumerate() {
+                    if paired && index == 1 {
+                        break;
+                    }
                     let inner = commutator(h, b)?;
                     let (mut outer, support) = commutator(a, &inner)?;
                     // Scale the matrix before applying the second inverse. The
@@ -560,6 +568,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         }
                     }
                     accumulate_scaled_real_space_blocks(&mut result, &outer, &support, 1.0)?;
+                    if paired {
+                        let (adjoint, adjoint_support) = real_space_adjoint(&outer, &support)?;
+                        accumulate_scaled_real_space_blocks(
+                            &mut result,
+                            &adjoint,
+                            &adjoint_support,
+                            1.0,
+                        )?;
+                    }
                 }
             }
         }
