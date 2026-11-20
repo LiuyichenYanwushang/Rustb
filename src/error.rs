@@ -38,6 +38,10 @@ pub enum TbError {
     Cryspglib(#[from] cryspglib::SymError),
 
     #[cfg(feature = "cryspglib")]
+    #[error("spin-group analysis failed: {0}")]
+    SpinGroup(#[from] cryspglib::spin_group::SpinGroupError),
+
+    #[cfg(feature = "cryspglib")]
     #[error("invalid crystal-symmetry input '{parameter}': {message}")]
     InvalidCrystalSymmetryInput {
         parameter: &'static str,
