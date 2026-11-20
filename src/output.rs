@@ -168,7 +168,8 @@ fn write_wannier_matrix<const DIM: usize>(
 
     // Validate before opening the file so unrepresentable data cannot truncate it.
     let mut seen = HashSet::with_capacity(nr);
-    for r in ham_r.rows() {
+    let mut blocks = Vec::with_capacity(nr);
+    for (index, r) in ham_r.rows().into_iter().enumerate() {
         let r = [
             r[0],
             r.get(1).copied().unwrap_or(0),
@@ -180,7 +181,9 @@ fn write_wannier_matrix<const DIM: usize>(
         if !seen.insert(r) {
             return Err(invalid(format!("duplicate translation {r:?}")).into());
         }
+        blocks.push((r, index));
     }
+    blocks.sort_unstable();
     for (index, z) in matrix.indexed_iter() {
         for value in [z.re, z.im] {
             // Only values near or outside the limits need a formatted width check.
@@ -206,12 +209,7 @@ fn write_wannier_matrix<const DIM: usize>(
         }
     }
     let components = if position { 3 } else { 1 };
-    for (index, r) in ham_r.rows().into_iter().enumerate() {
-        let [rx, ry, rz] = [
-            r[0],
-            r.get(1).copied().unwrap_or(0),
-            r.get(2).copied().unwrap_or(0),
-        ];
+    for ([rx, ry, rz], index) in blocks {
         for n in 0..nsta {
             for m in 0..nsta {
                 write!(file, "{rx:>5}{ry:>5}{rz:>5}{:>5}{:>5}", m + 1, n + 1)?;
@@ -234,8 +232,9 @@ fn write_wannier_matrix<const DIM: usize>(
 impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM, HasRMatrix> {
     /// Writes Cartesian position matrices (Å) to `{seedname}_r.dat` as `5I5,6F12.6`.
     ///
-    /// Uses the same `hamR` order and 1-based indices as [`OutPut::output_hr`],
-    /// without a degeneracy section. Absent Cartesian axes are padded with zero.
+    /// Uses the same lexicographic translation order `(Rx, Ry, Rz)` and 1-based
+    /// indices as [`OutPut::output_hr`], without a degeneracy section. Absent
+    /// Cartesian axes are padded with zero.
     /// Non-finite values and fields that do not fit are rejected.
     pub fn output_r(&self, path: &str, seedname: &str) -> Result<()> {
         write_wannier_matrix::<DIM>(
@@ -251,9 +250,10 @@ impl<const SPIN: bool, const DIM: usize> Model<SPIN, DIM, HasRMatrix> {
 pub trait OutPut {
     /// Writes the Hamiltonian to `{seedname}_hr.dat` as `5I5,2F12.6`.
     ///
-    /// Records use the stored `hamR` order, unit degeneracies, and 1-based
-    /// indices. No conjugate blocks are added. Non-finite values and fields
-    /// that do not fit are rejected.
+    /// Translation blocks are sorted by `(Rx, Ry, Rz)` in ascending order
+    /// (`Rz` varies fastest). The model is not reordered. Records use unit
+    /// degeneracies and 1-based indices. No conjugate blocks are added.
+    /// Non-finite values and fields that do not fit are rejected.
     fn output_hr(&self, path: &str, seedname: &str) -> Result<()>;
     fn output_POSCAR(&self, path: &str) -> Result<()>;
     fn output_win(&self, path: &str, seedname: &str) -> Result<()>;
@@ -934,13 +934,28 @@ mod tests {
         let mut model =
             Model::<false, 3, HasRMatrix>::tb_model(Array2::eye(3), Array2::zeros((2, 3)), None)
                 .unwrap();
-        model.hamR = Array2::from_shape_fn((16, 3), |(b, d)| match b {
-            0 => 0,
-            1 => [-9_999, 99_999, 0][d],
-            2 => [3, -1, 3][d],
-            3 => [2, -1, 3][d],
-            _ => [b as isize, -1, 3][d],
-        });
+        let translations = [
+            [0, 0, 0],
+            [-9_999, 99_999, 0],
+            [3, 2, -4],
+            [2, -1, 3],
+            [8, -1, 3],
+            [-2, 4, 1],
+            [3, -1, 3],
+            [12, 0, -2],
+            [3, -1, -2],
+            [2, 1, -3],
+            [1, 0, 3],
+            [-2, -3, 0],
+            [5, 0, 0],
+            [10, -1, 3],
+            [4, -1, 3],
+            [7, 1, 0],
+        ];
+        let ham_r = Array2::from_shape_fn((16, 3), |(b, d)| translations[b][d]);
+        model.hamR = ham_r.clone();
+        // Original row indices in ascending (Rx, Ry, Rz) order.
+        let expected_rows = [1, 11, 5, 0, 10, 3, 9, 8, 6, 2, 14, 12, 15, 4, 13, 7];
         model.ham = Array3::from_shape_fn((16, 2, 2), |(b, m, n)| {
             let key = (100 * b + 10 * m + n) as f64;
             if (b, m, n) == (1, 1, 0) {
@@ -955,6 +970,7 @@ mod tests {
         }));
         model.output_hr(&dir, "wannier90").unwrap();
         model.output_r(&dir, "wannier90").unwrap();
+        assert_eq!(model.hamR, ham_r);
         for (suffix, fields) in [("hr", 2), ("r", 6)] {
             let text = std::fs::read_to_string(format!("{dir}wannier90_{suffix}.dat")).unwrap();
             let mut lines = text.lines();
@@ -970,7 +986,7 @@ mod tests {
                 assert_eq!(lines.next().unwrap(), "    1".repeat(15));
                 assert_eq!(lines.next().unwrap(), "    1");
             }
-            for b in 0..16 {
+            for b in expected_rows {
                 for n in 0..2 {
                     for m in 0..2 {
                         let line = lines.next().unwrap();
@@ -983,10 +999,7 @@ mod tests {
                                 .parse::<f64>()
                                 .unwrap()
                         };
-                        assert_eq!(
-                            [i5(0), i5(1), i5(2)],
-                            [model.hamR[[b, 0]], model.hamR[[b, 1]], model.hamR[[b, 2]]]
-                        );
+                        assert_eq!([i5(0), i5(1), i5(2)], translations[b], "{line}");
                         assert_eq!([i5(3), i5(4)], [m as isize + 1, n as isize + 1]);
                         for d in 0..fields / 2 {
                             let key = (100 * b + 10 * m + n + 2 * d) as f64;
