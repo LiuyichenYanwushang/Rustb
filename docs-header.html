@@ -10,6 +10,17 @@
     }
 </style>
 <script>
+    // Rustdoc has no math-markdown extension: the text between $...$ / $$...$$
+    // is parsed as ordinary CommonMark before KaTeX ever sees it. Formula
+    // sources in Rust doc comments and in include_str! markdown files must be
+    // pre-escaped so that the CommonMark pass returns the intended TeX:
+    //   * every subscript underscore / emphasis asterisk as \_ and \*
+    //   * a LaTeX backslash before ASCII punctuation is doubled
+    //     (\\, thin space, \\\\ line break, \\| norm, \\_ literal underscore)
+    //   * line-leading - + > # | inside display math are backslash-escaped
+    //   * literal square brackets are written \lbrack / \rbrack; append {}
+    //     only when the following character is a letter
+    // Backslashes before letters (\mathbf, \sum, \frac) stay single.
     document.addEventListener("DOMContentLoaded", function() {
         const macros = {
             "\\rt": "\\right",

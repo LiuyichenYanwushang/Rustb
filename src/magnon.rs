@@ -10,44 +10,58 @@
 //!
 //! The classical spin Hamiltonian follows TB2J:
 //!
-//! ```text
-//! E = - sum_i K_i (S_i . n_i)^2 - sum_{i,j,R} S_i . J_ij(R) . S_j(R)
-//! ```
+//! $$
+//! E = -\sum\_{i,j,\mathbf R}
+//!     \mathbf s\_i\cdot\mathbf J\_{ij}(\mathbf R)\cdot\mathbf s\_j(\mathbf R),
+//! $$
 //!
-//! where the exchange sum runs over **ordered** pairs. Both `(i, j, R)` and its
+//! where the spin directions are unit vectors and the sum runs over **ordered**
+//! pairs. Both `(i, j, R)` and its
 //! partner `(j, i, -R)` are stored in [`Magnon::ham`], so one physical bond
 //! contributes twice and the effective bond coupling is twice the listed
-//! value. `J > 0` favours ferromagnetic alignment and energies are in eV.
+//! value. $J>0$ favours ferromagnetic alignment and energies are in eV.
 //!
-//! The first term is **not** additional to the second: the single-ion
-//! anisotropy is stored inside the `(R = 0, i = i)` block of `ham`, and the two
-//! terms above only show which 3x3 block it belongs to.
+//! The single-ion anisotropy is included in the onsite `(R = 0, i = j)`
+//! block of `ham`; it is not added again as a separate term.
 //!
 //! The real-space to reciprocal-space transform is
-//! `J(q) = sum_R J(R) exp(-2 pi i q . R)` (TB2J's sign convention, the opposite
-//! of [`Model::gen_ham`](crate::model::Model::gen_ham)); magnon eigenvalues are
-//! independent of that overall phase choice, but band-vector parities are not.
 //!
-//! The stored `J` is TB2J's **unit-vector** coefficient: it is the curvature of
+//! $$
+//! \mathbf J(\mathbf q) = \sum\_{\mathbf R}
+//! \mathbf J(\mathbf R)\\,e^{-2\pi i\\,\mathbf q\cdot\mathbf R}
+//! $$
+//!
+//! (TB2J's sign convention, the opposite
+//! of [`Model::gen_ham`](crate::model::Model::gen_ham)). Reversing the Fourier
+//! sign relabels $\mathbf q$ as $-\mathbf q$; a nonreciprocal spectrum need not
+//! have the same frequencies at the same numerical momentum.
+//!
+//! The stored $J$ is TB2J's **unit-vector** coefficient: it is the curvature of
 //! the energy landscape with respect to the moment *directions*, so it does not
-//! carry a factor `S_i S_j`. The spin-wave solver converts the landscape
-//! coefficient into the operator exchange `J^op_ij(R) = J_ij(R) / (S_i S_j)`
+//! carry a factor $S\_iS\_j$. The spin-wave solver converts the landscape
+//! coefficient into the operator exchange
+//!
+//! $$
+//! J^{\mathrm{op}}\_{ij}(\mathbf R) = \frac{J\_{ij}(\mathbf R)}{S\_iS\_j}
+//! $$
+//!
 //! before applying linear spin-wave theory, exactly as TB2J's `Magnon.Jq` does.
 //! For a ferromagnetic chain this reproduces
 //!
-//! ```text
-//! omega(q) = (2 / S) [ J(0) - J(q) ],
-//! ```
+//! $$
+//! \omega(\mathbf q) = \frac{2}{S}\lbrack J(\mathbf 0) - J(\mathbf q)\rbrack,
+//! $$
 //!
-//! which for one bond of landscape coupling `j` per direction is
-//! `omega(q) = 4 j (1 - cos(q)) / S`: larger moments precess more slowly for a
-//! fixed energy landscape.
+//! which for one bond of landscape coupling $j$ per direction is
+//! $\omega(q) = 4j\\,\lbrack1-\cos(2\pi q)\rbrack/S$ for fractional momentum $q$:
+//! larger moments precess more
+//! slowly for a fixed energy landscape.
 //!
-//! [`Magnon::spin`] holds the spin quantum number `S_i` in units of `hbar`
-//! (`S_i = |m_i| / 2` for a magnetic moment `m_i` in Bohr magnetons, i.e. the
-//! `g = 2` orbital-quenched moment), and [`Magnon::axis`] the reference
+//! [`Magnon::spin`] holds the spin quantum number $S\_i$ in units of $\hbar$
+//! ($S\_i=|m\_i|/2$ for a magnetic moment $m\_i$ in Bohr magnetons, i.e. the
+//! $g=2$ orbital-quenched moment), and [`Magnon::axis`] the reference
 //! direction of each moment. Those two arrays are what the spin-wave expansion
-//! needs: the local frame of site `i` is an orthonormal triad whose third axis
+//! needs: the local frame of site $i$ is an orthonormal triad whose third axis
 //! is `axis[i]`.
 //!
 //! # Storage
@@ -55,10 +69,18 @@
 //! [`Magnon::ham`] is an `(nR, 3n, 3n)` array laid out exactly like
 //! [`Model::ham`](crate::model::Model::ham): row `iR` is the matrix of the cell
 //! translation `hamR[iR]`, and the Cartesian components of magnetic site `i`
-//! occupy columns `3*i .. 3*i + 3` (the TB2J `i3j3` ordering). The `3 x 3`
-//! block of a site pair is
-//! `J_iso * I + J_ani(symmetric) + D(antisymmetric)`, and the `(R = 0, i = i)`
-//! block additionally carries the single-ion anisotropy.
+//! occupy columns `3*i .. 3*i + 3` (the TB2J `i3j3` ordering). The
+//! $3\times3$ block of a site pair is
+//!
+//! $$
+//! \mathbf J\_{ij} =
+//! J\_{\mathrm{iso}}\\,\mathbb{1}
+//! \+ J\_{\mathrm{ani}}^{\mathrm{sym}}
+//! \+ D^{\mathrm{anti}},
+//! $$
+//!
+//! and the `(R = 0, i = i)` block additionally carries the single-ion
+//! anisotropy.
 //!
 //! # Examples
 //!
@@ -121,10 +143,11 @@ pub const SPIN_COMPONENTS: usize = 3;
 /// Reference magnetic structure of a [`Magnon`] model.
 ///
 /// TB2J keeps three pieces of information beyond the exchange tensors: the
-/// single-Q propagation vector `q`, the global axis `n` the reference structure
-/// rotates about, and the global quantization axis `uz` used to build local
-/// frames. `q = 0` (the default) describes a structure that is already fully
-/// contained in the unit cell.
+/// single-Q propagation vector $\mathbf q$, the global axis $\mathbf n$ the
+/// reference structure rotates about, and the global quantization axis
+/// $\mathbf u\_z$ used to build local frames. $\mathbf q=\mathbf 0$ (the
+/// default) describes a structure that is already fully contained in the unit
+/// cell.
 #[derive(Clone, Debug)]
 pub struct MagnonReference<const DIM: usize = 3> {
     /// Single-Q propagation vector in reduced reciprocal coordinates.
@@ -136,12 +159,15 @@ pub struct MagnonReference<const DIM: usize = 3> {
 }
 
 impl<const DIM: usize> MagnonReference<DIM> {
-    /// Collinear/ferromagnetic reference: `q = 0`, `n = x`, `uz = z`.
+    /// Collinear/ferromagnetic reference:
+    /// $\mathbf q=\mathbf 0$, $\mathbf n=\hat{\mathbf x}$,
+    /// $\mathbf u\_z=\hat{\mathbf z}$.
     ///
     /// TB2J's `Magnon._Q`/`_uz` defaults are matched, but its rotation axis
-    /// (`_n`) defaults to `z`; this crate uses `x`, which is the transverse
-    /// axis of the default `z`-polarized moments and therefore the physically
-    /// meaningful spiral axis. With `q = 0` the choice is inert.
+    /// (`_n`) defaults to $\hat{\mathbf z}$; this crate uses
+    /// $\hat{\mathbf x}$, which is the transverse axis of the default
+    /// $\hat{\mathbf z}$-polarized moments and therefore the physically
+    /// meaningful spiral axis. With $\mathbf q=\mathbf 0$ the choice is inert.
     pub fn collinear() -> Self {
         Self {
             q: Array1::zeros(DIM),
@@ -150,11 +176,12 @@ impl<const DIM: usize> MagnonReference<DIM> {
         }
     }
 
-    /// Single-Q spiral reference: propagation vector `q`, default axes.
+    /// Single-Q spiral reference: propagation vector $\mathbf q$, default axes.
     ///
-    /// The exchange tensors are rotated by `2 pi R.q` about `rotation_axis`
-    /// when the BdG matrix is built. `rotation_axis = x` keeps the rotation
-    /// transverse to the default `z`-polarized moments; use
+    /// The exchange tensors are rotated by $2\pi\\,\mathbf q\cdot\mathbf R$
+    /// about `rotation_axis` when the BdG matrix is built.
+    /// $\mathbf n=\hat{\mathbf x}$ keeps the rotation transverse to the default
+    /// $\hat{\mathbf z}$-polarized moments; use
     /// [`Self::with_rotation_axis`] for another spiral axis.
     pub fn single_q<S: Data<Elem = f64>>(q: &ArrayBase<S, Ix1>) -> Result<Self> {
         let reference = Self {
@@ -229,7 +256,7 @@ impl<const DIM: usize> MagnonReference<DIM> {
 /// Real-space spin Hamiltonian of a magnon problem.
 ///
 /// See the [module documentation](self) for the model, the storage layout, the
-/// energy conventions and the `J` versus `J/(S_i S_j)` bookkeeping. Every field
+/// energy conventions and the $J$ versus $J/(S\_iS\_j)$ bookkeeping. Every field
 /// is public so that builders and analysis code can work on the arrays
 /// directly; [`Magnon::validate`] checks the invariants those consumers rely
 /// on, and code that mutates a field must call it again before solving or
@@ -240,16 +267,18 @@ pub struct Magnon<const DIM: usize = 3> {
     pub lat: Array2<f64>,
     /// Fractional positions of the magnetic sites, shape `(n, DIM)`.
     pub orb: Array2<f64>,
-    /// Spin quantum numbers `S_i` in units of `hbar`, shape `(n,)`.
+    /// Spin quantum numbers $S\_i$ in units of $\hbar$, shape `(n,)`.
     pub spin: Array1<f64>,
     /// Reference moment direction of each site, shape `(n, 3)`, unit rows.
     pub axis: Array2<f64>,
-    /// Exchange tensors `J_ij(R)`, shape `(nR, 3n, 3n)`, in eV.
+    /// Exchange tensors $\mathbf J\_{ij}(\mathbf R)$, shape `(nR, 3n, 3n)`,
+    /// in eV.
     pub ham: Array3<f64>,
-    /// Cell translations `R` as integer multiples of the lattice rows,
-    /// shape `(nR, DIM)`. Row `0` must be the zero vector.
+    /// Cell translations $\mathbf R$ as integer multiples of the lattice
+    /// rows, shape `(nR, DIM)`. Row `0` must be the zero vector.
     pub hamR: Array2<isize>,
-    /// Reference magnetic structure (TB2J's `Q`, `n` and `uz`).
+    /// Reference magnetic structure (TB2J's $\mathbf Q$, $\mathbf n$ and
+    /// $\mathbf u\_z$).
     pub reference: MagnonReference<DIM>,
 }
 
@@ -301,10 +330,16 @@ impl<const DIM: usize> Magnon<DIM> {
         DIM
     }
 
-    /// Reciprocal lattice vectors as rows, satisfying `B A^T = 2 pi I`.
+    /// Reciprocal lattice vectors as rows, satisfying
+    /// $\mathbf B\mathbf A^{\mathrm T} = 2\pi\mathbb{1}$.
     ///
     /// The formula matches [`Model::rec_lat`](crate::model::Model::rec_lat):
-    /// `B = 2 pi (A^T)^{-1}` with the real-space lattice `A` stored as rows.
+    ///
+    /// $$
+    /// \mathbf B = 2\pi\\,(\mathbf A^{\mathrm T})^{-1}
+    /// $$
+    ///
+    /// with the real-space lattice $\mathbf A$ stored as rows.
     pub fn rec_lat(&self) -> Result<Array2<f64>> {
         let inv_t = self
             .lat
@@ -349,8 +384,11 @@ impl<const DIM: usize> Magnon<DIM> {
     /// The checks mirror what the spin-wave solver and the hr writer need: a
     /// square lattice with a finite inverse, one positive spin per site, unit
     /// reference axes, at least one translation with the zero vector in row
-    /// `0`, no duplicated translations, every `-R` present, and
-    /// `J_ij^{ab}(R) = J_ji^{ba}(-R)`.
+    /// `0`, no duplicated translations, every $-\mathbf R$ present, and
+    ///
+    /// $$
+    /// J^{ab}\_{ij}(\mathbf R) = J^{ba}\_{ji}(-\mathbf R).
+    /// $$
     pub fn validate(&self) -> Result<()> {
         if !(1..=3).contains(&DIM) {
             return Err(TbError::InvalidDimension {
@@ -530,7 +568,8 @@ impl<const DIM: usize> Magnon<DIM> {
 ///
 /// The contract mirrors [`Solve`](crate::solve_ham::Solve) on the electronic
 /// side: every method validates the model and the input points, returns
-/// `nspin()` frequencies per q-point in non-decreasing order, and preserves the
+/// `nspin()` frequencies per $\mathbf q$-point in non-decreasing order, and
+/// preserves the
 /// input order. The frequencies are the positive paraunitary (Colpa)
 /// eigenvalues of [`Magnon::gen_bdg`], in eV.
 pub trait MagnonSolve {
@@ -538,7 +577,8 @@ pub trait MagnonSolve {
     fn magnon_band_onek<S: Data<Elem = f64>>(&self, q: &ArrayBase<S, Ix1>) -> Result<Array1<f64>>;
     /// Frequencies at every row of `qs`, shape `(nq, nspin)`.
     fn magnon_band_all<S: Data<Elem = f64>>(&self, qs: &ArrayBase<S, Ix2>) -> Result<Array2<f64>>;
-    /// Same as [`MagnonSolve::magnon_band_all`], solved in parallel over q-points.
+    /// Same as [`MagnonSolve::magnon_band_all`], solved in parallel over
+    /// $\mathbf q$-points.
     fn magnon_band_all_parallel<S: Data<Elem = f64>>(
         &self,
         qs: &ArrayBase<S, Ix2>,
@@ -547,7 +587,7 @@ pub trait MagnonSolve {
 
 /// Band paths use the same node-preserving sampler as [`Model`](crate::model::Model).
 ///
-/// Distances are reciprocal-lattice units without a `2 pi` factor, and the
+/// Distances are reciprocal-lattice units without a $2\pi$ factor, and the
 /// path is sampled with `nk` points including every node.
 impl<const DIM: usize> Kpath for Magnon<DIM> {
     fn k_path(

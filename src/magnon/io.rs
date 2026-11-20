@@ -25,7 +25,7 @@
 //! | field | value | meaning |
 //! |---|---|---|
 //! | `energy_unit` | `eV` | exchange tensors and frequencies |
-//! | `spin_unit` | `hbar` | `spin[i]` is `S_i = \|m_i\| / 2` |
+//! | `spin_unit` | `hbar` | `spin[i]` is $S\_i=\lvert m\_i\rvert/2$ |
 //! | `exchange_convention` | `unit-vector` | `J` is TB2J's landscape coefficient |
 //!
 //! # Examples

@@ -11,26 +11,34 @@
 //! Both run the same extraction, which follows the magnetic force theorem with
 //! a local rigid spin rotation (LKAG / TB2J):
 //!
-//! ```text
-//! J_ij(R) = (1/4 pi) Im int dE Tr_L [ Delta_i G^up_ij(R, E) Delta_j G^dn_ji(-R, E) ]
-//! ```
+//! $$
+//! J\_{ij}(\mathbf R) = \frac{1}{4\pi\eta\_{ij}}\operatorname{Im}
+//! \int\\!dE\\;\operatorname{Tr}\_{\\!L}\lbrack
+//! \Delta\_i\\,G^{\uparrow}\_{ij}(\mathbf R,E)\\,
+//! \Delta\_j\\,G^{\downarrow}\_{ji}(-\mathbf R,E)\rbrack,
+//! $$
 //!
-//! with `Delta_i = H^up_ii - H^dn_ii` the on-site exchange splitting of magnetic
-//! site `i`, and
+//! with
+//! $\Delta\_i = H^{\uparrow}\_{ii}-H^{\downarrow}\_{ii}$ the on-site exchange
+//! splitting of magnetic site $i$. The alignment factor $\eta\_{ij}$ is $-1$ if
+//! $\mathbf n\_i\cdot\mathbf n\_j<0$ and $+1$ otherwise. The Green function is
 //!
-//! ```text
-//! G^s_ij(R, z) = (1/N_k) sum_k [ z I - H^s(k) ]^{-1}_{ij} exp(-2 pi i k.R).
-//! ```
+//! $$
+//! G^{s}\_{ij}(\mathbf R,z) = \frac{1}{N\_k}\sum\_{\mathbf k}
+//! \lbrack z\mathbb{1}-H^{s}(\mathbf k)\rbrack^{-1}\_{ij}
+//! e^{-2\pi i\\,\mathbf k\cdot\mathbf R}.
+//! $$
 //!
 //! The default energy integral uses the continued-fraction representation of
 //! the Fermi function. The optional upper-half-plane semicircle connects
-//! `emax` and `emin`, relative to the zero Fermi energy, and uses the composite
-//! Simpson rule.
+//! $\epsilon\_{\max}$ and $\epsilon\_{\min}$, relative to the zero Fermi energy,
+//! and uses the composite Simpson rule.
 //!
-//! The result is the TB2J **unit-vector landscape coefficient** in eV: `J > 0`
-//! is ferromagnetic, and the sign is fixed by `sign(axis_i . axis_j)` so that an
-//! antiferromagnetic reference still reports a positive coupling as
-//! antiferromagnetic. This construction yields the isotropic part only; the
+//! The result is the TB2J **unit-vector landscape coefficient** in eV: $J>0$
+//! favours ferromagnetic alignment and $J<0$ favours antiferromagnetic
+//! alignment. The factor $\eta\_{ij}$ converts the local rotation curvature
+//! to this reference-independent sign convention. This construction yields
+//! the isotropic part only; the
 //! anisotropic and Dzyaloshinskii-Moriya parts need the spinor (four-component)
 //! treatment and are not produced here.
 //!
@@ -46,17 +54,19 @@
 //! 1. [`ExchangeParams::spin`] together with [`ExchangeParams::axis`];
 //! 2. the atom magnetic moments;
 //! 3. otherwise the **site magnetization of the two channels**,
-//!    `m_i = Tr(rho_up - rho_dn)` over the site's orbitals at zero temperature.
-//!    This is the usual case for Wannier90 input, which stores no moments, and
-//!    it is what TB2J calls `spinat`: `S_i = |m_i| / 2` in units of `hbar`
-//!    (a `g = 2`, orbital-quenched moment) and `axis_i = +z` or `-z` along the
-//!    Hamiltonian's own quantization axis.
+//!    $m\_i = \operatorname{Tr}(\rho\_\uparrow-\rho\_\downarrow)$ over the
+//!    site's orbitals at zero temperature. This is the usual case for Wannier90
+//!    input, which stores no moments, and it is what TB2J calls `spinat`:
+//!    $S\_i = |m\_i|/2$ in units of $\hbar$ (a $g=2$, orbital-quenched moment)
+//!    and $\mathbf n\_i = \pm\hat{\mathbf z}$ along the Hamiltonian's own
+//!    quantization axis.
 //!
 //! An explicitly supplied direction is cross-checked against that
 //! magnetization. A *global* spin flip is a symmetry of the problem and is
 //! accepted, but a per-site contradiction is rejected with
 //! `moment_direction_consistent`, because it would silently flip the sign of
-//! `J` (the couplings are normalized by `sign(axis_i . axis_j)`).
+//! $J$ (the couplings are normalized by
+//! $\operatorname{sign}(\mathbf n\_i\cdot\mathbf n\_j)$).
 
 //! # Examples
 //!
@@ -105,14 +115,14 @@ pub enum MagnonContour {
     ///
     /// The integrand is analytic in the upper half plane, so the arc integral
     /// equals the real-axis integral. Accurate for gapped systems, but the arc
-    /// ends on the real axis at `emax`. For a metal, ending at zero can put
-    /// nodes near band energies and slow convergence.
+    /// ends on the real axis at $\epsilon\_{\max}$. For a metal, ending at
+    /// zero can put nodes near band energies and slow convergence.
     Semicircle,
     /// TB2J's continued-fraction representation of the Fermi function.
     ///
     /// The tridiagonal continued-fraction matrix gives poles and residues.
     /// Integration nodes lie off the real energy axis at finite temperature,
-    /// avoiding real-axis poles in metals. The `-pi/2` conversion factor is
+    /// avoiding real-axis poles in metals. The $-\pi/2$ conversion factor is
     /// applied to the accumulated sum as in TB2J. This is the default.
     Cfr {
         /// Electronic temperature of the representation, in kelvin.
@@ -132,9 +142,10 @@ impl Default for MagnonContour {
 /// Parameters of a TB2J-style exchange extraction.
 ///
 /// Defaults follow TB2J: a `-10.0` to `0.0` eV window relative to the Fermi
-/// level and 65 contour nodes. The k-mesh is forced to odd components, because
+/// level and 101 contour nodes. The k-mesh is forced to odd components, because
 /// an odd mesh makes the commensurate real-space box
-/// `R_i in [-(n_i-1)/2, (n_i-1)/2]` closed under `R -> -R`.
+/// $R\_i\in\lbrack-(n\_i-1)/2,\\ (n\_i-1)/2\rbrack$ closed under
+/// $\mathbf R\to-\mathbf R$.
 #[derive(Clone, Debug)]
 pub struct ExchangeParams {
     /// k-point mesh; every component is rounded up to the next odd integer.
@@ -153,7 +164,7 @@ pub struct ExchangeParams {
     pub contour: MagnonContour,
     /// Optional pair-distance cutoff in angstrom.
     pub rcut: Option<f64>,
-    /// Optional spin quantum numbers `S_i` in units of `hbar`.
+    /// Optional spin quantum numbers $S\_i$ in units of $\hbar$.
     ///
     /// When both this and [`Self::axis`] are set they take precedence over the
     /// atom moments and over the magnetization derived from the two channels.
@@ -589,11 +600,16 @@ const BOLTZMANN_EV_PER_KELVIN: f64 = 8.617_333_262e-5;
 /// TB2J's continued-fraction representation of the Fermi function.
 ///
 /// The poles are the eigenvalues of the tridiagonal matrix
-/// `b_j = 1 / (2 sqrt((2j+1)(2j+3)))`, pushed onto the imaginary axis at
-/// `k_B T / p`, with residues `|v_0|^2 / (4 p^2)`. Every pole appears as a
-/// `+i`/`-i` pair with the same weight `2i/beta * |v_0|^2 / (4 p^2)`. The
-/// `-pi/2` conversion factor is applied by the caller, exactly as TB2J applies
-/// it after accumulating over the path.
+///
+/// $$
+/// b\_j = \frac{1}{2\sqrt{(2j+1)(2j+3)}},
+/// $$
+///
+/// pushed onto the imaginary axis at $k\_BT/p$, with residues
+/// $\lvert v\_0\rvert^2/(4p^2)$. Every pole appears as a $+i$/$-i$ pair with
+/// the same weight $2i\lvert v\_0\rvert^2/(\beta\\,4p^2)$. The $-\pi/2$
+/// conversion factor is applied by the caller, exactly as TB2J applies it after
+/// accumulating over the path.
 pub(crate) fn cfr_contour(
     nz: usize,
     temperature_kelvin: f64,
@@ -652,9 +668,14 @@ pub(crate) fn cfr_contour(
 
 /// Contour nodes and integration weights of the upper-half-plane semicircle.
 ///
-/// The weights already include `dz` and the orientation sign, so
-/// `sum_k w_k f(z_k)` approximates `int_{emin}^{emax} f(E) dE` for `f` analytic
-/// in the upper half plane.
+/// The weights already include $dz$ and the orientation sign, so
+///
+/// $$
+/// \sum\_k w\_k f(z\_k) \approx
+/// \int\_{\epsilon\_{\min}}^{\epsilon\_{\max}} f(E)\\,dE
+/// $$
+///
+/// for $f$ analytic in the upper half plane.
 pub(crate) fn semicircle_contour(
     emin: f64,
     emax: f64,
@@ -731,8 +752,14 @@ fn prepare_channel(
 
 /// Real-space Green's function on the requested box for one contour node.
 ///
-/// `phases[i_r, k] = exp(-2 pi i k.R) / N_k`, so the whole box transform is a
-/// single matrix product `phases.dot(gmat)`.
+///
+/// $$
+/// \text{phases}\lbrack i\_R,\mathbf k\rbrack
+/// = e^{-2\pi i\\,\mathbf k\cdot\mathbf R}/N\_k,
+/// $$
+///
+/// so the whole box transform is a single matrix product
+/// `phases.dot(gmat)`.
 fn greens_on_box(
     bands: &ChannelBands,
     phases: &Array2<Complex<f64>>,
@@ -795,7 +822,13 @@ fn hamiltonian_at(
     hk
 }
 
-/// `Tr[Delta_i G_up_ij(R) Delta_j G_down_ji(-R)]` over the two site blocks.
+/// $$
+/// \operatorname{Tr}\lbrack
+/// \Delta\_i\\,G^{\uparrow}\_{ij}(\mathbf R)\\,
+/// \Delta\_j\\,G^{\downarrow}\_{ji}(-\mathbf R)\rbrack
+/// $$
+///
+/// over the two site blocks.
 fn trace_product(
     delta: &Array2<Complex<f64>>,
     site_i: &[usize],
@@ -913,8 +946,9 @@ fn site_positions_from_atoms(
     positions
 }
 
-/// Site magnetization `Tr(rho_up - rho_dn)` in units of `mu_B`, evaluated at
-/// zero temperature from the two channel band structures.
+/// Site magnetization $\operatorname{Tr}(\rho\_\uparrow-\rho\_\downarrow)$ in
+/// units of $\mu\_B$, evaluated at zero temperature from the two channel band
+/// structures.
 fn site_magnetization(
     band_up: &ChannelBands,
     band_down: &ChannelBands,
@@ -955,8 +989,9 @@ fn site_magnetization(
 ///
 /// Order of precedence: `ExchangeParams::spin`/`::axis`, then the atom magnetic
 /// moments, then — the usual case for Wannier90 input, which stores no moments
-/// — the site magnetization computed from the two channels (`S_i = |m_i| / 2`,
-/// axis `+z` or `-z` along the Hamiltonian's own quantization axis). Whenever an
+/// — the site magnetization computed from the two channels
+/// ($S\_i=|m\_i|/2$, axis $\pm\hat{\mathbf z}$ along the Hamiltonian's own
+/// quantization axis). Whenever an
 /// explicit direction is supplied it is cross-checked against that
 /// magnetization: a per-site disagreement would silently flip `J`, while a
 /// global spin flip is a symmetry and is accepted.
@@ -1035,7 +1070,8 @@ fn resolve_moments(
 
 /// Reject a per-site contradiction between a supplied direction and the
 /// on-site magnetization of the two channels. A uniform global flip is allowed
-/// because it leaves every `sign(axis_i . axis_j)` unchanged.
+/// because it leaves every $\operatorname{sign}(\mathbf n\_i\cdot\mathbf n\_j)$
+/// unchanged.
 fn check_axis_against_hamiltonian(
     axis: &Array2<f64>,
     magnetization: &Array1<f64>,

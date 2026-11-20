@@ -9,128 +9,105 @@
 //! linear/nonlinear transport properties, Floquet driven systems, and optional
 //! crystallographic and magnetic-symmetry analysis.
 //!
-//! ## Module overview
+//! ## API map
 //!
-//! ### Core data structures
+//! Click an API name to jump to its documentation. Branches can be collapsed
+//! or reopened by clicking their headings.
 //!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`model`] | Central [`Model`]<SPIN, DIM, R> struct with lattice, orbital, and hopping data;
-//! |   constructors (`tb_model`), hopping/on-site setup, structural editing, supercells;
-//! |   plus [`Gauge`], [`Dimension`], [`SpinDirection`] |
-//! | [`atom_struct`] | [`Atom`] and [`OrbProj`] types for describing atomic sites and orbital
-//! |   projections |
+//! <details open>
+//! <summary>Electronic tight-binding models</summary>
 //!
-//! ### Model construction and manipulation
+//! - [`Model<SPIN, DIM, R>`](Model): spin, real-space dimension, and
+//!   [`NoRMatrix`] or [`HasRMatrix`] position-matrix storage.
+//!   - **Build and edit:** [`tb_model`](Model::tb_model), [`Atom`], [`OrbProj`];
+//!     in-place edits include [`set_hop`](Model::set_hop), [`add_hop`](Model::add_hop),
+//!     [`set_onsite`](Model::set_onsite), [`remove_atom`](Model::remove_atom),
+//!     and [`reorder_atom`](Model::reorder_atom).
+//!   - **Structure transforms:** [`make_supercell`](Model::make_supercell),
+//!     [`shift_to_atom`](Model::shift_to_atom) and its alias [`move_to_atom`](Model::move_to_atom)
+//!     return new models. The alignment methods move only atom-owned orbital
+//!     coordinates and leave the real-space Hamiltonian and position matrix unchanged.
+//!   - **Wannier90 and structure I/O:** [`from_hr`](Wannier90::from_hr) (3D),
+//!     [`output_hr`](OutPut::output_hr), [`output_r`](Model::output_r) (requires
+//!     [`HasRMatrix`]), [`output_win`](OutPut::output_win),
+//!     [`output_xyz`](OutPut::output_xyz), [`output_POSCAR`](OutPut::output_POSCAR).
+//!   - **Sampling and bands:** [`gen_kmesh`], [`gen_kplane`],
+//!     [`k_path`](Kpath::k_path), [`gen_ham`](Model::gen_ham),
+//!     [`gen_v`](Velocity::gen_v), [`solve_onek`](Solve::solve_onek),
+//!     [`solve_band_all_parallel`](Solve::solve_band_all_parallel),
+//!     [`dos`](Model::dos), [`show_band`](OutPut::show_band).
+//!   - **Geometry and topology:** [`berry_curvature_at`](BerryCurvature::berry_curvature_at),
+//!     [`quantum_geometry_at`](QuantumGeometry::quantum_geometry_at),
+//!     [`berry_loop`](Berry::berry_loop), [`wannier_centre`](Berry::wannier_centre),
+//!     [`orb_angular`](Model::orb_angular) (orbital angular momentum).
+//!   - **Boundaries, Fermi surfaces, and unfolding:** [`cut_piece`](CutModel::cut_piece),
+//!     [`cut_dot`](CutModel::cut_dot), [`SurfGreen`] (semi-infinite surface spectra),
+//!     [`show_fermi_surface`](FermiSurface::show_fermi_surface), [`unfold`](Unfold::unfold).
+//!   - **Brillouin-zone responses** ([`Parameters<DIM>`](Parameters)):
+//!     - Linear: [`hall_conductivity`](Model::hall_conductivity),
+//!       [`quantum_geometry`](Model::quantum_geometry).
+//!     - Optical: [`optical_conductivity`](Model::optical_conductivity),
+//!       [`optical_conductivity_tensor`](Model::optical_conductivity_tensor).
+//!     - Nonlinear: [`extrinsic_nonlinear_hall`](Model::extrinsic_nonlinear_hall),
+//!       [`intrinsic_nonlinear_hall`](Model::intrinsic_nonlinear_hall).
+//!   - **Fields and effective models:**
+//!     - Static magnetic field: [`add_magnetic_field`](MagneticField::add_magnetic_field).
+//!     - Hubbard: [`HubbardModel`] → [`solve_hartree_fock`](HubbardModel::solve_hartree_fock).
+//!     - Floquet: [`FloquetDrive`] → [`floquet_model`](Floquet::floquet_model) (enlarged Sambe basis),
+//!       or [`floquet_effective_model`](Model::floquet_effective_model),
+//!       [`floquet_effective_mode_resolved_model`](Model::floquet_effective_mode_resolved_model),
+//!       [`floquet_effective_q_model`](Model::floquet_effective_q_model) (same-size models).
 //!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`hubbard`] | Non-collinear unrestricted Hartree-Fock for on-site Hubbard
-//! |   interactions, with fixed chemical potential or fixed initial filling |
-//! | [`cut`] | [`CutModel`] trait for extracting finite slabs from supercells |
-//! | [`model::utils`] | Public lattice-vector lookup (`find_R`) and array row/column removal |
+//! </details>
 //!
-//! ### Hamiltonian solving
+//! <details open>
+//! <summary>Exchange and magnons</summary>
 //!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`model::physics`] | Bloch Hamiltonians (`gen_ham`, `gen_ham_batch`) and density of states (`dos`) |
-//! | [`solve_ham`] | Parallel diagonalization of H(k) over k-point meshes
-//! |   (`solve_all_parallel`, `solve_band_all_parallel`) |
-//! | [`ndarray_lapack`] | LAPACK bindings for ndarray matrices |
+//! - [`Magnon<DIM>`](Magnon), a separate spin model:
+//!   - **Extract and store exchange:** [`from_model`](Magnon::from_model),
+//!     [`from_collinear`](Magnon::from_collinear), [`from_hr`](Magnon::from_hr),
+//!     [`write_hr`](Magnon::write_hr).
+//!   - **Spin waves:** [`gen_jq`](Magnon::gen_jq), [`gen_bdg`](Magnon::gen_bdg),
+//!     [`magnon_band_onek`](magnon::MagnonSolve::magnon_band_onek), [`magnon_dos`](Magnon::magnon_dos).
+//!   - **Driven magnons:** [`floquet_superexchange`](Magnon::floquet_superexchange),
+//!     [`MagnonSambe::new_aharonov_casher`].
 //!
-//! ### Floquet driven systems
+//! </details>
 //!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`floquet`] | Floquet-Sambe Hamiltonians and quasienergies, together with
-//! |   same-size van Vleck effective models for coherent and mode-resolved drives |
-//!
-//! ### k-space sampling
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`kpath`] | k-path generation along high-symmetry lines (`k_path`) |
-//! | [`kpoints`] | Uniform k-mesh generation (`gen_kmesh`, `gen_krange`) |
-//!
-//! ### Transport properties
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`response`] | Linear, nonlinear, and optical conductivity tensors via the Kubo
-//! |   formalism and simplex quadrature: anomalous Hall, spin Hall, nonlinear
-//! |   responses, and frequency-dependent optical conductivity |
-//!
-//! ### Operators and observables
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`velocity`] | Velocity operator v_a(k) at each k-point |
-//! | [`orbital_angular`] | Orbital angular momentum operator |
-//! | [`math`] | Mathematical utilities (commutators, matrix operations) |
-//!
-//! ### Topological analysis
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`geometry`] | Berry phases, Wilson loops, Berry flux, and Wannier centers |
-//! | [`response`] | Berry curvature and Hall responses |
-//! | [`quantum_geometry`] | Quantum geometric tensor and quantum metric |
-//!
-//! ### Surface and defect calculations
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`surfgreen`] | Surface Green's function G^s(omega, k_parallel) for
-//! |   semi-infinite systems; local density of states at surfaces and edges |
-//!
-//! ### Interfaces
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`wannier90`] | Read Wannier90 `_hr.dat` and `_r.dat` files |
-//! | [`unfold`] | Band unfolding for supercell calculations (the [`Unfold`] trait) |
-//!
-//! ### Magnetism and spin waves
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`magnon`] | Real-space exchange tensors of a classical spin
-//! |   Hamiltonian, with hr-style `_hr` exchange file input and output |
-//!
-//! ### Magnetic field
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`magnetic_field`] | Uniform magnetic field via Peierls substitution |
-//!
-//! ### Crystal and Hamiltonian symmetry
-//!
-//! The following modules are available with the `cryspglib` feature.
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | `crystal_symmetry` | Structural and magnetic space groups, high-symmetry
-//! |   k-points, character tables, and irreducible reciprocal meshes |
-//! | `hamiltonian_symmetry` | Localized orbital symmetry actions, exact
-//! |   Hamiltonian covariance checks, residual magnetic groups, and forced symmetrization |
-//! | `irrep_analysis` | Parallel high-symmetry band-character calculation and
-//! |   magnetic corepresentation identification (`Model::calculate_irrep`) |
-//!
-//! ### Output and I/O
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`output`] | Band structure and surface state plotting via gnuplot (`show_band`, etc.) |
-//! | [`io`] | Text file I/O for 1D and 2D arrays (`write_txt`, `write_txt_1`) |
-//!
-//! ### Supporting modules
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`error`] | Centralized error handling ([`TbError`], [`Result`]) |
-//! | [`phy_const`] | Physical constants (hbar, e, k_B, etc.) |
-//! | [`generics`] | Numeric type abstractions |
+
+#![cfg_attr(
+    feature = "cryspglib",
+    doc = r"
+<details open>
+<summary>Crystal and Hamiltonian symmetry (cryspglib, 3D)</summary>
+
+- **Crystal and magnetic groups:** [`crystal_symmetry`](CrystalSymmetry::crystal_symmetry),
+  [`magnetic_crystal_symmetry`](CrystalSymmetry::magnetic_crystal_symmetry),
+  [`irreducible_kmesh`](CrystalSymmetry::irreducible_kmesh),
+  [`high_symmetry_kpoints`](CrystalSymmetryDataset::high_symmetry_kpoints),
+  [`character_table_at`](CrystalSymmetryDataset::character_table_at).
+- **Check or project a Hamiltonian:** [`check_hamiltonian_symmetry`](Model::check_hamiltonian_symmetry)
+  returns a report; [`symmetrize_hamiltonian`](Model::symmetrize_hamiltonian) returns a new model.
+- **Projections from shared references** (spinless models; inputs unchanged):
+  - Centres, returning `(model, report)`: [`symmetrize_centres`](Model::symmetrize_centres),
+    [`symmetrize_model_and_centres`](Model::symmetrize_model_and_centres).
+  - Two channels, returning `(up_sym, dn_sym, report)` in input order:
+    [`symmetrize_pair`](Model::symmetrize_pair),
+    [`symmetrize_pair_with_collinear_spin_group`](Model::symmetrize_pair_with_collinear_spin_group),
+    [`symmetrize_pair_with_unitary_collinear_spin_group`](Model::symmetrize_pair_with_unitary_collinear_spin_group).
+- **Band representations:** [`calculate_irrep`](Model::calculate_irrep),
+  [`calculate_irrep_for_group`](Model::calculate_irrep_for_group).
+
+</details>
+"
+)]
+#![cfg_attr(
+    not(feature = "cryspglib"),
+    doc = "
+Enable the `cryspglib` feature to include the crystal and Hamiltonian symmetry branch.
+"
+)]
+
 //!
 //! ## Mathematical foundation
 //!

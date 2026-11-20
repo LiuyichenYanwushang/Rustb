@@ -6,30 +6,45 @@
 //! substitution, is reduced to an effective spin Hamiltonian by a
 //! Floquet–Sambe strong-coupling (Löwdin) expansion. The result is
 //!
-//! ```text
-//! H = J1 sum_<ij> S_i.S_j + J2 sum_<<ik>> S_i.S_k
-//!     + chi sum_(ijk) S_i.(S_j x S_k) + O(t^6),
-//! ```
+//! $$
+//! H = J\_1\\!\sum\_{\langle ij\rangle}\mathbf S\_i\cdot\mathbf S\_j
+//!   \+ J\_2\\!\sum\_{\langle\\!\langle ik\rangle\\!\rangle}
+//!     \mathbf S\_i\cdot\mathbf S\_k
+//!   \+ \chi\\!\sum\_{(i,j,k)}\mathbf S\_i\cdot(\mathbf S\_j\times\mathbf S\_k)
+//!   \+ O(t^6),
+//! $$
 //!
-//! with `chi(-xi) = -chi(xi)` while `J1` and `J2` are even in the helicity
-//! `xi = +-1`. At quadratic spin-wave order the chirality is a momentum-odd
-//! term `D_k = 2 chi S^2 sum_nu sin(k.b_nu)` and the two magnon branches split,
+//! with $\chi(-\xi) = -\chi(\xi)$ while $J\_1$ and $J\_2$ are even in the
+//! helicity $\xi=\pm1$. At quadratic spin-wave order the chirality is a
+//! momentum-odd term
 //!
-//! ```text
-//! hbar omega_{up,down}(k) = sqrt((A_k +- D_k)^2 - |B_k|^2),
-//! ```
+//! $$
+//! D\_{\mathbf k} = 2\chi S^2\sum\_{\nu}\sin(\mathbf k\cdot\mathbf b\_\nu)
+//! $$
 //!
-//! which satisfy `omega_up(k) = omega_down(-k)`: an odd-parity magnon.
+//! and the two magnon branches split,
+//!
+//! $$
+//! \hbar\omega\_{\uparrow,\downarrow}(\mathbf k)
+//!   = \sqrt{\bigl(A\_{\mathbf k}\pm D\_{\mathbf k}\bigr)^2
+//!           \- \lvert B\_{\mathbf k}\rvert^2},
+//! $$
+//!
+//! which satisfy $\omega\_\uparrow(\mathbf k) = \omega\_\downarrow(-\mathbf k)$:
+//! an odd-parity magnon.
 //!
 //! # Light coupling
 //!
-//! For `A(t) = A0 (-sin(Omega t), xi cos(Omega t))` the Peierls phase on a bond
-//! of length `a` at angle `phi` gives
+//! For $\mathbf A(t) = A\_0(-\sin\Omega t,\\ \xi\cos\Omega t)$ the Peierls
+//! phase on a bond of length $a$ at angle $\phi$ gives
 //!
-//! ```text
-//! t_ij(t) = sum_m t_ij J_m(lambda) exp(i xi m phi) exp(-i m Omega t),
-//! lambda  = e A0 a / hbar = e E a / (hbar Omega).
-//! ```
+//! $$
+//! \begin{aligned}
+//! t\_{ij}(t) &= \sum\_m t\_{ij}\\,\mathcal J\_m(\lambda)\\,
+//!   e^{i\xi m\phi}\\,e^{-im\Omega t},\\\\
+//! \lambda &= \frac{eA\_0a}{\hbar} = \frac{eEa}{\hbar\Omega}.
+//! \end{aligned}
+//! $$
 //!
 //! The exchange and chirality then follow from the second- and fourth-order
 //! Löwdin sums over Floquet harmonics. The `F`, `B` and `G` contributions
@@ -46,16 +61,17 @@ use std::f64::consts::PI;
 /// Physical parameters of the driven half-filled Hubbard model.
 #[derive(Clone, Copy, Debug)]
 pub struct DrivenHubbardParams {
-    /// Hopping amplitude `t` in eV.
+    /// Hopping amplitude $t$ in eV.
     pub hopping_ev: f64,
-    /// On-site repulsion `U` in eV.
+    /// On-site repulsion $U$ in eV.
     pub interaction_ev: f64,
-    /// Photon energy `hbar Omega` in eV.
+    /// Photon energy $\hbar\Omega$ in eV.
     pub photon_ev: f64,
-    /// Nonnegative dimensionless Peierls amplitude `lambda = e E a / (hbar Omega)`;
-    /// negative values are rejected by [`Self::validate`].
+    /// Nonnegative dimensionless Peierls amplitude
+    /// $\lambda = eEa/(\hbar\Omega)$; negative values are rejected by
+    /// [`Self::validate`].
     pub lambda: f64,
-    /// Optical helicity `xi = +-1`.
+    /// Optical helicity $\xi=\pm1$.
     pub helicity: f64,
     /// Truncation of the Floquet harmonic sums.
     pub harmonic_max: isize,
@@ -144,7 +160,7 @@ impl DrivenHubbardParams {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BilayerExchange {
     /// Intralayer nearest-neighbour exchange, before subtracting the
-    /// phenomenological ferromagnetic direct exchange `J_D` of the paper.
+    /// phenomenological ferromagnetic direct exchange $J\_D$ of the paper.
     pub j1: f64,
     /// Intralayer next-nearest-neighbour exchange.
     pub j2: f64,
@@ -157,7 +173,7 @@ pub struct BilayerExchange {
     /// Four-spin coefficient of the vertical-pair bilinears.
     pub k2: f64,
     /// Four-spin coefficient of the diagonal cross-layer bilinears; stored with
-    /// the sign printed in the Supplemental Material, i.e. `k3 = -k1`.
+    /// the sign printed in the Supplemental Material, i.e. $k\_3=-k\_1$.
     pub k3: f64,
     /// Scalar spin chirality of each layer.
     pub chirality: f64,
@@ -167,18 +183,18 @@ pub struct BilayerExchange {
 /// drive).
 #[derive(Clone, Copy, Debug)]
 pub struct BilayerParams {
-    /// In-plane hopping `t` in eV.
+    /// In-plane hopping $t$ in eV.
     pub hopping_ev: f64,
-    /// Vertical hopping `t_perp` in eV.
+    /// Vertical hopping $t\_\perp$ in eV.
     pub interlayer_hopping_ev: f64,
-    /// On-site repulsion `U` in eV.
+    /// On-site repulsion $U$ in eV.
     pub interaction_ev: f64,
 }
 
 impl BilayerExchange {
     /// Decoupled bilayer whose intralayer part is a given monolayer exchange.
     ///
-    /// `J_perp`, `J_cross` and the four-spin coefficients vanish, so the two
+    /// $J\_\perp$, $J\_\times$ and the four-spin coefficients vanish, so the two
     /// layers are independent and each reproduces the monolayer spectrum.
     pub fn decoupled(monolayer: &DrivenExchange) -> Self {
         Self {
@@ -193,13 +209,21 @@ impl BilayerExchange {
         }
     }
 
-    /// Static (`lambda = 0`) couplings of the AA-stacked bilayer.
+    /// Static ($\lambda=0$) couplings of the AA-stacked bilayer.
     ///
     /// Reproduces the closed forms printed in the Supplemental Material:
-    /// `J1 = 4t^2/U - (16t^4 + 4t^2 t_perp^2)/U^3`,
-    /// `J2 = 4t^4/U^3`, `J_perp = 4t_perp^2/U - (16t_perp^4 + 12t^2 t_perp^2)/U^3`,
-    /// `J_cross = 4t^2 t_perp^2/U^3`,
-    /// `K^(1) = K^(2) = -K^(3) = 80 t^2 t_perp^2/U^3` and `chi = 0`.
+    ///
+    /// $$
+    /// \begin{aligned}
+    /// J\_1 &= \frac{4t^2}{U} - \frac{16t^4 + 4t^2t\_\perp^2}{U^3},\\\\
+    /// J\_2 &= \frac{4t^4}{U^3},\\\\
+    /// J\_\perp &= \frac{4t\_\perp^2}{U}
+    ///   \- \frac{16t\_\perp^4 + 12t^2t\_\perp^2}{U^3},\\\\
+    /// J\_\times &= \frac{4t^2t\_\perp^2}{U^3},\\\\
+    /// K^{(1)} = K^{(2)} = -K^{(3)}
+    ///   &= \frac{80\\,t^2t\_\perp^2}{U^3},\qquad \chi = 0.
+    /// \end{aligned}
+    /// $$
     pub fn static_limit(params: &BilayerParams) -> Result<Self> {
         let t = params.hopping_ev;
         let tp = params.interlayer_hopping_ev;
@@ -259,23 +283,47 @@ impl DrivenExchange {
     /// Build a `Magnon` whose spin-wave spectrum reproduces
     /// [`Self::honeycomb_dispersion`].
     ///
-    /// The mapping between the paper's convention `H = J sum S_i.S_j` (spin
-    /// operators, `|S| = S`) and this crate's landscape convention
-    /// `E = -sum J_hat s_i.s_j` (unit vectors) is
+    /// The mapping between the paper's convention (spin operators with
+    /// $\lvert\mathbf S\rvert = S$)
     ///
-    /// ```text
-    /// J_land   = -(S^2 / 2) J_paper,  (J1, J2)
-    /// SIA_zz   = -K S^2,              (single-ion anisotropy, R = 0 block)
-    /// dmi_land = chi S^3 / 2          (next-nearest-neighbour DMI)
-    /// ```
+    /// $$
+    /// H = J\sum\_{\langle ij\rangle}\mathbf S\_i\cdot\mathbf S\_j
+    /// $$
     ///
-    /// The `S^2/2` of the exchange carries both the spin-operator normalisation
-    /// and the `2` of TB2J's `C` term (the transverse frame contributes a factor
-    /// two of its own). The anisotropy enters only through that same `C` term,
-    /// which is why it keeps a single `S^2` rather than `S^2/2`. The chirality
-    /// needs `S^3/2` because the solver's `A1[0,0] - A1[1,1]` is
-    /// `(8/S) sum d sin(k.b)`. Our next-nearest list is `{b1, -b2, b3}`, so the
-    /// paper's `sum_nu sin(k.b_nu)` needs alternating signs.
+    /// and this crate's landscape convention (unit vectors)
+    ///
+    /// $$
+    /// E = -\sum \hat J\\,\mathbf s\_i\cdot\mathbf s\_j
+    /// $$
+    ///
+    /// is
+    ///
+    /// $$
+    /// \begin{aligned}
+    /// J\_{\mathrm{land}} &= -\tfrac{S^2}{2}\\,J\_{\mathrm{paper}},
+    ///   &&(J\_1,\\ J\_2)\\\\
+    /// \mathrm{SIA}\_{zz} &= -K S^2,
+    ///   &&(\text{single-ion anisotropy, }R=0\text{ block})\\\\
+    /// d\_{\mathrm{mi}} &= \tfrac{\chi S^3}{2}
+    ///   &&(\text{next-nearest-neighbour DMI}).
+    /// \end{aligned}
+    /// $$
+    ///
+    /// The $S^2/2$ of the exchange carries both the spin-operator normalisation
+    /// and the $2$ of TB2J's $C$ term (the transverse frame contributes a factor
+    /// two of its own). The anisotropy enters only through that same $C$ term,
+    /// which is why it keeps a single $S^2$ rather than $S^2/2$. The chirality
+    /// needs $S^3/2$ because the solver's
+    /// $A\_1\lbrack0,0\rbrack-A\_1\lbrack1,1\rbrack$ is
+    ///
+    /// $$
+    /// \bigl(A\_1\lbrack0,0\rbrack-A\_1\lbrack1,1\rbrack\bigr)\_{\mathbf q}
+    /// = \frac{8}{S}\sum\_{\nu} d\\,\sin(\mathbf k\cdot\mathbf b\_\nu).
+    /// $$
+    ///
+    /// Our next-nearest list is $\\{\mathbf b\_1,-\mathbf b\_2,\mathbf b\_3\\}$, so
+    /// the paper's $\sum\_\nu\sin(\mathbf k\cdot\mathbf b\_\nu)$ needs
+    /// alternating signs.
     ///
     /// With this mapping the resulting bands reproduce
     /// [`Self::honeycomb_dispersion`] to `1e-12` eV on a k-mesh, and the two
@@ -399,22 +447,28 @@ impl DrivenExchange {
 /// Effective spin couplings generated by the drive, in eV.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DrivenExchange {
-    /// Nearest-neighbour Heisenberg coupling.
+    /// Nearest-neighbour Heisenberg coupling $J\_1$.
     pub j1: f64,
-    /// Next-nearest-neighbour Heisenberg coupling.
+    /// Next-nearest-neighbour Heisenberg coupling $J\_2$.
     pub j2: f64,
-    /// Scalar spin chirality `chi`.
+    /// Scalar spin chirality $\chi$.
     pub chirality: f64,
 }
 
 impl DrivenExchange {
-    /// Effective `J1`, `J2` and `chi` of the CPL-driven honeycomb Hubbard model.
+    /// Effective $J\_1$, $J\_2$ and $\chi$ of the CPL-driven honeycomb Hubbard
+    /// model.
     ///
     /// Implements the Floquet–Sambe Löwdin sums of the paper's Supplemental
     /// Material: second order
-    /// `J^(2) = 4 t^2 sum_m J_m^2 / (U - m hbar Omega)`, and fourth order
-    /// through the `F` (one-doublon), `B` (nonzero-replica) and `G` (folded)
-    /// contributions with the honeycomb `V`-cluster multiplicities.
+    ///
+    /// $$
+    /// J^{(2)} = 4t^2\sum\_m
+    /// \frac{\mathcal J\_m^2(\lambda)}{U-m\hbar\Omega},
+    /// $$
+    ///
+    /// and fourth order through the $F$ (one-doublon), $B$ (nonzero-replica) and
+    /// $G$ (folded) contributions with the honeycomb $V$-cluster multiplicities.
     pub fn honeycomb(params: &DrivenHubbardParams) -> Result<Self> {
         params.validate()?;
         let t = params.hopping_ev;
@@ -505,11 +559,13 @@ impl DrivenExchange {
         }
     }
 
-    /// Honeycomb spin-wave functions `A_k`, `B_k`, `D_k` of the paper.
+    /// Honeycomb spin-wave functions $A\_{\mathbf k}$, $B\_{\mathbf k}$ and
+    /// $D\_{\mathbf k}$ of the paper.
     ///
-    /// `q` is in fractional reciprocal coordinates of the hexagonal cell with
-    /// the nearest-neighbour vectors of the Supplemental Material, and the
-    /// returned `(a_k, |b_k|, d_k)` uses the units of the couplings (eV).
+    /// $\mathbf q$ is in fractional reciprocal coordinates of the hexagonal cell
+    /// with the nearest-neighbour vectors of the Supplemental Material, and the
+    /// returned $(a\_{\mathbf k},\lvert b\_{\mathbf k}\rvert,d\_{\mathbf k})$
+    /// uses the units of the couplings (eV).
     ///
     /// # Errors
     /// Returns [`TbError::InvalidMagnonInvariant`] for nonpositive/nonfinite spin,
@@ -579,11 +635,12 @@ impl DrivenExchange {
         }
     }
 
-    /// Magnon energies of the two spin branches at `q`, in eV.
+    /// Magnon energies of the two spin branches at $\mathbf q$, in eV.
     ///
-    /// Returns `(omega_up, omega_down)`. A branch is stable only when
-    /// `A ± D >= |B|` within an energy-scale-relative roundoff tolerance;
-    /// a negative radicand beyond roundoff is returned as a structured error.
+    /// Returns $(\omega\_\uparrow,\omega\_\downarrow)$. A branch is stable only
+    /// when $A\pm D \ge \lvert B\rvert$ within an energy-scale-relative
+    /// roundoff tolerance; a negative radicand beyond roundoff is returned as a
+    /// structured error.
     ///
     /// # Errors
     /// Returns [`TbError::InvalidMagnonInvariant`] for invalid inputs, a
@@ -1307,25 +1364,28 @@ use ndarray_linalg::Eig;
 /// The drive dresses every exchange bond with the Peierls phase the electronic
 /// module uses,
 ///
-/// ```text
-/// J_ij(R, t) = J_ij(R) exp[-i a(t).d_ijR],
-/// ```
+/// $$
+/// \mathbf J\_{ij}(\mathbf R,t)
+///   = \mathbf J\_{ij}(\mathbf R)\\,
+///     e^{-i\\,\mathbf a(t)\cdot\mathbf d\_{ij\mathbf R}},
+/// $$
 ///
-/// whose harmonics are the Bessel coefficients `C_m(d)` of the drive. The
-/// quasienergies are obtained from the one-period propagator of the bosonic
+/// whose harmonics are the Bessel coefficients $C\_m(\mathbf d)$ of the drive.
+/// The quasienergies are obtained from the one-period propagator of the bosonic
 /// Bogoliubov–de Gennes dynamics,
 ///
-/// ```text
-/// i d Psi / dt = g H(t) Psi,   g = diag(1, -1),
-/// ```
+/// $$
+/// i\frac{d\Psi}{dt} = gH(t)\Psi,\qquad g=\operatorname{diag}(1,-1),
+/// $$
 ///
 /// rather than from a Hermitian diagonalization: only eigenvectors with
 /// positive metric norm are physical, and at a degenerate (Goldstone) mode the
-/// metric-weighted matrix `g H` is defective, so a naive eigen-decomposition of
-/// `g S` splits the photon replicas of a zero mode spuriously.
+/// metric-weighted matrix $gH$ is defective, so a naive eigen-decomposition of
+/// $gS$ splits the photon replicas of a zero mode spuriously.
 pub struct MagnonSambe<const DIM: usize = 3> {
     magnon: MagnonModel<DIM>,
-    /// Exchange harmonics `J^(m)(R)`, indexed by `m + harmonic_span`.
+    /// Exchange harmonics $\mathbf J^{(m)}(\mathbf R)$, indexed by
+    /// `m + harmonic_span`.
     harmonics: Vec<Array3<Complex<f64>>>,
     omega_ev: f64,
     n_max: isize,
@@ -1538,7 +1598,7 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         &self.magnon
     }
 
-    /// Photon energy `hbar Omega` in eV.
+    /// Photon energy $\hbar\Omega$ in eV.
     pub fn omega_ev(&self) -> f64 {
         self.omega_ev
     }
@@ -1566,13 +1626,14 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         Ok(self)
     }
 
-    /// Time-dependent Bogoliubov–de Gennes matrix `H(q, t)`.
+    /// Time-dependent Bogoliubov–de Gennes matrix $H(\mathbf q,t)$.
     ///
     /// The time dependence is applied to the *real-space* exchange tensors,
-    /// where `J_ji(-R, t) = conj(J_ij(R, t))` holds by construction, and the
-    /// BdG matrix is then built once per time step. Building a single Fourier
-    /// harmonic instead would not be Hermitian, because only the pair
-    /// `H^(m), H^(-m)` is adjoint-related.
+    /// where
+    /// $\mathbf J\_{ji}(-\mathbf R,t) = \mathbf J\_{ij}(\mathbf R,t)^\dagger$
+    /// holds by construction, and the BdG matrix is then built once per time
+    /// step. Building a single Fourier harmonic instead would not be Hermitian,
+    /// because only the pair $H^{(m)}$, $H^{(-m)}$ is adjoint-related.
     pub fn bdg_at_time(&self, q: &Array1<f64>, time: f64) -> Result<Array2<Complex<f64>>> {
         let point = self.magnon.check_q(q)?;
         if !time.is_finite() {
@@ -1624,7 +1685,7 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         self.magnon.bdg_from_jq(&jq, &j0)
     }
 
-    /// One-period propagator `U(T)` of `i dPsi/dt = g H(t) Psi`.
+    /// One-period propagator $U(T)$ of $i\\,d\Psi/dt = gH(t)\Psi$.
     pub fn propagator_at(&self, q: &Array1<f64>) -> Result<Array2<Complex<f64>>> {
         let size = 2 * self.magnon.nspin();
         let period = std::f64::consts::TAU / self.omega_ev;
@@ -1650,7 +1711,8 @@ impl<const DIM: usize> MagnonSambe<DIM> {
         Ok(propagator)
     }
 
-    /// Quasienergies at one `q`, folded into `[-Omega/2, Omega/2)`, ascending.
+    /// Quasienergies at one $\mathbf q$, folded into
+    /// $\lbrack-\hbar\Omega/2,\\ \hbar\Omega/2)$, ascending.
     ///
     /// The one-period propagator is diagonalized and only eigenvectors with
     /// positive metric norm are kept, so the result has exactly `n_band`
@@ -2004,7 +2066,12 @@ pub(crate) fn matrix_exponential(matrix: &Array2<Complex<f64>>) -> Result<Array2
     Ok(result)
 }
 
-/// Cartesian displacement `(R + tau_j - tau_i) . L` of the bond `(R, i, j)`.
+/// Cartesian displacement of the bond $(\mathbf R,i,j)$,
+///
+/// $$
+/// \mathbf d\_{ij}(\mathbf R)
+///   = (\mathbf R + \boldsymbol\tau\_j - \boldsymbol\tau\_i)\cdot\mathbf L.
+/// $$
 fn bond_displacement<const DIM: usize>(
     magnon: &MagnonModel<DIM>,
     i_r: usize,
@@ -2031,9 +2098,10 @@ const SC_SPIN: usize = 3;
 impl<const DIM: usize> MagnonModel<DIM> {
     /// Time-averaged (van Vleck `order = 0`) magnon model of a driven system.
     ///
-    /// Every exchange bond acquires the Bessel renormalization `J_m(0)(d)` of
-    /// the drive, so the result is an ordinary [`MagnonModel`] with renormalized
-    /// couplings: the same interface as the electronic
+    /// Every exchange bond is multiplied by the drive's time-averaged Peierls
+    /// coefficient $C\_0(\mathbf d)$, so the result is an ordinary
+    /// [`MagnonModel`] with renormalized couplings: the same interface
+    /// as the electronic
     /// [`crate::Model::floquet_effective_model`]. Higher orders mix particle and
     /// hole components and are not representable as exchange tensors, so they
     /// are rejected here; the full propagator spectrum is available through
@@ -2446,7 +2514,8 @@ mod sambe_tests {
 // Bilayer linear spin-wave theory (paper, Supplemental Material section II D)
 // ---------------------------------------------------------------------------
 
-/// Intralayer blocks `(A1, A2)` and the interlayer pairing `C` at one `q`.
+/// Intralayer blocks $(A\_1,A\_2)$ and the interlayer pairing $C$ at one
+/// $\mathbf q$.
 type LayerBlocks = (
     Array2<Complex<f64>>,
     Array2<Complex<f64>>,
@@ -2457,19 +2526,20 @@ type LayerBlocks = (
 ///
 /// Transcribes the explicit blocks of the Supplemental Material for an A-type
 /// antiferromagnet (ferromagnetic inside each layer, antiparallel between the
-/// layers) with `(S_A1, S_B1, S_A2, S_B2) = (S1, S2, S2, S1)`. The two spin
+/// layers) with $(S\_{A1},S\_{B1},S\_{A2},S\_{B2})=(S\_1,S\_2,S\_2,S\_1)$. The two spin
 /// sectors are diagonalized separately through the paraunitary problem, so the
 /// four bands keep their spin labels.
 #[derive(Clone, Copy, Debug)]
 pub struct BilayerSpinWave {
     /// Exchange coefficients of the bilayer.
     pub exchange: BilayerExchange,
-    /// Local spin lengths `(S_A1, S_B1, S_A2, S_B2)` in units of `hbar`.
+    /// Local spin lengths $(S\_{A1},S\_{B1},S\_{A2},S\_{B2})$ in units of
+    /// $\hbar$.
     pub spins: [f64; 4],
-    /// Easy-axis single-ion anisotropy `K` in eV (negative for an easy axis).
+    /// Easy-axis single-ion anisotropy $K$ in eV (negative for an easy axis).
     pub anisotropy_ev: f64,
-    /// Phenomenological intralayer ferromagnetic direct exchange `J_D > 0` in
-    /// eV, subtracted from `J1` exactly as in the Supplemental Material.
+    /// Phenomenological intralayer ferromagnetic direct exchange $J\_D>0$ in
+    /// eV, subtracted from $J\_1$ exactly as in the Supplemental Material.
     pub direct_exchange_ev: f64,
 }
 
@@ -2513,10 +2583,18 @@ impl BilayerSpinWave {
         Ok(())
     }
 
-    /// Structure factors `(gamma, c, s)` at `q` in fractional coordinates.
+    /// Structure factors $(\gamma,c,s)$ at $\mathbf q$ in fractional
+    /// coordinates.
     ///
-    /// `gamma = sum_mu exp(i k.delta_mu)`, `c = sum_nu cos(k.b_nu)` and
-    /// `s = sum_nu sin(k.b_nu)` with the vectors of the Supplemental Material.
+    /// $$
+    /// \gamma\_{\mathbf k} = \sum\_\mu e^{i\mathbf k\cdot\boldsymbol\delta\_\mu},
+    /// \qquad
+    /// c\_{\mathbf k} = \sum\_\nu\cos(\mathbf k\cdot\mathbf b\_\nu),
+    /// \qquad
+    /// s\_{\mathbf k} = \sum\_\nu\sin(\mathbf k\cdot\mathbf b\_\nu),
+    /// $$
+    ///
+    /// with the vectors of the Supplemental Material.
     pub fn structure_factors(&self, q: &[f64; 2]) -> (Complex<f64>, f64, f64) {
         let delta = [
             [1.0 / 3.0, -2.0 / 3.0],
@@ -2583,7 +2661,7 @@ impl BilayerSpinWave {
         Ok((a1, a2, pairing))
     }
 
-    /// Magnon frequencies at `q`, ascending (four bands).
+    /// Magnon frequencies at $\mathbf q$, ascending (four bands).
     ///
     /// The two spin sectors of the Supplemental Material are diagonalized
     /// through their `4 x 4` Bogoliubov–de Gennes matrices, returning two
@@ -2597,7 +2675,8 @@ impl BilayerSpinWave {
         Ok(Array1::from(spectra.to_vec()))
     }
 
-    /// Spin-resolved bands `(up sector, down sector)` at `q`, each ascending.
+    /// Spin-resolved bands (up sector, down sector) at $\mathbf q$, each
+    /// ascending.
     /// Each sector contains two nonnegative stable frequencies, including
     /// Goldstone zeros; no normalized zero-mode eigenvectors are promised.
     pub fn sector_bands(&self, q: &[f64; 2]) -> Result<([f64; 2], [f64; 2])> {
@@ -2648,9 +2727,11 @@ impl BilayerSpinWave {
 
 /// Stable bosonic frequencies, including PSD Goldstone modes.
 ///
-/// For H=KK† >= 0, the shared Colpa solver diagonalizes M=K†gK, not H.
-/// If Mv=omega*v with omega>0, y=gKv is a gH eigenvector and
-/// y†gy=omega*||v||²>0. Zero frequencies need no normalizable Jordan eigenvector.
+/// For $H=KK^\dagger \ge 0$, the shared Colpa solver diagonalizes
+/// $M=K^\dagger gK$, not $H$. If $Mv=\omega v$ with $\omega>0$, then
+/// $y=gKv$ is a $gH$ eigenvector and
+/// $y^\dagger gy = \omega\lVert v\rVert^2 > 0$. Zero frequencies need no
+/// normalizable Jordan eigenvector.
 fn paraunitary_spectrum(matrix: &Array2<Complex<f64>>, n: usize) -> Result<Array1<f64>> {
     let size = matrix.nrows();
     if n == 0 || n.checked_mul(2) != Some(size) || matrix.ncols() != size {

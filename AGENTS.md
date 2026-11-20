@@ -23,7 +23,7 @@ Rustb is a Rust library for tight-binding model calculations in condensed matter
 - **MSRV**: 1.90.0 (edition 2024)
 - **Repo**: https://github.com/LiuyichenYanwushang/Rustb
 - **Error handling**: Uses `thiserror` for `TbError` enum.
-- **Docs**: `docs-header.html` loads KaTeX to render LaTeX in rustdoc and supplies custom CSS.
+- **Docs**: `docs-header.html` loads KaTeX to render LaTeX in rustdoc and supplies custom CSS. Rustdoc has no math-markdown extension, so formula sources in doc comments and `include_str!` markdown must be pre-escaped for the CommonMark pass; the convention is documented at the top of the `docs-header.html` script block.
 - **Version**: 0.7.3. crates.io publishes 0.7.0 and 0.7.1 (2026-08-15 UTC); 0.7.2 and 0.7.3 are not on the registry.
 - **SKILLS.md**: Practical usage guide with code examples for the entire crate. When adding or changing any public API, update that file as well.
 
@@ -987,9 +987,11 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   the provider or averaging H. Any target mismatch is
   `TargetMagneticGroupIncompatible`; never silently use a smaller group. The
   localized actions must form a projective magnetic corepresentation. Average
-  the complete symmetry-generated support, restore Hermiticity, keep `R=0` at
-  row zero, realign old `rmatrix` blocks by R, zero-fill generated rmatrix rows,
-  and postcheck every target covariance equation. Return a new Model.
+  the complete symmetry-generated support, restore Hermiticity, and keep
+  `R=0` at row zero. For `HasRMatrix`, project `rmatrix` as a vector operator
+  and derive the final centres from its onsite diagonal. Postcheck covariance
+  and return a new model. The centre-only and two-channel entry points also
+  borrow their inputs and return new models with their reports.
 - **Band coreps diagnose rather than hide broken symmetry**: call
   `Model::calculate_irrep(options)` to detect the Atom-defined/field-effective
   magnetic group, or `calculate_irrep_for_group(target, options)` for an

@@ -3,31 +3,57 @@
 //! The construction follows TB2J's `Magnon.Hq`:
 //!
 //! 1. build local spin frames from [`Magnon::axis`] and the reference
-//!    quantization axis (TB2J's `uz`);
+//!    quantization axis (TB2J's $\mathbf u\_z$);
 //! 2. Fourier transform the ordered-pair exchange tensors,
-//!    `J(q) = sum_R J(R) exp(-2 pi i q . R)`, after rotating each block by the
-//!    reference propagation vector `q_ref` (TB2J's `Q`);
-//! 3. assemble the `2n x 2n` Bogoliubov matrix
-//!    `H = [[A - C, B], [B^*, A^*(-q) - C]]` with
-//!    `A_ij = -sqrt(S_i S_j) U_i^T J^op_ij(q) U_j^*`,
-//!    `B_ij = -sqrt(S_i S_j) U_i^T J^op_ij(q) U_j`,
-//!    `C_i = sum_j 2 S_j V_i^T J^op_ij(0) V_j`,
-//!    where `J^op = J/(S_i S_j)` converts the stored unit-vector landscape
-//!    coefficient into the operator exchange (the `1/(S_i S_j)` factor is
-//!    TB2J's `Magnon.Jq`, the `sqrt(S_i S_j)` and `S_j` factors are its `Hq`);
+//!
+//!    $$
+//!    \mathbf J(\mathbf q) = \sum\_{\mathbf R}
+//!    \mathbf J(\mathbf R)\\,e^{-2\pi i\\,\mathbf q\cdot\mathbf R},
+//!    $$
+//!
+//!    after rotating each block by the reference propagation vector
+//!    $\mathbf q\_{\mathrm{ref}}$ (TB2J's $\mathbf Q$). Take the Hermitian
+//!    part of the rotated Fourier sum before assembling the spin-wave matrix;
+//! 3. assemble the $2n\times2n$ Bogoliubov matrix
+//!
+//!    $$
+//!    H = \begin{pmatrix}
+//!        A(\mathbf q) - C & B(\mathbf q) \\\\
+//!        B(\mathbf q)^\dagger & A^\*(-\mathbf q) - C
+//!    \end{pmatrix},
+//!    $$
+//!
+//!    with
+//!
+//!    $$
+//!    \begin{aligned}
+//!    A\_{ij}(\mathbf q) &= -\sqrt{S\_iS\_j}\\,
+//!        U\_i^{\mathrm T} \widetilde J^{\mathrm{op}}\_{ij}(\mathbf q)\\,U\_j^\*,\\\\
+//!    B\_{ij}(\mathbf q) &= -\sqrt{S\_iS\_j}\\,
+//!        U\_i^{\mathrm T} \widetilde J^{\mathrm{op}}\_{ij}(\mathbf q)\\,U\_j,\\\\
+//!    C\_{ii} &= -\sum\_j 2S\_j\\,V\_i^{\mathrm T}
+//!        \operatorname{Re}\\!\left(J^{\mathrm{op}}\_{ij}(\mathbf 0)\right)\\,V\_j.
+//!    \end{aligned}
+//!    $$
+//!
+//!    Here $C$ is diagonal, $J^{\mathrm{op}}\_{ij}=J\_{ij}/(S\_iS\_j)$ converts
+//!    unit-vector landscape coefficients to operator exchange, and
+//!    $\widetilde J^{\mathrm{op}} = (J^{\mathrm{op}})^{\mathrm T}$ transposes the
+//!    full site-and-Cartesian matrix, not just each Cartesian block. For real
+//!    reciprocal exchange tensors this is $J^{\mathrm{op}}(-\mathbf q)$;
 //! 4. solve the paraunitary problem with Colpa's method: factorize
-//!    `H = K K^dagger`, diagonalize the Hermitian `K^dagger g K`
-//!    (`g = diag(1, -1)`) and keep the `n` largest eigenvalues.
+//!    $H = KK^\dagger$, diagonalize the Hermitian $K^\dagger gK$
+//!    ($g=\operatorname{diag}(1,-1)$) and keep the $n$ largest eigenvalues.
 //!
 //! Unlike TB2J, the factorization here uses the Hermitian eigendecomposition
-//! `H = U L U^dagger` with `K = U L^(1/2)` rather than a Cholesky factor. The
-//! two are equivalent for positive-definite `H`, but the eigendecomposition
+//! $H = ULU^\dagger$ with $K = UL^{1/2}$ rather than a Cholesky factor. The
+//! two are equivalent for positive-definite $H$, but the eigendecomposition
 //! keeps gapless (Goldstone) modes exactly zero instead of perturbing them by
-//! `sqrt(shift * omega)`: a Cholesky of a singular `H` needs a diagonal shift,
-//! which mixes the zero mode with the gapped one and produces a spurious
-//! `~1e-4 eV` gap at `q` points that should be gapless.
+//! $\sqrt{\text{shift}\cdot\omega}$: a Cholesky of a singular $H$ needs a
+//! diagonal shift, which mixes the zero mode with the gapped one and produces a
+//! spurious $10^{-4}$ eV gap at $\mathbf q$ points that should be gapless.
 //!
-//! A stable magnetic state requires `H` to be positive semidefinite. A
+//! A stable magnetic state requires $H$ to be positive semidefinite. A
 //! genuinely negative eigenvalue means the reference structure is not a local
 //! energy minimum; that is reported as an error instead of returning an
 //! imaginary frequency.
@@ -85,8 +111,15 @@ pub(super) fn cis_turns(turns: f64) -> Complex<f64> {
     }
 }
 
+/// Rotation matrix
+///
+/// $$
+/// \mathbf R = \mathbb{1} + \sin(\phi)\\,\mathbf K
+///   \+ (1-\cos\phi)\\,\mathbf K^2
+/// $$
+///
+/// about `axis`.
 fn rotation_about(axis: &[f64; 3], turns: f64) -> Option<([[f64; 3]; 3], [[f64; 3]; 3])> {
-/// Rotation matrix `R = I + sin(phi) K + (1 - cos(phi)) K^2` about `axis`.
     let length = norm(axis);
     if !length.is_finite() || length <= 1e-15 || !turns.is_finite() || turns % 1.0 == 0.0 {
         return None;
@@ -111,12 +144,13 @@ fn rotation_about(axis: &[f64; 3], turns: f64) -> Option<([[f64; 3]; 3], [[f64; 
 
 /// Local spin frames with a fixed physical longitudinal direction.
 ///
-/// Site `i` gets a right-handed triad with `V_i` along its normalized reference
-/// moment and `U_i = e_x + i e_y`. The reference `quantization_axis` selects
-/// only a transverse gauge via its cross product with the moment. A parallel
-/// reference uses a deterministic Cartesian seed instead. Changing this gauge
-/// multiplies each `U_i` by a phase, never rotates the physical moment or
-/// changes the spectrum. Callers validate nonzero unit moment/reference axes.
+/// Site $i$ gets a right-handed triad with $\mathbf V\_i$ along its normalized
+/// reference moment and $\mathbf U\_i = \mathbf e\_x + i\\,\mathbf e\_y$. The
+/// reference `quantization_axis` selects only a transverse gauge via its cross
+/// product with the moment. A parallel reference uses a deterministic
+/// Cartesian seed instead. Changing this gauge multiplies each $\mathbf U\_i$
+/// by a phase, never rotates the physical moment or changes the spectrum.
+/// Callers validate nonzero unit moment/reference axes.
 pub(crate) fn local_frames<const DIM: usize>(
     magnon: &Magnon<DIM>,
 ) -> (Array2<Complex<f64>>, Array2<f64>) {
@@ -199,11 +233,16 @@ impl<const DIM: usize> Magnon<DIM> {
     }
 
     /// Fourier transform of the exchange tensors,
-    /// `J(q) = sum_R J(R) exp(-2 pi i q . R)`, shape `(3n, 3n)`.
     ///
-    /// Each `3 x 3` block is rotated by the reference propagation vector first
-    /// (TB2J's single-Q convention), and the stored unit-vector coefficients are
-    /// returned unchanged: this is the landscape `J(q)`, not `J(q)/(S_i S_j)`.
+    /// $$
+    /// \mathbf J(\mathbf q) = \sum\_{\mathbf R}
+    /// \mathbf J(\mathbf R)\\,e^{-2\pi i\\,\mathbf q\cdot\mathbf R},
+    /// $$
+    ///
+    /// shape `(3n, 3n)`. Each $3\times3$ block is rotated by the reference
+    /// propagation vector first (TB2J's single-Q convention). The Hermitian
+    /// part of the resulting Fourier sum is returned in landscape units:
+    /// $\mathbf J(\mathbf q)$, not $\mathbf J(\mathbf q)/(S\_iS\_j)$.
     pub fn gen_jq(&self, q: &Array1<f64>) -> Result<Array2<Complex<f64>>> {
         self.validate()?;
         Ok(self.jq_of(&self.check_q(q)?, false).0)
@@ -350,14 +389,22 @@ impl<const DIM: usize> Magnon<DIM> {
         (out, fourier_noise)
     }
 
-    /// Bogoliubov-de Gennes matrix of the spin-wave problem at `q`, shape
-    /// `(2n, 2n)`.
+    /// Bogoliubov-de Gennes matrix of the spin-wave problem at $\mathbf q$,
+    /// shape `(2n, 2n)`.
     ///
-    /// The block structure is `[[A - C, B], [B^*, A^*(-q) - C]]` with the
-    /// TB2J `A`, `B`, `C` matrices built from the local frames and the
-    /// `J^op = J/(S_i S_j)` operator exchange. The matrix is Hermitian; a
-    /// positive semidefinite result is the stability condition checked by
-    /// [`MagnonSolve`](super::MagnonSolve).
+    /// The block structure is
+    ///
+    /// $$
+    /// H = \begin{pmatrix}
+    ///     A - C & B \\\\
+    ///     B^\dagger & A^\*(-\mathbf q) - C
+    /// \end{pmatrix}
+    /// $$
+    ///
+    /// with the TB2J $A$, $B$, $C$ matrices built from the local frames and the
+    /// $J^{\mathrm{op}} = J/(S\_iS\_j)$ operator exchange. The matrix is
+    /// Hermitian; a positive semidefinite result is the stability condition
+    /// checked by [`MagnonSolve`].
     pub fn gen_bdg(&self, q: &Array1<f64>) -> Result<Array2<Complex<f64>>> {
         self.validate()?;
         let point = self.check_q(q)?;
@@ -473,10 +520,17 @@ impl<const DIM: usize> Magnon<DIM> {
         h
     }
 
-    /// Density of states `g(omega) = (1/N_q) sum_{q,n} N(omega; omega_n(q), sigma)`
+    /// Density of states
+    ///
+    /// $$
+    /// g(\omega) = \frac{1}{N\_q}\sum\_{\mathbf q,n}
+    /// N\bigl(\omega;\\,\omega\_n(\mathbf q),\sigma\bigr)
+    /// $$
+    ///
     /// on a uniform frequency grid.
     ///
-    /// Returns `(omega, dos)` with `omega = linspace(w_min, w_max, w_n)`; the
+    /// Returns `(omega, dos)` with
+    /// $\omega = \operatorname{linspace}(w\_{\min}, w\_{\max}, w\_n)$; the
     /// Gaussians are normalized, so integrating the result over a window that
     /// contains all bands gives `nspin()`.
     pub fn magnon_dos(
@@ -581,12 +635,12 @@ impl<const DIM: usize> MagnonSolve for Magnon<DIM> {
     }
 }
 
-/// Positive paraunitary eigenvalues of `g H` via Colpa's factorization.
+/// Positive paraunitary eigenvalues of $gH$ via Colpa's factorization.
 ///
-/// `H` must be positive semidefinite (a stable reference structure). The
-/// Hermitian eigenfactorization `H = U L U^dagger` gives `K = U L^(1/2)` and
-/// the spectrum of the Hermitian `K^dagger g K`; zero eigenvalues of `H`
-/// produce exact zero frequencies.
+/// $H$ must be positive semidefinite (a stable reference structure). The
+/// Hermitian eigenfactorization $H = ULU^\dagger$ gives $K = UL^{1/2}$ and the
+/// spectrum of the Hermitian $K^\dagger gK$; zero eigenvalues of $H$ produce
+/// exact zero frequencies.
 pub(crate) fn paraunitary_frequencies(
     h: &Array2<Complex<f64>>,
     n: usize,
