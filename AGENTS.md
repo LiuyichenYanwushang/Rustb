@@ -897,7 +897,13 @@ agree block by block:
   resolved axis. Cost is `O(N_k n^3)` instead of one matrix product per input
   pair; the result is transformed back once and accumulated with the slab
   phase. Never materialize the full k volume: the transients are one harmonic
-  slab plus two slice buffers. Its own working set is nevertheless dominated
+  slab plus two slice buffers. The pointwise assembly evaluates one
+  representative of each conjugate pair of the two `O(W^-2)` families and
+  adds its adjoint, which halves their matrix products: `H_0 = H_0^dagger` and
+  `H_-n = H_n^dagger` make the omitted half the algebraic adjoint of the
+  computed half (equal up to round-off, since the FFT blocks satisfy the
+  relation only numerically), and the mixed family obeys
+  `T(m,m')^dagger = T(-m,-m')` with an invariant weight. Its own working set is nevertheless dominated
   by the output, because both paths need the accumulation map and the final
   Hamiltonian: two dense `support x nsta^2` arrays. The engine estimates
   slab plus output before allocating and refuses to start above its hard
@@ -922,9 +928,10 @@ identical in both paths; the k-space matrices therefore use at most
 
 **Hermitian input is assumed, not re-checked.** Both paths require
 `H(R) = H(-R)^dagger`; the order-two real-space path uses that relation to
-halve the A-family convolutions, so hand-mutating `ham` to break it is
-unsupported and can make the two paths disagree. Builder methods always
-preserve it. Structural invariants (unique translations, closed under
+halve the A-family convolutions and the k-space engine now relies on the
+same relation for both order-two families, so hand-mutating `ham` to break
+it is unsupported and can make the two paths disagree. Builder methods
+always preserve it. Structural invariants (unique translations, closed under
 negation) are validated by the effective-model entry point.
 
 **Threading:** the k-space assembly parallelizes over k points with Rayon while

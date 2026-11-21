@@ -6,6 +6,13 @@
 //! can be evaluated on a zero-aliasing k-point grid in O(N_k n^3) products and
 //! transformed back once. This module implements that engine.
 //!
+//! The engine assumes a Hermitian input model: H(R) = H(-R)^dagger, so every
+//! Peierls harmonic satisfies H_-n = H_n^dagger and H_0 = H_0^dagger (up to
+//! coefficient round-off). Both order-two families are evaluated on one
+//! representative of each conjugate pair and completed with its adjoint, which
+//! halves their matrix products. Hand-mutating the public ham blocks to break
+//! that relation is unsupported, exactly as for the real-space path.
+//!
 //! Streaming layout: the last resolved axis is sampled slice by slice. For each
 //! k-slice the harmonics are reduced along that axis, transformed over the
 //! remaining axes, assembled pointwise, transformed back, and accumulated into
@@ -292,6 +299,10 @@ impl<const SPIN: bool, const DIM: usize, RMatrix: RMatrixData> Model<SPIN, DIM, 
                 used_max,
                 order,
                 has_corrections,
+                // Real Peierls harmonics are Hermitian-consistent, so the
+                // conjugate half of both order-two families is the adjoint of
+                // the computed half.
+                true,
                 drive.omega0_ev,
                 assembled.view_mut(),
             )?;

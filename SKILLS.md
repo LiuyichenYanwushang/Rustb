@@ -1036,7 +1036,9 @@ produce that same model:
   polynomial of bounded degree in the harmonic hopping blocks, so the operator
   is evaluated on a zero-aliasing k-point grid (twice the polynomial degree
   times the real-space radius, plus one, per axis) and transformed back once.
-  Cost is `O(N_k n^3)` matrix products instead of one product per input pair,
+  Cost is `O(N_k n^3)` matrix products instead of one product per input pair;
+  the two `O(W^-2)` families are evaluated on one representative of each
+  conjugate pair and added with its adjoint, halving their products,
   and the k-point slabs are streamed, so the full k volume is never held in
   memory. This is exact up to floating-point round-off: it computes the same
   polynomial, not an approximation. The dominant allocation is the output

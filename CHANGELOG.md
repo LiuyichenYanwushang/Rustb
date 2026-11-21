@@ -96,6 +96,14 @@
   and `(j,i,-R)` with conjugate amplitudes and the Peierls coefficients obey
   `C_-n = C_n^*`, so `H_-m(R) = H_m(-R)^dagger` and `H_0` is Hermitian. No
   public API change.
+- Halve the order-two k-space van Vleck assembly: the conjugate half of both
+  families is the adjoint of the computed half, so only the `m > 0`
+  representatives are formed and each is added with its adjoint
+  (`T(m,m')^dagger = T(-m,-m')`). Per-point scratch buffers replace the
+  per-product allocation. On the 55-orbital benchmark (4 Rayon threads with
+  `OPENBLAS_NUM_THREADS=1`), a back-to-back A/B of the `kspace_engine_cost_probe`
+  run dropped the assembly from 19.2 s to 10.7 s and the end-to-end run from
+  75.9 s to 64.8 s.
 - Evaluate the `NoRMatrix` effective model on a zero-aliasing k-point grid and
   transform it back once, replacing the pairwise Minkowski convolution with
   `O(N_k n^3)` work. k-slabs are streamed, so the full k volume is never

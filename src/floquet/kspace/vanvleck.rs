@@ -2,8 +2,10 @@
 
 use super::C;
 use crate::error::{Result, TbError};
+use ndarray::linalg::general_mat_mul;
 use ndarray::{Array2, ArrayView2, ArrayView3, ArrayView4, ArrayViewMut2, ArrayViewMut3, Axis};
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+use rayon::slice::ParallelSliceMut;
 
 const NONFINITE_SCALE: &str = "a van Vleck frequency scaling factor is non-finite; \
 increase omega0_ev or lower the requested order";
@@ -26,16 +28,28 @@ increase omega0_ev or lower the requested order";
 /// exactly: the double-commutator form equals the truncated Loewdin triple sum
 /// only under that window, and m' == 2m makes the inner commutator vanish.
 ///
-/// Every point is assembled with one fixed accumulation order (n ascending,
-/// then m ascending, then m' ascending), so a point value never depends on the
-/// worker count. Points are independent and are the only parallel axis, so each
-/// point keeps its full serial sum. The reference Netlib CBLAS is not reentrant,
-/// which is why those builds stay serial.
+/// With reuse_adjoint = true the two order-two families are evaluated on one
+/// representative of each conjugate pair and their adjoints are added, which
+/// halves their matrix products. Real Peierls harmonics satisfy
+/// H_0 = H_0^dagger and H_-n = H_n^dagger up to coefficient round-off, so the
+/// missing half is the algebraic adjoint of the computed half; the same holds
+/// for the mixed family because T(m, m')^dagger = T(-m, -m') and the weight
+/// 1/(3 m m') is invariant under (m, m') -> (-m, -m'). Pass false for
+/// unrestricted (not harmonic consistent) blocks, which only the test oracle
+/// does.
+///
+/// Every point is assembled with one fixed accumulation order, so a point value
+/// never depends on the worker count. Points are independent and are the only
+/// parallel axis, so each point keeps its full serial sum. Per-point scratch
+/// buffers are allocated once per worker chunk, so the hot loop performs no
+/// heap allocation. The reference Netlib CBLAS is not reentrant, which is why
+/// those builds stay serial.
 pub(super) fn assemble_pointwise(
     harmonics: ArrayView4<'_, C>,
     harmonic_max: isize,
     order: usize,
-    has_time_dependence: bool,
+    has_corrections: bool,
+    reuse_adjoint: bool,
     omega: f64,
     mut out: ArrayViewMut3<'_, C>,
 ) -> Result<()> {
@@ -65,7 +79,7 @@ pub(super) fn assemble_pointwise(
             harmonic_shape[1], harmonic_shape[2], harmonic_shape[3]
         )));
     }
-    let effective_order = if has_time_dependence { order } else { 0 };
+    let effective_order = if has_corrections { order } else { 0 };
     let slots_needed = required_slots(harmonic_max, effective_order)?;
     if harmonic_shape[0] < slots_needed {
         return Err(TbError::Other(format!(
@@ -96,33 +110,69 @@ harmonic_max = {harmonic_max} and order {effective_order}",
 
     let mut rows: Vec<ArrayViewMut2<'_, C>> = out.outer_iter_mut().collect();
     // Reference Netlib CBLAS may use process globals; keep the fan-out serial
-    // there, matching the real-space convolution policy.
+    // there, matching the real-space convolution policy. Chunking gives every
+    // worker one scratch set for many points instead of one allocation per
+    // matrix product.
     if !cfg!(any(feature = "netlib-static", feature = "netlib-system"))
         && rayon::current_num_threads() > 1
     {
-        rows.par_iter_mut().enumerate().for_each(|(point, target)| {
-            assemble_point_into(
-                harmonics.index_axis(Axis(1), point),
-                harmonic_max,
-                effective_order,
-                inverse_omega,
-                inverse_omega_squared,
-                target,
-            );
-        });
+        let workers = rayon::current_num_threads();
+        let chunk_len = rows.len().div_ceil(workers * 4).max(1);
+        rows.par_chunks_mut(chunk_len)
+            .enumerate()
+            .for_each(|(chunk_index, chunk)| {
+                let mut scratch = Scratch::new(nsta);
+                for (offset, target) in chunk.iter_mut().enumerate() {
+                    let point = chunk_index * chunk_len + offset;
+                    assemble_point_into(
+                        harmonics.index_axis(Axis(1), point),
+                        harmonic_max,
+                        effective_order,
+                        inverse_omega,
+                        inverse_omega_squared,
+                        reuse_adjoint,
+                        target,
+                        &mut scratch,
+                    );
+                }
+            });
     } else {
-        for (point, mut target) in rows.into_iter().enumerate() {
+        let mut scratch = Scratch::new(nsta);
+        for (point, target) in rows.iter_mut().enumerate() {
             assemble_point_into(
                 harmonics.index_axis(Axis(1), point),
                 harmonic_max,
                 effective_order,
                 inverse_omega,
                 inverse_omega_squared,
-                &mut target,
+                reuse_adjoint,
+                target,
+                &mut scratch,
             );
         }
     }
     Ok(())
+}
+
+/// Reusable per-worker buffers for one k point.
+///
+/// total holds the running effective block; inner and outer hold the nested
+/// commutators. Keeping them out of the loop removes three nsta^2 allocations
+/// per commutator.
+struct Scratch {
+    total: Array2<C>,
+    inner: Array2<C>,
+    outer: Array2<C>,
+}
+
+impl Scratch {
+    fn new(nsta: usize) -> Self {
+        Self {
+            total: Array2::zeros((nsta, nsta)),
+            inner: Array2::zeros((nsta, nsta)),
+            outer: Array2::zeros((nsta, nsta)),
+        }
+    }
 }
 
 /// Number of harmonic slots the requested effective order reads.
@@ -152,73 +202,124 @@ fn harmonic_slot(n: isize, harmonic_max: isize) -> usize {
     (n + harmonic_max) as usize
 }
 
-/// Matrix commutator [left, right] = left right - right left.
+/// out = left * right - right * left, into a caller-owned buffer.
+///
+/// Two BLAS products with the second accumulating into the first: no heap
+/// allocation and no intermediate subtraction buffer.
 #[inline]
-fn commutator(left: ArrayView2<'_, C>, right: ArrayView2<'_, C>) -> Array2<C> {
-    left.dot(&right) - right.dot(&left)
+fn commutator_into(left: ArrayView2<'_, C>, right: ArrayView2<'_, C>, out: &mut Array2<C>) {
+    general_mat_mul(C::new(1.0, 0.0), &left, &right, C::new(0.0, 0.0), out);
+    general_mat_mul(C::new(-1.0, 0.0), &right, &left, C::new(1.0, 0.0), out);
+}
+
+/// total += scale * (matrix + matrix^dagger), in one pass.
+///
+/// The adjoint is formed by reading the transposed element, so this adds the
+/// conjugate partner of a double-commutator term without materializing it.
+fn add_hermitian_scaled(total: &mut Array2<C>, matrix: &Array2<C>, scale: f64) {
+    let scale = C::new(scale, 0.0);
+    let nsta = matrix.nrows();
+    for row in 0..nsta {
+        for column in 0..nsta {
+            total[[row, column]] += scale * (matrix[[row, column]] + matrix[[column, row]].conj());
+        }
+    }
+}
+
+/// A-family orders to evaluate: one representative per conjugate pair when
+/// adjoints are reused, otherwise every signed order.
+fn a_family_orders(harmonic_max: isize, reuse_adjoint: bool) -> impl Iterator<Item = isize> {
+    let first = if reuse_adjoint { 1 } else { -harmonic_max };
+    (first..=harmonic_max).filter(move |m| *m != 0)
+}
+
+/// Mixed-family (m, m') pairs to evaluate, in ascending order.
+///
+/// With reuse_adjoint the first index runs over m > 0 only; the partner of
+/// (m, m') is (-m, -m'), whose first index is negative, so every conjugate
+/// pair is covered exactly once. Without it both signs are summed explicitly.
+fn mixed_family_pairs(
+    harmonic_max: isize,
+    reuse_adjoint: bool,
+) -> impl Iterator<Item = (isize, isize)> {
+    let first = if reuse_adjoint { 1 } else { -harmonic_max };
+    (first..=harmonic_max)
+        .filter(move |m| *m != 0)
+        .flat_map(move |m| {
+            (-harmonic_max..=harmonic_max)
+                .filter(move |m_prime| {
+                    *m_prime != 0
+                        && *m_prime != m
+                        && *m_prime != 2 * m
+                        && (*m_prime - m).abs() <= harmonic_max
+                })
+                .map(move |m_prime| (m, m_prime))
+        })
 }
 
 /// Effective Hamiltonian of one k point, written into its output block.
 ///
-/// The terms are added exactly in the order documented on assemble_pointwise:
-/// the static block first, then the order-one commutators with n ascending,
-/// then the A family with m ascending, then the B family with m ascending and
-/// m' ascending inside each m.
+/// The terms are added exactly in the order documented on assemble_pointwise.
+/// With reuse_adjoint only the m > 0 representatives of both order-two families
+/// are formed, and each is added together with its adjoint.
 fn assemble_point_into(
     point_harmonics: ArrayView3<'_, C>,
     harmonic_max: isize,
     order: usize,
     inverse_omega: f64,
     inverse_omega_squared: f64,
+    reuse_adjoint: bool,
     target: &mut ArrayViewMut2<'_, C>,
+    scratch: &mut Scratch,
 ) {
     let harmonic =
         |n: isize| point_harmonics.index_axis_move(Axis(0), harmonic_slot(n, harmonic_max));
-    let mut total = harmonic(0).to_owned();
+    scratch.total.assign(&harmonic(0));
 
     if order >= 1 {
+        // [H_-n, H_n] is already Hermitian, so no pairing is needed here.
         for n in 1..=harmonic_max {
-            let negative = harmonic(-n);
-            let positive = harmonic(n);
-            let term = commutator(negative, positive);
-            total.scaled_add(C::new(inverse_omega / (n as f64), 0.0), &term);
+            commutator_into(harmonic(-n), harmonic(n), &mut scratch.inner);
+            scratch
+                .total
+                .scaled_add(C::new(inverse_omega / (n as f64), 0.0), &scratch.inner);
         }
     }
 
     if order >= 2 {
-        // A family: sum over m != 0 of [H_-m, [H_0, H_m]] / (2 m^2 W^2).
-        for m in -harmonic_max..=harmonic_max {
-            if m == 0 {
-                continue;
-            }
-            let inner = commutator(harmonic(0), harmonic(m));
-            let outer = commutator(harmonic(-m), inner.view());
+        // A family: T_m = [H_-m, [H_0, H_m]]. With reuse_adjoint only the
+        // m > 0 representative of each conjugate pair is formed and added
+        // together with its adjoint; T_m^dagger = T_-m carries the same
+        // weight 1/(2 m^2 W^2).
+        for m in a_family_orders(harmonic_max, reuse_adjoint) {
+            commutator_into(harmonic(0), harmonic(m), &mut scratch.inner);
+            commutator_into(harmonic(-m), scratch.inner.view(), &mut scratch.outer);
             let scale = inverse_omega_squared / (2.0 * (m as f64).powi(2));
-            total.scaled_add(C::new(scale, 0.0), &outer);
-        }
-        // B family: the double sum only equals the truncated Loewdin triple
-        // sum under the shared harmonic window; m' == 2m is skipped because its
-        // inner commutator is exactly zero.
-        for m in -harmonic_max..=harmonic_max {
-            if m == 0 {
-                continue;
+            if reuse_adjoint {
+                add_hermitian_scaled(&mut scratch.total, &scratch.outer, scale);
+            } else {
+                scratch.total.scaled_add(C::new(scale, 0.0), &scratch.outer);
             }
-            for m_prime in -harmonic_max..=harmonic_max {
-                if m_prime == 0 || m_prime == m || m_prime == 2 * m {
-                    continue;
-                }
-                if (m_prime - m).abs() > harmonic_max {
-                    continue;
-                }
-                let inner = commutator(harmonic(m_prime - m), harmonic(m));
-                let outer = commutator(harmonic(-m_prime), inner.view());
-                let scale = inverse_omega_squared / (3.0 * (m as f64) * (m_prime as f64));
-                total.scaled_add(C::new(scale, 0.0), &outer);
+        }
+        // B family: T(m, m') = [H_-m', [H_(m'-m), H_m]]. The double sum only
+        // equals the truncated Loewdin triple sum under the shared harmonic
+        // window; m' == 2m is skipped because its inner commutator is exactly
+        // zero. With reuse_adjoint only the m > 0 representative is formed and
+        // added with its adjoint; T(m,m')^dagger = T(-m,-m') carries the same
+        // weight 1/(3 m m').
+        for (m, m_prime) in mixed_family_pairs(harmonic_max, reuse_adjoint) {
+            commutator_into(harmonic(m_prime - m), harmonic(m), &mut scratch.inner);
+            commutator_into(harmonic(-m_prime), scratch.inner.view(), &mut scratch.outer);
+            let scale = inverse_omega_squared / (3.0 * (m as f64) * (m_prime as f64));
+            if reuse_adjoint {
+                add_hermitian_scaled(&mut scratch.total, &scratch.outer, scale);
+            } else {
+                scratch.total.scaled_add(C::new(scale, 0.0), &scratch.outer);
             }
         }
     }
 
-    target.assign(&total);
+    target.assign(&scratch.total);
 }
 
 #[cfg(test)]
@@ -409,6 +510,43 @@ mod tests {
         has_time_dependence: bool,
         omega: f64,
     ) -> Array3<C> {
+        assemble_with(
+            harmonics,
+            harmonic_max,
+            order,
+            has_time_dependence,
+            true,
+            omega,
+        )
+    }
+
+    /// Termwise reference assembly: both signs of every double-commutator
+    /// family, no harmonic-consistency relation assumed.
+    fn assemble_termwise(
+        harmonics: &Array4<C>,
+        harmonic_max: isize,
+        order: usize,
+        has_time_dependence: bool,
+        omega: f64,
+    ) -> Array3<C> {
+        assemble_with(
+            harmonics,
+            harmonic_max,
+            order,
+            has_time_dependence,
+            false,
+            omega,
+        )
+    }
+
+    fn assemble_with(
+        harmonics: &Array4<C>,
+        harmonic_max: isize,
+        order: usize,
+        has_time_dependence: bool,
+        reuse_adjoint: bool,
+        omega: f64,
+    ) -> Array3<C> {
         let shape = harmonics.shape();
         let mut out = Array3::<C>::zeros((shape[1], shape[2], shape[3]));
         assemble_pointwise(
@@ -416,6 +554,7 @@ mod tests {
             harmonic_max,
             order,
             has_time_dependence,
+            reuse_adjoint,
             omega,
             out.view_mut(),
         )
@@ -442,9 +581,9 @@ mod tests {
 
     #[test]
     fn second_order_matches_expanded_triple_commutators() {
-        // h = 2 keeps the B-family window active: m' = -1 and m' = 2 survive
-        // for m = 1 while m' = 2m is skipped, and the double sum is over both
-        // signs of m.
+        // h = 2 keeps the B-family window active: the paired formula keeps one
+        // representative per conjugate pair, and the termwise reference sums
+        // both signs of m.
         let harmonic_max = 2_isize;
         let points = 3;
         let omega = 2.5;
@@ -468,7 +607,7 @@ mod tests {
         let points = 2;
         let omega = 1.75;
         let harmonics = random_harmonics(points, 8, harmonic_max, 0x00c0_ffee);
-        let out = assemble(&harmonics, harmonic_max, 2, true, omega);
+        let out = assemble_termwise(&harmonics, harmonic_max, 2, true, omega);
         for point in 0..points {
             let expected = reference_effective(&harmonics, point, harmonic_max, 2, true, omega);
             assert_close(out.index_axis(Axis(0), point), &expected, 1e-12);
@@ -552,8 +691,16 @@ must return H_0 exactly"
         let harmonic_max = 2_isize;
         let harmonics = random_harmonics(3, 2, harmonic_max, 0x1111_2222);
         let mut out = Array3::<C>::zeros((3, 2, 2));
-        assemble_pointwise(harmonics.view(), harmonic_max, 2, true, 1.0, out.view_mut())
-            .expect("a well-formed slice should assemble");
+        assemble_pointwise(
+            harmonics.view(),
+            harmonic_max,
+            2,
+            true,
+            true,
+            1.0,
+            out.view_mut(),
+        )
+        .expect("a well-formed slice should assemble");
 
         let mut wrong_points = Array3::<C>::zeros((2, 2, 2));
         assert!(
@@ -561,6 +708,7 @@ must return H_0 exactly"
                 harmonics.view(),
                 harmonic_max,
                 2,
+                true,
                 true,
                 1.0,
                 wrong_points.view_mut()
@@ -574,6 +722,7 @@ must return H_0 exactly"
                 harmonic_max,
                 2,
                 true,
+                true,
                 1.0,
                 non_square.view_mut()
             )
@@ -586,6 +735,7 @@ must return H_0 exactly"
                 harmonic_max,
                 2,
                 true,
+                true,
                 1.0,
                 wrong_states.view_mut()
             )
@@ -593,17 +743,31 @@ must return H_0 exactly"
         );
         let truncated = random_harmonics(3, 2, 1, 0x3333_4444);
         assert!(
-            assemble_pointwise(truncated.view(), harmonic_max, 2, true, 1.0, out.view_mut())
-                .is_err()
+            assemble_pointwise(
+                truncated.view(),
+                harmonic_max,
+                2,
+                true,
+                true,
+                1.0,
+                out.view_mut(),
+            )
+            .is_err()
         );
-        assert!(assemble_pointwise(harmonics.view(), -1, 2, true, 1.0, out.view_mut()).is_err());
         assert!(
-            assemble_pointwise(harmonics.view(), harmonic_max, 3, true, 1.0, out.view_mut())
-                .is_err()
+            assemble_pointwise(harmonics.view(), -1, 2, true, true, 1.0, out.view_mut()).is_err()
         );
         assert!(
-            assemble_pointwise(harmonics.view(), harmonic_max, 1, true, 0.0, out.view_mut())
-                .is_err()
+            assemble_pointwise(
+                harmonics.view(),
+                harmonic_max,
+                3,
+                true,
+                true,
+                1.0,
+                out.view_mut(),
+            )
+            .is_err()
         );
         assert!(
             assemble_pointwise(
@@ -611,10 +775,87 @@ must return H_0 exactly"
                 harmonic_max,
                 1,
                 true,
+                true,
+                0.0,
+                out.view_mut(),
+            )
+            .is_err()
+        );
+        assert!(
+            assemble_pointwise(
+                harmonics.view(),
+                harmonic_max,
+                1,
+                true,
+                true,
                 f64::NAN,
                 out.view_mut()
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn adjoint_reuse_matches_the_termwise_sum() {
+        // The paired form drops the explicitly summed conjugate half, so it
+        // must reproduce the termwise sum on harmonic-consistent blocks for
+        // every supported order and window.
+        for harmonic_max in [1_isize, 2, 3] {
+            let points = 2;
+            let omega = 2.25;
+            let harmonics = hermitian_consistent_harmonics(points, 3, harmonic_max, 0x5151_2024);
+            for order in [1_usize, 2] {
+                let paired = assemble(&harmonics, harmonic_max, order, true, omega);
+                let termwise = assemble_termwise(&harmonics, harmonic_max, order, true, omega);
+                for point in 0..points {
+                    assert_close(
+                        paired.index_axis(Axis(0), point),
+                        &termwise.index_axis(Axis(0), point).to_owned(),
+                        1e-12,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn adjoint_reuse_halves_the_order_two_terms() {
+        // Count the terms each branch enumerates. Every term costs two matrix
+        // products, so a halved term count is a halved product count.
+        for harmonic_max in [1_isize, 2, 3, 4] {
+            let a_paired = a_family_orders(harmonic_max, true).count();
+            let a_termwise = a_family_orders(harmonic_max, false).count();
+            assert_eq!(a_paired * 2, a_termwise, "A family at h={harmonic_max}");
+            let b_paired = mixed_family_pairs(harmonic_max, true).count();
+            let b_termwise = mixed_family_pairs(harmonic_max, false).count();
+            assert_eq!(b_paired * 2, b_termwise, "B family at h={harmonic_max}");
+        }
+        // The production window h = 2 has two A terms (m = 1, 2) and two B
+        // pairs ((1, -1) and (2, 1)) against four termwise B pairs.
+        assert_eq!(a_family_orders(2, true).count(), 2);
+        assert_eq!(
+            mixed_family_pairs(2, true).collect::<Vec<_>>(),
+            vec![(1, -1), (2, 1)]
+        );
+        assert_eq!(mixed_family_pairs(2, false).count(), 4);
+    }
+
+    #[test]
+    fn adjoint_reuse_flag_selects_the_paired_branch() {
+        // On harmonic-inconsistent blocks the two branches are different
+        // formulas, so this pins that the flag actually switches the branch.
+        let harmonic_max = 2_isize;
+        let inconsistent = random_harmonics(2, 3, harmonic_max, 0x9999_aaaa);
+        let paired = assemble(&inconsistent, harmonic_max, 2, true, 2.0);
+        let termwise = assemble_termwise(&inconsistent, harmonic_max, 2, true, 2.0);
+        let mut largest = 0.0_f64;
+        for (left, right) in paired.iter().zip(termwise.iter()) {
+            largest = largest.max((left - right).norm());
+        }
+        assert!(
+            largest > 1e-6,
+            "the paired branch must differ from the termwise branch on \
+harmonic-inconsistent blocks, largest difference {largest:e}"
         );
     }
 }

@@ -134,6 +134,7 @@ fn kspace_stage_timing_probe() {
             used_max,
             order,
             true,
+            true,
             drive.omega0_ev,
             assembled.view_mut(),
         )
