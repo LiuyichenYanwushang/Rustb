@@ -96,6 +96,34 @@
   and `(j,i,-R)` with conjugate amplitudes and the Peierls coefficients obey
   `C_-n = C_n^*`, so `H_-m(R) = H_m(-R)^dagger` and `H_0` is Hermitian. No
   public API change.
+- Evaluate the `NoRMatrix` effective model on a zero-aliasing k-point grid and
+  transform it back once, replacing the pairwise Minkowski convolution with
+  `O(N_k n^3)` work. k-slabs are streamed, so the full k volume is never
+  materialized. The pairwise convolution is kept as the reference implementation
+  and as the fallback for small supports or an oversized harmonic slab; the
+  public signature and the returned model are unchanged. A 55-orbital,
+  3249-block model now takes 70 s at 9.7 GiB peak instead of hours; the peak is
+  the two dense copies of the output model, not the k-space slab. Pin
+  `OPENBLAS_NUM_THREADS=1` (or `MKL_NUM_THREADS=1`) when
+  `RAYON_NUM_THREADS` is above one: leaving both pools at their defaults
+  oversubscribed the machine and made the same run 13x slower. Selection is
+  internal: k space is used only when the call has corrections (order 1 or 2
+  with an AC drive), the zero-aliasing grid needs at most half as many sampled
+  points as the input pair count, and the estimated engine working set stays
+  under 32 GiB, and the frequency scale must be representable (otherwise the
+  exact real-space path is used). An explicitly requested k-space run is only
+  refused above a 64 GiB hard limit. Effective-model calls also reject
+  duplicate or non-closed support vectors instead of letting the two paths
+  disagree.
+- Index the real-space Hermiticity pass by translation row instead of
+  scanning the support once per block. The projection is unchanged bit for
+  bit, and a 75,000-block output drops from 4.4 s to 44 ms.
+- Restrict the mixed-harmonic van Vleck family to triples whose frequencies all
+  lie inside `harmonic_max`. The double-commutator form equals the truncated
+  Loewdin triple sum only under that condition, so dropping it silently
+  introduced terms outside the requested window. At `harmonic_max = 2` this
+  also removes the exactly vanishing self-commutators and cuts the order-two
+  convolution count from 36 to 20 (28 to 18 with regrouping).
 - Use ordinary `f64` accumulation for mode-resolved Floquet models. Remove
   the custom exact accumulator, per-mode block storage, and its extreme-range
   tests; mode reordering may now change floating-point rounding.

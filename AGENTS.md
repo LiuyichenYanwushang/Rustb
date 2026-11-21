@@ -768,7 +768,7 @@ This is the projection of `H(t)-iħ∂t` in the positive-time basis
 `u(t)=Σ_n u_n exp(+inΩ₀t)`, with `H(t)=Σ_q H^(q) exp(-iqΩ₀t)`.
 Quasienergies (eV) can be folded to `[−W/2, W/2)` via `fold_quasienergy`.
 
-### Real-space Bessel backend (main path of `floquet_effective_model`)
+### Real-space Bessel backend (reference and fallback)
 
 van Vleck through `O(W⁻²)`, with `W = omega0_ev = ħΩ₀`, entirely in real space — no `k_mesh`, no `n_time`
 (only fallback links beyond the branch's cap touch the time grid):
@@ -884,6 +884,55 @@ sector-major order. `floquet_effective_model` preserves the input metadata
 unchanged and determines its own real-space support (Minkowski sum of the
 input `hamR`); a custom `target_hamR` (legacy path only) must contain unique
 vectors and be closed under `R -> -R`.
+
+### Effective-model evaluation engine
+
+The effective model for `NoRMatrix` is a polynomial of degree `order + 1` in
+the harmonic hopping blocks, so it has two exact evaluation paths that must
+agree block by block:
+
+- **k space (automatic default)** — `src/floquet/kspace/`. Evaluate the
+  polynomial on a zero-aliasing grid (`N_a >= 2 * degree * R_max,a + 1`,
+  rounded up to a 2/3/5/7-smooth size), streaming slabs along the last
+  resolved axis. Cost is `O(N_k n^3)` instead of one matrix product per input
+  pair; the result is transformed back once and accumulated with the slab
+  phase. Never materialize the full k volume: the transients are one harmonic
+  slab plus two slice buffers. Its own working set is nevertheless dominated
+  by the output, because both paths need the accumulation map and the final
+  Hamiltonian: two dense `support x nsta^2` arrays. The engine estimates
+  slab plus output before allocating and refuses to start above its hard
+  limit. The estimate excludes the harmonic cache, which is built before the
+  path is chosen and shared with the real-space path, so the bound is an
+  engine working-set bound rather than a process peak.
+- **real space (reference and fallback)** — the pairwise Minkowski convolutions
+  in `src/floquet`. Kept as the oracle every k-space regression is compared
+  against, and used whenever the automatic rule prefers it.
+
+Path selection is internal: `floquet_effective_model` keeps its signature and
+always chooses for the caller. Do not add a public switch. The automatic rule
+requires corrections at all (order 1 or 2 with an AC drive), a representable
+frequency scale, a k-point grid with at least twice fewer sampled points than
+the input pair count, and a working set under 32 GiB; otherwise the
+real-space convolutions run. An explicitly requested k-space run is only
+refused above a 64 GiB hard limit. The
+guarded window
+`|m|, |m'|, |m'-m| <= harmonic_max` and the `m' == 2m` skip must stay
+identical in both paths; the k-space matrices therefore use at most
+`2 * harmonic_max + 1` harmonics.
+
+**Hermitian input is assumed, not re-checked.** Both paths require
+`H(R) = H(-R)^dagger`; the order-two real-space path uses that relation to
+halve the A-family convolutions, so hand-mutating `ham` to break it is
+unsupported and can make the two paths disagree. Builder methods always
+preserve it. Structural invariants (unique translations, closed under
+negation) are validated by the effective-model entry point.
+
+**Threading:** the k-space assembly parallelizes over k points with Rayon while
+each point runs small (55x55) BLAS products. Pin the BLAS pool to one thread
+(`OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`) whenever `RAYON_NUM_THREADS`
+is above one; leaving both pools at their defaults oversubscribes the machine
+and was measured to make the engine more than 20x slower. The same rule
+applies to the parallel symmetry kernels.
 
 ---
 

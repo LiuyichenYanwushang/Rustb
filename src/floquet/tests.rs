@@ -6098,7 +6098,13 @@ mod regrouped_order_two {
                     .unwrap();
                 let old = serial
                     .install(|| {
-                        model.floquet_effective_model_impl(&drive, Some(&options), false, false)
+                        model.floquet_effective_model_impl(
+                            &drive,
+                            Some(&options),
+                            false,
+                            false,
+                            EffectivePath::RealSpace,
+                        )
                     })
                     .unwrap();
                 let threaded = parallel
@@ -6146,13 +6152,25 @@ mod regrouped_order_two {
                     .floquet_effective_model(&drive, Some(&options))
                     .unwrap();
                 let old = model
-                    .floquet_effective_model_impl(&drive, Some(&options), false, false)
+                    .floquet_effective_model_impl(
+                        &drive,
+                        Some(&options),
+                        false,
+                        false,
+                        EffectivePath::RealSpace,
+                    )
                     .unwrap();
                 assert_models_close(&actual, &old);
             }
             let drive = drive(omega);
             let actual = model.floquet_effective_model(&drive, Some(&options));
-            let old = model.floquet_effective_model_impl(&drive, Some(&options), false, false);
+            let old = model.floquet_effective_model_impl(
+                &drive,
+                Some(&options),
+                false,
+                false,
+                EffectivePath::RealSpace,
+            );
             if omega < 1.0 {
                 assert_eq!(
                     actual.unwrap_err().to_string(),
@@ -6186,7 +6204,13 @@ mod regrouped_order_two {
             );
             match (
                 model.floquet_effective_model(&drive, Some(&options)),
-                model.floquet_effective_model_impl(&drive, Some(&options), false, false),
+                model.floquet_effective_model_impl(
+                    &drive,
+                    Some(&options),
+                    false,
+                    false,
+                    EffectivePath::RealSpace,
+                ),
             ) {
                 (Ok(actual), Ok(old)) => assert_models_close(&actual, &old),
                 (Err(actual), Err(old)) if !safe => assert_eq!(actual.to_string(), old.to_string()),
@@ -6327,6 +6351,7 @@ mod regrouped_order_two {
                                     Some(&options),
                                     regroup,
                                     adjoint,
+                                    EffectivePath::RealSpace,
                                 )
                                 .unwrap();
                             (
@@ -6349,6 +6374,412 @@ mod regrouped_order_two {
     }
 
     #[test]
+    fn b_family_truncation_audit() {
+        use crate::ndarray_lapack::eigvalsh_v;
+        use ndarray::Array2;
+        use ndarray_linalg::UPLO;
+        use std::collections::BTreeMap;
+
+        type C = Complex<f64>;
+        let model = fixture();
+        let drive = drive(6.0);
+        let w = drive.omega0_ev;
+        let cut = 2_isize;
+        let cache = model.floquet_harmonic_cache(&drive, -4, 4, &BESSEL);
+        let sambe = model
+            .floquet_model(&drive, &FloquetTruncation::new(6))
+            .unwrap();
+        let zeros = || Array2::<C>::zeros((model.nsta(), model.nsta()));
+        let comm = |a: &Array2<C>, b: &Array2<C>| a.dot(b) - b.dot(a);
+        let sorted = |m: &Array2<C>| {
+            let mut v = eigvalsh_v(m, UPLO::Lower).unwrap().to_vec();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v
+        };
+
+        let mut worst = [0.0_f64; 4];
+        for k in [array![0.0, 0.0], array![0.31, 0.14], array![0.43, 0.81]] {
+            let mut blocks: BTreeMap<isize, Array2<C>> = BTreeMap::new();
+            for n in -4..=4 {
+                blocks.insert(
+                    n,
+                    model.floquet_cached_harmonic_onek(&k, n, Gauge::Lattice, &cache),
+                );
+            }
+            let get = |n: isize, clean: bool| {
+                if clean && n.abs() > cut {
+                    zeros()
+                } else {
+                    blocks[&n].clone()
+                }
+            };
+            let mut first_order = zeros();
+            for n in 1..=cut {
+                let c = comm(&get(-n, false), &get(n, false));
+                first_order = first_order + c.mapv(|z| z / (n as f64 * w));
+            }
+            let family_a = |clean: bool| {
+                let mut sum = zeros();
+                for m in -cut..=cut {
+                    if m == 0 {
+                        continue;
+                    }
+                    let inner = comm(&get(0, clean), &get(m, clean));
+                    let outer = comm(&get(-m, clean), &inner);
+                    sum = sum + outer.mapv(|z| z / (2.0 * (m as f64).powi(2) * w * w));
+                }
+                sum
+            };
+            let family_b = |clean: bool, loewdin: bool| {
+                let mut sum = zeros();
+                for m in -cut..=cut {
+                    if m == 0 {
+                        continue;
+                    }
+                    for mp in -cut..=cut {
+                        if mp == 0 || mp == m {
+                            continue;
+                        }
+                        let term = if loewdin {
+                            get(-mp, clean).dot(&get(mp - m, clean)).dot(&get(m, clean))
+                        } else {
+                            comm(&get(-mp, clean), &comm(&get(mp - m, clean), &get(m, clean)))
+                        };
+                        sum = sum + term.mapv(|z| z / ((m * mp) as f64 * w * w));
+                    }
+                }
+                sum
+            };
+            let exact = {
+                let mut v: Vec<f64> = eigvalsh_v(&sambe.gen_ham(&k, Gauge::Lattice), UPLO::Lower)
+                    .unwrap()
+                    .to_vec()
+                    .into_iter()
+                    .filter(|e| e.abs() < w / 2.0)
+                    .collect();
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                v.truncate(model.nsta());
+                v
+            };
+            let b_magnitude = |m: &Array2<C>| m.iter().map(|z| z.norm()).fold(0.0_f64, f64::max);
+            let b_full = family_b(false, false);
+            let b_clean = family_b(true, false);
+            let b_ld_full = family_b(false, true);
+            let b_ld_clean = family_b(true, true);
+            println!(
+                "k={k:?} |B| dc_full={:.3e} dc_clean={:.3e} ld_full={:.3e} ld_clean={:.3e}",
+                b_magnitude(&b_full),
+                b_magnitude(&b_clean),
+                b_magnitude(&b_ld_full),
+                b_magnitude(&b_ld_clean)
+            );
+            let bare = get(0, false);
+            let variants: [(&str, Array2<C>); 4] = [
+                ("dc_full", &bare + &first_order + &family_a(false) + &b_full),
+                (
+                    "dc_clean",
+                    &bare + &first_order + &family_a(true) + &b_clean,
+                ),
+                (
+                    "ld_full",
+                    &bare + &first_order + &family_a(false) + &b_ld_full,
+                ),
+                (
+                    "ld_clean",
+                    &bare + &first_order + &family_a(true) + &b_ld_clean,
+                ),
+            ];
+            for (index, (name, matrix)) in variants.iter().enumerate() {
+                let values = sorted(matrix);
+                let dev = values
+                    .iter()
+                    .zip(&exact)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f64, f64::max);
+                worst[index] = worst[index].max(dev);
+                println!("k={k:?} {name}: eff={values:?} exact={exact:?} maxdev={dev:.3e}");
+            }
+        }
+        println!("worst deviation [dc_full, dc_clean, ld_full, ld_clean] = {worst:?}");
+        assert!(
+            worst.iter().all(|deviation| *deviation < 1e-3),
+            "effective model must stay within 1 meV of the exact Sambe spectrum: {worst:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "timing probe for the k-space engine design"]
+    fn k_space_engine_timing_probe() {
+        use ndarray::Array3;
+        use std::time::Instant;
+
+        type C = Complex<f64>;
+        let nsta = 55;
+        let n = 56_usize;
+        let w = 5.0_f64;
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state as f64 / u64::MAX as f64) - 0.5
+        };
+        let mut harmonics: Vec<Array2<C>> = (0..5)
+            .map(|_| Array2::from_shape_fn((nsta, nsta), |_| C::new(next(), next())))
+            .collect();
+        let comm = |a: &Array2<C>, b: &Array2<C>| a.dot(b) - b.dot(a);
+        let assemble = |harmonics: &[Array2<C>]| {
+            let get = |m: isize| &harmonics[(m + 2) as usize];
+            let mut h = get(0).clone();
+            for k in 1..=2_isize {
+                let c = comm(get(-k), get(k));
+                h = h + c.mapv(|z| z / (k as f64 * w));
+            }
+            for m in -2..=2_isize {
+                if m == 0 {
+                    continue;
+                }
+                let inner = comm(get(0), get(m));
+                let outer = comm(get(-m), &inner);
+                h = h + outer.mapv(|z| z / (2.0 * (m as f64).powi(2) * w * w));
+            }
+            for m in -2..=2_isize {
+                if m == 0 {
+                    continue;
+                }
+                for mp in -2..=2_isize {
+                    if mp == 0 || mp == m || mp == 2 * m || (mp - m).abs() > 2 {
+                        continue;
+                    }
+                    let inner = comm(get(mp - m), get(m));
+                    let outer = comm(get(-mp), &inner);
+                    h = h + outer.mapv(|z| z / (3.0 * (m * mp) as f64 * w * w));
+                }
+            }
+            h
+        };
+        // Warm up and time.
+        let _ = assemble(&harmonics);
+        let rounds = 300;
+        let started = Instant::now();
+        let mut sink = 0.0_f64;
+        for _ in 0..rounds {
+            sink += assemble(&harmonics)[[0, 0]].re;
+        }
+        let per_k = started.elapsed().as_secs_f64() / rounds as f64;
+        println!(
+            "per-k assembly: {:.1} us (sink={sink:.3e}), grid 56x56x25 -> {:.1} s",
+            per_k * 1e6,
+            per_k * 78_400.0
+        );
+
+        // FFT cost for one 2D slice of 3025 lanes.
+        let mut field = Array3::<C>::from_shape_fn((n, n, nsta * nsta), |_| C::new(next(), next()));
+        let handler = ndrustfft::FftHandler::<f64>::new(n);
+        harmonics[0][[0, 0]] += C::new(0.0, 0.0);
+        let started = Instant::now();
+        for _ in 0..4 {
+            for axis in 0..2 {
+                ndrustfft::ndfft_inplace(&mut field, &handler, axis);
+            }
+        }
+        let per_slice = started.elapsed().as_secs_f64() / 4.0;
+        println!(
+            "one 2D FFT slice ({} lanes, {n}x{n}): {:.1} ms; 25 slices x 5 harmonics -> {:.1} s",
+            nsta * nsta,
+            per_slice * 1e3,
+            per_slice * 25.0 * 5.0
+        );
+    }
+
+    #[test]
+    fn k_space_engine_matches_the_real_space_kernel() {
+        use ndarray::Array3;
+        use ndrustfft::{FftHandler, ndfft_inplace};
+        use std::collections::BTreeMap;
+
+        type C = Complex<f64>;
+        let mut model = Model::<false, 3>::tb_model(
+            array![[1.0, 0.0, 0.0], [0.0, 1.2, 0.0], [0.0, 0.0, 0.8]],
+            array![[0.0, 0.0, 0.0], [0.41, 0.13, 0.07]],
+            None,
+        )
+        .unwrap();
+        model.set_onsite(&array![0.24, -0.31], None);
+        model.set_hop(0.42, 0, 1, &array![0, 0, 0], None);
+        model.set_hop(-0.27, 0, 1, &array![1, 0, 0], None);
+        model.set_hop(0.19, 1, 0, &array![0, 1, 0], None);
+        model.set_hop(0.13, 0, 1, &array![0, 0, 1], None);
+        let drive = FloquetDrive::with_modes(
+            5.0,
+            vec![LightMode::new(
+                1,
+                array![C::new(0.22, 0.05), C::new(-0.13, 0.17), C::new(0.09, -0.06)],
+            )],
+        );
+        let options = FloquetEffectiveOptions::new()
+            .with_order(2)
+            .with_harmonic_max(2);
+        let real = model
+            .floquet_effective_model(&drive, Some(&options))
+            .unwrap();
+
+        let h_max = 2_isize;
+        let cache = model.floquet_harmonic_cache(&drive, -h_max, h_max, &BESSEL);
+        let nsta = model.nsta();
+        let mut rmax = [0_isize; 3];
+        for row in model.hamR.outer_iter() {
+            for axis in 0..3 {
+                rmax[axis] = rmax[axis].max(row[axis].abs());
+            }
+        }
+        let grid: Vec<usize> = rmax.iter().map(|r| (6 * r + 1) as usize).collect();
+        let volume: usize = grid.iter().product();
+        let index = |[x, y, z]: [usize; 3]| (x * grid[1] + y) * grid[2] + z;
+
+        // H_m(k) = sum_R T_m(R) exp(+2*pi*i*k.R). conj(ndfft(conj(T))) gives it
+        // with an unnormalised forward transform.
+        let mut handlers: Vec<FftHandler<f64>> = grid.iter().map(|n| FftHandler::new(*n)).collect();
+        let mut harmonics: BTreeMap<isize, Vec<Array2<C>>> = BTreeMap::new();
+        for harmonic in -h_max..=h_max {
+            let mut blocks = vec![Array2::<C>::zeros((nsta, nsta)); volume];
+            for i in 0..nsta {
+                for j in 0..nsta {
+                    let mut field = Array3::<C>::zeros((grid[0], grid[1], grid[2]));
+                    for (i_r, row) in model.hamR.outer_iter().enumerate() {
+                        let at = [
+                            row[0].rem_euclid(grid[0] as isize) as usize,
+                            row[1].rem_euclid(grid[1] as isize) as usize,
+                            row[2].rem_euclid(grid[2] as isize) as usize,
+                        ];
+                        field[at] = cache.harmonic_blocks(harmonic)[[i_r, i, j]].conj();
+                    }
+                    for axis in 0..3 {
+                        ndfft_inplace(&mut field, &handlers[axis], axis);
+                    }
+                    for (slot, value) in field.iter().enumerate() {
+                        blocks[slot][[i, j]] = value.conj();
+                    }
+                }
+            }
+            harmonics.insert(harmonic, blocks);
+        }
+
+        // Calibration: one k-point must equal the direct Bloch sum.
+        let probe = [model.hamR[[0, 0]].rem_euclid(1) as usize, 0usize, 0usize];
+        let _ = probe;
+        let k_probe = [1usize, 2, 3];
+        for harmonic in -h_max..=h_max {
+            let mut direct = Array2::<C>::zeros((nsta, nsta));
+            for (i_r, row) in model.hamR.outer_iter().enumerate() {
+                let phase: f64 = (0..3)
+                    .map(|axis| row[axis] as f64 * k_probe[axis] as f64 / grid[axis] as f64)
+                    .sum();
+                let factor = C::from_polar(1.0, std::f64::consts::TAU * phase);
+                direct = direct
+                    + cache
+                        .harmonic_blocks(harmonic)
+                        .index_axis(Axis(0), i_r)
+                        .mapv(|z| z * factor);
+            }
+            let engine = &harmonics[&harmonic][index(k_probe)];
+            for (a, b) in engine.iter().zip(direct.iter()) {
+                assert!(
+                    (a - b).norm() < 1e-10,
+                    "harmonic {harmonic}: FFT {a} vs direct {b}"
+                );
+            }
+        }
+
+        // Pointwise van Vleck assembly with the same truncation as production.
+        let w = drive.omega0_ev;
+        let comm = |a: &Array2<C>, b: &Array2<C>| a.dot(b) - b.dot(a);
+        let mut effective = vec![Array2::<C>::zeros((nsta, nsta)); volume];
+        for slot in 0..volume {
+            let get = |n: isize| harmonics[&n][slot].clone();
+            let mut h = get(0);
+            for n in 1..=h_max {
+                let c = comm(&get(-n), &get(n));
+                h = h + c.mapv(|z| z / (n as f64 * w));
+            }
+            for m in -h_max..=h_max {
+                if m == 0 {
+                    continue;
+                }
+                let inner = comm(&get(0), &get(m));
+                let outer = comm(&get(-m), &inner);
+                h = h + outer.mapv(|z| z / (2.0 * (m as f64).powi(2) * w * w));
+            }
+            for m in -h_max..=h_max {
+                if m == 0 {
+                    continue;
+                }
+                for mp in -h_max..=h_max {
+                    if mp == 0 || mp == m || mp == 2 * m || (mp - m).abs() > h_max {
+                        continue;
+                    }
+                    let inner = comm(&get(mp - m), &get(m));
+                    let outer = comm(&get(-mp), &inner);
+                    h = h + outer.mapv(|z| z / (3.0 * (m * mp) as f64 * w * w));
+                }
+            }
+            effective[slot] = h;
+        }
+
+        // Back to real space: H(R) = (1/N) sum_k H(k) exp(-2*pi*i*k.R).
+        let mut projected: BTreeMap<[isize; 3], Array2<C>> = BTreeMap::new();
+        for i in 0..nsta {
+            for j in 0..nsta {
+                let mut field = Array3::<C>::zeros((grid[0], grid[1], grid[2]));
+                for (slot, value) in effective.iter().enumerate() {
+                    field[[
+                        slot / (grid[1] * grid[2]),
+                        slot % (grid[1] * grid[2]) / grid[2],
+                        slot % grid[2],
+                    ]] = value[[i, j]];
+                }
+                for axis in 0..3 {
+                    ndfft_inplace(&mut field, &handlers[axis], axis);
+                }
+                let norm = 1.0 / volume as f64;
+                for (slot, value) in field.iter().enumerate() {
+                    let cell = [
+                        slot / (grid[1] * grid[2]),
+                        slot % (grid[1] * grid[2]) / grid[2],
+                        slot % grid[2],
+                    ];
+                    let mut r = [0_isize; 3];
+                    for axis in 0..3 {
+                        r[axis] = cell[axis] as isize;
+                        if r[axis] > grid[axis] as isize / 2 {
+                            r[axis] -= grid[axis] as isize;
+                        }
+                    }
+                    projected
+                        .entry(r)
+                        .or_insert_with(|| Array2::zeros((nsta, nsta)))[[i, j]] = value * norm;
+                }
+            }
+        }
+
+        let mut worst = 0.0_f64;
+        let mut scale = 0.0_f64;
+        for (i_r, row) in real.hamR.outer_iter().enumerate() {
+            let key = [row[0], row[1], row[2]];
+            let engine = projected.get(&key).cloned().unwrap_or_default();
+            for (a, b) in real.ham.index_axis(Axis(0), i_r).iter().zip(engine.iter()) {
+                worst = worst.max((a - b).norm());
+                scale = scale.max(a.norm());
+            }
+        }
+        println!(
+            "k-space vs real-space kernel: blocks={} grid={grid:?} max|diff|={worst:.3e} scale={scale:.3e}",
+            real.hamR.nrows()
+        );
+        assert!(worst < 1e-12, "k-space engine deviates by {worst:e}");
+    }
+
+    #[test]
     fn mixed_family_regrouping_reduces_support_constructions() {
         rayon::ThreadPoolBuilder::new()
             .num_threads(1)
@@ -6365,7 +6796,13 @@ mod regrouped_order_two {
                     let results = [false, true].map(|regroup| {
                         REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.set(0));
                         let out = model
-                            .floquet_effective_model_impl(&drive, Some(&options), regroup, false)
+                            .floquet_effective_model_impl(
+                                &drive,
+                                Some(&options),
+                                regroup,
+                                false,
+                                EffectivePath::RealSpace,
+                            )
                             .unwrap();
                         (
                             out,
@@ -6375,9 +6812,9 @@ mod regrouped_order_two {
                     assert_models_close(&results[0].0, &results[1].0);
                     let (old, grouped) = (results[0].1, results[1].1);
                     if n == 2 && !pure_second {
-                        assert_eq!(old, 36, "exercise all twelve mixed-family summands");
+                        assert_eq!(old, 20, "self-consistent window leaves five B pairs");
                         assert!(
-                            grouped <= 28 && grouped < old,
+                            grouped <= 18 && grouped < old,
                             "grouped={grouped}, termwise={old}"
                         );
                     } else {

@@ -1,3 +1,4 @@
+use super::kspace::EffectivePath;
 use super::{Floquet, FloquetDrive, FloquetEffectiveOptions, FloquetTruncation, LightMode};
 use crate::{Gauge, HasRMatrix, Model, SpinDirection, find_R};
 use ndarray::{Axis, array};
@@ -378,6 +379,125 @@ fn position_quadratic_coupling_balances_extreme_amplitude_and_matrix_scales() {
         );
     }
 }
+#[test]
+fn wilson_line_reduces_to_peierls_and_exposes_the_dipole_order() {
+    use ndarray::Array2;
+    use ndarray_linalg::{Eigh, UPLO};
+
+    let lat = array![[3.0_f64]];
+    let build = |dipole: f64| {
+        let mut model =
+            Model::<false, 1, HasRMatrix>::tb_model(lat.clone(), array![[0.0], [0.3]], None)
+                .unwrap();
+        model.set_hop(0.42, 0, 1, &array![0], None);
+        model.set_hop(0.31, 0, 0, &array![1], None);
+        model.rmatrix[[0, 0, 0, 0]] = C::from(0.0);
+        model.rmatrix[[0, 0, 1, 1]] = C::from(0.9);
+        if dipole != 0.0 {
+            model.rmatrix[[0, 0, 0, 1]] = C::from(dipole);
+            model.rmatrix[[0, 0, 1, 0]] = C::from(dipole);
+        }
+        model
+    };
+    // Fractional reciprocal coordinates: the Bloch phase carries 2*pi.
+    let tau = 2.0 * std::f64::consts::PI;
+    let hamiltonian = |model: &Model<false, 1, HasRMatrix>, k: f64, shift: f64| {
+        let mut block = Array2::<C>::zeros((model.nsta(), model.nsta()));
+        for (i_r, row) in model.hamR.outer_iter().enumerate() {
+            let phase = C::from_polar(1.0, tau * (k - shift) * row[0] as f64);
+            block = block + model.ham.index_axis(Axis(0), i_r).mapv(|z| z * phase);
+        }
+        block
+    };
+    let connection = |model: &Model<false, 1, HasRMatrix>, k: f64| {
+        let mut block = Array2::<C>::zeros((model.nsta(), model.nsta()));
+        for (i_r, row) in model.hamR.outer_iter().enumerate() {
+            let phase = C::from_polar(1.0, tau * k * row[0] as f64);
+            block = block
+                + model
+                    .rmatrix
+                    .index_axis(Axis(0), i_r)
+                    .index_axis(Axis(0), 0)
+                    .mapv(|z| z * phase);
+        }
+        block
+    };
+    // exp(i A X) for a Hermitian X from its eigenbasis.
+    let exponent = |hermitian: &Array2<C>, a: f64| {
+        let (values, vectors) = hermitian.eigh(UPLO::Lower).unwrap();
+        let n = hermitian.nrows();
+        let mut out = Array2::<C>::zeros((n, n));
+        for index in 0..n {
+            let column = vectors.column(index);
+            let phase = C::from_polar(1.0, a * values[index]);
+            for i in 0..n {
+                for j in 0..n {
+                    out[[i, j]] += column[i] * column[j].conj() * phase;
+                }
+            }
+        }
+        out
+    };
+    let wilson = |model: &Model<false, 1, HasRMatrix>, k: f64, a: f64| {
+        // A in 1/Angstrom shifts the Cartesian wavevector; convert to the
+        // fractional coordinate used by the Bloch phase.
+        let shift = a * lat[[0, 0]] / tau;
+        let w = exponent(&connection(model, k - 0.5 * shift), a);
+        let h = hamiltonian(model, k, shift);
+        let wd = w.t().mapv(|z| z.conj());
+        w.dot(&h).dot(&wd)
+    };
+    let peierls = |model: &Model<false, 1, HasRMatrix>, k: f64, a: f64| {
+        let mut block = Array2::<C>::zeros((model.nsta(), model.nsta()));
+        for (i_r, row) in model.hamR.outer_iter().enumerate() {
+            for i in 0..model.nsta() {
+                for j in 0..model.nsta() {
+                    let d = (row[0] as f64 + model.orb[[j, 0]] - model.orb[[i, 0]]) * lat[[0, 0]];
+                    // exp(i k R) times the Peierls link phase exp(-i A d).
+                    let phase = C::from_polar(1.0, tau * k * row[0] as f64 - a * d);
+                    block[[i, j]] += model.ham.index_axis(Axis(0), i_r)[[i, j]] * phase;
+                }
+            }
+        }
+        block
+    };
+
+    let centre_only = build(0.0);
+    let dipolar = build(0.25);
+    let a = 0.17;
+    let mut worst = 0.0_f64;
+    for k in [0.0_f64, 0.13, 0.37] {
+        let w = wilson(&centre_only, k, a);
+        let p = peierls(&centre_only, k, a);
+        for (x, y) in w.iter().zip(p.iter()) {
+            worst = worst.max((x - y).norm());
+        }
+    }
+    println!("Wilson vs Peierls with centre-only r: max|diff| = {worst:.3e}");
+    assert!(worst < 1e-12, "centre-only Wilson line must equal Peierls");
+
+    // An off-diagonal dipole is dropped by Peierls, so the gap is first order in A.
+    let mut ratios = Vec::new();
+    for a in [0.02_f64, 0.04, 0.08] {
+        let mut diff = 0.0_f64;
+        for k in [0.0_f64, 0.13, 0.37] {
+            let w = wilson(&dipolar, k, a);
+            let p = peierls(&dipolar, k, a);
+            for (x, y) in w.iter().zip(p.iter()) {
+                diff = diff.max((x - y).norm());
+            }
+        }
+        ratios.push(diff / a);
+        println!(
+            "A={a}: max|Wilson-Peierls|={diff:.3e} diff/A={:.3e}",
+            diff / a
+        );
+    }
+    assert!(
+        (ratios[2] - ratios[0]).abs() < 0.2 * ratios[0],
+        "the omitted dipole enters linearly in A: {ratios:?}"
+    );
+}
 
 #[test]
 fn position_h0_family_adjoint_matches_termwise() {
@@ -411,7 +531,13 @@ fn position_h0_family_adjoint_matches_termwise() {
     let results = [false, true].map(|adjoint| {
         REAL_SPACE_SUPPORT_CONSTRUCTIONS.with(|count| count.set(0));
         let out = model
-            .floquet_effective_model_impl(&drive, Some(&options), false, adjoint)
+            .floquet_effective_model_impl(
+                &drive,
+                Some(&options),
+                false,
+                adjoint,
+                EffectivePath::RealSpace,
+            )
             .unwrap();
         (
             out,

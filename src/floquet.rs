@@ -380,6 +380,11 @@
 //! ```
 
 mod coefficients;
+mod kspace;
+#[cfg(test)]
+mod kspace_perf_tests;
+#[cfg(test)]
+mod kspace_tests;
 mod position;
 #[cfg(test)]
 mod position_tests;
@@ -388,6 +393,7 @@ mod real_space;
 mod time_direction_tests;
 
 use coefficients::*;
+use kspace::EffectivePath;
 
 pub(crate) use coefficients::bessel_peierls_coeffs;
 pub(crate) use coefficients::{FloquetHarmonicCache, bessel_j};
@@ -630,9 +636,12 @@ pub struct FloquetEffectiveOptions {
     /// through `O(omega^0)`, `O(omega^-1)`, and `O(omega^-2)`, respectively.
     pub order: usize,
     /// Signed-harmonic cutoff for commutator sums. Defaults to `2`,
-    /// independently of any Sambe photon cutoff. In the all-orders Peierls
-    /// path, order 2 evaluates `H_(m'-m)` up to `2 * harmonic_max` automatically.
-    /// In the weak-field position path, the cutoff does not affect the time average.
+    /// independently of any Sambe photon cutoff. It bounds every index of the
+    /// retained families, including the mixed-harmonic one: at order 2 the sum
+    /// keeps only triples with `|m|, |m'|, |m'-m| <= harmonic_max`. Keeping
+    /// the bound self-consistent is what makes the double-commutator form agree
+    /// with the truncated Loewdin triple sum. In the weak-field position path
+    /// the cutoff does not affect the time average.
     pub harmonic_max: isize,
     /// Optional target real-space hopping vectors for the legacy path's
     /// inverse Fourier transform.  Rejected by the real-space path.
@@ -1586,10 +1595,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// full signed sum is accumulated.
     ///
     /// `options.order = 0` keeps only `T_0`; `order = 1` adds the `1/W`
-    /// commutator terms; `order = 2` adds both `1/W^2` families.  The signed
-    /// indices `m,m'` are truncated at `harmonic_max` (default `2`),
-    /// while `T_(m'-m)` is evaluated automatically through `2*harmonic_max`.
-    /// The real-space support is determined automatically: primitive at
+    /// commutator terms; `order = 2` adds both `1/W^2` families.  Every index
+    /// of every retained family is truncated at `harmonic_max` (default `2`),
+    /// including the mixed-harmonic `T_(m'-m)`; no harmonic outside that window
+    /// is read. The support is determined automatically: primitive at
     /// order 0, the union through the double Minkowski sum at order 1, and
     /// through the triple Minkowski sum at order 2.  No `target_hamR`
     /// parameter is needed, and the output is guaranteed Hermitian
@@ -1602,6 +1611,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// The returned model has the same lattice, orbitals, atoms, and
     /// state count as the input model, and differs only in `ham`/`hamR`.
+    ///
+    /// Both evaluation paths assume the input is a valid Hermitian model:
+    /// `H(R) = H(-R)^dagger`, and every Peierls harmonic inherits it. The
+    /// order-two real-space path reuses that relation to halve the A-family
+    /// convolutions, so a model whose `ham` blocks were mutated to break it can
+    /// give path-dependent results. The builder methods always preserve it.
     /// It is an approximation to the off-resonant Floquet problem, not
     /// the full enlarged Sambe model returned by [`Floquet::floquet_model`].
     ///
@@ -1617,14 +1632,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// # Errors
     /// Returns an error for an invalid drive, `order > 2`, a
     /// negative or unrepresentable harmonic range, a non-finite frequency
-    /// scaling factor, a supplied `target_hamR`, a real-space support sum that
-    /// overflows `isize`, or a support that is not closed under `R -> −R`.
+    /// scaling factor, a supplied `target_hamR`, duplicate or non-closed
+    /// support vectors, a support sum that overflows `isize`, a k-point grid
+    /// whose extent overflows `usize`, or a working set above the engine's
+    /// hard memory limit.
     pub fn floquet_effective_model(
         &self,
         drive: &FloquetDrive,
         options: Option<&FloquetEffectiveOptions>,
     ) -> Result<Model<SPIN, DIM, R>> {
-        self.floquet_effective_model_impl(drive, options, true, true)
+        self.floquet_effective_model_impl(drive, options, true, true, EffectivePath::Auto)
     }
 
     // The false setting retains the termwise reference for regression tests;
@@ -1635,6 +1652,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         options: Option<&FloquetEffectiveOptions>,
         regroup_order_two: bool,
         adjoint_h0_family: bool,
+        path: EffectivePath,
     ) -> Result<Model<SPIN, DIM, R>> {
         self.validate()?;
         let default_options;
@@ -1674,6 +1692,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             )?;
             return self.position_effective_output(corrections);
         }
+        // Both evaluation paths need an unambiguous self-conjugate support:
+        // duplicate translations are merged by the real-space block map while
+        // the k-space transform sums every row, and a missing -R block cannot
+        // be Hermitised. Validate once, before either path starts work.
+        validate_effective_support::<DIM>(&self.hamR)?;
         let has_time_dependence = drive_has_ac_components(drive);
         let static_drive;
         let cache_drive = if has_time_dependence {
@@ -1700,6 +1723,24 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 cutoff_margin: BESSEL_CUTOFF_MARGIN,
             },
         );
+        // Every van Vleck term is a bounded-degree polynomial in the harmonic
+        // blocks, so a zero-aliasing k-point grid reproduces the same
+        // real-space model without the pairwise convolution.
+        if self.prefer_kspace_effective_model(
+            path,
+            harmonic_max,
+            options.order,
+            has_time_dependence,
+            drive.omega0_ev,
+        ) {
+            return self.floquet_effective_model_kspace(
+                drive,
+                options,
+                &harmonic_cache,
+                harmonic_max,
+                has_time_dependence,
+            );
+        }
         // Zeroth order: the Peierls-dressed static blocks on the input
         // support.  The BTreeMap merges the per-n contributions onto the
         // final support in lexicographic order (matching
@@ -1824,7 +1865,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 accumulate_h0_family(partial, m)?;
 
                 for &m_prime in &signed_harmonics {
-                    if m_prime == m || !nonzero(-m_prime) || !nonzero(m_prime - m) {
+                    // The double-commutator form equals the truncated Loewdin
+                    // triple sum only when all three indices share the cutoff.
+                    if m_prime == m
+                        || m_prime == 2 * m
+                        || (m_prime - m).abs() > harmonic_max
+                        || !nonzero(-m_prime)
+                        || !nonzero(m_prime - m)
+                    {
                         continue;
                     }
                     let h_difference = harmonic_cache.harmonic_blocks(m_prime - m);
@@ -1861,8 +1909,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
                 // The first family is not fused with the mixed-family inner sum.
                 accumulate_h0_family(partial, p)?;
-                // B needs H_-p, not H_p. Do not assume an adjoint relation for
-                // every storage-valid (possibly hand-mutated) input model.
+                // B needs H_-p, not H_p. The A family above already relies on
+                // the documented Hermitian-input precondition to reuse the
+                // adjoint; the B family does not, so it keeps the explicit
+                // negative harmonic and would still be correct for a model
+                // whose blocks were mutated.
                 if !nonzero(-p) {
                     return Ok(());
                 }
@@ -1870,7 +1921,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 let mut inner_sum = RealSpaceBlockMap::new();
                 let mut scaling_safe = true;
                 for &m in &signed_harmonics {
-                    if m == p || !nonzero(m) || !nonzero(p - m) {
+                    if m == p
+                        || p == 2 * m
+                        || (p - m).abs() > harmonic_max
+                        || !nonzero(m)
+                        || !nonzero(p - m)
+                    {
                         continue;
                     }
                     let h_difference = harmonic_cache.harmonic_blocks(p - m);
@@ -1898,7 +1954,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     // this p termwise instead; do not retain all inner blocks.
                     drop(inner_sum);
                     for &m in &signed_harmonics {
-                        if m == p || !nonzero(m) || !nonzero(p - m) {
+                        if m == p
+                            || p == 2 * m
+                            || (p - m).abs() > harmonic_max
+                            || !nonzero(m)
+                            || !nonzero(p - m)
+                        {
                             continue;
                         }
                         let h_difference = harmonic_cache.harmonic_blocks(p - m);
@@ -2043,7 +2104,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
             for &m in &signed_harmonics {
                 for &m_prime in &signed_harmonics {
-                    if m_prime == m {
+                    if m_prime == m || (m_prime - m).abs() > harmonic_max {
                         continue;
                     }
                     let inner = matrix_commutator(harmonic(m_prime - m), harmonic(m));
@@ -2533,6 +2594,41 @@ fn validate_effective_options<const DIM: usize>(
     effective_harmonic_max(options)?;
     if let Some(target_ham_r) = &options.target_hamR {
         validate_target_hamr::<DIM>(target_ham_r)?;
+    }
+    Ok(())
+}
+
+/// Require unique translations that are closed under negation.
+///
+/// The effective-model paths accumulate blocks in a map keyed by translation
+/// and later enforce Hermiticity by pairing every `R` with `-R`; a duplicate or
+/// unpaired vector would make either path ambiguous.
+fn validate_effective_support<const DIM: usize>(support: &Array2<isize>) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::<Vec<isize>>::new();
+    for row in support.outer_iter() {
+        let vector = row.to_vec();
+        if !seen.insert(vector.clone()) {
+            return Err(TbError::Other(format!(
+                "the effective model needs unique hopping translations, but R={vector:?} appears more than once"
+            )));
+        }
+    }
+    for vector in &seen {
+        let negated = vector
+            .iter()
+            .map(|value| {
+                value.checked_neg().ok_or_else(|| {
+                    TbError::Other(format!(
+                        "the effective model cannot negate the translation R={vector:?}"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if !seen.contains(&negated) {
+            return Err(TbError::MissingHermitianConjugateHopping {
+                r: Array1::from(vector.clone()),
+            });
+        }
     }
     Ok(())
 }

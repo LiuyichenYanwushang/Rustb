@@ -1023,13 +1023,42 @@ or `target_hamR`; hopping support is determined automatically.
 an old effective-model call's implicit harmonic range during migration, pass
 `.with_harmonic_max(2 * old_n_max)` explicitly.
 
+The mixed-harmonic `1/omega^2` sum keeps only triples with
+`|m|, |m'|, |m'-m| <= harmonic_max`; the double-commutator form agrees with the
+truncated triple sum exactly under that condition. At `harmonic_max = 2` this
+leaves five pairs and 20 convolutions instead of 36.
+
 For `NoRMatrix`, the effective hopping support can reach the double Minkowski
-sum at `order = 1` and the triple sum at `order = 2`. For large, compact
-supports, direct convolution assigns each output `R` to one task and uses
-a dense translation-index table to find matching input blocks. It keeps the
-serial pairwise accumulation order within each output block and avoids
-merging per-worker coefficient maps. Small or sparse supports and the Netlib
-backend still use the original kernel. The full Minkowski support is retained. The per-link
+sum at `order = 1` and the triple sum at `order = 2`. Two evaluation paths
+produce that same model:
+
+- **k space (chosen automatically for large supports).** Every van Vleck term is a
+  polynomial of bounded degree in the harmonic hopping blocks, so the operator
+  is evaluated on a zero-aliasing k-point grid (twice the polynomial degree
+  times the real-space radius, plus one, per axis) and transformed back once.
+  Cost is `O(N_k n^3)` matrix products instead of one product per input pair,
+  and the k-point slabs are streamed, so the full k volume is never held in
+  memory. This is exact up to floating-point round-off: it computes the same
+  polynomial, not an approximation. The dominant allocation is the output
+  model itself (the accumulation map and the final Hamiltonian), exactly as
+  in the pairwise path; the engine estimates both before it starts.
+- **real space (internal reference and fallback).** The automatic rule keeps
+  a call here when it has no corrections (order 0, static drive, `harmonic_max
+  = 0`), when the zero-aliasing grid would need more sampled points than
+  the input pair set, or when the estimated working set is too large. Each
+  output `R` is one task, a dense translation-index table finds the matching
+  input blocks, and the serial pairwise accumulation order within a block is
+  preserved. This path is also the reference the k-space engine is tested
+  against.
+
+Because the assembly runs many small matrix products in parallel, pin the BLAS
+thread pool to one thread (`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`)
+whenever `RAYON_NUM_THREADS` is above one. Leaving both pools at their default
+oversubscribes the machine: on a 55-orbital, 3249-block model the same run took
+982 s unpinned and 76 s pinned.
+
+Both paths retain the full Minkowski support, including its zero-valued
+layers, and enforce the same real-space Hermiticity. The per-link
 DFT fallback is sized from the link's bandwidth and requested harmonic range. It projects
 onto the link before summing coherent carriers and factors the real DC phase
 outside the sampled AC signal. The actual Bessel backend is checked before
