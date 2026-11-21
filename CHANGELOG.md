@@ -96,6 +96,19 @@
   and `(j,i,-R)` with conjugate amplitudes and the Peierls coefficients obey
   `C_-n = C_n^*`, so `H_-m(R) = H_m(-R)^dagger` and `H_0` is Hermitian. No
   public API change.
+- Store the k-space output in a dense slot table over the exact support box
+  and keep only one representative of every conjugate pair: the support is
+  now marked on a bitmap over that box (the Minkowski sums are still formed,
+  but no `BTreeSet` is involved), the accumulator holds half the blocks, and
+  the other half is reconstructed as its adjoint on output. On the
+  55-orbital benchmark (4 Rayon threads, `OPENBLAS_NUM_THREADS=1`) a
+  back-to-back A/B of `kspace_engine_cost_probe` moved the run from 47.1 s to
+  34.4 s and the peak resident set from 10.2 GiB to 8.15 GiB. Probe stages of
+  the 34.4 s run (three sampled slices extrapolated, so they do not sum to
+  the end-to-end time): harmonic cache 1.8 s, support enumeration plus
+  accumulator allocation 0.7 s, forward transform 7.3 s, assembly 10.9 s,
+  inverse 1.5 s, accumulation 5.3 s, output assembly 2.6 s, Hermiticity
+  pass 1.1 s.
 - Run the k-space slice transforms on ndrustfft's parallel entry points for
   pools above one thread, which fan out over transform lanes on the calling
   Rayon pool; a single-thread pool keeps the serial entry point, so the

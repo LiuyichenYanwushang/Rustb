@@ -20,11 +20,11 @@
 //! blocks plus one slice of assembled blocks, not the full k-point volume.
 
 use super::*;
-use ndarray::{Array2, Array3};
+use ndarray::{Array3, Array4};
 use num_complex::Complex;
-use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
+mod blocks;
 mod grid;
 #[cfg(test)]
 mod perf;
@@ -55,13 +55,15 @@ pub(super) enum EffectivePath {
 /// Automatic selection refuses an estimated engine working set above this
 /// bound; an explicit request is only refused above the hard limit.
 ///
-/// The estimate covers the allocations the engine itself controls: the
-/// harmonic slab plus two dense copies of the output model (the accumulation
-/// map and the final Hamiltonian). It does not cover the harmonic cache, which
-/// the caller builds before the path is chosen and shares with the real-space
-/// path. The bound is therefore an engine working-set bound, not a process
-/// peak: the measured 55-orbital benchmark peaks at 9.7 GiB against a 7.5 GiB
-/// estimate because of that cache plus allocator overhead.
+/// The estimate charges the harmonic slab plus two full copies of the output
+/// model. The k-space accumulator actually holds half the blocks (one per
+/// conjugate pair) and the finish step allocates the full Hamiltonian, so the
+/// charge is conservative by about half a copy for a dense support. It does
+/// not cover the harmonic cache, which the caller builds before the path is
+/// chosen and shares with the real-space path. The bound is therefore an
+/// engine working-set bound, not a process peak: the 55-orbital benchmark now
+/// peaks at 8.15 GiB against the same 7.5 GiB charge, and the back-to-back A/B
+/// before the half-support accumulator peaked at 10.2 GiB.
 const KSPACE_MEMORY_LIMIT: u128 = 32 * 1024 * 1024 * 1024;
 const KSPACE_MEMORY_HARD_LIMIT: u128 = 64 * 1024 * 1024 * 1024;
 
@@ -72,7 +74,8 @@ struct KspaceEstimate {
     total_points: u128,
     /// One slab of harmonic blocks, the largest transient allocation.
     slab_bytes: u128,
-    /// Two dense copies of the output model (accumulation map plus final ham).
+    /// Two full output copies, charged conservatively: the engine accumulates
+    /// half the blocks and then allocates the full Hamiltonian.
     output_bytes: u128,
 }
 
@@ -180,8 +183,10 @@ impl<const SPIN: bool, const DIM: usize, RMatrix: RMatrixData> Model<SPIN, DIM, 
             }
         }
         let slab_bytes = (2 * used_max + 1) as u128 * lanes * nsta * nsta * element;
-        // The output support is contained in the degree times radius box, and
-        // the engine holds two dense copies of it (map plus final ham).
+        // The output support is contained in the degree times radius box. The
+        // engine charges two full copies of that box: the accumulator itself
+        // holds half the blocks per conjugate pair, and the finish step
+        // allocates the full Hamiltonian.
         let mut support = 1_u128;
         for axis in 0..DIM {
             let radius = self
@@ -231,7 +236,7 @@ impl<const SPIN: bool, const DIM: usize, RMatrix: RMatrixData> Model<SPIN, DIM, 
         let estimate = self.kspace_estimate(harmonic_max, order, has_time_dependence);
         if estimate.working_set_bytes() > KSPACE_MEMORY_HARD_LIMIT {
             return Err(TbError::Other(format!(
-                "the k-space effective model needs about {:.1} GiB (slab {:.1} GiB plus two output copies); reduce the support or use the real-space path",
+                "the k-space effective model needs about {:.1} GiB (slab {:.1} GiB plus a conservative two-copy output charge); reduce the support or use the real-space path",
                 estimate.working_set_bytes() as f64 / (1024.0 * 1024.0 * 1024.0),
                 estimate.slab_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
             )));
@@ -255,31 +260,20 @@ impl<const SPIN: bool, const DIM: usize, RMatrix: RMatrixData> Model<SPIN, DIM, 
                         .iter()
                         .any(|value| value.re != 0.0 || value.im != 0.0)
                 });
-        let support = effective_support(&self.hamR, DIM, harmonic_max, order)?;
-        let mut blocks: BTreeMap<[isize; 3], Array2<C>> = support
-            .into_iter()
-            .map(|vector| (vector, Array2::zeros((nsta, nsta))))
-            .collect();
-
         let slices = grid.slices();
         let lanes = grid.points_per_slice();
         // inverse_slice applies 1 / (N_0 * ... * N_{dim-2}); the streaming axis
         // needs its own 1 / N_last factor here.
         let slice_norm = 1.0 / slices as f64;
-        // Lane -> translation on the non-streaming axes, decoded once.
-        let lane_vectors: Vec<[isize; 3]> = (0..lanes)
-            .map(|lane| {
-                let mut vector = [0_isize; 3];
-                let mut rest = lane;
-                for axis in (0..DIM - 1).rev() {
-                    let length = grid.axis_len(axis);
-                    let index = rest % length;
-                    rest /= length;
-                    vector[axis] = grid.signed(index, axis);
-                }
-                vector
-            })
-            .collect();
+        // The exact support is a Minkowski sum the engine can enumerate before
+        // any transform runs; the accumulator stores one representative of
+        // every conjugate pair and reconstructs the other half on output.
+        let (support_box, support) =
+            blocks::effective_support(&self.hamR, DIM, harmonic_max, order)?;
+        let mut accumulator = blocks::DenseBlocks::new(support_box, support, nsta, DIM)?;
+        // Slot of every (lane, streaming translation) is fixed before the loop,
+        // so the accumulation needs one table lookup per contribution.
+        let lane_slots = lane_slots(&grid, DIM, &accumulator);
         // The harmonic slab and the two slice buffers are reused across kz.
         let mut harmonics = Array4::<C>::zeros(((2 * used_max + 1) as usize, lanes, nsta, nsta));
         let mut assembled = Array3::<C>::zeros((lanes, nsta, nsta));
@@ -312,83 +306,45 @@ impl<const SPIN: bool, const DIM: usize, RMatrix: RMatrixData> Model<SPIN, DIM, 
                 // phase stays exact for long streaming axes.
                 let turn = (kz as i128 * r_last as i128) % slices as i128;
                 let phase = C::from_polar(slice_norm, -TAU * turn as f64 / slices as f64);
-                let last = grid.signed(r_last, DIM - 1);
                 for (lane, block) in real.outer_iter().enumerate() {
-                    let mut vector = lane_vectors[lane];
-                    vector[DIM - 1] = last;
-                    if let Some(target) = blocks.get_mut(&vector) {
-                        target.scaled_add(phase, &block);
+                    let slot = lane_slots[lane * slices + r_last];
+                    if slot != blocks::NO_SLOT {
+                        accumulator.add_slot(slot, phase, block);
                     }
                 }
             }
         }
 
-        let mut ham = Array3::<Complex<f64>>::zeros((blocks.len(), nsta, nsta));
-        let mut ham_r = Array2::<isize>::zeros((blocks.len(), DIM));
-        for (index, (vector, block)) in blocks.into_iter().enumerate() {
-            for axis in 0..DIM {
-                ham_r[[index, axis]] = vector[axis];
-            }
-            ham.index_axis_mut(Axis(0), index).assign(&block);
-        }
+        let (mut ham, mut ham_r) = accumulator.finish()?;
         place_origin_first(&mut ham, &mut ham_r)?;
         enforce_real_space_hermiticity(&mut ham, &ham_r)?;
         self.floquet_effective_output(ham, ham_r)
     }
 }
 
-/// Exact real-space support of the effective model, in lexicographic order.
+/// Slot of every (lane, streaming translation) pair of one k slice.
 ///
-/// Mirrors the pairwise path: the input support is always present, the pairwise
-/// Minkowski layer appears when harmonic_max > 0 and order >= 1, and the triple
-/// layer when harmonic_max > 0 and order >= 2.
-fn effective_support(
-    support: &Array2<isize>,
-    dim: usize,
-    harmonic_max: isize,
-    order: usize,
-) -> Result<Vec<[isize; 3]>> {
-    let mut vectors = std::collections::BTreeSet::new();
-    for row in support.outer_iter() {
-        vectors.insert(fold_row(row, dim)?);
-    }
-    if harmonic_max > 0 && order >= 1 {
-        let pairs = minkowski(&vectors, support, dim)?;
-        vectors.extend(pairs.iter().copied());
-        if order >= 2 {
-            vectors.extend(minkowski(&pairs, support, dim)?);
+/// A lane decodes to the translations of the non-streaming axes and the
+/// streaming axis contributes the residue of the slice. The driver and the
+/// stage probe share this table so their accumulation loops cannot drift.
+fn lane_slots(grid: &KspaceGrid, dim: usize, accumulator: &blocks::DenseBlocks) -> Vec<u32> {
+    let lanes = grid.points_per_slice();
+    let slices = grid.slices();
+    let mut table = vec![blocks::NO_SLOT; lanes * slices];
+    for lane in 0..lanes {
+        let mut vector = [0_isize; 3];
+        let mut rest = lane;
+        for axis in (0..dim - 1).rev() {
+            let length = grid.axis_len(axis);
+            let index = rest % length;
+            rest /= length;
+            vector[axis] = grid.signed(index, axis);
+        }
+        for r_last in 0..slices {
+            let mut vector = vector;
+            vector[dim - 1] = grid.signed(r_last, dim - 1);
+            table[lane * slices + r_last] = accumulator.slot(&vector);
         }
     }
-    Ok(vectors.into_iter().collect())
-}
-
-fn fold_row(row: ndarray::ArrayView1<'_, isize>, dim: usize) -> Result<[isize; 3]> {
-    let mut vector = [0_isize; 3];
-    for axis in 0..dim {
-        vector[axis] = row[axis];
-    }
-    Ok(vector)
-}
-
-fn minkowski(
-    left: &std::collections::BTreeSet<[isize; 3]>,
-    right: &Array2<isize>,
-    dim: usize,
-) -> Result<std::collections::BTreeSet<[isize; 3]>> {
-    let mut out = std::collections::BTreeSet::new();
-    for lhs in left {
-        for row in right.outer_iter() {
-            let mut vector = [0_isize; 3];
-            for axis in 0..dim {
-                vector[axis] = lhs[axis].checked_add(row[axis]).ok_or_else(|| {
-                    TbError::Other(format!(
-                        "k-space support sum overflows isize on axis {axis}: {} + {}",
-                        lhs[axis], row[axis]
-                    ))
-                })?;
-            }
-            out.insert(vector);
-        }
-    }
-    Ok(out)
+    table
 }

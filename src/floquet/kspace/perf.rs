@@ -95,6 +95,7 @@ fn kspace_stage_timing_probe() {
     let order = 2_usize;
     let used_max = harmonic_max;
     let cache_limit = effective_cache_max(order, harmonic_max).unwrap();
+    let prepared = Instant::now();
     let cache = model.floquet_harmonic_cache(
         &drive,
         -cache_limit,
@@ -104,6 +105,7 @@ fn kspace_stage_timing_probe() {
         },
     );
     let grid = KspaceGrid::for_polynomial(&model.hamR, 3, order + 1).unwrap();
+    let prepare = prepared.elapsed().as_secs_f64();
     let lanes = grid.points_per_slice();
     let slices = grid.slices();
     let nsta = model.nsta();
@@ -111,6 +113,17 @@ fn kspace_stage_timing_probe() {
         "grid={:?} lanes={lanes} slices={slices} total={} nsta={nsta}",
         grid.shape(),
         grid.total_points()
+    );
+
+    // Support enumeration plus the half-support accumulator allocation.
+    let started = Instant::now();
+    let (support_box, support) =
+        super::blocks::effective_support(&model.hamR, 3, harmonic_max, order).unwrap();
+    let mut blocks = super::blocks::DenseBlocks::new(support_box, support, nsta, 3).unwrap();
+    let support_time = started.elapsed().as_secs_f64();
+    assert!(
+        blocks.stored_blocks() > 0,
+        "the probe model must store blocks"
     );
 
     let mut harmonics = Array4::<Kc>::zeros(((2 * used_max + 1) as usize, lanes, nsta, nsta));
@@ -148,25 +161,42 @@ fn kspace_stage_timing_probe() {
     }
     let inverse = started.elapsed().as_secs_f64() / sampled as f64 * slices as f64;
 
-    // One slice worth of output accumulation: lanes x slices scaled additions,
-    // reusing one accumulator exactly like the driver.
-    let mut acc = Array2::<Kc>::zeros((nsta, nsta));
-    let mut sink = 0.0_f64;
+    // The real accumulation loop: one table lookup and, for the stored half of
+    // the conjugate pairs, one scaled addition per (lane, streaming index).
+    let lane_slots = super::lane_slots(&grid, 3, &blocks);
+    let stored = lane_slots
+        .iter()
+        .filter(|slot| **slot != super::blocks::NO_SLOT)
+        .count();
+    assert_eq!(stored, blocks.stored_blocks());
     let started = Instant::now();
-    for r_last in 0..slices {
-        let phase = Kc::from_polar(
-            1.0 / slices as f64,
-            -std::f64::consts::TAU * r_last as f64 / slices as f64,
-        );
-        for block in real.outer_iter() {
-            acc.fill(Kc::new(0.0, 0.0));
-            acc.scaled_add(phase, &block);
-            sink += acc[[0, 0]].re;
+    for _ in 0..sampled {
+        for r_last in 0..slices {
+            let phase = Kc::from_polar(
+                1.0 / slices as f64,
+                -std::f64::consts::TAU * r_last as f64 / slices as f64,
+            );
+            for (lane, block) in real.outer_iter().enumerate() {
+                let slot = lane_slots[lane * slices + r_last];
+                if slot != super::blocks::NO_SLOT {
+                    blocks.add_slot(slot, phase, block);
+                }
+            }
         }
     }
-    let accumulate = started.elapsed().as_secs_f64() * slices as f64;
+    let accumulate = started.elapsed().as_secs_f64() / sampled as f64 * slices as f64;
+
+    // One-time output assembly: reconstruct the conjugate half and write the
+    // model rows.
+    let started = Instant::now();
+    let (mut ham, mut ham_r) = blocks.finish().unwrap();
+    let finish = started.elapsed().as_secs_f64();
+    let started = Instant::now();
+    super::place_origin_first(&mut ham, &mut ham_r).unwrap();
+    super::enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
+    let hermitize = started.elapsed().as_secs_f64();
     println!(
-        "estimated totals: forward={forward:.1}s assembly={assembly:.1}s inverse={inverse:.1}s accumulate={accumulate:.1}s sink={sink:.3e}"
+        "estimated totals: prepare={prepare:.1}s support={support_time:.1}s forward={forward:.1}s assembly={assembly:.1}s inverse={inverse:.1}s accumulate={accumulate:.1}s finish={finish:.1}s hermitize={hermitize:.1}s blocks={}",
+        ham_r.nrows()
     );
-    assert!(sink.is_finite());
 }
