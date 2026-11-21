@@ -896,32 +896,27 @@ agree block by block:
   rounded up to a 2/3/5/7-smooth size), streaming slabs along the last
   resolved axis. Cost is `O(N_k n^3)` instead of one matrix product per input
   pair; the result is transformed back once and accumulated with the slab
-  phase. Never materialize the full k volume: the transients are one harmonic
-  slab plus two slice buffers. The pointwise assembly evaluates one
-  representative of each conjugate pair of the two `O(W^-2)` families and
-  adds its adjoint, which halves their matrix products: `H_0 = H_0^dagger` and
-  `H_-n = H_n^dagger` make the omitted half the algebraic adjoint of the
-  computed half (equal up to round-off, since the FFT blocks satisfy the
-  relation only numerically), and the mixed family obeys
-  `T(m,m')^dagger = T(-m,-m')` with an invariant weight. Its own working set is nevertheless dominated
-  by the output, because both paths need the accumulation map and the final
-  Hamiltonian: two dense `support x nsta^2` arrays. The engine estimates
-  slab plus output before allocating and refuses to start above its hard
-  limit. The estimate excludes the harmonic cache, which is built before the
-  path is chosen and shared with the real-space path, so the bound is an
-  engine working-set bound rather than a process peak.
+  phase. The transients are one harmonic slab plus two slice buffers. The
+  pointwise assembly keeps one representative
+  per conjugate pair of the two `O(W^-2)` families and adds its adjoint
+  (`T_m^dagger = T_-m`, `T(m,m')^dagger = T(-m,-m')`, invariant weights),
+  which halves their matrix products up to coefficient round-off. Both paths
+  also hold the accumulation map and the final Hamiltonian
+  (`2 * support * nsta^2`), which dominate the working set. The engine
+  estimates slab plus output before allocating and refuses to start above its
+  hard limit; the estimate excludes the harmonic cache, so it is an engine
+  working-set bound, not a process peak.
 - **real space (reference and fallback)** — the pairwise Minkowski convolutions
   in `src/floquet`. Kept as the oracle every k-space regression is compared
-  against, and used whenever the automatic rule prefers it.
+  against.
 
 Path selection is internal: `floquet_effective_model` keeps its signature and
 always chooses for the caller. Do not add a public switch. The automatic rule
 requires corrections at all (order 1 or 2 with an AC drive), a representable
 frequency scale, a k-point grid with at least twice fewer sampled points than
 the input pair count, and a working set under 32 GiB; otherwise the
-real-space convolutions run. An explicitly requested k-space run is only
-refused above a 64 GiB hard limit. The
-guarded window
+real-space convolutions run. A forced k-space run is only refused above
+64 GiB. The guarded window
 `|m|, |m'|, |m'-m| <= harmonic_max` and the `m' == 2m` skip must stay
 identical in both paths; the k-space matrices therefore use at most
 `2 * harmonic_max + 1` harmonics.
@@ -935,8 +930,14 @@ always preserve it. Structural invariants (unique translations, closed under
 negation) are validated by the effective-model entry point.
 
 **Threading:** the k-space assembly parallelizes over k points with Rayon while
-each point runs small (55x55) BLAS products. Pin the BLAS pool to one thread
-(`OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`) whenever `RAYON_NUM_THREADS`
+each point runs small (55x55) BLAS products, and the per-slice FFTs use
+ndrustfft's parallel entry points, which fan out over transform lanes on the
+same Rayon pool (FFT never touches BLAS, so that part stays parallel even for
+Netlib builds). Thread counts come from RAYON_NUM_THREADS or the node's
+available parallelism, never from a constant; a single-thread pool keeps the
+serial FFT entry point, which does not allocate per lane. Pin
+the BLAS pool to one thread (`OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`)
+whenever `RAYON_NUM_THREADS`
 is above one; leaving both pools at their defaults oversubscribes the machine
 and was measured to make the engine more than 20x slower. The same rule
 applies to the parallel symmetry kernels.

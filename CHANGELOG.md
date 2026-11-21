@@ -96,6 +96,18 @@
   and `(j,i,-R)` with conjugate amplitudes and the Peierls coefficients obey
   `C_-n = C_n^*`, so `H_-m(R) = H_m(-R)^dagger` and `H_0` is Hermitian. No
   public API change.
+- Run the k-space slice transforms on ndrustfft's parallel entry points for
+  pools above one thread, which fan out over transform lanes on the calling
+  Rayon pool; a single-thread pool keeps the serial entry point, so the
+  reference-Netlib and single-threaded-BLAS configurations do not pay the
+  per-lane temporary allocation. Measured on the 55-orbital benchmark with
+  4 Rayon threads and `OPENBLAS_NUM_THREADS=1`: a back-to-back A/B of
+  `kspace_stage_timing_probe` (three sampled slices, extrapolated) moved the
+  forward stage from 25.1 s to 7.9 s and the inverse from 4.9 s to 1.6 s, and
+  `kspace_engine_cost_probe` moved the end-to-end run from 67.4 s to 46.9 s.
+  The transform is bitwise identical between the serial and parallel entry
+  points (one- versus four-thread test); the end-to-end baseline drifts by a
+  few seconds between sessions, so only the paired runs are comparable.
 - Halve the order-two k-space van Vleck assembly: the conjugate half of both
   families is the adjoint of the computed half, so only the `m > 0`
   representatives are formed and each is added with its adjoint

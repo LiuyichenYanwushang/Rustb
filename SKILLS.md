@@ -1053,11 +1053,15 @@ produce that same model:
   preserved. This path is also the reference the k-space engine is tested
   against.
 
-Because the assembly runs many small matrix products in parallel, pin the BLAS
+The per-slice transforms use ndrustfft's parallel entry points when the pool has
+more than one thread (fanning out over transform lanes; FFT never touches BLAS,
+so it stays parallel for Netlib builds too), and the assembly fans out over k
+points. Because the assembly runs many small matrix products in parallel, pin the BLAS
 thread pool to one thread (`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`)
 whenever `RAYON_NUM_THREADS` is above one. Leaving both pools at their default
-oversubscribes the machine: on a 55-orbital, 3249-block model the same run took
-982 s unpinned and 76 s pinned.
+oversubscribes the machine: on a 55-orbital, 3249-block model an unpinned run
+took 982 s while the pinned one took 76 s before the k-space assembly and FFT
+optimizations, and is about 47 s now.
 
 Both paths retain the full Minkowski support, including its zero-valued
 layers, and enforce the same real-space Hermiticity. The per-link

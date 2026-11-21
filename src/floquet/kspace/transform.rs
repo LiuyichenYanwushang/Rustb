@@ -6,7 +6,7 @@ use super::C;
 use super::grid::KspaceGrid;
 use crate::error::{Result, TbError};
 use ndarray::{Array3, Array4, ArrayView3, ArrayViewMut3, ArrayViewMut4, Axis, s};
-use ndrustfft::{FftHandler, ndfft_inplace};
+use ndrustfft::{FftHandler, ndfft_inplace, ndfft_inplace_par};
 use std::f64::consts::TAU;
 
 /// Harmonic blocks on one slice of the streaming axis.
@@ -253,19 +253,42 @@ fn padded_workspace<'a>(
 /// Only axes that exist in the model are transformed; length-one axes are
 /// skipped because their transform is the identity. The handlers are built
 /// once by the caller so the harmonics of one slice share their FFT plans.
+///
+/// Above one thread the parallel entry point fans out over the lanes of the
+/// untransformed axes on the pool of the calling thread (the global pool in
+/// production, because rustfft's Fft is Send + Sync and one plan feeds every
+/// lane); a single-thread pool keeps the serial entry point, which reuses one
+/// temporary instead of allocating per lane. Both entry points run the same
+/// plan, so their results are bitwise identical. FFT never touches BLAS, so
+/// the fan-out is safe for every backend feature, including the serial Netlib
+/// policy used by the matrix products.
+///
+/// ndrustfft's parallel in-place branch for NON-standard layouts never copies
+/// the lane into its temporary (upstream bug), so the workspace must stay
+/// standard layout; every caller builds it that way.
 fn forward_transform(
     workspace: &mut ArrayViewMut4<'_, C>,
     grid: &KspaceGrid,
     first_handler: &FftHandler<f64>,
     second_handler: &FftHandler<f64>,
 ) {
+    debug_assert!(workspace.is_standard_layout());
     let axes = grid.slice_axes();
     let (first, second) = padded_transform_axes(grid);
+    let parallel = rayon::current_num_threads() > 1;
     if axes >= 1 && first > 1 {
-        ndfft_inplace(workspace, first_handler, 0);
+        if parallel {
+            ndfft_inplace_par(workspace, first_handler, 0);
+        } else {
+            ndfft_inplace(workspace, first_handler, 0);
+        }
     }
     if axes >= 2 && second > 1 {
-        ndfft_inplace(workspace, second_handler, 1);
+        if parallel {
+            ndfft_inplace_par(workspace, second_handler, 1);
+        } else {
+            ndfft_inplace(workspace, second_handler, 1);
+        }
     }
 }
 
@@ -598,6 +621,72 @@ mod tests {
                     &expected,
                 );
             }
+        }
+    }
+
+    #[test]
+    fn parallel_and_serial_transforms_are_bitwise_equal() {
+        // A three-dimensional slice exercises both transform axes (axis 0 and
+        // axis 1 are each non-outermost), and a one-thread pool takes the
+        // serial entry point while four threads take the parallel one. Each
+        // lane runs the same plan, so the results must agree bit for bit. The
+        // inverse input varies by lane and by matrix element, so a permuted or
+        // dropped lane cannot hide behind identical data.
+        let model = three_dimensional_model();
+        let drive = three_dimensional_drive();
+        let harmonic_max = 2_isize;
+        let cache = model.floquet_harmonic_cache(&drive, -harmonic_max, harmonic_max, &bessel());
+        let grid = KspaceGrid::for_polynomial(&model.hamR, 3, 3).unwrap();
+        let nsta = model.nsta();
+        let slots = (2 * harmonic_max + 1) as usize;
+        let lanes = grid.points_per_slice();
+        let kz = if grid.slices() > 1 { 1 } else { 0 };
+        let run = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("a rayon pool");
+            pool.install(|| {
+                let mut harmonics = Array4::<C>::zeros((slots, lanes, nsta, nsta));
+                slice_harmonics_into(&cache, harmonic_max, nsta, &grid, kz, harmonics.view_mut())
+                    .unwrap();
+                let k_blocks = Array3::from_shape_fn((lanes, nsta, nsta), |(lane, i, j)| {
+                    C::new(
+                        0.25 + (lane % 5) as f64 + i as f64,
+                        -0.5 + (lane % 3) as f64 - j as f64,
+                    )
+                });
+                let mut real = Array3::<C>::zeros((lanes, nsta, nsta));
+                inverse_slice_into(k_blocks.view(), &grid, real.view_mut()).unwrap();
+                (harmonics, real)
+            })
+        };
+        let (serial, serial_inverse) = run(1);
+        let (parallel, parallel_inverse) = run(4);
+        assert_eq!(serial.shape(), parallel.shape());
+        for (left, right) in serial.iter().zip(parallel.iter()) {
+            assert_eq!(
+                left.re.to_bits(),
+                right.re.to_bits(),
+                "parallel forward transform changed a real part"
+            );
+            assert_eq!(
+                left.im.to_bits(),
+                right.im.to_bits(),
+                "parallel forward transform changed an imaginary part"
+            );
+        }
+        for (left, right) in serial_inverse.iter().zip(parallel_inverse.iter()) {
+            assert_eq!(
+                left.re.to_bits(),
+                right.re.to_bits(),
+                "parallel inverse transform changed a real part"
+            );
+            assert_eq!(
+                left.im.to_bits(),
+                right.im.to_bits(),
+                "parallel inverse transform changed an imaginary part"
+            );
         }
     }
 }
