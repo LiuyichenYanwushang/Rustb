@@ -224,6 +224,9 @@ pub enum BasisRepresentationError {
 /// falsely label the operation as broken. Whole-group analysis resolves
 /// independent operations concurrently with Rayon, so providers passed to
 /// those methods must be [`Sync`] and must not depend on invocation order.
+/// They must also be callable concurrently: `resolve` is treated as a pure
+/// function of the context, so it must not keep call-order-dependent caches or
+/// single-entry mutable state.
 pub trait BasisSymmetryRepresentation<const SPIN: bool, R: RMatrixData> {
     fn resolve(
         &self,
@@ -1182,53 +1185,68 @@ pub(crate) fn validate_hamiltonian<const SPIN: bool, R: RMatrixData>(
         });
     }
 
+    // Independent blocks are copied in parallel; duplicate detection and map
+    // construction stay in input order, so the first duplicate keeps its error.
+    let blocks = (0..model.hamR.nrows())
+        .into_par_iter()
+        .map(|index| {
+            let lattice_vector = [
+                model.hamR[[index, 0]],
+                model.hamR[[index, 1]],
+                model.hamR[[index, 2]],
+            ];
+            let matrix = model.ham.index_axis(Axis(0), index).to_owned();
+            (lattice_vector, matrix)
+        })
+        .collect::<Vec<_>>();
     let mut matrices = BTreeMap::new();
-    for index in 0..model.hamR.nrows() {
-        let lattice_vector = [
-            model.hamR[[index, 0]],
-            model.hamR[[index, 1]],
-            model.hamR[[index, 2]],
-        ];
+    for (lattice_vector, matrix) in blocks {
         if matrices.contains_key(&lattice_vector) {
             return Err(TbError::InvalidHamiltonianSymmetryInput {
                 parameter: "hamR",
                 message: format!("duplicate hopping lattice vector {lattice_vector:?}"),
             });
         }
-        let matrix = model.ham.index_axis(Axis(0), index).to_owned();
         matrices.insert(lattice_vector, matrix);
     }
 
-    for (&lattice_vector, matrix) in &matrices {
-        let Some(negative) = checked_negate(lattice_vector) else {
-            return Err(TbError::InvalidHamiltonianSymmetryInput {
-                parameter: "hamR",
-                message: format!("cannot negate hopping lattice vector {lattice_vector:?}"),
-            });
-        };
-        let Some(partner) = matrices.get(&negative) else {
-            return Err(TbError::InvalidHamiltonianSymmetryInput {
-                parameter: "hermiticity",
-                message: format!(
-                    "hopping lattice vector {lattice_vector:?} has no stored partner {negative:?}"
-                ),
-            });
-        };
-        let mut max_residual = 0.0_f64;
-        for row in 0..model.nsta() {
-            for column in 0..model.nsta() {
-                max_residual = max_residual
-                    .max((matrix[[row, column]] - partner[[column, row]].conj()).norm());
+    let keys = matrices.keys().copied().collect::<Vec<_>>();
+    {
+        let matrices_ref: &BTreeMap<[isize; 3], Array2<Complex64>> = &matrices;
+        let nsta = model.nsta();
+        symmetry_ordered_map(keys.clone(), |lattice_vector| -> Result<()> {
+            let Some(negative) = checked_negate(lattice_vector) else {
+                return Err(TbError::InvalidHamiltonianSymmetryInput {
+                    parameter: "hamR",
+                    message: format!("cannot negate hopping lattice vector {lattice_vector:?}"),
+                });
+            };
+            let Some(partner) = matrices_ref.get(&negative) else {
+                return Err(TbError::InvalidHamiltonianSymmetryInput {
+                    parameter: "hermiticity",
+                    message: format!(
+                        "hopping lattice vector {lattice_vector:?} has no stored partner {negative:?}"
+                    ),
+                });
+            };
+            let matrix = &matrices_ref[&lattice_vector];
+            let mut max_residual = 0.0_f64;
+            for row in 0..nsta {
+                for column in 0..nsta {
+                    max_residual = max_residual
+                        .max((matrix[[row, column]] - partner[[column, row]].conj()).norm());
+                }
             }
-        }
-        if max_residual > tolerance {
-            return Err(TbError::InvalidHamiltonianSymmetryInput {
-                parameter: "hermiticity",
-                message: format!(
-                    "H({lattice_vector:?}) differs from H({negative:?})^dagger by {max_residual:e}"
-                ),
-            });
-        }
+            if max_residual > tolerance {
+                return Err(TbError::InvalidHamiltonianSymmetryInput {
+                    parameter: "hermiticity",
+                    message: format!(
+                        "H({lattice_vector:?}) differs from H({negative:?})^dagger by {max_residual:e}"
+                    ),
+                });
+            }
+            Ok(())
+        })?;
     }
 
     // A scalar energy-origin shift C I at R=0 is invariant under every
@@ -1246,19 +1264,38 @@ pub(crate) fn validate_hamiltonian<const SPIN: bool, R: RMatrixData>(
         }
         centered
     });
+    // Per-block maxima and squared norms are independent. The serial reduction
+    // below keeps the historical block order. Summing block partials instead of
+    // one running total changes floating-point grouping by a few ulps in
+    // frobenius_norm, which is a diagnostic scale only; max_element is
+    // order-insensitive and is the value compared against covariance thresholds.
+    let norm_partials = {
+        let matrices_ref: &BTreeMap<[isize; 3], Array2<Complex64>> = &matrices;
+        let onsite_centered = centered_onsite.as_ref();
+        keys.into_par_iter()
+            .map(|lattice_vector| {
+                let matrix = &matrices_ref[&lattice_vector];
+                let scaled = if lattice_vector == [0, 0, 0] {
+                    onsite_centered.unwrap_or(matrix)
+                } else {
+                    matrix
+                };
+                let mut max_element = 0.0_f64;
+                let mut norm_squared = 0.0_f64;
+                for value in scaled {
+                    let norm = value.norm();
+                    max_element = max_element.max(norm);
+                    norm_squared += norm * norm;
+                }
+                (max_element, norm_squared)
+            })
+            .collect::<Vec<_>>()
+    };
     let mut max_element = 0.0_f64;
     let mut norm_squared = 0.0_f64;
-    for (lattice_vector, matrix) in &matrices {
-        let scaled = if *lattice_vector == [0, 0, 0] {
-            centered_onsite.as_ref().unwrap_or(matrix)
-        } else {
-            matrix
-        };
-        for value in scaled {
-            let norm = value.norm();
-            max_element = max_element.max(norm);
-            norm_squared += norm * norm;
-        }
+    for (block_max, block_squared) in norm_partials {
+        max_element = max_element.max(block_max);
+        norm_squared += block_squared;
     }
 
     Ok(HamiltonianSupport {
@@ -2148,9 +2185,11 @@ fn symmetrized_support(
 
     // A Reynolds average of a Hermitian Hamiltonian is Hermitian in exact
     // arithmetic. Enforce the paired relation once to remove roundoff without
-    // changing the mathematical projection.
+    // changing the mathematical projection. Independent R pairs are evaluated
+    // in parallel; their insertions run in sorted order for determinism.
     let keys = averaged.keys().copied().collect::<Vec<_>>();
     let mut processed = BTreeSet::new();
+    let mut pairs = Vec::new();
     for lattice_vector in keys {
         if !processed.insert(lattice_vector) {
             continue;
@@ -2161,10 +2200,24 @@ fn symmetrized_support(
             )
         })?;
         processed.insert(negative);
-        let matrix = averaged[&lattice_vector].clone();
-        let partner_dagger = averaged[&negative].t().mapv(|value| value.conj());
-        let hermitian = (matrix + partner_dagger).mapv(|value| value * 0.5);
-        let hermitian_dagger = hermitian.t().mapv(|value| value.conj());
+        pairs.push((lattice_vector, negative));
+    }
+    // The pairs partition the key set, so each task reads only its own two
+    // blocks from the frozen map and the later insertions cannot race. The R=0
+    // self-pair inserts the same Hermitian value twice, exactly as the serial
+    // loop did.
+    let current: &BTreeMap<[isize; 3], Array2<Complex64>> = &averaged;
+    let computed = pairs
+        .into_par_iter()
+        .map(|(lattice_vector, negative)| {
+            let matrix = current[&lattice_vector].clone();
+            let partner_dagger = current[&negative].t().mapv(|value| value.conj());
+            let hermitian = (matrix + partner_dagger).mapv(|value| value * 0.5);
+            let hermitian_dagger = hermitian.t().mapv(|value| value.conj());
+            (lattice_vector, negative, hermitian, hermitian_dagger)
+        })
+        .collect::<Vec<_>>();
+    for (lattice_vector, negative, hermitian, hermitian_dagger) in computed {
         averaged.insert(lattice_vector, hermitian);
         averaged.insert(negative, hermitian_dagger);
     }
@@ -2369,8 +2422,8 @@ pub(crate) fn project_position_support_with_sources<const SPIN: bool, R: RMatrix
     })?
     .into_iter()
     .collect();
-    let mut result = BTreeMap::new();
     let mut processed = BTreeSet::new();
+    let mut pairs = Vec::new();
     for &lattice_vector in domain {
         if !processed.insert(lattice_vector) {
             continue;
@@ -2381,27 +2434,42 @@ pub(crate) fn project_position_support_with_sources<const SPIN: bool, R: RMatrix
             }
         })?;
         processed.insert(negative);
-        let block = averaged
-            .get(&lattice_vector)
-            .cloned()
-            .unwrap_or_else(|| Array3::<Complex64>::zeros((3, nsta, nsta)));
-        let partner = averaged
-            .get(&negative)
-            .cloned()
-            .unwrap_or_else(|| Array3::<Complex64>::zeros((3, nsta, nsta)));
-        let mut hermitian = Array3::<Complex64>::zeros((3, nsta, nsta));
-        let mut partner_hermitian = Array3::<Complex64>::zeros((3, nsta, nsta));
-        for alpha in 0..3 {
-            let partner_dagger = partner
-                .index_axis(Axis(0), alpha)
-                .t()
-                .mapv(|value| value.conj());
-            let value = (&block.index_axis(Axis(0), alpha) + &partner_dagger) * 0.5;
-            hermitian.index_axis_mut(Axis(0), alpha).assign(&value);
-            partner_hermitian
-                .index_axis_mut(Axis(0), alpha)
-                .assign(&value.t().mapv(|entry| entry.conj()));
-        }
+        pairs.push((lattice_vector, negative));
+    }
+    // Same disjoint-pair partition as the Hamiltonian hermitization: each task
+    // reads its own blocks from the frozen map, and ordered collection keeps the
+    // insertion order deterministic. The R=0 self-pair repeats the serial double
+    // insert.
+    let current: &BTreeMap<[isize; 3], Array3<Complex64>> = &averaged;
+    let computed = pairs
+        .into_par_iter()
+        .map(|(lattice_vector, negative)| {
+            let block = current
+                .get(&lattice_vector)
+                .cloned()
+                .unwrap_or_else(|| Array3::<Complex64>::zeros((3, nsta, nsta)));
+            let partner = current
+                .get(&negative)
+                .cloned()
+                .unwrap_or_else(|| Array3::<Complex64>::zeros((3, nsta, nsta)));
+            let mut hermitian = Array3::<Complex64>::zeros((3, nsta, nsta));
+            let mut partner_hermitian = Array3::<Complex64>::zeros((3, nsta, nsta));
+            for alpha in 0..3 {
+                let partner_dagger = partner
+                    .index_axis(Axis(0), alpha)
+                    .t()
+                    .mapv(|value| value.conj());
+                let value = (&block.index_axis(Axis(0), alpha) + &partner_dagger) * 0.5;
+                hermitian.index_axis_mut(Axis(0), alpha).assign(&value);
+                partner_hermitian
+                    .index_axis_mut(Axis(0), alpha)
+                    .assign(&value.t().mapv(|entry| entry.conj()));
+            }
+            (lattice_vector, negative, hermitian, partner_hermitian)
+        })
+        .collect::<Vec<_>>();
+    let mut result = BTreeMap::new();
+    for (lattice_vector, negative, hermitian, partner_hermitian) in computed {
         result.insert(lattice_vector, hermitian);
         result.insert(negative, partner_hermitian);
     }

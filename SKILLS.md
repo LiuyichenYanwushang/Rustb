@@ -1688,19 +1688,30 @@ Position covariance and centre consistency use `parameters.tolerances.position`
 (or `parameters.structural_parameters.symprec` if unset), in Cartesian Å.
 `NoRMatrix` models skip the position-matrix checks.
 
-Rayon parallelizes pair Hamiltonian (`H`) projection and the position-matrix
-(`r`) projection shared by the single-model and pair paths across independent
-real-space `R` blocks. Each block accumulates symmetry operations in the
-original order. Final pair covariance checks run in parallel by operation
-and target channel, preserving the original error order. The public API is
-unchanged; iterative centre projection still runs serially. Set
-`RAYON_NUM_THREADS` to control the outer pool and keep BLAS at one thread
-(e.g. `MKL_NUM_THREADS=1` or `OPENBLAS_NUM_THREADS=1`) to avoid
-oversubscription. These projections and pair covariance checks stay serial
-with the Netlib features because reference Netlib CBLAS is not reentrant;
-use `RAYON_NUM_THREADS=1` with reference Netlib for the
-existing parallel validation steps as well. OpenBLAS must support concurrent
-calls: if it was built with `USE_THREAD=0`, it needs `USE_LOCKING=1`
+Rayon parallelizes the independent projection tasks: one task per real-space
+`R` block for the Reynolds average, the position-matrix projection and the
+paired-Hermiticity restoration; one task per target operation for basis-action
+resolution, projective-corepresentation checks, post-projection covariance, and
+the iterative centre and joint projections; one task per operation pair for
+pair action resolution; and one task per `R` block for the Hamiltonian
+validation clones, per-key Hermiticity checks and scale partials. Duplicate
+detection, support construction and every ordered reduction stay serial. Each
+block still accumulates symmetry operations in the original order, and parallel
+results are collected in task order before any reduction, so the returned
+matrices, the error variant and order, and the max-element acceptance scale are
+independent of the Rayon worker count; the reported `relative_frobenius`
+diagnostic can differ in the last few ulps. `symmetrize_centres` now requires a
+`Sync` basis provider like `symmetrize_hamiltonian`, the pair methods and the
+already-`Sync` `symmetrize_model_and_centres`; the built-in providers satisfy
+this. Set `RAYON_NUM_THREADS` to control the outer pool and keep BLAS at one
+thread (e.g. `MKL_NUM_THREADS=1` or `OPENBLAS_NUM_THREADS=1`) to avoid
+oversubscription. Kernels that call BLAS through `symmetry_ordered_map` fall
+back to serial with the Netlib features because reference Netlib CBLAS is not
+reentrant; the BLAS-free elementwise maps (support hermitization, block copies,
+scale partials) remain parallel, so use `RAYON_NUM_THREADS=1` with reference
+Netlib when those BLAS-touching kernels must stay serial too. OpenBLAS must
+support concurrent calls: if it was built with `USE_THREAD=0`, it needs
+`USE_LOCKING=1`
 ([OpenBLAS FAQ](https://github.com/OpenMathLib/OpenBLAS/blob/v0.3.32/docs/faq.md#multi-threaded)).
 For an unlocked build, use `RAYON_NUM_THREADS=1`; setting only
 `OPENBLAS_NUM_THREADS=1` does not make the library reentrant.

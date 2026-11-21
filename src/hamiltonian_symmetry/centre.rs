@@ -4,7 +4,8 @@ use crate::model::Model;
 use cryspglib::spin_group::{CollinearAction, CollinearSpinGroup};
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
-use std::collections::BTreeMap;
+use rayon::prelude::*;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One operation of a collinear two-channel corepresentation.
 ///
@@ -605,17 +606,21 @@ impl<R: RMatrixData> Model<false, 3, R> {
     pub fn symmetrize_centres(
         &self,
         target_group: &MagneticCrystalSymmetry,
-        basis: &impl BasisSymmetryRepresentation<false, R>,
+        basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
         tolerance: f64,
     ) -> Result<Self> {
         validate_centre_tolerance(tolerance)?;
         let projected = self.project_geometrical_centres(target_group, basis)?;
         projected.validate()?;
         if !R::HAS_RMATRIX {
-            for operation in &target_group.operations {
-                let action = resolve_centre_action(&projected, operation, basis)?;
-                check_centre_image(&projected, &projected.orb, operation, &action, 1e-5)?;
-            }
+            super::symmetry_ordered_map(
+                (0..target_group.operations.len()).collect::<Vec<_>>(),
+                |index| -> Result<()> {
+                    let operation = &target_group.operations[index];
+                    let action = resolve_centre_action(&projected, operation, basis)?;
+                    check_centre_image(&projected, &projected.orb, operation, &action, 1e-5)
+                },
+            )?;
         }
         validate_position_centres(&projected, tolerance)?;
         Ok(projected)
@@ -626,7 +631,7 @@ impl<R: RMatrixData> Model<false, 3, R> {
     fn project_geometrical_centres(
         &self,
         target_group: &MagneticCrystalSymmetry,
-        basis: &impl BasisSymmetryRepresentation<false, R>,
+        basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
     ) -> Result<Self> {
         self.validate()?;
         if target_group.operations.is_empty() {
@@ -646,14 +651,23 @@ impl<R: RMatrixData> Model<false, 3, R> {
     fn symmetrize_centres_once(
         &mut self,
         target_group: &MagneticCrystalSymmetry,
-        basis: &impl BasisSymmetryRepresentation<false, R>,
+        basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
     ) -> Result<f64> {
-        let old = &self.orb;
-        let mut accumulated: Vec<(f64, [f64; 3])> = Vec::new();
-        accumulated.resize(self.norb(), (0.0, [0.0; 3]));
-        for operation in &target_group.operations {
-            let action = resolve_centre_action(self, operation, basis)?;
-            let entries = centre_image_deltas(self, &self.orb, operation, &action)?;
+        let norb = self.norb();
+        let old = self.orb.clone();
+        let model: &Self = self;
+        let per_operation = super::symmetry_ordered_map(
+            (0..target_group.operations.len()).collect::<Vec<_>>(),
+            |index| -> Result<Vec<(usize, [f64; 3])>> {
+                let operation = &target_group.operations[index];
+                let action = resolve_centre_action(model, operation, basis)?;
+                centre_image_deltas(model, &old, operation, &action)
+            },
+        )?;
+        // One delta vector per operation is collected before the ordered
+        // reduction; this is O(|group| * norb), small next to the projection.
+        let mut accumulated: Vec<(f64, [f64; 3])> = vec![(0.0, [0.0; 3]); norb];
+        for entries in per_operation {
             for (target_orbital, delta) in entries {
                 let (count, sum) = &mut accumulated[target_orbital];
                 *count += 1.0;
@@ -676,7 +690,7 @@ impl<R: RMatrixData> Model<false, 3, R> {
                 new[[orbital, axis]] += sum[axis] / count;
             }
         }
-        let step = max_centre_step(old, &new, &self.lat);
+        let step = max_centre_step(&old, &new, &self.lat);
         self.orb = new;
         Ok(step)
     }
@@ -685,7 +699,7 @@ impl<R: RMatrixData> Model<false, 3, R> {
 fn validate_joint_projection<R: RMatrixData>(
     model: &Model<false, 3, R>,
     target: &MagneticCrystalSymmetry,
-    basis: &impl BasisSymmetryRepresentation<false, R>,
+    basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
     parameters: &HamiltonianSymmetrizationParameters,
 ) -> Result<()> {
     let support = validate_hamiltonian(model, parameters.tolerances.hermiticity)?;
@@ -693,30 +707,36 @@ fn validate_joint_projection<R: RMatrixData>(
         .tolerances
         .position
         .unwrap_or(parameters.structural_parameters.symprec);
-    for operation in &target.operations {
-        let action = basis
-            .resolve(BasisActionContext {
-                model,
-                operation,
-                position_tolerance,
-                representation_tolerance: parameters.tolerances.representation,
-            })
-            .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
-                reason: format!("post-projection action failed: {error}"),
-            })?;
-        let action = validate_action(action, model.nsta(), parameters.tolerances.representation)
-            .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
-                reason: format!("post-projection action is invalid: {error}"),
-            })?;
-        hamiltonian_residual(&support, operation, &action, parameters.tolerances).map_err(
-            |error| crate::TbError::TargetMagneticGroupIncompatible {
-                reason: format!("post-projection residual failed: {error}"),
-            },
-        )?;
-        if !R::HAS_RMATRIX {
-            check_centre_image(model, &model.orb, operation, &action, position_tolerance)?;
-        }
-    }
+    super::symmetry_ordered_map(
+        (0..target.operations.len()).collect::<Vec<_>>(),
+        |index| -> Result<()> {
+            let operation = &target.operations[index];
+            let action = basis
+                .resolve(BasisActionContext {
+                    model,
+                    operation,
+                    position_tolerance,
+                    representation_tolerance: parameters.tolerances.representation,
+                })
+                .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
+                    reason: format!("post-projection action failed: {error}"),
+                })?;
+            let action =
+                validate_action(action, model.nsta(), parameters.tolerances.representation)
+                    .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
+                        reason: format!("post-projection action is invalid: {error}"),
+                    })?;
+            hamiltonian_residual(&support, operation, &action, parameters.tolerances).map_err(
+                |error| crate::TbError::TargetMagneticGroupIncompatible {
+                    reason: format!("post-projection residual failed: {error}"),
+                },
+            )?;
+            if !R::HAS_RMATRIX {
+                check_centre_image(model, &model.orb, operation, &action, position_tolerance)?;
+            }
+            Ok(())
+        },
+    )?;
     Ok(())
 }
 
@@ -749,7 +769,7 @@ fn pair_centre_average<R: RMatrixData>(
     up_centres: &Array2<f64>,
     down_centres: &Array2<f64>,
     operations: &[PairOperation],
-    basis: &impl BasisSymmetryRepresentation<false, R>,
+    basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
 ) -> Result<()> {
     if operations.is_empty() {
         return Err(crate::TbError::TargetMagneticGroupIncompatible {
@@ -757,18 +777,25 @@ fn pair_centre_average<R: RMatrixData>(
         });
     }
     let old = target.orb.clone();
-    let mut sums = vec![[0.0f64; 3]; target.norb()];
-    let mut counts = vec![0usize; target.norb()];
-    for operation in operations {
-        let centres =
-            match (side, operation.channel) {
+    let norb = target.norb();
+    let model: &Model<false, 3, R> = target;
+    let per_operation = super::symmetry_ordered_map(
+        (0..operations.len()).collect::<Vec<_>>(),
+        |index| -> Result<Vec<(usize, [f64; 3])>> {
+            let operation = &operations[index];
+            let centres = match (side, operation.channel) {
                 (PairSide::Up, CollinearAction::Preserve)
                 | (PairSide::Down, CollinearAction::Swap) => up_centres,
                 (PairSide::Up, CollinearAction::Swap)
                 | (PairSide::Down, CollinearAction::Preserve) => down_centres,
             };
-        let action = resolve_centre_action(target, &operation.spatial, basis)?;
-        let entries = centre_image_deltas(target, centres, &operation.spatial, &action)?;
+            let action = resolve_centre_action(model, &operation.spatial, basis)?;
+            centre_image_deltas(model, centres, &operation.spatial, &action)
+        },
+    )?;
+    let mut sums = vec![[0.0f64; 3]; norb];
+    let mut counts = vec![0usize; norb];
+    for entries in per_operation {
         for (target_orbital, delta) in entries {
             sums[target_orbital][0] += delta[0];
             sums[target_orbital][1] += delta[1];
@@ -795,49 +822,53 @@ fn resolve_pair_actions<R: RMatrixData>(
     a: &Model<false, 3, R>,
     b: &Model<false, 3, R>,
     operations: &[PairOperation],
-    basis: &impl BasisSymmetryRepresentation<false, R>,
+    basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
     parameters: &HamiltonianSymmetrizationParameters,
 ) -> Result<Vec<(PairOperation, LocalizedBasisAction, LocalizedBasisAction)>> {
     let position_tolerance = parameters
         .tolerances
         .position
         .unwrap_or(parameters.structural_parameters.symprec);
-    let mut result = Vec::with_capacity(operations.len());
-    for operation in operations {
-        let action_a = basis
-            .resolve(BasisActionContext {
-                model: a,
-                operation: &operation.spatial,
-                position_tolerance,
-                representation_tolerance: parameters.tolerances.representation,
-            })
-            .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
-                reason: format!("pair action failed on first model: {error}"),
-            })?;
-        let action_b = basis
-            .resolve(BasisActionContext {
-                model: b,
-                operation: &operation.spatial,
-                position_tolerance,
-                representation_tolerance: parameters.tolerances.representation,
-            })
-            .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
-                reason: format!("pair action failed on second model: {error}"),
-            })?;
-        let action_tolerance = parameters.tolerances.representation.max(1e-6);
-        let action_a = validate_action(action_a, a.nsta(), action_tolerance).map_err(|error| {
-            crate::TbError::TargetMagneticGroupIncompatible {
-                reason: format!("pair action invalid on first model: {error}"),
-            }
-        })?;
-        let action_b = validate_action(action_b, b.nsta(), action_tolerance).map_err(|error| {
-            crate::TbError::TargetMagneticGroupIncompatible {
-                reason: format!("pair action invalid on second model: {error}"),
-            }
-        })?;
-        result.push((*operation, action_a, action_b));
-    }
-    Ok(result)
+    let action_tolerance = parameters.tolerances.representation.max(1e-6);
+    super::symmetry_ordered_map(
+        (0..operations.len()).collect::<Vec<_>>(),
+        |index| -> Result<(PairOperation, LocalizedBasisAction, LocalizedBasisAction)> {
+            let operation = operations[index];
+            let action_a = basis
+                .resolve(BasisActionContext {
+                    model: a,
+                    operation: &operation.spatial,
+                    position_tolerance,
+                    representation_tolerance: parameters.tolerances.representation,
+                })
+                .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
+                    reason: format!("pair action failed on first model: {error}"),
+                })?;
+            let action_b = basis
+                .resolve(BasisActionContext {
+                    model: b,
+                    operation: &operation.spatial,
+                    position_tolerance,
+                    representation_tolerance: parameters.tolerances.representation,
+                })
+                .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
+                    reason: format!("pair action failed on second model: {error}"),
+                })?;
+            let action_a =
+                validate_action(action_a, a.nsta(), action_tolerance).map_err(|error| {
+                    crate::TbError::TargetMagneticGroupIncompatible {
+                        reason: format!("pair action invalid on first model: {error}"),
+                    }
+                })?;
+            let action_b =
+                validate_action(action_b, b.nsta(), action_tolerance).map_err(|error| {
+                    crate::TbError::TargetMagneticGroupIncompatible {
+                        reason: format!("pair action invalid on second model: {error}"),
+                    }
+                })?;
+            Ok((operation, action_a, action_b))
+        },
+    )
 }
 
 fn validate_pair_corepresentations<R: RMatrixData>(
@@ -873,8 +904,13 @@ fn validate_pair_corepresentations<R: RMatrixData>(
 }
 
 fn hermitize_support_map(matrices: &mut BTreeMap<[isize; 3], Array2<Complex64>>) -> Result<()> {
+    let dimension = matrices
+        .values()
+        .next()
+        .map_or((0, 0), |matrix| matrix.dim());
     let keys = matrices.keys().copied().collect::<Vec<_>>();
     let mut processed = BTreeSet::new();
+    let mut pairs = Vec::new();
     for lattice_vector in keys {
         if !processed.insert(lattice_vector) {
             continue;
@@ -885,21 +921,33 @@ fn hermitize_support_map(matrices: &mut BTreeMap<[isize; 3], Array2<Complex64>>)
             }
         })?;
         processed.insert(negative);
-        let matrix = matrices.get(&lattice_vector).cloned().unwrap_or_else(|| {
-            Array2::zeros((
-                matrices.values().next().map_or(0, Array2::nrows),
-                matrices.values().next().map_or(0, Array2::ncols),
-            ))
-        });
-        let partner = matrices.get(&negative).cloned().unwrap_or_else(|| {
-            Array2::zeros((
-                matrices.values().next().map_or(0, Array2::nrows),
-                matrices.values().next().map_or(0, Array2::ncols),
-            ))
-        });
-        let partner_dagger = partner.t().mapv(|value| value.conj());
-        let hermitian = (matrix + partner_dagger).mapv(|value| value * 0.5);
-        let hermitian_dagger = hermitian.t().mapv(|value| value.conj());
+        pairs.push((lattice_vector, negative));
+    }
+    // The pairs partition the key set, so each task reads only its own two
+    // blocks from the frozen map. Ordered collection keeps the later insertions
+    // deterministic; the R=0 self-pair repeats the serial double insert. All
+    // pair results are materialized before insertion, so the peak holds one
+    // extra support-sized copy: the same order as the returned model, bounded
+    // by |hamR| * nsta^2.
+    let current: &BTreeMap<[isize; 3], Array2<Complex64>> = matrices;
+    let computed = pairs
+        .into_par_iter()
+        .map(|(lattice_vector, negative)| {
+            let matrix = current
+                .get(&lattice_vector)
+                .cloned()
+                .unwrap_or_else(|| Array2::zeros(dimension));
+            let partner = current
+                .get(&negative)
+                .cloned()
+                .unwrap_or_else(|| Array2::zeros(dimension));
+            let partner_dagger = partner.t().mapv(|value| value.conj());
+            let hermitian = (matrix + partner_dagger).mapv(|value| value * 0.5);
+            let hermitian_dagger = hermitian.t().mapv(|value| value.conj());
+            (lattice_vector, negative, hermitian, hermitian_dagger)
+        })
+        .collect::<Vec<_>>();
+    for (lattice_vector, negative, hermitian, hermitian_dagger) in computed {
         matrices.insert(lattice_vector, hermitian);
         matrices.insert(negative, hermitian_dagger);
     }
@@ -910,7 +958,7 @@ fn pair_project_hamiltonian<R: RMatrixData>(
     a: &Model<false, 3, R>,
     b: &Model<false, 3, R>,
     operations: &[PairOperation],
-    basis: &impl BasisSymmetryRepresentation<false, R>,
+    basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
     parameters: &HamiltonianSymmetrizationParameters,
 ) -> Result<(Model<false, 3, R>, Model<false, 3, R>)> {
     let support_a = validate_hamiltonian(a, parameters.tolerances.hermiticity)?;
@@ -1437,6 +1485,7 @@ mod tests {
     use crate::crystal_symmetry::{CrystalSymmetry, SymmetryParameters};
     use crate::wannier90::Wannier90;
     use ndarray::array;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     #[ignore = "loads the external MgFe6Ge6 Wannier90 dataset"]
@@ -2009,6 +2058,218 @@ mod tests {
         assert_eq!(model.ham, original.ham);
         assert_eq!(model.hamR, original.hamR);
         assert!(projected.orb.iter().all(|value| value.abs() < 1e-8));
+    }
+
+    fn real_bits(array: &Array2<f64>) -> Vec<u64> {
+        array.iter().map(|value| value.to_bits()).collect()
+    }
+
+    fn complex_bits(array: &ndarray::Array3<Complex64>) -> Vec<(u64, u64)> {
+        array
+            .iter()
+            .map(|value| (value.re.to_bits(), value.im.to_bits()))
+            .collect()
+    }
+
+    fn complex4_bits(array: &ndarray::Array4<Complex64>) -> Vec<(u64, u64)> {
+        array
+            .iter()
+            .map(|value| (value.re.to_bits(), value.im.to_bits()))
+            .collect()
+    }
+
+    /// Records which Rayon workers actually called resolve, so the parallel
+    /// invariance test cannot pass on a silently serial fallback.
+    struct ThreadRecordingBasis {
+        inner: CenterResolvedBasis,
+        seen: AtomicU64,
+    }
+
+    impl ThreadRecordingBasis {
+        fn new() -> Self {
+            Self {
+                inner: CenterResolvedBasis::new(),
+                seen: AtomicU64::new(0),
+            }
+        }
+
+        fn worker_count(&self) -> u32 {
+            self.seen.load(Ordering::Relaxed).count_ones()
+        }
+
+        fn reset(&self) {
+            self.seen.store(0, Ordering::Relaxed);
+        }
+    }
+
+    impl BasisSymmetryRepresentation<false, crate::NoRMatrix> for ThreadRecordingBasis {
+        fn resolve(
+            &self,
+            context: BasisActionContext<'_, false, crate::NoRMatrix>,
+        ) -> std::result::Result<LocalizedBasisAction, BasisRepresentationError> {
+            if let Some(index) = rayon::current_thread_index() {
+                if index < 64 {
+                    self.seen.fetch_or(1u64 << index, Ordering::Relaxed);
+                }
+            }
+            self.inner.resolve(context)
+        }
+
+        fn validates_orbital_centres(&self) -> bool {
+            <CenterResolvedBasis as BasisSymmetryRepresentation<false, crate::NoRMatrix>>::validates_orbital_centres(
+                &self.inner,
+            )
+        }
+    }
+
+    #[test]
+    fn symmetry_projections_are_thread_count_invariant() {
+        if cfg!(any(feature = "netlib-static", feature = "netlib-system")) {
+            // BLAS-touching symmetry kernels intentionally fall back to serial
+            // for reference Netlib CBLAS; skip the worker-count proof here.
+            return;
+        }
+        let model = displaced_p_model();
+        let mut down = model.clone();
+        down.ham.mapv_inplace(|value| value * 1.5);
+        let group = model
+            .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())
+            .unwrap();
+        let basis = ThreadRecordingBasis::new();
+        let parameters = HamiltonianSymmetrizationParameters::default();
+        let serial = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let parallel = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+
+        let centres_serial = serial
+            .install(|| model.symmetrize_centres(&group, &basis, 0.05))
+            .unwrap();
+        let mut centres_proven = false;
+        for _ in 0..3 {
+            basis.reset();
+            let centres_parallel = parallel
+                .install(|| {
+                    assert_eq!(rayon::current_num_threads(), 4);
+                    model.symmetrize_centres(&group, &basis, 0.05)
+                })
+                .unwrap();
+            centres_proven |= basis.worker_count() >= 2;
+            assert_eq!(
+                real_bits(&centres_serial.orb),
+                real_bits(&centres_parallel.orb)
+            );
+        }
+        // A serial fallback can only ever record one worker per call, so a
+        // single call with two workers proves the parallel path executed.
+        assert!(
+            centres_proven,
+            "symmetrize_centres must resolve actions on more than one worker in one call"
+        );
+
+        let joint_serial = serial
+            .install(|| model.symmetrize_model_and_centres(&group, &basis, &parameters))
+            .unwrap();
+        let mut joint_proven = false;
+        for _ in 0..3 {
+            basis.reset();
+            let joint_parallel = parallel
+                .install(|| {
+                    assert_eq!(rayon::current_num_threads(), 4);
+                    model.symmetrize_model_and_centres(&group, &basis, &parameters)
+                })
+                .unwrap();
+            joint_proven |= basis.worker_count() >= 2;
+            assert_eq!(real_bits(&joint_serial.orb), real_bits(&joint_parallel.orb));
+            assert_eq!(joint_serial.hamR, joint_parallel.hamR);
+            assert_eq!(
+                complex_bits(&joint_serial.ham),
+                complex_bits(&joint_parallel.ham)
+            );
+        }
+        assert!(
+            joint_proven,
+            "symmetrize_model_and_centres must resolve actions on more than one worker in one call"
+        );
+
+        let pair_serial = serial
+            .install(|| {
+                Model::<false, 3>::symmetrize_pair(&model, &down, &group, &basis, &parameters)
+            })
+            .unwrap();
+        let mut pair_proven = false;
+        for _ in 0..3 {
+            basis.reset();
+            let pair_parallel = parallel
+                .install(|| {
+                    assert_eq!(rayon::current_num_threads(), 4);
+                    Model::<false, 3>::symmetrize_pair(&model, &down, &group, &basis, &parameters)
+                })
+                .unwrap();
+            pair_proven |= basis.worker_count() >= 2;
+            assert_eq!(
+                real_bits(&pair_serial.0.orb),
+                real_bits(&pair_parallel.0.orb)
+            );
+            assert_eq!(
+                real_bits(&pair_serial.1.orb),
+                real_bits(&pair_parallel.1.orb)
+            );
+            assert_eq!(pair_serial.0.hamR, pair_parallel.0.hamR);
+            assert_eq!(pair_serial.1.hamR, pair_parallel.1.hamR);
+            assert_eq!(
+                complex_bits(&pair_serial.0.ham),
+                complex_bits(&pair_parallel.0.ham)
+            );
+            assert_eq!(
+                complex_bits(&pair_serial.1.ham),
+                complex_bits(&pair_parallel.1.ham)
+            );
+        }
+        assert!(
+            pair_proven,
+            "symmetrize_pair must resolve actions on more than one worker in one call"
+        );
+
+        // Position-matrix projection tail: HasRMatrix model with symmetric centres.
+        let positioned = displaced_s_model_with_positions(0.0);
+        let positioned_group = positioned
+            .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())
+            .unwrap();
+        let positioned_serial = serial
+            .install(|| {
+                positioned.symmetrize_hamiltonian(&positioned_group, &ScalarSiteBasis, &parameters)
+            })
+            .unwrap();
+        for _ in 0..3 {
+            let positioned_parallel = parallel
+                .install(|| {
+                    assert_eq!(rayon::current_num_threads(), 4);
+                    positioned.symmetrize_hamiltonian(
+                        &positioned_group,
+                        &ScalarSiteBasis,
+                        &parameters,
+                    )
+                })
+                .unwrap();
+            assert_eq!(positioned_serial.hamR, positioned_parallel.hamR);
+            assert_eq!(
+                real_bits(&positioned_serial.orb),
+                real_bits(&positioned_parallel.orb)
+            );
+            assert_eq!(
+                complex_bits(&positioned_serial.ham),
+                complex_bits(&positioned_parallel.ham)
+            );
+            assert_eq!(
+                complex4_bits(positioned_serial.rmatrix.as_array4()),
+                complex4_bits(positioned_parallel.rmatrix.as_array4())
+            );
+        }
     }
 
     #[test]
