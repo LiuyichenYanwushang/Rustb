@@ -96,6 +96,17 @@
   and `(j,i,-R)` with conjugate amplitudes and the Peierls coefficients obey
   `C_-n = C_n^*`, so `H_-m(R) = H_m(-R)^dagger` and `H_0` is Hermitian. No
   public API change.
+- Accumulate the k-space output directly into the final Hamiltonian rows
+  instead of a separate half-support array: the slot table now maps a
+  translation to its model row, `finish` only writes the conjugate half as
+  the exact adjoint of the accumulated rows and symmetrises the origin, and
+  the driver no longer needs the full real-space Hermiticity pass. On the
+  55-orbital benchmark (4 Rayon threads, `OPENBLAS_NUM_THREADS=1`), two
+  back-to-back A/B pairs of `kspace_engine_cost_probe` measured 31.2 s and
+  29.5 s for the new build against 30.9 s and 32.5 s for the previous one, so
+  the time change is at the level of run-to-run noise (a few seconds); the
+  peak resident set reproducibly dropped from 8.15 GiB to 6.36 GiB, because
+  the engine now holds one output copy instead of one and a half.
 - Store the k-space output in a dense slot table over the exact support box
   and keep only one representative of every conjugate pair: the support is
   now marked on a bitmap over that box (the Minkowski sums are still formed,

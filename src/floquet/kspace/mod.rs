@@ -56,14 +56,14 @@ pub(super) enum EffectivePath {
 /// bound; an explicit request is only refused above the hard limit.
 ///
 /// The estimate charges the harmonic slab plus two full copies of the output
-/// model. The k-space accumulator actually holds half the blocks (one per
-/// conjugate pair) and the finish step allocates the full Hamiltonian, so the
-/// charge is conservative by about half a copy for a dense support. It does
+/// model. The k-space accumulator is itself the final Hamiltonian and only
+/// accumulates one block per conjugate pair, so the charge is conservative by
+/// a full copy for a dense support. It does
 /// not cover the harmonic cache, which the caller builds before the path is
 /// chosen and shares with the real-space path. The bound is therefore an
-/// engine working-set bound, not a process peak: the 55-orbital benchmark now
-/// peaks at 8.15 GiB against the same 7.5 GiB charge, and the back-to-back A/B
-/// before the half-support accumulator peaked at 10.2 GiB.
+/// engine working-set bound, not a process peak. The 55-orbital benchmark now
+/// peaks at 6.36 GiB against the same 7.5 GiB charge; it peaked at 8.15 GiB
+/// with the separate half accumulator and at 10.2 GiB before that.
 const KSPACE_MEMORY_LIMIT: u128 = 32 * 1024 * 1024 * 1024;
 const KSPACE_MEMORY_HARD_LIMIT: u128 = 64 * 1024 * 1024 * 1024;
 
@@ -74,8 +74,8 @@ struct KspaceEstimate {
     total_points: u128,
     /// One slab of harmonic blocks, the largest transient allocation.
     slab_bytes: u128,
-    /// Two full output copies, charged conservatively: the engine accumulates
-    /// half the blocks and then allocates the full Hamiltonian.
+    /// Two full output copies, charged conservatively: the engine holds one
+    /// full copy and accumulates only one block per conjugate pair.
     output_bytes: u128,
 }
 
@@ -184,9 +184,8 @@ impl<const SPIN: bool, const DIM: usize, RMatrix: RMatrixData> Model<SPIN, DIM, 
         }
         let slab_bytes = (2 * used_max + 1) as u128 * lanes * nsta * nsta * element;
         // The output support is contained in the degree times radius box. The
-        // engine charges two full copies of that box: the accumulator itself
-        // holds half the blocks per conjugate pair, and the finish step
-        // allocates the full Hamiltonian.
+        // engine charges two full copies of that box although its accumulator
+        // is the single final Hamiltonian with only the conjugate half accumulated.
         let mut support = 1_u128;
         for axis in 0..DIM {
             let radius = self
@@ -231,8 +230,9 @@ impl<const SPIN: bool, const DIM: usize, RMatrix: RMatrixData> Model<SPIN, DIM, 
             0
         };
         let degree = if harmonic_max > 0 { order + 1 } else { 1 };
-        // The working-set estimate covers the slab and both dense copies of the
-        // output model, which dominate memory for a large support.
+        // The working-set estimate charges the slab plus a conservative
+        // two-copy charge of the output model, which dominates memory for a
+        // large support.
         let estimate = self.kspace_estimate(harmonic_max, order, has_time_dependence);
         if estimate.working_set_bytes() > KSPACE_MEMORY_HARD_LIMIT {
             return Err(TbError::Other(format!(
@@ -315,9 +315,12 @@ impl<const SPIN: bool, const DIM: usize, RMatrix: RMatrixData> Model<SPIN, DIM, 
             }
         }
 
+        // finish() writes the conjugate half as the exact adjoint of the
+        // accumulated rows and symmetrises the origin, so the model is already
+        // origin-first and exactly Hermitian; the generic real-space repair pass
+        // would only rewrite the same values.
         let (mut ham, mut ham_r) = accumulator.finish()?;
         place_origin_first(&mut ham, &mut ham_r)?;
-        enforce_real_space_hermiticity(&mut ham, &ham_r)?;
         self.floquet_effective_output(ham, ham_r)
     }
 }

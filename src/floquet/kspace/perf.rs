@@ -115,7 +115,7 @@ fn kspace_stage_timing_probe() {
         grid.total_points()
     );
 
-    // Support enumeration plus the half-support accumulator allocation.
+    // Support enumeration plus the full output allocation.
     let started = Instant::now();
     let (support_box, support) =
         super::blocks::effective_support(&model.hamR, 3, harmonic_max, order).unwrap();
@@ -186,17 +186,16 @@ fn kspace_stage_timing_probe() {
     }
     let accumulate = started.elapsed().as_secs_f64() / sampled as f64 * slices as f64;
 
-    // One-time output assembly: reconstruct the conjugate half and write the
-    // model rows.
+    // One-time output assembly: the accumulated rows are already in place, so
+    // finish only writes the conjugate half and symmetrises the origin.
     let started = Instant::now();
     let (mut ham, mut ham_r) = blocks.finish().unwrap();
     let finish = started.elapsed().as_secs_f64();
     let started = Instant::now();
     super::place_origin_first(&mut ham, &mut ham_r).unwrap();
-    super::enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
-    let hermitize = started.elapsed().as_secs_f64();
+    let origin = started.elapsed().as_secs_f64();
     println!(
-        "estimated totals: prepare={prepare:.1}s support={support_time:.1}s forward={forward:.1}s assembly={assembly:.1}s inverse={inverse:.1}s accumulate={accumulate:.1}s finish={finish:.1}s hermitize={hermitize:.1}s blocks={}",
+        "estimated totals: prepare={prepare:.1}s support={support_time:.1}s forward={forward:.1}s assembly={assembly:.1}s inverse={inverse:.1}s accumulate={accumulate:.1}s finish={finish:.1}s origin={origin:.1}s blocks={}",
         ham_r.nrows()
     );
 }

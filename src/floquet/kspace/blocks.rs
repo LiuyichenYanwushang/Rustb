@@ -9,13 +9,14 @@
 //! dense bitmap over that box avoids the O(|pairs| * |support|) tree
 //! insertions of a Minkowski sum over a BTreeSet.
 //!
-//! The accumulator stores one representative of every conjugate pair
-//! (-R is the Hermitian conjugate of R), so it holds half the output blocks;
-//! the partner is reconstructed when the model rows are written out.
+//! The accumulator keeps one representative of every conjugate pair (-R is the
+//! Hermitian conjugate of R) and writes the partner as its adjoint when the
+//! model rows are produced, so only half the blocks are ever accumulated.
 
 use super::C;
 use crate::error::{Result, TbError};
-use ndarray::{Array2, Array3, ArrayView2, Axis};
+use crate::floquet::real_space::hermitian_conjugate;
+use ndarray::{Array2, Array3, ArrayView2, Axis, s};
 
 /// Slot value for a translation that is not stored (outside the support or the
 /// non-canonical half of a conjugate pair).
@@ -177,14 +178,23 @@ pub(super) fn effective_support(
     Ok((support_box, vectors))
 }
 
-/// Half-support accumulator with dense slot lookup.
+/// Output accumulator with a dense slot table over the support box.
+///
+/// The rows are the model rows themselves: origin first, then the support in
+/// lexicographic order. Only the canonical representative of each conjugate
+/// pair is accumulated; `DenseBlocks::finish` writes the partner row as its
+/// exact adjoint, so the accumulator never holds more than one full copy of the
+/// output and never allocates a second one.
 pub(super) struct DenseBlocks {
     support_box: SupportBox,
     slots: Vec<u32>,
-    values: Array3<C>,
+    ham: Array3<C>,
+    ham_r: Array2<isize>,
     support: Vec<[isize; 3]>,
+    has_origin: bool,
     nsta: usize,
-    dim: usize,
+    #[cfg_attr(not(test), allow(dead_code))]
+    stored: usize,
 }
 
 impl DenseBlocks {
@@ -195,13 +205,29 @@ impl DenseBlocks {
         dim: usize,
     ) -> Result<Self> {
         debug_assert!(support.windows(2).all(|pair| pair[0] < pair[1]));
-        let stored = support.iter().filter(|vector| canonical(vector)).count();
+        let origin = [0_isize; 3];
+        let has_origin = support.binary_search(&origin).is_ok();
+        let n_rows = support.len() + usize::from(!has_origin);
         let volume = support_box.checked_volume().ok_or_else(|| {
             TbError::Other("the effective support box does not fit a usize".into())
         })?;
         let mut slots = vec![NO_SLOT; volume];
-        let mut slot = 0_u32;
+        let mut ham_r = Array2::<isize>::zeros((n_rows, dim));
+        let mut stored = 0_usize;
+        // Row zero is the origin: the real one when the support contains it,
+        // otherwise the zero block the model needs there.
+        let mut row = 1_usize;
         for vector in &support {
+            let assigned = if *vector == origin {
+                0
+            } else {
+                let assigned = row;
+                row += 1;
+                assigned
+            };
+            for axis in 0..dim {
+                ham_r[[assigned, axis]] = vector[axis];
+            }
             if canonical(vector) {
                 let index = support_box.index(vector).ok_or_else(|| {
                     TbError::Other("the effective support vector left its own box".into())
@@ -211,30 +237,47 @@ impl DenseBlocks {
                         "the effective support contains a duplicate translation".into(),
                     ));
                 }
-                slots[index] = slot;
-                slot = slot.checked_add(1).ok_or_else(|| {
-                    TbError::Other("the effective support has too many blocks".into())
-                })?;
+                if assigned >= NO_SLOT as usize {
+                    return Err(TbError::Other(
+                        "the effective support has too many blocks".into(),
+                    ));
+                }
+                slots[index] = assigned as u32;
+                stored += 1;
             }
         }
-        debug_assert_eq!(stored, slot as usize);
+        debug_assert_eq!(row, n_rows);
+        // The input support is validated as negation-closed at the entry point
+        // and every Minkowski layer preserves that, so this cannot fire through
+        // the public API; keep the symmetric check so a hand-built support still
+        // fails here instead of producing a non-Hermitian model.
+        for vector in &support {
+            let partner = [-vector[0], -vector[1], -vector[2]];
+            if support.binary_search(&partner).is_err() {
+                return Err(TbError::Other(
+                    "the effective support is not closed under negation".into(),
+                ));
+            }
+        }
         Ok(Self {
             support_box,
             slots,
-            values: Array3::zeros((stored, nsta, nsta)),
+            ham: Array3::zeros((n_rows, nsta, nsta)),
+            ham_r,
             support,
+            has_origin,
             nsta,
-            dim,
+            stored,
         })
     }
 
-    /// Number of stored half-blocks (one per conjugate pair).
+    /// Number of accumulated blocks (one per conjugate pair).
     #[cfg(test)]
     pub(super) fn stored_blocks(&self) -> usize {
-        self.values.shape()[0]
+        self.stored
     }
 
-    /// Slot of a translation, or NO_SLOT when it is not stored in this half.
+    /// Model row of a translation, or NO_SLOT when it is not accumulated here.
     pub(super) fn slot(&self, vector: &[isize; 3]) -> u32 {
         match self.support_box.index(vector) {
             Some(index) => self.slots[index],
@@ -242,67 +285,70 @@ impl DenseBlocks {
         }
     }
 
-    /// Accumulate one k-slice contribution into a stored half-block.
+    /// Accumulate one k-slice contribution into a model row.
     pub(super) fn add_slot(&mut self, slot: u32, phase: C, block: ArrayView2<'_, C>) {
         debug_assert_ne!(slot, NO_SLOT);
-        let mut target = self.values.index_axis_mut(Axis(0), slot as usize);
+        let mut target = self.ham.index_axis_mut(Axis(0), slot as usize);
         target.scaled_add(phase, &block);
     }
 
-    /// Write the model rows: origin first, then lexicographic, with the
-    /// conjugate half reconstructed from the stored representatives.
-    pub(super) fn finish(self) -> Result<(Array3<C>, Array2<isize>)> {
-        let Self {
-            support_box,
-            slots,
-            values,
-            support,
-            nsta,
-            dim,
-        } = self;
+    /// Write the conjugate half and return the model rows.
+    ///
+    /// The accumulated rows are already exactly Hermitian as a pair: the stored
+    /// representative is written as-is and its partner as its adjoint. The only
+    /// self-paired row is the origin, which is symmetrised here, so the caller
+    /// does not need the full real-space Hermiticity pass.
+    pub(super) fn finish(mut self) -> Result<(Array3<C>, Array2<isize>)> {
         let origin = [0_isize; 3];
-        let has_origin = support.binary_search(&origin).is_ok();
-        let n_rows = support.len() + usize::from(!has_origin);
-        let mut ham = Array3::<C>::zeros((n_rows, nsta, nsta));
-        let mut ham_r = Array2::<isize>::zeros((n_rows, dim));
-        let mut ordered: Vec<[isize; 3]> = Vec::with_capacity(n_rows);
-        ordered.push(origin);
-        ordered.extend(support.iter().copied().filter(|vector| *vector != origin));
-        for (row, vector) in ordered.iter().enumerate() {
-            for axis in 0..dim {
-                ham_r[[row, axis]] = vector[axis];
-            }
-            if !has_origin && *vector == origin {
-                // The pairwise and triple layers always contain the origin when
-                // the input support is closed, so this is a zero-filled row.
+        let mut row = 1_usize;
+        for vector in &self.support {
+            let assigned = if *vector == origin {
+                0
+            } else {
+                let assigned = row;
+                row += 1;
+                assigned
+            };
+            if canonical(vector) {
                 continue;
             }
-            let (stored, transpose) = if canonical(vector) {
-                (*vector, false)
-            } else {
-                ([-vector[0], -vector[1], -vector[2]], true)
-            };
-            let index = support_box.index(&stored).ok_or_else(|| {
-                TbError::Other("the effective support lost a stored block".into())
+            let partner = [-vector[0], -vector[1], -vector[2]];
+            let index = self.support_box.index(&partner).ok_or_else(|| {
+                TbError::Other("the effective support lost a conjugate block".into())
             })?;
-            let slot = slots[index];
-            if slot == NO_SLOT {
+            let partner_row = self.slots[index];
+            if partner_row == NO_SLOT {
                 return Err(TbError::Other(
-                    "the effective support lost a stored block slot".into(),
+                    "the effective support lost a conjugate block slot".into(),
                 ));
             }
-            let source = values.index_axis(Axis(0), slot as usize);
-            let mut target = ham.index_axis_mut(Axis(0), row);
-            if transpose {
-                for i in 0..nsta {
-                    for j in 0..nsta {
-                        target[[i, j]] = source[[j, i]].conj();
-                    }
+            let partner_row = partner_row as usize;
+            // Both rows belong to the same array, so the disjoint borrows come
+            // from multi_slice_mut instead of two index_axis calls.
+            let (source, mut target) = self
+                .ham
+                .multi_slice_mut((s![partner_row, .., ..], s![assigned, .., ..]));
+            for i in 0..self.nsta {
+                for j in 0..self.nsta {
+                    target[[i, j]] = source[[j, i]].conj();
                 }
-            } else {
-                target.assign(&source);
             }
         }
+        debug_assert_eq!(row, self.ham.shape()[0]);
+        if self.has_origin {
+            let block = self.ham.index_axis(Axis(0), 0).to_owned();
+            let block_dag = hermitian_conjugate(&block);
+            let mut target = self.ham.index_axis_mut(Axis(0), 0);
+            for i in 0..self.nsta {
+                for j in 0..self.nsta {
+                    target[[i, j]] = C::new(
+                        block[[i, j]].re.midpoint(block_dag[[i, j]].re),
+                        block[[i, j]].im.midpoint(block_dag[[i, j]].im),
+                    );
+                }
+            }
+        }
+        let Self { ham, ham_r, .. } = self;
         Ok((ham, ham_r))
     }
 }
@@ -533,6 +579,26 @@ mod tests {
         assert_eq!(&ham_r.row(0).to_vec(), &vec![0, 0]);
         assert_eq!(&ham_r.row(1).to_vec(), &vec![-1, 0]);
         assert_eq!(&ham_r.row(2).to_vec(), &vec![1, 0]);
+        // The conjugate row is the adjoint of the accumulated zero block, so
+        // both stay zero and the appended origin row stays zero.
+        assert!(ham.iter().all(|value| value.re == 0.0 && value.im == 0.0));
+        // Also pin the adjoint relation with a nonzero block.
+        let mut accumulator = DenseBlocks::new(
+            effective_support(&unpaired, 2, 0, 0).unwrap().0,
+            vectors,
+            2,
+            2,
+        )
+        .unwrap();
+        let block = Array2::from_shape_fn((2, 2), |(i, j)| C::new(1.0 + i as f64, -0.5 - j as f64));
+        let slot = accumulator.slot(&[1, 0, 0]);
+        accumulator.add_slot(slot, C::new(1.0, 0.0), block.view());
+        let (ham, _) = accumulator.finish().unwrap();
+        for i in 0..2 {
+            for j in 0..2 {
+                assert_eq!(ham[[1, i, j]], ham[[2, j, i]].conj());
+            }
+        }
 
         // An origin-only support is a single row.
         let origin_only = array![[0_isize, 0]];
@@ -541,5 +607,81 @@ mod tests {
         let (_, ham_r) = accumulator.finish().unwrap();
         assert_eq!(ham_r.dim(), (1, 2));
         assert_eq!(&ham_r.row(0).to_vec(), &vec![0, 0]);
+    }
+
+    #[test]
+    fn finish_symmetrises_an_asymmetric_origin_block() {
+        let support = array![[0_isize, 0]];
+        let (support_box, vectors) = effective_support(&support, 2, 0, 0).unwrap();
+        let mut accumulator = DenseBlocks::new(support_box, vectors, 2, 2).unwrap();
+        let slot = accumulator.slot(&[0, 0, 0]);
+        let block = Array2::from_shape_fn((2, 2), |(i, j)| C::new(1.0 + i as f64, -0.5 + j as f64));
+        accumulator.add_slot(slot, C::new(1.0, 0.0), block.view());
+        let (ham, _) = accumulator.finish().unwrap();
+        let origin = ham.index_axis(Axis(0), 0);
+        for i in 0..2 {
+            for j in 0..2 {
+                assert_eq!(
+                    origin[[i, j]].re,
+                    block[[i, j]].re.midpoint(block[[j, i]].re),
+                    "origin real part ({i},{j}) was not symmetrised"
+                );
+                assert_eq!(
+                    origin[[i, j]].im,
+                    block[[i, j]].im.midpoint(-block[[j, i]].im),
+                    "origin imaginary part ({i},{j}) was not symmetrised"
+                );
+                assert_eq!(origin[[i, j]], origin[[j, i]].conj());
+            }
+        }
+    }
+
+    #[test]
+    fn finished_rows_need_no_real_space_repair() {
+        // The store writes the conjugate half as the exact adjoint and
+        // symmetrises the origin, so the real-space repair pass must be a
+        // bitwise no-op on the finished rows.
+        let support = array![[0_isize, 0], [1, 0], [-1, 0], [0, 1], [0, -1]];
+        let (support_box, vectors) = effective_support(&support, 2, 1, 1).unwrap();
+        let mut accumulator = DenseBlocks::new(support_box, vectors.clone(), 2, 2).unwrap();
+        let mut state = 0x9e37_79b9_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state as f64 / u64::MAX as f64) - 0.5
+        };
+        for vector in &vectors {
+            let slot = accumulator.slot(vector);
+            if slot == NO_SLOT {
+                continue;
+            }
+            let block = Array2::from_shape_fn((2, 2), |_| C::new(next(), next()));
+            accumulator.add_slot(slot, C::new(next(), next()), block.view());
+        }
+        let (ham, ham_r) = accumulator.finish().unwrap();
+        let mut repaired = ham.clone();
+        crate::floquet::real_space::enforce_real_space_hermiticity(&mut repaired, &ham_r).unwrap();
+        for (index, value) in ham.iter().enumerate() {
+            let repaired_value = repaired[[index / 4, (index / 2) % 2, index % 2]];
+            assert_eq!(
+                value.re.to_bits(),
+                repaired_value.re.to_bits(),
+                "repair changed real part {index}"
+            );
+            assert_eq!(
+                value.im.to_bits(),
+                repaired_value.im.to_bits(),
+                "repair changed imaginary part {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_closed_supports_are_rejected() {
+        let closed = array![[0_isize, 0], [1, 0], [-1, 0]];
+        let (support_box, _) = effective_support(&closed, 2, 0, 0).unwrap();
+        let missing_partner = vec![[0, 0, 0], [1, 0, 0]];
+        assert!(DenseBlocks::new(support_box, missing_partner, 2, 2).is_err());
     }
 }

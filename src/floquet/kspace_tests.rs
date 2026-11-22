@@ -15,7 +15,10 @@
 //!   the explicitly forced paths;
 //! - exactly zero harmonic blocks produced by selection rules and by coherent
 //!   mode cancellation;
-//! - bitwise determinism of two independent k-space runs.
+//! - bitwise determinism of two independent k-space runs;
+//! - exact block-level Hermiticity `H(R) = H(-R)^dagger` of the k-space output,
+//!   because the conjugate half is written as the stored representative's
+//!   adjoint rather than summed independently.
 //!
 //! The relative tolerance always uses the largest block element as scale, as
 //! documented on the real-space constructor.
@@ -348,6 +351,47 @@ fn assert_support<const DIM: usize>(
             );
         }
     }
+}
+
+/// Every block must be the exact adjoint of its `-R` partner, and the origin
+/// block must be Hermitian: the engine writes the conjugate half from the
+/// accumulated representative, so these equalities are exact value comparisons,
+/// not a tolerance.
+#[track_caller]
+fn assert_exactly_hermitian<const DIM: usize>(context: &str, model: &Model<false, DIM>) {
+    let nsta = model.nsta();
+    for index in 0..model.hamR.nrows() {
+        let mut negative = Array1::zeros(DIM);
+        for axis in 0..DIM {
+            negative[axis] = -model.hamR[[index, axis]];
+        }
+        let partner = super::find_R(&model.hamR, &negative)
+            .unwrap_or_else(|| panic!("{context}: support is not closed under negation"));
+        let block = model.ham.index_axis(Axis(0), index);
+        let partner_block = model.ham.index_axis(Axis(0), partner);
+        for i in 0..nsta {
+            for j in 0..nsta {
+                assert_eq!(
+                    block[[i, j]],
+                    partner_block[[j, i]].conj(),
+                    "{context}: block {index} entry ({i},{j}) is not the exact adjoint"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn kspace_output_is_exactly_hermitian() {
+    let two = two_dimensional_model();
+    let drive = two_mode_drive::<2>();
+    let kspace = effective(&two, &drive, 2, 2, EffectivePath::Kspace);
+    assert_exactly_hermitian("2D order 2", &kspace);
+
+    let three = three_dimensional_model();
+    let drive = two_mode_drive::<3>();
+    let kspace = effective(&three, &drive, 2, 2, EffectivePath::Kspace);
+    assert_exactly_hermitian("3D order 2", &kspace);
 }
 
 #[track_caller]

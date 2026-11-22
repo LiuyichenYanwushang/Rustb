@@ -902,11 +902,11 @@ agree block by block:
   (`T_m^dagger = T_-m`, `T(m,m')^dagger = T(-m,-m')`, invariant weights),
   halving their matrix products up to round-off. The output
   support is a Minkowski sum of the input support, so it is enumerated before
-  the loop on a bitmap over its bounding box; the accumulator is a dense slot
-  table over that box keeping one representative per conjugate pair, and the
-  missing half is written as its adjoint. The working set is the half
-  accumulator plus the final Hamiltonian (about `1.5 * |support| * nsta^2`);
-  the estimator charges two full copies, covering the box slot table. It
+  the loop on a bitmap over its bounding box, and a dense slot table over
+  that box maps a translation to its model row; only one representative per
+  conjugate pair is accumulated and the missing half is written as its
+  adjoint. The accumulator is the final Hamiltonian itself, and the
+  estimator charges two copies of it, covering the box slot table. It
   excludes the harmonic cache, so it bounds the engine working set, not the
   process peak.
 - **real space (reference and fallback)** — the pairwise Minkowski convolutions

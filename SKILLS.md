@@ -1042,9 +1042,9 @@ produce that same model:
   and the k-point slabs are streamed, so the full k volume is never held in
   memory. This is exact up to floating-point round-off: it computes the same
   polynomial, not an approximation. The dominant allocation is the output
-  model itself: the accumulator holds one block per conjugate pair and the
-  finish step allocates the full Hamiltonian, so the engine estimates a
-  conservative two full copies before it starts.
+  model itself: the accumulator is the final Hamiltonian and accumulates one
+  block per conjugate pair, so the engine estimates a conservative two full
+  copies before it starts.
 - **real space (internal reference and fallback).** The automatic rule keeps
   a call here when it has no corrections (order 0, static drive, `harmonic_max
   = 0`), when the zero-aliasing grid would need more sampled points than
@@ -1062,10 +1062,10 @@ thread pool to one thread (`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`)
 whenever `RAYON_NUM_THREADS` is above one. Leaving both pools at their default
 oversubscribes the machine: on a 55-orbital, 3249-block model an unpinned run
 took 982 s while the pinned one took 76 s before the k-space assembly, FFT and
-output optimizations, and is about 34 s now (peak RSS about 8 GiB).
+output optimizations, and is about 31 s now (peak RSS about 6.4 GiB).
 
 Both paths retain the full Minkowski support, including its zero-valued
-layers, and enforce the same real-space Hermiticity. The per-link
+layers, and produce the same exactly Hermitian real-space model. The per-link
 DFT fallback is sized from the link's bandwidth and requested harmonic range. It projects
 onto the link before summing coherent carriers and factors the real DC phase
 outside the sampled AC signal. The actual Bessel backend is checked before
