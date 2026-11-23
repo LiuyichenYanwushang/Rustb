@@ -160,8 +160,16 @@ weights, and overflowing sizes. `zero_energy` must be finite. Element labels are
 case-insensitively, so the species token of a `.win` projection line, the
 `atoms_cart`/`atoms_frac` labels and the extra-atom labels of `_centres.xyz`
 may be spelled `v`/`V` or `cl`/`Cl`; the orbital token after `:` remains
-case-sensitive. Optional centres/wsvec files and coordinate unit conversion
-retain their existing behavior.
+case-sensitive. Orbital labels follow the Wannier90 built-in angular-function
+order (`p`: pz, px, py; `d`: dz2, dxz, dyz, dx2-y2, dxy). The base order is the
+delivered projection block (each projection line over its matching atoms in atom
+order; this matches Wannier90's state order when the `.win` file matches the
+run). When `_centres.xyz` stores one atom-centred contiguous block per atom,
+whole blocks are matched to the nearest atom, so a block order differing from the
+atom list is handled; bond-centred hybrids and ambiguous blocks fall back to the
+delivered projection order with a warning, and the labels can then be wrong if
+that `.win` file was reordered relative to the run. Optional wsvec files and coordinate unit conversion retain
+their existing behavior.
 
 When exported from the same model, `_hr.dat` and `_r.dat` have identical
 translation block order: ascending lexicographic `(Rx, Ry, Rz)`, with `Rz`

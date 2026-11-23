@@ -69,6 +69,17 @@
 
 ### Safety and numerical fixes
 
+- `Wannier90::from_hr` now assigns orbital owners and characters in the
+  order of the delivered projection block (which matches Wannier90's state order
+  when the `.win` file matches the run) instead of the previous atom-major order.
+  Orbital labels within a block follow the built-in
+  angular-function order (`p`: pz, px, py; `d`: dz2, dxz, dyz, dx2-y2, dxy; and
+  likewise for `f` and hybrids). When `_centres.xyz` stores one atom-centred
+  contiguous block per atom, whole blocks are matched to the nearest atom
+  instead, which handles a delivered `.win` whose block order differs from the
+  atom list. Bond-centred hybrids and ambiguous centre blocks fall back to the
+  projection-block order with a warning instead of failing the import. The
+  `orb` centres themselves are read unchanged from `_centres.xyz`.
 - `HamiltonianSymmetryTolerances::default().operation` is now `1e-5`
   (fractional translation) instead of `1e-8`. It has the same numerical default
   value as the structural-detection precision (`symprec = 1e-5`) and the

@@ -817,6 +817,15 @@ assert_eq!(weight.dim(), (101, 101));
 required; `NoRMatrix` models never open it. The translations declared in
 `_r.dat` and `_hr.dat` must match exactly, regardless of block order. Declared
 record counts, indices, weights and sizes are validated before assembly.
+Orbital labels follow the Wannier90 built-in angular-function order (`p`: pz,
+px, py; `d`: dz2, dxz, dyz, dx2-y2, dxy). The base order is the delivered
+projection block (each projection line over its matching atoms; this matches
+Wannier90's state order when the `.win` file matches the run). When `_centres.xyz`
+stores one atom-centred contiguous block per atom, whole blocks are matched to
+the nearest atom instead, so a block order differing from the atom list is
+handled. Bond-centred hybrids and ambiguous blocks fall back to the delivered
+projection order with a warning; the labels can then be wrong if that `.win`
+file was reordered relative to the run.
 
 ```rust
 let wannier: Model<false, 3> = Model::from_hr("path/to/seedname/", "wannier90", 0.0)?;

@@ -14,6 +14,21 @@
 //! blocks and the extra-atom labels of `_centres.xyz` are matched
 //! case-insensitively; the orbital token after the colon remains case-sensitive.
 //!
+//! Orbital labels follow the Wannier90 built-in angular-function order. The
+//! canonical base is the order of the delivered projection block: each projection
+//! line applies to its matching atoms in atom order (this is Wannier90's state
+//! order when the `.win` file matches the run). When `_centres.xyz` is present
+//! and every atom's Wannier functions form one atom-centred contiguous block,
+//! whole blocks are matched to the nearest atom instead, so a `.win` whose block
+//! order differs from the centre file is handled. Bond-centred hybrids and
+//! ambiguous blocks fall back to the delivered projection order with a warning;
+//! when that happens the labels follow the delivered `.win` order and can be
+//! wrong if that file was reordered relative to the run. Two atoms of one species
+//! with equal projected counts could in principle exchange a whole block, but
+//! that requires every centre of the block to be closer to the other atom; the
+//! stored centres and Hamiltonian are unaffected, only atom ownership follows
+//! the centres.
+//!
 //! # Examples
 //!
 //! ```no_run
@@ -681,43 +696,155 @@ fn match_orbitals(
         }
         return Ok((centres, vec![OrbProj::s; norb], assigned));
     }
-    let mut projections = Vec::new();
-    let mut assigned = Vec::new();
-    let mut fallback = Array2::zeros((0, 3));
-    let mut dropped = HashSet::new();
-    for (species, position) in atoms {
-        let first = projections.len();
-        for (projected_species, orbitals) in &win.projections {
+    // Build the projected orbital list of every atom in Wannier90 order. Each
+    // projection token already carries the built-in angular-function order
+    // (p: pz, px, py; d: dz2, dxz, dyz, dx2-y2, dxy; ...), so these labels match
+    // the state order that Wannier90 writes.
+    let mut atom_projections: Vec<Vec<OrbProj>> = vec![Vec::new(); atoms.len()];
+    for (projected_species, orbitals) in &win.projections {
+        for (atom_index, (species, _)) in atoms.iter().enumerate() {
             if species == projected_species {
-                projections.extend(orbitals.iter().copied());
+                atom_projections[atom_index].extend_from_slice(orbitals);
             }
         }
-        if first == projections.len() {
-            if dropped.insert(species.to_str()) {
+    }
+    // Wannier90 writes Wannier functions in projection-block order: each
+    // projection line applies to its matching atoms in atom order. This
+    // expansion is the authoritative fallback when the centres cannot be
+    // grouped into one atom-centred block per atom.
+    let mut ordered_atoms = Vec::with_capacity(norb);
+    for (projected_species, orbitals) in &win.projections {
+        for (atom_index, (species, _)) in atoms.iter().enumerate() {
+            if species == projected_species {
+                for orbital in orbitals {
+                    ordered_atoms.push((atom_index, *orbital));
+                }
+            }
+        }
+    }
+    if ordered_atoms.len() != norb {
+        return Err(parse_error(
+            file,
+            format!(
+                "species mismatch between atom data and projections: HR declares {norb} orbitals, but {} could be assigned to atoms",
+                ordered_atoms.len()
+            ),
+        ));
+    }
+    let mut projections = ordered_atoms
+        .iter()
+        .map(|(_, orbital)| *orbital)
+        .collect::<Vec<_>>();
+    let mut per_atom: Vec<Vec<usize>> = vec![Vec::new(); atoms.len()];
+    for (index, (atom_index, _)) in ordered_atoms.iter().enumerate() {
+        per_atom[*atom_index].push(index);
+    }
+    let mut fallback = Array2::zeros((0, 3));
+    if centres.is_none() {
+        for (atom_index, _) in &ordered_atoms {
+            fallback.push_row(atoms[*atom_index].1.view())?;
+        }
+    } else {
+        // Prefer whole-centre-block assignment when every atom's projected
+        // orbitals form one contiguous block: this handles delivered .win/HR
+        // pairs whose centre blocks are not in atom order. Bond-centred or
+        // otherwise non-atom-centred Wannier functions fall back to the
+        // projection-block order above.
+        let centres = centres.as_ref().expect("checked above");
+        let mut nearest_atom = Vec::with_capacity(norb);
+        let mut atom_centred = true;
+        for index in 0..norb {
+            let centre = centres.row(index);
+            let mut best = (usize::MAX, f64::INFINITY);
+            for (atom_index, (_, position)) in atoms.iter().enumerate() {
+                let mut delta = [0.0_f64; 3];
+                for axis in 0..3 {
+                    delta[axis] = centre[axis] - position[axis];
+                    delta[axis] -= delta[axis].round();
+                }
+                let mut cartesian = [0.0_f64; 3];
+                for axis in 0..3 {
+                    for column in 0..3 {
+                        cartesian[column] += delta[axis] * win.lat[[axis, column]];
+                    }
+                }
+                let distance = cartesian
+                    .iter()
+                    .map(|value| value * value)
+                    .sum::<f64>()
+                    .sqrt();
+                if distance < best.1 {
+                    best = (atom_index, distance);
+                }
+            }
+            if best.0 == usize::MAX {
+                return Err(parse_error(
+                    file,
+                    "Wannier centres require at least one atom",
+                ));
+            }
+            atom_centred &= best.1 <= 1.0;
+            nearest_atom.push(best.0);
+        }
+        let mut blocks: Vec<(usize, usize, usize)> = Vec::new();
+        for (index, &atom_index) in nearest_atom.iter().enumerate() {
+            match blocks.last_mut() {
+                Some((last_atom, _, len)) if *last_atom == atom_index => *len += 1,
+                _ => blocks.push((atom_index, index, 1)),
+            }
+        }
+        let mut block_valid = atom_centred;
+        if block_valid {
+            let mut seen = vec![false; atoms.len()];
+            for &(atom_index, _, len) in &blocks {
+                if atom_projections[atom_index].len() != len || seen[atom_index] {
+                    block_valid = false;
+                    break;
+                }
+                seen[atom_index] = true;
+            }
+            if block_valid {
+                block_valid = atom_projections
+                    .iter()
+                    .enumerate()
+                    .all(|(atom_index, orbitals)| orbitals.is_empty() || seen[atom_index]);
+            }
+        }
+        if block_valid {
+            projections = vec![OrbProj::s; norb];
+            per_atom = vec![Vec::new(); atoms.len()];
+            for &(atom_index, start, len) in &blocks {
+                projections[start..start + len].copy_from_slice(&atom_projections[atom_index]);
+                per_atom[atom_index] = (start..start + len).collect();
+            }
+        } else {
+            let reason = if atom_centred {
+                "the Wannier centre blocks do not form one contiguous block per projected atom"
+            } else {
+                "some Wannier centres are more than 1 A from their nearest atom"
+            };
+            eprintln!(
+                "warning: {reason}; using the order of the delivered projection block to assign atoms and orbitals"
+            );
+        }
+    }
+    let mut assigned = Vec::new();
+    let mut dropped = HashSet::new();
+    for (atom_index, (species, position)) in atoms.iter().enumerate() {
+        if per_atom[atom_index].is_empty() {
+            if atom_projections[atom_index].is_empty() && dropped.insert(species.to_str()) {
                 eprintln!(
                     "warning: dropping '{species}' atoms (no orbitals in the projections block)"
                 );
             }
             continue;
         }
-        if centres.is_none() {
-            for _ in first..projections.len() {
-                fallback.push_row(position.view())?;
-            }
-        }
         assigned.push(Atom::with_orbitals(
             position.clone(),
             *species,
-            (first..projections.len()).map(OrbitalId::new),
-        ));
-    }
-    if projections.len() != norb {
-        return Err(parse_error(
-            file,
-            format!(
-                "species mismatch between atom data and projections: HR declares {norb} orbitals, but {} could be assigned to atoms",
-                projections.len()
-            ),
+            per_atom[atom_index]
+                .iter()
+                .map(|&index| OrbitalId::new(index)),
         ));
     }
     Ok((centres.unwrap_or(fallback), projections, assigned))
@@ -1083,6 +1210,269 @@ mod tests {
         assert_eq!(model.natom(), 2);
         assert_eq!(model.atoms[0].atom_type(), AtomType::V);
         assert_eq!(model.atoms[1].atom_type(), AtomType::Cl);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_assigns_orbitals_by_nearest_centres() {
+        // The centre file writes the two Te blocks first and in reverse atom
+        // order, while the atom list starts with Fe. Ownership must follow the
+        // centres, and labels must use the Wannier90 built-in orbital order.
+        let dir = "tests/tmp_w90_nearest_centres/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n10.0 0.0 0.0\n0.0 10.0 0.0\n0.0 0.0 10.0\nend unit_cell_cart\n\nbegin atoms_cart\nFe 0.0 0.0 0.0\nTe 0.0 0.0 2.3\nTe 0.0 0.0 4.6\nend atoms_cart\n\nbegin projections\nFe:d\nTe:p\nend projections\n";
+        let mut hr = String::from("generated\n11\n1\n1\n");
+        for i in 1..=11 {
+            for j in 1..=11 {
+                hr.push_str(&format!("0 0 0 {i} {j} 0.0 0.0\n"));
+            }
+        }
+        let xyz = "14\nWannier centres\nTe 0.0 0.0 4.6\nTe 0.0 0.0 4.6\nTe 0.0 0.0 4.6\nFe 0.0 0.0 0.0\nFe 0.0 0.0 0.0\nFe 0.0 0.0 0.0\nFe 0.0 0.0 0.0\nFe 0.0 0.0 0.0\nTe 0.0 0.0 2.3\nTe 0.0 0.0 2.3\nTe 0.0 0.0 2.3\nFe 0.0 0.0 0.0\nTe 0.0 0.0 2.3\nTe 0.0 0.0 4.6\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 11);
+        assert_eq!(model.natom(), 3);
+        assert_eq!(model.atoms[0].atom_type(), AtomType::Fe);
+        assert_eq!(model.atoms[1].atom_type(), AtomType::Te);
+        assert_eq!(model.atoms[2].atom_type(), AtomType::Te);
+        let ids = |atom: usize| {
+            model.atoms[atom]
+                .orbitals()
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(0), vec![3, 4, 5, 6, 7]);
+        assert_eq!(ids(1), vec![8, 9, 10]);
+        assert_eq!(ids(2), vec![0, 1, 2]);
+        assert_eq!(
+            model.orb_projection,
+            vec![
+                OrbProj::pz,
+                OrbProj::px,
+                OrbProj::py,
+                OrbProj::dz2,
+                OrbProj::dxz,
+                OrbProj::dyz,
+                OrbProj::dx2y2,
+                OrbProj::dxy,
+                OrbProj::pz,
+                OrbProj::px,
+                OrbProj::py,
+            ]
+        );
+        assert!((model.orb[[0, 2]] - 0.46).abs() < 1e-12);
+        assert!(model.orb[[3, 2]].abs() < 1e-12);
+        assert!((model.orb[[8, 2]] - 0.23).abs() < 1e-12);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_handles_the_reported_62_centre_dataset() {
+        // Geometry taken from a real Fe4Te2O12 data set: 62 Wannier centres
+        // grouped Te(3), Te(3), Fe(5)x4, O(3)x12, while the atom list starts
+        // with Fe. That is the observed block order the nearest-centre rule must
+        // handle; the projections block is Fe:d, Te:p, O:p.
+        let dir = "tests/tmp_w90_real_62/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = format!(
+            "begin unit_cell_cart\n10.0 0.0 0.0\n0.0 10.0 0.0\n0.0 0.0 10.0\nend unit_cell_cart\n\nbegin atoms_cart\nfe 2.30049990 2.30049990 7.57401470\nfe 0.00000000 0.00000000 6.05648520\nfe 0.00000000 0.00000000 3.03051440\nfe 2.30049990 2.30049990 1.51298550\nte 0.00000000 0.00000000 0.00000000\nte 2.30049990 2.30049990 4.54349990\no 1.37569890 1.37569890 0.00000000\no 0.92480100 3.67619900 4.54349990\no 3.67619900 0.92480100 4.54349990\no 3.22530080 3.22530080 0.00000000\no 1.41250700 1.41250700 3.04868850\no 0.88799290 3.71300710 7.59218840\no 3.71300710 0.88799290 7.59218840\no 3.71300710 0.88799290 1.49481150\no 0.88799290 3.71300710 1.49481150\no 3.18849270 3.18849270 3.04868850\no 1.41250700 1.41250700 6.03831140\no 3.18849270 3.18849270 6.03831140\nend atoms_cart\n\nbegin projections\nFe:d\nTe:p\nO:p\nend projections\n"
+        );
+        let mut hr = String::from("generated\n62\n1\n1\n");
+        for i in 1..=62 {
+            for j in 1..=62 {
+                hr.push_str(&format!("0 0 0 {i} {j} 0.0 0.0\n"));
+            }
+        }
+        let xyz = "80\n Wannier centres, written by Wannier90 on23Nov2026 at 14:26:08\nX         -0.00000009      -0.00000010       0.01508405\nX         -0.00000014      -0.00000005       0.00412937\nX         -0.00000005      -0.00000014       0.00412972\nX          2.30049984       2.30049985       4.55858375\nX          2.30049987       2.30049997       4.54762983\nX          2.30049997       2.30049988       4.54763019\nX          2.30049990       2.30049990       7.57297993\nX          2.30049989       2.30049990       7.57396502\nX          2.30049990       2.30049989       7.57396492\nX          2.30049990       2.30049990       7.57464396\nX          2.30049990       2.30049990       7.57362089\nX         -0.00000000      -0.00000000       6.06213708\nX         -0.00000000      -0.00000000       6.05536535\nX         -0.00000000      -0.00000000       6.05536540\nX         -0.00000001      -0.00000001       6.05593748\nX         -0.00000000      -0.00000000       6.05894187\nX         -0.00000000      -0.00000000       3.02947958\nX          0.00000000      -0.00000000       3.03046478\nX         -0.00000000       0.00000000       3.03046467\nX          0.00000000       0.00000000       3.03114379\nX         -0.00000000      -0.00000000       3.03012075\nX          2.30049990       2.30049990       1.51863744\nX          2.30049989       2.30049990       1.51186569\nX          2.30049990       2.30049989       1.51186574\nX          2.30049990       2.30049990       1.51243772\nX          2.30049990       2.30049990       1.51544210\nX          1.38246512       1.38246521       0.00040771\nX          1.35287083       1.30293535      -0.00146505\nX          1.30293524       1.35287087      -0.00146511\nX          0.91803478       3.68296523       4.54390770\nX          0.94762906       3.60343541       4.54203503\nX          0.99756462       3.65337097       4.54203498\nX          3.68296514       0.91803469       4.54390770\nX          3.65337093       0.99756451       4.54203503\nX          3.60343531       0.94762901       4.54203498\nX          3.21853454       3.21853445       0.00040771\nX          3.24812877       3.29806428      -0.00146505\nX          3.29806439       3.24812873      -0.00146511\nX          1.46224622       1.46224632       3.06258484\nX          1.38802142       1.42940468       3.07897980\nX          1.42940458       1.38802066       3.07898002\nX          0.83825342       3.76274659       7.60608528\nX          0.91247828       3.72990483       7.62247978\nX          0.87109519       3.68852094       7.62248000\nX          3.76274650       0.83825332       7.60608528\nX          3.68852171       0.87109509       7.62247977\nX          3.72990473       0.91247905       7.62248000\nX          3.76238583       0.83861411       1.48575434\nX          3.69235685       0.86739084       1.46290000\nX          3.73360926       0.90864258       1.46289981\nX          0.83861409       3.76238581       1.48575434\nX          0.90864313       3.73360908       1.46289999\nX          0.86739066       3.69235740       1.46289982\nX          3.13875342       3.13875332       3.06258490\nX          3.21297820       3.17159497       3.07897982\nX          3.17159507       3.21297897       3.07898005\nX          1.46188601       1.46188600       6.02925386\nX          1.39185695       1.43310917       6.00639990\nX          1.43310935       1.39185750       6.00639972\nX          3.13911363       3.13911364       6.02925380\nX          3.20914267       3.16789049       6.00639988\nX          3.16789031       3.20914212       6.00639970\nfe         2.30049990       2.30049990       7.57401470\nfe         0.00000000       0.00000000       6.05648520\nfe         0.00000000       0.00000000       3.03051440\nfe         2.30049990       2.30049990       1.51298550\nte         0.00000000       0.00000000       0.00000000\nte         2.30049990       2.30049990       4.54349990\no          1.37569890       1.37569890       0.00000000\no          0.92480100       3.67619900       4.54349990\no          3.67619900       0.92480100       4.54349990\no          3.22530080       3.22530080       0.00000000\no          1.41250700       1.41250700       3.04868850\no          0.88799290       3.71300710       7.59218840\no          3.71300710       0.88799290       7.59218840\no          3.71300710       0.88799290       1.49481150\no          0.88799290       3.71300710       1.49481150\no          3.18849270       3.18849270       3.04868850\no          1.41250700       1.41250700       6.03831140\no          3.18849270       3.18849270       6.03831140\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(model.norb(), 62);
+        assert_eq!(model.natom(), 18);
+        let ids = |atom: usize| {
+            model.atoms[atom]
+                .orbitals()
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>()
+        };
+        // The two Te blocks come first, then the four Fe d shells, then O.
+        assert_eq!(ids(4), vec![0, 1, 2]);
+        assert_eq!(ids(5), vec![3, 4, 5]);
+        assert_eq!(ids(0), vec![6, 7, 8, 9, 10]);
+        assert_eq!(ids(1), vec![11, 12, 13, 14, 15]);
+        assert_eq!(ids(2), vec![16, 17, 18, 19, 20]);
+        assert_eq!(ids(3), vec![21, 22, 23, 24, 25]);
+        assert_eq!(
+            model.atoms.iter().map(|atom| atom.norb()).sum::<usize>(),
+            62
+        );
+        assert_eq!(model.orb_projection[0], OrbProj::pz);
+        assert_eq!(model.orb_projection[2], OrbProj::py);
+        assert_eq!(model.orb_projection[6], OrbProj::dz2);
+        assert_eq!(model.orb_projection[10], OrbProj::dxy);
+        assert_eq!(model.orb_projection[26], OrbProj::pz);
+        assert!((model.orb[[0, 2]] - 0.001508405).abs() < 1e-12);
+        assert!((model.orb[[6, 2]] - 0.757297993).abs() < 1e-12);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_falls_back_to_projection_order_for_ambiguous_blocks() {
+        // Two centre blocks point at Fe and Te, but the projections block gives
+        // Fe one s orbital and Te three p orbitals, so the blocks are not a
+        // valid atom partition. The Wannier90 projection order is used instead.
+        let dir = "tests/tmp_w90_block_mismatch/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n10.0 0.0 0.0\n0.0 10.0 0.0\n0.0 0.0 10.0\nend unit_cell_cart\n\nbegin atoms_cart\nFe 0.0 0.0 0.0\nTe 0.0 0.0 2.3\nend atoms_cart\n\nbegin projections\nFe:s\nTe:p\nend projections\n";
+        let mut hr = String::from("generated\n4\n1\n1\n");
+        for i in 1..=4 {
+            for j in 1..=4 {
+                hr.push_str(&format!("0 0 0 {i} {j} 0.0 0.0\n"));
+            }
+        }
+        let xyz = "6\nWannier centres\nFe 0.0 0.0 0.0\nFe 0.0 0.0 0.0\nTe 0.0 0.0 2.3\nTe 0.0 0.0 2.3\nFe 0.0 0.0 0.0\nTe 0.0 0.0 2.3\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        let ids = |atom: usize| {
+            model.atoms[atom]
+                .orbitals()
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(0), vec![0]);
+        assert_eq!(ids(1), vec![1, 2, 3]);
+        assert_eq!(
+            model.orb_projection,
+            vec![OrbProj::s, OrbProj::pz, OrbProj::px, OrbProj::py]
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_falls_back_to_projection_order_for_bond_centred_wanniers() {
+        // GaAs-like sp3 hybrids live at the bond centre, more than 1 A from
+        // both atoms, so the nearest-atom block assignment cannot be used; the
+        // projection order must still load the model.
+        let dir = "tests/tmp_w90_bond_centred/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n10.0 0.0 0.0\n0.0 10.0 0.0\n0.0 0.0 10.0\nend unit_cell_cart\n\nbegin atoms_cart\nGa 0.0 0.0 0.0\nAs 5.0 5.0 5.0\nend atoms_cart\n\nbegin projections\nGa:sp3\nAs:sp3\nend projections\n";
+        let mut hr = String::from("generated\n8\n1\n1\n");
+        for i in 1..=8 {
+            for j in 1..=8 {
+                hr.push_str(&format!("0 0 0 {i} {j} 0.0 0.0\n"));
+            }
+        }
+        let xyz = "10\nWannier centres\nX 2.5 2.5 2.5\nX 2.5 2.5 2.5\nX 2.5 2.5 2.5\nX 2.5 2.5 2.5\nX 2.5 2.5 2.5\nX 2.5 2.5 2.5\nX 2.5 2.5 2.5\nX 2.5 2.5 2.5\nGa 0.0 0.0 0.0\nAs 5.0 5.0 5.0\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        let ids = |atom: usize| {
+            model.atoms[atom]
+                .orbitals()
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(0), vec![0, 1, 2, 3]);
+        assert_eq!(ids(1), vec![4, 5, 6, 7]);
+        assert!((model.orb[[0, 0]] - 0.25).abs() < 1e-12);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_uses_projection_order_for_interleaved_lines() {
+        // Two Fe atoms with Fe:s and Fe:p give line-major Wannier order:
+        // both s functions first, then both p shells. The centres therefore do
+        // not form one block per atom, and the projection order must be used.
+        let dir = "tests/tmp_w90_interleaved_lines/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n10.0 0.0 0.0\n0.0 10.0 0.0\n0.0 0.0 10.0\nend unit_cell_cart\n\nbegin atoms_cart\nFe 0.0 0.0 0.0\nFe 5.0 0.0 0.0\nend atoms_cart\n\nbegin projections\nFe:s\nFe:p\nend projections\n";
+        let mut hr = String::from("generated\n8\n1\n1\n");
+        for i in 1..=8 {
+            for j in 1..=8 {
+                hr.push_str(&format!("0 0 0 {i} {j} 0.0 0.0\n"));
+            }
+        }
+        let xyz = "10\nWannier centres\nX 0.0 0.0 0.0\nX 5.0 0.0 0.0\nX 0.0 0.0 0.0\nX 0.0 0.0 0.0\nX 0.0 0.0 0.0\nX 5.0 0.0 0.0\nX 5.0 0.0 0.0\nX 5.0 0.0 0.0\nFe 0.0 0.0 0.0\nFe 5.0 0.0 0.0\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        let ids = |atom: usize| {
+            model.atoms[atom]
+                .orbitals()
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(0), vec![0, 2, 3, 4]);
+        assert_eq!(ids(1), vec![1, 5, 6, 7]);
+        assert_eq!(
+            model.orb_projection,
+            vec![
+                OrbProj::s,
+                OrbProj::s,
+                OrbProj::pz,
+                OrbProj::px,
+                OrbProj::py,
+                OrbProj::pz,
+                OrbProj::px,
+                OrbProj::py,
+            ]
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_hr_matches_displaced_centres_across_the_cell_boundary() {
+        // The centres are displaced from the atoms and one lies across the cell
+        // boundary; the minimum-image distance must still select the right atom.
+        let dir = "tests/tmp_w90_displaced_centres/";
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let win = "begin unit_cell_cart\n2.0 0.0 0.0\n0.0 2.0 0.0\n0.0 0.0 2.0\nend unit_cell_cart\n\nbegin atoms_cart\nFe 0.6 0.0 0.0\nTe 1.6 0.0 0.0\nend atoms_cart\n\nbegin projections\nFe:d\nTe:p\nend projections\n";
+        let mut hr = String::from("generated\n8\n1\n1\n");
+        for i in 1..=8 {
+            for j in 1..=8 {
+                hr.push_str(&format!("0 0 0 {i} {j} 0.0 0.0\n"));
+            }
+        }
+        let xyz = "10\nWannier centres\nX 0.04 0.0 0.0\nX 0.04 0.0 0.0\nX 0.04 0.0 0.0\nX 1.0 0.0 0.0\nX 1.0 0.0 0.0\nX 1.0 0.0 0.0\nX 1.0 0.0 0.0\nX 1.0 0.0 0.0\nFe 0.6 0.0 0.0\nTe 1.6 0.0 0.0\n";
+        fs::write(format!("{dir}seedname.win"), win).unwrap();
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+
+        let model = <Model<false, 3> as Wannier90>::from_hr(dir, "seedname", 0.0).unwrap();
+        let ids = |atom: usize| {
+            model.atoms[atom]
+                .orbitals()
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(0), vec![3, 4, 5, 6, 7]);
+        assert_eq!(ids(1), vec![0, 1, 2]);
+        assert!((model.orb[[0, 0]] - 0.02).abs() < 1e-12);
+        assert!((model.orb[[3, 0]] - 0.5).abs() < 1e-12);
         fs::remove_dir_all(dir).ok();
     }
 
