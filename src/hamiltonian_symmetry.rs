@@ -319,8 +319,20 @@ pub struct HamiltonianSymmetryTolerances {
     pub representation: f64,
     /// Fractional-translation tolerance for magnetic-operation equality.
     ///
-    /// This must lie in $(0,\frac12)$ so distinct lattice cosets remain
-    /// separable.
+    /// Defaults to `1e-5`, the same numerical value as the default
+    /// structural-detection precision [`SymmetryParameters::symprec`], but it
+    /// is an independent setting: a caller-supplied `symprec` does not change
+    /// it. A group whose closure residual is within this fractional shift is
+    /// accepted; a tighter value can make later closure and
+    /// projective-corepresentation checks reject a legitimately detected group.
+    ///
+    /// This is a numerical equality tolerance for algebraic bookkeeping, not a
+    /// physical symmetry tolerance: Hamiltonian covariance is governed by
+    /// [`Self::absolute`], [`Self::relative`] and [`Self::hermiticity`],
+    /// position-matrix covariance by [`Self::position`], and the
+    /// localized-action matrix algebra by [`Self::representation`]. Raise this
+    /// value together with `symprec` when detecting at coarser precision. It
+    /// must lie in $(0,\frac12)$ so distinct lattice cosets remain separable.
     pub operation: f64,
     /// Tolerance for matching supplied target operations against the
     /// operation set detected from the Model structure.
@@ -340,7 +352,7 @@ impl Default for HamiltonianSymmetryTolerances {
             position: None,
             hermiticity: 1e-10,
             representation: 1e-8,
-            operation: 1e-8,
+            operation: 1e-5,
             membership: None,
         }
     }
@@ -4829,6 +4841,57 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("projective group composition"));
+    }
+
+    #[test]
+    fn operation_tolerance_default_matches_detection_precision() {
+        let tolerances = HamiltonianSymmetryTolerances::default();
+        assert_eq!(tolerances.operation, 1e-5);
+        validate_tolerances(tolerances).unwrap();
+    }
+
+    #[test]
+    fn operation_closure_accepts_detection_noise_but_rejects_loose_closure() {
+        // A cyclic C4 group whose C4^3 representative carries a translation
+        // error. This is the signature of a group detected at `symprec`
+        // precision: closure holds up to the detection noise, not exactly.
+        let model = scalar_cubic();
+        let identity = identity_operation(false);
+        let c4 = c4z(false);
+        let c4_squared = CrystalSymmetryOperation {
+            rotation: [[-1, 0, 0], [0, -1, 0], [0, 0, 1]],
+            translation: [0.0; 3],
+            time_reversal: false,
+        };
+        let mut c4_cubed = CrystalSymmetryOperation {
+            rotation: [[0, 1, 0], [-1, 0, 0], [0, 0, 1]],
+            translation: [0.0; 3],
+            time_reversal: false,
+        };
+        let action = || LocalizedBasisAction {
+            sectors: vec![CellShiftAction {
+                shift: [0, 0, 0],
+                matrix: array![[Complex64::new(1.0, 0.0)]],
+            }],
+        };
+
+        c4_cubed.translation[0] = 1e-6;
+        let mut operations = vec![
+            (identity, action()),
+            (c4, action()),
+            (c4_squared, action()),
+            (c4_cubed, action()),
+        ];
+        let tight =
+            validate_projective_corepresentation(&model, &operations, 1e-8, 1e-6).unwrap_err();
+        assert!(tight.to_string().contains("has no target operation"));
+        let default_operation = HamiltonianSymmetryTolerances::default().operation;
+        validate_projective_corepresentation(&model, &operations, default_operation, 1e-6).unwrap();
+
+        operations[3].0.translation[0] = 1e-3;
+        let loose =
+            validate_projective_corepresentation(&model, &operations, 1e-5, 1e-6).unwrap_err();
+        assert!(loose.to_string().contains("has no target operation"));
     }
 
     #[test]

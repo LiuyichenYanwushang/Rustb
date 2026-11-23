@@ -69,6 +69,16 @@
 
 ### Safety and numerical fixes
 
+- `HamiltonianSymmetryTolerances::default().operation` is now `1e-5`
+  (fractional translation) instead of `1e-8`. It has the same numerical default
+  value as the structural-detection precision (`symprec = 1e-5`) and the
+  cryspglib spin-group position default, but these are independent settings: a
+  caller-supplied `symprec` does not change `operation`, which must be raised
+  explicitly when detecting at coarser precision. Operation sets whose closure
+  residual is within this tolerance are no longer rejected by
+  projective-corepresentation or pair-closure checks with "has no target
+  operation". The other tolerances (`absolute`, `relative`, `position`,
+  `hermiticity`, `representation`, `membership`) are unchanged.
 - `Model::output_win` now derives its `begin projections` block from the
   model Atom ownership, `orb_projection`, and orbital order instead of writing
   an empty block. It also writes `num_wann = nsta` and an explicit `spinors`

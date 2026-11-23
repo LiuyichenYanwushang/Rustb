@@ -1686,7 +1686,14 @@ operation. If action resolution, centre consistency, or covariance fails, the
 call returns an error. The input models are unchanged on success and error.
 Position covariance and centre consistency use `parameters.tolerances.position`
 (or `parameters.structural_parameters.symprec` if unset), in Cartesian Å.
-`NoRMatrix` models skip the position-matrix checks.
+`NoRMatrix` models skip the position-matrix checks. Operation equality during closure and projective-corepresentation checks uses
+`parameters.tolerances.operation` (fractional translation; default `1e-5`, the
+same numerical value as the default detection precision but an independent
+setting, so raising `symprec` does not raise `operation`). It is an algebraic
+ equality
+tolerance only: Hamiltonian covariance still uses the `absolute`/`relative` and
+`hermiticity` tolerances, position-matrix covariance uses `position`, and
+localized-action matrix equality uses `representation`.
 
 Rayon parallelizes the independent projection tasks: one task per real-space
 `R` block for the Reynolds average, the position-matrix projection and the
