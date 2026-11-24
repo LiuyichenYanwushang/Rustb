@@ -4,7 +4,7 @@ use super::FloquetDrive;
 use crate::error::{Result, TbError};
 use crate::{Model, RMatrixData};
 use ndarray::prelude::*;
-use ndarray::s;
+use ndarray::{array, s};
 use num_complex::Complex;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::f64::consts::TAU;
@@ -32,7 +32,7 @@ pub(crate) enum PeierlsFourierMethod {
     },
 }
 
-/// Precomputed `t_ij(R) * C_n(d)` for all harmonics `n ∈ [harmonic_min, harmonic_max]`.
+/// Precomputed driven hopping blocks for `n ∈ [harmonic_min, harmonic_max]`.
 ///
 /// `blocks` has shape `(harmonic_count, n_r, nsta, nsta)` where `harmonic_count = harmonic_max - harmonic_min + 1`.
 /// Index `[i_n, i_r, i, j]` stores the `n = harmonic_min + i_n` Fourier component of hopping
@@ -152,10 +152,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let fallback_warned = AtomicBool::new(false);
         let fallback_clamped = AtomicBool::new(false);
         let fallback_saturated = AtomicBool::new(false);
+        let field = coherent_cartesian_field(drive);
         let coeffs_per_d: Vec<Array1<Complex<f64>>> = unique_d
             .par_iter()
             .map(|d| match method {
                 PeierlsFourierMethod::Bessel { cutoff_margin } => {
+                    // Public entry points completed the same link preflight.
+                    // Keep the directly-called test cache API infallible.
+                    let projected = coherent_link_drive(d, drive, &field);
+                    let scalar = array![1.0];
+                    let (d, drive) = match &projected {
+                        Ok(projected) => (&scalar, projected),
+                        Err(_) => (d, drive),
+                    };
                     match bessel_peierls_coeffs(
                         d,
                         drive,
@@ -238,8 +247,7 @@ pub(super) fn validate_link_resolvability<const SPIN: bool, const DIM: usize, R:
     }
     let span = harmonic_max.saturating_sub(harmonic_min).saturating_add(1) as usize;
     let mut checked = std::collections::HashSet::<[u64; DIM]>::new();
-    // Drive-level count, which chooses the backend's amplitude cap.
-    let drive_carriers = drive.modes.iter().filter(|mode| mode.harmonic != 0).count();
+    let field = coherent_cartesian_field(drive);
     for ((r, i, j), hopping) in model.ham.indexed_iter() {
         if hopping.re == 0.0 && hopping.im == 0.0 {
             continue;
@@ -261,6 +269,10 @@ pub(super) fn validate_link_resolvability<const SPIN: bool, const DIM: usize, R:
         }
         #[cfg(test)]
         LINK_RESOLVABILITY_SCANS.with(|count| count.set(count.get() + 1));
+        let projected = coherent_link_drive(&d, drive, &field)?;
+        let drive = &projected;
+        let d = array![1.0];
+        let drive_carriers = drive.modes.iter().filter(|mode| mode.harmonic != 0).count();
         // Mirror the backend's own applicability test.  It groups modes
         // differently depending on how many distinct harmonics survive:
         //
@@ -783,6 +795,18 @@ pub(super) fn bessel_ladder_for_amplitude(
     Ok((ladder, m_cap))
 }
 
+// Cauchy's bound on the Bessel generating function at radius exp(alpha).
+// Use that radius for every higher order to bound the whole geometric tail.
+fn bessel_tail_bound(r: f64, first: f64) -> f64 {
+    if first <= r {
+        return f64::INFINITY;
+    }
+    let alpha = ((first / r).acosh()).min(first.ln() - r.ln() + std::f64::consts::LN_2);
+    let slope = (1.0 - (r / first).powi(2)).sqrt();
+    let log_tail = first * (slope - alpha) + (2.0 / -(-alpha).exp_m1()).ln();
+    log_tail.exp()
+}
+
 /// Closed form for a drive whose nonzero temporal harmonics collapse to one
 /// value `l`.
 ///
@@ -805,9 +829,10 @@ pub(super) fn bessel_ladder_for_amplitude(
 fn single_harmonic_closed_form(
     d: &Array1<f64>,
     drive: &FloquetDrive,
-    harmonic_min: isize,
-    harmonic_max: isize,
+    harmonic_min: i128,
+    harmonic_max: i128,
     cutoff_margin: isize,
+    position_tolerance: Option<f64>,
 ) -> Result<Option<Array1<Complex<f64>>>> {
     let mut single: Option<(isize, Complex<f64>)> = None;
     let mut dc = 0.0_f64;
@@ -864,11 +889,25 @@ fn single_harmonic_closed_form(
     // therefore every truncated bin — agrees exactly.
     let error_share = 1e-12 / (drive.modes.len() as f64);
     let (ladder, m_cap) =
-        bessel_ladder_for_amplitude(r, error_share, cutoff_margin, MAX_BESSEL_ARG_CLOSED_FORM)?;
+        if position_tolerance.is_some() && r.is_finite() && r <= MAX_BESSEL_ARG_CLOSED_FORM {
+            // A derivative weight can amplify a small resonant J_m beyond the
+            // ordinary tail budget, so compute every explicitly requested order.
+            let carrier = (harmonic as i128).abs();
+            let first = -(-harmonic_min).div_euclid(carrier);
+            let last = harmonic_max.div_euclid(carrier);
+            let largest = if first <= last {
+                first.unsigned_abs().max(last.unsigned_abs())
+            } else {
+                0
+            };
+            let n = largest.min(MAX_BESSEL_ORDER as u128) as usize;
+            (BesselLadder::new(r, n), n as isize)
+        } else {
+            bessel_ladder_for_amplitude(r, error_share, cutoff_margin, MAX_BESSEL_ARG_CLOSED_FORM)?
+        };
     let delta = z.arg();
     let mut coeffs = Array1::<Complex<f64>>::zeros(harmonic_count);
     for (index, n) in (harmonic_min..=harmonic_max).enumerate() {
-        let n = n as i128;
         let harmonic = harmonic as i128;
         if n % harmonic != 0 {
             continue;
@@ -878,19 +917,46 @@ fn single_harmonic_closed_form(
         let m = -n / harmonic;
         let order = m.unsigned_abs();
         if order > m_cap as u128 {
+            if let Some(tol) = position_tolerance
+                && bessel_tail_bound(r, order as f64) > tol
+            {
+                return Err(TbError::Other(
+                    "Requested Floquet position Bessel order exceeds the resolvable range".into(),
+                ));
+            }
             continue;
         }
         let order = order as usize;
+        if let Some(tol) = position_tolerance
+            && order as f64 > r
+            && !ladder.j[order].is_normal()
+            && bessel_tail_bound(r, order as f64) > tol
+        {
+            return Err(TbError::Other(
+                "Requested Floquet position Bessel coefficient underflows".into(),
+            ));
+        }
         let m = m as isize;
         let j_m = if m < 0 && order % 2 == 1 {
             -ladder.j[order]
         } else {
             ladder.j[order]
         };
-        coeffs[index] = dc_phase
-            * Complex::new(0.0, -1.0).powi(m as i32)
-            * j_m
-            * Complex::from_polar(1.0, -(m as f64) * delta);
+        let phase = if let Some(tol) = position_tolerance {
+            // Integer powers preserve exact axial phases and small complex
+            // components; atan2 followed by sin(m*pi) does not.
+            let unit = z / r;
+            if z.re != 0.0 && z.im != 0.0 && 16.0 * f64::EPSILON * (order as f64) * j_m.abs() > tol
+            {
+                return Err(TbError::Other(
+                    "Cannot resolve the weighted Floquet position Bessel phase".into(),
+                ));
+            }
+            (if m < 0 { unit } else { unit.conj() }).powu(order as u32)
+        } else {
+            Complex::from_polar(1.0, -(m as f64) * delta)
+        };
+        coeffs[index] = dc_phase * Complex::new(0.0, -1.0).powi(m as i32) * j_m * phase;
     }
     Ok(Some(coeffs))
 }
@@ -974,6 +1040,26 @@ pub(crate) fn bessel_peierls_coeffs(
     harmonic_max: isize,
     cutoff_margin: isize,
 ) -> Result<Array1<Complex<f64>>> {
+    bessel_peierls_coeffs_wide(
+        d,
+        drive,
+        harmonic_min as i128,
+        harmonic_max as i128,
+        cutoff_margin,
+        None,
+    )
+}
+
+// Shifted position sidebands may cross the isize endpoints. Keep labels wide
+// without enlarging the coefficient arrays beyond the requested *width*.
+fn bessel_peierls_coeffs_wide(
+    d: &Array1<f64>,
+    drive: &FloquetDrive,
+    harmonic_min: i128,
+    harmonic_max: i128,
+    cutoff_margin: isize,
+    position_tolerance: Option<f64>,
+) -> Result<Array1<Complex<f64>>> {
     if harmonic_min > harmonic_max {
         return Err(TbError::Other(format!(
             "bessel_peierls_coeffs: empty harmonic range [{harmonic_min}, {harmonic_max}]"
@@ -984,12 +1070,12 @@ pub(crate) fn bessel_peierls_coeffs(
             "bessel_peierls_coeffs: cutoff_margin = {cutoff_margin} outside [0, 48]"
         )));
     }
-    // harmonic_max >= harmonic_min here, so the span is non-negative; checked_sub guards
-    // the isize::MIN..=isize::MAX range against overflow.
-    let harmonic_count = harmonic_max.checked_sub(harmonic_min).ok_or_else(|| {
-        TbError::Other("bessel_peierls_coeffs: harmonic range too wide".to_string())
-    })? as usize
-        + 1;
+    let harmonic_count = harmonic_max
+        .checked_sub(harmonic_min)
+        .and_then(|width| width.checked_add(1))
+        .and_then(|count| usize::try_from(count).ok())
+        .filter(|&count| count <= isize::MAX as usize / size_of::<Complex<f64>>())
+        .ok_or_else(|| TbError::Other("bessel_peierls_coeffs: harmonic range too wide".into()))?;
     // Empty drive: the Peierls exponential is 1, so only C_0 survives.
     if drive.modes.is_empty() {
         let mut coeffs = Array1::<Complex<f64>>::zeros(harmonic_count);
@@ -1001,9 +1087,14 @@ pub(crate) fn bessel_peierls_coeffs(
 
     // A drive whose nonzero harmonics collapse to one value needs no
     // convolution: the resonance condition leaves exactly one term per bin.
-    if let Some(coeffs) =
-        single_harmonic_closed_form(d, drive, harmonic_min, harmonic_max, cutoff_margin)?
-    {
+    if let Some(coeffs) = single_harmonic_closed_form(
+        d,
+        drive,
+        harmonic_min,
+        harmonic_max,
+        cutoff_margin,
+        position_tolerance,
+    )? {
         return Ok(coeffs);
     }
 
@@ -1036,7 +1127,14 @@ pub(crate) fn bessel_peierls_coeffs(
         m_cap: isize,
     }
     let mut modes = Vec::<ModeData>::with_capacity(drive.modes.len());
-    let error_share = 1e-12 / (drive.modes.len() as f64);
+    let error_share =
+        position_tolerance.map_or(1e-12, |tol| 0.5 * tol.min(1e-12)) / drive.modes.len() as f64;
+    if position_tolerance.is_some_and(|tol| tol < 32.0 * f64::EPSILON) {
+        return Err(TbError::Other(
+            "Weighted Floquet position multicarrier coefficients exceed the available precision"
+                .into(),
+        ));
+    }
     let mut dc_re = 0.0_f64;
     // Two carriers are enumerated, and that path is linear in the amplitude
     // instead of quadratic, so it can reach as far as the closed form.  The
@@ -1071,13 +1169,41 @@ pub(crate) fn bessel_peierls_coeffs(
             // Degenerate mode: only m = 0 contributes (B = 1), a no-op fold.
             continue;
         }
-        let (ladder, m_cap) = bessel_ladder_for_amplitude(r, error_share, cutoff_margin, mode_cap)?;
+        let ladder_share = if position_tolerance.is_some() {
+            0.5 * error_share
+        } else {
+            error_share
+        };
+        let (ladder, m_cap) =
+            bessel_ladder_for_amplitude(r, ladder_share, cutoff_margin, mode_cap)?;
+        if position_tolerance.is_some()
+            && ladder.tail_after(m_cap as usize)
+                + bessel_tail_bound(r, (ladder.max_order() + 1) as f64)
+                > error_share
+        {
+            return Err(TbError::Other(
+                "Cannot resolve the weighted Floquet position Bessel tail".into(),
+            ));
+        }
         modes.push(ModeData {
             ladder,
             projection: z,
             harmonic: mode.harmonic,
             m_cap,
         });
+    }
+    if let Some(tol) = position_tolerance {
+        // Account for the recurrence range and phase powers, not merely a
+        // constant multiple of epsilon when many orders feed the same bin.
+        let work: f64 = modes
+            .iter()
+            .map(|mode| 1.0 + mode.projection.norm() + mode.m_cap as f64)
+            .sum();
+        if 16.0 * f64::EPSILON * work > tol {
+            return Err(TbError::Other(
+                "Weighted Floquet position Bessel round-off exceeds the coefficient budget".into(),
+            ));
+        }
     }
     if !dc_re.is_finite() {
         // Two finite static projections can still sum past f64::MAX; the phase
@@ -1168,7 +1294,7 @@ pub(crate) fn bessel_peierls_coeffs(
         };
         let mut coeffs = Array1::<Complex<f64>>::zeros((harmonic_max - harmonic_min + 1) as usize);
         for (index, n) in (harmonic_min..=harmonic_max).enumerate() {
-            let target = -(n as i128);
+            let target = -n;
             let mut acc = Complex::new(0.0, 0.0);
             for m in -scan.m_cap..=scan.m_cap {
                 // Huge products can cancel to a small requested order. isize
@@ -1194,33 +1320,35 @@ pub(crate) fn bessel_peierls_coeffs(
     // support [−drift, +drift] around [harmonic_min, harmonic_max], because intermediates
     // outside the requested range can fold back into it.
     let total_drift = drift_for_fold(&modes)?;
-    let work_min = harmonic_min.checked_sub(total_drift).ok_or_else(|| {
-        TbError::Other("bessel_peierls_coeffs: working window underflow".to_string())
-    })?;
-    let work_max = harmonic_max.checked_add(total_drift).ok_or_else(|| {
-        TbError::Other("bessel_peierls_coeffs: working window overflow".to_string())
-    })?;
-    // work_max >= work_min by construction (harmonic_max >= harmonic_min, drift >= 0), so
-    // the span is non-negative; checked_sub and usize::try_from are kept
-    // for hygiene.
-    let work_span = work_max.checked_sub(work_min).ok_or_else(|| {
-        TbError::Other("bessel_peierls_coeffs: working window span overflow".to_string())
-    })?;
-    let work_len = usize::try_from(work_span).map_err(|_| {
-        TbError::Other("bessel_peierls_coeffs: working window too large".to_string())
-    })? + 1;
-    if work_len > MAX_BESSEL_WINDOW {
+    let work_min = harmonic_min
+        .checked_sub(total_drift as i128)
+        .ok_or_else(|| {
+            TbError::Other("bessel_peierls_coeffs: working window underflow".to_string())
+        })?;
+    let work_max = harmonic_max
+        .checked_add(total_drift as i128)
+        .ok_or_else(|| {
+            TbError::Other("bessel_peierls_coeffs: working window overflow".to_string())
+        })?;
+    let work_len = work_max
+        .checked_sub(work_min)
+        .and_then(|width| width.checked_add(1))
+        .ok_or_else(|| {
+            TbError::Other("bessel_peierls_coeffs: working window span overflow".into())
+        })?;
+    if work_len > MAX_BESSEL_WINDOW as i128 {
         return Err(TbError::Other(format!(
             "bessel_peierls_coeffs: the one-mode convolution window needs {work_len} entries, \
              above the {MAX_BESSEL_WINDOW} cap; lower the drive harmonics or the amplitudes"
         )));
     }
 
+    let work_len = work_len as usize; // bounded above before narrowing
     let requested = (harmonic_min - work_min) as usize..(harmonic_max - work_min + 1) as usize;
     let mut sequence = vec![Complex::new(0.0, 0.0); work_len];
     let mut live = 0..0;
     if let Some(zero_index) = work_min.checked_neg()
-        && (0_isize..work_len as isize).contains(&zero_index)
+        && (0_i128..work_len as i128).contains(&zero_index)
     {
         sequence[zero_index as usize] = Complex::new(1.0, 0.0);
         live = zero_index as usize..zero_index as usize + 1;
@@ -1502,7 +1630,16 @@ pub(super) fn fallback_time_grid_coeffs(
              amplitudes"
         );
     }
-    let n_req = size.n_req;
+    sample_link_coeffs(d, drive, harmonic_min, harmonic_max, size.n_req)
+}
+
+fn sample_link_coeffs(
+    d: &Array1<f64>,
+    drive: &FloquetDrive,
+    harmonic_min: isize,
+    harmonic_max: isize,
+    n_req: usize,
+) -> Array1<Complex<f64>> {
     // Direct DFT at the fine resolution (no shared harmonic_count × n_time
     // Fourier matrix to reuse).
     let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
@@ -1526,4 +1663,224 @@ pub(super) fn fallback_time_grid_coeffs(
         *coeff *= inv_n;
     }
     Array1::from(coeffs)
+}
+
+// TwoSum with a running residual: retain a small mode between large,
+// cancelling contributions instead of mistaking the rounded sum for zero.
+pub(super) fn add_coherent(sum: &mut Complex<f64>, tail: &mut Complex<f64>, value: Complex<f64>) {
+    let next = *sum + value;
+    let back = next - *sum;
+    *tail += (*sum - (next - back)) + (value - back);
+    *sum = next;
+}
+
+// Add a rounded product and its FMA residual separately so cancellation
+// cannot hide bits lost before the compensated sum begins.
+pub(super) fn add_coherent_product(
+    sum: &mut Complex<f64>,
+    tail: &mut Complex<f64>,
+    x: f64,
+    y: Complex<f64>,
+    product: Complex<f64>,
+) {
+    add_coherent(sum, tail, product);
+    add_coherent(
+        sum,
+        tail,
+        Complex::new(x.mul_add(y.re, -product.re), x.mul_add(y.im, -product.im)),
+    );
+}
+
+pub(super) type CoherentCartesianField =
+    std::collections::BTreeMap<usize, Vec<(Complex<f64>, Complex<f64>)>>;
+
+pub(super) fn coherent_cartesian_field(drive: &FloquetDrive) -> CoherentCartesianField {
+    let mut field = CoherentCartesianField::new();
+    for mode in &drive.modes {
+        let p = mode.harmonic;
+        let components = field
+            .entry(p.unsigned_abs())
+            .or_insert_with(|| vec![(Complex::ZERO, Complex::ZERO); mode.a_complex.len()]);
+        for ((hi, lo), &a) in components.iter_mut().zip(&mode.a_complex) {
+            let im = if p == 0 {
+                0.0
+            } else if p < 0 {
+                -a.im
+            } else {
+                a.im
+            };
+            add_coherent(hi, lo, Complex::new(a.re, im));
+        }
+    }
+    // Cancel exact opposites before multiplication. Preserve both components
+    // of all other amplitudes so projecting cannot lose the low part.
+    field.retain(|_, components| {
+        components
+            .iter()
+            .any(|&(hi, lo)| hi != Complex::ZERO || lo != Complex::ZERO)
+    });
+    field
+}
+
+pub(super) fn coherent_link_drive(
+    d: &Array1<f64>,
+    drive: &FloquetDrive,
+    field: &CoherentCartesianField,
+) -> Result<FloquetDrive> {
+    if d.iter().any(|x| !x.is_finite()) {
+        return Err(TbError::Other(
+            "Floquet link displacement is not finite".into(),
+        ));
+    }
+    let mut projected = FloquetDrive::new(drive.omega0_ev);
+    for (&p, components) in field {
+        let (mut sum, mut tail) = (Complex::ZERO, Complex::ZERO);
+        if components
+            .iter()
+            .all(|(hi, lo)| hi.is_finite() && lo.is_finite())
+        {
+            for (&(hi, lo), &x) in components.iter().zip(d) {
+                for a in [hi, lo] {
+                    if a != Complex::ZERO {
+                        add_coherent_product(&mut sum, &mut tail, x, a, a * x);
+                    }
+                }
+            }
+        } else {
+            // A Cartesian component can overflow even when every mode's
+            // projection is finite (e.g. a transverse field on this link).
+            for mode in drive
+                .modes
+                .iter()
+                .filter(|m| m.harmonic.unsigned_abs() == p)
+            {
+                let (mut hi, mut lo) = (Complex::ZERO, Complex::ZERO);
+                for (&a, &x) in mode.a_complex.iter().zip(d) {
+                    let a = if p == 0 {
+                        Complex::new(a.re, 0.0)
+                    } else if mode.harmonic < 0 {
+                        a.conj()
+                    } else {
+                        a
+                    };
+                    add_coherent_product(&mut hi, &mut lo, x, a, a * x);
+                }
+                add_coherent(&mut sum, &mut tail, hi);
+                add_coherent(&mut sum, &mut tail, lo);
+            }
+        }
+        let mut z = sum + tail;
+        if !z.is_finite() {
+            return Err(TbError::Other(
+                "Floquet link phase amplitude is not finite".into(),
+            ));
+        }
+        if z != Complex::ZERO {
+            // abs(isize::MIN) has no positive representation. Use its
+            // equivalent negative carrier, conjugating the amplitude back.
+            let harmonic = isize::try_from(p).unwrap_or_else(|_| {
+                z = z.conj();
+                isize::MIN
+            });
+            projected.add_mode(super::LightMode::new(harmonic, array![z]));
+        }
+    }
+    Ok(projected)
+}
+
+pub(super) fn phase_harmonic_gcd(drive: &FloquetDrive) -> usize {
+    drive
+        .modes
+        .iter()
+        .map(|mode| mode.harmonic.unsigned_abs())
+        .fold(0, |mut a, mut b| {
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a
+        })
+}
+
+// Unlike the legacy fallback adapter, never sample an unresolved sideband.
+// The drive contains the already projected and grouped scalar carriers.
+pub(super) fn position_peierls_coeffs(
+    drive: &FloquetDrive,
+    gcd: usize,
+    low: i128,
+    high: i128,
+    error_budget: f64,
+    fallback_warned: &AtomicBool,
+) -> Result<Array1<Complex<f64>>> {
+    let d = &array![1.0];
+    let coeffs = match bessel_peierls_coeffs_wide(
+        d,
+        drive,
+        low,
+        high,
+        BESSEL_CUTOFF_MARGIN,
+        // Hopping-only links use the same approximation as NoRMatrix.
+        error_budget.is_finite().then_some(error_budget),
+    ) {
+        Ok(coeffs) => coeffs,
+        Err(error) => {
+            let (low, high) = isize::try_from(low)
+                .ok()
+                .zip(isize::try_from(high).ok())
+                .ok_or_else(|| {
+                    TbError::Other(format!(
+                        "Floquet shifted range [{low}, {high}] exceeds the time-grid cap ({error})"
+                    ))
+                })?;
+            let size = fallback_grid_size(drive, d, low, high);
+            if size.clamped {
+                return Err(TbError::Other(format!(
+                    "Floquet drive needs {} samples on a link the Bessel backend cannot \
+                     resolve ({error}); the per-link grid cap is {FALLBACK_GRID_MAX}",
+                    size.required.max(size.request_range),
+                )));
+            }
+            if !fallback_warned.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "Bessel backend unavailable for some links ({error}); falling back to a per-link time-grid DFT"
+                );
+            }
+            // A band-limited approximation sampled above Nyquist contributes
+            // at most twice the discarded tail. Also budget for angle formation,
+            // trig, and the linear summation of N samples before amplification.
+            let angular_work: f64 = drive
+                .modes
+                .iter()
+                .filter(|m| m.harmonic != 0)
+                .map(|m| 1.0 + m.harmonic.unsigned_abs() as f64 * m.a_complex[0].norm())
+                .sum();
+            let estimate = 4e-12
+                + 8.0
+                    * f64::EPSILON
+                    * (size.n_req as f64
+                        + TAU
+                            * (angular_work + low.unsigned_abs().max(high.unsigned_abs()) as f64));
+            if estimate > error_budget {
+                return Err(TbError::Other(format!(
+                    "Cannot resolve weighted Floquet position sidebands by time-grid DFT ({error}); estimated coefficient error {estimate:e} exceeds {error_budget:e}"
+                )));
+            }
+            let mut sampled = sample_link_coeffs(d, drive, low, high, size.n_req);
+            // Only multiples of the carrier GCD exist in the phase. Preserve
+            // these structural zeros instead of amplifying DFT round-off by W.
+            if gcd > 1 {
+                for (c, n) in sampled.iter_mut().zip(low..=high) {
+                    if !n.unsigned_abs().is_multiple_of(gcd) {
+                        *c = Complex::ZERO;
+                    }
+                }
+            }
+            sampled
+        }
+    };
+    if coeffs.iter().any(|z| !z.is_finite()) {
+        return Err(TbError::Other(
+            "Floquet link phase amplitude is not finite".into(),
+        ));
+    }
+    Ok(coeffs)
 }

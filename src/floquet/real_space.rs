@@ -1,5 +1,5 @@
 //! Private real-space hopping-block machinery for the Floquet effective-model
-//! path: origin-first ordering, Minkowski-support convolutions, and the exact
+//! output: origin-first ordering and the exact
 //! `R <-> -R` Hermiticity pairing.  Nothing here is re-exported: the items are
 //! `pub(super)` only for the `floquet` parent and its sibling tests.
 
@@ -8,8 +8,11 @@ use crate::model::utils::find_R;
 use ndarray::parallel::prelude::IntoParallelIterator;
 use ndarray::{Array1, Array2, Array3, ArrayBase, ArrayView2, Axis, Data, Ix3};
 use num_complex::Complex;
-use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+#[cfg(test)]
+use rayon::iter::IndexedParallelIterator;
+use rayon::iter::ParallelIterator;
 
+#[cfg(test)]
 type RealSpaceBlocks = (Vec<Array2<Complex<f64>>>, Array2<isize>);
 pub(super) type RealSpaceBlockMap = std::collections::BTreeMap<Vec<isize>, Array2<Complex<f64>>>;
 
@@ -71,43 +74,41 @@ impl RealSpaceBlockSource for Vec<Array2<Complex<f64>>> {
 
 pub(super) fn accumulate_scaled_real_space_blocks(
     target: &mut RealSpaceBlockMap,
-    source_blocks: &[Array2<Complex<f64>>],
+    source: &impl RealSpaceBlockSource,
     source_r: &Array2<isize>,
     scale: f64,
 ) -> Result<()> {
-    debug_assert_eq!(source_blocks.len(), source_r.nrows());
-    if source_blocks.is_empty() {
-        return Ok(());
-    }
-    if source_blocks
-        .iter()
-        .all(|block| block.iter().all(|value| value.re == 0.0 && value.im == 0.0))
-    {
-        for row in source_r.outer_iter() {
-            target
-                .entry(row.to_vec())
-                .or_insert_with(|| Array2::<Complex<f64>>::zeros(source_blocks[0].raw_dim()));
-        }
+    debug_assert_eq!(source.nblocks(), source_r.nrows());
+    if source.nblocks() == 0 {
         return Ok(());
     }
     if !scale.is_finite() {
-        return Err(TbError::Other(
-            "a van Vleck frequency scaling factor is non-finite; increase omega0_ev or lower the requested order"
-                .to_string(),
-        ));
+        if (0..source.nblocks()).any(|i| source.block(i).iter().any(|z| *z != Complex::ZERO)) {
+            return Err(TbError::Other(
+                "a Floquet frequency scaling factor is non-finite; increase omega0_ev or lower the requested order".into(),
+            ));
+        }
+        for row in source_r.outer_iter() {
+            target
+                .entry(row.to_vec())
+                .or_insert_with(|| Array2::zeros(source.block(0).raw_dim()));
+        }
+        return Ok(());
     }
     let scale = Complex::new(scale, 0.0);
-    for (i_r, row) in source_r.outer_iter().enumerate() {
+    for (i, row) in source_r.outer_iter().enumerate() {
+        let block = source.block(i);
         target
             .entry(row.to_vec())
-            .and_modify(|block| block.scaled_add(scale, &source_blocks[i_r]))
-            .or_insert_with(|| source_blocks[i_r].mapv(|value| scale * value));
+            .and_modify(|dst| dst.scaled_add(scale, &block))
+            .or_insert_with(|| block.mapv(|value| scale * value));
     }
     Ok(())
 }
 
 /// Merge two real-space block accumulators, preferring to insert the smaller
 /// map into the larger one to limit tree lookups and reallocations.
+#[cfg(test)]
 pub(super) fn merge_real_space_block_maps(
     mut left: RealSpaceBlockMap,
     mut right: RealSpaceBlockMap,
@@ -148,6 +149,7 @@ pub(super) fn merge_real_space_block_maps(
 /// # Panics
 /// Debug-asserts that `a_blocks` and `b_blocks` each contain
 /// `ham_r.nrows()` square blocks of one common size.
+#[cfg(test)]
 pub(super) fn real_space_commutator<A, B>(
     a_blocks: &A,
     b_blocks: &B,
@@ -185,6 +187,7 @@ where
 /// as `[H_0,H_m]` is not Hermitian by itself.  The caller must only
 /// symmetrize the final effective Hamiltonian after the complete signed
 /// harmonic sum has been accumulated.
+#[cfg(test)]
 pub(super) fn real_space_commutator_with_supports<A, B>(
     a_blocks: &A,
     a_r: &Array2<isize>,
@@ -200,6 +203,7 @@ where
 
 /// Adjoint of a real-space block map: `A^dagger(R) = A(-R)^dagger`, with the
 /// input support and its order preserved.
+#[cfg(test)]
 pub(super) fn real_space_adjoint(
     blocks: &[Array2<Complex<f64>>],
     support: &Array2<isize>,
@@ -224,44 +228,6 @@ pub(super) fn real_space_adjoint(
     Ok((out, support.clone()))
 }
 
-/// Real-space anticommutator `{A,B} = AB + BA` on one common support.
-///
-/// When `B = A^dagger`, as in the finite-`q` weak-field kernel, the result is
-/// Hermitian.  The final pairing pass removes only floating-point accumulation
-/// noise and supplies exact `R <-> -R` conjugation to downstream derivatives.
-pub(super) fn real_space_anticommutator<A, B>(
-    a_blocks: &A,
-    b_blocks: &B,
-    ham_r: &Array2<isize>,
-) -> Result<RealSpaceBlocks>
-where
-    A: RealSpaceBlockSource + ?Sized,
-    B: RealSpaceBlockSource + ?Sized,
-{
-    let (blocks, support_rows) = real_space_two_product_sum_with_supports(
-        a_blocks,
-        ham_r,
-        b_blocks,
-        ham_r,
-        1.0,
-        "anticommutator",
-    )?;
-    let nsta = if a_blocks.nblocks() == 0 {
-        0
-    } else {
-        a_blocks.block(0).nrows()
-    };
-    let mut stacked = Array3::<Complex<f64>>::zeros((blocks.len(), nsta, nsta));
-    for (i, block) in blocks.iter().enumerate() {
-        stacked.index_axis_mut(Axis(0), i).assign(block);
-    }
-    enforce_real_space_hermiticity(&mut stacked, &support_rows)?;
-    let blocks = (0..blocks.len())
-        .map(|i| stacked.index_axis(Axis(0), i).to_owned())
-        .collect();
-    Ok((blocks, support_rows))
-}
-
 #[cfg(test)]
 thread_local! {
     // Per-test-thread count: assert bounded work without flaky timing thresholds.
@@ -270,6 +236,7 @@ thread_local! {
 
 // A compact bounding box lets each output R look up R - Ra without building a
 // list of every pair. The pairwise path handles small or sparse boxes.
+#[cfg(test)]
 fn gather_real_space_products<A, B>(
     a: &A,
     a_r: &Array2<isize>,
@@ -378,6 +345,7 @@ where
 
 /// Accumulate `AB + reverse_scale * BA` for operands with independent
 /// real-space supports.
+#[cfg(test)]
 pub(super) fn real_space_two_product_sum_with_supports<A, B>(
     a_blocks: &A,
     a_r: &Array2<isize>,
@@ -526,17 +494,45 @@ pub(super) fn enforce_real_space_hermiticity(
     ham_r: &Array2<isize>,
 ) -> Result<()> {
     let n_r = ham_r.nrows();
+    if n_r == 0 {
+        return Ok(());
+    }
+
+    // Look the conjugating partner up in one ordered index instead of rescanning
+    // the whole support per block: the old per-block `find_R` scan made this
+    // pass O(n_r^2), which dominates the effective-model assembly once the
+    // support reaches tens of thousands of rows.  Rows are compared
+    // lexicographically with the row index as tie-breaker, so the first entry of
+    // an equal run is the smallest matching index -- exactly the row `find_R`
+    // returned for a duplicated translation.
+    let mut row_order: Vec<usize> = (0..n_r).collect();
+    row_order.sort_unstable_by(|&left, &right| {
+        ham_r
+            .row(left)
+            .iter()
+            .cmp(ham_r.row(right).iter())
+            .then_with(|| left.cmp(&right))
+    });
+
     let mut visited = vec![false; n_r];
+    let mut neg_r = Vec::with_capacity(ham_r.ncols());
 
     for i_r in 0..n_r {
         if visited[i_r] {
             continue;
         }
-        let neg_r = ham_r.row(i_r).mapv(|x| -x);
-        let Some(j_r) = find_R(ham_r, &neg_r) else {
-            return Err(TbError::MissingHermitianConjugateHopping {
-                r: ham_r.row(i_r).to_owned(),
-            });
+        neg_r.clear();
+        neg_r.extend(ham_r.row(i_r).iter().map(|&x| -x));
+        // First sorted row that is >= -R; it is the partner iff it is equal.
+        let position =
+            row_order.partition_point(|&index| ham_r.row(index).iter().cmp(neg_r.iter()).is_lt());
+        let j_r = match row_order.get(position) {
+            Some(&index) if ham_r.row(index).iter().eq(neg_r.iter()) => index,
+            _ => {
+                return Err(TbError::MissingHermitianConjugateHopping {
+                    r: ham_r.row(i_r).to_owned(),
+                });
+            }
         };
 
         if i_r == j_r {
@@ -572,4 +568,169 @@ pub(super) fn enforce_real_space_hermiticity(
 
 pub(super) fn hermitian_conjugate(a: &Array2<Complex<f64>>) -> Array2<Complex<f64>> {
     a.t().mapv(|x| x.conj())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::{arr1, array};
+
+    /// Bitwise image of a block stack, so the comparisons below pin exact
+    /// floating-point values (including `-0.0` and NaN payloads) instead of
+    /// numeric equality.
+    fn bit_image(ham: &Array3<Complex<f64>>) -> Vec<(u64, u64)> {
+        ham.iter()
+            .map(|value| (value.re.to_bits(), value.im.to_bits()))
+            .collect()
+    }
+
+    fn sample_blocks(n_r: usize, n_sta: usize) -> Array3<Complex<f64>> {
+        Array3::from_shape_fn((n_r, n_sta, n_sta), |(i_r, row, col)| {
+            Complex::new(
+                0.5 * i_r as f64 - 1.25 * row as f64 + 0.125 * col as f64,
+                -0.75 * i_r as f64 + 0.375 * row as f64 + 2.0 * col as f64,
+            )
+        })
+    }
+
+    /// Independent O(n_r^2) oracle: one linear scan for the conjugating partner
+    /// per block, plus the same midpoint recipe as the implementation.
+    fn naive_enforce(
+        ham: &Array3<Complex<f64>>,
+        ham_r: &Array2<isize>,
+    ) -> Result<Array3<Complex<f64>>> {
+        let midpoint_with_conjugate =
+            |left: &Array2<Complex<f64>>, right: &Array2<Complex<f64>>| {
+                let right_dag = hermitian_conjugate(right);
+                Array2::from_shape_fn(left.raw_dim(), |index| {
+                    Complex::new(
+                        left[index].re.midpoint(right_dag[index].re),
+                        left[index].im.midpoint(right_dag[index].im),
+                    )
+                })
+            };
+        let n_r = ham_r.nrows();
+        let mut out = ham.clone();
+        let mut visited = vec![false; n_r];
+        for i_r in 0..n_r {
+            if visited[i_r] {
+                continue;
+            }
+            let mut partner = None;
+            for candidate in 0..n_r {
+                if (0..ham_r.ncols()).all(|axis| ham_r[[candidate, axis]] == -ham_r[[i_r, axis]]) {
+                    partner = Some(candidate);
+                    break;
+                }
+            }
+            let Some(j_r) = partner else {
+                return Err(TbError::MissingHermitianConjugateHopping {
+                    r: ham_r.row(i_r).to_owned(),
+                });
+            };
+            visited[i_r] = true;
+            visited[j_r] = true;
+            if i_r == j_r {
+                let block = out.index_axis(Axis(0), i_r).to_owned();
+                let herm = midpoint_with_conjugate(&block, &block);
+                out.index_axis_mut(Axis(0), i_r).assign(&herm);
+            } else {
+                let block_i = out.index_axis(Axis(0), i_r).to_owned();
+                let block_j = out.index_axis(Axis(0), j_r).to_owned();
+                let avg = midpoint_with_conjugate(&block_i, &block_j);
+                let avg_dag = hermitian_conjugate(&avg);
+                out.index_axis_mut(Axis(0), i_r).assign(&avg);
+                out.index_axis_mut(Axis(0), j_r).assign(&avg_dag);
+            }
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn real_space_hermiticity_matches_naive_reference_on_shuffled_support() {
+        // Six rows with the origin second, every +/-R pair separated, and the
+        // origin duplicated so duplicate first-match bookkeeping is pinned too.
+        let ham_r = array![[1isize, 0], [0, 0], [-1, 0], [0, -1], [0, 0], [0, 1],];
+        let ham = sample_blocks(ham_r.nrows(), 2);
+        let expected = naive_enforce(&ham, &ham_r).unwrap();
+
+        let mut actual = ham.clone();
+        enforce_real_space_hermiticity(&mut actual, &ham_r).unwrap();
+
+        assert_eq!(bit_image(&actual), bit_image(&expected));
+    }
+
+    #[test]
+    fn real_space_hermiticity_rejects_missing_conjugate_hopping() {
+        let ham_r = array![[0isize, 0], [1, 0]];
+        let mut ham = sample_blocks(ham_r.nrows(), 2);
+
+        let err = enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap_err();
+
+        match err {
+            TbError::MissingHermitianConjugateHopping { r } => assert_eq!(r, arr1(&[1isize, 0])),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn real_space_hermiticity_leaves_origin_only_support_unchanged() {
+        let ham_r = Array2::<isize>::zeros((1, 2));
+
+        // An exactly Hermitian origin block is a bitwise fixed point...
+        let hermitian = array![
+            [Complex::new(1.0, 0.0), Complex::new(2.0, 3.0)],
+            [Complex::new(2.0, -3.0), Complex::new(-4.5, 0.0)],
+        ];
+        let mut ham = Array3::zeros((1, 2, 2));
+        ham.index_axis_mut(Axis(0), 0).assign(&hermitian);
+        let unchanged = bit_image(&ham);
+        enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
+        assert_eq!(bit_image(&ham), unchanged);
+        enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
+        assert_eq!(bit_image(&ham), unchanged);
+
+        // ...while a generic origin block becomes its Hermitian part and then
+        // stays put under a second pass.
+        let generic = array![
+            [Complex::new(1.0, 2.0), Complex::new(3.0, 4.0)],
+            [Complex::new(5.0, 6.0), Complex::new(-7.0, 8.0)],
+        ];
+        let mut ham = Array3::zeros((1, 2, 2));
+        ham.index_axis_mut(Axis(0), 0).assign(&generic);
+        enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
+        let once = bit_image(&ham);
+        enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
+        assert_eq!(bit_image(&ham), once);
+    }
+
+    #[test]
+    fn real_space_hermiticity_is_idempotent() {
+        let ham_r = array![[0isize, 0], [1, 1], [-1, -1], [2, 0], [-2, 0]];
+        let mut ham = sample_blocks(ham_r.nrows(), 3);
+
+        enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
+        let once = bit_image(&ham);
+        enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
+
+        assert_eq!(bit_image(&ham), once);
+    }
+
+    #[test]
+    fn real_space_hermiticity_handles_degenerate_shapes() {
+        // Empty support is a no-op.
+        let mut ham = Array3::<Complex<f64>>::zeros((0, 2, 2));
+        let ham_r = Array2::<isize>::zeros((0, 2));
+        enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
+
+        // A zero-width translation makes every row the empty vector: the lookup
+        // degenerates to the origin row without panicking.
+        let mut ham = sample_blocks(2, 1);
+        let ham_r = Array2::<isize>::zeros((2, 0));
+        enforce_real_space_hermiticity(&mut ham, &ham_r).unwrap();
+        assert_eq!(
+            ham.index_axis(Axis(0), 0),
+            ham.index_axis(Axis(0), 1).mapv(|x| x.conj())
+        );
+    }
 }

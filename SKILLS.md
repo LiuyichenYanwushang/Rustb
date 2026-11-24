@@ -972,7 +972,7 @@ let options = FloquetEffectiveOptions::new()
 let effective_incoherent =
     model.floquet_effective_mode_resolved_model(&drive, Some(&options))?;
 
-// Keep van Vleck terms through O(W^-2), subject to the field truncation.
+// Keep van Vleck terms through O(W^-2), without truncating in field amplitude.
 let second_order_options = FloquetEffectiveOptions::new().with_order(2);
 let effective_second_order = model.floquet_effective_model(
     &drive,
@@ -1002,15 +1002,21 @@ with the input `R` type. Build the Sambe model once and reuse `gen_ham`,
 `fold_quasienergy` on the unfolded energies and sort afterwards if ascending
 quasienergies are required.
 
-For `NoRMatrix`, Sambe and effective models still use the all-orders Peierls
-phase `exp(-i a(t)·d)` with generalized-Bessel coefficients (or a per-link
-DFT fallback). With `HasRMatrix` and a uniform drive, Sambe and both coherent
-and mode-resolved effective models instead Taylor-expand the velocity-gauge
-transform of the projected length-gauge Hamiltonian through `O(a²)`. If
-`r_i(k)` is the lattice-gauge Fourier transform of the full `r_i(R)`, the
-covariant derivative is `D_i B = ∂_i B + i[B, r_i(k)]`. The expansion includes
-the projected-position curvature term proportional to `a_i * dot(a_j)`. Use
-this path in the weak-field regime; it is not an all-orders Peierls dressing.
+For a spatially uniform field, the diagonal-position gauge gives the exact
+time dependence within the model:
+
+```text
+H_ij(R,t) = exp(-i a(t)·d_ijR) [H_ij(R) + hbar da(t)/dt · (X - X_d)_ij(R)]
+```
+
+Here `d_ijR = (R + tau_j - tau_i) · lat`; `X_d` is diagonal in the localized
+orbital basis, at the centres set by `orb` and the cell translations.
+`HasRMatrix` supplies the full projected-position remainder `X - X_d`,
+including its nonlocal blocks. For `NoRMatrix` the remainder is absent.
+The same link-phase Fourier sampler uses generalized-Bessel coefficients
+where resolvable and a self-sized per-link time-grid DFT otherwise. The
+position term shifts the sampled phase harmonics by the Fourier labels of
+`da/dt`. Neither uniform-drive path expands in field amplitude.
 
 The returned `HasRMatrix` carries the bare projected position embedding,
 remapped by lattice translation with new rows zero-filled. Sambe places a
@@ -1019,40 +1025,24 @@ spinless models and `(spin, photon, orbital)` for spinful models. The
 embedding is not a micromotion-dressed observable; applying ordinary
 response methods to the result does not establish physical Floquet transport.
 
-All three effective-model APIs use `FloquetEffectiveOptions` (defaults:
-`order = 1`, `harmonic_max = 2`). `order = 0` keeps the time average; orders
-`1` and `2` add van Vleck terms through `1/W` and `1/W²`, respectively. For
-`HasRMatrix`, this inverse-frequency truncation is independent of the field
-truncation: the assembled result keeps only terms through `O(a²)`.
-`harmonic_max` is a nonnegative integer that cuts only the static van Vleck
-correction sums, not the time average. Effective methods take no `k_mesh`
-or `target_hamR`; hopping support is determined automatically.
-`FloquetTruncation` controls only the Sambe photon cutoff `n_max`. To preserve
-an old effective-model call's implicit harmonic range during migration, pass
-`.with_harmonic_max(2 * old_n_max)` explicitly.
+`FloquetTruncation::new(N)` controls only the Sambe photon sectors
+`-N..=N`. Their differences require Hamiltonian harmonics through `±2N`;
+converge `N` for the quasienergies of interest. The effective-model APIs
+instead use `FloquetEffectiveOptions` (defaults: `order = 1`,
+`harmonic_max = 2`). Order 0 keeps the time average; orders 1 and 2 add
+van Vleck terms through `O(W^-1)` and `O(W^-2)`, respectively. The
+nonnegative `harmonic_max` bounds the outer indices `|m|, |m'|`; in the
+order-two mixed family `m'-m` can run through twice that cutoff. It does not
+cut the time average. To preserve the outer cutoff of an old effective-model
+call that used a photon truncation, pass `.with_harmonic_max(2 * old_n_max)`.
 
-For `NoRMatrix`, the effective hopping support can reach the double Minkowski
-sum at `order = 1` and the triple sum at `order = 2`. For large, compact
-supports, direct convolution assigns each output `R` to one task and uses
-a dense translation-index table to find matching input blocks. It keeps the
-serial pairwise accumulation order within each output block and avoids
-merging per-worker coefficient maps. Small or sparse supports and the Netlib
-backend still use the original kernel. The full Minkowski support is retained. The per-link
-DFT fallback is sized from the link's bandwidth and requested harmonic range. It projects
-onto the link before summing coherent carriers and factors the real DC phase
-outside the sampled AC signal. The actual Bessel backend is checked before
-an otherwise unresolvable fallback is refused.
+Production spatial convolutions use only a zero-aliasing FFT grid, streamed
+in slabs, with no user k-mesh or target hopping range. The effective hopping
+support is determined from the harmonic support and can reach double
+Minkowski sums at order 1 and triple sums at order 2. When using multiple
+Rayon threads, pin BLAS to one thread (`OPENBLAS_NUM_THREADS=1` or
+`MKL_NUM_THREADS=1`) to avoid oversubscription.
 
-Cost of one Peierls link, with `R = |a·d|` and `K` the requested harmonic range: a
-single nonzero harmonic is `O(R + K)` and exact up to `R = 16384`; two carriers
-enumerate the resonance sum in `O(K·min(M))` and reach the same amplitude;
-three or more fold one-mode convolutions, which is exact only up to `R = 128`
-and is the slow case (~1 ms per link at `R = 60`).  A link past a cap is
-evaluated by a self-sized per-link time-grid DFT instead, and a drive whose
-link needs more than `2^20` samples is rejected rather than silently aliased.
-In practice: a single-colour or two-colour drive is effectively free at any
-realistic field strength, and only three-plus commensurate colours over a
-large bond can reach the fallback.
 
 For multiple mutually incoherent modes,
 `floquet_effective_mode_resolved_model` computes
@@ -1067,7 +1057,7 @@ For either `R` type, `floquet_effective_q_model` with `q = 0` is identical to
 `NoRMatrix`, the linear-`q` correction uses ordinary Cartesian momentum
 derivatives, not numerical differences: for a bond
 `d = (R + tau_j - tau_i) * lat`, `∂_a H_0` is represented by `i*d_a*t(R)`.
-It builds `G_n = a_n·∂ H_0`, forms `{G_n, G_n†}` by real-space convolution,
+It builds `G_n = a_n·∂ H_0`, forms `{G_n, G_n†}` by zero-aliasing FFT convolution,
 and adds `+sum_(n>0) (q·∂){G_n, G_n†}/(8nW)` by multiplying the output
 blocks by `i*q·d_out`. Same-harmonic amplitudes are summed coherently. Both
 `|a_n·d| << 1` and `|q·d| << 1` are required; distinct coherent wavevectors

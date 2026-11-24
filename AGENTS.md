@@ -377,7 +377,9 @@ All trait impls: `impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Trait
 | `fermi_surface.rs` | `FermiSurface`/`FermiSurfacePlane` traits; BXSF export; `write_spin_frmsf` for altermagnets |
 | [floquet.rs](<src/floquet.rs>) | Floquet public types, trait and model-construction facade |
 | [floquet/coefficients.rs](<src/floquet/coefficients.rs>) | Private Peierls coefficients, matching link validation and harmonic cache |
-| [floquet/real_space.rs](<src/floquet/real_space.rs>) | Private real-space block algebra and support handling |
+| [floquet/position.rs](<src/floquet/position.rs>) | Uniform full projected-position harmonics and bare output embedding |
+| [floquet/kspace/](<src/floquet/kspace/>) | Production zero-aliasing spatial FFT convolution |
+| [floquet/real_space.rs](<src/floquet/real_space.rs>) | Real-space support utilities and focused test references |
 | [floquet/tests.rs](<src/floquet/tests.rs>) | Floquet unit tests and independent numerical checks |
 | `ndarray_lapack.rs` | LAPACK bindings + safe `zaxpy()` BLAS wrapper |
 | `lib.rs` | Crate root, re-exports, integration tests |
@@ -571,7 +573,7 @@ lattice (element-wise diff < 1e-10).
 
 ---
 
-## Floquet: Real-Space Peierls-Sambe Solver
+## Electronic Floquet: Sambe and van Vleck
 
 ### Real-space convention
 
@@ -588,7 +590,7 @@ For spinful models: `orbital_index = state_index % norb`.
 
 ### Light-field convention
 
-Dimensionless vector-potential amplitude `a(t) = (e/ħ)A(t)` in inverse length
+Rescaled vector potential `a(t) = (e/ħ)A(t)` in inverse length
 units matching `lat` (typically 1/Å). Complex Fourier components stored as
 `a_complex`, real drive:
 
@@ -645,7 +647,7 @@ a(r,t)=\operatorname{Re}\sum_{n>0}a_n e^{+iq\cdot r-in\Omega_0t}.
 
 Modes with the same temporal harmonic are summed coherently before the
 correction is evaluated.  The method first computes the existing `q = 0`
-baseline—Bessel all-orders in field amplitude and van Vleck through the
+baseline—unexpanded in field amplitude and van Vleck through the
 requested inverse-frequency order 0, 1, or 2—and, when `order >= 1`, adds
 
 ```math
@@ -666,8 +668,9 @@ D_aH_{0,ij}(k)=i\sum_Rd_{ijR,a}t_{ij}(R)e^{ik\cdot d_{ijR}}.
 ```
 
 The implementation therefore builds
-`G_n(R) = i (a_n · d_{ijR}) t(R)`, evaluates the real-space anticommutator
-`J_n = {G_n,G_n†}`, and applies the final directional derivative by replacing
+`G_n(R) = i (a_n · d_{ijR}) t(R)`, evaluates the anticommutator
+`J_n = {G_n,G_n†}` by zero-aliasing FFT convolution, and applies the final
+directional derivative by replacing
 each output block with `i (q · d_out) J_n(R)`.  The full Cartesian bond
 `d = (R + tau_j - tau_i) · lat` includes the orbital embedding; for spinful
 models the same orbital bond is used in each spin block.
@@ -681,138 +684,78 @@ and active nonpositive harmonics are rejected when nonzero `q` and
 `order >= 1` request it.  With `order = 0` no linear-`q` term is added, while
 `q = 0` returns the ordinary baseline exactly without imposing that positive-
 harmonic restriction.  No optical supercell or photon bands are introduced.
+Nonzero `q` with `HasRMatrix` is unsupported, even at order zero.
 Coherent beams with distinct wavevectors cannot be represented by this
 one-model interface; use separate calls or a future graded/supercell solver
 instead.
 
-### Peierls time dependence
+### Exact uniform time dependence in the diagonal-position gauge
 
-Each hopping dressed by `exp[−i a(t)·d_{ijR}]`. Fourier coefficient:
-
-```math
-C_n(d) = (1/T) ∫_0^T dt e^{inΩ₀t} exp[−i a(t)·d]
-```
-
-Main path: the generalized Bessel backend, which evaluates each link three
-ways.  A drive with one nonzero temporal harmonic takes the closed form
-(`O(R + K)`), accurate up to `MAX_BESSEL_ARG_CLOSED_FORM`.  Two carriers
-enumerate the resonance sum (`O(K·(2·min(M₁,M₂)+1))`, no working window), also
-up to `MAX_BESSEL_ARG_CLOSED_FORM` and bounded by `MAX_BESSEL_ENUM_WORK`.
-Three or more fold one-mode convolutions, which keeps the lower
-`MAX_BESSEL_ARG` cap and the `MAX_BESSEL_WINDOW` bound.  The uniform time-grid
-DFT is retained per link as the fallback beyond those ranges and as the
-crate-internal cross-validation reference.  Each link's `J_0..J_M` and every
-truncation tail come from one backward-recurrence ladder per mode, so the
-coefficient cost is linear in the order range rather than quadratic.
-
-### Bessel coefficient cost model (measured, per link)
-
-`R_α = |a_α·d|`; `N_mode` is the drive's mode count; `M_α` is the adaptive cutoff
-— at least `⌈R_α⌉ + cutoff_margin`, raised until the two-sided tail
-`2·Σ_{m>M_α}|J_m|` fits a `1e-12/N_mode` share, so `M_α ≈ R_α`; `K` is the
-requested harmonic range; `L_α` is a mode's temporal harmonic.
-
-| Drive shape | Cost | Caps |
-|---|---|---|
-| one nonzero harmonic | `O(R + K)` (one ladder + lookups) | `MAX_BESSEL_ARG_CLOSED_FORM` = 16384 |
-| two carriers | `O(K·(2·min(M₁,M₂)+1))`, no window | same cap, plus `MAX_BESSEL_ENUM_WORK` = 2^22 iterations |
-| ≥ 3 carriers | worst-case `O(Σ(2M_α+1)·W)`, `W = K + 2·Σ|L_α|M_α` | `MAX_BESSEL_ARG` = 128 per operand, `MAX_BESSEL_WINDOW` = 2^22 |
-| past a cap | project/group once, then per-link DFT `O(N·(N_carrier + K))`: one time exponential per coherent carrier and sample | `N ≤ FALLBACK_GRID_MAX` = 2^20, else refused |
-
-A single ladder sweep (`max(⌈R⌉, requested) + O(√R)` orders) yields `J_0..J_M`
-and every truncation tail; no order is ever evaluated in isolation. Historical
-measurements with `n_max = 2`: the removed single-k Sambe entry point cost R = 128 → 15 µs,
-R = 4000 → 72 µs, R = 16000 → 286 µs, against 2121 µs and 8357 µs through
-the old Cartesian fallback. The projected fallback now sums coherent scalar
-carriers before sampling; those old fallback timings are not a new benchmark.
-Historical two-carrier timings were 9-15 µs at R ≤ 400 against ~0.9 ms for
-then-unpruned folds; these are not timings of the current convolution kernel.
-
-The ≥3-carrier fold retains the original full-window overflow and resource
-checks before optimization. It reuses two call-local full-window buffers and
-accumulates only overlapping contiguous slices of the reachable prefix and the
-requested range expanded by the remaining modes' drift. Do not clip intermediate
-support to the requested bins alone: excursions can fold back. Preserve mode
-and Bessel-order summation order; never prune by an amplitude tolerance.
-Link resolvability deduplicates finite Cartesian displacement bit keys before
-mode projections, using the same exact `[u64; DIM]` equivalence as the cache.
-
-Static (harmonic-0) modes are a pure phase `e^{-i Re z}` in every branch: never
-form their unused imaginary projection or add DC into the sampled AC phase.
-It consumes no ladder, amplitude cap or bandwidth. Project AC onto the link
-before time evolution and sum coherent carriers before sampling; equal link
-projections must give equal coefficients even for cancelling Cartesian fields.
-
-`validate_sambe_allocation` and the effective model's
-`validate_link_resolvability` use cheap sufficient cutoff/window upper bounds.
-If those cannot certify the link and its fallback grid is unresolvable, probe
-the actual Bessel backend before rejecting: an upper bound cannot prove that
-the true enumeration budget or convolution window is exceeded. When a cap,
-budget or branch condition changes, refresh both sides and their boundary tests,
-including `sambe_validation_mirrors_the_backend_limits`,
-`validator_scan_bound_dominates_the_true_cutoff` and
-`validation_accepts_the_true_enumeration_budget`. Resonance products/division
-must be widened to i128 before cancellation and narrowed only after cutoff checks.
-
-### Sambe Hamiltonian
+For a uniform drive, let `U = exp(-i a(t)·X_d)`, with `X_d` diagonal at the
+localized orbital centres including cell translations. Transform the
+projected length-gauge Hamiltonian as `U† H_L U - i hbar U† dU/dt`, where
+`H_L = H + hbar da/dt · X`. The resulting real-space block is
 
 ```math
-H^{(n)}_{ij}(k) = Σ_R t_{ij}(R) C_n(d_{ijR}) e^{i2πk·R}
+H_{ij}(R,t) = e^{-i a(t)\cdot d_{ijR}}
+\left[H_{ij}(R)+\hbar\dot a(t)\cdot(X-X_d)_{ij}(R)\right].
 ```
+
+Here `X` is the full projected position for `HasRMatrix`; retaining the
+remainder `X - X_d` includes all intra-cell and nonlocal blocks. For
+`NoRMatrix` the remainder is absent. There is no field polynomial in either
+uniform-drive path and no assumption that different components of `X`
+commute. The bare position operator is remapped to the output support, with
+new rows zero-filled; in Sambe it is copied on each photon diagonal only.
+The result does not include a micromotion dressing of this observable.
+
+The existing link sampler evaluates the Fourier coefficients `C_n(d)` of
+the exponential by generalized Bessel expansion or a self-sized link DFT
+fallback. If `a(t) = sum_l b_l exp(-ilΩ₀t)` with `b_-l = b_l*`, then
+`hbar da/dt` has Fourier coefficients `-ilW b_l` and the position term
+uses the shifted coefficients `C_(n-l)(d)`. Coherent AC carriers are summed
+after projection onto the link; a static mode contributes only its real DC
+phase and has no derivative. A link is rejected if neither the Bessel
+sampler nor the bounded fallback can resolve the required harmonics.
+
+### Finite Sambe Hamiltonian
+
+With `H(t) = sum_q H^(q) exp(-iqΩ₀t)` and basis `exp(+inΩ₀t)`, the
+projection of `H(t) - i hbar ∂t` has blocks
 
 ```math
-[H_F(k)]_{in,jm} = H^{(m−n)}_{ij}(k) + nW δ_{nm}δ_{ij},\qquad W=ħΩ₀.
+[H_F(k)]_{in,jm} = H^{(m-n)}_{ij}(k) + nW\delta_{nm}\delta_{ij},
+\qquad W=\hbar\Omega_0.
 ```
 
-This is the projection of `H(t)-iħ∂t` in the positive-time basis
-`u(t)=Σ_n u_n exp(+inΩ₀t)`, with `H(t)=Σ_q H^(q) exp(-iqΩ₀t)`.
-Quasienergies (eV) can be folded to `[−W/2, W/2)` via `fold_quasienergy`.
+`FloquetTruncation::new(N)` keeps only `-N <= n,m <= N`, so differences
+need `H^(q)` through `q = ±2N`. This is not an inverse-frequency expansion;
+converge the sector cutoff independently. Quasienergies in eV can be folded
+to `[-W/2, W/2)` with `fold_quasienergy`.
 
-### Real-space Bessel backend (main path of `floquet_effective_model`)
+### van Vleck and spatial convolution
 
-van Vleck through `O(W⁻²)`, with `W = omega0_ev = ħΩ₀`, entirely in real space — no `k_mesh`, no `n_time`
-(only fallback links beyond the branch's cap touch the time grid):
+The coherent and mode-resolved effective models keep the same basis size
+and separately truncate van Vleck at order 0, 1, or 2 in `1/W`. Their time
+average is `H^(0)`. First order is `[H^(-n), H^(n)]/(nW)` summed over
+`1 <= n <= harmonic_max`. Second order adds
+`[H^(-m), [H^(0), H^(m)]]/(2m²W²)` and
+`[H^(-m'), [H^(m'-m), H^(m)]]/(3mm'W²)`. The nonzero outer indices satisfy
+`|m|, |m'| <= harmonic_max` (with `m' != m` in the mixed family), so
+`m'-m` can reach `±2 * harmonic_max`. The cutoff does not alter `H^(0)`.
 
-```math
-T_eff(R) = T_0(R) + Σ_{n=1}^{harmonic_max} comm_n(R) / (n W),
-\qquad
-comm_n(R) = (AB)(R) − (BA)(R),
-```
+The sole production convolution uses a spatial FFT grid with no aliasing
+on the required Minkowski support. The first- and second-order terms and the linear-q
+anticommutator use this engine; no pairwise convolution solver is selected
+as a fallback. The output support extends to double sums at order 1 and
+triple sums at order 2 when needed and is origin-first. The time-grid
+fallback is only for the link Fourier coefficients, not the spatial FFT.
 
-with `A_R = T_{−n}(R)`, `B_R = T_n(R)` and BOTH discrete convolutions
-`(AB)(R) = Σ A_{R−R'}B_{R'}` and `(BA)(R) = Σ B_{R−R'}A_{R'}` (the "P − P†"
-single-convolution simplification is wrong for non-commuting blocks).
-For `order = 2`, the implementation additionally evaluates
-`Σ_{m≠0}[H_{−m},[H_0,H_m]]/(2m²W²)` and
-`Σ_{m,m'≠0;m'≠m}[H_{−m'},[H_{m'−m},H_m]]/(3mm'W²)`.
-The two operands of an inner/outer commutator may have different supports;
-`real_space_commutator_with_supports` returns their Minkowski sum without
-premature Hermitian symmetrization. The output support is the union through
-the double Minkowski sum at order 1 and through the triple sum at order 2,
-with the origin first and remaining rows in lexicographic order;
-`target_hamR` is rejected. Hermiticity
-`T(R) = T(−R)†` is enforced exactly on the final signed sum.
-
-**Forward-time convention and migration:** first order is
-`[H^(−n), H^(n)]/(nW)` (negative harmonic first, positive second).
-The old `H^(n−m)+nW` assembly described `H(-t)`, not the declared `H(t)`.
-The historical claim that a spatial k mirror cancels the commutator sign is
-not a physical proof. Input mode amplitudes, Peierls phases and Fourier
-coefficients are unchanged; old helicity-sensitive CPL outputs must be
-recomputed, not all quasienergies uniformly negated. The two `W^-2` families
-above do not acquire an overall sign flip. The linear-q term has the positive
-sign shown above, from the midpoint expansion of the `H_n: k→k+q` and
-`H_-n: k→k−q` paths. An independent two-colour two-state Peierls forward
-propagator distinguishes the old reversed protocol and passes with the
-migrated Sambe; this is not full-suite or high-order spin-workflow acceptance.
-
-Machinery: `bessel_peierls_coeffs` (recursive one-mode convolutions,
-adaptive tail truncation, `cutoff_margin ∈ [0,48]`, all integer arithmetic
-checked), `floquet_harmonic_cache` (dedup by distinct `d`, `[u64; DIM]` bit
-keys), `real_space_commutator` (two convolutions using ndarray's
-`general_mat_mul`, fp symmetrization),
-`floquet_effective_model_legacy` (crate-internal k-space reference,
-`pub(crate)` with `FloquetEffectiveOptions::target_hamR`/`with_target_hamR`).
+**Forward-time migration:** the old `H^(n-m)+nW` assembly described the
+time-reversed protocol. Recompute helicity-sensitive results; do not simply
+negate all quasienergies. The two `W^-2` families have no overall sign flip.
+The linear-q sign follows the midpoint expansion of the `H_n: k→k+q`
+and `H_-n: k→k-q` paths.
 
 ### Graphene circular-light benchmarks (tests in [floquet/tests.rs](<src/floquet/tests.rs>))
 
@@ -837,7 +780,7 @@ closed form gives `C_n(e_l) = J_n(α)e^{i2πnl/3}`.
   not establish its physical sign.
 
 Second-order van Vleck is enabled by `FloquetEffectiveOptions::with_order(2)`
-and cross-validated against both the legacy k-space path and the full Sambe
+and cross-validated against both the legacy k-space path and the finite Sambe
 quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 
 ### Key API types
@@ -846,7 +789,7 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 |------|---------|
 | `LightMode` | One harmonic component: `LightMode::new(harmonic, a_complex)` |
 | `FloquetDrive` | `omega0_ev` + `Vec<LightMode>`; builder: `new()`, `with_modes()`, `add_mode()` |
-| `FloquetTruncation` | Full Sambe calculation only: photon cutoff `n_max`; `n_sector()` = `2n_max+1`. No sampling count exists (the coefficients are grid-free), so `new(n_max)` takes one argument |
+| `FloquetTruncation` | Finite Sambe only: `new(n_max)`, `n_sector()` = `2n_max+1` (fallible); no user sampling count |
 | `IncidentBasis` | Transverse polarization basis from incident direction |
 | `FloquetEffectiveOptions` | van Vleck controls: concrete `order = 1`, `harmonic_max = 2` defaults; `with_order(n)`, `with_harmonic_max(n)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
 | `Floquet` trait | `floquet_model` only: build a real-space Sambe `Model`; use ordinary `Model` Hamiltonian/band solvers and `fold_quasienergy` afterwards |
@@ -854,36 +797,21 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 | `Model::floquet_effective_q_model` | Same-size coherent weak-field correction through `O(A^2 q/W)` for one common Cartesian `q` |
 | `Model::floquet_effective_mode_resolved_model` | `H_0 + sum_alpha (H_eff[a_alpha] - H_0)` for mutually incoherent modes; no weights |
 
-### Two Floquet paths
+### Model layout and reference tests
 
-The three public effective-model methods take `drive` and optional
-`FloquetEffectiveOptions`, with the Cartesian wavevector additionally supplied
-to `floquet_effective_q_model`. They do not take `FloquetTruncation`.
-`harmonic_max` is an `isize`, validated as nonnegative, and its default is
-independent of Sambe photon sectors. Migrate calls that relied on the old
-implicit cutoff using `.with_harmonic_max(2 * old_n_max)`.
-The test-only legacy DFT reference takes an explicit `n_time` instead of a
-photon truncation.  Both Floquet paths share the grid-free Bessel backend and no
-entry point takes a sampling count at all: `FloquetTruncation` carries only
-`n_max`, and the time grid survives as a per-link fallback plus the test-only
-oracle in `crate::floquet_test`.  Links beyond the relevant branch cap fall back
-to a per-link, self-sized time grid inside the harmonic cache; a drive whose link needs more than `FALLBACK_GRID_MAX` samples
-is rejected by `validate_sambe_allocation` instead of being silently aliased.
+`floquet_model` encodes photon sectors as additional orbitals in
+`(photon, orbital)` order (spinless) or `(spin, photon, orbital)` order
+(spinful). It replicates atom metadata and orbital projections in sector
+order. Effective models preserve the input metadata and choose their own
+support. The legacy test-only DFT reference accepts explicit `n_time` and
+`target_hamR` for cross-checks; the latter must be unique and closed under
+`R -> -R`. Neither option is public.
 
-| Path | Returns | Basis size | When |
-|------|---------|------------|------|
-| `floquet_model` | Enlarged `Model` | `nsta·(2N+1)` | Exact, any Ω; same Bessel backend as the effective-model path |
-| `floquet_effective_model` | Same-size `Model` | `nsta` | Ω ≫ bandwidth; real-space Bessel backend, no `k_mesh` |
-| `floquet_effective_q_model` | Same-size `Model` | `nsta` | Coherent weak-field, long-wavelength `O(A^2 q/W)` correction |
-| `floquet_effective_model_legacy` | Same-size `Model` | `nsta` | `pub(crate)` k-space reference: cross-validation, custom `target_hamR` |
-
-`floquet_model` encodes photon sectors as additional orbitals. Spinless basis
-order: `(photon sector, orbital)`. Spinful: `(spin, photon sector, orbital)`.
-It replicates the input atom metadata and orbital projections in the same
-sector-major order. `floquet_effective_model` preserves the input metadata
-unchanged and determines its own real-space support (Minkowski sum of the
-input `hamR`); a custom `target_hamR` (legacy path only) must contain unique
-vectors and be closed under `R -> -R`.
+**Threading:** the streaming FFT engine processes k points with Rayon and
+uses parallel transform lanes when the pool has multiple threads. Pin BLAS
+to one thread (`OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`) in this case to
+avoid oversubscription. Support invariants (unique, negation-closed) are
+validated; builders preserve the required Hermiticity `H(R) = H(-R)†`.
 
 ---
 

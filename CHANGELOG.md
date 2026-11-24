@@ -6,12 +6,11 @@
 
 - Remove `Model::from_hr_with_rmatrix`. Import the `Wannier90` trait and use
   `Model::<SPIN, 3, HasRMatrix>::from_hr` to load `_r.dat`.
-- `FloquetTruncation::new(n_max, n_time)` is now `FloquetTruncation::new(n_max)`
-  and the `n_time` field is gone.  Both Floquet paths evaluate the Peierls
-  coefficients with the exact, grid-free Bessel backend, so no public entry
-  point takes a sampling count any more; the time grid survives only as the
-  per-link fallback for links beyond the backend's range.  Callers that passed
-  a sampling count can drop the second argument and will get the same results.
+- `FloquetTruncation::new(n_max, n_time)` is now `FloquetTruncation::new(n_max)`.
+  The finite Sambe basis contains only photon sectors `-n_max..=n_max`,
+  with Hamiltonian harmonics through `±2*n_max`. Link-phase Fourier
+  coefficients use the existing Bessel sampler or a self-sized link DFT
+  fallback; there is no caller-supplied time grid.
 - `Model::validate` no longer rejects an orbital or Wannier centre that is
   farther than `ORBITAL_ATOM_POSITION_TOLERANCE` from its parent atom.  It
   emits a one-time process-global warning instead; atom-centred symmetry and
@@ -112,11 +111,18 @@
 - Replace the Floquet and batched Fourier raw GEMM calls with ndarray's
   `general_mat_mul`, with `ndarray/blas` enabled for the selected backend.
   Restrict crate-owned `unsafe` to the existing `ndarray_lapack` module.
-- Reuse the `-m` second-order van Vleck terms as the adjoints of the `+m`
-  terms in both effective-model paths. Hopping builders store both `(i,j,R)`
-  and `(j,i,-R)` with conjugate amplitudes and the Peierls coefficients obey
-  `C_-n = C_n^*`, so `H_-m(R) = H_m(-R)^dagger` and `H_0` is Hermitian. No
-  public API change.
+- Use the diagonal-position gauge for uniform electronic Floquet driving.
+  `HasRMatrix` uses all projected-position blocks in
+  `exp(-i a·d) * [H + hbar da/dt · (X - X_d)]` with no field polynomial;
+  `NoRMatrix` retains the exact Peierls phase alone. Output position blocks
+  remain bare (photon-diagonal in Sambe). Nonzero `q` with `HasRMatrix`
+  is unsupported.
+- Use zero-aliasing spatial FFTs as the sole production convolution for
+  electronic effective models, including the linear-`q` anticommutator.
+  The separate van Vleck expansion stops at `O(W^-2)`; the outer indices
+  `|m|, |m'| <= harmonic_max` in the order-two mixed family now retain
+  inner differences through `±2*harmonic_max`.
+
 - Use ordinary `f64` accumulation for mode-resolved Floquet models. Remove
   the custom exact accumulator, per-mode block storage, and its extreme-range
   tests; mode reordering may now change floating-point rounding.

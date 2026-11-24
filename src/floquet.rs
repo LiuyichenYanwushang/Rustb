@@ -2,7 +2,7 @@
 //!
 //! A commensurate uniform drive dresses hopping blocks stored in [`Model::ham`]
 //! and [`Model::hamR`]. Models without a position matrix use Peierls phases;
-//! models with one use its full projected position operator at weak field.
+//! models with one retain the full projected position operator to all field orders.
 //!
 //! # Fourier and forward-time convention
 //!
@@ -21,31 +21,20 @@
 //! uniform light field. The drive must be commensurate with one base frequency
 //! `omega0_ev`; arbitrary mixtures of integer harmonics are supported.
 //!
-//! [`crate::NoRMatrix`] uses the all-orders point-orbital Peierls coupling
-//! described below. [`crate::HasRMatrix`] instead uses the uniform projected
-//! position coupling through second order in the vector-potential amplitude.
-//! In lattice gauge the position operator is `X_i = i ∂_i + A_i(k)`, where
-//! `A_i` is the Fourier transform of the full Cartesian `rmatrix` and `∂_i`
-//! differentiates physical Cartesian momentum. The periodic transformation
-//! `U = exp(i a·X)` of `H_L = H + hbar dot(a)·X` gives
+//! For a uniform field, let $X_d$ be diagonal in the localized orbital centres,
+//! including lattice translations. Transform the projected length-gauge
+//! Hamiltonian $H_L=H+\hbar\dot a\cdot X$ with $U=\exp(i a\cdot X_d)$.
+//! The derivative term cancels the diagonal field coupling, leaving the exact
+//! link Hamiltonian $e^{-i a\cdot d}(H+\hbar\dot a\cdot(X-X_d))$ in the
+//! Wannier subspace. This retains every input position block with no field
+//! Taylor expansion and no commutativity assumption on $X$. For
+//! [`crate::NoRMatrix`] the remainder vanishes, giving plain Peierls coupling.
+//! Finite Sambe truncates only the photon sector; the separate van Vleck solver
+//! truncates in inverse frequency and in its outer harmonic window.
+//! Nonzero `q` with [`crate::HasRMatrix`] is not implemented.
 //!
-//! ```math
-//! H_V(t) = H - a_i D_i H + \tfrac12 a_i a_j D_i D_j H
-//!          - \tfrac{\hbar}{2} a_i \dot a_j F_{ij} + O(a^3),
-//! \qquad D_i B = \partial_i B + i[B,A_i],\quad
-//! F_{ij} = \partial_i A_j - \partial_j A_i - i[A_i,A_j].
-//! ```
-//!
-//! The curvature term is needed because projected position components need
-//! not commute. For diagonal position centres this reduces to the corresponding
-//! Taylor expansion of the Peierls result. Use the position path only within
-//! the weak-field regime; photon convergence alone does not control its field
-//! truncation. Nonzero `q` with `HasRMatrix` is not implemented.
-//!
-//! Output models keep the input position data type. Stored position blocks
-//! follow translation rows, with zero blocks on generated rows. Sambe
-//! replicates them on the photon diagonal. These are undressed position data
-//! in the output basis, not optical-gauge- or micromotion-dressed observables.
+//! Output models carry undressed input position blocks, with zero blocks on
+//! generated rows. Sambe replicates the input operator on the photon diagonal.
 //!
 //! # Real-space hopping convention
 //!
@@ -229,13 +218,10 @@
 //! staying in the same photon sector but acquiring an effective hopping
 //! correction of order `1/W`.
 //!
-//! [`Model::floquet_effective_model`] builds the effective hopping blocks in
-//! real space (no k-mesh), returning a `Model<SPIN, DIM, R>` with the input
-//! band count. With `HasRMatrix`, the van Vleck products keep only terms
-//! through second order in field amplitude: a commutator uses two linear
-//! vertices, and the second-order nested commutator additionally uses bare
-//! `H` as its static vertex. The time average retains the quadratic terms
-//! independently of `harmonic_max`.
+//! [`Model::floquet_effective_model`] uses a zero-aliasing spatial FFT to
+//! assemble the full requested van Vleck polynomial from the driven Fourier
+//! blocks, and returns its real-space model. The separate Sambe construction
+//! uses the same blocks without an inverse-frequency expansion.
 //!
 //! # API overview
 //!
@@ -380,6 +366,11 @@
 //! ```
 
 mod coefficients;
+mod kspace;
+#[cfg(test)]
+mod kspace_perf_tests;
+#[cfg(test)]
+mod kspace_tests;
 mod position;
 #[cfg(test)]
 mod position_tests;
@@ -398,17 +389,21 @@ use crate::Gauge;
 use crate::error::{Result, TbError};
 #[cfg(test)]
 use crate::model::NoRMatrix;
+#[cfg(test)]
 use crate::model::utils::find_R;
 #[cfg(test)]
 use crate::ndarray_lapack::eigvalsh_v;
 use crate::{Model, OrbitalId, RMatrixData};
 use ndarray::parallel::prelude::IntoParallelIterator;
 use ndarray::prelude::*;
+#[cfg(test)]
 use ndarray::*;
 #[cfg(test)]
 use ndarray_linalg::UPLO;
 use num_complex::Complex;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+#[cfg(test)]
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 #[cfg(test)]
 use std::f64::consts::TAU;
 
@@ -630,9 +625,9 @@ pub struct FloquetEffectiveOptions {
     /// through `O(omega^0)`, `O(omega^-1)`, and `O(omega^-2)`, respectively.
     pub order: usize,
     /// Signed-harmonic cutoff for commutator sums. Defaults to `2`,
-    /// independently of any Sambe photon cutoff. In the all-orders Peierls
-    /// path, order 2 evaluates `H_(m'-m)` up to `2 * harmonic_max` automatically.
-    /// In the weak-field position path, the cutoff does not affect the time average.
+    /// independently of any Sambe photon cutoff. It bounds the outer indices
+    /// `m` and `m'`; the mixed harmonic `m'-m` can reach twice the bound.
+    /// The cutoff does not affect the time average.
     pub harmonic_max: isize,
     /// Optional target real-space hopping vectors for the legacy path's
     /// inverse Fourier transform.  Rejected by the real-space path.
@@ -908,11 +903,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             let conjugate = amplitude.mapv(|value| value.conj());
             let gradient = self.cartesian_gradient_contraction_blocks(&amplitude)?;
             let gradient_conjugate = self.cartesian_gradient_contraction_blocks(&conjugate)?;
-            let (mut jordan_blocks, jordan_r) =
-                real_space_anticommutator(&gradient, &gradient_conjugate, &self.hamR)?;
+            let (mut jordan_blocks, jordan_r, restore) = kspace::kspace_anticommutator(
+                gradient.view(),
+                gradient_conjugate.view(),
+                &self.hamR,
+            )?;
 
             for (i_r, r_vec) in jordan_r.outer_iter().enumerate() {
-                let mut block = jordan_blocks[i_r].view_mut();
+                let mut block = jordan_blocks.index_axis_mut(Axis(0), i_r);
                 for i in 0..nsta {
                     for j in 0..nsta {
                         let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
@@ -923,7 +921,56 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                                  support row {i_r}, state pair ({i}, {j})"
                             )));
                         }
-                        block[[i, j]] *= Complex::new(0.0, q_dot_d);
+                        if restore == 1.0 {
+                            block[[i, j]] *= Complex::new(0.0, q_dot_d);
+                        } else {
+                            // Keep the two FFT rescaling factors together with
+                            // the derivative and frequency denominator; either
+                            // the raw product or its ratio can exceed f64.
+                            let z = block[[i, j]];
+                            let rescale = |value: f64| {
+                                let factors = [value, q_dot_d, restore, restore];
+                                if factors.contains(&0.0) {
+                                    return 0.0;
+                                }
+                                let split = |x: f64| {
+                                    let bits = x.to_bits();
+                                    let exponent = ((bits >> 52) & 0x7ff) as i32;
+                                    let (bits, exponent) = if exponent == 0 {
+                                        let bits = (x * 2.0_f64.powi(54)).to_bits();
+                                        (bits, ((bits >> 52) & 0x7ff) as i32 - 54)
+                                    } else {
+                                        (bits, exponent)
+                                    };
+                                    (
+                                        f64::from_bits(
+                                            (bits & 0x800f_ffff_ffff_ffff) | (1023_u64 << 52),
+                                        ),
+                                        exponent - 1023,
+                                    )
+                                };
+                                let (w, w_exp) = split(drive.omega0_ev);
+                                let (mantissa, exponent) = factors.into_iter().map(split).fold(
+                                    (1.0 / (w * (8.0 * harmonic as f64)), -w_exp),
+                                    |(m, e), (f, f_exp)| (m * f, e + f_exp),
+                                );
+                                // Normalize before applying powers of two so
+                                // a large exponent can retain a small mantissa.
+                                let (m, adjust) = split(mantissa);
+                                let exponent = exponent + adjust;
+                                if exponent > 1023 {
+                                    return m * f64::INFINITY;
+                                }
+                                if exponent < -1075 {
+                                    return m * 0.0;
+                                }
+                                if exponent < -1022 {
+                                    return (m * 2.0_f64.powi(exponent + 1022)) * f64::MIN_POSITIVE;
+                                }
+                                m * 2.0_f64.powi(exponent)
+                            };
+                            block[[i, j]] = Complex::new(-rescale(z.im), rescale(z.re));
+                        }
                         if !block[[i, j]].re.is_finite() || !block[[i, j]].im.is_finite() {
                             return Err(TbError::Other(format!(
                                 "floquet_effective_q_model finite-q correction overflowed for \
@@ -934,7 +981,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 }
             }
 
-            let scale = q_linear_frequency_scale(harmonic, drive.omega0_ev);
+            let scale = if restore == 1.0 {
+                q_linear_frequency_scale(harmonic, drive.omega0_ev)
+            } else {
+                1.0
+            };
             accumulate_scaled_real_space_blocks(&mut correction, &jordan_blocks, &jordan_r, scale)?;
         }
 
@@ -1028,25 +1079,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 target.nrows()
             )));
         }
-        let harmonic_max = effective_harmonic_max(options)?;
+        effective_harmonic_max(options)?;
         if R::HAS_RMATRIX {
             self.validate()?;
             self.validate_floquet_position()?;
-            let mut corrections = RealSpaceBlockMap::new();
-            for mode in &drive.modes {
-                if mode.a_complex.iter().all(|a| a.re == 0.0 && a.im == 0.0) {
-                    continue;
-                }
-                let isolated = FloquetDrive::with_modes(drive.omega0_ev, vec![mode.clone()]);
-                let single = self.position_effective_corrections(
-                    &isolated,
-                    options.order,
-                    harmonic_max,
-                    true,
-                )?;
-                corrections = merge_real_space_block_maps(corrections, single);
-            }
-            return self.position_effective_output(corrections);
         }
         let nsta = self.nsta();
         let active_modes = drive
@@ -1078,27 +1114,25 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             blocks.insert(row.to_vec(), self.ham.index_axis(Axis(0), i_r).to_owned());
         }
 
+        let mut corrections = RealSpaceBlockMap::new();
         for mode_def in active_modes {
             let single_drive = FloquetDrive::with_modes(drive.omega0_ev, vec![mode_def.clone()]);
-            let single = self.floquet_effective_model(&single_drive, Some(options))?;
-
-            for (i_r, row) in single.hamR.outer_iter().enumerate() {
-                let dst = blocks
-                    .entry(row.to_vec())
-                    .or_insert_with(|| Array2::zeros((nsta, nsta)));
-                let dressed = single.ham.index_axis(Axis(0), i_r);
-                if let Some(original) = find_R(&self.hamR, &row) {
-                    let baseline = self.ham.index_axis(Axis(0), original);
-                    Zip::from(&mut *dst)
-                        .and(dressed)
-                        .and(baseline)
-                        .for_each(|out, &value, &static_value| *out += value - static_value);
-                } else {
-                    *dst += &dressed;
-                }
-            }
+            let (cache, harmonic_max, has_ac) = self.effective_harmonics(&single_drive, options)?;
+            let (delta, delta_r) = self.floquet_effective_delta_kspace(
+                &single_drive,
+                &cache,
+                options.order,
+                harmonic_max,
+                has_ac,
+            )?;
+            accumulate_scaled_real_space_blocks(&mut corrections, &delta, &delta_r, 1.0)?;
         }
 
+        for (row, correction) in corrections {
+            *blocks
+                .entry(row)
+                .or_insert_with(|| Array2::zeros((nsta, nsta))) += &correction;
+        }
         let mut ham_r = Array2::zeros((blocks.len(), DIM));
         let mut ham = Array3::zeros((blocks.len(), nsta, nsta));
         for (i_r, (row, block)) in blocks.into_iter().enumerate() {
@@ -1176,9 +1210,9 @@ pub trait Floquet {
     /// ```
     ///
     /// With `HasRMatrix`, replace `t C_{m-n}` by the full projected-position
-    /// Fourier block through second order in field amplitude. The hopping
-    /// support can grow; the bare position blocks are remapped and replicated
-    /// on the photon diagonal. Both `SPIN` and the position data type are
+    /// Fourier block, without any expansion in field amplitude. The hopping
+    /// support includes all stored position rows; the bare position blocks are
+    /// replicated on the photon diagonal. Both `SPIN` and the position data type are
     /// preserved. Photon sectors are encoded as additional orbitals; if the input model is
     /// spinful, physical spin remains the `Model<true, DIM, _>` spin degree of
     /// freedom rather than being flattened away.
@@ -1219,20 +1253,18 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
         let harmonic_min = -2 * trunc.n_max;
         let harmonic_max = 2 * trunc.n_max;
-        let (mut ham_r, harmonic_cache) = if R::HAS_RMATRIX {
-            self.position_sambe_cache(drive, harmonic_max, total)?
+        let mut ham_r = self.hamR.clone();
+        let harmonic_cache = if R::HAS_RMATRIX {
+            self.position_harmonic_cache(drive, harmonic_max)?
         } else {
             // Scalar links past the Bessel backend's range use a per-link grid.
-            (
-                self.hamR.clone(),
-                self.floquet_harmonic_cache(
-                    drive,
-                    harmonic_min,
-                    harmonic_max,
-                    &PeierlsFourierMethod::Bessel {
-                        cutoff_margin: BESSEL_CUTOFF_MARGIN,
-                    },
-                ),
+            self.floquet_harmonic_cache(
+                drive,
+                harmonic_min,
+                harmonic_max,
+                &PeierlsFourierMethod::Bessel {
+                    cutoff_margin: BESSEL_CUTOFF_MARGIN,
+                },
             )
         };
 
@@ -1544,20 +1576,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(model)
     }
 
-    /// Real-space van Vleck effective model through `O(omega^-2)`.
-    /// [`FloquetEffectiveOptions`] controls the expansion; no photon cutoff,
-    /// time-sampling count, or k-mesh is required.
+    /// van Vleck effective model through order two in inverse frequency.
+    /// No photon cutoff, time-sampling count, or k-mesh is required.
     ///
-    /// `HasRMatrix` uses the projected position coupling and consistently
-    /// retains terms only through second order in field amplitude. The
-    /// quadratic time average is included at every frequency order. The
-    /// van Vleck corrections use only linear nonzero-harmonic vertices,
-    /// with bare `H` in the middle of the `1/W²` nested commutator. The
-    /// result carries the bare position matrix remapped to the new `hamR`.
-    ///
-    /// For `NoRMatrix`, the all-orders Peierls path uses generalized Bessel
-    /// coefficients (with automatic time-grid fallback beyond the backend's
-    /// range). In this path the effective hopping blocks are:
+    /// Both position data types use their full time-dependent coupling.
+    /// The driven Fourier blocks are combined on a zero-aliasing FFT grid:
     ///
     /// ```math
     /// T_{\mathrm{eff}}(R)
@@ -1568,9 +1591,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// +T_{\mathrm{eff}}^{(2)}(R),\qquad W=\hbar\Omega_0,
     /// ```
     ///
-    /// where `T_0(R) = t(R)·C_0(d)` are the Peierls-dressed static blocks
-    /// and `comm_n(R)` are the two-convolution commutator blocks of the
-    /// internal real-space commutator for the harmonic pair `(T_{−n}, T_n)`.
+    /// The static block `T_0` is the driven time average.
     /// The second-order term is
     ///
     /// ```math
@@ -1580,72 +1601,48 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// \frac{[T_{-m'},[T_{m'-m},T_m]]}{3mm'W^2}.
     /// ```
     ///
-    /// Inner commutators use an internal generalized-support convolution
-    /// because their support is already a double Minkowski sum and they are
-    /// not individually Hermitian.  Hermiticity is enforced only after the
-    /// full signed sum is accumulated.
+    /// `options.order = 0` returns the time average; orders 1 and 2 add the
+    /// corresponding inverse-frequency terms. Outer indices are restricted
+    /// to `harmonic_max` (default 2); `m'-m` may reach twice that value.
+    /// The origin-first output support is determined automatically. The input
+    /// atom/orbital metadata and bare position matrix are retained; position
+    /// blocks on generated rows are zero, not micromotion dressed.
     ///
-    /// `options.order = 0` keeps only `T_0`; `order = 1` adds the `1/W`
-    /// commutator terms; `order = 2` adds both `1/W^2` families.  The signed
-    /// indices `m,m'` are truncated at `harmonic_max` (default `2`),
-    /// while `T_(m'-m)` is evaluated automatically through `2*harmonic_max`.
-    /// The real-space support is determined automatically: primitive at
-    /// order 0, the union through the double Minkowski sum at order 1, and
-    /// through the triple Minkowski sum at order 2.  No `target_hamR`
-    /// parameter is needed, and the output is guaranteed Hermitian
-    /// (`T(R) = T(−R)†` enforced exactly).
-    /// The crate-internal `target_hamR` option is rejected: the real-space
-    /// path determines its own support.  Blocks with
-    /// vanishing coefficients (e.g. harmonics outside the drive's
-    /// selection-rule reach) are retained as exact zeros — the support
-    /// depends only on the input `hamR`, not on the drive content.
+    /// This is an off-resonant approximation, not the enlarged Sambe model
+    /// returned by [`Floquet::floquet_model`]. The FFT assumes Hermitian
+    /// input hopping blocks as produced by the model builders.
     ///
-    /// The returned model has the same lattice, orbitals, atoms, and
-    /// state count as the input model, and differs only in `ham`/`hamR`.
-    /// It is an approximation to the off-resonant Floquet problem, not
-    /// the full enlarged Sambe model returned by [`Floquet::floquet_model`].
-    ///
-    /// # Parallelism
-    ///
-    /// The order-2 signed-harmonic sum and sufficiently large real-space
-    /// hopping convolutions automatically use Rayon's global thread pool.
-    /// `RAYON_NUM_THREADS` controls the outer worker count.  When the linked
-    /// BLAS also starts worker threads, workloads with many small hopping
-    /// blocks usually perform best with `OPENBLAS_NUM_THREADS=1` or
-    /// `MKL_NUM_THREADS=1`, avoiding nested oversubscription.
+    /// Rayon parallelizes transforms and independent k points. When using
+    /// multiple Rayon threads, set BLAS threads to one to avoid oversubscription.
     ///
     /// # Errors
-    /// Returns an error for an invalid drive, `order > 2`, a
-    /// negative or unrepresentable harmonic range, a non-finite frequency
-    /// scaling factor, a supplied `target_hamR`, a real-space support sum that
-    /// overflows `isize`, or a support that is not closed under `R -> −R`.
+    /// Returns an error for invalid input, unsupported frequency scales or
+    /// harmonic ranges, unresolved coefficients, an unrepresentable support,
+    /// or a k-space working set beyond the hard memory limit.
     pub fn floquet_effective_model(
         &self,
         drive: &FloquetDrive,
         options: Option<&FloquetEffectiveOptions>,
     ) -> Result<Model<SPIN, DIM, R>> {
-        self.floquet_effective_model_impl(drive, options, true, true)
+        let defaults = FloquetEffectiveOptions::default();
+        let options = options.unwrap_or(&defaults);
+        let (harmonic_cache, harmonic_max, has_time_dependence) =
+            self.effective_harmonics(drive, options)?;
+        self.floquet_effective_model_kspace(
+            drive,
+            &harmonic_cache,
+            options.order,
+            harmonic_max,
+            has_time_dependence,
+        )
     }
 
-    // The false setting retains the termwise reference for regression tests;
-    // production also uses that path when regrouping lacks numerical headroom.
-    fn floquet_effective_model_impl(
+    fn effective_harmonics(
         &self,
         drive: &FloquetDrive,
-        options: Option<&FloquetEffectiveOptions>,
-        regroup_order_two: bool,
-        adjoint_h0_family: bool,
-    ) -> Result<Model<SPIN, DIM, R>> {
+        options: &FloquetEffectiveOptions,
+    ) -> Result<(FloquetHarmonicCache, isize, bool)> {
         self.validate()?;
-        let default_options;
-        let options = match options {
-            Some(options) => options,
-            None => {
-                default_options = FloquetEffectiveOptions::default();
-                &default_options
-            }
-        };
-
         validate_floquet_drive::<DIM>(drive)?;
         if options.order > 2 {
             return Err(TbError::Other(format!(
@@ -1655,25 +1652,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         if let Some(target) = &options.target_hamR {
             return Err(TbError::Other(format!(
-                "FloquetEffectiveOptions.target_hamR is not supported by the \
-                 real-space path: the effective support is determined \
-                 automatically (got {} target vectors)",
+                "FloquetEffectiveOptions.target_hamR is not supported by the production path: the effective support is determined automatically (got {} target vectors)",
                 target.nrows()
             )));
         }
         let harmonic_max = effective_harmonic_max(options)?;
-
-        let nsta = self.nsta();
         if R::HAS_RMATRIX {
             self.validate_floquet_position()?;
-            let corrections = self.position_effective_corrections(
-                drive,
-                options.order,
-                harmonic_max,
-                adjoint_h0_family,
-            )?;
-            return self.position_effective_output(corrections);
         }
+        validate_effective_support::<DIM>(&self.hamR)?;
         let has_time_dependence = drive_has_ac_components(drive);
         let static_drive;
         let cache_drive = if has_time_dependence {
@@ -1687,292 +1674,23 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         } else {
             0
         };
-        validate_effective_cache_layout(cache_max, self.hamR.nrows(), nsta)?;
-        // The effective path has no photon truncation, but it has the same
-        // fallback: a link the per-link grid cannot resolve must be refused
-        // here too, not silently answered from a clamped grid.
-        validate_link_resolvability(self, cache_drive, -cache_max, cache_max)?;
-        let harmonic_cache = self.floquet_harmonic_cache(
-            cache_drive,
-            -cache_max,
-            cache_max,
-            &PeierlsFourierMethod::Bessel {
-                cutoff_margin: BESSEL_CUTOFF_MARGIN,
-            },
-        );
-        // Zeroth order: the Peierls-dressed static blocks on the input
-        // support.  The BTreeMap merges the per-n contributions onto the
-        // final support in lexicographic order (matching
-        // real_space_commutator's deterministic output).
-        let mut blocks = std::collections::BTreeMap::<Vec<isize>, Array2<Complex<f64>>>::new();
-        let i_n0 = harmonic_cache.harmonic_index(0);
-        for (i_r, row) in self.hamR.outer_iter().enumerate() {
-            blocks.insert(
-                row.to_vec(),
-                harmonic_cache
-                    .blocks
-                    .slice(s![i_n0, i_r, .., ..])
-                    .to_owned(),
-            );
-        }
-
-        // Retain the documented support even when harmonic operands vanish,
-        // but construct its zero-valued Minkowski layers only once.
-        if harmonic_max > 0 && options.order >= 1 {
-            let zero_primitive = (0..self.hamR.nrows())
-                .map(|_| Array2::<Complex<f64>>::zeros((nsta, nsta)))
-                .collect::<Vec<_>>();
-            let (pair_blocks, pair_r) =
-                real_space_commutator(&zero_primitive, &zero_primitive, &self.hamR)?;
-            accumulate_scaled_real_space_blocks(&mut blocks, &pair_blocks, &pair_r, 0.0)?;
-            if options.order >= 2 {
-                let (triple_blocks, triple_r) = real_space_commutator_with_supports(
-                    &zero_primitive,
-                    &self.hamR,
-                    &pair_blocks,
-                    &pair_r,
-                )?;
-                accumulate_scaled_real_space_blocks(&mut blocks, &triple_blocks, &triple_r, 0.0)?;
-            }
-        }
-
-        // Inspect the computed blocks, not a Cartesian sum of drive amplitudes:
-        // exact-zero harmonics cannot contribute, but every tiny nonzero survives.
-        let nonzero_harmonics = harmonic_cache
-            .blocks
-            .outer_iter()
-            .map(|blocks| {
-                blocks
-                    .iter()
-                    .any(|value| value.re != 0.0 || value.im != 0.0)
-            })
-            .collect::<Vec<_>>();
-        let nonzero = |n| nonzero_harmonics[harmonic_cache.harmonic_index(n)];
-
-        // First order: sum over n of comm_n/(n·ħΩ₀); omega0_ev carries
-        // the ħΩ₀ energy (same convention as the legacy k-space path).
-        let inverse_omega = drive.omega0_ev.recip();
-        if options.order >= 1 && has_time_dependence {
-            for n in 1..=harmonic_max {
-                if !nonzero(n) || !nonzero(-n) {
-                    continue;
-                }
-                let positive = harmonic_cache.harmonic_blocks(n);
-                let negative = harmonic_cache.harmonic_blocks(-n);
-                let (comm_blocks, comm_r) =
-                    real_space_commutator(&negative, &positive, &self.hamR)?;
-                let scale = inverse_omega / (n as f64);
-                accumulate_scaled_real_space_blocks(&mut blocks, &comm_blocks, &comm_r, scale)?;
-            }
-        }
-
-        // Second order in 1/(ħΩ₀): the two van Vleck nested-commutator
-        // families.  Both signed harmonic sums are required; individual
-        // summands are not Hermitian and therefore must not be symmetrized
-        // before the complete sum is assembled.
-        if options.order >= 2 && has_time_dependence {
-            let inverse_omega_squared = inverse_omega * inverse_omega;
-            let signed_harmonics = (-harmonic_max..=harmonic_max)
-                .filter(|&n| n != 0 && (nonzero(n) || nonzero(-n)))
-                .collect::<Vec<_>>();
-
-            // The grouped B-family path is taken only when the selector asks
-            // for it and the conservative L1 headroom guard accepts.  The
-            // termwise reference below remains the fallback in every other
-            // case, including a selector that forces it for regression tests.
-
-            // The H_0 family pairs each m with -m. Hopping builders store both
-            // (i,j,R) and (j,i,-R) with conjugate amplitudes and the Peierls
-            // coefficients satisfy C_-n = C_n^*, so H_-m(R) = H_m(-R)^dagger
-            // and H_0 is Hermitian. The -m term is then the adjoint of the +m
-            // term and one positive m needs two convolutions instead of four.
-            let h0_family_adjoint = adjoint_h0_family;
-            let accumulate_h0_family = |partial: &mut RealSpaceBlockMap, m: isize| -> Result<()> {
-                if !nonzero(m) || !nonzero(0) || !nonzero(-m) {
-                    return Ok(());
-                }
-                if h0_family_adjoint && m < 0 {
-                    // Generated as the adjoint of the corresponding +m term.
-                    return Ok(());
-                }
-                let h_zero = harmonic_cache.harmonic_blocks(0);
-                let h_m = harmonic_cache.harmonic_blocks(m);
-                let (inner, inner_r) =
-                    real_space_commutator_with_supports(&h_zero, &self.hamR, &h_m, &self.hamR)?;
-                let h_minus_m = harmonic_cache.harmonic_blocks(-m);
-                let (outer, outer_r) =
-                    real_space_commutator_with_supports(&h_minus_m, &self.hamR, &inner, &inner_r)?;
-                let scale = inverse_omega_squared / (2.0 * (m as f64).powi(2));
-                accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
-                if !h0_family_adjoint {
-                    return Ok(());
-                }
-                let (adjoint, adjoint_r) = real_space_adjoint(&outer, &outer_r)?;
-                accumulate_scaled_real_space_blocks(partial, &adjoint, &adjoint_r, scale)
-            };
-
-            // Each fixed-m contribution is independent.  Accumulate one
-            // private real-space map per Rayon job and merge maps only after
-            // all nested commutators for that job are complete.  This exposes
-            // the abundant harmonic-level parallelism of the O(omega^-2)
-            // double sum without locking the output map in the hot loop.
-            let accumulate_fixed_m = |partial: &mut RealSpaceBlockMap, m: isize| -> Result<()> {
-                if !nonzero(m) {
-                    return Ok(());
-                }
-                let h_m = harmonic_cache.harmonic_blocks(m);
-                accumulate_h0_family(partial, m)?;
-
-                for &m_prime in &signed_harmonics {
-                    if m_prime == m || !nonzero(-m_prime) || !nonzero(m_prime - m) {
-                        continue;
-                    }
-                    let h_difference = harmonic_cache.harmonic_blocks(m_prime - m);
-                    let (inner, inner_r) = real_space_commutator_with_supports(
-                        &h_difference,
-                        &self.hamR,
-                        &h_m,
-                        &self.hamR,
-                    )?;
-                    let h_minus_m_prime = harmonic_cache.harmonic_blocks(-m_prime);
-                    let (outer, outer_r) = real_space_commutator_with_supports(
-                        &h_minus_m_prime,
-                        &self.hamR,
-                        &inner,
-                        &inner_r,
-                    )?;
-                    let scale = inverse_omega_squared / (3.0 * (m as f64) * (m_prime as f64));
-                    accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
-                }
-                Ok(())
-            };
-
-            // With only one signed pair there is no outer convolution to
-            // reuse. Keep that case (including pure l=2 at N=2) termwise.
-            let regroup = regroup_order_two
-                && signed_harmonics.len() > 2
-                && can_regroup_order_two(&harmonic_cache, harmonic_max, inverse_omega);
-            let accumulate_fixed_index = |partial: &mut RealSpaceBlockMap,
-                                          p: isize|
-             -> Result<()> {
-                if !regroup {
-                    return accumulate_fixed_m(partial, p);
-                }
-
-                // The first family is not fused with the mixed-family inner sum.
-                accumulate_h0_family(partial, p)?;
-                // B needs H_-p, not H_p. Do not assume an adjoint relation for
-                // every storage-valid (possibly hand-mutated) input model.
-                if !nonzero(-p) {
-                    return Ok(());
-                }
-                let h_minus_p = harmonic_cache.harmonic_blocks(-p);
-                let mut inner_sum = RealSpaceBlockMap::new();
-                let mut scaling_safe = true;
-                for &m in &signed_harmonics {
-                    if m == p || !nonzero(m) || !nonzero(p - m) {
-                        continue;
-                    }
-                    let h_difference = harmonic_cache.harmonic_blocks(p - m);
-                    let h_m = harmonic_cache.harmonic_blocks(m);
-                    let (inner, inner_r) = real_space_commutator_with_supports(
-                        &h_difference,
-                        &self.hamR,
-                        &h_m,
-                        &self.hamR,
-                    )?;
-                    let weight = 1.0 / (m as f64);
-                    if !grouped_inner_scaling_is_safe(&inner, weight) {
-                        scaling_safe = false;
-                        break;
-                    }
-                    accumulate_scaled_real_space_blocks(&mut inner_sum, &inner, &inner_r, weight)?;
-                }
-                scaling_safe = scaling_safe
-                    && inner_sum.values().all(|block| {
-                        grouped_inner_scaling_is_safe(std::slice::from_ref(block), 1.0)
-                    });
-                if !scaling_safe {
-                    // Reweighting before the outer product must not erase a
-                    // subnormal that the outer operand could amplify. Stream
-                    // this p termwise instead; do not retain all inner blocks.
-                    drop(inner_sum);
-                    for &m in &signed_harmonics {
-                        if m == p || !nonzero(m) || !nonzero(p - m) {
-                            continue;
-                        }
-                        let h_difference = harmonic_cache.harmonic_blocks(p - m);
-                        let h_m = harmonic_cache.harmonic_blocks(m);
-                        let (inner, inner_r) = real_space_commutator_with_supports(
-                            &h_difference,
-                            &self.hamR,
-                            &h_m,
-                            &self.hamR,
-                        )?;
-                        let (outer, outer_r) = real_space_commutator_with_supports(
-                            &h_minus_p, &self.hamR, &inner, &inner_r,
-                        )?;
-                        let scale = inverse_omega_squared / (3.0 * (m as f64) * (p as f64));
-                        accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)?;
-                    }
-                    return Ok(());
-                }
-                if inner_sum.is_empty() {
-                    return Ok(());
-                }
-                // Y_p = sum_{m != p} [H_(p-m), H_m] / m. Linearity lets one
-                // raw outer commutator replace all mixed-family outer terms.
-                let (rows, inner): (Vec<_>, Vec<_>) = inner_sum.into_iter().unzip();
-                let inner_r =
-                    Array2::from_shape_fn((rows.len(), DIM), |(row, axis)| rows[row][axis]);
-                let (outer, outer_r) =
-                    real_space_commutator_with_supports(&h_minus_p, &self.hamR, &inner, &inner_r)?;
-                let scale = inverse_omega_squared / (3.0 * (p as f64));
-                accumulate_scaled_real_space_blocks(partial, &outer, &outer_r, scale)
-            };
-
-            let order_two_blocks = if signed_harmonics.len() > 1 && rayon::current_num_threads() > 1
-            {
-                let min_harmonics_per_job =
-                    (signed_harmonics.len() / rayon::current_num_threads()).max(1);
-                signed_harmonics
-                    .par_iter()
-                    .with_min_len(min_harmonics_per_job)
-                    .try_fold(
-                        RealSpaceBlockMap::new,
-                        |mut partial, &m| -> Result<RealSpaceBlockMap> {
-                            accumulate_fixed_index(&mut partial, m)?;
-                            Ok(partial)
-                        },
-                    )
-                    .try_reduce(RealSpaceBlockMap::new, |left, right| {
-                        Ok(merge_real_space_block_maps(left, right))
-                    })?
-            } else {
-                let mut partial = RealSpaceBlockMap::new();
-                for &m in &signed_harmonics {
-                    accumulate_fixed_index(&mut partial, m)?;
-                }
-                partial
-            };
-            blocks = merge_real_space_block_maps(blocks, order_two_blocks);
-        }
-
-        // Assemble the model on the merged support and enforce exact
-        // real-space Hermiticity.
-        let n_r_out = blocks.len();
-        let mut ham = Array3::<Complex<f64>>::zeros((n_r_out, nsta, nsta));
-        let mut ham_r = Array2::<isize>::zeros((n_r_out, DIM));
-        for (i, (key, block)) in blocks.into_iter().enumerate() {
-            for (a, v) in key.iter().enumerate() {
-                ham_r[[i, a]] = *v;
-            }
-            ham.index_axis_mut(Axis(0), i).assign(&block);
-        }
-        place_origin_first(&mut ham, &mut ham_r)?;
-        enforce_real_space_hermiticity(&mut ham, &ham_r)?;
-
-        self.floquet_effective_output(ham, ham_r)
+        validate_effective_cache_layout(cache_max, self.hamR.nrows(), self.nsta())?;
+        let harmonic_cache = if R::HAS_RMATRIX {
+            self.position_harmonic_cache(cache_drive, cache_max)?
+        } else {
+            // Reject links that neither the Bessel ladder nor its temporal
+            // Fourier fallback can resolve without aliasing.
+            validate_link_resolvability(self, cache_drive, -cache_max, cache_max)?;
+            self.floquet_harmonic_cache(
+                cache_drive,
+                -cache_max,
+                cache_max,
+                &PeierlsFourierMethod::Bessel {
+                    cutoff_margin: BESSEL_CUTOFF_MARGIN,
+                },
+            )
+        };
+        Ok((harmonic_cache, harmonic_max, has_time_dependence))
     }
 
     fn floquet_effective_output(
@@ -2383,81 +2101,6 @@ fn effective_cache_max(order: usize, harmonic_max: isize) -> Result<isize> {
     }
 }
 
-// Only the mixed-family regrouping scales an inner result before the outer
-// product. Keep subnormal/underflowing components on the original arithmetic
-// order instead of silently losing a contribution that might be amplified.
-fn grouped_inner_scaling_is_safe(blocks: &[Array2<Complex<f64>>], weight: f64) -> bool {
-    weight.is_finite()
-        && blocks.iter().flat_map(|block| block.iter()).all(|value| {
-            [value.re, value.im]
-                .into_iter()
-                .all(|component| component == 0.0 || (component * weight).is_normal())
-        })
-}
-
-// Bound complete convolution L1 norms, not a band gap or amplitude tolerance.
-// If L bounds every harmonic's sum of |re|+|im| over all blocks/entries, then
-// ||[A,B]||_1 <= 2 L^2 and each raw nested term is bounded by 4 L^3.
-// The grouped inner has at most 2N terms with |1/m| <= 1. Keep ample overflow
-// headroom for both the old and grouped arithmetic and their final signed sum.
-// Reject underflowed/coarse bounds as well; the original path remains valid
-// for exact-zero terms even when 1/W^2 itself is not representable.
-fn can_regroup_order_two(
-    cache: &FloquetHarmonicCache,
-    harmonic_max: isize,
-    inverse_omega: f64,
-) -> bool {
-    let inverse_squared = inverse_omega * inverse_omega;
-    if harmonic_max <= 0 || !inverse_squared.is_normal() {
-        return false;
-    }
-    // Guard minima as well as maxima: dividing an inner before the outer
-    // multiplication must not underflow a raw triple product that the final
-    // inverse-frequency scale could amplify. With |m| < 2^63, input nonzero
-    // components >= eps^4 = 2^-208 give a least binary quantum of at least
-    // 2^(-3*(208+52)-(63+52)) = 2^-895 before that final scale, safely above
-    // the normal limit 2^-1022 even after cancellation. This selects the old
-    // arithmetic for smaller components; it never prunes their contributions.
-    let n = harmonic_max as f64;
-    // Splitting a subnormal original coefficient can also change a term that
-    // a large raw outer would amplify. Keep every original A/B scale normal.
-    if !(inverse_squared / (3.0 * n * n)).is_normal() {
-        return false;
-    }
-    let minimum_component = f64::EPSILON.powi(4);
-    let mut l1 = 0.0;
-    for value in &cache.blocks {
-        for component in [value.re, value.im] {
-            let magnitude = component.abs();
-            if magnitude != 0.0 && magnitude < minimum_component {
-                return false;
-            }
-            l1 += magnitude;
-        }
-    }
-    if !l1.is_normal() {
-        return false;
-    }
-    let inner = 2.0 * l1 * l1;
-    let grouped_inner = (2.0 * n) * inner;
-    let raw_outer = 2.0 * l1 * inner;
-    let grouped_outer = 2.0 * l1 * grouped_inner;
-    let first_order = n * inner * inverse_omega;
-    let second_order = (2.0 * n) * (raw_outer + grouped_outer) * inverse_squared;
-    let final_sum = l1 + first_order + second_order;
-    [
-        inner,
-        grouped_inner,
-        raw_outer,
-        grouped_outer,
-        first_order,
-        second_order,
-        final_sum,
-    ]
-    .into_iter()
-    .all(|bound| bound.is_normal() && bound < f64::MAX / 1024.0)
-}
-
 fn validate_effective_cache_layout(cache_max: isize, n_r: usize, nsta: usize) -> Result<usize> {
     let harmonic_count = cache_max
         .checked_mul(2)
@@ -2533,6 +2176,41 @@ fn validate_effective_options<const DIM: usize>(
     effective_harmonic_max(options)?;
     if let Some(target_ham_r) = &options.target_hamR {
         validate_target_hamr::<DIM>(target_ham_r)?;
+    }
+    Ok(())
+}
+
+/// Require unique translations that are closed under negation.
+///
+/// The effective-model paths accumulate blocks in a map keyed by translation
+/// and later enforce Hermiticity by pairing every `R` with `-R`; a duplicate or
+/// unpaired vector would make either path ambiguous.
+fn validate_effective_support<const DIM: usize>(support: &Array2<isize>) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::<Vec<isize>>::new();
+    for row in support.outer_iter() {
+        let vector = row.to_vec();
+        if !seen.insert(vector.clone()) {
+            return Err(TbError::Other(format!(
+                "the effective model needs unique hopping translations, but R={vector:?} appears more than once"
+            )));
+        }
+    }
+    for vector in &seen {
+        let negated = vector
+            .iter()
+            .map(|value| {
+                value.checked_neg().ok_or_else(|| {
+                    TbError::Other(format!(
+                        "the effective model cannot negate the translation R={vector:?}"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if !seen.contains(&negated) {
+            return Err(TbError::MissingHermitianConjugateHopping {
+                r: Array1::from(vector.clone()),
+            });
+        }
     }
     Ok(())
 }

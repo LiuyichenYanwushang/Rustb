@@ -732,16 +732,21 @@ coherent and mutually incoherent modes, respectively. All return ordinary
 `Model` values preserving the input `R` type. Use `fold_quasienergy` to fold
 Sambe eigenvalues.
 
-`NoRMatrix` keeps the all-orders Bessel Peierls path. For uniform drives,
-`HasRMatrix` uses the velocity-gauge Taylor expansion of the projected
-length-gauge Hamiltonian through `O(a²)`. It uses the full `r_i(R)` in the
-covariant derivative `D_i` and includes the curvature term proportional to
-`a_i * dot(a_j)`, with `dot(a_j)` the time derivative. This weak-field
-approximation applies to Sambe and effective models; it is not the exact
-Peierls exponential.
-The effective methods separately truncate van Vleck at `order = 0`, `1`, or `2`,
-keeping only terms through `O(a²)` for `HasRMatrix`. `harmonic_max` cuts the
-van Vleck correction sums, not the time average.
+For uniform drives the diagonal-position gauge gives each real-space block
+`exp(-i a(t)·d) * [H + hbar da/dt · (X - X_d)]`, with the bond
+`d = (R + tau_j - tau_i) · lat` and `X_d` the diagonal position set by the
+orbital centres. `HasRMatrix` retains the full projected-position remainder
+`X - X_d`; for `NoRMatrix` it vanishes and only the Peierls-dressed hopping
+remains. Both use the existing link Bessel coefficients or the per-link
+DFT fallback, with no expansion in field amplitude.
+
+Sambe retains only photon sectors `-N..=N`, using harmonics through
+`±2N` for their differences. Separately, the same-size effective model
+keeps van Vleck terms through `order = 0`, `1`, or `2` in `1/W`; at
+order 2 the outer harmonic indices are bounded by `harmonic_max` and their
+difference can reach twice that cutoff. The time average is not truncated
+by this cutoff. A zero-aliasing spatial FFT supplies the production
+convolutions.
 
 `floquet_effective_q_model` adds the coherent long-wavelength `O(a² q/W)`
 correction for `NoRMatrix`; nonzero `q` with `HasRMatrix` returns an error.
