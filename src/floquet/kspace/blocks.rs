@@ -347,7 +347,15 @@ impl DenseBlocks {
         }
     }
 
-    /// Accumulate one k-slice contribution into a model row.
+    /// Copy one inverse-FFT block into the canonical output row.
+    pub(super) fn set_slot(&mut self, slot: u32, block: ArrayView2<'_, C>) {
+        debug_assert_ne!(slot, NO_SLOT);
+        self.ham
+            .index_axis_mut(Axis(0), slot as usize)
+            .assign(&block);
+    }
+
+    /// Add an aligned time-average block into a model row.
     pub(super) fn add_slot(&mut self, slot: u32, phase: C, block: ArrayView2<'_, C>) {
         debug_assert_ne!(slot, NO_SLOT);
         let mut target = self.ham.index_axis_mut(Axis(0), slot as usize);

@@ -751,6 +751,14 @@ for `A` and `|m| <= 2h` for `B`, and input Hamiltonian harmonics through
 spatial FFT handles degree-four products at order 3, so the output
 hopping support can reach fourfold sums of input translations.
 
+The FFT evaluates disjoint k slices concurrently with OpenBLAS or MKL,
+subject to a memory cap. It keeps harmonics local to each slice and stores
+one full-grid correction for a batched inverse FFT along the final axis.
+Use single-threaded BLAS (`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`)
+to avoid oversubscribing Rayon. Netlib keeps pointwise matrix products
+serial for safety, but the final-axis FFT can still run in parallel. The
+static effective-model path and Sambe construction are unchanged.
+
 `floquet_effective_q_model` adds the coherent long-wavelength `O(a² q/W)`
 correction for `NoRMatrix`; nonzero `q` with `HasRMatrix` returns an error.
 Order 3 extends only the uniform baseline, not the finite-`q` correction.

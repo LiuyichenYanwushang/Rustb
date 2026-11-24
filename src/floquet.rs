@@ -1619,8 +1619,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// returned by [`Floquet::floquet_model`]. The FFT assumes Hermitian
     /// input hopping blocks as produced by the model builders.
     ///
-    /// Rayon parallelizes transforms and independent k points. When using
-    /// multiple Rayon threads, set BLAS threads to one to avoid oversubscription.
+    /// OpenBLAS and MKL builds can process multiple FFT slices concurrently
+    /// within the memory budget. Only the correction is stored on the full
+    /// grid; each active slice has separate harmonic scratch. Set BLAS
+    /// threads to one when using multiple Rayon threads.
     ///
     /// # Errors
     /// Returns an error for invalid input, unsupported frequency scales or

@@ -1041,14 +1041,20 @@ appreciable harmonics outside `±h`, increase `h` and check convergence. The
 cutoff does not change the time average. To preserve the outer cutoff of an
 old call that used a photon truncation, pass `.with_harmonic_max(2 * old_n_max)`.
 
-Production spatial convolutions use only a zero-aliasing FFT grid, streamed
-in slabs, with no user k-mesh or target hopping range. The effective hopping
-support is determined from the harmonic support and can reach double
-Minkowski sums at order 1, triple sums at order 2, and fourfold sums at order 3
-(the cubic inverse-frequency term is degree four in the input Hamiltonian
-blocks). With multiple Rayon threads, pin BLAS to one thread
-(`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`) to avoid oversubscription.
+Production spatial convolutions use only a zero-aliasing FFT grid, with no
+user k-mesh or target hopping range. The effective hopping support is
+determined from the harmonic support and can reach double Minkowski sums
+at order 1, triple sums at order 2, and fourfold sums at order 3 (the cubic
+inverse-frequency term is degree four in the input Hamiltonian blocks).
 
+With OpenBLAS or MKL, Rayon evaluates disjoint k slices concurrently,
+subject to the FFT working-set cap. Each slice computes its own harmonics;
+only the assembled correction fills the entire grid. A batched inverse FFT
+along the final axis completes the transform back to real space. Pin BLAS
+to one thread (`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`) to avoid
+oversubscription. Netlib evaluates one slice at a time with serial pointwise
+matrix products for safety; the final-axis FFT can still run in parallel.
+The static effective-model path and Sambe construction are unchanged.
 
 For multiple mutually incoherent modes,
 `floquet_effective_mode_resolved_model` computes

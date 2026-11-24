@@ -121,6 +121,12 @@
   electronic effective models, including the linear-`q` anticommutator.
   At order 2, `|m|, |m'| <= harmonic_max` in the mixed family retain
   inner differences through `±2*harmonic_max`.
+- Evaluate disjoint electronic Floquet k slices concurrently with OpenBLAS
+  or MKL, subject to the FFT working-set cap. Keep harmonics slice-local and
+  retain one full-grid correction for a batched inverse FFT along the final
+  axis. Use single-threaded BLAS with Rayon. Netlib keeps pointwise products
+  serial for safety; the final-axis FFT can still run in parallel. Static
+  effective-model and Sambe paths are unchanged.
 - `FloquetEffectiveOptions::with_order(3)` adds the full cubic zero-average
   van Vleck coefficient to electronic effective models. For `h = harmonic_max`,
   the `A` and `B` generators use windows `±h` and `±2h`, respectively, and

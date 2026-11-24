@@ -834,11 +834,17 @@ support. The legacy test-only DFT reference covers orders 0–2 and accepts
 explicit `n_time` and `target_hamR` for cross-checks; the latter must be
 unique and closed under `R -> -R`. Neither option is public.
 
-**Threading:** the streaming FFT engine processes k points with Rayon and
-uses parallel transform lanes when the pool has multiple threads. Pin BLAS
-to one thread (`OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`) in this case to
-avoid oversubscription. Support invariants (unique, negation-closed) are
-validated; builders preserve the required Hermiticity `H(R) = H(-R)†`.
+**FFT workspace and threading:** OpenBLAS and MKL evaluate disjoint k slices
+in the same Rayon pool. The 64 GiB FFT working-set cap limits how many slices
+can be in flight. Keep harmonic buffers slice-local and write the assembled
+correction into one full-grid buffer. Use a batched inverse FFT along the
+final axis, then gather the real-space support once. Pin BLAS to one thread
+(`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`) to avoid oversubscription.
+With reference Netlib, evaluate one slice at a time and keep pointwise matrix
+products serial to avoid concurrent CBLAS calls; the final-axis FFT can still
+run in parallel. The static effective-model path and Sambe construction are
+unchanged. Support invariants (unique, negation-closed) are validated; builders
+preserve the required Hermiticity `H(R) = H(-R)†`.
 
 ---
 

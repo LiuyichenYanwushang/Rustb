@@ -13,22 +13,18 @@
 //! halves their matrix products. Hand-mutating the public ham blocks to break
 //! that relation is unsupported, exactly as for the real-space path.
 //!
-//! Streaming layout: the last resolved axis is sampled slice by slice. For each
-//! k-slice the harmonics are reduced along that axis, transformed over the
-//! remaining axes, assembled pointwise, transformed back, and accumulated into
-//! the output blocks with the slice phase. Peak memory is one slice of harmonic
-//! blocks plus one slice of assembled blocks, not the full k-point volume.
+//! The last resolved axis is sampled in concurrent slices within the memory
+//! budget. Each task owns its harmonic scratch and a disjoint slice of the
+//! correction grid. After pointwise assembly and the in-slice inverse, a
+//! batched FFT along the last axis completes the inverse before gathering R.
 
 use super::*;
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array3, Array4, ArrayView3, ArrayViewMut3};
 use num_complex::Complex;
-use std::f64::consts::TAU;
 
 mod blocks;
 mod grid;
-#[cfg(test)]
-mod perf;
 mod transform;
 mod vanvleck;
 
@@ -159,18 +155,22 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             return Ok((ham, ham_r));
         }
         let grid = KspaceGrid::for_polynomial(&self.hamR, DIM, degree)?;
-        validate_workspace(
+        let concurrent_slabs = workspace_concurrency(
             &grid,
             slots,
             nsta,
-            if order == 3 { harmonic_max as usize } else { 0 },
+            Some(if order == 3 { harmonic_max as usize } else { 0 }),
         )?;
         let (support_box, support) =
             blocks::effective_support(&self.hamR, DIM, harmonic_max, order)?;
         let mut accumulator = blocks::DenseBlocks::new(support_box, support, nsta, DIM)?;
-        {
-            let mut harmonics = Array4::<C>::zeros((slots, grid.points_per_slice(), nsta, nsta));
-            inverse_polynomial(&grid, nsta, &mut accumulator, |kz, assembled| {
+        inverse_polynomial(
+            &grid,
+            nsta,
+            slots,
+            concurrent_slabs,
+            &mut accumulator,
+            |kz, mut harmonics, assembled| {
                 transform::slice_harmonics_into(
                     harmonic_cache,
                     used_max,
@@ -188,8 +188,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     drive.omega0_ev,
                     assembled,
                 )
-            })?
-        }
+            },
+        )?;
         // H_0 is already in real space, so never take an FFT round trip for
         // the baseline. Add each aligned row to the canonical half.
         // Within a negation-closed sorted support the negative partner is at
@@ -267,85 +267,164 @@ pub(super) fn kspace_anticommutator(
     }
     let dim = ham_r.ncols();
     let grid = KspaceGrid::for_polynomial(ham_r, dim, 2)?;
-    validate_workspace(&grid, 2, nsta, 0)?;
+    let concurrent_slabs = workspace_concurrency(&grid, 2, nsta, None)?;
     let (support_box, support) = blocks::quadratic_support(ham_r, dim)?;
     let mut accumulator = blocks::DenseBlocks::new(support_box, support, nsta, dim)?;
-    let mut left = Array3::zeros((grid.points_per_slice(), nsta, nsta));
-    let mut right = Array3::zeros(left.raw_dim());
-    inverse_polynomial(&grid, nsta, &mut accumulator, |kz, mut assembled| {
-        transform::forward_slice_into(a, &grid, kz, left.view_mut(), input_factor)?;
-        transform::forward_slice_into(b, &grid, kz, right.view_mut(), input_factor)?;
-        for ((a_k, b_k), mut target) in left
-            .outer_iter()
-            .zip(right.outer_iter())
-            .zip(assembled.outer_iter_mut())
-        {
-            let one = C::new(1.0, 0.0);
-            general_mat_mul(one, &a_k, &b_k, C::new(0.0, 0.0), &mut target);
-            general_mat_mul(one, &b_k, &a_k, one, &mut target);
-        }
-        Ok(())
-    })?;
+    inverse_polynomial(
+        &grid,
+        nsta,
+        2,
+        concurrent_slabs,
+        &mut accumulator,
+        |kz, scratch, mut assembled| {
+            let (mut left, mut right) = scratch.split_at(Axis(0), 1);
+            let mut left = left.index_axis_mut(Axis(0), 0);
+            let mut right = right.index_axis_mut(Axis(0), 0);
+            transform::forward_slice_into(a, &grid, kz, left.view_mut(), input_factor)?;
+            transform::forward_slice_into(b, &grid, kz, right.view_mut(), input_factor)?;
+            for ((a_k, b_k), mut target) in left
+                .outer_iter()
+                .zip(right.outer_iter())
+                .zip(assembled.outer_iter_mut())
+            {
+                let one = C::new(1.0, 0.0);
+                general_mat_mul(one, &a_k, &b_k, C::new(0.0, 0.0), &mut target);
+                general_mat_mul(one, &b_k, &a_k, one, &mut target);
+            }
+            Ok(())
+        },
+    )?;
     let (blocks, rows) = finish_checked(accumulator)?;
     Ok((blocks, rows, restore))
 }
 
-fn validate_workspace(
+/// Return the maximum number of simultaneously live slab buffers.
+fn workspace_concurrency(
     grid: &KspaceGrid,
     slots: usize,
     nsta: usize,
-    cubic_cutoff: usize,
-) -> Result<()> {
+    van_vleck: Option<usize>,
+) -> Result<usize> {
     let lanes = grid.points_per_slice() as u128;
     let points = grid.total_points() as u128;
-    let block_bytes = (nsta as u128)
-        .pow(2)
-        .saturating_mul(std::mem::size_of::<C>() as u128);
-    // Two full grid volumes of matrices conservatively cover the output,
-    // support and slot arrays, including sparse supports and the padded grid.
-    let mut bytes = (2 * points + (slots as u128 + 2) * lanes).saturating_mul(block_bytes.max(48));
-    if cubic_cutoff > 0 {
-        let workers = if cfg!(any(feature = "netlib-static", feature = "netlib-system")) {
+    let threads = rayon::current_num_threads() as u128;
+    let netlib = cfg!(any(feature = "netlib-static", feature = "netlib-system"));
+    let block_bytes = (nsta as u128).pow(2).saturating_mul(size_of::<C>() as u128);
+    // Count the two co-live grids plus the output's row labels, dense slot map,
+    // support Vec capacity, and populated FFT coordinates separately.
+    let grid_metadata = (size_of::<usize>() * grid.dim()
+        + size_of::<u32>()
+        + 2 * size_of::<[isize; 3]>()
+        + size_of::<(usize, usize, u32)>()) as u128;
+    let base = points.saturating_mul(block_bytes.saturating_mul(2).saturating_add(grid_metadata));
+    // Reference Netlib uses process globals. Do not overlap its matrix products
+    // across slabs, although the transforms themselves can still use Rayon.
+    let max_slabs = (grid.slices() as u128).min(if netlib { 1 } else { threads });
+    // Include the two products and the two scaled inputs of the extreme-range
+    // second-order retry, even when cubic normalization scratch is live.
+    let scratch_blocks = match van_vleck {
+        None => 0,
+        Some(0) => 7,
+        Some(h) => 8 * h as u128 + 13,
+    };
+    let views = if van_vleck.is_some() {
+        size_of::<ArrayViewMut2<'_, C>>() as u128
+    } else {
+        0
+    };
+    let per_slab = lanes.saturating_mul(
+        (slots as u128)
+            .saturating_mul(block_bytes)
+            .saturating_add(views),
+    );
+    let in_slice_axis = (0..grid.slice_axes())
+        .map(|d| grid.axis_len(d))
+        .max()
+        .unwrap_or(1) as u128;
+    // Allow for FFT plans and their private lane scratch. The last-axis
+    // transform starts only after the input slab/pointwise buffers are gone.
+    let fft_bytes = 8 * size_of::<C>() as u128;
+    let inverse = if grid.slices() > 1 {
+        let final_lanes = lanes.saturating_mul((nsta as u128).pow(2));
+        (threads.min(final_lanes) + 1)
+            .saturating_mul(grid.slices() as u128)
+            .saturating_mul(fft_bytes)
+    } else {
+        0
+    };
+    let estimate = |slabs: u128| {
+        let points_in_flight = lanes * slabs;
+        let workers = if netlib {
             1
         } else {
-            rayon::current_num_threads()
+            threads.min(points_in_flight)
         };
-        // Two 4h+1 harmonic buffers, two accumulators, two normalization
-        // operands, and the three ordinary pointwise matrices per worker.
-        let scratch_blocks = 8 * cubic_cutoff as u128 + 9;
-        bytes = bytes.saturating_add(
-            (workers as u128)
-                .min(lanes)
-                .saturating_mul(scratch_blocks)
-                .saturating_mul(block_bytes),
-        );
+        let front_fft = (threads + 2 * slabs)
+            .saturating_mul(in_slice_axis)
+            .saturating_mul(fft_bytes);
+        let assemble = per_slab
+            .saturating_mul(slabs)
+            .saturating_add(
+                workers
+                    .saturating_mul(scratch_blocks)
+                    .saturating_mul(block_bytes),
+            )
+            .saturating_add(front_fft);
+        base.saturating_add(assemble.max(inverse))
+    };
+    let limit = KSPACE_MEMORY_HARD_LIMIT.min(isize::MAX as u128);
+    for slabs in (1..=max_slabs).rev() {
+        if estimate(slabs) <= limit {
+            return Ok(slabs as usize);
+        }
     }
-    if bytes > KSPACE_MEMORY_HARD_LIMIT || bytes > isize::MAX as u128 {
-        return Err(TbError::Other(format!(
-            "the k-space convolution needs about {:.1} GiB; reduce the support, harmonic cutoff, or order",
-            bytes as f64 / (1024.0 * 1024.0 * 1024.0)
-        )));
-    }
-    Ok(())
+    Err(TbError::Other(format!(
+        "the k-space convolution needs about {:.1} GiB with one slab; reduce the support, harmonic cutoff, or order",
+        estimate(1) as f64 / (1024.0 * 1024.0 * 1024.0)
+    )))
 }
 
-/// Apply the pointwise polynomial one slab at a time and inverse-transform
-/// onto the exact output support. The callback overwrites every output point.
+/// Give each task a disjoint part of the output grid and one reusable buffer
+/// for the input harmonic slab. The full harmonic volume is never stored.
 fn inverse_polynomial(
     grid: &KspaceGrid,
     nsta: usize,
+    scratch_slots: usize,
+    concurrent_slabs: usize,
     accumulator: &mut blocks::DenseBlocks,
-    mut assemble: impl FnMut(usize, ArrayViewMut3<'_, C>) -> Result<()>,
+    assemble: impl Fn(usize, ArrayViewMut4<'_, C>, ArrayViewMut3<'_, C>) -> Result<()> + Sync,
 ) -> Result<()> {
     let slices = grid.slices();
     let lanes = grid.points_per_slice();
-    let slots = phase_slots(grid, accumulator);
-    let mut assembled = Array3::<C>::zeros((lanes, nsta, nsta));
-    let mut real = Array3::<C>::zeros(assembled.raw_dim());
-    for kz in 0..slices {
-        assemble(kz, assembled.view_mut())?;
-        transform::inverse_slice_into(assembled.view(), grid, real.view_mut())?;
-        accumulate_slice(grid, kz, &slots, real.view(), accumulator);
+    let mut volume = Array4::<C>::zeros((slices, lanes, nsta, nsta));
+    let mut rest = volume.view_mut();
+    let mut tasks = Vec::with_capacity(concurrent_slabs);
+    let mut first = 0;
+    for task in 0..concurrent_slabs {
+        let len = slices / concurrent_slabs + usize::from(task < slices % concurrent_slabs);
+        let (part, remain) = rest.split_at(Axis(0), len);
+        tasks.push((first, part));
+        rest = remain;
+        first += len;
+    }
+    tasks
+        .into_par_iter()
+        .try_for_each(|(first, mut part)| -> Result<()> {
+            let mut scratch = Array4::zeros((scratch_slots, lanes, nsta, nsta));
+            for (i, mut slab) in part.outer_iter_mut().enumerate() {
+                assemble(first + i, scratch.view_mut(), slab.view_mut())?;
+                transform::inverse_slice_inplace(slab, grid)?;
+            }
+            Ok(())
+        })?;
+    transform::inverse_streaming_axis(volume.view_mut())?;
+    for (residue, lane, slot) in output_slots(grid, accumulator) {
+        accumulator.set_slot(
+            slot,
+            volume
+                .index_axis(Axis(0), residue)
+                .index_axis(Axis(0), lane),
+        );
     }
     Ok(())
 }
@@ -360,9 +439,8 @@ fn finish_checked(accumulator: blocks::DenseBlocks) -> Result<(Array3<C>, Array2
     Ok(out)
 }
 
-/// Only occupied (streaming residue, lane, model row) entries, sorted so
-/// each streaming phase is evaluated once and then shared by all its lanes.
-fn phase_slots(grid: &KspaceGrid, accumulator: &blocks::DenseBlocks) -> Vec<(usize, usize, u32)> {
+/// Map each stored output row to its folded FFT coordinate; read in grid order.
+fn output_slots(grid: &KspaceGrid, accumulator: &blocks::DenseBlocks) -> Vec<(usize, usize, u32)> {
     let last = grid.dim() - 1;
     let mut slots = Vec::with_capacity(accumulator.stored_blocks());
     for (r, slot) in accumulator.populated_slots() {
@@ -375,25 +453,45 @@ fn phase_slots(grid: &KspaceGrid, accumulator: &blocks::DenseBlocks) -> Vec<(usi
     slots
 }
 
-fn accumulate_slice(
-    grid: &KspaceGrid,
-    kz: usize,
-    slots: &[(usize, usize, u32)],
-    real: ArrayView3<'_, C>,
-    accumulator: &mut blocks::DenseBlocks,
-) {
-    let slices = grid.slices();
-    // inverse_slice normalized the in-slice FFT. Reduce integral turns
-    // before applying the streaming-axis phase and normalization.
-    // ponytail: this direct sum keeps just two slice buffers; consider a
-    // batched 1D FFT if a densely populated streaming axis dominates timings.
-    for group in slots.chunk_by(|a, b| a.0 == b.0) {
-        let turn = (kz as i128 * group[0].0 as i128) % slices as i128;
-        let phase = C::from_polar(1.0 / slices as f64, -TAU * turn as f64 / slices as f64);
-        for &(_, lane, slot) in group {
-            accumulator.add_slot(slot, phase, real.index_axis(Axis(0), lane));
-        }
+#[cfg(test)]
+#[test]
+fn independent_slabs_overlap_on_the_rayon_pool() {
+    use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
+
+    if cfg!(any(feature = "netlib-static", feature = "netlib-system")) {
+        return;
     }
+    let input = ndarray::array![[0], [-1], [1]];
+    let grid = KspaceGrid::for_polynomial(&input, 1, 2).unwrap();
+    let (bounds, support) = blocks::effective_support(&input, 1, 1, 1).unwrap();
+    let mut accumulator = blocks::DenseBlocks::new(bounds, support, 1, 1).unwrap();
+    let gate = (Mutex::new(0), Condvar::new());
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    pool.install(|| {
+        let slabs = workspace_concurrency(&grid, 1, 1, None).unwrap();
+        assert_eq!(slabs, 2);
+        inverse_polynomial(&grid, 1, 1, slabs, &mut accumulator, |k, _, mut out| {
+            if k == 0 || k == grid.slices().div_ceil(2) {
+                let mut count = gate.0.lock().unwrap();
+                *count += 1;
+                gate.1.notify_all();
+                let (count, _) = gate
+                    .1
+                    .wait_timeout_while(count, Duration::from_secs(5), |n| *n < 2)
+                    .unwrap();
+                assert_eq!(*count, 2, "two slices should run concurrently");
+            }
+            out.fill(C::new(2.0, 0.0));
+            Ok(())
+        })
+        .unwrap();
+    });
+    let (out, _) = accumulator.finish().unwrap();
+    assert!((out[[0, 0, 0]] - C::new(2.0, 0.0)).norm() < 1e-14);
 }
 
 #[cfg(test)]
@@ -409,14 +507,52 @@ fn cubic_workspace_counts_parallel_generator_buffers() {
         .build()
         .unwrap();
     pool.install(|| {
-        validate_workspace(&grid, 193, 1_000, 0).unwrap();
-        assert!(validate_workspace(&grid, 193, 1_000, 32).is_err());
+        assert_eq!(
+            workspace_concurrency(&grid, 193, 1_000, Some(0)).unwrap(),
+            1
+        );
+        assert!(workspace_concurrency(&grid, 193, 1_000, Some(32)).is_err());
     });
 }
 
 #[cfg(test)]
 #[test]
-fn phase_slots_only_visit_populated_representatives() {
+fn workspace_counts_output_metadata_for_small_matrices() {
+    // Test the bounding grid without constructing hundreds of millions of rows.
+    let input = ndarray::array![[0, 0], [5_625, 5_625], [-5_625, -5_625]];
+    let grid = KspaceGrid::for_polynomial(&input, 2, 2).unwrap();
+    assert!(workspace_concurrency(&grid, 3, 2, None).is_err());
+}
+
+#[cfg(test)]
+#[test]
+fn workspace_counts_simultaneous_retry_matrices() {
+    let input = ndarray::array![[0]];
+    let grid = KspaceGrid::for_polynomial(&input, 1, 3).unwrap();
+    assert!(workspace_concurrency(&grid, 5, 18_000, Some(0)).is_err());
+}
+
+#[cfg(test)]
+#[test]
+fn workspace_counts_only_live_fft_and_pointwise_workers() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    pool.install(|| {
+        let grid = KspaceGrid::for_polynomial(&ndarray::array![[0], [12], [-12]], 1, 2).unwrap();
+        assert!(workspace_concurrency(&grid, 2, 4_000, None).is_ok());
+        let grid =
+            KspaceGrid::for_polynomial(&ndarray::array![[0], [2_000_000], [-2_000_000]], 1, 2)
+                .unwrap();
+        // One matrix element permits just one final-axis FFT lane.
+        assert!(workspace_concurrency(&grid, 2, 1, None).is_ok());
+    });
+}
+
+#[cfg(test)]
+#[test]
+fn output_slots_only_visit_populated_representatives() {
     let input = ndarray::array![
         [0, 0, 0],
         [1, -10, 20],
@@ -429,7 +565,7 @@ fn phase_slots_only_visit_populated_representatives() {
     let acc = blocks::DenseBlocks::new(bounds, support, 1, 3).unwrap();
     let ny = grid.axis_len(1);
     assert_eq!(
-        phase_slots(&grid, &acc),
+        output_slots(&grid, &acc),
         [(0, 0, 0), (20, 3, 3), (20, 2 * ny - 10, 4)]
     );
 }

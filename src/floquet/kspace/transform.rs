@@ -6,8 +6,9 @@ use super::C;
 use super::grid::KspaceGrid;
 use crate::error::{Result, TbError};
 #[cfg(test)]
-use ndarray::Axis;
-use ndarray::{Array3, Array4, ArrayView3, ArrayViewMut3, ArrayViewMut4, s};
+use ndarray::Array3;
+use ndarray::parallel::prelude::*;
+use ndarray::{Array1, Array4, ArrayView3, ArrayViewMut3, ArrayViewMut4, Axis, Zip, s};
 use ndrustfft::{FftHandler, ndfft_inplace, ndfft_inplace_par};
 use std::f64::consts::TAU;
 
@@ -174,47 +175,43 @@ fn forward_slice_with_handlers(
     Ok(())
 }
 
-/// Inverse transform of one slice of assembled effective blocks.
-///
-/// Input and output both have shape (points_per_slice, nsta, nsta). The result
-/// holds
-///
-///   X(R_0, R_1) = (1 / N_0 N_1) sum_{k_0, k_1}
-///                  X(k_0, k_1) exp(-2*pi*i* k . R)
-///
-/// with R folded onto the grid. The normalisation is applied here.
-///
-/// This allocates the output; the sibling inverse_slice_into is the
-/// reusable-buffer form used by the streaming driver.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Allocating inverse slice transform for the reference tests.
+#[cfg(test)]
 pub(super) fn inverse_slice(blocks: ArrayView3<'_, C>, grid: &KspaceGrid) -> Result<Array3<C>> {
     let mut out = Array3::<C>::zeros(blocks.raw_dim());
     inverse_slice_into(blocks, grid, out.view_mut())?;
     Ok(out)
 }
 
-/// Write the inverse slice transform into a caller-provided buffer.
-///
-/// The buffer must be a standard-layout (points_per_slice, nsta, nsta) array;
-/// every element is overwritten. The transform is a plain unnormalised forward
-/// FFT over the slice axes followed by the explicit normalisation factor, so a
-/// forward slice followed by this inverse recovers the real-space blocks.
+/// Copy the input into a caller-provided buffer before transforming it.
+#[cfg(test)]
 pub(super) fn inverse_slice_into(
     blocks: ArrayView3<'_, C>,
     grid: &KspaceGrid,
     mut out: ArrayViewMut3<'_, C>,
 ) -> Result<()> {
+    if out.shape() != blocks.shape() {
+        return Err(TbError::Other(format!(
+            "the k-space inverse slice output has shape {:?}, expected {:?}",
+            out.shape(),
+            blocks.shape()
+        )));
+    }
+    out.assign(&blocks);
+    inverse_slice_inplace(out, grid)
+}
+
+/// Invert the in-slice axes of standard-layout (points_per_slice, nsta, nsta)
+/// blocks, with a negative exponent and normalization by points_per_slice.
+pub(super) fn inverse_slice_inplace(
+    mut out: ArrayViewMut3<'_, C>,
+    grid: &KspaceGrid,
+) -> Result<()> {
     let lanes = grid.points_per_slice();
-    let shape = blocks.shape();
+    let shape = out.shape();
     if shape[0] != lanes || shape[1] != shape[2] {
         return Err(TbError::Other(format!(
             "the k-space inverse slice needs shape ({lanes}, nsta, nsta), got {shape:?}"
-        )));
-    }
-    if out.shape() != shape {
-        return Err(TbError::Other(format!(
-            "the k-space inverse slice output has shape {:?}, expected {shape:?}",
-            out.shape()
         )));
     }
     let nsta = shape[1];
@@ -223,7 +220,6 @@ pub(super) fn inverse_slice_into(
             "the k-space slice transform needs at least one state".into(),
         ));
     }
-    out.assign(&blocks);
     let buffer = out.as_slice_mut().ok_or_else(|| {
         TbError::Other("the k-space inverse slice needs a standard-layout buffer".into())
     })?;
@@ -232,10 +228,79 @@ pub(super) fn inverse_slice_into(
     let second_handler = FftHandler::<f64>::new(second);
     let mut workspace = padded_workspace(buffer, nsta, grid)?;
     forward_transform(&mut workspace, grid, &first_handler, &second_handler);
-    // The padded transform covers exactly points_per_slice points because the
-    // missing axes contribute one; the forward FFT is unnormalised.
     let norm = 1.0 / lanes as f64;
     workspace.mapv_inplace(|value| value * norm);
+    Ok(())
+}
+
+/// Finish the spatial inverse on a standard-layout (slices, lanes, nsta, nsta)
+/// volume whose in-slice axes are already transformed and normalized. The
+/// physical last axis is axis 0 in memory; each remaining index is independent.
+pub(super) fn inverse_streaming_axis(mut volume: ArrayViewMut4<'_, C>) -> Result<()> {
+    let (slices, lanes, nsta, cols) = volume.dim();
+    if slices == 0 || lanes == 0 || nsta == 0 || nsta != cols || !volume.is_standard_layout() {
+        return Err(TbError::Other(
+            "the k-space streaming inverse needs a nonempty standard-layout (slices, lanes, nsta, nsta) buffer".into(),
+        ));
+    }
+    if slices == 1 {
+        return Ok(());
+    }
+
+    let handler = FftHandler::<f64>::new(slices);
+    let norm = 1.0 / slices as f64;
+    // A power of two <= 1/(4*slices) leaves room for an unnormalized
+    // FFT, including addition of the two components in complex rotations.
+    let downscale = 2.0_f64.powi(-((slices - 1).ilog2() as i32 + 3));
+    let safe_max = f64::MAX * downscale;
+    // One lane buffer per active Rayon task, plus the internal FFT scratch.
+    Zip::from(volume.lanes_mut(Axis(0)))
+        .into_par_iter()
+        .for_each_init(
+            || Array1::<C>::zeros(slices),
+            |scratch, (mut lane,)| {
+                let peak = Zip::from(&mut *scratch)
+                    .and(&lane)
+                    .fold(0.0_f64, |peak, dst, &z| {
+                        *dst = z;
+                        peak.max(z.re.abs()).max(z.im.abs())
+                    });
+                // Scale only at the ends of the exponent range. In particular,
+                // don't divide ordinary inputs by slices before summing: that
+                // could round every tiny term to zero before it can accumulate.
+                let scale = if peak > safe_max {
+                    let restore = downscale.recip();
+                    if scratch.iter().any(|&z| {
+                        z.re.is_finite() && z.im.is_finite() && z * downscale * restore != z
+                    }) {
+                        // ponytail: for a mixed-range lane that cannot share a
+                        // scale, retain the old normalized DFT without another
+                        // buffer. Split by exponent and use multiple FFTs if
+                        // such lanes ever dominate measured working time.
+                        for (r, dst) in lane.iter_mut().enumerate() {
+                            *dst = scratch
+                                .iter()
+                                .enumerate()
+                                .map(|(k, &z)| z * (conjugate_phase(k, r, slices) * norm))
+                                .sum();
+                        }
+                        return;
+                    }
+                    downscale
+                } else if peak < f64::MIN_POSITIVE {
+                    (1_u64 << 54) as f64
+                } else {
+                    1.0
+                };
+                if scale != 1.0 {
+                    scratch.mapv_inplace(|z| z * scale);
+                }
+                // ndrustfft's unnormalized forward FFT has the negative sign.
+                ndfft_inplace(scratch, &handler, 0);
+                let factor = norm / scale;
+                lane.zip_mut_with(scratch, |dst, &src| *dst = src * factor);
+            },
+        );
     Ok(())
 }
 
@@ -531,6 +596,61 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn streaming_inverse_matches_direct_dft() {
+        let slices = 5;
+        let input = Array4::from_shape_fn((slices, 3, 2, 2), |(k, lane, i, j)| {
+            C::new(
+                ((7 * k + 5 * lane + 3 * i + j) % 13) as f64 * 0.17 - 0.8,
+                ((2 * k + 3 * lane + i + 5 * j) % 11) as f64 * 0.21 - 0.6,
+            )
+        });
+        let mut actual = input.clone();
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| inverse_streaming_axis(actual.view_mut()))
+            .unwrap();
+        for ((r, lane, i, j), &value) in actual.indexed_iter() {
+            let expected: C = (0..slices)
+                .map(|k| {
+                    let phase =
+                        C::from_polar(1.0 / slices as f64, -TAU * (k * r) as f64 / slices as f64);
+                    input[[k, lane, i, j]] * phase
+                })
+                .sum();
+            assert!((value - expected).norm() < 1e-12, "{value} vs {expected}");
+        }
+    }
+
+    #[test]
+    fn streaming_inverse_preserves_extreme_lanes_and_length_one() {
+        let huge = f64::MAX * 0.75;
+        let tiny = f64::from_bits(3);
+        let mixed_tiny = f64::from_bits(5);
+        let mut blocks = Array4::from_shape_fn((5, 3, 1, 1), |(_, lane, _, _)| match lane {
+            0 => C::new(huge, -huge),
+            1 => C::new(tiny, -tiny),
+            _ => C::new(huge, mixed_tiny),
+        });
+        inverse_streaming_axis(blocks.view_mut()).unwrap();
+        let dc = blocks[[0, 0, 0, 0]];
+        assert!((dc.re / huge - 1.0).abs() < 1e-15);
+        assert!((dc.im / huge + 1.0).abs() < 1e-15);
+        assert_eq!(blocks[[0, 1, 0, 0]], C::new(tiny, -tiny));
+        let mixed_dc = blocks[[0, 2, 0, 0]];
+        assert!((mixed_dc.re / huge - 1.0).abs() < 1e-15);
+        assert_eq!(mixed_dc.im, mixed_tiny);
+
+        let mut identity = Array4::from_elem((1, 2, 1, 1), C::new(-0.0, tiny));
+        inverse_streaming_axis(identity.view_mut()).unwrap();
+        for value in identity {
+            assert_eq!(value.re.to_bits(), (-0.0_f64).to_bits());
+            assert_eq!(value.im, tiny);
         }
     }
 

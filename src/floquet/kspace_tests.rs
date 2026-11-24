@@ -76,7 +76,7 @@ fn two_dimensional_model() -> Model<false, 2> {
     model
 }
 
-fn three_dimensional_model() -> Model<false, 3> {
+fn three_dimensional_model(z_hop: isize) -> Model<false, 3> {
     let lat = array![[1.0, 0.0, 0.0], [0.13, 0.94, 0.0], [-0.07, 0.11, 1.03]];
     let orb = array![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.31, 0.22, 0.13]];
     let atoms = vec![
@@ -101,7 +101,7 @@ fn three_dimensional_model() -> Model<false, 3> {
         (1, 2, [0, 0, 0], -0.26, 0.29),
         (0, 1, [1, 0, 0], -0.78, 0.24),
         (1, 2, [0, 1, 0], 0.45, -0.33),
-        (2, 0, [0, 0, 1], 0.31, 0.12),
+        (2, 0, [0, 0, z_hop], 0.31, 0.12),
         (0, 2, [1, -1, 0], 0.18, -0.21),
     ] {
         model.set_hop(Complex::new(re, im), row, column, &arr1(&cell), None);
@@ -608,7 +608,7 @@ fn streaming_fft_preserves_support_metadata_and_matches_literal_sum() {
     }
     check(&one_dimensional_model());
     check(&two_dimensional_model());
-    check(&three_dimensional_model());
+    check(&three_dimensional_model(1));
     check(&long_range_chain());
 }
 
@@ -691,8 +691,87 @@ fn driven_scalar_commutes_even_at_unrepresentable_inverse_square() {
 }
 
 #[test]
+fn slab_fft_matches_with_one_and_four_rayon_threads() {
+    #[track_caller]
+    fn assert_same<const DIM: usize>(serial: &Model<false, DIM>, parallel: &Model<false, DIM>) {
+        assert_eq!(serial.hamR, parallel.hamR);
+        assert_eq!(serial.ham.dim(), parallel.ham.dim());
+        for (index, &a) in serial.ham.indexed_iter() {
+            let b = parallel.ham[index];
+            assert!((a - b).norm() < 2e-12, "DIM={DIM}, {index:?}: {a} vs {b}");
+        }
+    }
+
+    let pools = [1, 4].map(|threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+    });
+    let options = FloquetEffectiveOptions::new()
+        .with_order(2)
+        .with_harmonic_max(1);
+    let mut model = two_dimensional_model();
+    let hopping = 0.26_f64;
+    model.set_hop(hopping, 0, 0, &array![1, -1], None);
+    let drive = two_mode_drive::<2>();
+    let q = array![0.013, -0.017];
+    let [serial, parallel] = pools.each_ref().map(|pool| {
+        pool.install(|| {
+            let uniform = model
+                .floquet_effective_model(&drive, Some(&options))
+                .unwrap();
+            let finite_q = model
+                .floquet_effective_q_model(&drive, Some(&options), &q)
+                .unwrap();
+            (uniform, finite_q)
+        })
+    });
+    assert_same(&serial.0, &parallel.0);
+    assert_same(&serial.1, &parallel.1);
+    assert_matches_oracle(&model, &parallel.0, &drive, 2, 1);
+
+    // Only the diagonal hop at R=(1,-1) can pair with itself to reach 2R.
+    // At that row the two gradient products give -2 |a·d|² t², then the
+    // final derivative contributes i q·(2d) and the denominator is 8W.
+    assert_eq!(parallel.0.hamR, parallel.1.hamR);
+    let row = row_of(&parallel.1.hamR, &[2, -2]).unwrap();
+    let d = array![1.0, -1.0].dot(&model.lat);
+    let a_dot_d: C = drive.modes[0]
+        .a_complex
+        .iter()
+        .zip(&d)
+        .map(|(&a, &d)| a * d)
+        .sum();
+    let expected = -C::I * (q.dot(&d) * a_dot_d.norm_sqr() * hopping.powi(2) / (2.0 * OMEGA));
+    let actual = parallel.1.ham[[row, 0, 0]] - parallel.0.ham[[row, 0, 0]];
+    assert!(
+        (actual - expected).norm() < 2e-12,
+        "finite q: {actual} vs {expected}"
+    );
+
+    let model = three_dimensional_model(-1);
+    let drive = two_mode_drive::<3>();
+    let [serial, parallel] = pools
+        .each_ref()
+        .map(|pool| pool.install(|| effective(&model, &drive, 3, 1)));
+    assert_same(&serial, &parallel);
+    // Every primitive row has x+y-z <= 1. This mixed-sign row has
+    // x+y-z = 4, so only the quartic spatial convolution reaches it.
+    let row = row_of(&parallel.hamR, &[2, 1, -1]).unwrap();
+    // Literal cubic sums on only the x+y-z=1 links, with the Peierls
+    // harmonics evaluated by direct Fourier sums on 128 time samples.
+    let expected = C::new(8.511_063_955_274e-6, 5.263_975_578_966e-6);
+    let actual = parallel.ham[[row, 0, 1]];
+    assert!(
+        (actual - expected).norm() < 2e-12,
+        "quartic edge: {actual} vs {expected}"
+    );
+}
+
+#[test]
 fn streaming_output_is_bitwise_repeatable() {
-    let model = three_dimensional_model();
+    let model = three_dimensional_model(1);
     let drive = two_mode_drive::<3>();
     let first = effective(&model, &drive, 2, 2);
     let second = effective(&model, &drive, 2, 2);
