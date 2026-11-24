@@ -67,8 +67,26 @@ impl SupportBox {
 pub(super) fn zero_padded_support<const DIM: usize>(
     input: &Array2<isize>,
     degree: usize,
+    check_rows: Option<impl Fn(usize) -> Result<()>>,
 ) -> Result<Array2<isize>> {
     use std::collections::BTreeSet;
+    if let Some(check) = &check_rows {
+        check(input.nrows())?;
+        if degree >= DIM {
+            // Axis-only rows form a Cartesian subset of the sumset. Count it
+            // without enumerating it; zero on an axis simply omits that term.
+            let mut counts = [1_usize; DIM];
+            for row in input.outer_iter() {
+                let mut nonzero = row.iter().enumerate().filter(|&(_, &x)| x != 0);
+                if let Some((axis, _)) = nonzero.next()
+                    && nonzero.next().is_none()
+                {
+                    counts[axis] += 1;
+                }
+            }
+            check(counts.into_iter().fold(1_usize, usize::saturating_mul))?;
+        }
+    }
     let input: BTreeSet<[isize; DIM]> = input
         .outer_iter()
         .map(|row| std::array::from_fn(|d| row[d]))
@@ -91,10 +109,22 @@ pub(super) fn zero_padded_support<const DIM: usize>(
                         ));
                     }
                 }
-                next.insert(sum);
+                if next.insert(sum)
+                    && let Some(check) = &check_rows
+                {
+                    check(next.len())?;
+                }
             }
         }
-        support.extend(next.iter().copied());
+        if let Some(check) = &check_rows {
+            for &row in &next {
+                if support.insert(row) {
+                    check(support.len())?;
+                }
+            }
+        } else {
+            support.extend(next.iter().copied());
+        }
         layer = next;
     }
     let nrows = support.len();

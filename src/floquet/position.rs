@@ -108,6 +108,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 harmonic_min: -harmonic_max,
                 harmonic_max,
                 blocks,
+                used_time_grid: false,
             });
         }
 
@@ -329,6 +330,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             harmonic_min: -harmonic_max,
             harmonic_max,
             blocks,
+            used_time_grid: fallback_warned.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
 

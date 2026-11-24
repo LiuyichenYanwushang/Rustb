@@ -751,9 +751,19 @@ for `A` and `|m| <= 2h` for `B`, and input Hamiltonian harmonics through
 spatial FFT handles degree-four products at order 3, so the output
 hopping support can reach fourfold sums of input translations.
 
+Use `floquet_effective_sweep` to compare `(order, harmonic_max)` pairs for
+one coherent uniform drive. The callback borrows a full effective `Model`
+for each pair in input order. Pairs can be unsorted or repeated; an empty
+sweep does nothing, and a callback error stops the sweep and is returned.
+The sweep normally prepares harmonics once through the largest
+`order * harmonic_max`. Consecutive requests on the same FFT grid share forward
+transforms without changing their cutoffs. If temporal DFT is needed, distinct
+windows keep their own sampling to preserve numerical accuracy.
+
 The FFT evaluates disjoint k slices concurrently with OpenBLAS or MKL,
-subject to a memory cap. It keeps harmonics local to each slice and stores
-one full-grid correction for a batched inverse FFT along the final axis.
+subject to a memory cap. Harmonics stay slice-local. In a single-model FFT
+calculation, one full-grid correction is stored for a batched inverse FFT
+along the final axis.
 Use single-threaded BLAS (`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`)
 to avoid oversubscribing Rayon. Netlib keeps pointwise matrix products
 serial for safety, but the final-axis FFT can still run in parallel. The
@@ -795,6 +805,16 @@ let third_order = model.floquet_effective_model(
 )?;
 assert_eq!(effective.nsta(), model.nsta());
 assert_eq!(third_order.nsta(), model.nsta());
+
+model.floquet_effective_sweep(
+    &drive,
+    &[(1, 4), (2, 2), (2, 4), (3, 4)],
+    |(order, h), eff| {
+        let bands = eff.solve_band_onek(&k)?;
+        println!("order {order}, h = {h}: {bands:?}");
+        Ok(())
+    },
+)?;
 ```
 
 ### `magnetic_field` — uniform magnetic field

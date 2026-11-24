@@ -994,11 +994,13 @@ let effective_linear_q = model.floquet_effective_q_model(
 |---|---:|---|
 | `floquet_model` | `nsta * (2*n_max + 1)` | Real-space Sambe model with a photon cutoff |
 | `floquet_effective_model` | `nsta` | Coherent off-resonant, high-frequency expansion |
+| `floquet_effective_sweep` | `nsta` | Compare van Vleck orders and harmonic cutoffs for one coherent uniform drive |
 | `floquet_effective_mode_resolved_model` | `nsta` | Mode-diagonal mutually incoherent correction sum |
 | `floquet_effective_q_model` | `nsta` | One coherent common `q`, through `O(a² q/W)`; nonzero `q` requires `NoRMatrix` |
 
-All these methods return an ordinary real-space `Model<SPIN, DIM, R>`
-with the input `R` type. Build the Sambe model once and reuse `gen_ham`,
+All these methods produce ordinary real-space `Model<SPIN, DIM, R>` values
+with the input `R` type; the sweep lends each model to a callback instead of
+returning it. Build the Sambe model once and reuse `gen_ham`,
 `gen_ham_batch` or the ordinary `Solve` methods across a k-path. Use
 `fold_quasienergy` on the unfolded energies and sort afterwards if ascending
 quasienergies are required.
@@ -1028,8 +1030,8 @@ response methods to the result does not establish physical Floquet transport.
 
 `FloquetTruncation::new(N)` controls only the Sambe photon sectors
 `-N..=N`. Their differences require Hamiltonian harmonics through `±2N`;
-converge `N` for the quasienergies of interest. The effective-model APIs
-instead use `FloquetEffectiveOptions` (defaults: `order = 1`,
+converge `N` for the quasienergies of interest. For one effective model,
+use `FloquetEffectiveOptions` (defaults: `order = 1`,
 `harmonic_max = 2`). Order 0 keeps the driven time average; orders 1–3
 retain terms through `O(W^-1)`, `O(W^-2)`, and `O(W^-3)`, respectively.
 With `h = harmonic_max`, the order-two outer indices `|m|, |m'|` are still
@@ -1041,6 +1043,31 @@ appreciable harmonics outside `±h`, increase `h` and check convergence. The
 cutoff does not change the time average. To preserve the outer cutoff of an
 old call that used a photon truncation, pass `.with_harmonic_max(2 * old_n_max)`.
 
+To test convergence for one coherent uniform drive, pass explicit `(order, h)`
+pairs to `floquet_effective_sweep`, where `h` is `harmonic_max`:
+
+```rust
+let mut bands_by_request = Vec::new();
+model.floquet_effective_sweep(
+    &drive,
+    &[(1, 4), (2, 2), (2, 4), (3, 4)],
+    |(order, h), eff| {
+        bands_by_request.push(((order, h), eff.solve_band_onek(&k)?));
+        Ok(())
+    },
+)?;
+```
+
+The callback receives a borrowed full `Model` for every pair in input order,
+even if pairs are unsorted or repeated. An empty list is a no-op; a callback
+error is returned and no later callbacks run. For a time-dependent drive,
+the sweep normally prepares the Hamiltonian harmonics once through
+`±max(order * h)` (`±12` here). Each request keeps its own cutoff. Put requests
+of the same order next to each other to share forward FFTs and low-order
+contractions when their grids match and memory permits. The cubic term is
+evaluated separately for each distinct `h` in a batch. If a link needs the
+time-grid fallback, distinct windows retain their own sampling.
+
 Production spatial convolutions use only a zero-aliasing FFT grid, with no
 user k-mesh or target hopping range. The effective hopping support is
 determined from the harmonic support and can reach double Minkowski sums
@@ -1048,11 +1075,11 @@ at order 1, triple sums at order 2, and fourfold sums at order 3 (the cubic
 inverse-frequency term is degree four in the input Hamiltonian blocks).
 
 With OpenBLAS or MKL, Rayon evaluates disjoint k slices concurrently,
-subject to the FFT working-set cap. Each slice computes its own harmonics;
-only the assembled correction fills the entire grid. A batched inverse FFT
-along the final axis completes the transform back to real space. Pin BLAS
-to one thread (`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`) to avoid
-oversubscription. Netlib evaluates one slice at a time with serial pointwise
+subject to the FFT working-set cap. Harmonics stay slice-local; for a
+single request, only the assembled correction fills the entire grid. A
+batched inverse FFT along the final axis completes the transform back to real
+space. Pin BLAS to one thread (`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`)
+to avoid oversubscription. Netlib evaluates one slice at a time with serial pointwise
 matrix products for safety; the final-axis FFT can still run in parallel.
 The static effective-model path and Sambe construction are unchanged.
 

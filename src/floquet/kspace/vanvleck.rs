@@ -4,9 +4,10 @@ use super::C;
 use crate::error::{Result, TbError};
 use ndarray::linalg::general_mat_mul;
 use ndarray::{
-    Array2, Array3, ArrayView2, ArrayView3, ArrayView4, ArrayViewMut2, ArrayViewMut3, Axis, Zip,
+    Array2, Array3, ArrayBase, ArrayView2, ArrayView3, ArrayView4, ArrayViewMut2, ArrayViewMut3,
+    ArrayViewMut4, Axis, Data, DataMut, Ix2, Slice, Zip,
 };
-use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use rayon::slice::ParallelSliceMut;
 
 const NONFINITE_SCALE: &str = "a van Vleck frequency scaling factor is non-finite; \
@@ -151,6 +152,227 @@ harmonic_max = {harmonic_max} and order {effective_order}",
     Ok(())
 }
 
+/// Assemble corrections for a sweep of (order, h) keys in caller order.
+/// The harmonics have the centered layout of [`assemble_pointwise`], and the
+/// output layout is (request, point, nsta, nsta). In particular, order zero
+/// writes zero, not H_0. Repeated keys copy the first correction for that
+/// key. Only disjoint k points are processed in parallel.
+pub(super) fn assemble_sweep_pointwise(
+    harmonics: ArrayView4<'_, C>,
+    requests: &[(usize, isize)],
+    omega: f64,
+    mut out: ArrayViewMut4<'_, C>,
+) -> Result<()> {
+    let (slots, points, nsta, columns) = harmonics.dim();
+    if out.dim() != (requests.len(), points, nsta, nsta) || columns != nsta || slots % 2 != 1 {
+        return Err(TbError::Other(
+            "invalid k-space van Vleck sweep layout".into(),
+        ));
+    }
+    let mut keys = Vec::with_capacity(requests.len());
+    let mut slots_needed = 1;
+    let mut third_cutoff = None;
+    let mut max_order = 0;
+    for (index, &(order, h)) in requests.iter().enumerate() {
+        if order > 3 || h <= 0 {
+            return Err(TbError::Other(format!(
+                "invalid van Vleck sweep key ({order}, {h})"
+            )));
+        }
+        if order == 0 {
+            out.index_axis_mut(Axis(0), index).fill(C::new(0.0, 0.0));
+            continue;
+        }
+        slots_needed = slots_needed.max(required_slots(h, order)?);
+        max_order = max_order.max(order);
+        if order == 3 {
+            third_cutoff = Some(third_cutoff.map_or(h, |old: isize| old.max(h)));
+        }
+        keys.push((h, order, index));
+    }
+    if keys.is_empty() {
+        return Ok(());
+    }
+    if slots < slots_needed {
+        return Err(TbError::Other(format!(
+            "k-space van Vleck sweep has {slots} harmonic slots but needs {slots_needed}"
+        )));
+    }
+    let cache_max = (slots / 2) as isize;
+    // The shell sweep changes the summation order and does not do the single
+    // solver's extreme-operand retries. Allow ordinary-scale contractions,
+    // but fail closed when those changes may lose a recoverable product.
+    let scale_error = || {
+        TbError::Other(
+        "the k-space van Vleck sweep is outside the safe product range; solve its requests independently".into(),
+    )
+    };
+    if !(1e-64..=1e64).contains(&omega.abs()) {
+        return Err(scale_error());
+    }
+    let offset = (slots - slots_needed) / 2;
+    let used = harmonics.slice_axis(Axis(0), Slice::from(offset..offset + slots_needed));
+    let mut largest = 0.0_f64;
+    let mut smallest = f64::INFINITY;
+    for z in &used {
+        for value in [z.re.abs(), z.im.abs()] {
+            if !value.is_finite() || value > 1e64 {
+                return Err(scale_error());
+            }
+            largest = largest.max(value);
+            if value != 0.0 {
+                smallest = smallest.min(value);
+            }
+        }
+    }
+    // Reserve headroom above the (order+1)th root of the smallest normal
+    // for products that a small frequency or large later factor can amplify.
+    let min_component = [0.0, 1e-145, 1e-95, 1e-72][max_order];
+    if (omega.abs() < 1.0 || largest > 1e32) && smallest < min_component {
+        return Err(scale_error());
+    }
+    keys.sort_unstable();
+
+    let new_scratch = || {
+        (
+            Scratch::new(nsta, third_cutoff),
+            Array2::zeros((nsta, nsta)),
+        )
+    };
+    let solve = |(scratch, second): &mut (Scratch, Array2<C>),
+                 (point, mut targets): (_, ArrayViewMut3<'_, C>)| {
+        let point_harmonics = harmonics.index_axis(Axis(1), point);
+        let harmonic = |n| point_harmonics.index_axis_move(Axis(0), harmonic_slot(n, cache_max));
+        let inverse = omega.recip();
+        let inverse_squared = inverse * inverse;
+        let mut first_h = 0;
+        let mut second_h = 0;
+        let zero = C::new(0.0, 0.0);
+        scratch.total.fill(zero);
+        second.fill(zero);
+        let mut previous = None;
+        for &(h, order, index) in &keys {
+            if let Some((prev_h, prev_order, prev_index)) = previous
+                && (h, order) == (prev_h, prev_order)
+            {
+                // Sorting by (h, order, original index) ensures prev_index < index.
+                let (left, mut right) = targets.view_mut().split_at(Axis(0), index);
+                right
+                    .index_axis_mut(Axis(0), 0)
+                    .assign(&left.index_axis(Axis(0), prev_index));
+                continue;
+            }
+            previous = Some((h, order, index));
+            for m in first_h + 1..=h {
+                commutator_into(harmonic(-m), harmonic(m), &mut scratch.inner, false);
+                scratch
+                    .total
+                    .scaled_add(C::new(inverse / m as f64, 0.0), &scratch.inner);
+            }
+            first_h = h;
+            let mut target = targets.index_axis_mut(Axis(0), index);
+            target.assign(&scratch.total);
+            if order >= 2 {
+                for shell in second_h + 1..=h {
+                    commutator_into(harmonic(0), harmonic(shell), &mut scratch.inner, false);
+                    commutator_into(
+                        harmonic(-shell),
+                        scratch.inner.view(),
+                        &mut scratch.outer,
+                        false,
+                    );
+                    add_second_order(
+                        second,
+                        &scratch.outer,
+                        inverse,
+                        inverse_squared,
+                        1.0 / (2.0 * (shell as f64).powi(2)),
+                        true,
+                    )?;
+                    for (m, m_prime) in mixed_shell_pairs(shell) {
+                        let difference = m_prime - m;
+                        // Fold swapped inners only when both enter this
+                        // increment. Do not reweight an earlier prefix.
+                        let swapped_shell = difference.abs().max(m_prime.abs());
+                        let paired = second_h < swapped_shell && swapped_shell <= h;
+                        if paired && m > difference.abs() {
+                            continue;
+                        }
+                        let weight = if paired {
+                            (difference - m) as f64
+                                / (3.0 * m_prime as f64 * m as f64 * difference as f64)
+                        } else {
+                            1.0 / (3.0 * m as f64 * m_prime as f64)
+                        };
+                        commutator_into(
+                            harmonic(difference),
+                            harmonic(m),
+                            &mut scratch.inner,
+                            false,
+                        );
+                        commutator_into(
+                            harmonic(-m_prime),
+                            scratch.inner.view(),
+                            &mut scratch.outer,
+                            false,
+                        );
+                        add_second_order(
+                            second,
+                            &scratch.outer,
+                            inverse,
+                            inverse_squared,
+                            weight,
+                            true,
+                        )?;
+                    }
+                }
+                second_h = h;
+                target += &*second;
+            }
+            if order == 3
+                && let Some(third) = &mut scratch.third
+            {
+                // The allocation is sized for the largest cubic request,
+                // but C and B both depend on the current A window.
+                third.h = h;
+                third.add_into(
+                    harmonic,
+                    omega,
+                    &mut target,
+                    &mut scratch.inner,
+                    &mut scratch.outer,
+                )?;
+            }
+            if !matrix_finite(&target) {
+                return Err(scale_error());
+            }
+        }
+        Ok(())
+    };
+    let workers = rayon::current_num_threads();
+    let rows = out.axis_iter_mut(Axis(1));
+    if !cfg!(any(feature = "netlib-static", feature = "netlib-system")) && workers > 1 {
+        let chunk_len = points.div_ceil(workers.saturating_mul(4)).max(1);
+        rows.into_par_iter()
+            .with_min_len(chunk_len)
+            .enumerate()
+            .try_for_each_init(new_scratch, solve)
+    } else {
+        let mut scratch = new_scratch();
+        rows.enumerate()
+            .try_for_each(|row| solve(&mut scratch, row))
+    }
+}
+
+/// Positive-m sign representatives with max(m, |m'|) = h, excluding the
+/// zero and vanishing-inner cases.
+fn mixed_shell_pairs(h: isize) -> impl Iterator<Item = (isize, isize)> {
+    (-h..=h)
+        .map(move |mp| (h, mp))
+        .chain((1..h).flat_map(move |m| [(m, -h), (m, h)]))
+        .filter(|&(m, mp)| mp != 0 && mp != m && mp != 2 * m)
+}
+
 /// Reusable per-worker buffers for one k point.
 ///
 /// total holds the running effective block; inner and outer hold the nested
@@ -202,7 +424,7 @@ impl ThirdOrderScratch {
         &mut self,
         harmonic: impl Fn(isize) -> ArrayView2<'a, C>,
         omega: f64,
-        total: &mut Array2<C>,
+        total: &mut ArrayBase<impl DataMut<Elem = C>, Ix2>,
         forward: &mut Array2<C>,
         backward: &mut Array2<C>,
     ) -> Result<()> {
@@ -662,7 +884,7 @@ fn assemble_point_into(
     Ok(())
 }
 
-fn matrix_finite(matrix: &Array2<C>) -> bool {
+fn matrix_finite(matrix: &ArrayBase<impl Data<Elem = C>, Ix2>) -> bool {
     matrix.iter().all(|z| z.re.is_finite() && z.im.is_finite())
 }
 
@@ -959,6 +1181,77 @@ mod tests {
     fn assert_hermitian(matrix: ArrayView2<'_, C>, tolerance: f64) {
         let adjoint = matrix.t().mapv(|value| value.conj());
         assert_close(matrix, &adjoint, tolerance);
+    }
+
+    #[test]
+    fn sweep_matches_independent_cutoffs_and_orders() {
+        // Interleave orders at a common h and at nonconsecutive h. In the
+        // (1 -> 3) increment, swapped inner pairs can enter in the same or
+        // different shells (as well as crossing the previously emitted h=1).
+        let requests = [
+            (3, 3),
+            (1, 4),
+            (2, 1),
+            (0, 9),
+            (1, 3),
+            (3, 1),
+            (2, 3),
+            (3, 3),
+        ];
+        let (points, nsta, omega) = (6, 8, 2.25);
+        let harmonics = hermitian_consistent_harmonics(points, nsta, 10, 0x011f_f4e9);
+        let run = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let mut out =
+                Array4::from_elem((requests.len(), points, nsta, nsta), C::new(17.0, -5.0));
+            pool.install(|| {
+                assemble_sweep_pointwise(harmonics.view(), &requests, omega, out.view_mut())
+            })
+            .unwrap();
+            out
+        };
+        let out = run(1);
+        assert_eq!(out, run(4));
+        assert_eq!(out.index_axis(Axis(0), 0), out.index_axis(Axis(0), 7));
+        for (index, &(order, h)) in requests.iter().enumerate() {
+            let mut expected = Array3::zeros((points, nsta, nsta));
+            assemble_pointwise(
+                harmonics.view(),
+                h,
+                order,
+                true,
+                true,
+                omega,
+                expected.view_mut(),
+            )
+            .unwrap();
+            for (actual, expected) in out
+                .index_axis(Axis(0), index)
+                .outer_iter()
+                .zip(expected.outer_iter())
+            {
+                assert_close(actual, &expected.to_owned(), 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn sweep_rejects_risky_products_but_ignores_unused_slots() {
+        let requests = [(1, 2), (2, 1)];
+        let mut harmonics = hermitian_consistent_harmonics(1, 2, 3, 0x0547_be12);
+        let mut out = Array4::zeros((requests.len(), 1, 2, 2));
+        harmonics[[0, 0, 0, 0]].re = 1e180; // |m|=3 is outside both requests.
+        assemble_sweep_pointwise(harmonics.view(), &requests, 1.0, out.view_mut()).unwrap();
+        assert!(
+            assemble_sweep_pointwise(harmonics.view(), &requests, 1e200, out.view_mut()).is_err()
+        );
+        harmonics[[1, 0, 0, 0]].re = 1e180;
+        assert!(
+            assemble_sweep_pointwise(harmonics.view(), &requests, 1.0, out.view_mut()).is_err()
+        );
     }
 
     fn third_harmonic_toy(amplitude: f64) -> Array4<C> {

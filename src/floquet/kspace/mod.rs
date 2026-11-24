@@ -25,6 +25,7 @@ use num_complex::Complex;
 
 mod blocks;
 mod grid;
+mod sweep;
 mod transform;
 mod vanvleck;
 
@@ -33,10 +34,9 @@ use grid::KspaceGrid;
 /// Complex scalar used throughout the Floquet kernels.
 pub(super) type C = Complex<f64>;
 
-// Bound the FFT working set (not the already-built harmonic cache or the
-// position array owned by the returned model). A sparse large-radius support
-// may exceed the limit even if its input blocks fit in memory.
-const KSPACE_MEMORY_HARD_LIMIT: u128 = 64 * 1024 * 1024 * 1024;
+// Bound the FFT working set. For sweep batches, also include the shared
+// harmonic cache and the position array for the current callback model.
+pub(super) const KSPACE_MEMORY_HARD_LIMIT: u128 = 64 * 1024 * 1024 * 1024;
 
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Assemble on the same translation rows (including r-only rows) and in
@@ -53,10 +53,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let (ham, ham_r) = self.floquet_effective_blocks_kspace(
             drive,
             harmonic_cache,
-            order,
-            harmonic_max,
+            (order, harmonic_max),
             has_time_dependence,
             false,
+            None,
         )?;
         self.floquet_effective_output(ham, ham_r)
     }
@@ -74,10 +74,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         self.floquet_effective_blocks_kspace(
             drive,
             harmonic_cache,
-            order,
-            harmonic_max,
+            (order, harmonic_max),
             has_time_dependence,
             true,
+            None,
         )
     }
 
@@ -85,52 +85,45 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         &self,
         drive: &FloquetDrive,
         harmonic_cache: &FloquetHarmonicCache,
-        order: usize,
-        harmonic_max: isize,
+        (order, harmonic_max): (usize, isize),
         has_time_dependence: bool,
         subtract_bare: bool,
+        sweep: Option<SweepWorkspace>,
     ) -> Result<(Array3<C>, Array2<isize>)> {
         let used_max = if has_time_dependence {
             effective_cache_max(order, harmonic_max)?
         } else {
             0
         };
-        validate_effective_cache_layout(used_max, self.hamR.nrows(), self.nsta())?;
+        self.validate_kspace_cache(harmonic_cache, used_max)?;
         let slots = (2 * used_max + 1) as usize;
         let nsta = self.nsta();
-        let shape = harmonic_cache.blocks.shape();
-        if harmonic_cache.harmonic_min > -used_max
-            || harmonic_cache.harmonic_max < used_max
-            || shape[1..] != [self.hamR.nrows(), nsta, nsta]
-        {
-            return Err(TbError::Other(
-                "the Floquet harmonic cache does not cover the required harmonics and model rows"
-                    .into(),
-            ));
-        }
         let h0 = harmonic_cache.harmonic_blocks(0);
         let degree = if harmonic_max > 0 { order + 1 } else { 1 };
-        let mut rows: Vec<_> = (0..self.hamR.nrows()).collect();
-        rows.sort_unstable_by(|&a, &b| self.hamR.row(a).iter().cmp(self.hamR.row(b).iter()));
+        let rows = self.sorted_effective_rows();
         // A window whose AC harmonics are zero carries no correction, even
         // when the inverse frequency is not representable. Still keep every
         // documented Minkowski layer, exactly zero outside the input rows.
         // Scalar harmonics also commute identically at every k.
-        let has_corrections = nsta > 1
-            && (1..=harmonic_max.min(used_max)).any(|n| {
-                [n, -n].into_iter().any(|n| {
-                    harmonic_cache
-                        .harmonic_blocks(n)
-                        .iter()
-                        .any(|z| *z != C::new(0.0, 0.0))
-                })
-            });
+        let has_corrections =
+            nsta > 1 && first_active_harmonic(harmonic_cache, harmonic_max.min(used_max)).is_some();
         if !has_corrections {
             let mut ham_r = if degree == 1 {
                 self.hamR.select(Axis(0), &rows)
             } else {
-                blocks::zero_padded_support::<DIM>(&self.hamR, degree)?
+                blocks::zero_padded_support::<DIM>(
+                    &self.hamR,
+                    degree,
+                    sweep.map(|sweep| {
+                        move |rows| sweep.check_static_support_growth(rows, nsta, DIM)
+                    }),
+                )?
             };
+            if let Some(sweep) = sweep {
+                let missing_origin = !ham_r.outer_iter().any(|row| row.iter().all(|&r| r == 0));
+                let output_rows = ham_r.nrows() + usize::from(missing_origin);
+                sweep.check_static_output(output_rows, nsta, DIM)?;
+            }
             let mut ham = Array3::<C>::zeros((ham_r.nrows(), nsta, nsta));
             let mut out = ham_r.outer_iter().zip(ham.outer_iter_mut()).peekable();
             for &ir in &rows {
@@ -160,10 +153,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             slots,
             nsta,
             Some(if order == 3 { harmonic_max as usize } else { 0 }),
+            sweep,
         )?;
-        let (support_box, support) =
-            blocks::effective_support(&self.hamR, DIM, harmonic_max, order)?;
-        let mut accumulator = blocks::DenseBlocks::new(support_box, support, nsta, DIM)?;
+        let mut accumulator = self.effective_accumulator(order, harmonic_max)?;
         inverse_polynomial(
             &grid,
             nsta,
@@ -190,6 +182,56 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 )
             },
         )?;
+        self.finish_effective_correction(accumulator, &rows, h0, subtract_bare)
+    }
+
+    /// Visit prevalidated requests in input order using one driven harmonic cache.
+    pub(super) fn floquet_effective_sweep_kspace(
+        &self,
+        drive: &FloquetDrive,
+        cache: &FloquetHarmonicCache,
+        has_ac: bool,
+        requests: &[(usize, isize)],
+        visit: impl FnMut((usize, isize), &Model<SPIN, DIM, R>) -> Result<()>,
+    ) -> Result<()> {
+        sweep::visit_effective(self, drive, cache, has_ac, requests, visit)
+    }
+
+    fn validate_kspace_cache(&self, cache: &FloquetHarmonicCache, used_max: isize) -> Result<()> {
+        let nsta = self.nsta();
+        let n_r = self.hamR.nrows();
+        validate_effective_cache_layout(used_max, n_r, nsta)?;
+        if cache.harmonic_min > -used_max
+            || cache.harmonic_max < used_max
+            || cache.blocks.shape()[1..] != [n_r, nsta, nsta]
+        {
+            return Err(TbError::Other(
+                "the Floquet harmonic cache does not cover the required harmonics and model rows"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn sorted_effective_rows(&self) -> Vec<usize> {
+        let mut rows: Vec<_> = (0..self.hamR.nrows()).collect();
+        rows.sort_unstable_by(|&a, &b| self.hamR.row(a).iter().cmp(self.hamR.row(b).iter()));
+        rows
+    }
+
+    fn effective_accumulator(&self, order: usize, h: isize) -> Result<blocks::DenseBlocks> {
+        let (bounds, support) = blocks::effective_support(&self.hamR, DIM, h, order)?;
+        blocks::DenseBlocks::new(bounds, support, self.nsta(), DIM)
+    }
+
+    fn finish_effective_correction(
+        &self,
+        mut accumulator: blocks::DenseBlocks,
+        rows: &[usize],
+        h0: ArrayView3<'_, C>,
+        subtract_bare: bool,
+    ) -> Result<(Array3<C>, Array2<isize>)> {
+        let nsta = self.nsta();
         // H_0 is already in real space, so never take an FFT round trip for
         // the baseline. Add each aligned row to the canonical half.
         // Within a negation-closed sorted support the negative partner is at
@@ -220,6 +262,17 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         finish_checked(accumulator)
     }
+}
+
+fn first_active_harmonic(cache: &FloquetHarmonicCache, limit: isize) -> Option<isize> {
+    (1..=limit).find(|&n| {
+        [n, -n].into_iter().any(|n| {
+            cache
+                .harmonic_blocks(n)
+                .iter()
+                .any(|z| *z != C::new(0.0, 0.0))
+        })
+    })
 }
 
 /// Evaluate AB + BA on the zero-aliasing quadratic grid. Both operands
@@ -267,7 +320,7 @@ pub(super) fn kspace_anticommutator(
     }
     let dim = ham_r.ncols();
     let grid = KspaceGrid::for_polynomial(ham_r, dim, 2)?;
-    let concurrent_slabs = workspace_concurrency(&grid, 2, nsta, None)?;
+    let concurrent_slabs = workspace_concurrency(&grid, 2, nsta, None, None)?;
     let (support_box, support) = blocks::quadratic_support(ham_r, dim)?;
     let mut accumulator = blocks::DenseBlocks::new(support_box, support, nsta, dim)?;
     inverse_polynomial(
@@ -304,22 +357,8 @@ fn workspace_concurrency(
     slots: usize,
     nsta: usize,
     van_vleck: Option<usize>,
+    sweep: Option<SweepWorkspace>,
 ) -> Result<usize> {
-    let lanes = grid.points_per_slice() as u128;
-    let points = grid.total_points() as u128;
-    let threads = rayon::current_num_threads() as u128;
-    let netlib = cfg!(any(feature = "netlib-static", feature = "netlib-system"));
-    let block_bytes = (nsta as u128).pow(2).saturating_mul(size_of::<C>() as u128);
-    // Count the two co-live grids plus the output's row labels, dense slot map,
-    // support Vec capacity, and populated FFT coordinates separately.
-    let grid_metadata = (size_of::<usize>() * grid.dim()
-        + size_of::<u32>()
-        + 2 * size_of::<[isize; 3]>()
-        + size_of::<(usize, usize, u32)>()) as u128;
-    let base = points.saturating_mul(block_bytes.saturating_mul(2).saturating_add(grid_metadata));
-    // Reference Netlib uses process globals. Do not overlap its matrix products
-    // across slabs, although the transforms themselves can still use Rayon.
-    let max_slabs = (grid.slices() as u128).min(if netlib { 1 } else { threads });
     // Include the two products and the two scaled inputs of the extreme-range
     // second-order retry, even when cubic normalization scratch is live.
     let scratch_blocks = match van_vleck {
@@ -332,11 +371,128 @@ fn workspace_concurrency(
     } else {
         0
     };
-    let per_slab = lanes.saturating_mul(
-        (slots as u128)
-            .saturating_mul(block_bytes)
-            .saturating_add(views),
+    let (slabs, one_slab_bytes) =
+        workspace_slab_limit(grid, slots, nsta, scratch_blocks, views, sweep);
+    if slabs > 0 {
+        return Ok(slabs);
+    }
+    Err(TbError::Other(format!(
+        "the k-space convolution needs about {:.1} GiB with one slab; reduce the support, harmonic cutoff, or order",
+        one_slab_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+    )))
+}
+
+#[derive(Clone, Copy)]
+struct SweepWorkspace {
+    requests: usize,
+    cache_bytes: u128,
+    has_position: bool,
+}
+
+impl SweepWorkspace {
+    fn check_static_support_growth(self, rows: usize, nsta: usize, dim: usize) -> Result<()> {
+        self.check_static_output(rows, nsta, dim)?;
+        // The input, accumulated support, current layer, and next layer can
+        // coexist. Reserve room for the tree nodes as well as their keys.
+        let tree_bytes = 4 * (dim * size_of::<isize>() + 8 * size_of::<usize>()) as u128;
+        if self.cache_bytes.saturating_add(rows as u128 * tree_bytes)
+            > KSPACE_MEMORY_HARD_LIMIT.min(isize::MAX as u128)
+        {
+            return Err(TbError::Other(
+                "the Floquet sweep support enumeration exceeds its memory budget".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_static_output(self, rows: usize, nsta: usize, dim: usize) -> Result<()> {
+        let rows = rows as u128;
+        let block = (nsta as u128).pow(2).saturating_mul(size_of::<C>() as u128);
+        let ham = rows.saturating_mul(block);
+        let metadata =
+            rows * (dim as u128 * size_of::<isize>() as u128 + size_of::<usize>() as u128);
+        // Origin-first reordering can temporarily copy the full Hamiltonian.
+        // A nonzero conjugate pair can use five temporary matrices.
+        let reorder = ham.saturating_add(metadata);
+        let hermiticity = block
+            .saturating_mul(if rows > 1 { 5 } else { 3 })
+            .saturating_add(rows * (size_of::<usize>() + size_of::<bool>()) as u128);
+        let position = if self.has_position {
+            ham.saturating_mul(dim as u128)
+        } else {
+            0
+        };
+        let bytes = self
+            .cache_bytes
+            .saturating_add(ham)
+            .saturating_add(metadata)
+            .saturating_add(reorder.max(hermiticity).max(position));
+        if bytes > KSPACE_MEMORY_HARD_LIMIT.min(isize::MAX as u128) {
+            return Err(TbError::Other(format!(
+                "the Floquet sweep needs about {:.1} GiB for its harmonic cache and static output; reduce the support or harmonic cutoff",
+                bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Return the permitted slab concurrency (zero if none) and one-slab estimate.
+fn workspace_slab_limit(
+    grid: &KspaceGrid,
+    slots: usize,
+    nsta: usize,
+    scratch_blocks: u128,
+    views_per_point: u128,
+    sweep: Option<SweepWorkspace>,
+) -> (usize, u128) {
+    let requests = sweep.map_or(1, |batch| batch.requests as u128);
+    let cache_bytes = sweep.map_or(0, |batch| batch.cache_bytes);
+    let lanes = grid.points_per_slice() as u128;
+    let points = grid.total_points() as u128;
+    let threads = rayon::current_num_threads() as u128;
+    let netlib = cfg!(any(feature = "netlib-static", feature = "netlib-system"));
+    let matrix_elements = (nsta as u128).pow(2);
+    let block_bytes = matrix_elements.saturating_mul(size_of::<C>() as u128);
+    // One correction grid per request plus one full real-space Hamiltonian.
+    // Account for the output's row labels, dense slot map, support vectors,
+    // and populated FFT coordinates separately.
+    let grid_metadata = (size_of::<usize>() * grid.dim()
+        + size_of::<u32>()
+        + 2 * size_of::<[isize; 3]>()
+        + size_of::<(usize, usize, u32)>()) as u128;
+    let base = cache_bytes.saturating_add(
+        points.saturating_mul(
+            block_bytes
+                .saturating_mul(requests + 1)
+                .saturating_add(grid_metadata),
+        ),
     );
+    let position = if sweep.is_some_and(|batch| batch.has_position) {
+        // At most one emitted position matrix is live, after its inverse FFT.
+        points
+            .saturating_mul(block_bytes)
+            .saturating_mul(grid.dim() as u128)
+    } else {
+        0
+    };
+    // Reference Netlib uses process globals. Do not overlap its matrix products
+    // across slabs, although the transforms themselves can still use Rayon.
+    let max_slabs = (grid.slices() as u128).min(if netlib { 1 } else { threads });
+    // Both solvers write straight to their correction grids. Each sweep slab
+    // additionally holds its pointwise kernel's sorted request descriptors.
+    let descriptors = if requests > 1 {
+        requests * size_of::<(isize, usize, usize)>() as u128
+    } else {
+        0
+    };
+    let per_slab = lanes
+        .saturating_mul(
+            (slots as u128)
+                .saturating_mul(block_bytes)
+                .saturating_add(views_per_point),
+        )
+        .saturating_add(descriptors);
     let in_slice_axis = (0..grid.slice_axes())
         .map(|d| grid.axis_len(d))
         .max()
@@ -345,7 +501,7 @@ fn workspace_concurrency(
     // transform starts only after the input slab/pointwise buffers are gone.
     let fft_bytes = 8 * size_of::<C>() as u128;
     let inverse = if grid.slices() > 1 {
-        let final_lanes = lanes.saturating_mul((nsta as u128).pow(2));
+        let final_lanes = lanes.saturating_mul(matrix_elements);
         (threads.min(final_lanes) + 1)
             .saturating_mul(grid.slices() as u128)
             .saturating_mul(fft_bytes)
@@ -370,18 +526,15 @@ fn workspace_concurrency(
                     .saturating_mul(block_bytes),
             )
             .saturating_add(front_fft);
-        base.saturating_add(assemble.max(inverse))
+        base.saturating_add(assemble.max(inverse).max(position))
     };
     let limit = KSPACE_MEMORY_HARD_LIMIT.min(isize::MAX as u128);
     for slabs in (1..=max_slabs).rev() {
         if estimate(slabs) <= limit {
-            return Ok(slabs as usize);
+            return (slabs as usize, estimate(1));
         }
     }
-    Err(TbError::Other(format!(
-        "the k-space convolution needs about {:.1} GiB with one slab; reduce the support, harmonic cutoff, or order",
-        estimate(1) as f64 / (1024.0 * 1024.0 * 1024.0)
-    )))
+    (0, estimate(1))
 }
 
 /// Give each task a disjoint part of the output grid and one reusable buffer
@@ -417,6 +570,14 @@ fn inverse_polynomial(
             }
             Ok(())
         })?;
+    gather_correction(grid, volume.view_mut(), accumulator)
+}
+
+fn gather_correction(
+    grid: &KspaceGrid,
+    mut volume: ArrayViewMut4<'_, C>,
+    accumulator: &mut blocks::DenseBlocks,
+) -> Result<()> {
     transform::inverse_streaming_axis(volume.view_mut())?;
     for (residue, lane, slot) in output_slots(grid, accumulator) {
         accumulator.set_slot(
@@ -472,7 +633,7 @@ fn independent_slabs_overlap_on_the_rayon_pool() {
         .build()
         .unwrap();
     pool.install(|| {
-        let slabs = workspace_concurrency(&grid, 1, 1, None).unwrap();
+        let slabs = workspace_concurrency(&grid, 1, 1, None, None).unwrap();
         assert_eq!(slabs, 2);
         inverse_polynomial(&grid, 1, 1, slabs, &mut accumulator, |k, _, mut out| {
             if k == 0 || k == grid.slices().div_ceil(2) {
@@ -508,10 +669,10 @@ fn cubic_workspace_counts_parallel_generator_buffers() {
         .unwrap();
     pool.install(|| {
         assert_eq!(
-            workspace_concurrency(&grid, 193, 1_000, Some(0)).unwrap(),
+            workspace_concurrency(&grid, 193, 1_000, Some(0), None).unwrap(),
             1
         );
-        assert!(workspace_concurrency(&grid, 193, 1_000, Some(32)).is_err());
+        assert!(workspace_concurrency(&grid, 193, 1_000, Some(32), None).is_err());
     });
 }
 
@@ -521,7 +682,7 @@ fn workspace_counts_output_metadata_for_small_matrices() {
     // Test the bounding grid without constructing hundreds of millions of rows.
     let input = ndarray::array![[0, 0], [5_625, 5_625], [-5_625, -5_625]];
     let grid = KspaceGrid::for_polynomial(&input, 2, 2).unwrap();
-    assert!(workspace_concurrency(&grid, 3, 2, None).is_err());
+    assert!(workspace_concurrency(&grid, 3, 2, None, None).is_err());
 }
 
 #[cfg(test)]
@@ -529,7 +690,7 @@ fn workspace_counts_output_metadata_for_small_matrices() {
 fn workspace_counts_simultaneous_retry_matrices() {
     let input = ndarray::array![[0]];
     let grid = KspaceGrid::for_polynomial(&input, 1, 3).unwrap();
-    assert!(workspace_concurrency(&grid, 5, 18_000, Some(0)).is_err());
+    assert!(workspace_concurrency(&grid, 5, 18_000, Some(0), None).is_err());
 }
 
 #[cfg(test)]
@@ -541,12 +702,12 @@ fn workspace_counts_only_live_fft_and_pointwise_workers() {
         .unwrap();
     pool.install(|| {
         let grid = KspaceGrid::for_polynomial(&ndarray::array![[0], [12], [-12]], 1, 2).unwrap();
-        assert!(workspace_concurrency(&grid, 2, 4_000, None).is_ok());
+        assert!(workspace_concurrency(&grid, 2, 4_000, None, None).is_ok());
         let grid =
             KspaceGrid::for_polynomial(&ndarray::array![[0], [2_000_000], [-2_000_000]], 1, 2)
                 .unwrap();
         // One matrix element permits just one final-axis FFT lane.
-        assert!(workspace_concurrency(&grid, 2, 1, None).is_ok());
+        assert!(workspace_concurrency(&grid, 2, 1, None, None).is_ok());
     });
 }
 

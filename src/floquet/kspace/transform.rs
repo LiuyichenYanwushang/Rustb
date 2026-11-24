@@ -683,6 +683,7 @@ mod tests {
                 harmonic_min: 0,
                 harmonic_max: 0,
                 blocks: arbitrary_blocks(&support, nsta),
+                used_time_grid: false,
             };
             let grid = KspaceGrid::for_polynomial(&support, dim, 1).unwrap();
             let lanes = grid.points_per_slice();

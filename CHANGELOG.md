@@ -65,6 +65,17 @@
   `validates_orbital_centres()`; the default remains strict, and
   centre-resolved providers opt out of the per-matrix-element centring gate
   while retaining parent-atom and cell-shift validation.
+- Add `Model::floquet_effective_sweep` to compare electronic van Vleck
+  `(order, harmonic_max)` pairs for one coherent uniform drive. A fallible
+  callback borrows each full effective `Model` in input order, including
+  duplicates; an empty list is a no-op, and the first callback error stops
+  the sweep. Prepare harmonics through the largest requested
+  `order * harmonic_max` where the coefficient backend permits sharing.
+  Consecutive compatible FFT grids share forward harmonic slices in
+  memory-bounded batches and reuse low-order contractions within a group.
+  The cubic term is evaluated separately for each distinct order-3 cutoff.
+  Sambe truncation, the harmonic precision window, and the finite-`q` API
+  are unchanged.
 
 ### Safety and numerical fixes
 

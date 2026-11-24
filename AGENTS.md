@@ -778,6 +778,15 @@ because the `W^-3` coefficient is degree four in the input Hamiltonian
 blocks. The time-grid fallback is only for the link Fourier coefficients,
 not the spatial FFT.
 
+For `floquet_effective_sweep`, prepare harmonics through the largest
+`order * h` among the requested `(order, h)` pairs, with `h = harmonic_max`.
+If the widest window uses the temporal DFT fallback, recompute narrow
+windows with their individual coefficient policy to avoid amplifying DFT
+roundoff. Group consecutive requests with the same FFT grid to share forward
+harmonic slices in memory-bounded batches. Within a batch, reuse low-order
+contractions and evaluate the cubic coefficient per distinct cubic cutoff.
+This uniform-drive sweep leaves the finite-`q` API and Sambe cutoff unchanged.
+
 **Forward-time migration:** the old `H^(n-m)+nW` assembly described the
 time-reversed protocol. Recompute helicity-sensitive results; do not simply
 negate all quasienergies. The two `W^-2` families have no overall sign flip.
@@ -821,8 +830,13 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 | `FloquetEffectiveOptions` | van Vleck controls: `with_order(n)` for `n = 0..=3` and `with_harmonic_max(h)`; defaults are `order = 1`, `harmonic_max = 2` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
 | `Floquet` trait | `floquet_model` only: build a real-space Sambe `Model`; use ordinary `Model` Hamiltonian/band solvers and `fold_quasienergy` afterwards |
 | `Model::floquet_effective_model` | Inherent method returning same-size effective Model |
+| `Model::floquet_effective_sweep` | One coherent uniform drive, explicit `(order, harmonic_max)` pairs; the callback borrows each full `Model` |
 | `Model::floquet_effective_q_model` | Same-size coherent weak-field correction through `O(A^2 q/W)` for one common Cartesian `q` |
 | `Model::floquet_effective_mode_resolved_model` | `H_0 + sum_alpha (H_eff[a_alpha] - H_0)` for mutually incoherent modes; no weights |
+
+The sweep calls back in input order, including unsorted or duplicate pairs.
+An empty request list is a no-op. A callback error is propagated and no
+further callbacks run.
 
 ### Model layout and reference tests
 
@@ -836,9 +850,10 @@ unique and closed under `R -> -R`. Neither option is public.
 
 **FFT workspace and threading:** OpenBLAS and MKL evaluate disjoint k slices
 in the same Rayon pool. The 64 GiB FFT working-set cap limits how many slices
-can be in flight. Keep harmonic buffers slice-local and write the assembled
-correction into one full-grid buffer. Use a batched inverse FFT along the
-final axis, then gather the real-space support once. Pin BLAS to one thread
+can be in flight. Keep harmonic buffers slice-local; for a single request,
+write the assembled correction into one full-grid buffer. Use a batched
+inverse FFT along the final axis, then gather the real-space support once.
+Pin BLAS to one thread
 (`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`) to avoid oversubscription.
 With reference Netlib, evaluate one slice at a time and keep pointwise matrix
 products serial to avoid concurrent CBLAS calls; the final-axis FFT can still

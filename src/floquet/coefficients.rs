@@ -42,6 +42,8 @@ pub(crate) struct FloquetHarmonicCache {
     pub(super) harmonic_min: isize,
     pub(super) harmonic_max: isize,
     pub(super) blocks: Array4<Complex<f64>>,
+    /// At least one link used the production time-grid fallback.
+    pub(super) used_time_grid: bool,
 }
 
 impl FloquetHarmonicCache {
@@ -96,6 +98,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 harmonic_min,
                 harmonic_max,
                 blocks,
+                used_time_grid: false,
             };
         }
 
@@ -222,6 +225,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             harmonic_min,
             harmonic_max,
             blocks,
+            used_time_grid: fallback_warned.load(Ordering::Relaxed),
         }
     }
 }
@@ -1630,7 +1634,7 @@ pub(super) fn fallback_time_grid_coeffs(
              amplitudes"
         );
     }
-    sample_link_coeffs(d, drive, harmonic_min, harmonic_max, size.n_req)
+    sample_link_coeffs(d, drive, harmonic_min, harmonic_max, size.n_req, None)
 }
 
 fn sample_link_coeffs(
@@ -1639,14 +1643,36 @@ fn sample_link_coeffs(
     harmonic_min: isize,
     harmonic_max: isize,
     n_req: usize,
+    gcd: Option<usize>,
 ) -> Array1<Complex<f64>> {
     // Direct DFT at the fine resolution (no shared harmonic_count × n_time
     // Fourier matrix to reuse).
     let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
     let inv_n = 1.0 / (n_req as f64);
-    let mut coeffs = vec![Complex::new(0.0, 0.0); harmonic_count];
-    let (dc, carriers, _) = time_grid_projections(drive, d);
+    let mut coeffs = vec![Complex::ZERO; harmonic_count];
+    let (dc, carriers, exact_sum) = time_grid_projections(drive, d);
     let dc_phase = Complex::new(0.0, -dc).exp();
+    // Only certify zeros for a valid phase and an exact grouping. The public
+    // paths already pass one finite scalar projection per physical carrier.
+    let gcd = if dc.is_finite() && exact_sum {
+        gcd.unwrap_or_else(|| carriers.keys().copied().fold(0, harmonic_gcd))
+    } else {
+        1
+    };
+    if gcd == 0 {
+        if (harmonic_min..=harmonic_max).contains(&0) {
+            coeffs[harmonic_min.unsigned_abs()] = dc_phase;
+        }
+        return Array1::from(coeffs);
+    }
+    // The phase has period 2π/gcd. Sample only harmonics on that lattice,
+    // keeping all other bins exactly zero rather than relying on cancellation
+    // in the DFT. Keep the existing grid sizing and allowed-bin approximation.
+    // Widen before negation: both |isize::MIN| and the gcd can exceed isize::MAX.
+    let first = (-(harmonic_min as i128)).rem_euclid(gcd as i128) as usize;
+    if first >= harmonic_count {
+        return Array1::from(coeffs);
+    }
     for it in 0..n_req {
         let theta = TAU * (it as f64) * inv_n;
         let mut link_phase = 0.0;
@@ -1655,8 +1681,13 @@ fn sample_link_coeffs(
             link_phase += (z * harmonic_phase).re;
         }
         let peierls = dc_phase * Complex::new(0.0, -link_phase).exp();
-        for (i_n, n) in (harmonic_min..=harmonic_max).enumerate() {
-            coeffs[i_n] += Complex::new(0.0, (n as f64) * theta).exp() * peierls;
+        for (coeff, n) in coeffs
+            .iter_mut()
+            .zip(harmonic_min..=harmonic_max)
+            .skip(first)
+            .step_by(gcd)
+        {
+            *coeff += Complex::new(0.0, (n as f64) * theta).exp() * peierls;
         }
     }
     for coeff in &mut coeffs {
@@ -1793,12 +1824,14 @@ pub(super) fn phase_harmonic_gcd(drive: &FloquetDrive) -> usize {
         .modes
         .iter()
         .map(|mode| mode.harmonic.unsigned_abs())
-        .fold(0, |mut a, mut b| {
-            while b != 0 {
-                (a, b) = (b, a % b);
-            }
-            a
-        })
+        .fold(0, harmonic_gcd)
+}
+
+fn harmonic_gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 // Unlike the legacy fallback adapter, never sample an unresolved sideband.
@@ -1864,17 +1897,7 @@ pub(super) fn position_peierls_coeffs(
                     "Cannot resolve weighted Floquet position sidebands by time-grid DFT ({error}); estimated coefficient error {estimate:e} exceeds {error_budget:e}"
                 )));
             }
-            let mut sampled = sample_link_coeffs(d, drive, low, high, size.n_req);
-            // Only multiples of the carrier GCD exist in the phase. Preserve
-            // these structural zeros instead of amplifying DFT round-off by W.
-            if gcd > 1 {
-                for (c, n) in sampled.iter_mut().zip(low..=high) {
-                    if !n.unsigned_abs().is_multiple_of(gcd) {
-                        *c = Complex::ZERO;
-                    }
-                }
-            }
-            sampled
+            sample_link_coeffs(d, drive, low, high, size.n_req, Some(gcd))
         }
     };
     if coeffs.iter().any(|z| !z.is_finite()) {
@@ -1883,4 +1906,57 @@ pub(super) fn position_peierls_coeffs(
         ));
     }
     Ok(coeffs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::floquet::LightMode;
+
+    #[test]
+    fn fallback_preserves_the_projected_carrier_lattice() {
+        let d = array![1.0, 0.0];
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![
+                LightMode::new(-4, array![Complex::new(600.0, 800.0), Complex::ZERO]),
+                LightMode::new(8, array![Complex::new(1000.0, 0.0), Complex::ZERO]),
+                // This carrier is transverse; it must not break the link's period.
+                LightMode::new(1, array![Complex::ZERO, Complex::new(1.0, 0.0)]),
+            ],
+        );
+        let projected = coherent_link_drive(&d, &drive, &coherent_cartesian_field(&drive)).unwrap();
+        let (lo, hi) = (-5, 9);
+        let expected =
+            bessel_peierls_coeffs(&array![1.0], &projected, lo, hi, BESSEL_CUTOFF_MARGIN).unwrap();
+        let clamped = AtomicBool::new(false);
+        let saturated = AtomicBool::new(false);
+        let actual = fallback_time_grid_coeffs(&d, &drive, lo, hi, &clamped, &saturated);
+        for (n, (&actual, &expected)) in (lo..=hi).zip(actual.iter().zip(&expected)) {
+            if n % 4 == 0 {
+                assert!(
+                    (actual - expected).norm() < 1e-11,
+                    "C_{n}: {actual} vs {expected}"
+                );
+            } else {
+                assert_eq!(actual, Complex::ZERO, "forbidden C_{n}");
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_handles_min_signed_carrier_without_relaxing_grid_cap() {
+        let d = array![1.0];
+        let drive = FloquetDrive::with_modes(
+            1.0,
+            vec![LightMode::new(isize::MIN, array![Complex::new(1.0, 1.0)])],
+        );
+        // The carrier, not the requested range, exceeds the grid cap.
+        assert!(fallback_grid_size(&drive, &d, -1, 1).clamped);
+
+        // One sample at θ=0 isolates indexing, not the quadrature accuracy
+        // of an intentionally unresolved carrier.
+        let actual = sample_link_coeffs(&d, &drive, isize::MIN, isize::MIN + 1, 1, None);
+        assert_eq!(actual, array![Complex::new(0.0, -1.0).exp(), Complex::ZERO]);
+    }
 }

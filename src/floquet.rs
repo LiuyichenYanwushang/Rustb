@@ -377,6 +377,8 @@ mod position;
 mod position_tests;
 mod real_space;
 #[cfg(test)]
+mod sweep_tests;
+#[cfg(test)]
 mod time_direction_tests;
 
 use coefficients::*;
@@ -1646,60 +1648,156 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         )
     }
 
+    /// Scan pairs of van Vleck `(order, harmonic_max)` for the same uniform drive.
+    ///
+    /// The callback receives a complete real-space model for each pair, in
+    /// input order. Pairs may repeat or decrease in either parameter. There
+    /// is no requirement to retain earlier models, and the callback can
+    /// stop the sweep by returning an error. An empty sweep is a no-op.
+    ///
+    /// Harmonic coefficients are prepared once through the largest required
+    /// window. Compatible FFT grids share forward transforms and low-order
+    /// commutators where the working-set budget permits. Otherwise the pairs
+    /// run on their own grids using the shared harmonic cache. The estimates
+    /// cover the retained cache, FFT buffers, and one current output; they
+    /// are not a cap on process RSS or temporary coefficient-generation work.
+    /// When harmonic preparation falls back to a time grid, separate windows
+    /// keep their own sampling to avoid amplifying a change in numerical error.
+    /// Results have the same truncation as [`Self::floquet_effective_model`], up to numerical
+    /// roundoff, and are not a change to the Sambe photon cutoff.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use Rustb::*;
+    /// # fn scan(model: &Model<false, 2>, drive: &FloquetDrive) -> Result<()> {
+    /// model.floquet_effective_sweep(drive, &[(1, 4), (2, 2), (2, 4), (3, 4)], |(order, h), eff| {
+    ///     println!("order={order}, harmonic_max={h}, rows={}", eff.hamR.nrows());
+    ///     Ok(())
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    /// Invalid pairs or failures preparing the shared harmonic window are
+    /// reported before any callback. Model, numerical, memory-budget, and
+    /// callback errors stop the sweep.
+    pub fn floquet_effective_sweep(
+        &self,
+        drive: &FloquetDrive,
+        requests: &[(usize, isize)],
+        mut visit: impl FnMut((usize, isize), &Model<SPIN, DIM, R>) -> Result<()>,
+    ) -> Result<()> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+        let has_ac = drive_has_ac_components(drive);
+        let cache_max = requests.iter().try_fold(0, |largest, &(order, h)| {
+            validate_effective_window(order, h)?;
+            let span = if has_ac {
+                effective_cache_max(order, h)?
+            } else {
+                0
+            };
+            Ok::<_, TbError>(largest.max(span))
+        })?;
+        let cache_bytes =
+            validate_effective_cache_layout(cache_max, self.hamR.nrows(), self.nsta())?;
+        if cache_bytes as u128 > kspace::KSPACE_MEMORY_HARD_LIMIT {
+            return Err(TbError::Other(format!(
+                "the shared Floquet sweep harmonic cache needs {:.1} GiB, exceeding the sweep memory budget",
+                cache_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+            )));
+        }
+        let mut cache = self.effective_harmonics_for_window(drive, cache_max, has_ac)?;
+        if !has_ac || !cache.used_time_grid {
+            return self.floquet_effective_sweep_kspace(drive, &cache, has_ac, requests, visit);
+        }
+        // Changing the requested window can switch a link between Bessel
+        // enumeration and a DFT. The latter's absolute roundoff can be
+        // amplified by inverse powers of W even in an allowed harmonic.
+        let mut remaining = requests;
+        while let Some(&(order, h)) = remaining.first() {
+            let window = effective_cache_max(order, h)?;
+            let len = remaining
+                .iter()
+                .take_while(|&&(order, h)| {
+                    effective_cache_max(order, h).is_ok_and(|span| span == window)
+                })
+                .count();
+            if cache.harmonic_max != window {
+                drop(cache);
+                cache = self.effective_harmonics_for_window(drive, window, has_ac)?;
+            }
+            self.floquet_effective_sweep_kspace(
+                drive,
+                &cache,
+                has_ac,
+                &remaining[..len],
+                &mut visit,
+            )?;
+            remaining = &remaining[len..];
+        }
+        Ok(())
+    }
+
     fn effective_harmonics(
         &self,
         drive: &FloquetDrive,
         options: &FloquetEffectiveOptions,
     ) -> Result<(FloquetHarmonicCache, isize, bool)> {
-        self.validate()?;
-        validate_floquet_drive::<DIM>(drive)?;
-        if options.order > 3 {
-            return Err(TbError::Other(format!(
-                "FloquetEffectiveOptions.order must be 0, 1, 2, or 3, got {}",
-                options.order
-            )));
-        }
+        let order = options.order;
+        let h = options.harmonic_max;
+        validate_effective_window(order, h)?;
         if let Some(target) = &options.target_hamR {
             return Err(TbError::Other(format!(
                 "FloquetEffectiveOptions.target_hamR is not supported by the production path: the effective support is determined automatically (got {} target vectors)",
                 target.nrows()
             )));
         }
-        let harmonic_max = effective_harmonic_max(options)?;
+        let has_ac = drive_has_ac_components(drive);
+        let cache_max = if has_ac {
+            effective_cache_max(order, h)?
+        } else {
+            0
+        };
+        let cache = self.effective_harmonics_for_window(drive, cache_max, has_ac)?;
+        Ok((cache, h, has_ac))
+    }
+
+    fn effective_harmonics_for_window(
+        &self,
+        drive: &FloquetDrive,
+        cache_max: isize,
+        has_ac: bool,
+    ) -> Result<FloquetHarmonicCache> {
+        self.validate()?;
+        validate_floquet_drive::<DIM>(drive)?;
         if R::HAS_RMATRIX {
             self.validate_floquet_position()?;
         }
         validate_effective_support::<DIM>(&self.hamR)?;
-        let has_time_dependence = drive_has_ac_components(drive);
         let static_drive;
-        let cache_drive = if has_time_dependence {
+        let cache_drive = if has_ac {
             drive
         } else {
             static_drive = static_component_drive(drive);
             &static_drive
         };
-        let cache_max = if has_time_dependence {
-            effective_cache_max(options.order, harmonic_max)?
-        } else {
-            0
-        };
         validate_effective_cache_layout(cache_max, self.hamR.nrows(), self.nsta())?;
-        let harmonic_cache = if R::HAS_RMATRIX {
-            self.position_harmonic_cache(cache_drive, cache_max)?
+        if R::HAS_RMATRIX {
+            self.position_harmonic_cache(cache_drive, cache_max)
         } else {
-            // Reject links that neither the Bessel ladder nor its temporal
-            // Fourier fallback can resolve without aliasing.
             validate_link_resolvability(self, cache_drive, -cache_max, cache_max)?;
-            self.floquet_harmonic_cache(
+            Ok(self.floquet_harmonic_cache(
                 cache_drive,
                 -cache_max,
                 cache_max,
                 &PeierlsFourierMethod::Bessel {
                     cutoff_margin: BESSEL_CUTOFF_MARGIN,
                 },
-            )
-        };
-        Ok((harmonic_cache, harmonic_max, has_time_dependence))
+            ))
+        }
     }
 
     fn floquet_effective_output(
@@ -2086,14 +2184,27 @@ fn validate_floquet_time_samples(n_time: usize) -> Result<()> {
     Ok(())
 }
 
+fn validate_effective_window(order: usize, h: isize) -> Result<()> {
+    if order > 3 {
+        return Err(TbError::Other(format!(
+            "FloquetEffectiveOptions.order must be 0, 1, 2, or 3, got {order}"
+        )));
+    }
+    check_effective_harmonic_max(h)
+}
+
 fn effective_harmonic_max(options: &FloquetEffectiveOptions) -> Result<isize> {
-    let harmonic_max = options.harmonic_max;
+    check_effective_harmonic_max(options.harmonic_max)?;
+    Ok(options.harmonic_max)
+}
+
+fn check_effective_harmonic_max(harmonic_max: isize) -> Result<()> {
     if harmonic_max < 0 {
         return Err(TbError::Other(format!(
             "FloquetEffectiveOptions.harmonic_max must be non-negative, got {harmonic_max}"
         )));
     }
-    Ok(harmonic_max)
+    Ok(())
 }
 
 fn effective_cache_max(order: usize, harmonic_max: isize) -> Result<isize> {
