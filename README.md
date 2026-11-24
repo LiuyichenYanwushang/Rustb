@@ -741,15 +741,19 @@ remains. Both use the existing link Bessel coefficients or the per-link
 DFT fallback, with no expansion in field amplitude.
 
 Sambe retains only photon sectors `-N..=N`, using harmonics through
-`±2N` for their differences. Separately, the same-size effective model
-keeps van Vleck terms through `order = 0`, `1`, or `2` in `1/W`; at
-order 2 the outer harmonic indices are bounded by `harmonic_max` and their
-difference can reach twice that cutoff. The time average is not truncated
-by this cutoff. A zero-aliasing spatial FFT supplies the production
-convolutions.
+`±2N` for their differences. Separately, the same-size effective models
+support van Vleck orders 0–3 in `1/W` (default 1). With
+`h = harmonic_max`, order 2 still reads harmonic differences through `±2h`.
+`FloquetEffectiveOptions::with_order(3)` adds the full cubic coefficient
+in the zero-average van Vleck gauge, with generator harmonics `|m| <= h`
+for `A` and `|m| <= 2h` for `B`, and input Hamiltonian harmonics through
+`±3h`. The cutoff does not change the time average. The zero-aliasing
+spatial FFT handles degree-four products at order 3, so the output
+hopping support can reach fourfold sums of input translations.
 
 `floquet_effective_q_model` adds the coherent long-wavelength `O(a² q/W)`
 correction for `NoRMatrix`; nonzero `q` with `HasRMatrix` returns an error.
+Order 3 extends only the uniform baseline, not the finite-`q` correction.
 For either type, `q = 0` is identical to `floquet_effective_model`.
 The returned position matrix is the bare projected embedding: blocks are
 remapped by lattice translation, with new rows zero-filled, and Sambe copies
@@ -777,12 +781,12 @@ quasienergies.mapv_inplace(|e| fold_quasienergy(e, drive.omega0_ev));
 quasienergies.as_slice_mut().unwrap().sort_by(f64::total_cmp);
 
 let effective = model.floquet_effective_model(&drive, None)?;
-let second_order = model.floquet_effective_model(
+let third_order = model.floquet_effective_model(
     &drive,
-    Some(&FloquetEffectiveOptions::new().with_order(2)),
+    Some(&FloquetEffectiveOptions::new().with_order(3)),
 )?;
 assert_eq!(effective.nsta(), model.nsta());
-assert_eq!(second_order.nsta(), model.nsta());
+assert_eq!(third_order.nsta(), model.nsta());
 ```
 
 ### `magnetic_field` — uniform magnetic field

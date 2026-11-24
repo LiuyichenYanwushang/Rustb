@@ -972,19 +972,20 @@ let options = FloquetEffectiveOptions::new()
 let effective_incoherent =
     model.floquet_effective_mode_resolved_model(&drive, Some(&options))?;
 
-// Keep van Vleck terms through O(W^-2), without truncating in field amplitude.
-let second_order_options = FloquetEffectiveOptions::new().with_order(2);
-let effective_second_order = model.floquet_effective_model(
+// Keep van Vleck terms through O(W^-3), without truncating in field amplitude.
+let third_order_options = FloquetEffectiveOptions::new().with_order(3);
+let effective_third_order = model.floquet_effective_model(
     &drive,
-    Some(&second_order_options),
+    Some(&third_order_options),
 )?;
 
 // Nonzero q requires NoRMatrix. Use one common Cartesian wavevector in
-// inverse-length units to add the weak-field O(a^2 q/W) correction.
+// inverse-length units to add the same weak-field O(a^2 q/W) correction
+// on top of the third-order uniform baseline.
 let q_cartesian = arr1(&[2.0e-3, 0.0]);
 let effective_linear_q = model.floquet_effective_q_model(
     &drive,
-    Some(&second_order_options),
+    Some(&third_order_options),
     &q_cartesian,
 )?;
 ```
@@ -1029,19 +1030,24 @@ response methods to the result does not establish physical Floquet transport.
 `-N..=N`. Their differences require Hamiltonian harmonics through `±2N`;
 converge `N` for the quasienergies of interest. The effective-model APIs
 instead use `FloquetEffectiveOptions` (defaults: `order = 1`,
-`harmonic_max = 2`). Order 0 keeps the time average; orders 1 and 2 add
-van Vleck terms through `O(W^-1)` and `O(W^-2)`, respectively. The
-nonnegative `harmonic_max` bounds the outer indices `|m|, |m'|`; in the
-order-two mixed family `m'-m` can run through twice that cutoff. It does not
-cut the time average. To preserve the outer cutoff of an old effective-model
-call that used a photon truncation, pass `.with_harmonic_max(2 * old_n_max)`.
+`harmonic_max = 2`). Order 0 keeps the driven time average; orders 1–3
+retain terms through `O(W^-1)`, `O(W^-2)`, and `O(W^-3)`, respectively.
+With `h = harmonic_max`, the order-two outer indices `|m|, |m'|` are still
+bounded by `h`, and the mixed difference `m'-m` can reach `±2h`. Order 3
+adds the full cubic zero-average van Vleck coefficient, using generator
+windows `0 < |m| <= h` for `A` and `0 < |m| <= 2h` for `B`. The contractions
+read input Hamiltonian harmonics through `±3h`. If the Hamiltonian has
+appreciable harmonics outside `±h`, increase `h` and check convergence. The
+cutoff does not change the time average. To preserve the outer cutoff of an
+old call that used a photon truncation, pass `.with_harmonic_max(2 * old_n_max)`.
 
 Production spatial convolutions use only a zero-aliasing FFT grid, streamed
 in slabs, with no user k-mesh or target hopping range. The effective hopping
 support is determined from the harmonic support and can reach double
-Minkowski sums at order 1 and triple sums at order 2. When using multiple
-Rayon threads, pin BLAS to one thread (`OPENBLAS_NUM_THREADS=1` or
-`MKL_NUM_THREADS=1`) to avoid oversubscription.
+Minkowski sums at order 1, triple sums at order 2, and fourfold sums at order 3
+(the cubic inverse-frequency term is degree four in the input Hamiltonian
+blocks). With multiple Rayon threads, pin BLAS to one thread
+(`OPENBLAS_NUM_THREADS=1` or `MKL_NUM_THREADS=1`) to avoid oversubscription.
 
 
 For multiple mutually incoherent modes,

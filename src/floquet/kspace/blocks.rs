@@ -208,27 +208,22 @@ fn polynomial_support(
         }
         input.push(index);
     }
-    if degree >= 2 {
-        let mut pairs = Vec::new();
-        for &left in &input {
+    let mut layer = input.clone();
+    for level in 2..=degree {
+        let mut next = Vec::new();
+        for &left in &layer {
             for &right in &input {
                 let index = left + right + shift;
                 debug_assert!((0..volume as i64).contains(&index));
                 if marked[index as usize] == 0 {
                     marked[index as usize] = 1;
-                    pairs.push(index);
+                    if level < degree {
+                        next.push(index);
+                    }
                 }
             }
         }
-        if degree >= 3 {
-            for &pair in &pairs {
-                for &right in &input {
-                    let index = pair + right + shift;
-                    debug_assert!((0..volume as i64).contains(&index));
-                    marked[index as usize] = 1;
-                }
-            }
-        }
+        layer = next;
     }
     let mut vectors = Vec::new();
     for index in 0..volume {

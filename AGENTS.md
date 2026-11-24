@@ -648,7 +648,7 @@ a(r,t)=\operatorname{Re}\sum_{n>0}a_n e^{+iq\cdot r-in\Omega_0t}.
 Modes with the same temporal harmonic are summed coherently before the
 correction is evaluated.  The method first computes the existing `q = 0`
 baseline—unexpanded in field amplitude and van Vleck through the
-requested inverse-frequency order 0, 1, or 2—and, when `order >= 1`, adds
+requested inverse-frequency order 0–3—and, when `order >= 1`, adds
 
 ```math
 \delta_qH_{\rm eff}
@@ -676,10 +676,10 @@ each output block with `i (q · d_out) J_n(R)`.  The full Cartesian bond
 models the same orbital bond is used in each spin block.
 
 The added term is controlled only through `O(A^2 q/W)` and `O(W^-1)` and
-requires both `|a_n · d| << 1` and `|q · d| << 1` on relevant bonds.  An
-`order = 2` option still retains the `q = 0` baseline through `O(W^-2)`, but
-does not promote the linear-`q` term to `O(W^-2)`.  Here `n_max` is the
-effective `harmonic_max`; higher harmonics are omitted from the correction,
+requires both `|a_n · d| << 1` and `|q · d| << 1` on relevant bonds. Orders 2
+and 3 retain the `q = 0` baseline through `O(W^-2)` and `O(W^-3)`, respectively,
+but do not change the linear-`q` term. Here `n_max` is the effective
+`harmonic_max`; higher harmonics are omitted from the correction,
 and active nonpositive harmonics are rejected when nonzero `q` and
 `order >= 1` request it.  With `order = 0` no linear-`q` term is added, while
 `q = 0` returns the ordinary baseline exactly without imposing that positive-
@@ -736,7 +736,7 @@ to `[-W/2, W/2)` with `fold_quasienergy`.
 ### van Vleck and spatial convolution
 
 The coherent and mode-resolved effective models keep the same basis size
-and separately truncate van Vleck at order 0, 1, or 2 in `1/W`. Their time
+and separately truncate van Vleck at order 0–3 in `1/W`. Their time
 average is `H^(0)`. First order is `[H^(-n), H^(n)]/(nW)` summed over
 `1 <= n <= harmonic_max`. Second order adds
 `[H^(-m), [H^(0), H^(m)]]/(2m²W²)` and
@@ -744,12 +744,39 @@ average is `H^(0)`. First order is `[H^(-n), H^(n)]/(nW)` summed over
 `|m|, |m'| <= harmonic_max` (with `m' != m` in the mixed family), so
 `m'-m` can reach `±2 * harmonic_max`. The cutoff does not alter `H^(0)`.
 
-The sole production convolution uses a spatial FFT grid with no aliasing
-on the required Minkowski support. The first- and second-order terms and the linear-q
-anticommutator use this engine; no pairwise convolution solver is selected
-as a fallback. The output support extends to double sums at order 1 and
-triple sums at order 2 when needed and is origin-first. The time-grid
-fallback is only for the link Fourier coefficients, not the spatial FFT.
+`FloquetEffectiveOptions::with_order(3)` adds `K_3/W^3`, the full cubic
+coefficient in the zero-average van Vleck gauge with the following harmonic
+windows. Set `h = harmonic_max` and `V = H(t) - H^(0)`:
+
+```math
+A_m = \frac{H^{(m)}}{m}\quad (0<|m|\le h),
+\qquad C=[V,A],
+\qquad B_m=\frac{[H^{(0)}+V/2,A]_m}{m}\quad (0<|m|\le 2h).
+```
+
+Outside their stated windows, the generator coefficients are zero
+(including `A_0 = B_0 = 0`). With `C_0` the zeroth Fourier component of `C`
+and `⟨·⟩` the period average,
+
+```math
+K_3=\left\langle
+\frac{[C,B]}{12}
++\left[[H^{(0)}/2+V/3,B]+\frac{[C,A]}{24}+\frac{[C_0,A]}{12},A\right]
+\right\rangle.
+```
+
+`C` is needed through `±2h`; forming it and contracting `V` with `B`
+requires input Hamiltonian harmonics through `±3h`. The windows recover the
+untruncated cubic coefficient if the input Hamiltonian has no harmonics
+outside `±h`; otherwise converge `h` separately.
+
+The sole production convolution uses a zero-aliasing spatial FFT for all
+van Vleck terms and the linear-`q` anticommutator; there is no pairwise
+convolution fallback. The origin-first output support can reach double sums
+at order 1, triple sums at order 2, and fourfold Minkowski sums at order 3
+because the `W^-3` coefficient is degree four in the input Hamiltonian
+blocks. The time-grid fallback is only for the link Fourier coefficients,
+not the spatial FFT.
 
 **Forward-time migration:** the old `H^(n-m)+nW` assembly described the
 time-reversed protocol. Recompute helicity-sensitive results; do not simply
@@ -791,7 +818,7 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 | `FloquetDrive` | `omega0_ev` + `Vec<LightMode>`; builder: `new()`, `with_modes()`, `add_mode()` |
 | `FloquetTruncation` | Finite Sambe only: `new(n_max)`, `n_sector()` = `2n_max+1` (fallible); no user sampling count |
 | `IncidentBasis` | Transverse polarization basis from incident direction |
-| `FloquetEffectiveOptions` | van Vleck controls: concrete `order = 1`, `harmonic_max = 2` defaults; `with_order(n)`, `with_harmonic_max(n)` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
+| `FloquetEffectiveOptions` | van Vleck controls: `with_order(n)` for `n = 0..=3` and `with_harmonic_max(h)`; defaults are `order = 1`, `harmonic_max = 2` (`with_target_hamR(rs)` is crate-internal, legacy path only) |
 | `Floquet` trait | `floquet_model` only: build a real-space Sambe `Model`; use ordinary `Model` Hamiltonian/band solvers and `fold_quasienergy` afterwards |
 | `Model::floquet_effective_model` | Inherent method returning same-size effective Model |
 | `Model::floquet_effective_q_model` | Same-size coherent weak-field correction through `O(A^2 q/W)` for one common Cartesian `q` |
@@ -803,9 +830,9 @@ quasienergy spectrum (the residual changes from `O(Ω⁻²)` to `O(Ω⁻³)`).
 `(photon, orbital)` order (spinless) or `(spin, photon, orbital)` order
 (spinful). It replicates atom metadata and orbital projections in sector
 order. Effective models preserve the input metadata and choose their own
-support. The legacy test-only DFT reference accepts explicit `n_time` and
-`target_hamR` for cross-checks; the latter must be unique and closed under
-`R -> -R`. Neither option is public.
+support. The legacy test-only DFT reference covers orders 0–2 and accepts
+explicit `n_time` and `target_hamR` for cross-checks; the latter must be
+unique and closed under `R -> -R`. Neither option is public.
 
 **Threading:** the streaming FFT engine processes k points with Rayon and
 uses parallel transform lanes when the pool has multiple threads. Pin BLAS

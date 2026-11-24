@@ -119,9 +119,15 @@
   is unsupported.
 - Use zero-aliasing spatial FFTs as the sole production convolution for
   electronic effective models, including the linear-`q` anticommutator.
-  The separate van Vleck expansion stops at `O(W^-2)`; the outer indices
-  `|m|, |m'| <= harmonic_max` in the order-two mixed family now retain
+  At order 2, `|m|, |m'| <= harmonic_max` in the mixed family retain
   inner differences through `±2*harmonic_max`.
+- `FloquetEffectiveOptions::with_order(3)` adds the full cubic zero-average
+  van Vleck coefficient to electronic effective models. For `h = harmonic_max`,
+  the `A` and `B` generators use windows `±h` and `±2h`, respectively, and
+  the input Hamiltonian harmonics extend through `±3h`. The spatial FFT
+  resolves degree-four hopping support. Orders 0–2, Sambe truncation, and the
+  weak-field finite-`q` correction are unchanged; order 3 extends only the
+  uniform baseline in the finite-`q` API.
 
 - Use ordinary `f64` accumulation for mode-resolved Floquet models. Remove
   the custom exact accumulator, per-mode block storage, and its extreme-range

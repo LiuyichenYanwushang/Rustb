@@ -6,6 +6,7 @@ use super::{
     drive_has_ac_components, effective_cache_max,
 };
 use crate::atom_struct::{Atom, AtomType, OrbProj, OrbitalId};
+use crate::model::{HasRMatrix, RMatrixData};
 use crate::{Gauge, Model};
 use ndarray::{Array1, Array2, Array3, Axis, arr1, array};
 use num_complex::Complex;
@@ -301,12 +302,12 @@ fn assert_exactly_hermitian<const DIM: usize>(context: &str, model: &Model<false
     }
 }
 
-fn effective<const SPIN: bool, const DIM: usize>(
-    model: &Model<SPIN, DIM>,
+fn effective<const SPIN: bool, const DIM: usize, R: RMatrixData>(
+    model: &Model<SPIN, DIM, R>,
     drive: &FloquetDrive,
     order: usize,
     harmonic_max: isize,
-) -> Model<SPIN, DIM> {
+) -> Model<SPIN, DIM, R> {
     model
         .floquet_effective_model(
             drive,
@@ -355,6 +356,240 @@ pub(super) fn assert_matches_oracle<const SPIN: bool, const DIM: usize>(
             );
         }
     }
+}
+
+type C = Complex<f64>;
+
+fn pauli([x, y, z]: [C; 3]) -> Array2<C> {
+    array![[z, x - C::I * y], [x + C::I * y, -z]]
+}
+
+fn matrix_error(a: &Array2<C>, b: &Array2<C>) -> f64 {
+    (a - b).iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt()
+}
+
+#[test]
+fn cubic_circular_dipoles_have_signed_mass_and_nonzero_fourth_neighbor() {
+    use ndarray::s;
+    use std::f64::consts::TAU;
+
+    let (delta, g, w, scalar): (f64, f64, f64, f64) = (0.39, 0.56, 6.0, 0.1);
+    let mut model =
+        Model::<false, 3, HasRMatrix>::tb_model(Array2::eye(3), Array2::zeros((2, 3)), None)
+            .unwrap();
+    model.set_onsite(&array![delta, -delta], None);
+    for orbital in 0..2 {
+        model.set_hop(scalar, orbital, orbital, &array![0, 0, 1], None);
+    }
+    for rz in [-1, 1] {
+        let ir = row_of(&model.hamR, &[0, 0, rz]).unwrap();
+        model
+            .rmatrix
+            .slice_mut(s![ir, 0, .., ..])
+            .assign(&pauli([C::ONE, C::ZERO, C::ZERO]));
+        model
+            .rmatrix
+            .slice_mut(s![ir, 1, .., ..])
+            .assign(&pauli([C::ZERO, C::ONE, C::ZERO]));
+    }
+
+    for helicity in [1.0, -1.0] {
+        // The transverse drive has zero Peierls phase along z. It gives only
+        // H_{±1}, with rotating coupling of magnitude |G(k)| = |2g cos(2πk_z)|.
+        let drive = FloquetDrive::with_modes(
+            w,
+            vec![LightMode::new(
+                1,
+                array![C::from(g / w), C::I * (helicity * g / w), C::ZERO],
+            )],
+        );
+        for order in 0..=3 {
+            let out = effective(&model, &drive, order, 1);
+            for kz in [0.0, 0.19] {
+                let cos = (TAU * kz).cos();
+                let g2 = (2.0 * g * cos).powi(2);
+                // Expand the signed central eigenvalue of the exact rotating
+                // two-state block: s W/2 - s sqrt((W/2-s δ)^2+G^2), s=helicity.
+                let terms = [
+                    delta,
+                    -helicity * g2 / w,
+                    -2.0 * delta * g2 / w.powi(2),
+                    helicity * (g2 * g2 - 4.0 * delta * delta * g2) / w.powi(3),
+                ];
+                let mass = terms[..=order].iter().sum::<f64>();
+                let shift = 2.0 * scalar * cos;
+                let want = array![
+                    [C::from(shift + mass), C::ZERO],
+                    [C::ZERO, C::from(shift - mass)]
+                ];
+                let actual = out.gen_ham(&array![0.0, 0.0, kz], Gauge::Lattice);
+                let error = matrix_error(&actual, &want);
+                assert!(
+                    error < 2e-13,
+                    "order={order}, helicity={helicity}, k_z={kz}: {error:e}"
+                );
+            }
+            if order == 3 {
+                assert_eq!(out.hamR.nrows(), 9);
+                for rz in [-4, 4] {
+                    let ir = row_of(&out.hamR, &[0, 0, rz]).unwrap();
+                    // Only G^4 can reach ±4. The coefficient of exp(±4ik_z) is g^4.
+                    let want = pauli([C::ZERO, C::ZERO, C::from(helicity * g.powi(4) / w.powi(3))]);
+                    assert!(
+                        matrix_error(&out.ham.index_axis(Axis(0), ir).to_owned(), &want) < 2e-13
+                    );
+                    assert!(
+                        out.rmatrix
+                            .index_axis(Axis(0), ir)
+                            .iter()
+                            .all(|&z| z == C::ZERO)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn cubic_multiharmonic_matches_sambe_and_retains_three_cutoff_edge() {
+    use crate::ndarray_lapack::eigvalsh_v;
+    use ndarray::s;
+    use ndarray_linalg::UPLO;
+
+    let harmonic = [
+        [C::from(0.32), C::from(-0.21), C::from(0.68)],
+        [C::from(0.41), C::new(0.0, 0.29), C::new(0.12, 0.08)],
+        [C::new(0.17, -0.13), C::from(-0.27), C::new(0.0, 0.19)],
+        [C::new(0.0, 0.12), C::from(0.15), C::from(-0.07)],
+    ];
+    let hm = harmonic.map(pauli);
+    let mut model =
+        Model::<false, 3, HasRMatrix>::tb_model(Array2::eye(3), Array2::zeros((2, 3)), None)
+            .unwrap();
+    model.set_onsite(&array![0.68, -0.68], None);
+    model.set_hop(hm[0][[0, 1]], 0, 1, &array![0, 0, 0], None);
+    for axis in 0..3 {
+        let mut coefficient = [C::ZERO; 3];
+        coefficient[axis] = C::ONE;
+        model
+            .rmatrix
+            .slice_mut(s![0, axis, .., ..])
+            .assign(&pauli(coefficient));
+    }
+    let drive = |w, carriers: usize| {
+        let modes = (1..=carriers).map(|m| {
+            // With d=0 and X-X_d=σ, H_m=(-imW/2) a_m·σ. Scale a_m
+            // with 1/W to hold actual H_m, not the field amplitude, fixed.
+            let a = harmonic[m].map(|z| z * C::I * (2.0 / (m as f64 * w)));
+            LightMode::new(m as isize, arr1(&a))
+        });
+        FloquetDrive::with_modes(w, modes.collect())
+    };
+    let h_at = |w, carriers, order, cutoff| {
+        effective(&model, &drive(w, carriers), order, cutoff)
+            .gen_ham(&array![0.0, 0.0, 0.0], Gauge::Lattice)
+    };
+
+    // Matrix oracle from directly diagonalizing the literal N=16 Sambe
+    // operator, reconstructing P(t)=Σ_n C_n exp(+inθ), and choosing constant
+    // R by iterating R <- R exp(-mean(log(P R))) on 64 time samples. Listed
+    // below are the Pauli coordinates of R† diag(ε) R, not the FM log at t=0
+    // or the polar gauge of C_0 (the latter differs already at cubic order).
+    // N=12 changed the oracle by less than 5e-13. No vV coefficient is used.
+    let exact = [
+        [0.342344843008385, -0.188186476773819, 0.633025636374451],
+        [0.331680545971553, -0.199409503913026, 0.658834464708965],
+        [0.325948108496347, -0.204769447106267, 0.669953997949794],
+        [0.322998924938020, -0.207399173543170, 0.675106280292674],
+    ];
+    let mut errors = [[0.0; 2]; 4];
+    for (iw, (w, xyz)) in [10.0, 20.0, 40.0, 80.0].into_iter().zip(exact).enumerate() {
+        let want = pauli(xyz.map(C::from));
+        // Verify the static matrix oracle's eigenvalues against a live,
+        // independent Sambe assembly using the literal harmonics above.
+        let ncut = 12;
+        let dim = 2 * (2 * ncut + 1);
+        let sambe = Array2::from_shape_fn((dim, dim), |(i, j)| {
+            let m = (j / 2) as isize - (i / 2) as isize;
+            let (a, b) = (i % 2, j % 2);
+            match m {
+                0 => {
+                    hm[0][[a, b]]
+                        + if i == j {
+                            C::from(((i / 2) as f64 - ncut as f64) * w)
+                        } else {
+                            C::ZERO
+                        }
+                }
+                1..=3 => hm[m as usize][[a, b]],
+                -3..=-1 => hm[(-m) as usize][[b, a]].conj(),
+                _ => C::ZERO,
+            }
+        });
+        let levels = eigvalsh_v(&sambe, UPLO::Lower).unwrap();
+        let mass = xyz.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!((levels[2 * ncut] + mass).abs() < 2e-12);
+        assert!((levels[2 * ncut + 1] - mass).abs() < 2e-12);
+        for (index, order) in [2, 3].into_iter().enumerate() {
+            errors[iw][index] = matrix_error(&h_at(w, 3, order, 3), &want);
+        }
+        assert!(
+            errors[iw][1] < 0.14 * errors[iw][0],
+            "W={w}: errors={:?}",
+            errors[iw]
+        );
+    }
+    for pair in errors.windows(2) {
+        let second = pair[0][0] / pair[1][0];
+        let cubic = pair[0][1] / pair[1][1];
+        assert!((7.0..10.0).contains(&second), "second order ratio={second}");
+        assert!((15.5..16.5).contains(&cubic), "cubic ratio={cubic}");
+    }
+
+    // At h=1 the ±3 bare harmonics cannot enter orders 0..2, but they
+    // contribute to K3. At h=0 the public cubic request is just H0.
+    let w = 10.0_f64;
+    for order in 0..=2 {
+        assert!(matrix_error(&h_at(w, 3, order, 1), &h_at(w, 2, order, 1)) < 2e-14);
+    }
+    let edge = matrix_error(&h_at(w, 3, 3, 1), &h_at(w, 2, 3, 1)) * w.powi(3);
+    assert!(
+        (edge - 0.016633725904877).abs() < 2e-10,
+        "3h edge coefficient norm={edge:e}"
+    );
+    assert_eq!(h_at(w, 3, 3, 0), h_at(w, 3, 0, 0));
+}
+
+#[test]
+fn cubic_peierls_only_support_and_time_origin() {
+    let model = one_dimensional_model();
+    let drive = two_mode_drive::<1>();
+    let second = effective(&model, &drive, 2, 2);
+    let third = effective(&model, &drive, 3, 2);
+    assert_support(
+        "cubic Peierls",
+        &third,
+        &[[0], [-4], [-3], [-2], [-1], [1], [2], [3], [4]],
+    );
+    assert_exactly_hermitian("cubic Peierls", &third);
+    let shifted = FloquetDrive::with_modes(
+        OMEGA,
+        drive
+            .modes
+            .into_iter()
+            .map(|mode| {
+                LightMode::new(
+                    mode.harmonic,
+                    mode.a_complex * C::from_polar(1.0, 0.73 * mode.harmonic as f64),
+                )
+            })
+            .collect(),
+    );
+    let shifted = effective(&model, &shifted, 3, 2);
+    let k = array![0.217];
+    let h = third.gen_ham(&k, Gauge::Lattice);
+    assert!(matrix_error(&h, &second.gen_ham(&k, Gauge::Lattice)) > 1e-9);
+    assert!(matrix_error(&h, &shifted.gen_ham(&k, Gauge::Lattice)) < 2e-13);
 }
 
 #[test]

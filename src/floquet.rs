@@ -208,8 +208,9 @@
 //! +O(W^{-3}).
 //! ```
 //!
-//! where `order = 2` includes both nested-commutator families through
-//! $O(W^{-2})$ documented on [`Model::floquet_effective_model`].
+//! This is the `order = 2` expansion. With `order = 3` the model also
+//! retains the cubic van Vleck term in $W^{-1}$. See
+//! [`Model::floquet_effective_model`] for the harmonic windows.
 //!
 //! The Fourier blocks `H^{(n)}(k)` follow the coupling selected by the input
 //! model's position data type. Each commutator term
@@ -302,7 +303,7 @@
 //! `LightMode::a_complex` is the complex amplitude of `eA/hbar` in inverse
 //! lattice-length units; its integer harmonic is measured relative to
 //! `FloquetDrive::omega0_ev`. The three effective-model methods take only
-//! [`FloquetEffectiveOptions`] (`order` in 0..=2, `harmonic_max`) and no photon
+//! [`FloquetEffectiveOptions`] (`order` in 0..=3, `harmonic_max`) and no photon
 //! truncation; [`FloquetTruncation`] controls the Sambe sector count only.
 //! Every entry point returns an ordinary real-space model, so the usual
 //! Hamiltonian and band solvers apply. Eigenvalues are unfolded and
@@ -344,14 +345,14 @@
 //!     .collect();
 //! folded.sort_by(f64::total_cmp);
 //!
-//! // Same-size effective models: order 1 by default, order 2 on request.
+//! // Same-size effective models: order 1 by default, order 3 on request.
 //! let first_order = model.floquet_effective_model(&drive, None)?;
-//! let second_order = model.floquet_effective_model(
+//! let third_order = model.floquet_effective_model(
 //!     &drive,
-//!     Some(&FloquetEffectiveOptions::new().with_order(2)),
+//!     Some(&FloquetEffectiveOptions::new().with_order(3)),
 //! )?;
 //! assert_eq!(first_order.nsta(), model.nsta());
-//! assert_eq!(second_order.nsta(), model.nsta());
+//! assert_eq!(third_order.nsta(), model.nsta());
 //!
 //! // Incoherent modes: one correction per mode around the static H0.
 //! let incoherent = model.floquet_effective_mode_resolved_model(&drive, None)?;
@@ -621,12 +622,13 @@ impl IncidentBasis {
 /// `target_hamR`.
 #[derive(Clone, Debug)]
 pub struct FloquetEffectiveOptions {
-    /// van Vleck order.  Supported: `0`, `1`, and `2`, retaining terms
-    /// through `O(omega^0)`, `O(omega^-1)`, and `O(omega^-2)`, respectively.
+    /// van Vleck order, from `0` (time average) through `3` (inverse-frequency cubed).
     pub order: usize,
     /// Signed-harmonic cutoff for commutator sums. Defaults to `2`,
     /// independently of any Sambe photon cutoff. It bounds the outer indices
     /// `m` and `m'`; the mixed harmonic `m'-m` can reach twice the bound.
+    /// At order 3 the first and second generator windows are this cutoff
+    /// and twice it, and the input reaches three times the cutoff.
     /// The cutoff does not affect the time average.
     pub harmonic_max: isize,
     /// Optional target real-space hopping vectors for the legacy path's
@@ -651,7 +653,7 @@ impl FloquetEffectiveOptions {
         Self::default()
     }
 
-    /// Set the van Vleck order.  `0`, `1`, and `2` are supported.
+    /// Set the van Vleck order. Orders `0` through `3` are supported.
     pub fn with_order(mut self, order: usize) -> Self {
         self.order = order;
         self
@@ -827,7 +829,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// This is a controlled `O(A^2 q / W)` spatial-dispersion correction, not
     /// an exact finite-wavevector Sambe solver.  The `q = 0` baseline may be
-    /// retained through `O(W^-2)`, but the added `q` term itself is only
+    /// retained through `O(W^-3)`, but the added `q` term itself is only
     /// `O(W^-1)`.  The added term requires both `|a_n·d| << 1` and
     /// `|q·d| << 1` on relevant bonds; the all-orders `q = 0` baseline does not
     /// remove that weak-field requirement from the derivative itself.
@@ -1065,9 +1067,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         };
         validate_floquet_drive::<DIM>(drive)?;
-        if options.order > 2 {
+        if options.order > 3 {
             return Err(TbError::Other(format!(
-                "FloquetEffectiveOptions.order must be 0, 1, or 2, got {}",
+                "FloquetEffectiveOptions.order must be 0, 1, 2, or 3, got {}",
                 options.order
             )));
         }
@@ -1576,11 +1578,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(model)
     }
 
-    /// van Vleck effective model through order two in inverse frequency.
+    /// van Vleck effective model through order three in inverse frequency.
     /// No photon cutoff, time-sampling count, or k-mesh is required.
     ///
     /// Both position data types use their full time-dependent coupling.
-    /// The driven Fourier blocks are combined on a zero-aliasing FFT grid:
+    /// The driven Fourier blocks are combined on a zero-aliasing FFT grid.
+    /// Through order two the expansion is:
     ///
     /// ```math
     /// T_{\mathrm{eff}}(R)
@@ -1601,9 +1604,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// \frac{[T_{-m'},[T_{m'-m},T_m]]}{3mm'W^2}.
     /// ```
     ///
-    /// `options.order = 0` returns the time average; orders 1 and 2 add the
-    /// corresponding inverse-frequency terms. Outer indices are restricted
-    /// to `harmonic_max` (default 2); `m'-m` may reach twice that value.
+    /// `options.order = 0` returns the time average. Let `h = harmonic_max`
+    /// (default 2). At order 2 the outer indices are bounded by `h`, while
+    /// `m'-m` can reach `2h`. Order 3 adds the cubic van Vleck expression with
+    /// generator windows `±h` and `±2h` and input harmonics through `±3h`.
+    /// This retains the full cubic coefficient if the input Hamiltonian has no
+    /// harmonics above `h`; otherwise converge the harmonic cutoff separately.
+    /// The spatial support can reach fourfold sums.
     /// The origin-first output support is determined automatically. The input
     /// atom/orbital metadata and bare position matrix are retained; position
     /// blocks on generated rows are zero, not micromotion dressed.
@@ -1644,9 +1651,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ) -> Result<(FloquetHarmonicCache, isize, bool)> {
         self.validate()?;
         validate_floquet_drive::<DIM>(drive)?;
-        if options.order > 2 {
+        if options.order > 3 {
             return Err(TbError::Other(format!(
-                "FloquetEffectiveOptions.order must be 0, 1, or 2, got {}",
+                "FloquetEffectiveOptions.order must be 0, 1, 2, or 3, got {}",
                 options.order
             )));
         }
@@ -2091,11 +2098,10 @@ fn effective_cache_max(order: usize, harmonic_max: isize) -> Result<isize> {
     match order {
         0 => Ok(0),
         1 => Ok(harmonic_max),
-        2 => harmonic_max.checked_mul(2).ok_or_else(|| {
-            TbError::Other(
-                "FloquetEffectiveOptions.harmonic_max is too large for the order-2 harmonic range"
-                    .to_string(),
-            )
+        2 | 3 => harmonic_max.checked_mul(order as isize).ok_or_else(|| {
+            TbError::Other(format!(
+                "FloquetEffectiveOptions.harmonic_max is too large for the order-{order} harmonic range"
+            ))
         }),
         _ => unreachable!("the effective order must be validated first"),
     }
@@ -2162,7 +2168,7 @@ fn validate_effective_options<const DIM: usize>(
 ) -> Result<()> {
     if options.order > 2 {
         return Err(TbError::Other(format!(
-            "Floquet effective order {} is not implemented; supported orders are 0, 1, and 2",
+            "Legacy Floquet reference supports only orders 0, 1, and 2, got {}",
             options.order
         )));
     }

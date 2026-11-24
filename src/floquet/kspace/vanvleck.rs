@@ -1,9 +1,11 @@
-//! Second-order van Vleck assembly at individual k points.
+//! Van Vleck assembly through cubic order in inverse frequency.
 
 use super::C;
 use crate::error::{Result, TbError};
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array2, ArrayView2, ArrayView3, ArrayView4, ArrayViewMut2, ArrayViewMut3, Axis};
+use ndarray::{
+    Array2, Array3, ArrayView2, ArrayView3, ArrayView4, ArrayViewMut2, ArrayViewMut3, Axis, Zip,
+};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::slice::ParallelSliceMut;
 
@@ -24,7 +26,9 @@ increase omega0_ev or lower the requested order";
 ///
 /// The correction sums are skipped when order is 0 or the drive has no time
 /// dependence. The difference m'-m can reach 2h; m' == 2m makes the inner
-/// commutator vanish and is skipped.
+/// commutator vanish and is skipped. Order 3 additionally evaluates the
+/// zero-average generator expression in `ThirdOrderScratch` with bare
+/// harmonics through 3h.
 ///
 /// With reuse_adjoint = true the two order-two families are evaluated on one
 /// representative of each conjugate pair and their adjoints are added, which
@@ -51,9 +55,9 @@ pub(super) fn assemble_pointwise(
     omega: f64,
     mut out: ArrayViewMut3<'_, C>,
 ) -> Result<()> {
-    if order > 2 {
+    if order > 3 {
         return Err(TbError::Other(format!(
-            "the k-space van Vleck assembly supports order 0, 1 or 2, got {order}"
+            "the k-space van Vleck assembly supports orders 0 through 3, got {order}"
         )));
     }
     if harmonic_max < 0 {
@@ -93,8 +97,8 @@ harmonic_max = {harmonic_max} and order {effective_order}",
         )));
     }
     let inverse_omega = omega.recip();
-    let inverse_omega_squared = inverse_omega * inverse_omega;
     let extreme_products = harmonics.iter().any(|z| z.re.abs().max(z.im.abs()) > 1e95);
+    let third_order_cutoff = (effective_order == 3 && harmonic_max > 0).then_some(harmonic_max);
 
     let mut rows: Vec<ArrayViewMut2<'_, C>> = out.outer_iter_mut().collect();
     // Reference Netlib CBLAS may use process globals; keep the fan-out serial
@@ -108,7 +112,7 @@ harmonic_max = {harmonic_max} and order {effective_order}",
         let chunk_len = rows.len().div_ceil(workers * 4).max(1);
         rows.par_chunks_mut(chunk_len).enumerate().try_for_each(
             |(chunk_index, chunk)| -> Result<()> {
-                let mut scratch = Scratch::new(nsta);
+                let mut scratch = Scratch::new(nsta, third_order_cutoff);
                 for (offset, target) in chunk.iter_mut().enumerate() {
                     let point = chunk_index * chunk_len + offset;
                     assemble_point_into(
@@ -117,7 +121,7 @@ harmonic_max = {harmonic_max} and order {effective_order}",
                         cache_max,
                         effective_order,
                         inverse_omega,
-                        inverse_omega_squared,
+                        omega,
                         reuse_adjoint,
                         extreme_products,
                         target,
@@ -128,7 +132,7 @@ harmonic_max = {harmonic_max} and order {effective_order}",
             },
         )?;
     } else {
-        let mut scratch = Scratch::new(nsta);
+        let mut scratch = Scratch::new(nsta, third_order_cutoff);
         for (point, target) in rows.iter_mut().enumerate() {
             assemble_point_into(
                 harmonics.index_axis(Axis(1), point),
@@ -136,7 +140,7 @@ harmonic_max = {harmonic_max} and order {effective_order}",
                 cache_max,
                 effective_order,
                 inverse_omega,
-                inverse_omega_squared,
+                omega,
                 reuse_adjoint,
                 extreme_products,
                 target,
@@ -156,15 +160,261 @@ struct Scratch {
     total: Array2<C>,
     inner: Array2<C>,
     outer: Array2<C>,
+    third: Option<ThirdOrderScratch>,
 }
 
 impl Scratch {
-    fn new(nsta: usize) -> Self {
+    fn new(nsta: usize, third_order_cutoff: Option<isize>) -> Self {
         Self {
             total: Array2::zeros((nsta, nsta)),
             inner: Array2::zeros((nsta, nsta)),
             outer: Array2::zeros((nsta, nsta)),
+            third: third_order_cutoff.map(|h| ThirdOrderScratch::new(nsta, h)),
         }
+    }
+}
+
+/// Third-order Fourier contractions. All storage is reused across the chunk's
+/// k points. Bare operands are normalized only at extreme amplitudes.
+struct ThirdOrderScratch {
+    h: isize,
+    va: Array3<C>,
+    b: Array3<C>,
+    inner: Array2<C>,
+    coefficient: Array2<C>,
+    scaled_operands: Option<[Array2<C>; 2]>,
+}
+
+impl ThirdOrderScratch {
+    fn new(nsta: usize, h: isize) -> Self {
+        let slots = harmonic_slot(2 * h, 2 * h) + 1;
+        Self {
+            h,
+            va: Array3::zeros((slots, nsta, nsta)),
+            b: Array3::zeros((slots, nsta, nsta)),
+            inner: Array2::zeros((nsta, nsta)),
+            coefficient: Array2::zeros((nsta, nsta)),
+            scaled_operands: None,
+        }
+    }
+
+    fn add_into<'a>(
+        &mut self,
+        harmonic: impl Fn(isize) -> ArrayView2<'a, C>,
+        omega: f64,
+        total: &mut Array2<C>,
+        forward: &mut Array2<C>,
+        backward: &mut Array2<C>,
+    ) -> Result<()> {
+        let h = self.h;
+        let slot = |m| harmonic_slot(m, 2 * h);
+        let a_orders = || (-h..=h).filter(|&m| m != 0);
+        let b_orders = || (-2 * h..=2 * h).filter(|&m| m != 0);
+        let zero = C::new(0.0, 0.0);
+        let one = C::new(1.0, 0.0);
+        let mut largest = 0.0_f64;
+        let mut smallest = f64::INFINITY;
+        for m in -3 * h..=3 * h {
+            for z in &harmonic(m) {
+                for value in [z.re.abs(), z.im.abs()] {
+                    if !value.is_finite() {
+                        return Err(TbError::Other(
+                            "non-finite third-order van Vleck operand".into(),
+                        ));
+                    }
+                    largest = largest.max(value);
+                    if value != 0.0 {
+                        smallest = smallest.min(value);
+                    }
+                }
+            }
+        }
+        let input_exponent = if largest != 0.0 && !(1e-64..=1e64).contains(&largest) {
+            binary_parts(largest).1
+        } else {
+            0
+        };
+        // A normal-sized component can hide a much smaller quartic product.
+        // Fail closed when dividing by |W| < 1 could restore such products,
+        // even if the largest component needs no scaling. Leave headroom
+        // above the fourth root of the smallest normal f64 for harmonic weights.
+        if input_exponent == 0 && omega.abs() < 1.0 && smallest < 1e-72 {
+            return Err(TbError::Other(
+                "third-order van Vleck operands exceed the representable product range".into(),
+            ));
+        }
+        let mut scaled_operands = if input_exponent != 0 {
+            // Reserve exponent headroom for four nonzero components and their
+            // harmonic weights. A single normalization cannot safely span
+            // arbitrary dynamic range.
+            if binary_parts(smallest).1 - input_exponent < -200 {
+                return Err(TbError::Other(
+                    "third-order van Vleck operands exceed the representable product range".into(),
+                ));
+            }
+            Some(
+                self.scaled_operands.get_or_insert_with(|| {
+                    [Array2::zeros(total.dim()), Array2::zeros(total.dim())]
+                }),
+            )
+        } else {
+            None
+        };
+        let exponent_step = (-input_exponent).clamp(-1022, 1023);
+        let factor = normal_power_of_two(exponent_step);
+        let tail = normal_power_of_two(-input_exponent - exponent_step);
+        let copy_scaled = |dst: &mut Array2<C>, src: ArrayView2<'_, C>| {
+            Zip::from(dst)
+                .and(src)
+                .for_each(|dst, &z| *dst = (z * factor) * tail);
+        };
+        let bare = |m| (harmonic(m), true);
+        let mut add_commutator = |(left, left_bare): (ArrayView2<'_, C>, bool),
+                                  (right, right_bare): (ArrayView2<'_, C>, bool),
+                                  mut out: ArrayViewMut2<'_, C>,
+                                  weight: f64| {
+            if left.iter().all(|&z| z == zero)
+                || right.iter().all(|&z| z == zero)
+                || ((input_exponent == 0 || left_bare == right_bare)
+                    && (left == right || left.iter().zip(right.iter()).all(|(a, b)| *a == -*b)))
+                || (diagonal(left) && diagonal(right))
+            {
+                return;
+            }
+            // Separate the two products so exact cancellation is not lost
+            // to BLAS's fused accumulation. No temporary allocation.
+            if let Some([scaled_left, scaled_right]) = scaled_operands.as_deref_mut() {
+                let left = if left_bare {
+                    copy_scaled(scaled_left, left);
+                    scaled_left.view()
+                } else {
+                    left
+                };
+                let right = if right_bare {
+                    copy_scaled(scaled_right, right);
+                    scaled_right.view()
+                } else {
+                    right
+                };
+                general_mat_mul(one, &left, &right, zero, forward);
+                general_mat_mul(one, &right, &left, zero, backward);
+            } else {
+                general_mat_mul(one, &left, &right, zero, forward);
+                general_mat_mul(one, &right, &left, zero, backward);
+            }
+            Zip::from(&mut out)
+                .and(forward.view())
+                .and(backward.view())
+                .for_each(|out, a, b| *out += (*a - *b) * weight);
+        };
+
+        // A_m = H_m/m for 0 < |m| <= h. Compute C = [V,A] through 2h
+        // (requiring V through 3h), then B_m = [H0+V/2,A]_m/m there.
+        // Apply A's harmonic denominators outside each commutator.
+        for q in -2 * h..=2 * h {
+            let mut va = self.va.index_axis_mut(Axis(0), slot(q));
+            va.fill(zero);
+            for m in a_orders().filter(|&m| q != m) {
+                add_commutator(bare(q - m), bare(m), va.view_mut(), 1.0 / m as f64);
+            }
+            if q != 0 {
+                let mut b = self.b.index_axis_mut(Axis(0), slot(q));
+                let qi = 1.0 / q as f64;
+                b.assign(&va);
+                b.mapv_inplace(|z| z * (0.5 * qi));
+                if q.abs() <= h {
+                    add_commutator(bare(0), bare(q), b, qi * qi);
+                }
+            }
+        }
+        let va = |m| (self.va.index_axis(Axis(0), slot(m)), false);
+        let b = |m| (self.b.index_axis(Axis(0), slot(m)), false);
+
+        // K3 = < [C,B]/12 + [[H0/2+V/3,B]+[C,A]/24+[C_0,A]/12,A] >,
+        // since K1 = C_0/2. Compute only the inner harmonics needed by A.
+        self.coefficient.fill(zero);
+        for q in b_orders() {
+            add_commutator(va(-q), b(q), self.coefficient.view_mut(), 1.0 / 12.0);
+        }
+        for q in a_orders() {
+            self.inner.fill(zero);
+            add_commutator(bare(0), b(q), self.inner.view_mut(), 0.5);
+            for m in b_orders().filter(|&m| q != m) {
+                add_commutator(bare(q - m), b(m), self.inner.view_mut(), 1.0 / 3.0);
+            }
+            for m in a_orders() {
+                add_commutator(
+                    va(q - m),
+                    bare(m),
+                    self.inner.view_mut(),
+                    1.0 / (24.0 * m as f64),
+                );
+            }
+            add_commutator(
+                va(0),
+                bare(q),
+                self.inner.view_mut(),
+                1.0 / (12.0 * q as f64),
+            );
+            add_commutator(
+                (self.inner.view(), false),
+                bare(-q),
+                self.coefficient.view_mut(),
+                -1.0 / q as f64,
+            );
+        }
+
+        let (omega_mantissa, omega_exponent) = binary_parts(omega);
+        let mantissa_scale = omega_mantissa * omega_mantissa * omega_mantissa;
+        let exponent_scale = 4 * input_exponent - 3 * omega_exponent;
+        let restore = |value: f64| {
+            if value == 0.0 || !value.is_finite() {
+                value
+            } else {
+                let (mantissa, exponent) = binary_parts(value);
+                restore_binary_scale(mantissa / mantissa_scale, exponent + exponent_scale)
+            }
+        };
+        total.zip_mut_with(&self.coefficient, |sum, &z| {
+            *sum += C::new(restore(z.re), restore(z.im));
+        });
+        if !matrix_finite(total) {
+            return Err(TbError::Other(
+                "the third-order van Vleck correction exceeds the representable range".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+// IEEE-754 normal powers of two. Callers keep the exponent in -1022..=1023.
+fn normal_power_of_two(exponent: i32) -> f64 {
+    f64::from_bits(((exponent + 1023) as u64) << 52)
+}
+
+/// Finite nonzero x = m * 2^e, with 1 <= |m| < 2, including subnormal x.
+fn binary_parts(x: f64) -> (f64, i32) {
+    let (normal, shift) = if x.is_subnormal() {
+        (x * normal_power_of_two(52), -52)
+    } else {
+        (x, 0)
+    };
+    let exponent = (normal.abs().to_bits() >> 52) as i32 - 1023;
+    (normal / normal_power_of_two(exponent), exponent + shift)
+}
+
+/// Restore the scale of a bounded mantissa (1/8 <= |m| < 2). Splitting the
+/// boundary exponents keeps the first product normal, so subnormal results
+/// round only once and no intermediate overflows before a finite result.
+fn restore_binary_scale(mantissa: f64, exponent: i32) -> f64 {
+    match exponent {
+        ..=-1076 => 0.0_f64.copysign(mantissa),
+        -1075..=-1023 => {
+            (mantissa * normal_power_of_two(-512)) * normal_power_of_two(exponent + 512)
+        }
+        1024..=1026 => (mantissa * normal_power_of_two(512)) * normal_power_of_two(exponent - 512),
+        1027.. => f64::INFINITY.copysign(mantissa),
+        _ => mantissa * normal_power_of_two(exponent),
     }
 }
 
@@ -299,12 +549,13 @@ fn assemble_point_into(
     cache_max: isize,
     order: usize,
     inverse_omega: f64,
-    inverse_omega_squared: f64,
+    omega: f64,
     reuse_adjoint: bool,
     extreme_products: bool,
     target: &mut ArrayViewMut2<'_, C>,
     scratch: &mut Scratch,
 ) -> Result<()> {
+    let inverse_omega_squared = inverse_omega * inverse_omega;
     let harmonic = |n: isize| point_harmonics.index_axis_move(Axis(0), harmonic_slot(n, cache_max));
     scratch.total.fill(C::new(0.0, 0.0));
 
@@ -395,6 +646,16 @@ fn assemble_point_into(
                 reuse_adjoint,
             )?;
         }
+    }
+
+    if let Some(third) = &mut scratch.third {
+        third.add_into(
+            harmonic,
+            omega,
+            &mut scratch.total,
+            &mut scratch.inner,
+            &mut scratch.outer,
+        )?;
     }
 
     target.assign(&scratch.total);
@@ -698,6 +959,68 @@ mod tests {
     fn assert_hermitian(matrix: ArrayView2<'_, C>, tolerance: f64) {
         let adjoint = matrix.t().mapv(|value| value.conj());
         assert_close(matrix, &adjoint, tolerance);
+    }
+
+    fn third_harmonic_toy(amplitude: f64) -> Array4<C> {
+        let h = 1;
+        let mut harmonics = Array4::zeros((7, 1, 2, 2));
+        for m in [-1, 1] {
+            let s = harmonic_slot(m, 3 * h);
+            harmonics[[s, 0, 0, 1]] = C::new(amplitude, 0.0);
+            harmonics[[s, 0, 1, 0]] = C::new(amplitude, 0.0);
+        }
+        for m in [-3, 3] {
+            let s = harmonic_slot(m, 3 * h);
+            let value = C::new(0.0, (m.signum() as f64) * amplitude);
+            harmonics[[s, 0, 0, 0]] = value;
+            harmonics[[s, 0, 1, 1]] = -value;
+        }
+        harmonics
+    }
+
+    #[test]
+    fn cubic_reads_third_harmonic_at_extreme_energy_scales() {
+        // With H_{±1}=X, H_{±3}=±iZ, K3=2Y and both lower orders vanish.
+        // The first case needs split frequency scaling even with normal K3;
+        // the next two require normalized operands, and the last pins support
+        // for subnormal W without ever forming its reciprocal in the cubic.
+        for (amplitude, omega, correction) in [
+            (1e60, 1e120, 2e-120),
+            (1e90, 1e90, 2e90),
+            (1e-90, 1e-90, 2e-90),
+            (f64::from_bits(1), f64::from_bits(1), f64::from_bits(2)),
+        ] {
+            let out = assemble(&third_harmonic_toy(amplitude), 1, 3, true, omega);
+            assert_eq!(out[[0, 0, 0]], C::new(0.0, 0.0));
+            assert!((out[[0, 0, 1]] / correction - C::new(0.0, -1.0)).norm() < 1e-14);
+            assert!((out[[0, 1, 0]] / correction - C::new(0.0, 1.0)).norm() < 1e-14);
+            assert_eq!(out[[0, 1, 1]], C::new(0.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn cubic_rejects_unsafe_dynamic_range_before_normalizing() {
+        let mut harmonics = third_harmonic_toy(1e90);
+        harmonics[[0, 0, 0, 0]].re = 1e-250;
+        let mut out = Array3::zeros((1, 2, 2));
+        let error = assemble_pointwise(harmonics.view(), 1, 3, true, true, 1e90, out.view_mut())
+            .unwrap_err();
+        assert!(error.to_string().contains("representable product range"));
+    }
+
+    #[test]
+    fn cubic_rejects_mixed_scales_that_can_hide_representable_products() {
+        let mut harmonics = third_harmonic_toy(1e-90);
+        harmonics[[3, 0, 0, 0]].re = 1.0;
+        harmonics[[3, 0, 1, 1]].re = 1.0;
+        let mut out = Array3::zeros((1, 2, 2));
+        // The scalar H0 does not change K3. Its largest entry must not mask
+        // underflow of a raw quartic that would give a 2e-120 correction.
+        for omega in [1e-80, 1e-39, 0.5] {
+            let err = assemble_pointwise(harmonics.view(), 1, 3, true, true, omega, out.view_mut())
+                .unwrap_err();
+            assert!(err.to_string().contains("representable product range"));
+        }
     }
 
     #[test]

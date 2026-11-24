@@ -159,7 +159,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             return Ok((ham, ham_r));
         }
         let grid = KspaceGrid::for_polynomial(&self.hamR, DIM, degree)?;
-        validate_workspace(&grid, slots, nsta)?;
+        validate_workspace(
+            &grid,
+            slots,
+            nsta,
+            if order == 3 { harmonic_max as usize } else { 0 },
+        )?;
         let (support_box, support) =
             blocks::effective_support(&self.hamR, DIM, harmonic_max, order)?;
         let mut accumulator = blocks::DenseBlocks::new(support_box, support, nsta, DIM)?;
@@ -262,7 +267,7 @@ pub(super) fn kspace_anticommutator(
     }
     let dim = ham_r.ncols();
     let grid = KspaceGrid::for_polynomial(ham_r, dim, 2)?;
-    validate_workspace(&grid, 2, nsta)?;
+    validate_workspace(&grid, 2, nsta, 0)?;
     let (support_box, support) = blocks::quadratic_support(ham_r, dim)?;
     let mut accumulator = blocks::DenseBlocks::new(support_box, support, nsta, dim)?;
     let mut left = Array3::zeros((grid.points_per_slice(), nsta, nsta));
@@ -285,7 +290,12 @@ pub(super) fn kspace_anticommutator(
     Ok((blocks, rows, restore))
 }
 
-fn validate_workspace(grid: &KspaceGrid, slots: usize, nsta: usize) -> Result<()> {
+fn validate_workspace(
+    grid: &KspaceGrid,
+    slots: usize,
+    nsta: usize,
+    cubic_cutoff: usize,
+) -> Result<()> {
     let lanes = grid.points_per_slice() as u128;
     let points = grid.total_points() as u128;
     let block_bytes = (nsta as u128)
@@ -293,7 +303,23 @@ fn validate_workspace(grid: &KspaceGrid, slots: usize, nsta: usize) -> Result<()
         .saturating_mul(std::mem::size_of::<C>() as u128);
     // Two full grid volumes of matrices conservatively cover the output,
     // support and slot arrays, including sparse supports and the padded grid.
-    let bytes = (2 * points + (slots as u128 + 2) * lanes).saturating_mul(block_bytes.max(48));
+    let mut bytes = (2 * points + (slots as u128 + 2) * lanes).saturating_mul(block_bytes.max(48));
+    if cubic_cutoff > 0 {
+        let workers = if cfg!(any(feature = "netlib-static", feature = "netlib-system")) {
+            1
+        } else {
+            rayon::current_num_threads()
+        };
+        // Two 4h+1 harmonic buffers, two accumulators, two normalization
+        // operands, and the three ordinary pointwise matrices per worker.
+        let scratch_blocks = 8 * cubic_cutoff as u128 + 9;
+        bytes = bytes.saturating_add(
+            (workers as u128)
+                .min(lanes)
+                .saturating_mul(scratch_blocks)
+                .saturating_mul(block_bytes),
+        );
+    }
     if bytes > KSPACE_MEMORY_HARD_LIMIT || bytes > isize::MAX as u128 {
         return Err(TbError::Other(format!(
             "the k-space convolution needs about {:.1} GiB; reduce the support, harmonic cutoff, or order",
@@ -368,6 +394,24 @@ fn accumulate_slice(
             accumulator.add_slot(slot, phase, real.index_axis(Axis(0), lane));
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn cubic_workspace_counts_parallel_generator_buffers() {
+    if cfg!(any(feature = "netlib-static", feature = "netlib-system")) {
+        return;
+    }
+    let input = ndarray::array![[0, 0], [-2, 0], [2, 0]];
+    let grid = KspaceGrid::for_polynomial(&input, 2, 4).unwrap();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(16)
+        .build()
+        .unwrap();
+    pool.install(|| {
+        validate_workspace(&grid, 193, 1_000, 0).unwrap();
+        assert!(validate_workspace(&grid, 193, 1_000, 32).is_err());
+    });
 }
 
 #[cfg(test)]

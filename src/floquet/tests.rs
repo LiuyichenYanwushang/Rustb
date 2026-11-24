@@ -2146,7 +2146,7 @@ fn floquet_drive_and_method_controls_are_validated_separately() {
             ),
             FloquetEffectiveOptions::new(),
         ),
-        (drive.clone(), FloquetEffectiveOptions::new().with_order(3)),
+        (drive.clone(), FloquetEffectiveOptions::new().with_order(4)),
         (
             drive.clone(),
             FloquetEffectiveOptions::new().with_harmonic_max(-1),
@@ -4055,15 +4055,15 @@ fn floquet_effective_model_bessel_rejects_invalid_options() {
         FloquetDrive::with_modes(1.0, vec![LightMode::new(1, array![Complex::new(0.4, 0.2)])]);
     let n_time = 512;
 
-    // order 2 is supported; higher orders are rejected.
+    // order 3 is supported; higher orders are rejected.
     assert!(
         model
-            .floquet_effective_model(&drive, Some(&FloquetEffectiveOptions::new().with_order(2)))
+            .floquet_effective_model(&drive, Some(&FloquetEffectiveOptions::new().with_order(3)))
             .is_ok()
     );
     assert!(
         model
-            .floquet_effective_model(&drive, Some(&FloquetEffectiveOptions::new().with_order(3)))
+            .floquet_effective_model(&drive, Some(&FloquetEffectiveOptions::new().with_order(4)))
             .is_err()
     );
     // target_hamR is rejected on the real-space path.
