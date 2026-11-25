@@ -56,6 +56,46 @@ let spinful = Model::<true, 2>::tb_model(lat, orb, None)?;
 `lat` is a square `DIM × DIM` matrix whose rows are real-space lattice
 vectors. Each row of `orb` is an orbital position in fractional coordinates.
 
+### Collinear spin channels
+
+Import `Rustb::CollinearModel` for uncoupled up and down channels.
+`CollinearModel::new(up, down)?` consumes two `Model<false, DIM, R>` values
+and validates each. The lattice entries and full `Atom` lists must match
+exactly, in order: species, fractional positions, orbital IDs and optional
+magnetic moments (`None` is not `Some([0.0; 3])`). No tolerance, coordinate
+wrapping or reordering is applied. Each channel keeps its own orbital basis
+and centres, `ham`, `hamR`, and `rmatrix`; band counts need not match. The pair
+stores two owned models: common metadata is an equality invariant, not
+physically deduplicated storage. Use a common energy reference: there is no
+automatic alignment, band/phase tracking, or spin mixing. For coupled
+channels, use `Model<true, DIM, R>` instead.
+
+`up()` and `down()` borrow the channel models; `into_channels()` consumes the
+pair and returns `(up_model, down_model)`. `lat()` and `atoms()` borrow the
+common values from up. All eight `Solve` counterparts are inherent methods,
+taking the same arguments and returning `Result` with an outer tuple in
+**up/down order**:
+
+| Method on `pair` | Value inside `Result` |
+|---|---|
+| `solve_band_onek(&k)` | `(Array1<f64>, Array1<f64>)` |
+| `solve_band_range_onek(&k, (low, high), tolerance)` | `(Array1<f64>, Array1<f64>)` |
+| `solve_band_all(&points)`, `solve_band_all_parallel(&points)` | `(Array2<f64>, Array2<f64>)` |
+| `solve_onek(&k)` | `((Array1<f64>, Array2<Complex<f64>>), (Array1<f64>, Array2<Complex<f64>>))` |
+| `solve_range_onek(&k, (low, high), tolerance)` | `((Array1<f64>, Array2<Complex<f64>>), (Array1<f64>, Array2<Complex<f64>>))` |
+| `solve_all(&points)`, `solve_all_parallel(&points)` | `((Array2<f64>, Array3<Complex<f64>>), (Array2<f64>, Array3<Complex<f64>>))` |
+
+Each spectrum is sorted independently at each k-point. Batch rows follow
+input k-point order, with one column per band in that channel. Eigenvectors
+are row kets in each channel's own `Gauge::Atom`: `C[band, basis]` for one k
+and `C[ik, band, basis]` for batches, satisfying `H C^T = C^T diag(E)`.
+Windowed methods use the same `(low, high]` and absolute energy tolerance in
+both channels; nonpositive tolerance selects LAPACK's default. Selection
+counts can differ, including zero; each selected eigenvector array has shape
+`(nselected_channel, nband_channel)`. Parallel methods run the channels
+sequentially and parallelize k-points within each channel. See
+[eigenvector conventions](<SKILLS.md#eigenvalue-ordering-and-eigenvector-axes>).
+
 ### Hoppings and onsite terms
 
 ```rust
@@ -1108,6 +1148,34 @@ active nonpositive harmonics are rejected.
 For three-dimensional illumination, `IncidentBasis::from_direction` constructs
 two transverse polarization vectors from a propagation direction.
 
+### Collinear Floquet sweep
+
+`pair.floquet_effective_model(&drive, None)?` returns an effective pair for
+the same uniform drive applied separately to each channel. Pass
+`Some(&options)` to use the same custom `FloquetEffectiveOptions` for both.
+`floquet_effective_sweep` borrows an effective `CollinearModel` in the callback
+for each `(order, harmonic_max)` in input order, including duplicates. An empty
+list is a no-op. It processes consecutive batches of up to two requests,
+retaining the up-channel outputs while solving down. Invalid request parameters
+and oversized harmonic-cache layouts fail before callbacks; batch preparation
+can also fail before any callback for that batch. If up completes a prefix
+before a later solver error, that prefix is still paired with down and visited
+before the saved up error is returned. A down-channel or callback error while
+pairing the prefix takes precedence and stops further callbacks. Harmonic
+preparation and FFT reuse are channel-local; the FFT working-set budget is per
+channel, not a combined limit on retained models or callback work. The caller
+supplies any k-points to diagonalize.
+
+```rust
+// Given `pair: CollinearModel<2>` and a 2D `drive: FloquetDrive`.
+let k_chunk = arr2(&[[0.0, 0.0], [0.25, 0.0]]); // caller-owned fractional k-points
+pair.floquet_effective_sweep(&drive, &[(1, 4), (2, 4)], |(order, h), eff| {
+    let (up, down) = eff.solve_band_all_parallel(&k_chunk)?;
+    println!("order={order}, h={h}: up={up:?}, down={down:?}");
+    Ok(())
+})?;
+```
+
 ## 8. Fermi-surface output
 
 ```rust
@@ -1804,10 +1872,11 @@ same cell representative within that tolerance; a missing onsite block or a
 mismatch is an error. `NoRMatrix` skips the diagonal check.
 
 For two spin channels related by a magnetic group, start with spinless 3D
-models `up` and `dn` with matching lattices, atom ordering, orbital projections,
-and position-matrix storage types. All three `symmetrize_pair*` methods
-take shared references and return `Result<(Self, Self)>` in input order.
-Use the returned models instead of the unchanged inputs:
+models `up` and `dn` with matching lattices, atom ordering, basis sizes, orbital
+projections, and position-matrix storage types. The legacy
+`Model::symmetrize_pair` takes shared references and returns
+`Result<(Self, Self)>` in input order. Use the returned models instead of the
+unchanged inputs:
 
 ~~~rust
 let (up_sym, dn_sym) = Model::symmetrize_pair(
@@ -1828,8 +1897,16 @@ not silently repaired.
 For a collinear spin group, prefer the cryspglib-certified entries instead of
 hand-building the old magnetic-group flags. `detect_collinear_spin_group`
 returns the complete `CollinearSpinGroup`: its unitary half and the `g A0`
-antiunitary partners are both present. The unitary entry filters that complete
-group internally:
+antiunitary partners are both present. Construct `CollinearModel<3, R>` and
+call `pair.symmetrize_pair_with_collinear_spin_group(&group, &basis, &params)`:
+it borrows the pair and returns `Result<CollinearModel<3, R>>`, leaving the
+input unchanged on success or error. The old associated `Model` full-group
+method was removed, with no deprecated alias. In addition to the constructor's
+exact common lattice and `Atom` metadata, this projection requires equal basis
+sizes and orbital projections. Channel swaps require corresponding Wannier
+gauges and centre differences below half a cell in each fractional component.
+The legacy `Model::symmetrize_pair` and unitary-group helper remain unchanged:
+the latter accepts the complete group and filters its unitary half internally.
 
 ~~~rust
 use Rustb::{CollinearMoments, SpinTolerances, detect_collinear_spin_group};
@@ -1840,19 +1917,23 @@ let group = detect_collinear_spin_group(
     SpinTolerances::default(),
 )?;
 
-let (up_sym, dn_sym) = Model::symmetrize_pair_with_collinear_spin_group(
-    &up,
-    &dn,
+let pair = CollinearModel::new(up, dn)?;
+let symmetric = pair.symmetrize_pair_with_collinear_spin_group(
     &group,
     &CenterResolvedBasis::new(),
     &HamiltonianSymmetrizationParameters::default(),
 )?;
 
-// Unitary half only: A0 antiunitary partners are filtered out internally.
+let kpoints = array![[0.0, 0.0, 0.0], [0.25, 0.0, 0.0]];
+let (up_bands, dn_bands) = symmetric.solve_band_all_parallel(&kpoints)?;
+let ((up_energies, up_kets), (dn_energies, dn_kets)) =
+    symmetric.solve_onek(&array![0.0, 0.0, 0.0])?;
+
+// The original pair is still available; impose only the unitary half on it.
 let (up_unitary, dn_unitary) =
     Model::symmetrize_pair_with_unitary_collinear_spin_group(
-        &up,
-        &dn,
+        pair.up(),
+        pair.down(),
         &group,
         &CenterResolvedBasis::new(),
         &HamiltonianSymmetrizationParameters::default(),

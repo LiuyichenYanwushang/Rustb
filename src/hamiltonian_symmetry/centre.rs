@@ -1,6 +1,6 @@
 use super::*;
 use crate::crystal_symmetry::{CrystalSymmetryOperation, MagneticCrystalSymmetry};
-use crate::model::Model;
+use crate::model::{CollinearModel, Model};
 use cryspglib::spin_group::{CollinearAction, CollinearSpinGroup};
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
@@ -1410,7 +1410,7 @@ impl<R: RMatrixData> Model<false, 3, R> {
     /// This legacy entry maps `time_reversal = true` to a simultaneous channel
     /// swap and orbital conjugation. For cryspglib-certified collinear spin
     /// groups, where a unitary Swap is distinct from an antiunitary operation,
-    /// use [`Self::symmetrize_pair_with_collinear_spin_group`] or
+    /// use [`CollinearModel::symmetrize_pair_with_collinear_spin_group`] or
     /// [`Self::symmetrize_pair_with_unitary_collinear_spin_group`].
     pub fn symmetrize_pair(
         a: &Self,
@@ -1426,39 +1426,11 @@ impl<R: RMatrixData> Model<false, 3, R> {
         symmetrize_pair_with_operations(a, b, &operations, basis, parameters)
     }
 
-    /// Project two spinless channel models under a complete collinear spin
-    /// corepresentation, including the spin-only C2T antiunitary extension.
-    ///
-    /// The supplied [cryspglib::spin_group::CollinearSpinGroup] is the complete
-    /// validated group: its unitary half and the antiunitary g A0 partners.
-    /// The projection therefore averages over both the channel action
-    /// (Preserve/Swap) and the independent antiunitarity flag. In particular a
-    /// unitary Swap exchanges the two Hamiltonians without conjugating them.
-    ///
-    /// Models must have identical basis sizes, atom ordering, lattice, and
-    /// orbital projections, with the same cell-gauge requirement as
-    /// [`Self::symmetrize_pair`]. The operation group is already geometrically
-    /// certified by cryspglib; Rustb still resolves and validates the localized
-    /// orbital actions and checks the final pair covariance. Returns two new
-    /// models in input order, leaving the inputs unchanged.
-    pub fn symmetrize_pair_with_collinear_spin_group(
-        a: &Self,
-        b: &Self,
-        group: &CollinearSpinGroup,
-        basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
-        parameters: &HamiltonianSymmetrizationParameters,
-    ) -> Result<(Self, Self)> {
-        validate_tolerances(parameters.tolerances)?;
-        validate_pair_models(a, b)?;
-        let operations = pair_operations_from_spin_group(group);
-        symmetrize_pair_with_operations(a, b, &operations, basis, parameters)
-    }
-
     /// Project two spinless channel models under the unitary collinear spin
     /// subgroup only.
     ///
     /// This is the G-only counterpart of
-    /// [Self::symmetrize_pair_with_collinear_spin_group]. The complete
+    /// [CollinearModel::symmetrize_pair_with_collinear_spin_group]. The complete
     /// [cryspglib::spin_group::CollinearSpinGroup] is accepted, but only its
     /// unitary operations are projected; the A0 antiunitary partners are
     /// filtered out. Use it when orbital time-reversal breaking is known or
@@ -1475,6 +1447,42 @@ impl<R: RMatrixData> Model<false, 3, R> {
         validate_pair_models(a, b)?;
         let operations = pair_operations_from_unitary_spin_group(group);
         symmetrize_pair_with_operations(a, b, &operations, basis, parameters)
+    }
+}
+
+impl<R: RMatrixData> CollinearModel<3, R> {
+    /// Project both channels under a complete collinear spin corepresentation.
+    ///
+    /// The supplied [cryspglib::spin_group::CollinearSpinGroup] is the complete
+    /// validated group: its unitary half and the spin-only C2T antiunitary
+    /// partners. Projection averages over the channel action (Preserve/Swap)
+    /// independently of antiunitarity: a unitary Swap exchanges Hamiltonians
+    /// without conjugating them.
+    ///
+    /// In addition to the constructor's exact common lattice and Atom metadata,
+    /// the channels must have equal basis sizes and orbital projections. Swaps
+    /// require corresponding Wannier gauges and centre differences below half
+    /// a cell in each fractional component; see [`Model::symmetrize_pair`].
+    /// Centres, Hamiltonians and any position matrices are projected jointly.
+    /// Localized orbital actions and final pair covariance are checked.
+    /// Returns a new validated pair in up/down order without modifying `self`.
+    pub fn symmetrize_pair_with_collinear_spin_group(
+        &self,
+        group: &CollinearSpinGroup,
+        basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
+        parameters: &HamiltonianSymmetrizationParameters,
+    ) -> Result<Self> {
+        validate_tolerances(parameters.tolerances)?;
+        validate_pair_models(self.up(), self.down())?;
+        let operations = pair_operations_from_spin_group(group);
+        let (up, down) = symmetrize_pair_with_operations(
+            self.up(),
+            self.down(),
+            &operations,
+            basis,
+            parameters,
+        )?;
+        Self::new(up, down)
     }
 }
 

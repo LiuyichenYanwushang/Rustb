@@ -1,8 +1,9 @@
 #![cfg(feature = "cryspglib")]
 
 use Rustb::{
-    Atom, AtomType, CenterResolvedBasis, CollinearMoments, HamiltonianSymmetrizationParameters,
-    Model, OrbitalId, SpinTolerances, detect_collinear_spin_group,
+    Atom, AtomType, CenterResolvedBasis, CollinearModel, CollinearMoments,
+    HamiltonianSymmetrizationParameters, Model, OrbitalId, SpinTolerances,
+    detect_collinear_spin_group,
 };
 use cryspglib::Crystal;
 use ndarray::{Array2, array};
@@ -49,29 +50,83 @@ fn crystal() -> Crystal {
 
 #[test]
 fn full_collinear_spin_group_projects_the_channel_average() {
-    let input_up = two_site_model(1.0);
-    let input_down = two_site_model(2.0);
+    let mut input_up = two_site_model(1.0);
+    let mut input_down = two_site_model(2.0);
     let moments = [1.0, -1.0];
+    for channel in [&mut input_up, &mut input_down] {
+        for (atom, moment) in channel.atoms.iter_mut().zip(moments) {
+            atom.set_magnetic_moment([0.0, 0.0, moment]).unwrap();
+        }
+    }
+    let original_atoms = input_up.atoms.clone();
+    let input = CollinearModel::new(input_up, input_down).unwrap();
     let group = detect_collinear_spin_group(
         &crystal(),
         CollinearMoments::Signed(&moments),
         SpinTolerances::default(),
     )
     .unwrap();
-    let (up, down) = Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
-        &input_up,
-        &input_down,
-        &group,
-        &CenterResolvedBasis::new(),
-        &HamiltonianSymmetrizationParameters::default(),
+    let projected = input
+        .symmetrize_pair_with_collinear_spin_group(
+            &group,
+            &CenterResolvedBasis::new(),
+            &HamiltonianSymmetrizationParameters::default(),
+        )
+        .unwrap();
+    let (up, down) = (projected.up(), projected.down());
+    assert!((onsite(up, 0) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
+    assert!((onsite(up, 1) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
+    assert!((onsite(down, 0) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
+    assert!((onsite(down, 1) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
+    assert_eq!(input.up().ham, two_site_model(1.0).ham);
+    assert_eq!(input.down().ham, two_site_model(2.0).ham);
+    for channel in [input.up(), input.down(), up, down] {
+        assert_eq!(channel.lat, Array2::<f64>::eye(3));
+        assert_eq!(channel.atoms.len(), original_atoms.len());
+        for (atom, original) in channel.atoms.iter().zip(&original_atoms) {
+            assert_eq!(atom.atom_type(), original.atom_type());
+            assert_eq!(atom.position_ref(), original.position_ref());
+            assert_eq!(atom.orbitals(), original.orbitals());
+            assert_eq!(atom.magnetic_moment(), original.magnetic_moment());
+        }
+    }
+    let (up_bands, down_bands) = projected
+        .solve_band_onek(&array![0.17, 0.23, -0.11])
+        .unwrap();
+    for bands in [up_bands, down_bands] {
+        assert_eq!(bands.len(), 2);
+        assert!(bands.iter().all(|energy| energy.is_finite()));
+        assert!((bands.sum() - 3.0).abs() < 1e-10);
+    }
+}
+
+#[test]
+fn full_collinear_projection_rejects_mismatched_orbital_projections() {
+    use Rustb::{OrbProj, TbError};
+
+    let up = two_site_model(1.0);
+    let mut down = two_site_model(2.0);
+    down.set_projection(&vec![OrbProj::s, OrbProj::px]);
+    // Independent bases are valid for a pair, but not for channel-swapping projection.
+    let input = CollinearModel::new(up, down).unwrap();
+    let group = detect_collinear_spin_group(
+        &crystal(),
+        CollinearMoments::Signed(&[1.0, -1.0]),
+        SpinTolerances::default(),
     )
     .unwrap();
-    assert!((onsite(&up, 0) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
-    assert!((onsite(&up, 1) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
-    assert!((onsite(&down, 0) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
-    assert!((onsite(&down, 1) - Complex64::new(1.5, 0.0)).norm() < 1e-10);
-    assert_eq!(input_up.ham, two_site_model(1.0).ham);
-    assert_eq!(input_down.ham, two_site_model(2.0).ham);
+    let error = input
+        .symmetrize_pair_with_collinear_spin_group(
+            &group,
+            &CenterResolvedBasis::new(),
+            &HamiltonianSymmetrizationParameters::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        TbError::TargetMagneticGroupIncompatible { reason }
+            if reason.contains("orbital projections")
+    ));
 }
 
 #[test]
@@ -242,14 +297,14 @@ fn mgfe6ge6_collinear_spin_pair_acceptance() {
         SpinTolerances::default(),
     )
     .unwrap();
-    Model::<false, 3>::symmetrize_pair_with_collinear_spin_group(
-        &up,
-        &down,
-        &group,
-        &CenterResolvedBasis::new(),
-        &HamiltonianSymmetrizationParameters::default(),
-    )
-    .unwrap();
+    CollinearModel::new(up, down)
+        .unwrap()
+        .symmetrize_pair_with_collinear_spin_group(
+            &group,
+            &CenterResolvedBasis::new(),
+            &HamiltonianSymmetrizationParameters::default(),
+        )
+        .unwrap();
 }
 
 #[test]
@@ -304,6 +359,7 @@ fn pair_projection_updates_position_matrices() {
     input_down.validate().unwrap();
     let original_up = input_up.clone();
     let original_down = input_down.clone();
+    let input = CollinearModel::new(input_up, input_down).unwrap();
     let moments = [1.0, -1.0];
     let group = detect_collinear_spin_group(
         &crystal(),
@@ -317,18 +373,17 @@ fn pair_projection_updates_position_matrices() {
             .build()
             .unwrap()
             .install(|| {
-                Model::symmetrize_pair_with_collinear_spin_group(
-                    &input_up,
-                    &input_down,
-                    &group,
-                    &CenterResolvedBasis::new(),
-                    &HamiltonianSymmetrizationParameters::default(),
-                )
-                .unwrap()
+                input
+                    .symmetrize_pair_with_collinear_spin_group(
+                        &group,
+                        &CenterResolvedBasis::new(),
+                        &HamiltonianSymmetrizationParameters::default(),
+                    )
+                    .unwrap()
             })
     };
-    let (up, down) = project(1);
-    let (up_parallel, down_parallel) = project(4);
+    let (up, down) = project(1).into_channels();
+    let (up_parallel, down_parallel) = project(4).into_channels();
     let bits = |z: Complex64| (z.re.to_bits(), z.im.to_bits());
     for (channel, serial, parallel) in [("up", &up, &up_parallel), ("down", &down, &down_parallel)]
     {
@@ -357,7 +412,7 @@ fn pair_projection_updates_position_matrices() {
             assert!(projected.rmatrix[[index, 1, site, 4 - site]].norm() > 1e-10);
         }
     }
-    for (input, original) in [(&input_up, &original_up), (&input_down, &original_down)] {
+    for (input, original) in [(input.up(), &original_up), (input.down(), &original_down)] {
         assert_eq!(input.orb, original.orb);
         assert_eq!(input.ham, original.ham);
         assert_eq!(input.hamR, original.hamR);

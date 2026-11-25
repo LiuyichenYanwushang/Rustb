@@ -185,6 +185,29 @@ let carbon = Atom::with_orbitals(
 invent atoms or chemical species. Such a model remains valid for tight-binding
 calculations, but crystal-symmetry analysis returns `MissingAtomicStructure`.
 
+### Collinear spin channels
+
+Use `Rustb::CollinearModel<DIM, R>` for two uncoupled spin channels.
+`CollinearModel::new(up, down)` takes ownership of two `Model<false, DIM, R>`
+values, validates each, and requires exactly equal lattices and ordered `Atom`
+lists, including orbital IDs and optional moments. It stores two owned models;
+common metadata means equality, not physically deduplicated storage. Each
+channel keeps its own orbital basis and centres, `ham`, `hamR`, and `rmatrix`.
+Use `up()` and `down()` to borrow the channels, `into_channels()` to recover
+`(up_model, down_model)`, and `lat()` and `atoms()` to borrow the common values
+from up.
+
+All eight `Solve` counterparts are inherent methods with the same arguments:
+`solve_band_onek`, `solve_band_range_onek`, `solve_band_all`, and
+`solve_band_all_parallel` return `Result<(E_up, E_down)>`; `solve_onek`,
+`solve_range_onek`, `solve_all`, and `solve_all_parallel` return
+`Result<((E_up, C_up), (E_down, C_down))>`. These tuples are always in up/down
+order. Each energy or eigenvector array retains its corresponding single-channel
+shape; eigenvectors are row kets in that channel's own Atom gauge. Energies are
+sorted independently at each k-point; there is no energy alignment, band/phase
+tracking, or spin mixing. Supply a common energy reference yourself. See the
+[collinear usage guide](<SKILLS.md#collinear-spin-channels>) for shapes and arguments.
+
 ## Module guide
 
 Each section below describes one public module and shows the shortest useful
@@ -760,6 +783,16 @@ The sweep normally prepares harmonics once through the largest
 transforms without changing their cutoffs. If temporal DFT is needed, distinct
 windows keep their own sampling to preserve numerical accuracy.
 
+For `CollinearModel`, `floquet_effective_model` applies the same uniform
+drive and options independently to both channels. Its `floquet_effective_sweep`
+lends one effective pair per request in input order, in batches of up to two
+requests. The FFT working-set budget applies separately to each channel, with
+no cross-channel reuse. Batch preparation failures can suppress that batch's
+callbacks. If up completes a prefix before a later solver error, the prefix is
+paired with down and visited before returning that error, unless down or the
+callback fails first. The [paired sweep example](<SKILLS.md#collinear-floquet-sweep>)
+shows how to solve bands on a caller-owned k-point chunk.
+
 The FFT evaluates disjoint k slices concurrently with OpenBLAS or MKL,
 subject to a memory cap. Harmonics stay slice-local. In a single-model FFT
 calculation, one full-grid correction is stored for a batched inverse FFT
@@ -923,13 +956,28 @@ For spinless 3D models, `symmetrize_centres` and
 `symmetrize_model_and_centres` borrow `&self` and return `Result<Self>`.
 The former projects only orbital centres, leaving `H` and `r` unchanged;
 the latter projects the centres and Hamiltonian (and `r` when present).
-For two spinless channels, all three `symmetrize_pair*` methods take
-`&up, &dn` and return `Result<(Self, Self)>` in input order. Use the
-returned models for subsequent calculations; the inputs are unchanged on
-success or error. The projections return no reports; use
-`check_hamiltonian_symmetry` for separate Hamiltonian diagnostics. See the
-[symmetry usage guide](<SKILLS.md#optional-cryspglib-symmetry>) for examples
-and the position-matrix consistency checks.
+For a complete collinear spin group, construct a pair and borrow it for the
+projection, which returns `Result<CollinearModel<3, R>>`:
+
+```rust
+// Given spinless 3D `up`, `down` and a certified `CollinearSpinGroup` named `group`.
+let pair = CollinearModel::new(up, down)?;
+let symmetric = pair.symmetrize_pair_with_collinear_spin_group(
+    &group,
+    &CenterResolvedBasis::new(),
+    &HamiltonianSymmetrizationParameters::default(),
+)?; // `pair` remains unchanged.
+let (up_bands, down_bands) = symmetric.solve_band_onek(&array![0.0, 0.0, 0.0])?;
+```
+
+This full-group method replaces the old associated `Model` method without a
+deprecated alias. The legacy `Model::symmetrize_pair` and
+`Model::symmetrize_pair_with_unitary_collinear_spin_group` are unchanged: they
+take `&up, &down` and return `Result<(Self, Self)>` in input order. All leave
+the inputs unchanged on success or error. The projections return no reports;
+use `check_hamiltonian_symmetry` for separate Hamiltonian diagnostics. See the
+[symmetry usage guide](<SKILLS.md#optional-cryspglib-symmetry>) for the additional
+pair-basis requirements and position-matrix consistency checks.
 
 ### `irrep_analysis` — magnetic band irreps and coreps
 

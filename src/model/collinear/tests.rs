@@ -1,0 +1,546 @@
+use super::CollinearModel;
+use crate::{
+    Atom, AtomType, FloquetDrive, FloquetEffectiveOptions, Gauge, HasRMatrix, LightMode, Model,
+    OrbitalId, Solve, TbError,
+};
+use ndarray::{Array2, ArrayView1, ArrayView2, Axis, array};
+use num_complex::Complex64 as C;
+
+type Channel = Model<false, 2, HasRMatrix>;
+// The first two requests share an FFT grid; the duplicate crosses batches.
+const REQUESTS: [(usize, isize); 5] = [(2, 2), (2, 1), (1, 1), (2, 2), (0, 0)];
+
+fn channels() -> [Channel; 2] {
+    let id = OrbitalId::new;
+    let mut atoms = vec![
+        Atom::with_orbitals(array![0.0, 0.0], AtomType::Fe, [id(0), id(1)]),
+        Atom::with_orbitals(array![0.25, 0.25], AtomType::O, [id(2)]),
+    ];
+    atoms[0].set_magnetic_moment([0.0, 0.0, 1.0]).unwrap();
+    let make = |x| {
+        let mut model = Channel::tb_model(
+            array![[1.0, 0.0], [0.25, 1.0]],
+            array![[0.0, 0.0], [0.0, 0.0], [x, 0.25]],
+            Some(atoms.clone()),
+        )
+        .unwrap();
+        model.set_hop(0.35_f64, 0, 2, &array![0, 0], None);
+        model
+    };
+    let mut up = make(0.25);
+    let mut down = make(0.28);
+    up.set_onsite(&array![-0.4, 0.3, 0.7], None);
+    down.set_onsite(&array![0.2, -0.6, 0.9], None);
+    up.set_hop(C::new(-0.4, 0.11), 0, 2, &array![1, 0], None);
+    down.set_hop(C::new(0.6, -0.2), 0, 2, &array![0, 1], None);
+    down.set_hop(C::new(0.18, 0.08), 1, 2, &array![1, 0], None);
+    for (model, dipole) in [
+        (&mut up, C::new(0.12, 0.04)),
+        (&mut down, C::new(-0.09, 0.02)),
+    ] {
+        model.rmatrix[[0, 0, 0, 2]] = dipole;
+        model.rmatrix[[0, 0, 2, 0]] = dipole.conj();
+    }
+    [up, down]
+}
+
+fn assert_atoms(actual: &[Atom], expected: &[Atom]) {
+    assert_eq!(actual.len(), expected.len());
+    for (a, b) in actual.iter().zip(expected) {
+        assert_eq!(a.atom_type(), b.atom_type());
+        assert_eq!(a.position_ref(), b.position_ref());
+        assert_eq!(a.orbitals(), b.orbitals());
+        assert_eq!(a.magnetic_moment(), b.magnetic_moment());
+    }
+}
+
+fn assert_channel(actual: &Channel, expected: &Channel, tol: f64) {
+    assert_eq!(actual.lat, expected.lat);
+    assert_atoms(&actual.atoms, &expected.atoms);
+    assert_eq!(actual.orb, expected.orb);
+    assert_eq!(actual.hamR, expected.hamR);
+    assert_eq!(actual.rmatrix.0, expected.rmatrix.0);
+    assert_eq!(actual.ham.dim(), expected.ham.dim());
+    for (idx, &want) in expected.ham.indexed_iter() {
+        let got = actual.ham[idx];
+        assert!((got - want).norm() <= tol, "ham{idx:?}: {got} != {want}");
+    }
+}
+
+#[test]
+fn test_new_keeps_both_channels_independent() {
+    let [up, down] = channels();
+    let pair = CollinearModel::new(up.clone(), down.clone()).unwrap();
+    assert_eq!(pair.lat(), &up.lat);
+    assert_atoms(pair.atoms(), &up.atoms);
+    assert_channel(pair.up(), &up, 0.0);
+    assert_channel(pair.down(), &down, 0.0);
+    let (actual_up, actual_down) = pair.into_channels();
+    assert_channel(&actual_up, &up, 0.0);
+    assert_channel(&actual_down, &down, 0.0);
+}
+
+#[test]
+fn test_new_rejects_lattice_or_atom_metadata_mismatches() {
+    let [up, down] = channels();
+    let reject = |case, invariant, change: fn(&mut Channel)| {
+        let mut changed = down.clone();
+        change(&mut changed);
+        changed.validate().unwrap();
+        let err = CollinearModel::new(up.clone(), changed).unwrap_err();
+        assert!(
+            matches!(err, TbError::InvalidModelInvariant { invariant: got, .. } if got == invariant),
+            "{case}: {err}"
+        );
+    };
+    reject("one-ULP lattice change", "collinear_lattice", |m| {
+        m.lat[[0, 0]] = m.lat[[0, 0]].next_up();
+    });
+    reject("atom count", "collinear_atoms", |m| m.atoms.truncate(1));
+    reject("atom order", "collinear_atoms", |m| m.atoms.swap(0, 1));
+    reject("species", "collinear_atoms", |m| {
+        m.atoms[1].change_type(AtomType::Si)
+    });
+    reject("one-ULP position change", "collinear_atoms", |m| {
+        m.atoms[1].set_position(array![0.25_f64.next_up(), 0.25]);
+    });
+    reject("orbital IDs", "collinear_atoms", |m| {
+        m.atoms[0].set_orbitals(vec![OrbitalId::new(0), OrbitalId::new(2)]);
+        m.atoms[1].set_orbitals(vec![OrbitalId::new(1)]);
+    });
+    reject("orbital ID order", "collinear_atoms", |m| {
+        m.atoms[0].set_orbitals(vec![OrbitalId::new(1), OrbitalId::new(0)]);
+    });
+    reject("absent vs explicit zero moment", "collinear_atoms", |m| {
+        m.atoms[1].set_magnetic_moment([0.0; 3]).unwrap();
+    });
+    reject("one-ULP moment change", "collinear_atoms", |m| {
+        m.atoms[0]
+            .set_magnetic_moment([0.0, 0.0, 1.0_f64.next_up()])
+            .unwrap();
+    });
+}
+
+#[test]
+fn test_bands_match_independent_solves_in_spin_and_k_order() {
+    let [up, down] = channels();
+    let pair = CollinearModel::new(up.clone(), down.clone()).unwrap();
+    let points = array![[0.27, -0.13], [0.0, 0.0], [-0.31, 0.2], [0.27, -0.13]];
+    let (batch_up, batch_down) = pair.solve_band_all_parallel(&points).unwrap();
+    for (row, k) in points.outer_iter().enumerate() {
+        let (single_up, single_down) = pair.solve_band_onek(&k).unwrap();
+        for (spin, (model, single, batch)) in [
+            (&up, &single_up, &batch_up),
+            (&down, &single_down, &batch_down),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let expected = model.solve_band_onek(&k).unwrap();
+            assert_eq!(single, &expected);
+            assert_eq!(batch.dim(), (points.nrows(), model.norb()));
+            for (&got, &want) in batch.row(row).iter().zip(&expected) {
+                assert!(
+                    (got - want).abs() < 1e-12,
+                    "spin {spin}, k row {row}: {got} != {want}"
+                );
+            }
+        }
+    }
+}
+
+fn drive() -> FloquetDrive {
+    FloquetDrive::with_modes(
+        4.7,
+        vec![LightMode::new(
+            1,
+            array![C::new(0.61, 0.13), C::new(0.19, 0.72)],
+        )],
+    )
+}
+
+#[test]
+fn test_floquet_pair_and_sweep_match_independent_channels() {
+    let [up, down] = channels();
+    let pair = CollinearModel::new(up.clone(), down.clone()).unwrap();
+    let drive = drive();
+    let refs = REQUESTS.map(|(order, h)| {
+        let options = FloquetEffectiveOptions::new()
+            .with_order(order)
+            .with_harmonic_max(h);
+        [&up, &down].map(|m| m.floquet_effective_model(&drive, Some(&options)).unwrap())
+    });
+    let options = FloquetEffectiveOptions::new()
+        .with_order(2)
+        .with_harmonic_max(2);
+    let fixed = pair
+        .floquet_effective_model(&drive, Some(&options))
+        .unwrap();
+    assert_channel(fixed.up(), &refs[0][0], 2e-11);
+    assert_channel(fixed.down(), &refs[0][1], 2e-11);
+
+    let mut seen = Vec::new();
+    pair.floquet_effective_sweep(&drive, &REQUESTS, |key, actual| {
+        let i = seen.len();
+        assert_eq!(key, REQUESTS[i]);
+        assert_channel(actual.up(), &refs[i][0], 2e-11);
+        assert_channel(actual.down(), &refs[i][1], 2e-11);
+        seen.push(key);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(seen, REQUESTS);
+}
+
+#[test]
+fn test_floquet_sweep_rejects_bad_late_requests_and_skips_empty() {
+    let [up, down] = channels();
+    let pair = CollinearModel::new(up, down).unwrap();
+    for invalid in [(4, 0), (1, -1), (3, isize::MAX)] {
+        let result =
+            pair.floquet_effective_sweep(&drive(), &[(0, 0), (1, 1), invalid], |key, _| {
+                panic!("callback ran for {key:?} before rejecting {invalid:?}")
+            });
+        assert!(result.is_err(), "accepted {invalid:?}");
+    }
+    pair.floquet_effective_sweep(&FloquetDrive::new(0.0), &[], |_, _| {
+        panic!("empty sweep called the callback")
+    })
+    .unwrap();
+}
+
+#[test]
+fn test_floquet_sweep_returns_callback_error_and_stops() {
+    let [up, down] = channels();
+    let pair = CollinearModel::new(up, down).unwrap();
+    let mut seen = Vec::new();
+    let result = pair.floquet_effective_sweep(&drive(), &REQUESTS, |key, _| {
+        seen.push(key);
+        if seen.len() == 3 {
+            return Err(TbError::Other("stop from collinear visitor".into()));
+        }
+        Ok(())
+    });
+    assert!(matches!(result, Err(TbError::Other(s)) if s == "stop from collinear visitor"));
+    assert_eq!(seen.as_slice(), &REQUESTS[..3]);
+}
+
+#[test]
+fn test_floquet_sweep_delivers_prefix_before_later_up_error() {
+    let down = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+    let mut up = down.clone();
+    // A valid sparse input whose order-3 static sumset overflows isize.
+    up.set_hop(0.5_f64, 0, 0, &array![isize::MAX / 2], None);
+    let pair = CollinearModel::new(up, down).unwrap();
+    let drive = FloquetDrive::new(1.0);
+    let requests = [(0, 0), (3, 1)];
+
+    let mut seen = Vec::new();
+    let err = pair
+        .floquet_effective_sweep(&drive, &requests, |key, _| {
+            seen.push(key);
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(seen, [requests[0]]);
+    assert!(matches!(err, TbError::Other(s) if s.contains("translation overflows")));
+
+    let err = pair
+        .floquet_effective_sweep(&drive, &requests, |key, _| {
+            assert_eq!(key, requests[0]);
+            Err(TbError::Other("stop at first pair".into()))
+        })
+        .unwrap_err();
+    assert!(matches!(err, TbError::Other(s) if s == "stop at first pair"));
+}
+
+fn assert_row_kets(ham: &Array2<C>, energies: ArrayView1<'_, f64>, vectors: ArrayView2<'_, C>) {
+    assert_eq!(vectors.dim(), (energies.len(), ham.nrows()));
+    assert!(
+        energies
+            .iter()
+            .zip(energies.iter().skip(1))
+            .all(|(a, b)| a <= b)
+    );
+    for (band, ket) in vectors.outer_iter().enumerate() {
+        let residual = ham.dot(&ket) - ket.mapv(|z| z * energies[band]);
+        assert!(residual.iter().all(|z| z.norm() < 1e-11));
+        for (other, other_ket) in vectors.outer_iter().enumerate() {
+            let overlap = ket.mapv(|z| z.conj()).dot(&other_ket);
+            let expected = if band == other { 1.0 } else { 0.0 };
+            assert!((overlap - expected).norm() < 1e-11);
+        }
+    }
+}
+
+#[test]
+fn test_paired_solvers_keep_complex_row_kets_and_input_k_order() {
+    let [up, down] = channels();
+    let pair = CollinearModel::new(up, down).unwrap();
+    let points = array![[0.27, -0.13], [0.0, 0.0], [-0.31, 0.2], [0.27, -0.13]];
+    let bands = pair.solve_band_all(&points).unwrap();
+    let batches = [
+        pair.solve_all(&points).unwrap(),
+        pair.solve_all_parallel(&points).unwrap(),
+    ];
+    let window = (-1.0, 0.8);
+    for (row, k) in points.outer_iter().enumerate() {
+        let single = pair.solve_onek(&k).unwrap();
+        let ranged = pair.solve_range_onek(&k, window, 0.0).unwrap();
+        let range_bands = pair.solve_band_range_onek(&k, window, 0.0).unwrap();
+        for (spin, (model, bands, single, ranged, range_bands)) in [
+            (pair.up(), &bands.0, &single.0, &ranged.0, &range_bands.0),
+            (pair.down(), &bands.1, &single.1, &ranged.1, &range_bands.1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let expected = model.solve_band_onek(&k).unwrap();
+            let ham = model.gen_ham(&k, Gauge::Atom);
+            assert!(ham.iter().any(|z| z.im.abs() > 1e-3));
+            assert_eq!(bands.dim(), (points.nrows(), model.nsta()));
+            for energies in [bands.row(row), single.0.view()] {
+                assert_eq!(energies.len(), expected.len());
+                assert!(
+                    energies
+                        .iter()
+                        .zip(&expected)
+                        .all(|(a, b)| (a - b).abs() < 1e-11)
+                );
+            }
+            assert_row_kets(&ham, single.0.view(), single.1.view());
+            for batch in &batches {
+                let (energies, vectors) = [&batch.0, &batch.1][spin];
+                assert_eq!(energies.dim(), (points.nrows(), model.nsta()));
+                assert_eq!(vectors.dim(), (points.nrows(), model.nsta(), model.nsta()));
+                assert!(
+                    energies
+                        .row(row)
+                        .iter()
+                        .zip(&expected)
+                        .all(|(a, b)| (a - b).abs() < 1e-11)
+                );
+                assert_row_kets(&ham, energies.row(row), vectors.index_axis(Axis(0), row));
+            }
+            let selected: Vec<_> = expected
+                .iter()
+                .copied()
+                .filter(|&e| e > window.0 && e <= window.1)
+                .collect();
+            assert!(!selected.is_empty());
+            for energies in [range_bands.view(), ranged.0.view()] {
+                assert_eq!(energies.len(), selected.len());
+                assert!(
+                    energies
+                        .iter()
+                        .zip(&selected)
+                        .all(|(a, b)| (a - b).abs() < 1e-11)
+                );
+            }
+            assert_row_kets(&ham, ranged.0.view(), ranged.1.view());
+        }
+    }
+}
+
+#[test]
+fn test_range_solvers_keep_unequal_selections_and_empty_channels() {
+    let [mut up, mut down] = channels();
+    up.ham.fill(C::new(0.0, 0.0));
+    down.ham.fill(C::new(0.0, 0.0));
+    up.set_onsite(&array![-1.0, 0.0, 2.0], None);
+    down.set_onsite(&array![-2.0, 1.0, 3.0], None);
+    let pair = CollinearModel::new(up, down).unwrap();
+    let k = array![0.0, 0.0]; // Exact diagonal energies pin the open/closed endpoints.
+    for (window, expected) in [
+        ((-1.0, 2.0), [vec![0.0, 2.0], vec![1.0]]),
+        ((0.0, 1.0), [vec![], vec![1.0]]),
+        ((1.0, 2.0), [vec![2.0], vec![]]),
+        ((4.0, 5.0), [vec![], vec![]]),
+    ] {
+        for tolerance in [-1.0, 0.0, 1e-12] {
+            let bands = pair.solve_band_range_onek(&k, window, tolerance).unwrap();
+            let states = pair.solve_range_onek(&k, window, tolerance).unwrap();
+            for (spin, (model, bands, (energies, vectors))) in [
+                (pair.up(), &bands.0, &states.0),
+                (pair.down(), &bands.1, &states.1),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert_eq!(bands.as_slice().unwrap(), expected[spin].as_slice());
+                assert_eq!(energies.as_slice().unwrap(), expected[spin].as_slice());
+                assert_row_kets(
+                    &model.gen_ham(&k, Gauge::Atom),
+                    energies.view(),
+                    vectors.view(),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_paired_solvers_reject_bad_inputs_and_down_overflow() {
+    let [up, down] = channels();
+    let pair = CollinearModel::new(up, down).unwrap();
+    for k in [
+        array![],
+        array![0.0],
+        array![0.0, 0.0, 0.0],
+        array![f64::NAN, 0.0],
+        array![0.0, f64::INFINITY],
+        array![f64::NEG_INFINITY, 0.0],
+    ] {
+        let mut points = Array2::zeros((2, k.len()));
+        points.row_mut(1).assign(&k); // A bad later row must reject the whole batch.
+        for result in [
+            pair.solve_band_onek(&k).map(|_| ()),
+            pair.solve_band_range_onek(&k, (-1.0, 1.0), 0.0).map(|_| ()),
+            pair.solve_onek(&k).map(|_| ()),
+            pair.solve_range_onek(&k, (-1.0, 1.0), 0.0).map(|_| ()),
+            pair.solve_band_all(&points).map(|_| ()),
+            pair.solve_band_all_parallel(&points).map(|_| ()),
+            pair.solve_all(&points).map(|_| ()),
+            pair.solve_all_parallel(&points).map(|_| ()),
+        ] {
+            let err = result.unwrap_err();
+            if k.len() != 2 {
+                assert!(
+                    matches!(err, TbError::DimensionMismatch { expected: 2, found, .. } if found == k.len())
+                );
+            } else {
+                assert!(
+                    matches!(err, TbError::Other(message) if message.contains("k-points must be finite"))
+                );
+            }
+        }
+    }
+    for (window, tolerance) in [
+        ((1.0, 1.0), 0.0),
+        ((2.0, -1.0), 0.0),
+        ((f64::NAN, 1.0), 0.0),
+        ((f64::NEG_INFINITY, 1.0), 0.0),
+        ((-1.0, f64::INFINITY), 0.0),
+        ((-1.0, 1.0), f64::NAN),
+        ((-1.0, 1.0), f64::INFINITY),
+        ((-1.0, 1.0), f64::NEG_INFINITY),
+    ] {
+        let k = array![0.0, 0.0];
+        for result in [
+            pair.solve_band_range_onek(&k, window, tolerance)
+                .map(|_| ()),
+            pair.solve_range_onek(&k, window, tolerance).map(|_| ()),
+        ] {
+            assert!(matches!(result, Err(TbError::Other(_))));
+        }
+    }
+    let [up, mut down] = channels();
+    // Each real-space block is finite; only down's Fourier sum at Gamma overflows.
+    down.set_hop(1e308, 0, 0, &array![1, 0], None);
+    let pair = CollinearModel::new(up, down).unwrap();
+    let k = array![0.0, 0.0];
+    let points = k.view().insert_axis(Axis(0));
+    assert!(pair.up().solve_onek(&k).is_ok());
+    for result in [
+        pair.solve_band_onek(&k).map(|_| ()),
+        pair.solve_band_range_onek(&k, (-1.0, 1.0), 0.0).map(|_| ()),
+        pair.solve_onek(&k).map(|_| ()),
+        pair.solve_range_onek(&k, (-1.0, 1.0), 0.0).map(|_| ()),
+        pair.solve_band_all(&points).map(|_| ()),
+        pair.solve_band_all_parallel(&points).map(|_| ()),
+        pair.solve_all(&points).map(|_| ()),
+        pair.solve_all_parallel(&points).map(|_| ()),
+    ] {
+        assert!(
+            matches!(result, Err(TbError::Other(message)) if message.contains("H(k) contains nonfinite"))
+        );
+    }
+}
+
+#[test]
+fn test_orbital_only_unequal_bands_and_empty_batches() {
+    let mut up = Model::<false, 2>::tb_model(Array2::eye(2), Array2::zeros((1, 2)), None).unwrap();
+    let mut down =
+        Model::<false, 2>::tb_model(Array2::eye(2), Array2::zeros((2, 2)), None).unwrap();
+    up.set_onsite(&array![0.5], None);
+    down.set_onsite(&array![2.0, -1.0], None);
+    let pair = CollinearModel::new(up, down).unwrap();
+    assert!(pair.atoms().is_empty());
+    let expected = [array![0.5], array![-1.0, 2.0]];
+    let k = array![0.31, -0.11];
+    for (up_bands, down_bands) in [
+        pair.solve_band_onek(&k).unwrap(),
+        pair.solve_band_range_onek(&k, (-3.0, 3.0), 0.0).unwrap(),
+    ] {
+        assert_eq!(up_bands, expected[0]);
+        assert_eq!(down_bands, expected[1]);
+    }
+    for states in [
+        pair.solve_onek(&k).unwrap(),
+        pair.solve_range_onek(&k, (-3.0, 3.0), 0.0).unwrap(),
+    ] {
+        for (spin, (model, (energies, vectors))) in
+            [(pair.up(), &states.0), (pair.down(), &states.1)]
+                .into_iter()
+                .enumerate()
+        {
+            assert_eq!(energies, &expected[spin]);
+            assert_row_kets(
+                &model.gen_ham(&k, Gauge::Atom),
+                energies.view(),
+                vectors.view(),
+            );
+        }
+    }
+    for points in [array![[0.31, -0.11], [0.0, 0.0]], Array2::zeros((0, 2))] {
+        for bands in [
+            pair.solve_band_all(&points).unwrap(),
+            pair.solve_band_all_parallel(&points).unwrap(),
+        ] {
+            for (bands, expected) in [(&bands.0, &expected[0]), (&bands.1, &expected[1])] {
+                assert_eq!(bands.dim(), (points.nrows(), expected.len()));
+                for row in bands.outer_iter() {
+                    assert_eq!(&row, expected);
+                }
+            }
+        }
+        for states in [
+            pair.solve_all(&points).unwrap(),
+            pair.solve_all_parallel(&points).unwrap(),
+        ] {
+            for (spin, (model, (energies, vectors))) in
+                [(pair.up(), &states.0), (pair.down(), &states.1)]
+                    .into_iter()
+                    .enumerate()
+            {
+                let n = expected[spin].len();
+                assert_eq!(energies.dim(), (points.nrows(), n));
+                assert_eq!(vectors.dim(), (points.nrows(), n, n));
+                for (row, k) in points.outer_iter().enumerate() {
+                    assert_eq!(energies.row(row), expected[spin]);
+                    assert_row_kets(
+                        &model.gen_ham(&k, Gauge::Atom),
+                        energies.row(row),
+                        vectors.index_axis(Axis(0), row),
+                    );
+                }
+            }
+        }
+    }
+    let wrong_shape = Array2::<f64>::zeros((0, 3));
+    for result in [
+        pair.solve_band_all(&wrong_shape).map(|_| ()),
+        pair.solve_band_all_parallel(&wrong_shape).map(|_| ()),
+        pair.solve_all(&wrong_shape).map(|_| ()),
+        pair.solve_all_parallel(&wrong_shape).map(|_| ()),
+    ] {
+        assert!(matches!(
+            result,
+            Err(TbError::DimensionMismatch {
+                expected: 2,
+                found: 3,
+                ..
+            })
+        ));
+    }
+}

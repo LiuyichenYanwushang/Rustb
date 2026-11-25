@@ -93,8 +93,9 @@
     [`symmetrize_model_and_centres`](Model::symmetrize_model_and_centres).
   - Two channels, returning `Result<(Self, Self)>` in input order:
     [`symmetrize_pair`](Model::symmetrize_pair),
-    [`symmetrize_pair_with_collinear_spin_group`](Model::symmetrize_pair_with_collinear_spin_group),
     [`symmetrize_pair_with_unitary_collinear_spin_group`](Model::symmetrize_pair_with_unitary_collinear_spin_group).
+  - A collinear pair, returning `Result<CollinearModel<3, R>>`:
+    [`symmetrize_pair_with_collinear_spin_group`](CollinearModel::symmetrize_pair_with_collinear_spin_group).
 - **Band representations:** [`calculate_irrep`](Model::calculate_irrep),
   [`calculate_irrep_for_group`](Model::calculate_irrep_for_group).
 

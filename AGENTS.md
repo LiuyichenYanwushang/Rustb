@@ -309,6 +309,21 @@ pub struct Model<
 
 ### Other key types
 
+- **`CollinearModel<DIM, R>`** (crate root): `new(up, down)` owns and validates
+  two `Model<false, DIM, R>` values with exactly equal `lat` and ordered `Atom`
+  metadata, including IDs and optional moments. It stores two owned models;
+  common metadata is an equality invariant, not physically deduplicated storage.
+  Preserve independent orbital bases and centres, `ham`, `hamR`, and `rmatrix`.
+  `up()`/`down()` borrow channels; `lat()`/`atoms()` borrow common values from up;
+  `into_channels()` returns the owned `(up_model, down_model)` tuple. All eight
+  `Solve` counterparts are inherent methods with the same arguments:
+  `solve_band_onek`, `solve_band_range_onek`, `solve_band_all`, and
+  `solve_band_all_parallel` return `Result<(E_up, E_down)>`; `solve_onek`,
+  `solve_range_onek`, `solve_all`, and `solve_all_parallel` return
+  `Result<((E_up, C_up), (E_down, C_down))>`, always in up/down order.
+  Preserve single-channel shapes and each channel's Atom-gauge row-ket
+  convention, independently sorted at each k-point, without alignment, tracking,
+  or mixing. Parallel methods parallelize k-points, not the two channels.
 - **`Gauge`**: `Atom` (orbital positions in phase) or `Lattice` (only R vectors).
 - **`RMatrixData`**: Trait — `HasRMatrix` (Deref to Array4) or `NoRMatrix` (ZST, literally no field).
 - **`SpinDirection`**: `X/Y/Z` Pauli matrices; `Option<SpinDirection>::None`
@@ -778,7 +793,7 @@ because the `W^-3` coefficient is degree four in the input Hamiltonian
 blocks. The time-grid fallback is only for the link Fourier coefficients,
 not the spatial FFT.
 
-For `floquet_effective_sweep`, prepare harmonics through the largest
+For `Model::floquet_effective_sweep`, prepare harmonics through the largest
 `order * h` among the requested `(order, h)` pairs, with `h = harmonic_max`.
 If the widest window uses the temporal DFT fallback, recompute narrow
 windows with their individual coefficient policy to avoid amplifying DFT
@@ -786,6 +801,15 @@ roundoff. Group consecutive requests with the same FFT grid to share forward
 harmonic slices in memory-bounded batches. Within a batch, reuse low-order
 contractions and evaluate the cubic coefficient per distinct cubic cutoff.
 This uniform-drive sweep leaves the finite-`q` API and Sambe cutoff unchanged.
+
+For `CollinearModel`, apply `floquet_effective_model` independently to both
+channels. In the paired sweep, batch at most two requests and keep the FFT
+budget and all reuse channel-local; lend a complete pair per request in input
+order. Batch preparation failures may suppress callbacks. If a later up solve
+fails after completing a prefix, pair that prefix with down and visit it before
+returning the saved up error; a down-channel or callback error while pairing
+takes precedence and stops further callbacks. The caller supplies its own
+k-point chunk; retained models and callback work are outside the FFT budget.
 
 **Forward-time migration:** the old `H^(n-m)+nW` assembly described the
 time-reversed protocol. Recompute helicity-sensitive results; do not simply
@@ -967,10 +991,19 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   `R=0` at row zero. For `HasRMatrix`, project `rmatrix` as a vector operator
   and derive the final centres from its onsite diagonal. Postcheck covariance
   and return a new model. `symmetrize_centres` and
-  `symmetrize_model_and_centres` borrow their input and return `Result<Self>`;
-  all three `symmetrize_pair*` methods borrow their inputs and return
-  `Result<(Self, Self)>` in input order. These projections do not return
-  reports; use `check_hamiltonian_symmetry` for separate diagnostics.
+  `symmetrize_model_and_centres` borrow their input and return `Result<Self>`.
+  The legacy `Model::symmetrize_pair` and
+  `Model::symmetrize_pair_with_unitary_collinear_spin_group` still borrow
+  `&up, &down` and return `Result<(Self, Self)>` in input order. The full-group
+  entry is now on `CollinearModel<3, R>`: construct `CollinearModel::new(up, down)?`,
+  then call `pair.symmetrize_pair_with_collinear_spin_group(group, basis, params)`.
+  It borrows the pair and returns `Result<CollinearModel<3, R>>`; the old
+  associated `Model` entry is removed without a deprecated alias. In addition to
+  the constructor's exact common metadata, pair projection requires equal basis
+  sizes and orbital projections; swaps require corresponding Wannier gauges
+  and centre differences below half a cell in each fractional component.
+  These projections leave inputs unchanged and do not return reports; use
+  `check_hamiltonian_symmetry` for separate diagnostics.
 - **Band coreps diagnose rather than hide broken symmetry**: call
   `Model::calculate_irrep(options)` to detect the Atom-defined/field-effective
   magnetic group, or `calculate_irrep_for_group(target, options)` for an

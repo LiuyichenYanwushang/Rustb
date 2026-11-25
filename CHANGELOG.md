@@ -16,13 +16,19 @@
   emits a one-time process-global warning instead; atom-centred symmetry and
   irrep representations continue to enforce their own strict centring check.
 - `Model::symmetrize_centres` and `Model::symmetrize_model_and_centres` now
-  borrow `&self` and return `Result<Self>`. `Model::symmetrize_pair`,
-  `Model::symmetrize_pair_with_collinear_spin_group`, and
+  borrow `&self` and return `Result<Self>`. `Model::symmetrize_pair` and
   `Model::symmetrize_pair_with_unitary_collinear_spin_group` now take shared
   references (`&up, &dn`) and return `Result<(Self, Self)>` in input order.
   Keep the returned models; the inputs stay unchanged on success or error.
   These projections no longer return reports or warn about centre displacement.
   Validation and the separate `Model::check_hamiltonian_symmetry` API are unchanged.
+- Move the full-group `Model::symmetrize_pair_with_collinear_spin_group` entry
+  to `CollinearModel<3, R>`. Construct `CollinearModel::new(up, down)?`, then
+  call `pair.symmetrize_pair_with_collinear_spin_group(&group, &basis, &params)`.
+  It borrows the pair and returns `Result<CollinearModel<3, R>>`; the input is
+  unchanged. The old associated method is removed without a deprecated alias.
+  The legacy `Model::symmetrize_pair` and unitary-group helper are unchanged
+  by this move.
 - `Model::shift_to_atom` and its alias `Model::move_to_atom` now borrow `&self`
   and return `Result<Self>` rather than editing in place. Keep the returned
   model (e.g. `let aligned = model.shift_to_atom()?;`). Only the coordinates
@@ -38,7 +44,7 @@
   `Model::symmetrize_model_and_centres`, and the associated
   `Model::symmetrize_pair` for two spinless models. The pair projection
   enforces the spin-flip relation for anti-unitary target operations.
-- Add `Model::symmetrize_pair_with_collinear_spin_group` and
+- Add `CollinearModel::symmetrize_pair_with_collinear_spin_group` and
   `Model::symmetrize_pair_with_unitary_collinear_spin_group` for
   cryspglib-certified collinear spin groups. Both accept the complete
   `CollinearSpinGroup`; the first projects its unitary and g A0 antiunitary
@@ -76,6 +82,24 @@
   The cubic term is evaluated separately for each distinct order-3 cutoff.
   Sambe truncation, the harmonic precision window, and the finite-`q` API
   are unchanged.
+- Export `CollinearModel<DIM, R>` at the crate root. Its owned constructor
+  validates two `Model<false, DIM, R>` channels and requires exactly matching
+  lattices and ordered atom lists, including orbital IDs and optional moments.
+  Two owned models retain independent orbital centres, bases and matrix data;
+  equal common metadata is not physically deduplicated. All eight `Solve`
+  counterparts are inherent with the same arguments: `solve_band_onek`,
+  `solve_band_range_onek`, `solve_band_all`, and `solve_band_all_parallel` return
+  `Result<(E_up, E_down)>`; `solve_onek`, `solve_range_onek`, `solve_all`, and
+  `solve_all_parallel` return `Result<((E_up, C_up), (E_down, C_down))>`, always
+  in up/down order. `into_channels()` returns `(up_model, down_model)`.
+  Each channel retains the single-model shapes and Atom-gauge row-ket
+  convention, without energy alignment, band/phase tracking, or spin mixing.
+  The paired `floquet_effective_model` and `floquet_effective_sweep` apply the
+  same uniform drive to both channels. Sweeps batch up to two requests and
+  apply the FFT budget per channel without cross-channel reuse. Batch
+  preparation failures may suppress callbacks; a completed up-channel prefix
+  is paired before returning a later up solver error, unless down or the
+  callback fails first.
 
 ### Safety and numerical fixes
 

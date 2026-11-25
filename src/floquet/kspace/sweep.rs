@@ -9,7 +9,7 @@ pub(super) fn visit_effective<const SPIN: bool, const DIM: usize, R: RMatrixData
     cache: &FloquetHarmonicCache,
     has_ac: bool,
     mut requests: &[(usize, isize)],
-    mut visit: impl FnMut((usize, isize), &Model<SPIN, DIM, R>) -> Result<()>,
+    mut visit: impl FnMut((usize, isize), Model<SPIN, DIM, R>) -> Result<()>,
 ) -> Result<()> {
     if requests.is_empty() {
         return Ok(());
@@ -111,7 +111,7 @@ pub(super) fn visit_effective<const SPIN: bool, const DIM: usize, R: RMatrixData
                             false,
                         )?;
                         let output = model.floquet_effective_output(ham, ham_r)?;
-                        visit(key, &output)?;
+                        visit(key, output)?;
                     }
                     requests = &requests[batch_len..];
                     continue;
@@ -128,7 +128,7 @@ pub(super) fn visit_effective<const SPIN: bool, const DIM: usize, R: RMatrixData
                 Some(single),
             )?;
             let output = model.floquet_effective_output(ham, ham_r)?;
-            visit(key, &output)?;
+            visit(key, output)?;
         }
         requests = &requests[batch_len..];
     }

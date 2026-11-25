@@ -192,7 +192,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         cache: &FloquetHarmonicCache,
         has_ac: bool,
         requests: &[(usize, isize)],
-        visit: impl FnMut((usize, isize), &Model<SPIN, DIM, R>) -> Result<()>,
+        visit: impl FnMut((usize, isize), Model<SPIN, DIM, R>) -> Result<()>,
     ) -> Result<()> {
         sweep::visit_effective(self, drive, cache, has_ac, requests, visit)
     }

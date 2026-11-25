@@ -43,6 +43,7 @@
 
 pub mod access;
 mod build;
+mod collinear;
 mod edit;
 pub mod physics;
 pub mod rmatrix;
@@ -57,6 +58,7 @@ mod wire;
 mod operators;
 
 pub use self::access::{AtomView, OrbitalRef};
+pub use self::collinear::CollinearModel;
 pub use self::rmatrix::{HasRMatrix, NoRMatrix, RMatrixData};
 pub use self::types::{Dimension, Gauge, SpinDirection};
 pub use self::utils::{find_R, remove_col, remove_row};

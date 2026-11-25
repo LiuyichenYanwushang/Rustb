@@ -1688,27 +1688,20 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         requests: &[(usize, isize)],
         mut visit: impl FnMut((usize, isize), &Model<SPIN, DIM, R>) -> Result<()>,
     ) -> Result<()> {
+        self.floquet_effective_sweep_owned(drive, requests, |key, output| visit(key, &output))
+    }
+
+    pub(crate) fn floquet_effective_sweep_owned(
+        &self,
+        drive: &FloquetDrive,
+        requests: &[(usize, isize)],
+        mut visit: impl FnMut((usize, isize), Model<SPIN, DIM, R>) -> Result<()>,
+    ) -> Result<()> {
         if requests.is_empty() {
             return Ok(());
         }
         let has_ac = drive_has_ac_components(drive);
-        let cache_max = requests.iter().try_fold(0, |largest, &(order, h)| {
-            validate_effective_window(order, h)?;
-            let span = if has_ac {
-                effective_cache_max(order, h)?
-            } else {
-                0
-            };
-            Ok::<_, TbError>(largest.max(span))
-        })?;
-        let cache_bytes =
-            validate_effective_cache_layout(cache_max, self.hamR.nrows(), self.nsta())?;
-        if cache_bytes as u128 > kspace::KSPACE_MEMORY_HARD_LIMIT {
-            return Err(TbError::Other(format!(
-                "the shared Floquet sweep harmonic cache needs {:.1} GiB, exceeding the sweep memory budget",
-                cache_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
-            )));
-        }
+        let cache_max = self.effective_sweep_cache_max(requests, has_ac)?;
         let mut cache = self.effective_harmonics_for_window(drive, cache_max, has_ac)?;
         if !has_ac || !cache.used_time_grid {
             return self.floquet_effective_sweep_kspace(drive, &cache, has_ac, requests, visit);
@@ -1739,6 +1732,32 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             remaining = &remaining[len..];
         }
         Ok(())
+    }
+
+    /// Validate the request windows and the largest cache layout without building the cache.
+    pub(crate) fn effective_sweep_cache_max(
+        &self,
+        requests: &[(usize, isize)],
+        has_ac: bool,
+    ) -> Result<isize> {
+        let cache_max = requests.iter().try_fold(0, |largest, &(order, h)| {
+            validate_effective_window(order, h)?;
+            let span = if has_ac {
+                effective_cache_max(order, h)?
+            } else {
+                0
+            };
+            Ok::<_, TbError>(largest.max(span))
+        })?;
+        let cache_bytes =
+            validate_effective_cache_layout(cache_max, self.hamR.nrows(), self.nsta())?;
+        if cache_bytes as u128 > kspace::KSPACE_MEMORY_HARD_LIMIT {
+            return Err(TbError::Other(format!(
+                "the shared Floquet sweep harmonic cache needs {:.1} GiB, exceeding the sweep memory budget",
+                cache_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+            )));
+        }
+        Ok(cache_max)
     }
 
     fn effective_harmonics(
