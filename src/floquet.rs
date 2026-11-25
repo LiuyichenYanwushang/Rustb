@@ -53,10 +53,10 @@
 //! \bigl(\mathbf R+\boldsymbol\tau_j-\boldsymbol\tau_i\bigr)L .
 //! ```
 //!
-//! Here `orb` stores fractional orbital coordinates `tau`, and `lat` is the
-//! real-space lattice matrix used with row-vector fractional coordinates:
-//! `cart = frac.dot(lat)`.  For spinful models the spin label is ignored in the
-//! link geometry; state indices are mapped to orbital indices by `state % norb`.
+//! Here `orb` stores one fractional centre `tau` per basis state, and `lat` is
+//! the real-space lattice matrix used with row-vector fractional coordinates:
+//! `cart = frac.dot(lat)`. Spinful centres are spin-major and may differ between
+//! paired up/down states; every link, including spin flips, uses its own endpoints.
 //!
 //! # Light-field convention
 //!
@@ -901,7 +901,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
 
         let nsta = self.nsta();
-        let norb = self.norb();
         let mut correction = RealSpaceBlockMap::new();
         for (harmonic, amplitude) in amplitudes {
             let conjugate = amplitude.mapv(|value| value.conj());
@@ -917,7 +916,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 let mut block = jordan_blocks.index_axis_mut(Axis(0), i_r);
                 for i in 0..nsta {
                     for j in 0..nsta {
-                        let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
+                        let d_cart = self.link_displacement_cartesian(i, j, &r_vec);
                         let q_dot_d = wavevector_cartesian.dot(&d_cart);
                         if !q_dot_d.is_finite() {
                             return Err(TbError::Other(format!(
@@ -1202,7 +1201,8 @@ pub trait Floquet {
     /// where `N = trunc.n_max`.  Photon sectors run from `-N` to `N`.
     /// Spinless models are ordered as `(photon sector, orbital)`.  Spinful
     /// models preserve the usual Rustb spin layout and are ordered as
-    /// `(spin, photon sector, orbital)`.
+    /// `(spin, photon sector, orbital)`. Each state retains its own centre in
+    /// every sector, while Atom ownership and projections label paired orbitals.
     ///
     /// For Peierls coupling the real-space matrix elements are
     ///
@@ -1252,7 +1252,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
         let norb = self.norb();
         let sectors: Vec<isize> = trunc.sectors()?.collect();
         let n_sector = sectors.len();
-        let new_norb = norb * n_sector;
         let total = nsta * n_sector;
         let basis_indices = floquet_basis_indices::<SPIN>(nsta, norb, n_sector);
         let harmonic_min = -2 * trunc.n_max;
@@ -1272,11 +1271,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Floquet for Model<SPIN,
             )
         };
 
-        let mut orb = Array2::<f64>::zeros((new_norb, DIM));
-        for isec in 0..n_sector {
-            for iorb in 0..norb {
-                let out_i = isec * norb + iorb;
-                orb.row_mut(out_i).assign(&self.orb.row(iorb));
+        let mut orb = Array2::<f64>::zeros((total, DIM));
+        for sector in &basis_indices {
+            for (state, &out_state) in sector.iter().enumerate() {
+                orb.row_mut(out_state).assign(&self.orb.row(state));
             }
         }
 
@@ -1568,7 +1566,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
         enforce_real_space_hermiticity(&mut ham, &target_ham_r)?;
 
-        let mut model = Model::<SPIN, DIM, NoRMatrix>::tb_model(
+        let mut model = Model::<SPIN, DIM, NoRMatrix>::tb_model_with_state_centres(
             self.lat.clone(),
             self.orb.clone(),
             Some(self.atoms.clone()),
@@ -1614,8 +1612,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// harmonics above `h`; otherwise converge the harmonic cutoff separately.
     /// The spatial support can reach fourfold sums.
     /// The origin-first output support is determined automatically. The input
-    /// atom/orbital metadata and bare position matrix are retained; position
-    /// blocks on generated rows are zero, not micromotion dressed.
+    /// Atom/orbital labels, every state centre (including unequal spin partners),
+    /// and the bare position matrix are retained; position blocks on generated
+    /// rows are zero, not micromotion dressed.
     ///
     /// This is an off-resonant approximation, not the enlarged Sambe model
     /// returned by [`Floquet::floquet_model`]. The FFT assumes Hermitian
@@ -1938,11 +1937,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     fn link_displacement_cartesian(
         &self,
-        i_orb: usize,
-        j_orb: usize,
+        i_state: usize,
+        j_state: usize,
         r_vec: &ArrayView1<'_, isize>,
     ) -> Array1<f64> {
-        link_displacement_cartesian(&self.lat, self.orb.row(i_orb), self.orb.row(j_orb), *r_vec)
+        link_displacement_cartesian(
+            &self.lat,
+            self.orb.row(i_state),
+            self.orb.row(j_state),
+            *r_vec,
+        )
     }
 
     /// Real-space blocks of `a_i partial_{k_i} H_0` in the fixed Wannier
@@ -1953,7 +1957,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ) -> Result<Array3<Complex<f64>>> {
         debug_assert_eq!(amplitude.len(), DIM);
         let nsta = self.nsta();
-        let norb = self.norb();
         let mut blocks = Array3::<Complex<f64>>::zeros(self.ham.raw_dim());
         for i_r in 0..self.hamR.nrows() {
             let r_vec = self.hamR.row(i_r);
@@ -1963,7 +1966,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     if hopping.re == 0.0 && hopping.im == 0.0 {
                         continue;
                     }
-                    let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
+                    let d_cart = self.link_displacement_cartesian(i, j, &r_vec);
                     let projection = amplitude
                         .iter()
                         .zip(d_cart.iter())
@@ -1989,21 +1992,10 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         mut ham: Array2<Complex<f64>>,
     ) -> Array2<Complex<f64>> {
         let nsta = self.nsta();
-        let norb = self.norb();
-        let mut phase_orb = Array1::<Complex<f64>>::zeros(norb);
-        for i in 0..norb {
-            let mut tau_dot_k = 0.0;
-            for a in 0..DIM {
-                tau_dot_k += self.orb[[i, a]] * kvec[a];
-            }
-            phase_orb[i] = Complex::new(0.0, TAU * tau_dot_k).exp();
-        }
-
-        let mut phase = Array1::<Complex<f64>>::zeros(nsta);
-        phase.slice_mut(s![..norb]).assign(&phase_orb);
-        if SPIN {
-            phase.slice_mut(s![norb..]).assign(&phase_orb);
-        }
+        let phase = self
+            .orb
+            .dot(kvec)
+            .mapv(|tau_dot_k| Complex::new(0.0, TAU * tau_dot_k).exp());
 
         for i in 0..nsta {
             let left = phase[i].conj();

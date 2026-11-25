@@ -525,6 +525,7 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
     ) -> std::result::Result<LocalizedBasisAction, BasisRepresentationError> {
         let model = context.model;
         validate_automatic_basis_context(&context, "ScalarSiteBasis")?;
+        let spin_count = if SPIN { 2 } else { 1 };
         for (atom_index, atom) in model.atoms.iter().enumerate() {
             if atom.norb() != 1 {
                 return Err(BasisRepresentationError::Unsupported(format!(
@@ -539,23 +540,25 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
                     model.orb_projection[orbital]
                 )));
             }
-            let displacement = [
-                model.orb[[orbital, 0]] - atom.position_ref()[0],
-                model.orb[[orbital, 1]] - atom.position_ref()[1],
-                model.orb[[orbital, 2]] - atom.position_ref()[2],
-            ];
-            if integer_shift_if_close(displacement, &model.lat, context.position_tolerance)
-                .is_none()
-            {
-                return Err(BasisRepresentationError::Unsupported(format!(
-                    "orbital {orbital} is not centered on atom {atom_index} modulo a lattice vector"
-                )));
+            for spin in 0..spin_count {
+                let state = orbital + spin * model.norb();
+                let displacement = std::array::from_fn(|axis| {
+                    model.orb[[state, axis]] - atom.position_ref()[axis]
+                });
+                if integer_shift_if_close(displacement, &model.lat, context.position_tolerance)
+                    .is_none()
+                {
+                    return Err(BasisRepresentationError::Unsupported(format!(
+                        "basis state {state} is not centered on atom {atom_index} modulo a lattice vector"
+                    )));
+                }
             }
         }
 
+        reject_spin_cell_offsets(model, context.position_tolerance)?;
         let spin_action =
             scalar_spin_action(model, context.operation, context.representation_tolerance)?;
-        let mut mapped_sites: BTreeMap<[isize; 3], Vec<(usize, usize)>> = BTreeMap::new();
+        let mut sectors: BTreeMap<[isize; 3], Array2<Complex64>> = BTreeMap::new();
         let mut used_target_atoms = BTreeSet::new();
         for (source_atom, atom) in model.atoms.iter().enumerate() {
             let target_atom =
@@ -567,53 +570,51 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
             }
             let source_orbital = atom.orbitals()[0].index();
             let target_orbital = model.atoms[target_atom].orbitals()[0].index();
-            let transformed_orbital: [f64; 3] = std::array::from_fn(|row| {
-                context.operation.translation[row]
+            // Integer centre offsets are a k-space gauge, so the cell sector
+            // comes from the paired representative and serves both spin blocks.
+            let transformed: [f64; 3] = std::array::from_fn(|axis| {
+                context.operation.translation[axis]
                     + (0..3)
-                        .map(|column| {
-                            f64::from(context.operation.rotation[row][column])
-                                * model.orb[[source_orbital, column]]
+                        .map(|input| {
+                            f64::from(context.operation.rotation[axis][input])
+                                * model.orb[[source_orbital, input]]
                         })
                         .sum::<f64>()
             });
-            let orbital_displacement = std::array::from_fn(|axis| {
-                transformed_orbital[axis] - model.orb[[target_orbital, axis]]
-            });
-            let Some(orbital_shift) = integer_shift_if_close(
-                orbital_displacement,
-                &model.lat,
-                context.position_tolerance,
-            ) else {
+            let displacement =
+                std::array::from_fn(|axis| transformed[axis] - model.orb[[target_orbital, axis]]);
+            let Some(shift) =
+                integer_shift_if_close(displacement, &model.lat, context.position_tolerance)
+            else {
                 return Err(BasisRepresentationError::Invalid(format!(
-                    "operation maps atom {source_atom} to atom {target_atom}, but their scalar orbital representatives are inconsistent"
+                    "operation maps orbital {source_orbital} to {target_orbital}, but their scalar representatives are inconsistent"
                 )));
             };
-            mapped_sites
-                .entry(orbital_shift)
-                .or_default()
-                .push((target_orbital, source_orbital));
-        }
-
-        let mut sectors = Vec::with_capacity(mapped_sites.len());
-        for (shift, mappings) in mapped_sites {
-            let mut matrix = Array2::zeros((model.nsta(), model.nsta()));
-            for (target_orbital, source_orbital) in mappings {
-                if SPIN {
-                    for target_spin in 0..2 {
-                        for source_spin in 0..2 {
-                            matrix[[
-                                target_spin * model.norb() + target_orbital,
-                                source_spin * model.norb() + source_orbital,
-                            ]] = spin_action[target_spin][source_spin];
-                        }
+            for source_spin in 0..spin_count {
+                for target_spin in 0..spin_count {
+                    let coefficient = if SPIN {
+                        spin_action[target_spin][source_spin]
+                    } else {
+                        Complex64::new(1.0, 0.0)
+                    };
+                    if coefficient.norm() <= context.representation_tolerance {
+                        continue;
                     }
-                } else {
-                    matrix[[target_orbital, source_orbital]] = Complex64::new(1.0, 0.0);
+                    sectors
+                        .entry(shift)
+                        .or_insert_with(|| Array2::zeros((model.nsta(), model.nsta())))[[
+                        target_orbital + target_spin * model.norb(),
+                        source_orbital + source_spin * model.norb(),
+                    ]] = coefficient;
                 }
             }
-            sectors.push(CellShiftAction { shift, matrix });
         }
-        Ok(LocalizedBasisAction { sectors })
+        Ok(LocalizedBasisAction {
+            sectors: sectors
+                .into_iter()
+                .map(|(shift, matrix)| CellShiftAction { shift, matrix })
+                .collect(),
+        })
     }
 }
 
@@ -629,6 +630,7 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
             cartesian_rotation(model, context.operation)?,
             context.representation_tolerance,
         )?;
+        reject_spin_cell_offsets(model, context.position_tolerance)?;
         let spin_action =
             scalar_spin_action(model, context.operation, context.representation_tolerance)?;
         let site_projections = model
@@ -688,6 +690,8 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
 
             for (source_local, source_id) in atom.orbitals().iter().enumerate() {
                 let source_orbital = source_id.index();
+                // As in `ScalarSiteBasis`, the sector shift comes from the
+                // paired representative; integer centre offsets are gauge.
                 let transformed_source: [f64; 3] = std::array::from_fn(|axis| {
                     context.operation.translation[axis]
                         + (0..3)
@@ -700,8 +704,8 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
                 for (target_local, target_id) in
                     model.atoms[target_atom].orbitals().iter().enumerate()
                 {
-                    let coefficient = local_action[[target_local, source_local]];
-                    if coefficient.norm() <= context.representation_tolerance {
+                    let orbital_coefficient = local_action[[target_local, source_local]];
+                    if orbital_coefficient.norm() <= context.representation_tolerance {
                         continue;
                     }
                     let target_orbital = target_id.index();
@@ -717,11 +721,24 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
                             "operation mixes source orbital {source_orbital} into target orbital {target_orbital}, but their centres differ by a non-lattice vector"
                         )));
                     };
-                    mapped_entries.entry(shift).or_default().push((
-                        target_orbital,
-                        source_orbital,
-                        coefficient,
-                    ));
+                    for source_spin in 0..if SPIN { 2 } else { 1 } {
+                        for target_spin in 0..if SPIN { 2 } else { 1 } {
+                            let coefficient = orbital_coefficient
+                                * if SPIN {
+                                    spin_action[target_spin][source_spin]
+                                } else {
+                                    Complex64::new(1.0, 0.0)
+                                };
+                            if coefficient.norm() <= context.representation_tolerance {
+                                continue;
+                            }
+                            mapped_entries.entry(shift).or_default().push((
+                                target_orbital + target_spin * model.norb(),
+                                source_orbital + source_spin * model.norb(),
+                                coefficient,
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -734,24 +751,42 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R> for 
         let mut sectors = Vec::with_capacity(mapped_entries.len());
         for (shift, entries) in mapped_entries {
             let mut matrix = Array2::zeros((model.nsta(), model.nsta()));
-            for (target_orbital, source_orbital, orbital_coefficient) in entries {
-                if SPIN {
-                    for target_spin in 0..2 {
-                        for source_spin in 0..2 {
-                            matrix[[
-                                target_spin * model.norb() + target_orbital,
-                                source_spin * model.norb() + source_orbital,
-                            ]] += orbital_coefficient * spin_action[target_spin][source_spin];
-                        }
-                    }
-                } else {
-                    matrix[[target_orbital, source_orbital]] += orbital_coefficient;
-                }
+            for (target_state, source_state, coefficient) in entries {
+                matrix[[target_state, source_state]] += coefficient;
             }
             sectors.push(CellShiftAction { shift, matrix });
         }
         Ok(LocalizedBasisAction { sectors })
     }
+}
+
+/// Reject paired slots whose spin blocks sit in different integer cells.
+///
+/// The localized actions describe one parent-cell mapping per paired slot, and
+/// an integer offset between the up and down centres would make a spin-flip
+/// matrix element belong to a different sector than its diagonal partners.
+/// Such models are a k-space gauge choice that the automatic bases cannot
+/// certify, so they are refused explicitly instead of mis-shifting a sector.
+fn reject_spin_cell_offsets<const SPIN: bool, R: RMatrixData>(
+    model: &Model<SPIN, 3, R>,
+    tolerance: f64,
+) -> std::result::Result<(), BasisRepresentationError> {
+    if !SPIN {
+        return Ok(());
+    }
+    for slot in 0..model.norb() {
+        let up = model.orb.row(slot);
+        let down = model.orb.row(slot + model.norb());
+        let difference = std::array::from_fn(|axis| down[axis] - up[axis]);
+        if let Some(offset) = integer_shift_if_close(difference, &model.lat, tolerance)
+            && offset != [0; 3]
+        {
+            return Err(BasisRepresentationError::Unsupported(format!(
+                "paired slot {slot} has up and down centres in different cells (offset {offset:?}); align the spin blocks to one cell representative before symmetry analysis"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_automatic_basis_context<const SPIN: bool, R: RMatrixData>(
@@ -798,13 +833,18 @@ fn atom_projection_matrix<const SPIN: bool, R: RMatrixData>(
     let mut coefficients = Array2::zeros((16, orbitals.len()));
     for (column, orbital_id) in orbitals.iter().enumerate() {
         let orbital = orbital_id.index();
-        let displacement = std::array::from_fn(|axis| {
-            model.orb[[orbital, axis]] - model.atoms[atom_index].position_ref()[axis]
-        });
-        if integer_shift_if_close(displacement, &model.lat, context.position_tolerance).is_none() {
-            return Err(BasisRepresentationError::Unsupported(format!(
-                "orbital {orbital} is not centred on atom {atom_index} modulo a lattice vector"
-            )));
+        for spin in 0..if SPIN { 2 } else { 1 } {
+            let state = orbital + spin * model.norb();
+            let displacement = std::array::from_fn(|axis| {
+                model.orb[[state, axis]] - model.atoms[atom_index].position_ref()[axis]
+            });
+            if integer_shift_if_close(displacement, &model.lat, context.position_tolerance)
+                .is_none()
+            {
+                return Err(BasisRepresentationError::Unsupported(format!(
+                    "basis state {state} is not centred on atom {atom_index} modulo a lattice vector"
+                )));
+            }
         }
         let state = projection_in_real_orbital_basis(model.orb_projection[orbital])?;
         for row in 0..16 {
@@ -1423,8 +1463,8 @@ pub(crate) fn validate_action_geometry<const SPIN: bool, R: RMatrixData>(
                 if sector.matrix[[row, column]].norm() <= representation_tolerance {
                     continue;
                 }
-                let target_orbital = row % model.norb();
-                let source_orbital = column % model.norb();
+                let target_orbital = row;
+                let source_orbital = column;
                 let transformed_source: [f64; 3] = std::array::from_fn(|axis| {
                     operation.translation[axis]
                         + (0..3)
@@ -2527,7 +2567,7 @@ fn validate_position_centres<const SPIN: bool, R: RMatrixData>(
         .index_axis(Axis(0), position_origin(model)?);
     let centres = model.orb.dot(&model.lat);
     for state in 0..model.nsta() {
-        let orbital = state % model.norb();
+        let orbital = state;
         let residual = (0..3).fold(0.0_f64, |length, axis| {
             length.hypot(
                 (Complex64::new(centres[[orbital, axis]], 0.0) - onsite[[axis, state, state]])
@@ -2568,10 +2608,9 @@ fn synchronize_position_centres<const SPIN: bool, R: RMatrixData>(
         .rmatrix
         .as_array4()
         .index_axis(Axis(0), position_origin(model)?);
-    let cartesian = Array2::from_shape_fn((model.norb(), 3), |(i, axis)| onsite[[axis, i, i]].re);
+    let cartesian = Array2::from_shape_fn((model.nsta(), 3), |(i, axis)| onsite[[axis, i, i]].re);
     model.orb = cartesian.dot(&model.lat.inv()?);
-    // A spinful Model has only one centre per spin-major orbital pair. Validate
-    // both states; the second spin block must not silently disagree with the first.
+    // Keep every state's own centre, including the independent down-spin block.
     validate_position_centres(model, tolerance)
 }
 
@@ -3071,8 +3110,9 @@ impl<const SPIN: bool, R: RMatrixData> Model<SPIN, 3, R> {
     /// averaged and its Hermitian partner is restored. Generated `hamR` blocks
     /// therefore receive a position block derived from the same projection.
     /// The input must store the onsite (`R = 0`) position block. Its projected
-    /// real diagonal sets the final Wannier centres without wrapping, and a
-    /// spinful model must agree with both spin-major blocks. Actions are
+    /// real diagonal sets the final Wannier centres without wrapping; every
+    /// spin-major state adopts its own diagonal, so the two blocks may differ.
+    /// Actions are
     /// re-resolved on that model before checking both Hamiltonian and position
     /// covariance. Position checks use the Cartesian basis-matching tolerance
     /// in Å, not the Hamiltonian energy tolerance.
@@ -4581,6 +4621,145 @@ mod tests {
     }
 
     #[test]
+    fn automatic_bases_reject_spin_blocks_in_different_cells() {
+        use crate::AtomType;
+        use ndarray::concatenate;
+
+        // The down centres differ from their up partners by a lattice vector.
+        // Automatic bases describe one sector per paired slot, so this model
+        // must be refused rather than analysed with a mis-shifted action.
+        let up = array![[0.0, 0.0, 0.0]];
+        let down = array![[1.0, 0.0, 0.0]];
+        let centres = concatenate(Axis(0), &[up.view(), down.view()]).unwrap();
+        let model = Model::<true, 3, NoRMatrix>::tb_model_with_state_centres(
+            Array2::eye(3),
+            centres,
+            Some(vec![Atom::with_orbitals(
+                array![0.0, 0.0, 0.0],
+                AtomType::H,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        model.validate().unwrap();
+
+        let operation = CrystalSymmetryOperation {
+            rotation: [[-1, 0, 0], [0, -1, 0], [0, 0, -1]],
+            translation: [0.0, 0.0, 0.0],
+            time_reversal: false,
+        };
+        let scalar_error = ScalarSiteBasis
+            .resolve(BasisActionContext {
+                model: &model,
+                operation: &operation,
+                position_tolerance: 1e-8,
+                representation_tolerance: 1e-8,
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(scalar_error.contains("different cells"), "{scalar_error}");
+        let atomic_error = AtomicOrbitalBasis
+            .resolve(BasisActionContext {
+                model: &model,
+                operation: &operation,
+                position_tolerance: 1e-8,
+                representation_tolerance: 1e-8,
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(atomic_error.contains("different cells"), "{atomic_error}");
+
+        // The public entry points must surface this as an unresolved/refused
+        // analysis, never as a certified symmetry or a silent success.
+        let report = model
+            .check_hamiltonian_symmetry(&ScalarSiteBasis, &HamiltonianSymmetryRequest::default())
+            .unwrap();
+        assert_eq!(report.is_fully_compatible(), None);
+
+        let target = model
+            .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())
+            .unwrap();
+        assert!(matches!(
+            model.symmetrize_hamiltonian(
+                &target,
+                &ScalarSiteBasis,
+                &HamiltonianSymmetrizationParameters::default(),
+            ),
+            Err(TbError::TargetMagneticGroupIncompatible { .. })
+        ));
+        let centre_error = CenterResolvedBasis::new()
+            .resolve(BasisActionContext {
+                model: &model,
+                operation: &operation,
+                position_tolerance: 1e-8,
+                representation_tolerance: 1e-8,
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(centre_error.contains("different cells"), "{centre_error}");
+    }
+
+    #[test]
+    fn center_resolved_basis_carries_both_spin_blocks_with_atom_sectors() {
+        use crate::AtomType;
+        use ndarray::concatenate;
+
+        // `CenterResolvedBasis` accepts centres that are displaced from their
+        // atoms, and both spin blocks here are displaced differently within the
+        // cell. Its sectors describe the parent-atom cell mapping, so each
+        // paired slot contributes one sector entry per spin block.
+        let up = array![[0.1, 0.0, 0.0], [0.6, 0.0, 0.0]];
+        let down = array![[0.25, 0.0, 0.0], [0.5, 0.0, 0.0]];
+        let centres = concatenate(Axis(0), &[up.view(), down.view()]).unwrap();
+        let model = Model::<true, 3, NoRMatrix>::tb_model_with_state_centres(
+            Array2::eye(3),
+            centres,
+            Some(vec![
+                Atom::with_orbitals(array![0.0, 0.0, 0.0], AtomType::H, [OrbitalId::new(0)]),
+                Atom::with_orbitals(array![0.5, 0.0, 0.0], AtomType::H, [OrbitalId::new(1)]),
+            ]),
+        )
+        .unwrap();
+        model.validate().unwrap();
+
+        let operation = CrystalSymmetryOperation {
+            rotation: [[-1, 0, 0], [0, -1, 0], [0, 0, -1]],
+            translation: [0.0, 0.0, 0.0],
+            time_reversal: false,
+        };
+        let action = CenterResolvedBasis::new()
+            .resolve(BasisActionContext {
+                model: &model,
+                operation: &operation,
+                position_tolerance: 1e-8,
+                representation_tolerance: 1e-8,
+            })
+            .unwrap();
+
+        // Atom 0 keeps its cell, atom 1 sits half a cell away and maps back
+        // with shift -1; both spin states of each slot share that sector.
+        let expected = [
+            (0usize, [0, 0, 0]),
+            (1, [-1, 0, 0]),
+            (2, [0, 0, 0]),
+            (3, [-1, 0, 0]),
+        ];
+        let mut seen = [false; 4];
+        for sector in &action.sectors {
+            for (state, shift) in expected {
+                if (sector.matrix[[state, state]] - Complex64::new(1.0, 0.0)).norm() < 1e-8 {
+                    assert_eq!(sector.shift, shift, "state {state} sector shift");
+                    assert!(!seen[state], "state {state} appears twice");
+                    seen[state] = true;
+                }
+            }
+        }
+        assert!(
+            seen.iter().all(|&found| found),
+            "every spin state is mapped"
+        );
+    }
+    #[test]
     fn synchronize_position_centres_preserves_cell_and_checks_both_spin_blocks() {
         let mut model = Model::<true, 3, HasRMatrix>::tb_model(
             array![[2.0, 0.5, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]],
@@ -4593,10 +4772,21 @@ mod tests {
             model.rmatrix[[0, 1, i, i]].re = 0.625;
         }
         synchronize_position_centres(&mut model, 1e-12).unwrap();
-        assert_eq!(model.orb, array![[1.25, 0.0, 0.0]]);
+        // Both spin-major state rows follow their own onsite diagonal.
+        assert_eq!(model.orb, array![[1.25, 0.0, 0.0], [1.25, 0.0, 0.0]]);
+        // Each state owns its centre, so a distinct down diagonal is absorbed
+        // instead of being reported as a two-block disagreement.
         model.rmatrix[[0, 0, 1, 1]].re += 0.01;
+        synchronize_position_centres(&mut model, 1e-12).unwrap();
+        assert_ne!(model.orb.row(0), model.orb.row(1));
+        let cartesian = model.orb.dot(&model.lat);
+        for state in 0..model.nsta() {
+            assert!((cartesian[[state, 0]] - model.rmatrix[[0, 0, state, state]].re).abs() < 1e-12);
+        }
+        // Stale metadata is still a hard error, named by the offending state.
+        model.orb[[1, 0]] += 0.02;
         assert!(
-            synchronize_position_centres(&mut model, 1e-12)
+            validate_position_centres(&model, 1e-12)
                 .unwrap_err()
                 .to_string()
                 .contains("state 1")

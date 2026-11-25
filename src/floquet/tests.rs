@@ -950,8 +950,7 @@ fn harmonic_cache_bessel_matches_time_grid_and_dedupes_links() {
                 if model.ham[[i_r, i, j]].re == 0.0 && model.ham[[i_r, i, j]].im == 0.0 {
                     continue;
                 }
-                let d_cart =
-                    model.link_displacement_cartesian(i % model.norb(), j % model.norb(), &r_vec);
+                let d_cart = model.link_displacement_cartesian(i, j, &r_vec);
                 let key: Vec<u64> = d_cart.iter().map(|value| value.to_bits()).collect();
                 if !distinct_d.contains(&key) {
                     distinct_d.push(key);
@@ -3343,15 +3342,14 @@ fn floquet_effective_model_bessel_matches_legacy_bands() {
 /// Independent weak-field one-photon vertex from the exact straight-bond
 /// plane-wave integral.  This keeps the finite-q sinc form factor instead
 /// of starting from the derivative formula used by the implementation.
-fn independent_finite_q_peierls_vertex(
-    model: &Model<false, 2, NoRMatrix>,
+fn independent_finite_q_peierls_vertex<const SPIN: bool>(
+    model: &Model<SPIN, 2, NoRMatrix>,
     k_reduced: &Array1<f64>,
     center_shift_cartesian: &Array1<f64>,
     transfer_cartesian: &Array1<f64>,
     amplitude: &Array1<Complex<f64>>,
 ) -> Array2<Complex<f64>> {
     let nsta = model.nsta();
-    let norb = model.norb();
     let mut out = Array2::<Complex<f64>>::zeros((nsta, nsta));
     for (i_r, r_vec) in model.hamR.outer_iter().enumerate() {
         for i in 0..nsta {
@@ -3362,8 +3360,8 @@ fn independent_finite_q_peierls_vertex(
                 }
                 let mut d_fractional = Array1::<f64>::zeros(2);
                 for axis in 0..2 {
-                    d_fractional[axis] = r_vec[axis] as f64 + model.orb[[j % norb, axis]]
-                        - model.orb[[i % norb, axis]];
+                    d_fractional[axis] =
+                        r_vec[axis] as f64 + model.orb[[j, axis]] - model.orb[[i, axis]];
                 }
                 let d_cartesian = d_fractional.dot(&model.lat);
                 let phase_angle =
@@ -3387,8 +3385,8 @@ fn independent_finite_q_peierls_vertex(
     out
 }
 
-fn independent_q_linear_commutator_odd_part(
-    model: &Model<false, 2, NoRMatrix>,
+fn independent_q_linear_commutator_odd_part<const SPIN: bool>(
+    model: &Model<SPIN, 2, NoRMatrix>,
     k_reduced: &Array1<f64>,
     wavevector_cartesian: &Array1<f64>,
     amplitude: &Array1<Complex<f64>>,
@@ -3462,6 +3460,56 @@ fn floquet_effective_q_model_matches_center_momentum_oracle() {
         error < 2.0e-11,
         "finite-q weak-field correction mismatch: error={error:e}\nimplemented={implemented:?}\nexpected={expected:?}"
     );
+}
+
+#[test]
+fn floquet_effective_q_unequal_spin_centres_match_momentum_oracle() {
+    let mut model = Model::<true, 2>::tb_model_with_state_centres(
+        array![[1.3, 0.2], [0.1, 0.9]],
+        array![[0.07, 0.11], [0.31, 0.23], [-0.12, 0.28], [0.49, 0.06]],
+        None,
+    )
+    .unwrap();
+    model.set_hop(-0.8, 0, 0, &array![1, 0], None);
+    model.set_hop(
+        Complex::new(0.35, -0.17),
+        0,
+        1,
+        &array![0, 1],
+        SpinDirection::X,
+    );
+    model.set_hop(
+        Complex::new(-0.21, 0.09),
+        1,
+        1,
+        &array![1, 1],
+        SpinDirection::Z,
+    );
+    model.set_hop(0.23, 0, 1, &array![0, 0], None);
+    let amplitude = array![Complex::new(0.24, 0.05), Complex::new(-0.08, 0.19)];
+    let drive = FloquetDrive::with_modes(3.7, vec![LightMode::new(1, amplitude.clone())]);
+    let options = FloquetEffectiveOptions::new().with_harmonic_max(1);
+    let q = array![8.0e-4, -6.0e-4];
+    let k = array![0.17, 0.29];
+    let baseline = model
+        .floquet_effective_model(&drive, Some(&options))
+        .unwrap();
+    let finite_q = model
+        .floquet_effective_q_model(&drive, Some(&options), &q)
+        .unwrap();
+    assert_eq!(finite_q.orb, model.orb);
+    finite_q.validate().unwrap();
+    let implemented = finite_q.gen_ham(&k, Gauge::Atom) - baseline.gen_ham(&k, Gauge::Atom);
+    let expected =
+        independent_q_linear_commutator_odd_part(&model, &k, &q, &amplitude, 1, drive.omega0_ev);
+    assert!(expected.iter().any(|z| z.norm() > 1e-7));
+    for (index, value) in implemented.indexed_iter() {
+        assert!(
+            (*value - expected[index]).norm() < 2e-11,
+            "unequal-centre finite-q mismatch at {index:?}: {value} != {}",
+            expected[index]
+        );
+    }
 }
 
 #[test]
@@ -4208,8 +4256,8 @@ fn floquet_effective_model_spinful_matches_legacy() {
     // Spinful 2D model: the real-space path must be agnostic to the
     // spin structure (blocks are nsta x nsta with nsta = 2·norb).
     let lat = array![[1.0, 0.0], [0.0, 1.0]];
-    let orb = array![[0.0, 0.0], [0.35, 0.2]];
-    let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
+    let orb = array![[0.0, 0.0], [0.35, 0.2], [0.08, -0.03], [0.41, 0.29]];
+    let mut model = Model::<true, 2>::tb_model_with_state_centres(lat, orb, None).unwrap();
     model.set_hop(-1.0, 0, 0, &array![1, 0], None);
     model.set_hop(-0.3, 0, 1, &array![0, 1], SpinDirection::X);
     model.set_hop(
@@ -4237,6 +4285,10 @@ fn floquet_effective_model_spinful_matches_legacy() {
             Some(&FloquetEffectiveOptions::new().with_target_hamR(bessel.hamR.clone())),
         )
         .unwrap();
+    bessel.validate().unwrap();
+    legacy.validate().unwrap();
+    assert_eq!(bessel.orb, model.orb);
+    assert_eq!(legacy.orb, model.orb);
     for k in [[0.1, 0.2], [0.5, 0.5]] {
         let kvec = array![k[0], k[1]];
         let e_b = eigvalsh_v(&bessel.gen_ham(&kvec, Gauge::Lattice), UPLO::Lower).unwrap();
@@ -4950,11 +5002,13 @@ fn link_validation_projects_each_exact_displacement_once() {
     );
 
     // Unequal displacement bits must not be merged through a tolerance.
-    let mut nearby = model.clone();
-    nearby.orb[[1, 0]] = f64::EPSILON;
-    LINK_RESOLVABILITY_SCANS.with(|count| count.set(0));
-    validate_link_resolvability(&nearby, &drive, -4, 4).unwrap();
-    assert_eq!(LINK_RESOLVABILITY_SCANS.with(|count| count.get()), 6);
+    for state in [1, 3] {
+        let mut nearby = model.clone();
+        nearby.orb[[state, 0]] = f64::EPSILON;
+        LINK_RESOLVABILITY_SCANS.with(|count| count.set(0));
+        validate_link_resolvability(&nearby, &drive, -4, 4).unwrap();
+        assert_eq!(LINK_RESOLVABILITY_SCANS.with(|count| count.get()), 6);
+    }
 
     // A later hopping with an already-seen d still has to pass the public
     // finite-Hamiltonian check before either constructor scans any link.
@@ -5289,8 +5343,8 @@ fn floquet_model_reuses_real_space_hamiltonian_across_batch_solvers() {
 #[test]
 fn floquet_model_preserves_spinful_layout() {
     let lat = array![[1.0, 0.0], [0.0, 1.0]];
-    let orb = array![[0.0, 0.0], [0.27, 0.19]];
-    let mut model = Model::<true, 2>::tb_model(lat, orb, None).unwrap();
+    let orb = array![[0.0, 0.0], [0.27, 0.19], [0.12, -0.08], [0.21, 0.31]];
+    let mut model = Model::<true, 2>::tb_model_with_state_centres(lat, orb, None).unwrap();
     model.set_hop(0.3_f64, 0, 0, &arr1(&[0isize, 0]), crate::SpinDirection::Z);
     model.add_hop(0.2_f64, 0, 0, &arr1(&[0isize, 0]), crate::SpinDirection::X);
     model.set_hop(-0.9_f64, 0, 1, &arr1(&[1isize, 0]), None);
@@ -5305,7 +5359,42 @@ fn floquet_model_preserves_spinful_layout() {
     );
     let trunc = FloquetTruncation::new(1);
     let k = arr1(&[0.17, 0.29]);
+    let cache = model.floquet_harmonic_cache(
+        &drive,
+        -2,
+        2,
+        &PeierlsFourierMethod::Bessel {
+            cutoff_margin: BESSEL_CUTOFF_MARGIN,
+        },
+    );
+    for n in -2..=2 {
+        let actual = model.floquet_cached_harmonic_onek(&k, n, Gauge::Lattice, &cache);
+        let expected = independent_dressed_harmonic(&model, &[k[0], k[1]], &drive, n, 256);
+        if n == 1 {
+            assert!(
+                expected[[0, 2]].norm() > 1e-4,
+                "onsite spin flip must have sidebands"
+            );
+        }
+        for (index, value) in actual.indexed_iter() {
+            assert!(
+                (*value - expected[index]).norm() < 1e-12,
+                "harmonic {n}, {index:?}"
+            );
+        }
+    }
     let floquet_model = model.floquet_model(&drive, &trunc).unwrap();
+    floquet_model.validate().unwrap();
+    for spin in 0..2 {
+        for sector in 0..3 {
+            for orbital in 0..2 {
+                assert_eq!(
+                    floquet_model.orb.row(spin * 6 + sector * 2 + orbital),
+                    model.orb.row(spin * 2 + orbital)
+                );
+            }
+        }
+    }
 
     assert_eq!(
         floquet_model.norb(),
@@ -5661,15 +5750,14 @@ fn decompose_two_band(h: &Array2<Complex<f64>>) -> (f64, [f64; 3]) {
 /// trapezoidal integration of H(k,t) = Σ_R t(R) e^{i2πk·R} e^{−i a(t)·d_R}
 /// over one period, with a(t) reconstructed from the drive modes.  Shares
 /// no code with the Bessel / convolution / commutator machinery under test.
-fn independent_dressed_harmonic(
-    model: &Model<false, 2, NoRMatrix>,
+fn independent_dressed_harmonic<const SPIN: bool>(
+    model: &Model<SPIN, 2, NoRMatrix>,
     k: &[f64; 2],
     drive: &FloquetDrive,
     n: isize,
     n_time: usize,
 ) -> Array2<Complex<f64>> {
     let nsta = model.nsta();
-    let norb = model.norb();
     let mut h_n = Array2::<Complex<f64>>::zeros((nsta, nsta));
     for it in 0..n_time {
         let theta = TAU * (it as f64) / (n_time as f64);
@@ -5694,8 +5782,7 @@ fn independent_dressed_harmonic(
                     for c in 0..2 {
                         let mut acc = 0.0;
                         for b in 0..2 {
-                            let frac =
-                                r[b] as f64 + model.orb[[j % norb, b]] - model.orb[[i % norb, b]];
+                            let frac = r[b] as f64 + model.orb[[j, b]] - model.orb[[i, b]];
                             acc += frac * model.lat[[b, c]];
                         }
                         d[c] = acc;

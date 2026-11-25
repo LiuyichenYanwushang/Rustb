@@ -4,6 +4,26 @@
 
 ### Breaking changes
 
+- `Model::orb` now holds one fractional centre per basis state: `norb` rows for
+  a spinless model and `2 * norb` spin-major rows for a spinful one. Previously
+  a spinful model stored only the `norb` spin-up centres and reused them for the
+  down block, which silently discarded asymmetric centres. `norb()` and
+  `nsta()` keep their meanings, and `tb_model(lat, orb, atom)` still accepts the
+  common `norb` centres and copies them into both blocks. Use
+  `Model::tb_model_with_state_centres` to supply distinct up and down centres;
+  `Wannier90::from_hr` now imports every `_centres.xyz` centre instead of
+  truncating the second half, and `SurfGreen::orb` likewise stores `nsta`
+  centres. Deserializing a model written before this change reports that
+  compact spinor centre tables are unsupported instead of failing a generic
+  shape check.
+- `cut_dot` rejects an explicit `dir` for a 2D model instead of silently
+  ignoring it; 3D models keep the documented `[0, 1]` default.
+- Automatic localized-basis providers (`ScalarSiteBasis`,
+  `AtomicOrbitalBasis`, `CenterResolvedBasis`) describe one cell sector per
+  paired orbital slot and reject a slot whose up and down centres differ by a
+  nonzero lattice vector, instead of analysing a mis-shifted action. Use one
+  shared cell representative per slot for symmetry and irrep workflows.
+
 - Remove `Model::from_hr_with_rmatrix`. Import the `Wannier90` trait and use
   `Model::<SPIN, 3, HasRMatrix>::from_hr` to load `_r.dat`.
 - `FloquetTruncation::new(n_max, n_time)` is now `FloquetTruncation::new(n_max)`.
@@ -57,8 +77,8 @@
   with Cartesian rotation, operation translation, explicit cell shifts, and
   antiunitary conjugation. Hermiticity is restored, and newly generated support
   receives projected position blocks. Final centres come from the real onsite
-  `r` diagonal in the same cell representative (no wrapping); shared spinful
-  centres must agree with both spin-major blocks. Rustb re-resolves actions on
+  `r` diagonal in the same cell representative (no wrapping), and each spin-major
+  state adopts its own diagonal, so the two blocks may differ. Rustb re-resolves actions on
   the final models and checks covariance of both `H` and `r`. Failure leaves the
   inputs unchanged. Position covariance and centre consistency use the position
   tolerance (or `symprec`) in Å. `NoRMatrix` skips the position-matrix checks.

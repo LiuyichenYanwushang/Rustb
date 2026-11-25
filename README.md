@@ -144,6 +144,14 @@ model.set_onsite(&arr1(&[0.5, -0.5]), None);
 model.add_hop(0.2, 0, 0, &array![1, 0], SpinDirection::Z);
 ```
 
+`Model::orb` always stores one fractional centre per basis state, so a spinful
+model has `2 * norb` rows in `(all spin-up states, all spin-down states)` order
+while `norb()` still counts the paired orbital labels and `nsta()` counts states.
+`tb_model(lat, orb, atom)` takes the common `norb` centres and copies them into
+both blocks; use `tb_model_with_state_centres(lat, orb, atom)` to keep distinct
+up and down Wannier centres. Atom ownership, `orb_projection`, and hopping
+blocks remain defined on paired orbital indices.
+
 `model.build_spin_matrix(SpinDirection::Z)` returns the spin operator
 `S_z / ℏ = σ_z ⊗ I_norb / 2` as an `Array2<Complex<f64>>`, ordered as all
 spin-up orbitals followed by all spin-down orbitals. This method is available

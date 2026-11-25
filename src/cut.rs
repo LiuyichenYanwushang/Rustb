@@ -74,6 +74,10 @@ pub trait CutModel {
 
     /// Cut a shaped dot or edge from the model.
     ///
+    /// Atom-owned slots follow the atom selection. In an orbital-only model,
+    /// the first/up centre selects a paired slot; both spin states are retained
+    /// or removed together without replacing their independent centres.
+    ///
     /// # Parameters
     ///
     /// - `num`: size parameter controlling the number of unit cells.
@@ -82,13 +86,15 @@ pub trait CutModel {
     ///   - `4`: square.
     ///   - `6`: hexagonal.
     ///   - `8`: octagonal.
-    /// - `dir`: for 3D models, the two in-plane directions.  For 2D models,
-    ///   `None` uses directions 0 and 1.
+    /// - `dir`: for 3D models, the two in-plane directions; `None` selects
+    ///   `[0, 1]`. A 2D model always uses both in-plane directions and rejects
+    ///   an explicit `dir` instead of ignoring it.
     ///
     /// # Errors
     ///
     /// - [`TbError::InvalidDimension`] if dimension is not 2 or 3.
     /// - [`TbError::InvalidShape`] if shape is not 3, 4, 6, or 8.
+    /// - [`TbError::Other`] for repeated directions or a 2D `dir` argument.
     fn cut_dot(&self, num: usize, shape: usize, dir: Option<Vec<usize>>) -> Result<Self>
     where
         Self: Sized;
@@ -162,8 +168,9 @@ fn select_atoms_and_orbitals<const SPIN: bool, const DIM: usize, R: RMatrixData>
     }
 
     if model.atoms.is_empty() {
-        // Orbital-only models are cut according to their own
-        // Wannier-center positions.
+        // Orbital-only models select paired slots using their first/up
+        // centre. The corresponding down state follows that same decision,
+        // retaining its own centre even if it lies across the shape boundary.
         for (orbital, owner) in owners.iter().enumerate() {
             debug_assert!(owner.is_none());
             if position_is_inside_shape(
@@ -228,7 +235,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 dim: self.dim_r(),
             });
         }
-        let mut new_orb = Array2::<f64>::zeros((self.norb() * num, self.dim_r()));
+        let mut new_orb = Array2::<f64>::zeros((self.nsta() * num, self.dim_r()));
         let mut new_orb_proj = Vec::new();
         let mut new_atom = Vec::new();
         let new_norb = self.norb() * num;
@@ -240,10 +247,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .assign(&(self.lat.row(dir).to_owned() * (num as f64)));
         for i in 0..num {
             for n in 0..self.norb() {
-                let mut use_orb = self.orb.row(n).to_owned();
-                use_orb[[dir]] += i as f64;
-                use_orb[[dir]] = use_orb[[dir]] / (num as f64);
-                new_orb.row_mut(i * self.norb() + n).assign(&use_orb);
+                for spin in 0..if SPIN { 2 } else { 1 } {
+                    let mut use_orb = self.orb.row(n + spin * self.norb()).to_owned();
+                    use_orb[[dir]] = (use_orb[[dir]] + i as f64) / num as f64;
+                    new_orb
+                        .row_mut(spin * new_norb + i * self.norb() + n)
+                        .assign(&use_orb);
+                }
                 new_orb_proj.push(self.orb_projection[n]);
             }
             for n in 0..self.natom() {
@@ -400,9 +410,14 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
         // Each layer shifts the orbital's Cartesian position by the layer
         // displacement along dir; the position-matrix diagonal must follow.
-        // New orbital order: (layer, source orbital) — layer i, orbital s
-        // at index i*norb + s, so source repeats per layer.
-        let source: Vec<usize> = (0..num).flat_map(|_| 0..self.norb()).collect();
+        // State order is (spin, layer, source orbital).
+        let source: Vec<usize> = (0..if SPIN { 2 } else { 1 })
+            .flat_map(|spin| {
+                (0..num).flat_map(move |_| {
+                    (0..self.norb()).map(move |orbital| orbital + spin * self.norb())
+                })
+            })
+            .collect();
         crate::model::supercell::set_rmatrix_diagonal_with_displacement::<DIM>(
             &mut new_rmatrix,
             &new_hamR,
@@ -412,7 +427,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             &self.lat,
             &crate::model::supercell::rmatrix_diagonal_cartesian(self),
             &source,
-            SPIN,
         );
         let model = Self {
             lat: new_lat,
@@ -434,256 +448,53 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         dir: Option<Vec<usize>>,
     ) -> Result<Model<SPIN, DIM, R>> {
         self.validate()?;
-        match self.dim_r() {
-            3 => {
-                let dir = if dir == None {
-                    eprintln!(
-                        "Wrong!, the dir is None, but model's dimension is 3, here we use default 0,1 direction"
-                    );
-                    let dir = vec![0, 1];
-                    dir
-                } else {
-                    dir.unwrap()
-                };
-                let (old_model, use_orb_item, use_atom_item) = {
-                    let model_1 = self.cut_piece(num + 1, dir[0])?;
-                    let model_2 = model_1.cut_piece(num + 1, dir[1])?;
-                    let (use_orb_item, use_atom_item) =
-                        select_atoms_and_orbitals(&model_2, num, shape, [dir[0], dir[1]], true)?;
-                    (model_2, use_orb_item, use_atom_item)
-                };
-                let norb = use_orb_item.len();
-                let mut new_atom = Vec::new();
-                let mut new_orb = Array2::<f64>::zeros((norb, self.dim_r()));
-                let mut new_orb_proj = Vec::new();
-                let mut old_to_new = vec![None; old_model.norb()];
-                for (new, &old) in use_orb_item.iter().enumerate() {
-                    old_to_new[old] = Some(OrbitalId::new(new));
-                }
-                for use_i in &use_atom_item {
-                    let mut atom = old_model.atoms[*use_i].clone();
-                    atom.set_orbitals(
-                        atom.orbitals()
-                            .iter()
-                            .filter_map(|id| old_to_new[id.index()])
-                            .collect(),
-                    );
-                    new_atom.push(atom);
-                }
-                for (i, use_i) in use_orb_item.iter().enumerate() {
-                    new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
-                    new_orb_proj.push(old_model.orb_projection[*use_i])
-                }
-                // nrows() is the orbital count; len() would count all
-                // matrix elements (norb * DIM).
-                let new_nsta = if SPIN {
-                    new_orb.nrows() * 2
-                } else {
-                    new_orb.nrows()
-                };
-                let n_R = old_model.hamR.len_of(Axis(0));
-                let new_ham = Array3::<Complex<f64>>::zeros((n_R, new_nsta, new_nsta));
-                let new_hamR = Array2::<isize>::zeros((0, self.dim_r()));
-
-                let mut new_model = Self {
-                    lat: old_model.lat.clone(),
-                    orb: new_orb,
-                    orb_projection: new_orb_proj,
-                    atoms: new_atom,
-                    ham: new_ham,
-                    hamR: new_hamR,
-                    rmatrix: R::from_array(Array4::zeros((n_R, self.dim_r(), new_nsta, new_nsta))),
-                };
-
-                let norb = new_model.norb();
-
-                if SPIN {
-                    let norb2 = old_model.norb();
-                    for (r, R) in old_model.hamR.axis_iter(Axis(0)).enumerate() {
-                        new_model.hamR.push_row(R)?;
-                        for (i, use_i) in use_orb_item.iter().enumerate() {
-                            for (j, use_j) in use_orb_item.iter().enumerate() {
-                                new_model.ham[[r, i, j]] = old_model.ham[[r, *use_i, *use_j]];
-                                new_model.ham[[r, i + norb, j + norb]] =
-                                    old_model.ham[[r, *use_i + norb2, *use_j + norb2]];
-                                new_model.ham[[r, i + norb, j]] =
-                                    old_model.ham[[r, *use_i + norb2, *use_j]];
-                                new_model.ham[[r, i, j + norb]] =
-                                    old_model.ham[[r, *use_i, *use_j + norb2]];
-                            }
-                        }
-                    }
-                } else {
-                    for (r, R) in old_model.hamR.axis_iter(Axis(0)).enumerate() {
-                        new_model.hamR.push_row(R)?;
-                        for (i, use_i) in use_orb_item.iter().enumerate() {
-                            for (j, use_j) in use_orb_item.iter().enumerate() {
-                                new_model.ham[[r, i, j]] = old_model.ham[[r, *use_i, *use_j]];
-                            }
-                        }
-                    }
-                }
-                if <R as RMatrixData>::HAS_RMATRIX {
-                    let _nsta = new_model.nsta();
-                    let mut new_rmatrix = Array4::<Complex<f64>>::zeros((
-                        n_R,
-                        self.dim_r(),
-                        new_model.nsta(),
-                        new_model.nsta(),
-                    ));
-                    if SPIN {
-                        let norb2 = old_model.norb();
-                        for r in 0..n_R {
-                            for dim in 0..self.dim_r() {
-                                for (i, use_i) in use_orb_item.iter().enumerate() {
-                                    for (j, use_j) in use_orb_item.iter().enumerate() {
-                                        new_rmatrix[[r, dim, i, j]] =
-                                            old_model.rmatrix.as_array4()[[r, dim, *use_i, *use_j]];
-                                        new_rmatrix[[r, dim, i + norb, j + norb]] = old_model
-                                            .rmatrix
-                                            .as_array4()[[r, dim, *use_i + norb2, *use_j + norb2]];
-                                        new_rmatrix[[r, dim, i + norb, j]] = old_model
-                                            .rmatrix
-                                            .as_array4()[[r, dim, *use_i + norb2, *use_j]];
-                                        new_rmatrix[[r, dim, i, j + norb]] = old_model
-                                            .rmatrix
-                                            .as_array4()[[r, dim, *use_i, *use_j + norb2]];
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        for r in 0..n_R {
-                            for dim in 0..self.dim_r() {
-                                for (i, use_i) in use_orb_item.iter().enumerate() {
-                                    for (j, use_j) in use_orb_item.iter().enumerate() {
-                                        new_rmatrix[[r, dim, i, j]] =
-                                            old_model.rmatrix.as_array4()[[r, dim, *use_i, *use_j]];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    new_model.rmatrix = R::from_array(new_rmatrix);
-                }
-                // The shape cut can select zero orbitals; reject that
-                // explicitly instead of returning an invalid empty model.
-                new_model.validate()?;
-                return Ok(new_model);
-            }
+        let directions = match DIM {
             2 => {
-                if dir != None {
-                    eprintln!(
-                        "Wrong!, the dimension of model is 2, but the dir is not None, you should give None!, here we use 0,1 direction"
-                    );
-                }
-
-                let (old_model, use_orb_item, use_atom_item) = {
-                    let model_1 = self.cut_piece(num + 1, 0)?;
-                    let model_2 = model_1.cut_piece(num + 1, 1)?;
-                    let (use_orb_item, use_atom_item) =
-                        select_atoms_and_orbitals(&model_2, num, shape, [0, 1], false)?;
-                    (model_2, use_orb_item, use_atom_item)
-                };
-                let norb = use_orb_item.len();
-                let mut new_atom = Vec::new();
-                let mut new_orb = Array2::<f64>::zeros((norb, self.dim_r()));
-                let mut new_orb_proj = Vec::new();
-                let mut old_to_new = vec![None; old_model.norb()];
-                for (new, &old) in use_orb_item.iter().enumerate() {
-                    old_to_new[old] = Some(OrbitalId::new(new));
-                }
-                for use_i in &use_atom_item {
-                    let mut atom = old_model.atoms[*use_i].clone();
-                    atom.set_orbitals(
-                        atom.orbitals()
-                            .iter()
-                            .filter_map(|id| old_to_new[id.index()])
-                            .collect(),
-                    );
-                    new_atom.push(atom);
-                }
-                for (i, use_i) in use_orb_item.iter().enumerate() {
-                    new_orb.row_mut(i).assign(&old_model.orb.row(*use_i));
-                    new_orb_proj.push(old_model.orb_projection[*use_i])
-                }
-                let mut new_model = Self::tb_model(old_model.lat.clone(), new_orb, Some(new_atom))?;
-                new_model.orb_projection = new_orb_proj;
-                let n_R = new_model.hamR.len_of(Axis(0));
-                let mut new_ham =
-                    Array3::<Complex<f64>>::zeros((n_R, new_model.nsta(), new_model.nsta()));
-                let new_hamR = Array2::<isize>::zeros((1, self.dim_r()));
-                let norb = new_model.norb();
-                let _nsta = new_model.nsta();
-
-                if SPIN {
-                    let norb2 = old_model.norb();
-                    for (i, use_i) in use_orb_item.iter().enumerate() {
-                        for (j, use_j) in use_orb_item.iter().enumerate() {
-                            new_ham[[0, i, j]] = old_model.ham[[0, *use_i, *use_j]];
-                            new_ham[[0, i + norb, j + norb]] =
-                                old_model.ham[[0, *use_i + norb2, *use_j + norb2]];
-                            new_ham[[0, i + norb, j]] = old_model.ham[[0, *use_i + norb2, *use_j]];
-                            new_ham[[0, i, j + norb]] = old_model.ham[[0, *use_i, *use_j + norb2]];
-                        }
-                    }
-                } else {
-                    for (i, use_i) in use_orb_item.iter().enumerate() {
-                        for (j, use_j) in use_orb_item.iter().enumerate() {
-                            new_ham[[0, i, j]] = old_model.ham[[0, *use_i, *use_j]];
-                        }
-                    }
-                }
-                new_model.ham = new_ham;
-                new_model.hamR = new_hamR;
-                if <R as RMatrixData>::HAS_RMATRIX {
-                    let mut new_rmatrix = Array4::<Complex<f64>>::zeros((
-                        n_R,
-                        self.dim_r(),
-                        new_model.nsta(),
-                        new_model.nsta(),
+                if dir.is_some() {
+                    return Err(TbError::Other(
+                        "cut_dot uses both in-plane directions for 2D models; remove dir".into(),
                     ));
-                    if SPIN {
-                        let norb2 = old_model.norb();
-                        for dim in 0..self.dim_r() {
-                            for (i, use_i) in use_orb_item.iter().enumerate() {
-                                for (j, use_j) in use_orb_item.iter().enumerate() {
-                                    new_rmatrix[[0, dim, i, j]] =
-                                        old_model.rmatrix.as_array4()[[0, dim, *use_i, *use_j]];
-                                    new_rmatrix[[0, dim, i + norb, j + norb]] = old_model
-                                        .rmatrix
-                                        .as_array4()[[0, dim, *use_i + norb2, *use_j + norb2]];
-                                    new_rmatrix[[0, dim, i + norb, j]] = old_model
-                                        .rmatrix
-                                        .as_array4()[[0, dim, *use_i + norb2, *use_j]];
-                                    new_rmatrix[[0, dim, i, j + norb]] = old_model
-                                        .rmatrix
-                                        .as_array4()[[0, dim, *use_i, *use_j + norb2]];
-                                }
-                            }
-                        }
-                    } else {
-                        for dim in 0..self.dim_r() {
-                            for (i, use_i) in use_orb_item.iter().enumerate() {
-                                for (j, use_j) in use_orb_item.iter().enumerate() {
-                                    new_rmatrix[[0, dim, i, j]] =
-                                        old_model.rmatrix.as_array4()[[0, dim, *use_i, *use_j]];
-                                }
-                            }
-                        }
-                    }
-                    new_model.rmatrix = R::from_array(new_rmatrix);
                 }
-                new_model.validate()?;
-                return Ok(new_model);
+                [0, 1]
+            }
+            3 => {
+                let dir = dir.unwrap_or_else(|| vec![0, 1]);
+                if dir.len() != 2 || dir[0] == dir[1] {
+                    return Err(TbError::Other(
+                        "cut_dot requires two distinct directions".into(),
+                    ));
+                }
+                [dir[0], dir[1]]
             }
             _ => {
                 return Err(TbError::InvalidDimension {
-                    dim: self.dim_r(),
+                    dim: DIM,
                     supported: vec![2, 3],
                 });
             }
+        };
+        let layers = num
+            .checked_add(1)
+            .ok_or(TbError::InvalidSupercellSize(num))?;
+        let mut model = self
+            .cut_piece(layers, directions[0])?
+            .cut_piece(layers, directions[1])?;
+        let (orbitals, atoms) =
+            select_atoms_and_orbitals(&model, num, shape, directions, DIM == 3)?;
+        if orbitals.is_empty() {
+            return Err(TbError::NoOrbitals);
         }
+        // Reuse the paired-state selection used by every structural removal;
+        // keep selected empty atoms as structural sites as well.
+        let removed_atoms = (0..model.natom())
+            .filter(|index| atoms.binary_search(index).is_err())
+            .collect::<Vec<_>>();
+        let removed_orbitals = (0..model.norb())
+            .filter(|index| orbitals.binary_search(index).is_err())
+            .collect::<Vec<_>>();
+        model.remove_atoms_only(&removed_atoms)?;
+        model.remove_orb(&removed_orbitals)?;
+        Ok(model)
     }
 }
 
@@ -694,6 +505,103 @@ mod ownership_tests {
     use crate::HasRMatrix;
 
     use ndarray::array;
+
+    fn check_asymmetric_cut<R: RMatrixData>() {
+        for with_atoms in [false, true] {
+            let mut model = Model::<true, 1, R>::tb_model_with_state_centres(
+                array![[2.0]],
+                array![[1.1], [-0.2]],
+                with_atoms.then(|| {
+                    vec![Atom::with_orbitals(
+                        array![0.15],
+                        AtomType::C,
+                        [OrbitalId::new(0)],
+                    )]
+                }),
+            )
+            .unwrap();
+            let hopping = Complex::new(0.4, 0.2);
+            model.add_element(hopping, 0, 1, &array![0]).unwrap();
+            if R::HAS_RMATRIX {
+                model.rmatrix.as_array4_mut()[[0, 0, 0, 1]] = hopping;
+                model.rmatrix.as_array4_mut()[[0, 0, 1, 0]] = hopping.conj();
+            }
+            let cut = model.cut_piece(3, 0).unwrap();
+            assert_eq!((cut.norb(), cut.nsta(), cut.orb.nrows()), (3, 6, 6));
+            assert_eq!(cut.natom(), if with_atoms { 3 } else { 0 });
+            let down = if with_atoms { -0.2 } else { 0.8 };
+            for layer in 0..3 {
+                assert!((cut.orb[[layer, 0]] - (0.1 + layer as f64) / 3.0).abs() < 1e-12);
+                assert!((cut.orb[[3 + layer, 0]] - (down + layer as f64) / 3.0).abs() < 1e-12);
+            }
+            let shift = if with_atoms { 1 } else { 2 };
+            for i in 0..3 {
+                for j in 0..3 {
+                    let expected = if i == j + shift {
+                        hopping
+                    } else {
+                        Complex::new(0.0, 0.0)
+                    };
+                    assert_eq!(cut.ham[[0, i, j + 3]], expected);
+                    assert_eq!(cut.ham[[0, j + 3, i]], expected.conj());
+                    if R::HAS_RMATRIX {
+                        assert_eq!(cut.rmatrix.as_array4()[[0, 0, i, j + 3]], expected);
+                    }
+                }
+            }
+            if R::HAS_RMATRIX {
+                for state in 0..6 {
+                    assert!(
+                        (cut.rmatrix.as_array4()[[0, 0, state, state]].re
+                            - 6.0 * cut.orb[[state, 0]])
+                        .abs()
+                            < 1e-12
+                    );
+                }
+            }
+            cut.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn cuts_preserve_asymmetric_centres_and_state_specific_cell_shifts() {
+        check_asymmetric_cut::<crate::NoRMatrix>();
+        check_asymmetric_cut::<HasRMatrix>();
+    }
+
+    #[test]
+    fn dot_selects_paired_slots_without_discarding_down_centres() {
+        let model = Model::<true, 2, HasRMatrix>::tb_model_with_state_centres(
+            Array2::eye(2),
+            array![[0.4, 0.4], [0.8, 0.8]],
+            None,
+        )
+        .unwrap();
+        let dot = model.cut_dot(1, 3, None).unwrap();
+        assert_eq!(dot.orb, array![[0.2, 0.2], [0.4, 0.4]]);
+        assert_eq!((dot.norb(), dot.nsta()), (1, 2));
+        assert_eq!(
+            dot.rmatrix.as_array4()[[0, 0, 1, 1]],
+            Complex::new(0.8, 0.0)
+        );
+        dot.validate().unwrap();
+
+        let model = Model::<true, 3, HasRMatrix>::tb_model_with_state_centres(
+            Array2::eye(3),
+            array![[0.1, 0.1, 0.2], [0.9, 0.9, 0.3]],
+            Some(vec![Atom::with_orbitals(
+                array![0.2, 0.2, 0.2],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]),
+        )
+        .unwrap();
+        let dot = model.cut_dot(1, 4, Some(vec![0, 1])).unwrap();
+        let expected = array![[0.05, 0.05, 0.2], [-0.05, -0.05, 0.3]];
+        assert!((&dot.orb - &expected).iter().all(|x| x.abs() < 1e-12));
+        assert_eq!((dot.norb(), dot.nsta(), dot.natom()), (1, 2, 1));
+        dot.validate().unwrap();
+    }
 
     #[test]
     fn three_dimensional_cut_dot_selects_orbitals() {
@@ -758,6 +666,15 @@ mod ownership_tests {
         model.add_hop(-1.0, 0, 0, &array![1, 0, 0], None);
         let result = model.cut_dot(1, 3, Some(vec![0, 1]));
         assert!(matches!(result, Err(TbError::NoOrbitals)));
+    }
+
+    #[test]
+    fn cut_dot_rejects_an_explicit_direction_for_2d_models() {
+        let model =
+            Model::<false, 2>::tb_model(array![[1.0, 0.0], [0.0, 1.0]], array![[0.0, 0.0]], None)
+                .unwrap();
+        let error = model.cut_dot(1, 4, Some(vec![0, 1])).unwrap_err();
+        assert!(error.to_string().contains("2D"), "{error}");
     }
 
     #[test]

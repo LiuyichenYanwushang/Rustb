@@ -54,7 +54,14 @@ let spinful = Model::<true, 2>::tb_model(lat, orb, None)?;
 ```
 
 `lat` is a square `DIM × DIM` matrix whose rows are real-space lattice
-vectors. Each row of `orb` is an orbital position in fractional coordinates.
+vectors. `orb` holds one fractional centre per basis state: `norb` rows when
+spinless and `2 * norb` spin-major rows when spinful. `tb_model` therefore takes
+common centres and copies them; `tb_model_with_state_centres` takes all state
+rows so that up and down Wannier centres may differ. `norb()` still counts the
+paired orbital labels used by atoms and `orb_projection`. Symmetry and irrep
+bases additionally require both spin blocks of a paired slot to share one
+integer cell representative; a nonzero lattice-vector offset between them is
+rejected instead of analysed.
 
 ### Collinear spin channels
 
@@ -295,6 +302,7 @@ let atoms = model.natom();
 let reciprocal_lattice = model.rec_lat()?;
 
 let lattice = &model.lat;
+// One row per state: `nsta` rows, spin-major when spinful.
 let positions = &model.orb;
 let hopping_vectors = &model.hamR;
 let hopping_blocks = &model.ham;
@@ -1844,8 +1852,8 @@ For groups with channel swaps, each fractional component of the difference
 between corresponding centres must be smaller than half a cell in magnitude.
 The centre fit searches the rounded fractional image and its 26 neighbours;
 reduce highly skew lattice bases first if that stencil misses nearby images.
-Each shared centre in a spinful model is checked against both spin-major
-blocks. Rustb re-resolves the localized actions on the final model or pair
+Every spin-major state centre in a spinful model is checked against its own
+onsite diagonal, so the two blocks may differ. Rustb re-resolves the localized actions on the final model or pair
 and checks real-space covariance of both `H` and `r` for every target
 operation. If action resolution, centre consistency, or covariance fails, the
 call returns an error. The input models are unchanged on success and error.

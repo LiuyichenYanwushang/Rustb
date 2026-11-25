@@ -40,8 +40,8 @@
 //! e^{2\pi i\mathbf{k}_\parallel\cdot\mathbf{R}_\parallel}.
 //! ```
 //!
-//! Both blocks are returned in the atom-position gauge. For orbital positions
-//! $\boldsymbol{\tau}_m$, the applied gauge transformation is
+//! Both blocks are returned in the atom-position gauge. Every basis state uses
+//! its own stored centre $\boldsymbol{\tau}_m$, so the gauge transformation is
 //!
 //! ```math
 //! H_{mn}\longmapsto
@@ -182,7 +182,6 @@ use crate::kpoints::gen_kmesh;
 pub use crate::model::utils::{remove_col, remove_row};
 use gnuplot::Major;
 use gnuplot::{Auto, AutoOption::Fix, AxesCommon, Custom, Figure, Font};
-use ndarray::concatenate;
 use ndarray::prelude::*;
 use ndarray::*;
 use ndarray_linalg::conjugate;
@@ -210,7 +209,9 @@ pub struct SurfGreen {
     pub spin: bool,
     /// - The lattice vector of the model, a dim_r$\times$dim_r matrix, the axis0 direction stores a 1$\times$dim_r lattice vector.
     pub lat: Array2<f64>,
-    /// - The position of the orbitals in the model. We use fractional coordinates uniformly.
+    /// - The fractional centres of the surface states, one row per state in
+    ///   spin-major `nsta` order. Unlike the paired orbital metadata, this keeps
+    ///   the two spin blocks' independent Wannier centres.
     pub orb: Array2<f64>,
     /// - The position of the atoms in the model, also in fractional coordinates.
     pub atom: Array2<f64>,
@@ -242,9 +243,8 @@ impl SurfGreen {
     ///
     /// This method is generic over the const parameter `SPIN`, which
     /// determines whether spin is enabled. The `SurfGreen::spin` field is
-    /// set from this const generic (`spin = SPIN`), and the internal
-    /// Hamiltonian construction (`orb_phase` doubling, etc.) uses it at
-    /// runtime.
+    /// set from this const generic (`spin = SPIN`). `orb` keeps one centre per
+    /// state, so the phases are built directly without duplicating a block.
     ///
     /// `dir` specifies the surface normal direction.
     ///
@@ -358,16 +358,11 @@ impl SurfGreen {
         if kvec.iter().any(|x| !x.is_finite()) {
             return Err(surface_error("kvec", "components must be finite"));
         }
-        // Orbital gauge phases: exp(i 2π τ·k)
+        // State gauge phases: exp(i 2π τ·k), one centre per stored state.
         let orb_phase: Array1<Complex<f64>> = self
             .orb
             .dot(kvec)
             .mapv(|p| Complex::new(0.0, 2.0 * PI * p).exp());
-        let orb_phase = if self.spin {
-            concatenate![Axis(0), orb_phase, orb_phase]
-        } else {
-            orb_phase
-        };
         // R-space phases for ham_bulk and ham_hop
         let U0 = (self.ham_bulkR.map(|x| *x as f64))
             .dot(kvec)
@@ -413,7 +408,7 @@ impl SurfGreen {
         }
         if self.norb == 0
             || self.norb.checked_mul(if self.spin { 2 } else { 1 }) != Some(self.nsta)
-            || self.orb.dim() != (self.norb, self.dim_r)
+            || self.orb.dim() != (self.nsta, self.dim_r)
             || self.lat.dim() != (self.dim_r, self.dim_r)
             || self.ham_bulk.dim() != (self.ham_bulkR.nrows(), self.nsta, self.nsta)
             || self.ham_hop.dim() != (self.ham_hopR.nrows(), self.nsta, self.nsta)

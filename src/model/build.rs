@@ -197,7 +197,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///   lattice vector. The dimensionality `DIM` is determined by the
     ///   const generic on [`Model<SPIN, DIM>`] (default: 3).
     /// * `orb` - Orbital positions in fractional coordinates, shape
-    ///   `(norb, DIM)`.
+    ///   `(norb, DIM)`. For spinful models these common centres are explicitly
+    ///   copied into both spin blocks. Use [`Self::tb_model_with_state_centres`]
+    ///   to supply distinct up/down centres; stored `orb` always has `nsta` rows.
     /// * `atom` - Optional explicit list of [`Atom`] objects. `None` creates an
     ///   orbital-only model.
     ///
@@ -249,8 +251,35 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         orb: Array2<f64>,
         atom: Option<Vec<Atom>>,
     ) -> Result<Model<SPIN, DIM, R>> {
-        let norb: usize = orb.len_of(Axis(0));
-        let nsta: usize = if SPIN { 2 * norb } else { norb };
+        let centres = if SPIN {
+            ndarray::concatenate(Axis(0), &[orb.view(), orb.view()])?
+        } else {
+            orb
+        };
+        Self::tb_model_with_state_centres(lat, centres, atom)
+    }
+
+    /// Construct from one fractional centre per basis state, without copying
+    /// or identifying corresponding spin centres. Spinful input has `2 * N`
+    /// rows in `(up_0, ..., up_{N-1}, down_0, ..., down_{N-1})` order.
+    /// Atom orbital IDs and projection labels refer to the `N` paired slots.
+    /// Spinless input has `N` rows, as in [`Self::tb_model`].
+    ///
+    /// The default position matrix uses each state's own Cartesian centre.
+    /// Odd spinful row counts and invalid geometry are rejected.
+    pub fn tb_model_with_state_centres(
+        lat: Array2<f64>,
+        orb: Array2<f64>,
+        atom: Option<Vec<Atom>>,
+    ) -> Result<Model<SPIN, DIM, R>> {
+        let nsta = orb.nrows();
+        if SPIN && nsta % 2 != 0 {
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "spinor_centre_count",
+                message: format!("spinful centres require 2 * N rows, found {nsta}"),
+            });
+        }
+        let norb = if SPIN { nsta / 2 } else { nsta };
         if lat.len_of(Axis(1)) != DIM {
             return Err(TbError::LatticeDimensionError {
                 expected: DIM,

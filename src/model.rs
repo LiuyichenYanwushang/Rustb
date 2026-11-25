@@ -57,6 +57,9 @@ mod wire;
 
 mod operators;
 
+#[cfg(test)]
+mod spinor_centres_tests;
+
 pub use self::access::{AtomView, OrbitalRef};
 pub use self::collinear::CollinearModel;
 pub use self::rmatrix::{HasRMatrix, NoRMatrix, RMatrixData};
@@ -96,6 +99,9 @@ pub const ORBITAL_ATOM_POSITION_TOLERANCE: f64 = 0.1;
 #[derive(Clone, Debug)]
 pub struct Model<const SPIN: bool = false, const DIM: usize = 3, R: RMatrixData = NoRMatrix> {
     pub lat: Array2<f64>,
+    /// Fractional centres of every basis state: `(nsta(), DIM)`.
+    /// Spinful rows are ordered as all up states followed by all down states;
+    /// corresponding states share orbital IDs and projections, not centres.
     pub orb: Array2<f64>,
     pub orb_projection: Vec<OrbProj>,
     pub atoms: Vec<Atom>,
@@ -139,13 +145,19 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     pub fn natom(&self) -> usize {
         self.atoms.len()
     }
+    /// Number of orbital labels (spinful up/down pairs), excluding spin.
     #[inline(always)]
     pub fn norb(&self) -> usize {
-        self.orb.nrows()
+        if SPIN {
+            self.orb.nrows() / 2
+        } else {
+            self.orb.nrows()
+        }
     }
+    /// Number of basis states, each with its own row in [`Self::orb`].
     #[inline(always)]
     pub fn nsta(&self) -> usize {
-        if SPIN { 2 * self.norb() } else { self.norb() }
+        self.orb.nrows()
     }
 }
 

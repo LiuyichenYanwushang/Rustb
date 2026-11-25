@@ -98,9 +98,19 @@ where
     R: RMatrixData + Serialize,
     for<'de> Model<SPIN, 3, R>: Deserialize<'de>,
 {
-    let mut model = Model::<SPIN, 3, R>::tb_model(
+    let centres = if SPIN {
+        array![
+            [0.125, 0.0, 0.0],
+            [0.0, 0.25, 0.0],
+            [0.375, 0.0, 0.5],
+            [0.0, -0.25, 0.0]
+        ]
+    } else {
+        array![[0.125, 0.0, 0.0], [0.0, 0.25, 0.0]]
+    };
+    let mut model = Model::<SPIN, 3, R>::tb_model_with_state_centres(
         Array2::eye(3),
-        array![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        centres,
         Some(vec![Atom::with_orbitals(
             array![0.0, 0.0, 0.0],
             AtomType::C,
@@ -111,11 +121,20 @@ where
     model.atoms[0].set_magnetic_moment([0.0, 0.0, 2.0]).unwrap();
     model.set_hop(Complex::new(0.3, -0.2), 0, 1, &array![1, 0, 0], None);
     model.add_hop(0.7, 0, 1, &array![1, 0, 0], None);
+    if SPIN {
+        model.set_hop(0.4, 0, 1, &array![0, 0, 0], SpinDirection::Y);
+    }
+    if R::HAS_RMATRIX {
+        let last = model.nsta() - 1;
+        model.rmatrix.as_array4_mut()[[0, 1, 0, last]] = Complex::new(0.2, -0.3);
+        model.rmatrix.as_array4_mut()[[0, 1, last, 0]] = Complex::new(0.2, 0.3);
+    }
 
     let encoded = toml::to_string(&model).unwrap();
     let decoded: Model<SPIN, 3, R> = toml::from_str(&encoded).unwrap();
     decoded.validate().unwrap();
     assert_eq!(decoded.norb(), 2);
+    assert_eq!(decoded.nsta(), if SPIN { 4 } else { 2 });
     assert_eq!(decoded.lat, model.lat);
     assert_eq!(decoded.orb, model.orb);
     assert_eq!(decoded.orb_projection, model.orb_projection);
@@ -161,6 +180,41 @@ fn atom_view_borrows_explicit_non_contiguous_orbitals() {
 }
 
 #[test]
+fn spinful_orbital_access_uses_paired_slots_and_first_centres() {
+    let mut model = Model::<true, 1>::tb_model_with_state_centres(
+        array![[2.0]],
+        array![[0.125], [0.25], [0.625], [-0.25]],
+        Some(vec![Atom::with_orbitals(
+            array![0.0],
+            AtomType::C,
+            [OrbitalId::new(1), OrbitalId::new(0)],
+        )]),
+    )
+    .unwrap();
+    model.set_projection(&vec![OrbProj::s, OrbProj::pz]);
+    assert_eq!((model.norb(), model.nsta()), (2, 4));
+    let atom = model.atom(AtomId::new(0)).unwrap();
+    assert_eq!(atom.orbitals().len(), 2);
+    assert_eq!(atom.orbitals()[0].position(), array![0.25].view());
+    assert_eq!(atom.orbitals()[0].projection(), &OrbProj::pz);
+    assert_eq!(atom.orbitals()[1].position(), array![0.125].view());
+    assert_eq!(model.orb.row(3), array![-0.25].view());
+    assert_eq!(
+        model.orbital_owners().unwrap(),
+        vec![Some(AtomId::new(0)); 2]
+    );
+    // Even malformed surplus projection labels cannot expose down-state rows
+    // as additional OrbitalIds; the bound is norb(), not orb.nrows().
+    model.orb_projection.extend([OrbProj::px, OrbProj::py]);
+    for index in [2, 3, usize::MAX] {
+        assert!(matches!(
+            model.orbital(OrbitalId::new(index)),
+            Err(TbError::InvalidOrbitalId { index: actual, norb: 2 }) if actual == index
+        ));
+    }
+}
+
+#[test]
 fn orbital_only_model_has_no_fabricated_atoms() {
     let model = Model::<false, 3>::tb_model(Array2::eye(3), array![[0.0, 0.0, 0.0]], None).unwrap();
     assert!(model.atoms.is_empty());
@@ -177,17 +231,21 @@ fn rmatrix_diagonal_is_cartesian_orbital_position() {
     // _r.dat); the default diagonal must equal frac · lat, not the raw
     // fractional coordinates.
     let lat = array![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
-    let orb = array![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]];
-    let model = Model::<true, 3, HasRMatrix>::tb_model(lat, orb, None).unwrap();
+    let orb = array![
+        [0.1, 0.2, 0.3],
+        [0.4, 0.5, 0.6],
+        [0.7, -0.2, 0.9],
+        [1.4, 0.8, 0.0]
+    ];
+    let model = Model::<true, 3, HasRMatrix>::tb_model_with_state_centres(lat, orb, None).unwrap();
     let rmatrix = model.rmatrix.as_array4();
     let cart = model.orb.dot(&model.lat);
     for i in 0..model.nsta() {
-        let s = i % model.norb();
         for axis in 0..3 {
             assert!(
-                (rmatrix[[0, axis, i, i]] - Complex::new(cart[[s, axis]], 0.0)).norm() < 1e-12,
+                (rmatrix[[0, axis, i, i]] - Complex::new(cart[[i, axis]], 0.0)).norm() < 1e-12,
                 "rmatrix diagonal ({i}, {axis}) must equal frac·lat = {}",
-                cart[[s, axis]]
+                cart[[i, axis]]
             );
         }
     }
@@ -392,6 +450,83 @@ fn model_serde_round_trips_all_type_level_storage_combinations() {
     assert_model_round_trip::<true, NoRMatrix>();
     assert_model_round_trip::<false, HasRMatrix>();
     assert_model_round_trip::<true, HasRMatrix>();
+}
+
+#[test]
+fn spinful_common_and_full_state_constructors_are_distinct() {
+    let common = array![[0.125], [0.375]];
+    let duplicated =
+        Model::<true, 1, HasRMatrix>::tb_model(array![[2.0]], common.clone(), None).unwrap();
+    assert_eq!(duplicated.orb, array![[0.125], [0.375], [0.125], [0.375]]);
+    assert_eq!((duplicated.norb(), duplicated.nsta()), (2, 4));
+    let rebuilt = Model::<true, 1, HasRMatrix>::tb_model_with_state_centres(
+        duplicated.lat.clone(),
+        duplicated.orb.clone(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(rebuilt.orb, duplicated.orb);
+    assert_eq!(rebuilt.rmatrix.0, duplicated.rmatrix.0);
+    let spinless =
+        Model::<false, 1>::tb_model_with_state_centres(array![[2.0]], common.clone(), None)
+            .unwrap();
+    assert_eq!(spinless.orb, common);
+    assert_eq!((spinless.norb(), spinless.nsta()), (2, 2));
+}
+
+#[test]
+fn spinful_state_centres_reject_invalid_geometry_and_compact_wire_storage() {
+    let full = array![
+        [0.125, 0.0, 0.0],
+        [0.375, 0.0, 0.0],
+        [0.625, 0.25, 0.0],
+        [-0.125, 0.0, 0.5]
+    ];
+    let valid = Model::<true, 3, HasRMatrix>::tb_model_with_state_centres(
+        Array2::eye(3),
+        full.clone(),
+        None,
+    )
+    .unwrap();
+    let mut bad_down = full.clone();
+    bad_down[[3, 2]] = f64::NAN;
+    for centres in [
+        Array2::zeros((0, 3)),
+        full.slice(s![..3, ..]).to_owned(),
+        Array2::zeros((4, 2)),
+        bad_down,
+    ] {
+        assert!(
+            Model::<true, 3, HasRMatrix>::tb_model_with_state_centres(
+                Array2::eye(3),
+                centres.clone(),
+                None,
+            )
+            .is_err()
+        );
+        let mut malformed = valid.clone();
+        malformed.orb = centres;
+        assert!(malformed.validate().is_err());
+        let encoded = toml::to_string(&malformed).unwrap();
+        assert!(toml::from_str::<Model<true, 3>>(&encoded).is_err());
+        assert!(toml::from_str::<Model<true, 3, HasRMatrix>>(&encoded).is_err());
+    }
+    // Old spinful wire data stored N centres with 2N Hamiltonian states. Even
+    // an even compact row count must fail rather than silently double centres.
+    let mut compact = valid.clone();
+    compact.orb = full.slice(s![..2, ..]).to_owned();
+    for shorten_labels in [false, true] {
+        if shorten_labels {
+            compact.orb_projection.truncate(1);
+        }
+        let encoded = toml::to_string(&compact).unwrap();
+        assert!(toml::from_str::<Model<true, 3>>(&encoded).is_err());
+        assert!(toml::from_str::<Model<true, 3, HasRMatrix>>(&encoded).is_err());
+    }
+    let mut bad_matrix = valid.clone();
+    bad_matrix.rmatrix = HasRMatrix(Array4::zeros((1, 3, 2, 2)));
+    let encoded = toml::to_string(&bad_matrix).unwrap();
+    assert!(toml::from_str::<Model<true, 3, HasRMatrix>>(&encoded).is_err());
 }
 
 #[test]

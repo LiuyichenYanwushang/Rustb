@@ -12,13 +12,16 @@ const QUADRATURE_MAX: isize = 2 * CUTOFF;
 const TOL: f64 = 3e-12;
 
 fn spinful_model<R: RMatrixData>() -> Model<true, 2, R> {
-    let orb = array![[0.13, 0.21], [0.63, 0.08]];
+    // Paired labels share atoms/projections, not up/down Wannier centres.
+    let orb = array![[0.13, 0.21], [0.63, 0.08], [0.19, 0.17], [0.58, 0.16]];
     let mut atoms = vec![
         Atom::with_orbitals(orb.row(0).to_owned(), AtomType::C, [OrbitalId::new(0)]),
         Atom::with_orbitals(orb.row(1).to_owned(), AtomType::O, [OrbitalId::new(1)]),
     ];
     atoms[0].set_magnetic_moment([0.3, -0.1, 0.2]).unwrap();
-    let mut model = Model::tb_model(array![[1.6, 0.4], [-0.3, 1.2]], orb, Some(atoms)).unwrap();
+    let mut model =
+        Model::tb_model_with_state_centres(array![[1.6, 0.4], [-0.3, 1.2]], orb, Some(atoms))
+            .unwrap();
     model.orb_projection = vec![OrbProj::s, OrbProj::px];
     model.set_onsite(&array![0.6, -0.44], None);
     model.add_onsite(&array![-0.19, 0.12], SpinDirection::Z);
@@ -72,11 +75,11 @@ fn quadrature(model: &Model<true, 2, HasRMatrix>, drive: &FloquetDrive) -> Vec<A
                 let translation: f64 = (0..2)
                     .map(|f| model.hamR[[r, f]] as f64 * model.lat[[f, axis]])
                     .sum();
-                let d = translation + centers[[j % 2, axis]] - centers[[i % 2, axis]];
+                let d = translation + centers[[j, axis]] - centers[[i, axis]];
                 phase -= a[axis] * d;
                 let mut y = model.rmatrix[[r, axis, i, j]];
                 if model.hamR.row(r) == array![0, 0] && i == j {
-                    y -= centers[[i % 2, axis]];
+                    y -= centers[[i, axis]];
                 }
                 bare += (drive.omega0_ev * da[axis]) * y;
             }
@@ -166,6 +169,12 @@ fn assert_bare_position(
     out.validate().unwrap();
     assert_eq!(out.lat, input.lat);
     assert_eq!(out.atoms.len(), input.atoms.len() * sectors);
+    assert_eq!(out.norb(), input.norb() * sectors);
+    assert_eq!(out.nsta(), input.nsta() * sectors);
+    for state in 0..out.nsta() {
+        let original = 2 * (state / (2 * sectors)) + state % 2;
+        assert_eq!(out.orb.row(state), input.orb.row(original));
+    }
     for sector in 0..sectors {
         for orbital in 0..2 {
             let output_orb = sector * 2 + orbital;
@@ -204,7 +213,7 @@ fn assert_bare_position(
 }
 
 #[test]
-fn position_sambe_and_effective_match_strong_field_quadrature() {
+fn unequal_spin_centres_position_sambe_and_effective_match_strong_field_quadrature() {
     let mut model = spinful_model::<HasRMatrix>();
     for (axis, i, j, value) in [
         (0, 0, 1, C::new(0.35, -0.1)),
@@ -310,7 +319,7 @@ fn position_sambe_and_effective_match_strong_field_quadrature() {
 }
 
 #[test]
-fn pure_centres_match_all_orders_peierls_in_sambe_and_effective_models() {
+fn unequal_spin_centres_match_all_orders_peierls_in_sambe_and_effective_models() {
     let peierls = spinful_model::<crate::NoRMatrix>();
     let centres = spinful_model::<HasRMatrix>();
     let drive = strong_drive();
@@ -318,6 +327,9 @@ fn pure_centres_match_all_orders_peierls_in_sambe_and_effective_models() {
     let trunc = FloquetTruncation::new(2);
     let bare_sambe = peierls.floquet_model(&drive, &trunc).unwrap();
     let centre_sambe = centres.floquet_model(&drive, &trunc).unwrap();
+    assert_bare_position(&centres, &centre_sambe, trunc.n_sector().unwrap());
+    bare_sambe.validate().unwrap();
+    assert_eq!(bare_sambe.orb, centre_sambe.orb);
     assert_eq!(centre_sambe.hamR.nrows(), bare_sambe.hamR.nrows());
     for (row, translation) in centre_sambe.hamR.rows().into_iter().enumerate() {
         let bare_row = find_R(&bare_sambe.hamR, &translation).unwrap();
@@ -346,10 +358,151 @@ fn pure_centres_match_all_orders_peierls_in_sambe_and_effective_models() {
         let c = centres
             .floquet_effective_model(&drive, Some(&options))
             .unwrap();
+        assert_bare_position(&centres, &c, 1);
+        p.validate().unwrap();
+        assert_eq!(p.orb, peierls.orb);
         let h = c.gen_ham(&k, Gauge::Lattice);
         assert_matrix(&h, &p.gen_ham(&k, Gauge::Lattice));
         assert_matrix(&h, want);
     }
+}
+
+#[test]
+fn unequal_spin_centres_zero_drive_is_exact_for_both_position_types() {
+    fn check<R: RMatrixData>() {
+        let mut model = spinful_model::<R>();
+        if R::HAS_RMATRIX {
+            let r = model.rmatrix.as_array4_mut();
+            r[[0, 0, 3, 3]] += 0.07;
+            r[[0, 1, 0, 3]] = C::new(0.13, -0.04);
+            r[[0, 1, 3, 0]] = C::new(0.13, 0.04);
+        }
+        let assert_static = |out: &Model<true, 2, R>| {
+            out.validate().unwrap();
+            assert_eq!(out.orb, model.orb);
+            // An effective model chooses its own support, so match blocks by
+            // translation and require every extra block to vanish exactly.
+            assert!(out.hamR.nrows() >= model.hamR.nrows());
+            let mut retained = vec![false; out.hamR.nrows()];
+            for (row, translation) in model.hamR.rows().into_iter().enumerate() {
+                let out_row = find_R(&out.hamR, &translation).expect("translation lost");
+                retained[out_row] = true;
+                assert_eq!(
+                    out.ham.index_axis(Axis(0), out_row).to_owned(),
+                    model.ham.index_axis(Axis(0), row).to_owned()
+                );
+            }
+            for (out_row, keep) in retained.iter().enumerate() {
+                if !keep {
+                    assert!(
+                        out.ham
+                            .index_axis(Axis(0), out_row)
+                            .iter()
+                            .all(|value| value.norm_sqr() == 0.0),
+                        "zero drive must not create new hopping blocks"
+                    );
+                }
+            }
+            assert_eq!(out.orb_projection, model.orb_projection);
+            assert_eq!(out.natom(), model.natom());
+            for (a, b) in out.atoms.iter().zip(&model.atoms) {
+                assert_eq!(a.orbitals(), b.orbitals());
+                assert_eq!(a.position_ref(), b.position_ref());
+                assert_eq!(a.atom_type(), b.atom_type());
+                assert_eq!(a.magnetic_moment(), b.magnetic_moment());
+            }
+            if R::HAS_RMATRIX {
+                let out_rmatrix = out.rmatrix.as_array4();
+                let model_rmatrix = model.rmatrix.as_array4();
+                for (row, translation) in model.hamR.rows().into_iter().enumerate() {
+                    let out_row = find_R(&out.hamR, &translation).expect("translation lost");
+                    assert_eq!(
+                        out_rmatrix.index_axis(Axis(0), out_row).to_owned(),
+                        model_rmatrix.index_axis(Axis(0), row).to_owned()
+                    );
+                }
+                for (out_row, keep) in retained.iter().enumerate() {
+                    if !keep {
+                        assert!(
+                            out_rmatrix
+                                .index_axis(Axis(0), out_row)
+                                .iter()
+                                .all(|value| value.norm_sqr() == 0.0),
+                            "zero drive must not create new position blocks"
+                        );
+                    }
+                }
+            }
+        };
+        for drive in [
+            FloquetDrive::new(3.2),
+            FloquetDrive::with_modes(3.2, vec![LightMode::new(1, array![C::ZERO, C::ZERO])]),
+        ] {
+            for order in 0..=3 {
+                let options = FloquetEffectiveOptions::new().with_order(order);
+                assert_static(
+                    &model
+                        .floquet_effective_model(&drive, Some(&options))
+                        .unwrap(),
+                );
+                assert_static(
+                    &model
+                        .floquet_effective_mode_resolved_model(&drive, Some(&options))
+                        .unwrap(),
+                );
+                assert_static(
+                    &model
+                        .floquet_effective_q_model(&drive, Some(&options), &array![0.0, 0.0])
+                        .unwrap(),
+                );
+            }
+            let requests = [(0, 2), (1, 2), (2, 2), (3, 2)];
+            let mut visited = 0;
+            model
+                .floquet_effective_sweep(&drive, &requests, |key, out| {
+                    assert_eq!(key, requests[visited]);
+                    visited += 1;
+                    assert_static(out);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(visited, requests.len());
+            assert_static(
+                &model
+                    .floquet_model(&drive, &FloquetTruncation::new(0))
+                    .unwrap(),
+            );
+
+            let sambe = model
+                .floquet_model(&drive, &FloquetTruncation::new(1))
+                .unwrap();
+            sambe.validate().unwrap();
+            assert_eq!((sambe.norb(), sambe.nsta()), (6, 12));
+            assert_eq!(sambe.natom(), 3 * model.natom());
+            assert_eq!(sambe.orb_projection.len(), 6);
+            for state in 0..12 {
+                assert_eq!(
+                    sambe.orb.row(state),
+                    model.orb.row(2 * (state / 6) + state % 2)
+                );
+            }
+            for ((r, i, j), &value) in sambe.ham.indexed_iter() {
+                let ni = (i / 2) % 3;
+                let nj = (j / 2) % 3;
+                let mut expected = if ni == nj {
+                    model.ham[[r, 2 * (i / 6) + i % 2, 2 * (j / 6) + j % 2]]
+                } else {
+                    C::ZERO
+                };
+                if r == 0 && i == j {
+                    expected += (ni as f64 - 1.0) * drive.omega0_ev;
+                }
+                assert_eq!(value, expected);
+            }
+        }
+    }
+    check::<crate::NoRMatrix>();
+    check::<HasRMatrix>();
 }
 
 #[test]

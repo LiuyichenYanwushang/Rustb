@@ -21,7 +21,12 @@
 //!    stores the caller-supplied `R`, and runs `Model::validate`.
 //!
 //! `Model::validate` checks the structural invariants serde cannot know
-//! about: array shapes, finite values, and atom/orbital references.
+//! about: array shapes, finite values, and atom/orbital references. `orb` stores
+//! exactly one centre per basis state: `N` rows when spinless, or `2 * N` rows
+//! in spin-major (all up, then all down) order when spinful. `orb_projection`
+//! and atom orbital IDs still describe only the `N` paired slots. The arrays
+//! are read verbatim: legacy compact spinor centres are rejected, never
+//! inferred, duplicated, averaged, or repaired from position matrices.
 //!
 //! Consequently, a `HasRMatrix` file can be read as `NoRMatrix` (the matrix
 //! is parsed and then dropped), but a `NoRMatrix` file cannot satisfy a
@@ -86,6 +91,7 @@ struct ModelWire {
     dim_r: usize,
     spin: bool,
     lat: Array2<f64>,
+    // Full state centres, not common per-orbital centres: never pass through tb_model.
     orb: Array2<f64>,
     orb_projection: Vec<OrbProj>,
     // `Atom` carries typed orbital IDs; `atoms_from_wire` rebuilds and
@@ -134,6 +140,20 @@ impl ModelWire {
             return Err(E::custom(format!(
                 "dimension mismatch: file has dim_r={}, but Model<DIM={}> was requested",
                 self.dim_r, DIM
+            )));
+        }
+        // Reject the pre-per-state layout explicitly instead of letting the
+        // generic shape checks report an unrelated mismatch. The old writer
+        // stored only the spin-up centres for a spinful model.
+        let expected_centres = if SPIN {
+            2 * self.orb_projection.len()
+        } else {
+            self.orb_projection.len()
+        };
+        if self.orb.nrows() != expected_centres {
+            return Err(E::custom(format!(
+                "legacy or malformed centres: expected {expected_centres} state rows for spin={SPIN}, found {}; compact spinor centre tables are not supported",
+                self.orb.nrows()
             )));
         }
         let model = Model {

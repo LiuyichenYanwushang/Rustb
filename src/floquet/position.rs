@@ -71,7 +71,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 
     /// Both Sambe and van Vleck use this cache, with every row aligned to input hamR.
     /// Given validated Hermitian input, Fourier-expand
-    /// `exp(-i a·d) (T + hbar dot(a)·Y)` with `Y` the position minus orbital centres.
+    /// `exp(-i a·d) (T + hbar dot(a)·Y)` with `Y` the position minus each state’s own centre.
     pub(super) fn position_harmonic_cache(
         &self,
         drive: &FloquetDrive,
@@ -79,7 +79,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ) -> Result<FloquetHarmonicCache> {
         let nr = self.hamR.nrows();
         let nsta = self.nsta();
-        let norb = self.norb();
         let count = harmonic_max
             .checked_mul(2)
             .and_then(|k| k.checked_add(1))
@@ -154,7 +153,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     let diagonal = ir == jr && i == j;
                     if let Some(centres) = centres.as_ref().filter(|_| diagonal) {
                         for (a, z) in y.iter_mut().enumerate() {
-                            z.re -= centres[[i % norb, a]];
+                            z.re -= centres[[i, a]];
                         }
                     }
                     if hopping == Complex::ZERO
@@ -165,7 +164,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     let d = if diagonal {
                         Array1::zeros(DIM)
                     } else {
-                        self.link_displacement_cartesian(i % norb, j % norb, &row)
+                        self.link_displacement_cartesian(i, j, &row)
                     };
                     let key: [u64; DIM] =
                         std::array::from_fn(|a| if d[a] == 0.0 { 0 } else { d[a].to_bits() });

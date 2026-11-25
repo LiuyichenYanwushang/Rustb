@@ -204,17 +204,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         &self,
         k: &ArrayBase<S, Ix1>,
     ) -> Array1<Complex<f64>> {
-        let mut phases = Array1::zeros(self.nsta());
-        for i in 0..self.norb() {
+        Array1::from_shape_fn(self.nsta(), |state| {
             let dot = (0..DIM)
-                .map(|axis| self.orb[[i, axis]] * k[axis])
+                .map(|axis| self.orb[[state, axis]] * k[axis])
                 .sum::<f64>();
-            phases[i] = Complex::new(0.0, 2.0 * PI * dot).exp();
-            if SPIN {
-                phases[i + self.norb()] = phases[i];
-            }
-        }
-        phases
+            Complex::new(0.0, 2.0 * PI * dot).exp()
+        })
     }
 
     /// Computes the density of states $\rho(E)$ using Gaussian smearing.
@@ -302,6 +297,62 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unequal_state_centres_match_analytic_bloch_phases_and_sewing() {
+        fn check<const SPIN: bool>() {
+            let mut model = Model::<SPIN, 2>::tb_model_with_state_centres(
+                array![[1.3, 0.4], [-0.2, 1.7]],
+                array![[0.13, 0.21], [0.60, -0.14]],
+                None,
+            )
+            .unwrap();
+            let hopping = Complex::new(0.7, -0.3);
+            model.hamR = array![[0, 0], [1, -1], [-1, 1]];
+            model.ham = Array3::zeros((3, 2, 2));
+            model.ham[[0, 0, 0]] = Complex::new(-0.4, 0.0);
+            model.ham[[0, 1, 1]] = Complex::new(0.4, 0.0);
+            model.ham[[1, 0, 1]] = hopping;
+            model.ham[[2, 1, 0]] = hopping.conj();
+            model.validate().unwrap();
+
+            let points = array![[0.17, -0.23], [-0.29, 0.31], [1.17, -1.23]];
+            for gauge in [Gauge::Atom, Gauge::Lattice] {
+                let batch = model.gen_ham_batch(&points, gauge);
+                for (ik, k) in points.outer_iter().enumerate() {
+                    // R + tau_down - tau_up = (1.47, -1.35).
+                    let dot = if matches!(gauge, Gauge::Atom) {
+                        1.47 * k[0] - 1.35 * k[1]
+                    } else {
+                        k[0] - k[1]
+                    };
+                    let off_diagonal = hopping * Complex::from_polar(1.0, 2.0 * PI * dot);
+                    let expected = array![
+                        [Complex::new(-0.4, 0.0), off_diagonal],
+                        [off_diagonal.conj(), Complex::new(0.4, 0.0)],
+                    ];
+                    let single = model.gen_ham(&k, gauge);
+                    for actual in [batch.index_axis(Axis(0), ik), single.view()] {
+                        assert!(
+                            actual
+                                .iter()
+                                .zip(&expected)
+                                .all(|(a, b)| (a - b).norm() < 1e-12)
+                        );
+                    }
+                }
+                // G = (1, -1): H(k+G) = D(G)^dagger H(k) D(G).
+                let sewing = if matches!(gauge, Gauge::Atom) {
+                    Complex::from_polar(1.0, 2.0 * PI * 0.82)
+                } else {
+                    Complex::new(1.0, 0.0)
+                };
+                assert!((batch[[2, 0, 1]] - batch[[0, 0, 1]] * sewing).norm() < 1e-12);
+            }
+        }
+        check::<true>();
+        check::<false>();
+    }
 
     #[test]
     fn fourier_sum_matches_scalar_sum_across_layouts() {

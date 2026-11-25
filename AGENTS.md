@@ -295,7 +295,7 @@ pub struct Model<
     R: RMatrixData = NoRMatrix,
 > {
     pub lat: Array2<f64>,     // real-space lattice vectors (rows)
-    pub orb: Array2<f64>,     // fractional orbital positions (rows)
+    pub orb: Array2<f64>,     // fractional centres (rows): nsta rows, spin-major when spinful
     pub rmatrix: R,           // NoRMatrix = ZST, HasRMatrix = Array4 newtype
     // ...
 }
@@ -305,7 +305,7 @@ pub struct Model<
 - `R` defaults to `NoRMatrix` (zero-sized). `HasRMatrix(Array4)` stores position matrix elements.
 - Hot-path `match DIM { 1 => ..., 2 => ..., 3 => ... }` is compile-time eliminated.
 - Hot-path `if <R as RMatrixData>::HAS_RMATRIX { ... }` is compile-time eliminated.
-- `SurfGreen` is non-generic and stores `spin: bool` and `dim_r: usize` (converted from const generics).
+- `SurfGreen` is non-generic and stores `spin: bool` and `dim_r: usize` (converted from const generics); its `orb` keeps all `nsta` state centres.
 
 ### Other key types
 
@@ -435,7 +435,13 @@ and all inherent `Model` calls are unchanged.
   node-preserving interpolation in `kpath.rs`. Distances omit `2π`. Unfolding
   uses the primitive lattice `U⁻¹ · lat` before mapping samples by `k · Uᵀ`;
   do not substitute the supercell metric or duplicate the sampler.
-- **Orbital positions**: Fractional coords (rows of `orb`).
+- **Orbital positions**: Fractional coords, one row per basis state in `orb`.
+  A spinless model has `norb` rows; a spinful model has `2 * norb` rows ordered
+  as all spin-up states then all spin-down states, and the two blocks have
+  independent centres. `norb()` counts the paired orbital labels shared by
+  atoms and `orb_projection`; `nsta()` counts states. Never index a centre with
+  `state % norb`. `Model::tb_model` takes the common `norb` centres and copies
+  them; `Model::tb_model_with_state_centres` takes every state row.
 - **Lattice vectors**: Stored as rows of `Model::lat`; Cartesian row
   coordinates are `fractional.dot(lat)`.
   Reciprocal vectors via `Model::rec_lat()` (rows = reciprocal vectors,
@@ -610,9 +616,11 @@ and matrix block `ham[R,i,j]`.  Real-space link for Peierls phase:
 d_{ijR} = (R + τ_j − τ_i) · L
 ```
 
-where `orb` stores fractional orbital positions and `lat` is the real-space
-lattice matrix used with row-vector fractional coordinates (`cart = frac · lat`).
-For spinful models: `orbital_index = state_index % norb`.
+where `orb` stores the fractional centre of each basis state and `lat` is the
+real-space lattice matrix used with row-vector fractional coordinates
+(`cart = frac · lat`). `state_index` indexes `orb` directly in both spin blocks;
+only shared orbital metadata such as `orb_projection` and atom ownership uses
+`state_index % norb`.
 
 ### Light-field convention
 
@@ -698,8 +706,9 @@ The implementation therefore builds
 `J_n = {G_n,G_n†}` by zero-aliasing FFT convolution, and applies the final
 directional derivative by replacing
 each output block with `i (q · d_out) J_n(R)`.  The full Cartesian bond
-`d = (R + tau_j - tau_i) · lat` includes the orbital embedding; for spinful
-models the same orbital bond is used in each spin block.
+`d = (R + tau_j - tau_i) · lat` includes the orbital embedding and uses each
+state's own centre `orb[j]`, so spinful models retain independent up/down
+Wannier centres.
 
 The added term is controlled only through `O(A^2 q/W)` and `O(W^-1)` and
 requires both `|a_n · d| << 1` and `|q · d| << 1` on relevant bonds. Orders 2
@@ -941,7 +950,10 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
 - **Commit after each successful `cargo check`**: prevents data loss from
   `git checkout` discarding uncommitted work.
 - **Constructing models**: `Model::<false, 2>::tb_model(lat, orb, None)?` for spinless 2D;
-  `Model::<true, 2>::tb_model(lat, orb, None)?` for spinful 2D;
+  `Model::<true, 2>::tb_model(lat, orb, None)?` for spinful 2D with common centres;
+  `Model::<true, 2>::tb_model_with_state_centres(lat, centers, None)?` for the full
+  `2 * norb` spin-major centre table. Reconstruct from an existing `model.orb`
+  with the state-centre constructor, never `tb_model`, which would copy again.
   `Model::<false, 3, HasRMatrix>::from_hr(path, seed, 0.0)?` for 3D with position matrix.
 - **Atom/orbital ownership**: `Model` owns the dense orbital arrays. `Atom`
   stores explicit typed `OrbitalId` handles, not a count or pointer. `None` in
@@ -978,7 +990,11 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   `ScalarSiteBasis` remains the one-`s`-orbital
   special case. General Wannier gauges and local frames must implement
   `BasisSymmetryRepresentation`; missing metadata is `Unresolved`, never
-  `Broken`.
+  `Broken`. Every automatic basis describes one cell sector per paired orbital
+  slot and rejects a slot whose up/down centres differ by a nonzero lattice
+  vector (`Unsupported`, not a silent mis-shift). `CenterResolvedBasis`
+  accepts independent spin centres that share one cell representative; the
+  atom-centred providers reject any non-integer per-state displacement first.
 - **Exact real-space convention**: for
   `g|b,R> = sum_(s,a) D_s[a,b]|a,W R+s>`, evaluate
   `K_g(R) = sum_(s,t) D_s^dag H(W R+t-s) D_t`. A unitary operation requires

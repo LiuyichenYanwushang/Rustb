@@ -10,7 +10,10 @@ pub trait RMatrixData: Clone + std::fmt::Debug + Sync {
     ///
     /// Position matrix elements are stored in **Cartesian** coordinates
     /// (matching Wannier90 `_r.dat`), so the fractional orbital positions are
-    /// converted via `cart = frac · lat`.
+    /// converted via `cart = frac · lat`. `orb` contains one row per state,
+    /// including both spin blocks when `spin` is true, so implementations must
+    /// size the matrix from `orb.nrows()`. The `norb` and `spin` parameters are
+    /// retained for signature compatibility and are not authoritative.
     fn from_orb(orb: &Array2<f64>, lat: &Array2<f64>, norb: usize, spin: bool, dim: usize) -> Self;
     /// Wrap an Array4 into the RMatrixData type.
     fn from_array(arr: Array4<Complex<f64>>) -> Self;
@@ -56,16 +59,20 @@ pub struct HasRMatrix(pub Array4<Complex<f64>>);
 
 impl RMatrixData for HasRMatrix {
     const HAS_RMATRIX: bool = true;
-    fn from_orb(orb: &Array2<f64>, lat: &Array2<f64>, norb: usize, spin: bool, dim: usize) -> Self {
-        let nsta = if spin { 2 * norb } else { norb };
+    fn from_orb(
+        orb: &Array2<f64>,
+        lat: &Array2<f64>,
+        _norb: usize,
+        _spin: bool,
+        dim: usize,
+    ) -> Self {
+        // `orb` holds one row per state, so its row count is the basis size.
+        let nsta = orb.nrows();
         let cart = orb.dot(lat);
         let mut r = Array4::<Complex<f64>>::zeros((1, dim, nsta, nsta));
-        for i in 0..norb {
+        for i in 0..nsta {
             for ri in 0..dim {
                 r[[0, ri, i, i]] = Complex::<f64>::from(cart[[i, ri]]);
-                if spin {
-                    r[[0, ri, i + norb, i + norb]] = Complex::<f64>::from(cart[[i, ri]]);
-                }
             }
         }
         HasRMatrix(r)

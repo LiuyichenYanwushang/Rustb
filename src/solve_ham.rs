@@ -1369,8 +1369,7 @@ mod tests {
                         .map(|axis| {
                             r[axis] as f64
                                 + if matches!(gauge, Gauge::Atom) {
-                                    model.orb[[j % model.norb(), axis]]
-                                        - model.orb[[i % model.norb(), axis]]
+                                    model.orb[[j, axis]] - model.orb[[i, axis]]
                                 } else {
                                     0.0
                                 }
@@ -1488,9 +1487,12 @@ mod tests {
     fn operator_case<const SPIN: bool, const DIM: usize>() {
         let mut bare = complex_model::<SPIN, DIM>();
         compare_operators(&bare);
-        let mut position =
-            Model::<SPIN, DIM, HasRMatrix>::tb_model(bare.lat.clone(), bare.orb.clone(), None)
-                .unwrap();
+        let mut position = Model::<SPIN, DIM, HasRMatrix>::tb_model_with_state_centres(
+            bare.lat.clone(),
+            bare.orb.clone(),
+            None,
+        )
+        .unwrap();
         position.ham = bare.ham.clone();
         position.hamR = bare.hamR.clone();
         position.rmatrix = HasRMatrix(Array4::from_shape_fn(
@@ -1588,10 +1590,12 @@ mod tests {
         if DIM > 1 {
             lat[[0, 1]] = 0.37;
         }
-        let orb = Array2::from_shape_fn((2, DIM), |(i, axis)| {
+        // Distinct spin-major state centres exercise both diagonal spin blocks
+        // and spin-flip matrix elements without changing the spinless fixture.
+        let orb = Array2::from_shape_fn((if SPIN { 4 } else { 2 }, DIM), |(i, axis)| {
             0.13 + 0.17 * i as f64 + 0.11 * axis as f64
         });
-        let mut model = Model::tb_model(lat, orb, None).unwrap();
+        let mut model = Model::tb_model_with_state_centres(lat, orb, None).unwrap();
         let nsta = model.nsta();
         model.hamR = Array2::zeros((1 + 2 * DIM, DIM));
         model.ham = Array3::zeros((1 + 2 * DIM, nsta, nsta));

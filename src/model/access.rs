@@ -2,7 +2,10 @@ use super::{Model, RMatrixData};
 use crate::atom_struct::{Atom, AtomId, OrbProj, OrbitalId};
 use crate::error::{Result, TbError};
 use ndarray::{Array2, ArrayView1};
-/// Borrowed view of one physical orbital in a [`Model`].
+/// Borrowed view of one paired orbital slot in a [`Model`].
+///
+/// For spinful models, the projection is shared by both spin states, while
+/// the position is explicitly the first/up centre, not a spin average.
 #[derive(Debug)]
 pub struct OrbitalRef<'a> {
     id: OrbitalId,
@@ -16,6 +19,9 @@ impl<'a> OrbitalRef<'a> {
         self.id
     }
 
+    /// Fractional first/up centre of this slot; for spinless models, its sole
+    /// centre. A spinful model stores every state centre, so the down partner is
+    /// `model.orb.row(id.index() + model.norb())`.
     #[inline]
     pub fn position(&self) -> ArrayView1<'a, f64> {
         self.position
@@ -69,7 +75,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         atom_position
     }
 
-    /// Borrow one orbital by its typed model-local ID.
+    /// Borrow one paired orbital slot by its typed model-local ID (`id < norb()`).
+    ///
+    /// For spinful models the position is the first/up centre. The corresponding
+    /// down centre is stored separately in `orb.row(id.index() + norb())`; both
+    /// states share this slot's projection and atom owner.
     pub fn orbital(&self, id: OrbitalId) -> Result<OrbitalRef<'_>> {
         let index = id.index();
         let projection = self
@@ -79,7 +89,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 index,
                 norb: self.norb(),
             })?;
-        if index >= self.orb.nrows() {
+        if index >= self.norb() {
             return Err(TbError::InvalidOrbitalId {
                 index,
                 norb: self.norb(),
@@ -108,8 +118,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         Ok(AtomView { id, atom, orbitals })
     }
 
-    /// Derive the unique owner of each orbital.
+    /// Derive the unique owner of each of the `norb()` paired orbital slots.
     ///
+    /// Both spin states share their slot's owner, regardless of their centres.
     /// Unassigned orbitals are represented by `None`. Duplicate or out-of-range
     /// assignments are reported as structured errors.
     pub fn orbital_owners(&self) -> Result<Vec<Option<AtomId>>> {

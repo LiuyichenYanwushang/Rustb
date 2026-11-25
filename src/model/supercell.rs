@@ -32,8 +32,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///    compute its determinant and adjugate with checked integer arithmetic.
     /// 2. Enumerate the row-vector quotient `Z^DIM / (Z^DIM U)` exactly using
     ///    the canonical key `r adj(U) mod det(U)`.
-    /// 3. Normalize each orbital to its parent atom, replicate every quotient
-    ///    image, and retain its exact primitive-cell label.
+    /// 3. Normalize each state centre to its common parent atom, replicate every
+    ///    quotient image, and retain each state's exact primitive-cell label.
     /// 4. Map each existing Hamiltonian and position-matrix block directly to
     ///    its unique target image and new lattice vector. No candidate-`R`
     ///    search or floating-point block lookup is used.
@@ -149,8 +149,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
         let mut normalized_orb = self.orb.clone();
-        let mut orbital_gauge_shift = vec![vec![0_isize; DIM]; self.norb()];
-        for (orbital, owner) in orbital_owners.iter().enumerate() {
+        let mut orbital_gauge_shift = vec![vec![0_isize; DIM]; self.nsta()];
+        for orbital in 0..self.nsta() {
+            let owner = &orbital_owners[orbital % self.norb()];
             for axis in 0..DIM {
                 let shift = match owner {
                     Some(atom) => (normalized_orb[[orbital, axis]]
@@ -169,11 +170,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut new_orb = Array2::<f64>::zeros((0, DIM));
         let mut new_orb_projection = Vec::with_capacity(expected_norb);
         let mut new_atoms = Vec::with_capacity(expected_natom);
-        let mut source_orbital = Vec::with_capacity(expected_norb);
-        let mut primitive_label = Vec::<Vec<isize>>::with_capacity(expected_norb);
-        let mut copies_by_source = vec![Vec::<usize>::with_capacity(cell_count); self.norb()];
+        let mut source_state = Vec::with_capacity(nsta);
+        let mut primitive_label = Vec::<Vec<isize>>::with_capacity(nsta);
+        let mut copies_by_source = vec![Vec::<usize>::with_capacity(cell_count); self.nsta()];
         let mut copy_by_source_and_coset =
-            vec![HashMap::<Vec<isize>, usize>::with_capacity(cell_count); self.norb()];
+            vec![HashMap::<Vec<isize>, usize>::with_capacity(cell_count); self.nsta()];
 
         if self.atoms.is_empty() {
             for source in 0..self.norb() {
@@ -187,7 +188,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     let copy = new_orb.nrows();
                     new_orb.push_row(position.view())?;
                     new_orb_projection.push(self.orb_projection[source]);
-                    source_orbital.push(source);
+                    source_state.push(source);
                     primitive_label.push(label);
                     copies_by_source[source].push(copy);
                     let key = row_coset_key(representative, &adjugate, determinant)
@@ -218,7 +219,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                         let copy = new_orb.nrows();
                         new_orb.push_row(position.view())?;
                         new_orb_projection.push(self.orb_projection[source]);
-                        source_orbital.push(source);
+                        source_state.push(source);
                         primitive_label.push(label);
                         copies_by_source[source].push(copy);
                         let key = row_coset_key(representative, &adjugate, determinant)
@@ -240,7 +241,33 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             }
         }
 
-        if new_orb.nrows() != expected_norb
+        // The paired slot order is common, but each down state folds using
+        // its own centre and has its own exact primitive-cell label. The up
+        // label only chooses the shared quotient class: changing it by a row
+        // of U cannot change the independently folded down image or its label.
+        if SPIN {
+            for up_copy in 0..expected_norb {
+                let source = source_state[up_copy] + self.norb();
+                let (position, label) = fold_supercell_copy(
+                    normalized_orb.row(source),
+                    &primitive_label[up_copy],
+                    &u_inverse,
+                    &integer_u,
+                )?;
+                let copy = new_orb.nrows();
+                let key = row_coset_key(&label, &adjugate, determinant)
+                    .ok_or(TbError::InvalidSupercellMatrix)?;
+                new_orb.push_row(position.view())?;
+                source_state.push(source);
+                primitive_label.push(label);
+                copies_by_source[source].push(copy);
+                if copy_by_source_and_coset[source].insert(key, copy).is_some() {
+                    return Err(TbError::InvalidSupercellMatrix);
+                }
+            }
+        }
+
+        if new_orb.nrows() != nsta
             || new_atoms.len() != expected_natom
             || copies_by_source
                 .iter()
@@ -272,23 +299,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         } else {
             None
         };
-        let spin_components = if SPIN { 2 } else { 1 };
-
         for (old_block, old_r) in self.hamR.outer_iter().enumerate() {
-            for old_source in 0..self.norb() {
-                for old_target in 0..self.norb() {
-                    let mut has_data = false;
-                    for source_spin in 0..spin_components {
-                        for target_spin in 0..spin_components {
-                            let old_i = old_source + source_spin * self.norb();
-                            let old_j = old_target + target_spin * self.norb();
-                            has_data |= self.ham[[old_block, old_i, old_j]].norm_sqr() != 0.0;
-                            if let Some(rmatrix) = old_rmatrix {
-                                for axis in 0..DIM {
-                                    has_data |=
-                                        rmatrix[[old_block, axis, old_i, old_j]].norm_sqr() != 0.0;
-                                }
-                            }
+            for old_source in 0..self.nsta() {
+                for old_target in 0..self.nsta() {
+                    let mut has_data =
+                        self.ham[[old_block, old_source, old_target]].norm_sqr() != 0.0;
+                    if let Some(rmatrix) = old_rmatrix {
+                        for axis in 0..DIM {
+                            has_data |= rmatrix[[old_block, axis, old_source, old_target]]
+                                .norm_sqr()
+                                != 0.0;
                         }
                     }
                     if !has_data {
@@ -356,20 +376,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                             }
                         };
 
-                        for source_spin in 0..spin_components {
-                            for target_spin in 0..spin_components {
-                                let old_i = old_source + source_spin * self.norb();
-                                let old_j = old_target + target_spin * self.norb();
-                                let new_i = new_source + source_spin * expected_norb;
-                                let new_j = new_target + target_spin * expected_norb;
-                                new_ham[[new_block, new_i, new_j]] +=
-                                    self.ham[[old_block, old_i, old_j]];
-                                if let Some(rmatrix) = old_rmatrix {
-                                    for axis in 0..DIM {
-                                        new_rmatrix[[new_block, axis, new_i, new_j]] +=
-                                            rmatrix[[old_block, axis, old_i, old_j]];
-                                    }
-                                }
+                        new_ham[[new_block, new_source, new_target]] +=
+                            self.ham[[old_block, old_source, old_target]];
+                        if let Some(rmatrix) = old_rmatrix {
+                            for axis in 0..DIM {
+                                new_rmatrix[[new_block, axis, new_source, new_target]] +=
+                                    rmatrix[[old_block, axis, old_source, old_target]];
                             }
                         }
                     }
@@ -387,8 +399,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 &self.orb,
                 &self.lat,
                 &old_diagonal,
-                &source_orbital,
-                SPIN,
+                &source_state,
             );
         }
         let model = Model {
@@ -681,6 +692,9 @@ pub(crate) fn rmatrix_diagonal_cartesian<const SPIN: bool, const DIM: usize, R: 
 /// r^{new}_{ii}(0) = r^{old}_{ss}(0) + \tau^{new}_i \cdot L_{new}
 ///                   - \tau^{old}_s \cdot L_{old}.
 /// ```
+///
+/// `source[i]` is the old state corresponding to new state `i`; both centre
+/// tables and the source map include the complete spin-major basis.
 pub(crate) fn set_rmatrix_diagonal_with_displacement<const DIM: usize>(
     rmatrix: &mut Array4<Complex<f64>>,
     ham_r: &Array2<isize>,
@@ -690,34 +704,20 @@ pub(crate) fn set_rmatrix_diagonal_with_displacement<const DIM: usize>(
     old_lat: &Array2<f64>,
     old_diagonal: &Array2<f64>,
     source: &[usize],
-    spin: bool,
 ) {
     let zero_r = Array1::<isize>::zeros(DIM);
     let Some(r0) = find_R(ham_r, &zero_r) else {
         return;
     };
     let nsta = rmatrix.dim().2;
-    let norb = new_orb.nrows();
-    let norb_old = old_orb.nrows();
     let new_cart = new_orb.dot(new_lat);
     let old_cart = old_orb.dot(old_lat);
     for i in 0..nsta {
-        let s = if spin { i % norb } else { i };
-        let src_orb = source[s];
-        // The source STATE preserves the spin component of state i
-        // (up block before down block in both models).
-        let src_state = if spin {
-            if i < norb {
-                src_orb
-            } else {
-                src_orb + norb_old
-            }
-        } else {
-            src_orb
-        };
+        let src_state = source[i];
         for axis in 0..DIM {
             rmatrix[[r0, axis, i, i]] = Complex::new(
-                old_diagonal[[src_state, axis]] + (new_cart[[s, axis]] - old_cart[[src_orb, axis]]),
+                old_diagonal[[src_state, axis]]
+                    + (new_cart[[i, axis]] - old_cart[[src_state, axis]]),
                 0.0,
             );
         }
@@ -735,17 +735,9 @@ fn relabel_hamiltonian_by_orbital_fold<const DIM: usize>(
     ham_r: &mut Array2<isize>,
     rmatrix: &mut Array4<Complex<f64>>,
     fold: &Array2<isize>,
-    spin: bool,
 ) {
     let nsta = ham.dim().1;
-    let norb = fold.nrows();
-    // Fold vector per state: spin copies share their orbital's position.
-    let mut state_fold = Vec::with_capacity(nsta);
-    for i in 0..nsta {
-        let s = if spin { i % norb } else { i };
-        state_fold.push(fold.row(s).to_owned());
-    }
-    if state_fold.iter().all(|n| n.iter().all(|&x| x == 0)) {
+    if fold.iter().all(|&x| x == 0) {
         return;
     }
     // Rebuild the blocks with compensated R vectors.  A compensated vector may
@@ -766,7 +758,7 @@ fn relabel_hamiltonian_by_orbital_fold<const DIM: usize>(
                 if element.norm_sqr() == 0.0 && !has_rmatrix {
                     continue;
                 }
-                let shift = &state_fold[j] - &state_fold[i];
+                let shift = &fold.row(j) - &fold.row(i);
                 let new_r = &r_vec + &shift;
                 let target = match find_R(ham_r, &new_r) {
                     Some(target) => target,
@@ -811,6 +803,7 @@ fn relabel_hamiltonian_by_orbital_fold<const DIM: usize>(
 pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrixData>(
     model: &Model<SPIN, DIM, R>,
 ) -> Result<Model<SPIN, DIM, R>> {
+    model.validate()?;
     let mut out = model.clone();
     let old_orb = model.orb.clone();
     let old_lat = model.lat.clone();
@@ -823,19 +816,23 @@ pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrix
         }
         atom.set_position(position);
     }
-    // 2. Per-orbital fold vectors.
+    // 2. Per-state fold vectors; only atom ownership is shared.
     let owners = out.orbital_owners()?;
-    let mut fold = Array2::<isize>::zeros((out.norb(), DIM));
-    for (s, owner) in owners.iter().enumerate() {
+    let mut fold = Array2::<isize>::zeros((out.nsta(), DIM));
+    for s in 0..out.nsta() {
+        let owner = &owners[s % out.norb()];
         for axis in 0..DIM {
             let n = match owner {
                 Some(atom_id) => {
                     (out.orb[[s, axis]] - out.atoms[atom_id.index()].position_ref()[[axis]]).round()
                 }
                 None => out.orb[[s, axis]].floor(),
-            } as isize;
-            fold[[s, axis]] = n;
-            out.orb[[s, axis]] -= n as f64;
+            };
+            if !n.is_finite() || n < isize::MIN as f64 || n > isize::MAX as f64 {
+                return Err(TbError::InvalidSupercellMatrix);
+            }
+            fold[[s, axis]] = n as isize;
+            out.orb[[s, axis]] -= n;
         }
     }
     // 3. Covariant relabel + covariant Cartesian diagonal translation
@@ -848,8 +845,8 @@ pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrix
     } else {
         Array4::<Complex<f64>>::zeros((ham_r.nrows(), DIM, out.nsta(), out.nsta()))
     };
-    relabel_hamiltonian_by_orbital_fold::<DIM>(&mut ham, &mut ham_r, &mut rmatrix, &fold, SPIN);
-    let identity_source: Vec<usize> = (0..out.norb()).collect();
+    relabel_hamiltonian_by_orbital_fold::<DIM>(&mut ham, &mut ham_r, &mut rmatrix, &fold);
+    let identity_source: Vec<usize> = (0..out.nsta()).collect();
     set_rmatrix_diagonal_with_displacement::<DIM>(
         &mut rmatrix,
         &ham_r,
@@ -859,7 +856,6 @@ pub(crate) fn normalized_to_atoms<const SPIN: bool, const DIM: usize, R: RMatrix
         &old_lat,
         &old_diagonal,
         &identity_source,
-        SPIN,
     );
     out.ham = ham;
     out.hamR = ham_r;
@@ -891,6 +887,111 @@ mod fold_tests {
         .unwrap();
         model.add_hop(-1.0, 0, 0, &array![1], None);
         model
+    }
+
+    fn check_asymmetric_supercell<R: RMatrixData>(with_atoms: bool) {
+        let atoms = with_atoms.then(|| {
+            vec![Atom::with_orbitals(
+                array![0.15, 0.2],
+                AtomType::C,
+                [OrbitalId::new(0)],
+            )]
+        });
+        let mut model = Model::<true, 2, R>::tb_model_with_state_centres(
+            array![[2.0, 0.4], [0.0, 1.5]],
+            array![[1.1, 0.3], [-0.2, 1.7]],
+            atoms,
+        )
+        .unwrap();
+        model.add_hop(-0.4, 0, 0, &array![1, 0], None);
+        model
+            .add_element(Complex::new(0.7, 0.2), 0, 1, &array![0, 0])
+            .unwrap();
+        if R::HAS_RMATRIX {
+            for state in 0..2 {
+                for axis in 0..2 {
+                    model.rmatrix.as_array4_mut()[[0, axis, state, state]] +=
+                        Complex::new(0.13 * (state + axis + 1) as f64, 0.0);
+                }
+            }
+            model.rmatrix.as_array4_mut()[[0, 0, 0, 1]] = Complex::new(0.03, 0.02);
+            model.rmatrix.as_array4_mut()[[0, 0, 1, 0]] = Complex::new(0.03, -0.02);
+        }
+        let u = array![[2.0, 1.0], [0.0, 1.0]];
+        let sc = model.make_supercell(&u).unwrap();
+        assert_eq!((sc.norb(), sc.nsta(), sc.orb.nrows()), (2, 4, 4));
+        assert_eq!(sc.natom(), if with_atoms { 2 } else { 0 });
+        assert!(sc.orb.iter().all(|x| (0.0..1.0).contains(x)));
+        let old_cart = model.orb.dot(&model.lat);
+        let new_cart = sc.orb.dot(&sc.lat);
+        // Independent real-space oracle: every old state-to-state bond has
+        // two copies with identical Cartesian displacement and amplitude.
+        for (old_block, old_r) in model.hamR.outer_iter().enumerate() {
+            for i in 0..2 {
+                for j in 0..2 {
+                    let value = model.ham[[old_block, i, j]];
+                    if value.norm() == 0.0 {
+                        continue;
+                    }
+                    let displacement = old_r.mapv(|x| x as f64).dot(&model.lat) + old_cart.row(j)
+                        - old_cart.row(i);
+                    let mut copies = 0;
+                    for (block, r) in sc.hamR.outer_iter().enumerate() {
+                        for a in i * 2..(i + 1) * 2 {
+                            for b in j * 2..(j + 1) * 2 {
+                                let actual = r.mapv(|x| x as f64).dot(&sc.lat) + new_cart.row(b)
+                                    - new_cart.row(a);
+                                if (&actual - &displacement).iter().all(|x| x.abs() < 1e-12) {
+                                    assert!((sc.ham[[block, a, b]] - value).norm() < 1e-12);
+                                    if R::HAS_RMATRIX && i != j {
+                                        assert!(
+                                            (sc.rmatrix.as_array4()[[block, 0, a, b]]
+                                                - model.rmatrix.as_array4()[[old_block, 0, i, j]])
+                                            .norm()
+                                                < 1e-12
+                                        );
+                                    }
+                                    copies += 1;
+                                }
+                            }
+                        }
+                    }
+                    assert_eq!(copies, 2);
+                }
+            }
+        }
+        if R::HAS_RMATRIX {
+            for state in 0..4 {
+                for axis in 0..2 {
+                    let old_state = state / 2;
+                    let expected = model.rmatrix.as_array4()[[0, axis, old_state, old_state]].re
+                        + new_cart[[state, axis]]
+                        - old_cart[[old_state, axis]];
+                    assert!(
+                        (sc.rmatrix.as_array4()[[0, axis, state, state]].re - expected).abs()
+                            < 1e-12
+                    );
+                }
+            }
+        }
+        let normalized = normalized_to_atoms(&model).unwrap();
+        let identity = model.make_supercell(&Array2::eye(2)).unwrap();
+        for k in [array![0.0, 0.0], array![0.23, 0.41]] {
+            let original = model.gen_ham(&k, Gauge::Atom);
+            for transformed in [&normalized, &identity] {
+                let actual = transformed.gen_ham(&k, Gauge::Atom);
+                assert!((&actual - &original).iter().all(|x| x.norm() < 1e-12));
+            }
+        }
+        sc.validate().unwrap();
+    }
+
+    #[test]
+    fn supercell_and_normalization_use_each_state_centre() {
+        for with_atoms in [false, true] {
+            check_asymmetric_supercell::<crate::NoRMatrix>(with_atoms);
+            check_asymmetric_supercell::<HasRMatrix>(with_atoms);
+        }
     }
 
     #[test]

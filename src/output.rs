@@ -555,10 +555,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> OutPut for Model<SPIN, 
             let z = position.get(2).copied().unwrap_or(0.0);
             writeln!(file, "{symbol:<2} {x:>18.8} {y:>16.8} {z:>16.8}")
         };
-        for _ in 0..(1 + usize::from(SPIN)) {
-            for position in orb_real.rows() {
-                write_row("X", position)?;
-            }
+        for position in orb_real.rows() {
+            write_row("X", position)?;
         }
         for (atom, position) in self.atoms.iter().zip(atom_position_real.rows()) {
             write_row(atom.atom_type().to_str(), position)?;

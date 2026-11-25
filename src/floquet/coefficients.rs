@@ -36,7 +36,7 @@ pub(crate) enum PeierlsFourierMethod {
 ///
 /// `blocks` has shape `(harmonic_count, n_r, nsta, nsta)` where `harmonic_count = harmonic_max - harmonic_min + 1`.
 /// Index `[i_n, i_r, i, j]` stores the `n = harmonic_min + i_n` Fourier component of hopping
-/// from orbital `j` in cell `R = hamR[i_r]` to orbital `i` at the origin.
+/// from state `j` in cell `R = hamR[i_r]` to state `i` at the origin.
 /// This is independent of `k` and reusable across the entire k-mesh.
 pub(crate) struct FloquetHarmonicCache {
     pub(super) harmonic_min: isize,
@@ -69,7 +69,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     ///
     /// Returns a [`FloquetHarmonicCache`] whose `blocks[harmonic_index(n), i_r, i, j]`
     /// stores the `n`-th Fourier coefficient of the Peierls-dressed hopping from
-    /// orbital `j` at cell `R = hamR[i_r]` to orbital `i` at the origin.  The
+    /// state `j` at cell `R = hamR[i_r]` to state `i` at the origin. The
     /// cache is consumed by the real-space constructors. For a k-mesh, build
     /// `floquet_model` once and reuse its ordinary Hamiltonian and band solvers.
     ///
@@ -83,7 +83,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         method: &PeierlsFourierMethod,
     ) -> FloquetHarmonicCache {
         let nsta = self.nsta();
-        let norb = self.norb();
         let n_r = self.hamR.nrows();
         let harmonic_count = (harmonic_max - harmonic_min + 1) as usize;
         let mut blocks = Array4::<Complex<f64>>::zeros((harmonic_count, n_r, nsta, nsta));
@@ -103,9 +102,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         }
 
         // Phase 1: collect the DISTINCT link displacements among non-zero
-        // hoppings.  Spin copies of the same orbital pair share the same
-        // d, so this deduplicates the coefficient computation (a 4x saving
-        // for spinful models).
+        // hoppings. Spin blocks share coefficients only when their actual
+        // state-centre displacements coincide.
         // Distinct-link map keyed by the bit pattern of the Cartesian
         // displacement (a fixed-size array avoids a heap allocation per
         // hopping entry).
@@ -119,7 +117,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                     if self.ham[[i_r, i, j]].re == 0.0 && self.ham[[i_r, i, j]].im == 0.0 {
                         continue;
                     }
-                    let d_cart = self.link_displacement_cartesian(i % norb, j % norb, &r_vec);
+                    let d_cart = self.link_displacement_cartesian(i, j, &r_vec);
                     let mut key = [0_u64; DIM];
                     for a in 0..DIM {
                         key[a] = d_cart[a].to_bits();
@@ -256,11 +254,7 @@ pub(super) fn validate_link_resolvability<const SPIN: bool, const DIM: usize, R:
         if hopping.re == 0.0 && hopping.im == 0.0 {
             continue;
         }
-        let d = model.link_displacement_cartesian(
-            i % model.norb(),
-            j % model.norb(),
-            &model.hamR.row(r),
-        );
+        let d = model.link_displacement_cartesian(i, j, &model.hamR.row(r));
         if d.iter().any(|x| !x.is_finite()) {
             return Err(TbError::Other(
                 "Floquet link displacement is not finite".into(),

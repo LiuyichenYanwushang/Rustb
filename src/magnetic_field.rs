@@ -211,14 +211,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> MagneticField for Model
                 let mut ham_slice = new_ham.slice_mut(s![i_r, .., ..]);
 
                 for i in 0..total_basis {
-                    let orb_i = i % norb;
-                    let u1_i = super_model.orb[[orb_i, d1]];
-                    let u2_i = super_model.orb[[orb_i, d2]];
+                    let u1_i = super_model.orb[[i, d1]];
+                    let u2_i = super_model.orb[[i, d2]];
 
                     for j in 0..total_basis {
-                        let orb_j = j % norb;
-                        let u1_j = super_model.orb[[orb_j, d1]];
-                        let u2_j = super_model.orb[[orb_j, d2]];
+                        let u1_j = super_model.orb[[j, d1]];
+                        let u2_j = super_model.orb[[j, d2]];
 
                         let phase = peierls_phase_periodic_landau(
                             phi_total, u1_i, u2_i, u1_j, u2_j, r1, r2,
@@ -418,4 +416,83 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 fn norm3(v: [f64; 3]) -> f64 {
     dot3(v, v).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unequal_spin_centres_get_their_own_magnetic_link_phases() {
+        fn check<R: RMatrixData>() {
+            let centres = array![[0.11, 0.19], [0.41, 0.31], [0.23, 0.53], [0.67, 0.79]];
+            let mut model = Model::<true, 2, R>::tb_model_with_state_centres(
+                array![[1.3, 0.4], [-0.2, 1.7]],
+                centres.clone(),
+                None,
+            )
+            .unwrap();
+            model.add_hop(Complex::new(0.7, 0.2), 0, 1, &array![0, 0], None);
+            model.add_hop(
+                Complex::new(-0.3, 0.4),
+                0,
+                1,
+                &array![1, -1],
+                crate::SpinDirection::X,
+            );
+            if R::HAS_RMATRIX {
+                let positive = find_R(&model.hamR, &array![1, -1]).unwrap();
+                let negative = find_R(&model.hamR, &array![-1, 1]).unwrap();
+                for d in 0..2 {
+                    let value = Complex::new(0.12 + 0.1 * d as f64, -0.03);
+                    model.rmatrix.as_array4_mut()[[positive, d, 0, 3]] = value;
+                    model.rmatrix.as_array4_mut()[[negative, d, 3, 0]] = value.conj();
+                }
+            }
+            model.validate().unwrap();
+            for flux in [-1, 0, 1] {
+                let magnetic = model.add_magnetic_field(2, [1, 1], flux).unwrap();
+                magnetic.validate().unwrap();
+                assert_eq!(magnetic.orb, centres);
+                for (ir, r) in model.hamR.outer_iter().enumerate() {
+                    let out_ir = find_R(&magnetic.hamR, &r.to_owned()).unwrap();
+                    for i in 0..4 {
+                        for j in 0..4 {
+                            // Straight-link integral in A_y = flux * x, minus
+                            // the x-boundary patch. No production phase helper.
+                            let x0 = centres[[i, 0]];
+                            let y0 = centres[[i, 1]];
+                            let x1 = centres[[j, 0]] + r[0] as f64;
+                            let y1 = centres[[j, 1]] + r[1] as f64;
+                            let integral = (x0 + x1) * (y1 - y0) / 2.0 - r[0] as f64 * y1;
+                            let phase = Complex::from_polar(1.0, -TAU * flux as f64 * integral);
+                            // The 2D Zeeman field changes only the R = 0 onsite
+                            // diagonal; every other link, including same-state
+                            // cross-cell hopping, must carry the Peierls phase.
+                            let zeeman_onsite = i == j && r[0] == 0 && r[1] == 0;
+                            if !zeeman_onsite {
+                                assert!(
+                                    (magnetic.ham[[out_ir, i, j]] - phase * model.ham[[ir, i, j]])
+                                        .norm()
+                                        < 1e-12
+                                );
+                            }
+                            if R::HAS_RMATRIX {
+                                for d in 0..2 {
+                                    assert!(
+                                        (magnetic.rmatrix.as_array4()[[out_ir, d, i, j]]
+                                            - phase * model.rmatrix.as_array4()[[ir, d, i, j]])
+                                        .norm()
+                                            < 1e-12
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        check::<crate::NoRMatrix>();
+        check::<crate::HasRMatrix>();
+    }
 }

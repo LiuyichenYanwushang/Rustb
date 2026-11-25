@@ -162,7 +162,8 @@ pub trait Unfold {
     //! waves projected onto the primitive cell.
     /// The algorithm follows PRL 104, 216401 (2010).
     /// Representative centers are matched within a fixed fractional-coordinate
-    /// tolerance of `1e-8`.
+    /// tolerance of `1e-8`, jointly over both centres of each spinful paired slot.
+    /// Orthogonal spin channels contribute probabilities, not coherent amplitudes.
     ///
     /// `path` uses fractional reciprocal coordinates of the primitive lattice
     /// `U.inv() * self.lat`. Sampling uses the same validation and rounded,
@@ -288,9 +289,8 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
         // is the caller's determinant-matching tolerance and must not stretch
         // physical positions.
         const SNAP_TOLERANCE: f64 = 1e-10;
-        let mut unit_orb = Array2::<f64>::zeros((0, self.dim_r()));
         let mut unit_orb_projection = Vec::<OrbProj>::new();
-        let unfold_orb = &self.orb.dot(U).map(|x| {
+        let folded_centres = self.orb.dot(U).map(|x| {
             if (x.fract() - 1.0).abs() < SNAP_TOLERANCE || x.fract().abs() < SNAP_TOLERANCE {
                 0.0
             } else if x.fract() < 0.0 {
@@ -299,6 +299,22 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                 x.fract()
             }
         });
+        // Match paired slots jointly: equal up centres alone do not imply
+        // equal orbitals when their down centres differ. Concatenated fractional
+        // coordinates let the existing periodic matcher check both halves.
+        let paired_centres = if SPIN {
+            concatenate(
+                Axis(1),
+                &[
+                    folded_centres.slice(s![..self.norb(), ..]),
+                    folded_centres.slice(s![self.norb().., ..]),
+                ],
+            )?
+        } else {
+            folded_centres
+        };
+        let unfold_orb = &paired_centres;
+        let mut unit_orb = Array2::<f64>::zeros((0, paired_centres.ncols()));
         let mut match_orb_list = Array1::<usize>::zeros(self.norb());
         if self.atoms.is_empty() {
             // Orbital-only models are first-class: derive primitive-orbital
@@ -391,73 +407,41 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Unfold for Model<SPIN, 
                 return Err(TbError::InvalidAtomConfiguration);
             }
         }
-        //好了, 接下来让我们计算权重
-        let mut weight = Array2::<Complex<f64>>::zeros((nk, self.nsta()));
-        let mut B = Array3::<f64>::zeros((nk, E_n, unit_orb.nrows()));
+        // Orthogonal spin channels are distinct primitive states: sum copy
+        // amplitudes within each channel, then sum their squared magnitudes.
+        let primitive_norb = unit_orb.nrows();
         if SPIN {
-            for k0 in 0..nk {
-                let mut r = &self.orb.dot(&fold_k.row(k0)) - &self.orb.dot(U).dot(&kvec.row(k0));
-                let r0 = r.clone();
-                r.append(Axis(0), r0.view()).unwrap();
-                weight
-                    .slice_mut(s![k0, ..])
-                    .assign(&(-PI * 2.0 * r).mapv(|x| Complex::new(0.0, x).exp()));
-            }
-            let A = match_orb_list.clone();
-            match_orb_list.append(Axis(0), A.view()).unwrap();
-            Zip::from(B.outer_iter_mut())
-                .and(G.outer_iter())
-                .and(weight.outer_iter())
-                .and(evec.outer_iter())
-                .par_for_each(|mut b, g, w, vec| {
-                    for (i0, mut b0) in b.axis_iter_mut(Axis(1)).enumerate() {
-                        let mut A = Array1::<Complex<f64>>::zeros(self.nsta());
-                        A = match_orb_list
-                            .iter()
-                            .enumerate()
-                            .zip(w.iter().zip(vec.axis_iter(Axis(1))))
-                            .fold(A.clone(), |acc, ((_io, orb_index), (w0, vec0))| {
-                                if *orb_index == i0 {
-                                    acc + *w0 * &vec0
-                                } else {
-                                    acc
-                                }
-                            });
-                        let A = A.mapv(|x| x.norm_sqr());
-                        b0.assign(&g.dot(&A));
-                    }
-                });
-        } else {
-            for k0 in 0..nk {
-                let weight1 = (-PI
-                    * 2.0
-                    * (&self.orb.dot(&fold_k.row(k0)) - &self.orb.dot(U).dot(&kvec.row(k0))))
-                    .mapv(|x| Complex::new(0.0, x).exp());
-                weight.slice_mut(s![k0, ..]).assign(&weight1);
-            }
-            Zip::from(B.outer_iter_mut())
-                .and(G.outer_iter())
-                .and(weight.outer_iter())
-                .and(evec.outer_iter())
-                .par_for_each(|mut b, g, w, vec| {
-                    for (i0, mut b0) in b.axis_iter_mut(Axis(1)).enumerate() {
-                        let mut A = Array1::<Complex<f64>>::zeros(self.nsta());
-                        A = match_orb_list
-                            .iter()
-                            .enumerate()
-                            .zip(w.iter().zip(vec.axis_iter(Axis(1))))
-                            .fold(A.clone(), |acc, ((_io, orb_index), (w0, vec0))| {
-                                if *orb_index == i0 {
-                                    acc + *w0 * &vec0
-                                } else {
-                                    acc
-                                }
-                            });
-                        let A = A.mapv(|x| x.norm_sqr());
-                        b0.assign(&g.dot(&A));
-                    }
-                });
+            let down = match_orb_list.mapv(|orbital| orbital + primitive_norb);
+            match_orb_list.append(Axis(0), down.view())?;
         }
+        let primitive_nsta = if SPIN {
+            2 * primitive_norb
+        } else {
+            primitive_norb
+        };
+        let mut weight = Array2::<Complex<f64>>::zeros((nk, self.nsta()));
+        for k0 in 0..nk {
+            let phase = &self.orb.dot(&fold_k.row(k0)) - &self.orb.dot(U).dot(&kvec.row(k0));
+            weight
+                .row_mut(k0)
+                .assign(&(-2.0 * PI * phase).mapv(|x| Complex::new(0.0, x).exp()));
+        }
+        let mut B = Array3::<f64>::zeros((nk, E_n, primitive_nsta));
+        Zip::from(B.outer_iter_mut())
+            .and(G.outer_iter())
+            .and(weight.outer_iter())
+            .and(evec.outer_iter())
+            .par_for_each(|mut b, g, w, vec| {
+                for (i0, mut b0) in b.axis_iter_mut(Axis(1)).enumerate() {
+                    let mut amplitude = Array1::<Complex<f64>>::zeros(self.nsta());
+                    for (state, &representative) in match_orb_list.iter().enumerate() {
+                        if representative == i0 {
+                            amplitude += &(w[state] * &vec.column(state));
+                        }
+                    }
+                    b0.assign(&g.dot(&amplitude.mapv(|x| x.norm_sqr())));
+                }
+            });
         let A0 = B.sum_axis(Axis(2));
         Ok(A0.reversed_axes())
     }
@@ -474,6 +458,92 @@ mod tests {
     use num_complex::Complex;
 
     use std::time::Instant;
+
+    #[test]
+    fn spinor_unfolding_sums_orthogonal_channel_probabilities() {
+        // Analytic eigenvectors of m sigma_x are (up +/- down)/sqrt(2).
+        // Each branch has copy weight 2, not the old coherent-spin weights
+        // 4 and 0 at k=0. A sigma_z control has identical energies and trace.
+        let m = 0.37;
+        let eta = 0.08;
+        let energies = [-0.8, -0.4, 0.0, 0.4, 0.8];
+        let samples = [0.0, 0.125, 0.25];
+        let u = array![[2.0]];
+        let mut reference = None;
+        for spin in [crate::SpinDirection::X, crate::SpinDirection::Z] {
+            let mut primitive = Model::<true, 1>::tb_model_with_state_centres(
+                array![[1.0]],
+                array![[0.1], [0.7]],
+                None,
+            )
+            .unwrap();
+            primitive.set_onsite(&array![m], spin);
+            primitive.add_hop(-0.2, 0, 0, &array![1], None);
+            let supercell = primitive.make_supercell(&u).unwrap();
+            let spectrum = supercell
+                .unfold(
+                    &u,
+                    &array![[0.0], [0.25]],
+                    samples.len(),
+                    -0.8,
+                    0.8,
+                    energies.len(),
+                    eta,
+                    1e-8,
+                )
+                .unwrap();
+            for (ik, &k) in samples.iter().enumerate() {
+                let centre = -0.4 * (2.0 * PI * k).cos();
+                for (ie, &energy) in energies.iter().enumerate() {
+                    let expected = [-m, m]
+                        .iter()
+                        .map(|offset| {
+                            2.0 * eta / (PI * ((energy - centre - offset).powi(2) + eta * eta))
+                        })
+                        .sum::<f64>();
+                    assert!((spectrum[[ie, ik]] - expected).abs() < 1e-10 * (1.0 + expected));
+                }
+            }
+            if let Some(previous) = reference {
+                let previous: Array2<f64> = previous;
+                assert!((&spectrum - &previous).iter().all(|x| x.abs() < 1e-10));
+            }
+            reference = Some(spectrum);
+        }
+    }
+
+    #[test]
+    fn unfolding_matches_both_centres_of_each_paired_slot() {
+        for with_atoms in [false, true] {
+            let primitive = Model::<true, 1>::tb_model_with_state_centres(
+                array![[1.0]],
+                array![[0.1], [0.1], [0.2], [0.3]],
+                with_atoms.then(|| {
+                    vec![Atom::with_orbitals(
+                        array![0.2],
+                        AtomType::C,
+                        [OrbitalId::new(0), OrbitalId::new(1)],
+                    )]
+                }),
+            )
+            .unwrap();
+            let u = array![[2.0]];
+            let mut supercell = primitive.make_supercell(&u).unwrap();
+            let path = array![[0.0], [0.25]];
+            assert!(
+                supercell
+                    .unfold(&u, &path, 2, -1.0, 1.0, 2, 0.1, 1e-8)
+                    .is_ok()
+            );
+            // A down-only mismatch must not be hidden by identical up rows.
+            let down = supercell.norb();
+            supercell.orb[[down, 0]] += 0.02;
+            assert!(matches!(
+                supercell.unfold(&u, &path, 2, -1.0, 1.0, 2, 0.1, 1e-8),
+                Err(TbError::InvalidAtomConfiguration)
+            ));
+        }
+    }
 
     #[test]
     fn unfold_uses_primitive_metric_and_preserves_short_path_nodes() {

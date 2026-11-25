@@ -89,6 +89,13 @@ fn projection_matrix_unchecked<const SPIN: bool, R: RMatrixData>(
     Ok(coefficients)
 }
 
+/// Parent-atom cell shift of one operation.
+///
+/// Every automatic basis describes one cell mapping per paired orbital slot,
+/// and refuses a slot whose two spin blocks occupy different integer cells.
+/// The sector therefore follows the atom (or the paired representative), not
+/// each state own centre image, which would need Hamiltonian blocks at
+/// spin-dependent lattice vectors.
 fn atom_shift<const SPIN: bool, R: RMatrixData>(
     model: &Model<SPIN, 3, R>,
     operation: &CrystalSymmetryOperation,
@@ -218,6 +225,7 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R>
     ) -> std::result::Result<LocalizedBasisAction, BasisRepresentationError> {
         let model = context.model;
         validate_automatic_basis_context(&context, "CenterResolvedBasis")?;
+        super::reject_spin_cell_offsets(model, context.position_tolerance)?;
         let angular_rotation = real_orbital_rotation(
             cartesian_rotation(model, context.operation)?,
             context.representation_tolerance.max(1e-6),
@@ -232,15 +240,10 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R>
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let origin = find_origin_index(model);
         let mut sectors: BTreeMap<[isize; 3], Array2<Complex64>> = BTreeMap::new();
+        let spin_count = if SPIN { 2 } else { 1 };
         for (source_atom, atom) in model.atoms.iter().enumerate() {
             let target_atom =
                 uniquely_mapped_atom(model, context.operation, source_atom, &context)?;
-            let shift = atom_shift(
-                model,
-                context.operation,
-                source_atom,
-                context.position_tolerance,
-            )?;
             let source_coefficients = &site_projections[source_atom];
             let target_coefficients = &site_projections[target_atom];
             if source_coefficients.ncols() != target_coefficients.ncols() {
@@ -270,6 +273,12 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R>
                     context.representation_tolerance,
                 );
             }
+            let shift = atom_shift(
+                model,
+                context.operation,
+                source_atom,
+                context.position_tolerance,
+            )?;
             let matrix = sectors
                 .entry(shift)
                 .or_insert_with(|| Array2::zeros((model.nsta(), model.nsta())));
@@ -283,17 +292,18 @@ impl<const SPIN: bool, R: RMatrixData> BasisSymmetryRepresentation<SPIN, R>
                         continue;
                     }
                     let target_orbital = target_id.index();
-                    if SPIN {
-                        for target_spin in 0..2 {
-                            for source_spin in 0..2 {
-                                matrix[[
-                                    target_spin * model.norb() + target_orbital,
-                                    source_spin * model.norb() + source_orbital,
-                                ]] += coefficient * spin_action[target_spin][source_spin];
-                            }
+                    for target_spin in 0..spin_count {
+                        for source_spin in 0..spin_count {
+                            let spin_coefficient = if SPIN {
+                                spin_action[target_spin][source_spin]
+                            } else {
+                                Complex64::new(1.0, 0.0)
+                            };
+                            matrix[[
+                                target_orbital + target_spin * model.norb(),
+                                source_orbital + source_spin * model.norb(),
+                            ]] += coefficient * spin_coefficient;
                         }
-                    } else {
-                        matrix[[target_orbital, source_orbital]] += coefficient;
                     }
                 }
             }

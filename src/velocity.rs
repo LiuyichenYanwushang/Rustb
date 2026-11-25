@@ -296,10 +296,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Velocity for Model<SPIN
 /// Add the atom-gauge orbital-position term `i (tau_j - tau_i) H_ij` to one
 /// projected velocity block.
 ///
-/// `tau[s]` is the projected orbital position `w . tau_s` of Bloch state `s` along
-/// this direction, pre-expanded from the orbital axis
-/// (`tau_orbital[[s % norb, direction]]`). Walking contiguous rows keeps the
-/// per-element loop free of a modulo by a runtime divisor and of 2-D indexing.
+/// `tau[s]` is the projected position `w . tau_s` of Bloch state `s` along
+/// this direction, using its own centre even when spin is present. Walking
+/// contiguous rows keeps the per-element loop free of 2-D indexing.
 ///
 /// # Panics
 /// Panics when the block shapes disagree, or when `ham` or velocity rows are not
@@ -461,12 +460,11 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         } else {
             None
         };
-        // Projected displacement of each Bloch state, `tau[state % norb, p]`.
+        // Project each state's own centre; keep each direction row contiguous.
         let tau_projected = if matches!(gauge, Gauge::Atom) {
             let tau = self.orb.dot(&lattice_directions);
-            let norb = self.norb();
             Some(Array2::from_shape_fn((nproj, nsta), |(p, state)| {
-                tau[[state % norb, p]]
+                tau[[state, p]]
             }))
         } else {
             None
@@ -525,17 +523,16 @@ mod tests {
         velocity: &mut Array3<Complex<f64>>,
         ham: &Array2<Complex<f64>>,
         tau: &Array2<f64>,
-        norb: usize,
     ) {
         for (p, mut component) in velocity.outer_iter_mut().enumerate() {
             for ((i, j), value) in component.indexed_iter_mut() {
-                let displacement = tau[[j % norb, p]] - tau[[i % norb, p]];
+                let displacement = tau[[j, p]] - tau[[i, p]];
                 *value += Complex::new(0.0, displacement) * ham[[i, j]];
             }
         }
     }
 
-    fn check_tau_term(norb: usize, nsta: usize, nproj: usize) {
+    fn check_tau_term(nsta: usize, nproj: usize) {
         let sample = |i: usize, j: usize, p: usize| {
             Complex::new(
                 (0.37 * (i * 7 + j * 13 + p * 3) as f64).sin(),
@@ -543,18 +540,15 @@ mod tests {
             )
         };
         let ham = Array2::from_shape_fn((nsta, nsta), |(i, j)| sample(i, j, 0));
-        let tau_orbitals = Array2::from_shape_fn((norb, nproj), |(orbital, p)| {
-            0.31 * orbital as f64 - 0.17 * p as f64
+        let tau = Array2::from_shape_fn((nsta, nproj), |(state, p)| {
+            0.31 * state as f64 - 0.17 * p as f64
         });
-        // The same projected orbital positions, expanded over Bloch states:
-        // `state % norb` drops the spin-block index, giving the orbital index.
-        let tau_states =
-            Array2::from_shape_fn((nproj, nsta), |(p, state)| tau_orbitals[[state % norb, p]]);
+        let tau_states = Array2::from_shape_fn((nproj, nsta), |(p, state)| tau[[state, p]]);
 
         let mut expected =
             Array3::from_shape_fn((nproj, nsta, nsta), |(p, i, j)| sample(i, j, p + 1));
         let mut actual = expected.clone();
-        reference_tau_term(&mut expected, &ham, &tau_orbitals, norb);
+        reference_tau_term(&mut expected, &ham, &tau);
         for (p, mut component) in actual.outer_iter_mut().enumerate() {
             let displacement_row = tau_states.row(p);
             add_projected_tau_term(
@@ -565,7 +559,7 @@ mod tests {
                     .expect("projected displacements are contiguous"),
             );
         }
-        assert_eq!(actual, expected, "norb={norb} nsta={nsta} nproj={nproj}");
+        assert_eq!(actual, expected, "nsta={nsta} nproj={nproj}");
     }
 
     /// A projection with zero directions must still return the atom-gauge
@@ -593,11 +587,97 @@ mod tests {
     }
 
     #[test]
+    fn unequal_spin_centres_match_analytic_velocity_and_cartesian_finite_difference() {
+        fn check<R: RMatrixData>() {
+            let lat = array![[1.3, 0.4], [-0.2, 1.7]];
+            let mut model = Model::<true, 2, R>::tb_model_with_state_centres(
+                lat.clone(),
+                array![[0.13, 0.21], [0.60, -0.14]],
+                None,
+            )
+            .unwrap();
+            model.set_onsite(&array![0.4], crate::SpinDirection::Z);
+            model.add_onsite(&array![0.6], crate::SpinDirection::X);
+            let hopping = Complex::new(-0.3, 0.4);
+            model.add_hop(hopping, 0, 0, &array![1, -1], crate::SpinDirection::X);
+            model.validate().unwrap();
+            let points = array![[0.17, -0.23], [-0.29, 0.31]];
+            let directions = array![[0.3, -0.8], [-0.5, 0.2]];
+            let (batch, _) = model.gen_v_batch(&points, Gauge::Atom);
+            let (projected, _) = model.gen_v_projected_batch(&points, Gauge::Atom, &directions);
+            let (empty, empty_ham) =
+                model.gen_v_projected_batch(&points, Gauge::Atom, &Array2::zeros((0, 2)));
+            assert_eq!(empty.dim(), (2, 0, 2, 2));
+            for (ik, k) in points.outer_iter().enumerate() {
+                let translated =
+                    hopping * Complex::from_polar(1.0, std::f64::consts::TAU * (k[0] - k[1]));
+                let amplitude = 0.6 + 2.0 * translated.re;
+                let embedding =
+                    Complex::from_polar(1.0, std::f64::consts::TAU * (0.47 * k[0] - 0.35 * k[1]));
+                let (velocity, ham) = model.gen_v(&k, Gauge::Atom);
+                let (lattice_velocity, _) = model.gen_v(&k, Gauge::Lattice);
+                let (single_projected, _) = model.gen_v_projected(&k, Gauge::Atom, &directions);
+                assert!((ham[[0, 1]] - amplitude * embedding).norm() < 1e-12);
+                assert!((empty_ham[[ik, 0, 1]] - amplitude * embedding).norm() < 1e-12);
+                let mut expected = Array3::<Complex<f64>>::zeros((2, 2, 2));
+                for d in 0..2 {
+                    let r_cart = lat[[0, d]] - lat[[1, d]];
+                    let delta_cart = 0.47 * lat[[0, d]] - 0.35 * lat[[1, d]];
+                    let derivative = -2.0 * translated.im * r_cart;
+                    let off_diagonal = Complex::new(derivative, delta_cart * amplitude) * embedding;
+                    expected[[d, 0, 1]] = off_diagonal;
+                    expected[[d, 1, 0]] = off_diagonal.conj();
+                    // With diagonal rmatrix, lattice-gauge velocity includes
+                    // i[H, tau]; NoRMatrix keeps the ordinary lattice derivative.
+                    let lattice_expected = Complex::new(
+                        derivative,
+                        if R::HAS_RMATRIX {
+                            delta_cart * amplitude
+                        } else {
+                            0.0
+                        },
+                    );
+                    assert!((lattice_velocity[[d, 0, 1]] - lattice_expected).norm() < 1e-12);
+                    let step = 1e-6;
+                    // k_frac = k_cart * lat^T / (2 pi), including a skew lattice.
+                    let shift = lat.column(d).to_owned() * (step / std::f64::consts::TAU);
+                    let plus = model.gen_ham(&(&k + &shift), Gauge::Atom);
+                    let minus = model.gen_ham(&(&k - &shift), Gauge::Atom);
+                    let finite_difference = (plus - minus) / (2.0 * step);
+                    for ((i, j), &value) in finite_difference.indexed_iter() {
+                        assert!((value - expected[[d, i, j]]).norm() < 1e-9);
+                    }
+                }
+                for actual in [velocity.view(), batch.index_axis(Axis(0), ik)] {
+                    assert!(
+                        actual
+                            .iter()
+                            .zip(&expected)
+                            .all(|(a, b)| (a - b).norm() < 1e-12)
+                    );
+                }
+                for p in 0..2 {
+                    for i in 0..2 {
+                        for j in 0..2 {
+                            let value = directions[[p, 0]] * expected[[0, i, j]]
+                                + directions[[p, 1]] * expected[[1, i, j]];
+                            assert!((projected[[ik, p, i, j]] - value).norm() < 1e-12);
+                            assert!((single_projected[[p, i, j]] - value).norm() < 1e-12);
+                        }
+                    }
+                }
+            }
+        }
+        check::<crate::NoRMatrix>();
+        check::<crate::HasRMatrix>();
+    }
+
+    #[test]
     fn tau_term_matches_elementwise_reference() {
-        check_tau_term(1, 1, 1);
-        check_tau_term(5, 5, 2); // spinless: nsta == norb
-        check_tau_term(3, 6, 3); // spinful: nsta == 2 norb
-        check_tau_term(4, 8, 2);
-        check_tau_term(3, 6, 0); // empty projection is a no-op
+        check_tau_term(1, 1);
+        check_tau_term(5, 2);
+        check_tau_term(6, 3);
+        check_tau_term(8, 2);
+        check_tau_term(6, 0); // empty projection is a no-op
     }
 }

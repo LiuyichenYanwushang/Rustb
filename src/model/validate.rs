@@ -22,6 +22,15 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
                 supported: vec![1, 2, 3],
             });
         }
+        if SPIN && self.orb.nrows() % 2 != 0 {
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "spinor_centre_count",
+                message: format!(
+                    "spinful centres require 2 * N rows, found {}",
+                    self.orb.nrows()
+                ),
+            });
+        }
         if self.norb() == 0 {
             return Err(TbError::NoOrbitals);
         }
@@ -96,17 +105,20 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         for (atom_index, atom) in self.atoms.iter().enumerate() {
             for &orbital_id in atom.orbitals() {
                 let orbital = orbital_id.index();
-                for axis in 0..DIM {
-                    let delta = (self.orb[[orbital, axis]] - atom.position_ref()[[axis]])
-                        .abs()
-                        .rem_euclid(1.0);
-                    let distance = delta.min(1.0 - delta);
-                    if distance > ORBITAL_ATOM_POSITION_TOLERANCE
-                        && largest_deviation
-                            .as_ref()
-                            .is_none_or(|(_, _, previous)| distance > *previous)
-                    {
-                        largest_deviation = Some((orbital, atom_index, distance));
+                for spin in 0..if SPIN { 2 } else { 1 } {
+                    let state = orbital + spin * self.norb();
+                    for axis in 0..DIM {
+                        let delta = (self.orb[[state, axis]] - atom.position_ref()[[axis]])
+                            .abs()
+                            .rem_euclid(1.0);
+                        let distance = delta.min(1.0 - delta);
+                        if distance > ORBITAL_ATOM_POSITION_TOLERANCE
+                            && largest_deviation
+                                .as_ref()
+                                .is_none_or(|(_, _, previous)| distance > *previous)
+                        {
+                            largest_deviation = Some((state, atom_index, distance));
+                        }
                     }
                 }
             }
@@ -165,12 +177,13 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             // every hot response/solver path, but the condition is structural
             // and does not need to be repeated for every call.
             if !ORBITAL_CENTER_WARNING.swap(true, Ordering::Relaxed) {
+                let slot = if SPIN { orbital % self.norb() } else { orbital };
                 eprintln!(
-                    "Warning: orbital {orbital} has a component-wise fractional deviation \
-                     {distance:.3} (modulo a lattice vector) from its parent atom {atom_index}, \
-                     exceeding the soft warning threshold {ORBITAL_ATOM_POSITION_TOLERANCE}; \
-                     continuing, but symmetry/irrep algorithms that require atom-centred \
-                     orbitals may reject this model"
+                    "Warning: basis state {orbital} (orbital slot {slot}) has a component-wise \
+                     fractional deviation {distance:.3} (modulo a lattice vector) from its parent \
+                     atom {atom_index}, exceeding the soft warning threshold \
+                     {ORBITAL_ATOM_POSITION_TOLERANCE}; continuing, but symmetry/irrep algorithms \
+                     that require atom-centred orbitals may reject this model"
                 );
             }
         }

@@ -27,7 +27,10 @@
 //! with equal projected counts could in principle exchange a whole block, but
 //! that requires every centre of the block to be closer to the other atom; the
 //! stored centres and Hamiltonian are unaffected, only atom ownership follows
-//! the centres.
+//! the centres. For spinors, all `2 * N` centres are retained in spin-major
+//! order, including distinct down-state centres. Projection labels and atom
+//! ownership describe the `N` paired slots and are matched using only the first
+//! (up) half; the corresponding down states share those labels and owners.
 //!
 //! # Examples
 //!
@@ -607,7 +610,7 @@ fn match_orbitals(
             return Err(parse_error(file, "Truncated _centres.xyz entries"));
         }
         let inverse = win.lat.inv()?;
-        let mut orb = Array2::zeros((norb, 3));
+        let mut orb = Array2::zeros((nsta, 3));
         for index in 0..entries {
             let mut fields = data_line(&mut lines, file)?.split_whitespace();
             let species: String = field(&mut fields, file, "XYZ label")?;
@@ -617,7 +620,7 @@ fn match_orbitals(
                 finite_field(&mut fields, file)?
             ]
             .dot(&inverse);
-            if index < norb {
+            if index < nsta {
                 orb.row_mut(index).assign(&position);
             }
             if index >= nsta {
@@ -641,8 +644,8 @@ fn match_orbitals(
     };
     if win.projections.is_empty() {
         // Wannier90 input without a projections block (for example a dataset
-        // written by a code that only records the centres): assign every
-        // Wannier function to its nearest atom. The orbital characters are
+        // written by a code that only records the centres): assign each paired
+        // slot using its first/up centre. The orbital characters are
         // unknown, so every projection is reported as `s`; callers that need
         // the characters must supply a real projections block.
         let centres = centres.ok_or_else(|| {
@@ -652,7 +655,7 @@ fn match_orbitals(
             )
         })?;
         let mut per_atom: Vec<Vec<usize>> = vec![Vec::new(); atoms.len()];
-        for (index, centre) in centres.rows().into_iter().enumerate() {
+        for (index, centre) in centres.rows().into_iter().take(norb).enumerate() {
             let mut best = (usize::MAX, f64::INFINITY);
             for (atom_index, (_, position)) in atoms.iter().enumerate() {
                 let mut delta = Array1::<f64>::zeros(3);
@@ -741,8 +744,11 @@ fn match_orbitals(
     }
     let mut fallback = Array2::zeros((0, 3));
     if centres.is_none() {
-        for (atom_index, _) in &ordered_atoms {
-            fallback.push_row(atoms[*atom_index].1.view())?;
+        // Only absent source centres use common atom centres in both halves.
+        for _ in 0..(1 + usize::from(win.spin)) {
+            for (atom_index, _) in &ordered_atoms {
+                fallback.push_row(atoms[*atom_index].1.view())?;
+            }
         }
     } else {
         // Prefer whole-centre-block assignment when every atom's projected
@@ -999,7 +1005,9 @@ fn assemble_model<const SPIN: bool, const DIM: usize, R: RMatrixData>(
 /// `DIM` must be 3. `HasRMatrix` requires `_r.dat` (`write_rmn=true`) with
 /// exactly the same translations as `_hr.dat`, in any block order. `NoRMatrix`
 /// skips `_r.dat`. `_centres.xyz` and `_wsvec.dat` are optional; without
-/// centres, the atomic positions from `.win` supply the orbital positions.
+/// centres, the atomic positions from `.win` supply the orbital positions
+/// (duplicated in spin-major order for spinors). Present centre files supply
+/// every state centre exactly; the down half is never truncated or averaged.
 pub trait Wannier90 {
     fn from_hr(path: &str, file_name: &str, zero_energy: f64) -> Result<Self>
     where
@@ -1802,6 +1810,100 @@ mod tests {
                 .ham[[0, 0, 0]],
             Complex64::new(2.5, 0.0)
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn from_hr_retains_distinct_spin_centres_and_paired_metadata() {
+        let dir = "tests/tmp_w90_distinct_spin_centres/";
+        fs::create_dir_all(dir).unwrap();
+        let win = "spinors = .true.\nbegin unit_cell_cart\n2 0 0\n0 4 0\n0 0 8\nend unit_cell_cart\nbegin atoms_frac\nC 0.125 0.125 0.125\nO 0.625 0.125 0.125\nend atoms_frac\n";
+        // Up order is O, C, opposite to the atom/projection order. Each down
+        // centre is nearer the other atom; neither ownership nor labels may
+        // be reassigned from that half, and cell representatives stay intact.
+        let xyz = "6\ncentres\nX 1.25 0.5 1\nX 0.25 0.5 1\nX 2.25 0.5 3\nX -0.75 -0.5 1\nC 0.25 0.5 1\nO 1.25 0.5 1\n";
+        let expected_centres = array![
+            [0.625, 0.125, 0.125],
+            [0.125, 0.125, 0.125],
+            [1.125, 0.125, 0.375],
+            [-0.375, -0.125, 0.125]
+        ];
+        let expected_ham = Array3::from_shape_fn((1, 4, 4), |(_, i, j)| {
+            Complex64::new((i + j + 1) as f64, i as f64 - j as f64)
+        });
+        // Deliberately independent of xyz: importing centres must not replace
+        // the full position matrix or touch its spin-flip elements.
+        let expected_r = Array4::from_shape_fn((1, 3, 4, 4), |(_, axis, i, j)| {
+            Complex64::new(
+                (10 * axis + i + j + 1) as f64,
+                (axis + 1) as f64 * (i as f64 - j as f64),
+            )
+        });
+        let mut hr = String::from("generated\n4\n1\n1\n");
+        let mut r = String::from("generated\n4\n1\n");
+        for i in 0..4 {
+            for j in 0..4 {
+                let h = expected_ham[[0, i, j]];
+                hr.push_str(&format!("0 0 0 {} {} {} {}\n", i + 1, j + 1, h.re, h.im));
+                r.push_str(&format!("0 0 0 {} {}", i + 1, j + 1));
+                for axis in 0..3 {
+                    let value = expected_r[[0, axis, i, j]];
+                    r.push_str(&format!(" {} {}", value.re, value.im));
+                }
+                r.push('\n');
+            }
+        }
+        fs::write(format!("{dir}seedname_hr.dat"), hr).unwrap();
+        fs::write(format!("{dir}seedname_r.dat"), r).unwrap();
+        fs::write(format!("{dir}seedname_centres.xyz"), xyz).unwrap();
+        for with_projections in [false, true] {
+            let projections = if with_projections { "C:s\nO:pz\n" } else { "" };
+            fs::write(
+                format!("{dir}seedname.win"),
+                format!("{win}begin projections\n{projections}end projections\n"),
+            )
+            .unwrap();
+            let plain = Model::<true, 3>::from_hr(dir, "seedname", 0.0).unwrap();
+            let model = Model::<true, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0).unwrap();
+            assert_eq!((model.norb(), model.nsta()), (2, 4));
+            assert_eq!(model.orb, expected_centres);
+            assert_eq!(plain.orb, expected_centres);
+            assert_eq!(model.ham, expected_ham);
+            assert_eq!(plain.ham, expected_ham);
+            assert_eq!(model.hamR, array![[0, 0, 0]]);
+            assert_eq!(model.rmatrix.0, expected_r);
+            assert_eq!(model.atoms.len(), 2);
+            assert_eq!(model.atoms[0].orbitals(), &[OrbitalId::new(1)]);
+            assert_eq!(model.atoms[1].orbitals(), &[OrbitalId::new(0)]);
+            assert_eq!(
+                model.orb_projection,
+                if with_projections {
+                    vec![OrbProj::pz, OrbProj::s]
+                } else {
+                    vec![OrbProj::s; 2]
+                }
+            );
+            model.validate().unwrap();
+        }
+        // With no xyz at all, and only then, the .win atom centres are copied
+        // into both halves in projection order; matrices remain unchanged.
+        fs::remove_file(format!("{dir}seedname_centres.xyz")).unwrap();
+        let fallback = Model::<true, 3, HasRMatrix>::from_hr(dir, "seedname", 0.0).unwrap();
+        assert_eq!(
+            fallback.orb,
+            array![
+                [0.125, 0.125, 0.125],
+                [0.625, 0.125, 0.125],
+                [0.125, 0.125, 0.125],
+                [0.625, 0.125, 0.125]
+            ]
+        );
+        assert_eq!((fallback.norb(), fallback.nsta()), (2, 4));
+        assert_eq!(fallback.atoms[0].orbitals(), &[OrbitalId::new(0)]);
+        assert_eq!(fallback.atoms[1].orbitals(), &[OrbitalId::new(1)]);
+        assert_eq!(fallback.orb_projection, vec![OrbProj::s, OrbProj::pz]);
+        assert_eq!(fallback.ham, expected_ham);
+        assert_eq!(fallback.rmatrix.0, expected_r);
         fs::remove_dir_all(dir).unwrap();
     }
 

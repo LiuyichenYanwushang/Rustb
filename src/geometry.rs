@@ -112,6 +112,108 @@ use std::f64::consts::PI;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod state_centre_tests {
+    use super::*;
+
+    #[test]
+    fn unequal_spin_centres_have_independent_atomic_wilson_phases() {
+        fn check<R: RMatrixData>() {
+            let mut model = Model::<true, 2, R>::tb_model_with_state_centres(
+                array![[1.3, 0.4], [-0.2, 1.7]],
+                array![[0.13, 0.21], [-0.19, 0.11], [0.31, -0.07], [-0.23, 0.29]],
+                None,
+            )
+            .unwrap();
+            for state in 0..4 {
+                model.ham[[0, state, state]] = Complex::new(state as f64 - 1.5, 0.0);
+            }
+            let points = array![[0.12, -0.08], [0.49, -0.08], [1.12, -0.08]];
+            let expected = [0.13, -0.19, 0.31, -0.23];
+            for (band, centre) in expected.into_iter().enumerate() {
+                let phase = 2.0 * PI * centre;
+                assert!((model.berry_loop(&points, &[band]).unwrap()[0] - phase).abs() < 1e-12);
+                assert!((model.berry_loop_det(&points, &[band]).unwrap() - phase).abs() < 1e-12);
+                assert!(
+                    (model
+                        .berry_loop(&points.slice(s![..;-1, ..]), &[band])
+                        .unwrap()[0]
+                        + phase)
+                        .abs()
+                        < 1e-12
+                );
+            }
+            let mut phases = model.berry_loop(&points, &[0, 1, 2, 3]).unwrap().to_vec();
+            phases.sort_by(f64::total_cmp);
+            let mut sorted = expected.map(|centre| 2.0 * PI * centre);
+            sorted.sort_by(f64::total_cmp);
+            assert!(
+                phases
+                    .iter()
+                    .zip(sorted)
+                    .all(|(a, b)| (a - b).abs() < 1e-12)
+            );
+            assert!(
+                (model.berry_loop_det(&points, &[0, 1, 2, 3]).unwrap() - 2.0 * PI * 0.02).abs()
+                    < 1e-12
+            );
+        }
+        check::<crate::NoRMatrix>();
+        check::<crate::HasRMatrix>();
+    }
+
+    #[test]
+    fn spin_mixed_wilson_loop_matches_analytic_row_ket_sewing() {
+        let mut model = Model::<true, 1>::tb_model_with_state_centres(
+            array![[1.7]],
+            array![[0.13], [0.60]],
+            None,
+        )
+        .unwrap();
+        let hopping = Complex::new(0.7, 0.2);
+        model.ham[[0, 0, 0]] = Complex::new(0.4, 0.0);
+        model.ham[[0, 1, 1]] = Complex::new(-0.4, 0.0);
+        model.ham[[0, 0, 1]] = hopping;
+        model.ham[[0, 1, 0]] = hopping.conj();
+        let points = array![[0.12], [0.30], [0.57], [0.91], [1.12]];
+        // Exact lower-band ket for H = [[m, t exp(i theta)], [conj, -m]].
+        // This oracle never uses generated H(k), solver vectors or phase helpers.
+        let energy = (0.4_f64.powi(2) + hopping.norm_sqr()).sqrt();
+        let up = ((1.0 - 0.4 / energy) / 2.0).sqrt();
+        let down = ((1.0 + 0.4 / energy) / 2.0).sqrt();
+        let ket = |k: f64| {
+            array![
+                -Complex::from_polar(up, hopping.arg() + 2.0 * PI * 0.47 * k),
+                Complex::new(down, 0.0),
+            ]
+        };
+        let mut sewn = ket(0.12);
+        sewn[0] *= Complex::from_polar(1.0, -2.0 * PI * 0.13);
+        sewn[1] *= Complex::from_polar(1.0, -2.0 * PI * 0.60);
+        let mut product = Complex::new(1.0, 0.0);
+        for link in 0..4 {
+            let left = ket(points[[link, 0]]);
+            let right = if link == 3 {
+                sewn.clone()
+            } else {
+                ket(points[[link + 1, 0]])
+            };
+            product *= left.mapv(|z| z.conj()).dot(&right);
+        }
+        let expected = -product.arg();
+        assert!((model.berry_loop(&points, &[0]).unwrap()[0] - expected).abs() < 1e-12);
+        assert!((model.berry_loop_det(&points, &[0]).unwrap() - expected).abs() < 1e-12);
+        assert!(
+            (model
+                .berry_loop(&points.slice(s![..;-1, ..]), &[0])
+                .unwrap()[0]
+                + expected)
+                .abs()
+                < 1e-12
+        );
+    }
+}
+
 /// Trait for computing Berry-phase, Berry curvature, and Wannier centre
 /// quantities via the Wilson loop method.
 ///
@@ -510,9 +612,9 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         check_array_size(&[n_k, self.nsta(), self.nsta()], size_of::<Complex<f64>>())?;
         check_array_size(&[n_k - 1, n_occ, n_occ], size_of::<Complex<f64>>())?;
         let (_, mut evec) = self.solve_all(kvec)?;
-        // The spin-major basis repeats each orbital position for spin down.
+        // Row kets acquire the sewing phase of each state's own centre.
         let phases = Array1::from_shape_fn(self.nsta(), |basis| {
-            let angle = -2.0 * PI * diff.dot(&self.orb.row(basis % self.norb()));
+            let angle = -2.0 * PI * diff.dot(&self.orb.row(basis));
             Complex::new(0.0, angle).exp()
         });
         if phases

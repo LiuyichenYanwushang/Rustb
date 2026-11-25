@@ -14,7 +14,8 @@ use ndarray::Axis;
 impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
     /// Return a new model with the owned orbital positions at their parent atoms.
     ///
-    /// This changes only the centres, not the Hamiltonian or position matrix.
+    /// This changes both spin centres of each owned slot, not the Hamiltonian
+    /// or position matrix.
     /// It sets each owned orbital's fractional-coordinate position to the
     /// fractional-coordinate position of the atom it belongs to. Useful
     /// when orbitals are initially at their Wannier centers but you want to
@@ -46,10 +47,12 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         let mut aligned = self.clone();
         for atom in &self.atoms {
             for &orbital in atom.orbitals() {
-                aligned
-                    .orb
-                    .row_mut(orbital.index())
-                    .assign(atom.position_ref());
+                for spin in 0..if SPIN { 2 } else { 1 } {
+                    aligned
+                        .orb
+                        .row_mut(orbital.index() + spin * self.norb())
+                        .assign(atom.position_ref());
+                }
             }
         }
         Ok(aligned)
@@ -107,7 +110,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         for (new, &old) in index.iter().enumerate() {
             old_to_new[old] = Some(OrbitalId::new(new));
         }
-        self.orb = self.orb.select(Axis(0), &index);
         self.orb_projection = index.iter().map(|&old| self.orb_projection[old]).collect();
         for atom in &mut self.atoms {
             let remapped = atom
@@ -122,6 +124,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             let index_add: Vec<_> = index.iter().map(|x| *x + old_norb).collect();
             index.extend(index_add);
         }
+        self.orb = self.orb.select(Axis(0), &index);
         //开始操作哈密顿量
         let new_ham = self.ham.select(Axis(1), &index);
         let new_ham = new_ham.select(Axis(2), &index);
@@ -290,8 +293,6 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         for (new, &old) in new_orb_order.iter().enumerate() {
             old_to_new[old] = new;
         }
-        //重排轨道顺序
-        self.orb = self.orb.select(Axis(0), &new_orb_order);
         let mut new_atom = Vec::new();
         //重排轨道projection顺序
         let mut new_orb_proj = Vec::new();
@@ -322,6 +323,7 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
         } else {
             new_orb_order
         };
+        self.orb = self.orb.select(Axis(0), &new_state_order);
         self.ham = self.ham.select(Axis(1), &new_state_order);
         self.ham = self.ham.select(Axis(2), &new_state_order);
         self.rmatrix = self
@@ -330,5 +332,83 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Model<SPIN, DIM, R> {
             .select(Axis(3), &new_state_order);
         self.validate()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Atom, AtomType, HasRMatrix, NoRMatrix, OrbProj};
+    use ndarray::{Array3, array};
+    use num_complex::Complex;
+
+    fn check_paired_edits<R: RMatrixData>() {
+        let mut model = Model::<true, 1, R>::tb_model_with_state_centres(
+            array![[2.0]],
+            array![[0.1], [0.3], [0.5], [0.2], [0.4], [0.7]],
+            Some(vec![
+                Atom::with_orbitals(
+                    array![0.1],
+                    AtomType::C,
+                    [OrbitalId::new(2), OrbitalId::new(0)],
+                ),
+                Atom::with_orbitals(array![0.3], AtomType::O, [OrbitalId::new(1)]),
+            ]),
+        )
+        .unwrap();
+        model.orb_projection = vec![OrbProj::s, OrbProj::px, OrbProj::py];
+        model.ham = Array3::from_shape_fn((1, 6, 6), |(_, i, j)| {
+            Complex::new((i + j) as f64, (i as f64) - (j as f64))
+        });
+        let original = model.clone();
+        let aligned = model.shift_to_atom().unwrap();
+        assert_eq!(
+            aligned.orb,
+            array![[0.1], [0.3], [0.1], [0.1], [0.3], [0.1]]
+        );
+        assert_eq!(aligned.ham, model.ham);
+        if R::HAS_RMATRIX {
+            assert_eq!(aligned.rmatrix.as_array4(), model.rmatrix.as_array4());
+        }
+
+        model.reorder_atom(&[1, 0]).unwrap();
+        let order = [1, 2, 0, 4, 5, 3];
+        assert_eq!(model.orb, original.orb.select(Axis(0), &order));
+        assert_eq!(
+            model.ham,
+            original.ham.select(Axis(1), &order).select(Axis(2), &order)
+        );
+        assert_eq!(
+            model.orb_projection,
+            vec![OrbProj::px, OrbProj::py, OrbProj::s]
+        );
+        if R::HAS_RMATRIX {
+            assert_eq!(
+                model.rmatrix.as_array4(),
+                original
+                    .rmatrix
+                    .select(Axis(2), &order)
+                    .select(Axis(3), &order)
+                    .as_array4()
+            );
+        }
+        model.remove_atom(&[0]).unwrap();
+        let kept = [2, 0, 5, 3];
+        assert_eq!(model.orb, original.orb.select(Axis(0), &kept));
+        assert_eq!(
+            model.ham,
+            original.ham.select(Axis(1), &kept).select(Axis(2), &kept)
+        );
+        model.remove_orb(&[0]).unwrap();
+        assert_eq!(model.orb, array![[0.1], [0.2]]);
+        assert_eq!(model.atoms[0].orbitals(), &[OrbitalId::new(0)]);
+        assert_eq!((model.norb(), model.nsta(), model.orb.nrows()), (1, 2, 2));
+        model.validate().unwrap();
+    }
+
+    #[test]
+    fn structural_edits_preserve_asymmetric_paired_centres() {
+        check_paired_edits::<NoRMatrix>();
+        check_paired_edits::<HasRMatrix>();
     }
 }
