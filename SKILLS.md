@@ -63,8 +63,9 @@ Import `Rustb::CollinearModel` for uncoupled up and down channels.
 and validates each. The lattice entries and full `Atom` lists must match
 exactly, in order: species, fractional positions, orbital IDs and optional
 magnetic moments (`None` is not `Some([0.0; 3])`). No tolerance, coordinate
-wrapping or reordering is applied. Each channel keeps its own orbital basis
-and centres, `ham`, `hamR`, and `rmatrix`; band counts need not match. The pair
+wrapping or reordering is applied. Both channels must have the same orbital
+count and exactly equal ordered `orb_projection` (orbital types and order).
+Orbital centres may differ; `ham`, `hamR`, and `rmatrix` remain independent. The pair
 stores two owned models: common metadata is an equality invariant, not
 physically deduplicated storage. Use a common energy reference: there is no
 automatic alignment, band/phase tracking, or spin mixing. For coupled
@@ -72,9 +73,37 @@ channels, use `Model<true, DIM, R>` instead.
 
 `up()` and `down()` borrow the channel models; `into_channels()` consumes the
 pair and returns `(up_model, down_model)`. `lat()` and `atoms()` borrow the
-common values from up. All eight `Solve` counterparts are inherent methods,
-taking the same arguments and returning `Result` with an outer tuple in
-**up/down order**:
+common values from up. Model-style getters `dim_r()`, `has_rmatrix()` and
+`natom()` describe the shared dimension, position-matrix availability and atom count.
+`atom_list()` returns per-atom orbital counts; `atom_position()` returns common
+fractional atom positions with shape `(natom, DIM)`. `rec_lat()?` returns
+reciprocal vectors as rows, satisfying `B Aᵀ = 2π I`, just as for `Model`.
+
+The shared single-channel count follows the spinless convention:
+`pair.nsta() == pair.norb() == pair.up().norb() == pair.down().norb()`, never
+the sum of the channels or twice the shared count. Channel-specific
+orbital/Hamiltonian queries stay on `up()`/`down()`; no `Deref` or mutating API
+is forwarded. Recover the owned models with `into_channels()` to edit them.
+
+Import `Rustb::Kpath`, as for `Model`, to call `pair.k_path(&path, nk)?`. It
+uses the common lattice and the same validation and node-preserving sampler;
+input k-points are fractional reciprocal coordinates and distances omit `2π`.
+
+```rust
+use Rustb::Kpath;
+
+// Given `pair: CollinearModel<2>`.
+assert_eq!(pair.nsta(), pair.norb());
+assert_eq!(pair.norb(), pair.up().norb());
+let path = array![[0.0, 0.0], [0.5, 0.0]];
+let (points, distance, node_distance) = pair.k_path(&path, 101)?;
+let (e_up, e_down) = pair.solve_band_all(&points)?;
+assert_eq!(e_up.ncols(), pair.nsta());
+assert_eq!(e_down.ncols(), pair.nsta());
+```
+
+All eight `Solve` counterparts are inherent methods, taking the same arguments
+and returning `Result` with an outer tuple in **up/down order**:
 
 | Method on `pair` | Value inside `Result` |
 |---|---|
@@ -1932,10 +1961,10 @@ antiunitary partners are both present. Construct `CollinearModel<3, R>` and
 call `pair.symmetrize_pair_with_collinear_spin_group(&group, &basis, &params)`:
 it borrows the pair and returns `Result<CollinearModel<3, R>>`, leaving the
 input unchanged on success or error. The old associated `Model` full-group
-method was removed, with no deprecated alias. In addition to the constructor's
-exact common lattice and `Atom` metadata, this projection requires equal basis
-sizes and orbital projections. Channel swaps require corresponding Wannier
-gauges and centre differences below half a cell in each fractional component.
+method was removed, with no deprecated alias. The constructor already enforces
+exact common lattice and `Atom` metadata, equal basis sizes and ordered orbital
+projections. Channel swaps additionally require corresponding Wannier gauges
+and centre differences below half a cell in each fractional component.
 The legacy `Model::symmetrize_pair` and unitary-group helper remain unchanged:
 the latter accepts the complete group and filters its unitary half internally.
 

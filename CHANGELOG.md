@@ -84,8 +84,9 @@
   are unchanged.
 - Export `CollinearModel<DIM, R>` at the crate root. Its owned constructor
   validates two `Model<false, DIM, R>` channels and requires exactly matching
-  lattices and ordered atom lists, including orbital IDs and optional moments.
-  Two owned models retain independent orbital centres, bases and matrix data;
+  lattices and ordered atom lists, including orbital IDs and optional moments,
+  as well as equal orbital counts and exactly equal ordered `orb_projection`
+  (orbital types and order). Orbital centres and matrix data remain independent;
   equal common metadata is not physically deduplicated. All eight `Solve`
   counterparts are inherent with the same arguments: `solve_band_onek`,
   `solve_band_range_onek`, `solve_band_all`, and `solve_band_all_parallel` return
@@ -100,6 +101,13 @@
   preparation failures may suppress callbacks; a completed up-channel prefix
   is paired before returning a later up solver error, unless down or the
   callback fails first.
+- Add Model-style `CollinearModel` getters `dim_r`, `has_rmatrix`, `natom`,
+  `norb`, `nsta`, `atom_list`, `atom_position`, and `rec_lat`, and implement the
+  existing `Kpath` trait (import `Rustb::Kpath`, as for `Model`).
+  The shared single-channel count follows the spinless convention:
+  `nsta() == norb() == up().norb() == down().norb()`, never summed or doubled.
+  Common geometry and k-path validation/units are unchanged;
+  orbital/Hamiltonian queries remain channel-explicit, with no forwarded mutations.
 
 ### Safety and numerical fixes
 

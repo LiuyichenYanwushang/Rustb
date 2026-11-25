@@ -190,12 +190,21 @@ calculations, but crystal-symmetry analysis returns `MissingAtomicStructure`.
 Use `Rustb::CollinearModel<DIM, R>` for two uncoupled spin channels.
 `CollinearModel::new(up, down)` takes ownership of two `Model<false, DIM, R>`
 values, validates each, and requires exactly equal lattices and ordered `Atom`
-lists, including orbital IDs and optional moments. It stores two owned models;
-common metadata means equality, not physically deduplicated storage. Each
-channel keeps its own orbital basis and centres, `ham`, `hamR`, and `rmatrix`.
+lists, including orbital IDs and optional moments. Orbital counts and ordered
+`orb_projection` (orbital types and order) must also match exactly. It stores
+two owned models; common metadata means equality, not physically deduplicated
+storage. Orbital centres may differ; `ham`, `hamR`, and `rmatrix` are independent.
 Use `up()` and `down()` to borrow the channels, `into_channels()` to recover
 `(up_model, down_model)`, and `lat()` and `atoms()` to borrow the common values
-from up.
+from up. Model-style getters are also available: `dim_r()`, `has_rmatrix()`,
+`natom()`, `norb()`, `nsta()`, `atom_list()`, `atom_position()` and `rec_lat()?`.
+The shared single-channel count is spinless:
+`pair.nsta() == pair.norb() == pair.up().norb() == pair.down().norb()`, never
+a sum or factor of two. Shared geometry is unchanged; orbital and Hamiltonian
+queries remain explicit on `up()`/`down()`, with no forwarded
+mutating APIs. Import `Rustb::Kpath`, as for `Model`, for
+`pair.k_path(&path, nk)?` using the common lattice and the same validated sampler
+(distances omit `2π`).
 
 All eight `Solve` counterparts are inherent methods with the same arguments:
 `solve_band_onek`, `solve_band_range_onek`, `solve_band_all`, and

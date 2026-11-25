@@ -311,12 +311,23 @@ pub struct Model<
 
 - **`CollinearModel<DIM, R>`** (crate root): `new(up, down)` owns and validates
   two `Model<false, DIM, R>` values with exactly equal `lat` and ordered `Atom`
-  metadata, including IDs and optional moments. It stores two owned models;
-  common metadata is an equality invariant, not physically deduplicated storage.
-  Preserve independent orbital bases and centres, `ham`, `hamR`, and `rmatrix`.
+  metadata, including IDs and optional moments. Orbital counts and ordered
+  `orb_projection` (orbital types and order) must also be exactly equal. It stores
+  two owned models; common metadata is an equality invariant, not physically
+  deduplicated storage. Only orbital centres may differ among basis metadata;
+  `ham`, `hamR`, and `rmatrix` remain independent.
   `up()`/`down()` borrow channels; `lat()`/`atoms()` borrow common values from up;
-  `into_channels()` returns the owned `(up_model, down_model)` tuple. All eight
-  `Solve` counterparts are inherent methods with the same arguments:
+  `into_channels()` returns the owned `(up_model, down_model)` tuple. Model-style
+  getters are `dim_r`, `has_rmatrix`, `natom`, `norb`, `nsta`, `atom_list`,
+  `atom_position`, and `rec_lat`. Preserve the shared single-channel spinless
+  count: `pair.nsta() == pair.norb() == pair.up().norb() == pair.down().norb()`,
+  never summed or doubled. Atom queries use common metadata; reciprocal vectors are rows
+  satisfying `B Aᵀ = 2π I`. The existing `Kpath` trait is implemented on the pair:
+  import `Rustb::Kpath`, as for `Model`; use the common lattice and shared
+  validation/sampler, with path distances omitting `2π`. Keep orbital/Hamiltonian
+  queries explicit on `up()`/`down()`; do not forward mutations or add `Deref`,
+  wrappers, or a parallel query trait. All eight `Solve` counterparts are
+  inherent methods with the same arguments:
   `solve_band_onek`, `solve_band_range_onek`, `solve_band_all`, and
   `solve_band_all_parallel` return `Result<(E_up, E_down)>`; `solve_onek`,
   `solve_range_onek`, `solve_all`, and `solve_all_parallel` return
@@ -998,10 +1009,10 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   entry is now on `CollinearModel<3, R>`: construct `CollinearModel::new(up, down)?`,
   then call `pair.symmetrize_pair_with_collinear_spin_group(group, basis, params)`.
   It borrows the pair and returns `Result<CollinearModel<3, R>>`; the old
-  associated `Model` entry is removed without a deprecated alias. In addition to
-  the constructor's exact common metadata, pair projection requires equal basis
-  sizes and orbital projections; swaps require corresponding Wannier gauges
-  and centre differences below half a cell in each fractional component.
+  associated `Model` entry is removed without a deprecated alias. The constructor
+  already enforces exact common metadata, equal basis sizes and ordered orbital
+  projections; swaps additionally require corresponding Wannier gauges and
+  centre differences below half a cell in each fractional component.
   These projections leave inputs unchanged and do not return reports; use
   `check_hamiltonian_symmetry` for separate diagnostics.
 - **Band coreps diagnose rather than hide broken symmetry**: call

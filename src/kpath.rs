@@ -1,7 +1,8 @@
 //! Piecewise-linear high-symmetry paths.
 //!
-//! [`Kpath`] is implemented by [`crate::Model`] and [`crate::SurfGreen`]. The
-//! sampler validates the node coordinates, retains every node exactly (including
+//! [`Kpath`] is implemented by [`crate::Model`], [`crate::CollinearModel`],
+//! [`crate::Magnon`] and [`crate::SurfGreen`]. The sampler validates the node
+//! coordinates, retains every node exactly (including
 //! nodes that border very short segments) and returns
 //!
 //! - the sampled k-points, shape `(nk, DIM)`,
@@ -62,6 +63,16 @@ impl<const SPIN: bool, const DIM: usize, R: RMatrixData> Kpath for Model<SPIN, D
         nk: usize,
     ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
         interpolate_k_path(&self.lat, DIM, path, nk)
+    }
+}
+
+impl<const DIM: usize, R: RMatrixData> Kpath for crate::CollinearModel<DIM, R> {
+    fn k_path(
+        &self,
+        path: &Array2<f64>,
+        nk: usize,
+    ) -> Result<(Array2<f64>, Array1<f64>, Array1<f64>)> {
+        interpolate_k_path(self.lat(), DIM, path, nk)
     }
 }
 

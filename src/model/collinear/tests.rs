@@ -1,7 +1,7 @@
 use super::CollinearModel;
 use crate::{
-    Atom, AtomType, FloquetDrive, FloquetEffectiveOptions, Gauge, HasRMatrix, LightMode, Model,
-    OrbitalId, Solve, TbError,
+    Atom, AtomType, FloquetDrive, FloquetEffectiveOptions, Gauge, HasRMatrix, Kpath, LightMode,
+    Model, OrbProj, OrbitalId, Solve, TbError,
 };
 use ndarray::{Array2, ArrayView1, ArrayView2, Axis, array};
 use num_complex::Complex64 as C;
@@ -78,6 +78,156 @@ fn test_new_keeps_both_channels_independent() {
     let (actual_up, actual_down) = pair.into_channels();
     assert_channel(&actual_up, &up, 0.0);
     assert_channel(&actual_down, &down, 0.0);
+}
+
+#[test]
+fn test_queries_use_common_metadata_and_single_channel_size() {
+    let [up, down] = channels();
+    let pair = CollinearModel::new(up, down).unwrap();
+    let pair: &CollinearModel<2, HasRMatrix> = &pair;
+    assert_eq!(pair.dim_r(), 2);
+    assert!(pair.has_rmatrix());
+    assert_eq!(pair.natom(), 2);
+    assert_eq!(pair.norb(), 3);
+    assert_eq!(pair.nsta(), pair.norb());
+    assert_eq!(pair.nsta(), pair.up().nsta());
+    assert_eq!(pair.down().nsta(), 3);
+    assert_eq!(pair.atom_list(), vec![2, 1]);
+    assert_eq!(pair.atom_position(), array![[0.0, 0.0], [0.25, 0.25]]);
+    assert_eq!(pair.atom_position(), pair.down().atom_position());
+    assert_ne!(pair.up().orb, pair.down().orb);
+    assert_atoms(pair.atoms(), &pair.down().atoms);
+
+    let reciprocal = pair.rec_lat().unwrap();
+    assert_eq!(reciprocal, pair.up().rec_lat().unwrap());
+    // Reciprocal vectors are rows, not columns, even for a skew lattice.
+    let dual = reciprocal.dot(&pair.lat().t());
+    let expected = Array2::<f64>::eye(2) * std::f64::consts::TAU;
+    assert!((&dual - &expected).iter().all(|x| x.abs() < 1e-12));
+}
+
+#[test]
+fn test_queries_keep_no_rmatrix_single_channel_size() {
+    let up = Model::<false, 1>::tb_model(array![[2.0]], array![[0.0]], None).unwrap();
+    let down = Model::<false, 1>::tb_model(array![[2.0]], array![[0.25]], None).unwrap();
+    let pair = CollinearModel::new(up, down).unwrap();
+    let pair: &CollinearModel<1> = &pair;
+    assert_eq!(pair.dim_r(), 1);
+    assert!(!pair.has_rmatrix());
+    assert_eq!(pair.natom(), 0);
+    assert!(pair.atom_list().is_empty());
+    assert_eq!(pair.atom_position().dim(), (0, 1));
+    assert_eq!(pair.norb(), pair.up().norb());
+    assert_eq!(pair.nsta(), pair.norb());
+    assert_eq!(pair.nsta(), 1); // Never doubled or summed across channels.
+    assert_eq!(pair.down().nsta(), pair.nsta());
+    assert_eq!(pair.rec_lat().unwrap(), array![[std::f64::consts::PI]]);
+
+    let path = array![[0.0], [0.5]];
+    let sampled = pair.k_path(&path, 3).unwrap();
+    assert_eq!(sampled, pair.up().k_path(&path, 3).unwrap());
+    assert_eq!(sampled.0, array![[0.0], [0.25], [0.5]]);
+    assert_eq!(sampled.1, array![0.0, 0.125, 0.25]);
+    assert_eq!(sampled.2, array![0.0, 0.25]);
+}
+
+#[test]
+fn test_new_rejects_orbital_count_and_projection_mismatches() {
+    for atoms in [
+        None,
+        Some(vec![Atom::with_orbitals(
+            array![0.0],
+            AtomType::Fe,
+            [OrbitalId::new(0), OrbitalId::new(1)],
+        )]),
+    ] {
+        let make = |n| {
+            Model::<false, 1>::tb_model(array![[2.0]], Array2::zeros((n, 1)), atoms.clone())
+                .unwrap()
+        };
+        let mut up = make(2);
+        up.orb_projection = vec![OrbProj::px, OrbProj::py];
+        let err = CollinearModel::new(up.clone(), make(3)).unwrap_err();
+        assert!(matches!(
+            err,
+            TbError::InvalidModelInvariant {
+                invariant: "collinear_orbital_count",
+                ..
+            }
+        ));
+        for projections in [
+            vec![OrbProj::px, OrbProj::pz], // Different type.
+            vec![OrbProj::py, OrbProj::px], // Same types in a different order.
+        ] {
+            let mut down = up.clone();
+            down.orb_projection = projections;
+            down.validate().unwrap();
+            assert!(matches!(
+                CollinearModel::new(up.clone(), down),
+                Err(TbError::InvalidModelInvariant {
+                    invariant: "collinear_orbital_projections",
+                    ..
+                })
+            ));
+        }
+        let mut down = up.clone();
+        down.orb[[0, 0]] = 0.125;
+        assert!(CollinearModel::new(up, down).is_ok());
+    }
+}
+
+#[test]
+fn test_k_path_preserves_short_nodes_and_skew_distances() {
+    let [up, down] = channels();
+    let pair = CollinearModel::new(up, down).unwrap();
+    let pair: &CollinearModel<2, HasRMatrix> = &pair;
+    let path = array![[0.0, 0.0], [1e-9, 0.0], [1.0, 0.0], [1.0, 1.0]];
+    // For this lattice, reciprocal steps along x and y have lengths
+    // sqrt(1 + 0.25^2) and 1, respectively, without the 2*pi factor.
+    let x_length = 1.0625_f64.sqrt();
+    let expected_nodes = array![0.0, 1e-9 * x_length, x_length, x_length + 1.0];
+    for nk in [4, 9] {
+        let sampled = pair.k_path(&path, nk).unwrap();
+        assert_eq!(sampled, pair.up().k_path(&path, nk).unwrap());
+        assert_eq!(sampled, pair.down().k_path(&path, nk).unwrap());
+        let (points, distances, nodes) = sampled;
+        assert_eq!(points.dim(), (nk, 2));
+        assert_eq!(distances.len(), nk);
+        assert_eq!(nodes.len(), path.nrows());
+        assert!((&nodes - &expected_nodes).iter().all(|x| x.abs() < 1e-14));
+        assert_eq!(distances[0], 0.0);
+        assert_eq!(distances[nk - 1], nodes[nodes.len() - 1]);
+        assert!(distances.windows(2).into_iter().all(|w| w[1] > w[0]));
+        for node in path.rows() {
+            assert!(points.rows().into_iter().any(|point| point == node));
+        }
+    }
+}
+
+#[test]
+fn test_k_path_rejects_invalid_nodes_and_sample_counts() {
+    let [up, down] = channels();
+    let pair = CollinearModel::new(up, down).unwrap();
+    assert!(matches!(
+        pair.k_path(&array![[0.0], [1.0]], 3),
+        Err(TbError::PathLengthMismatch {
+            expected: 2,
+            actual: 1
+        })
+    ));
+    for path in [
+        Array2::zeros((0, 2)),
+        array![[0.0, 0.0]],
+        array![[0.0, 0.0], [0.0, 0.0]],
+        array![[0.0, 0.0], [f64::NAN, 0.0]],
+        array![[0.0, 0.0], [0.0, f64::INFINITY]],
+    ] {
+        assert!(matches!(pair.k_path(&path, 3), Err(TbError::Other(_))));
+    }
+    let path = array![[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]];
+    for nk in [0, 2, usize::MAX] {
+        assert!(matches!(pair.k_path(&path, nk), Err(TbError::Other(_))));
+    }
 }
 
 #[test]
@@ -185,6 +335,10 @@ fn test_floquet_pair_and_sweep_match_independent_channels() {
         assert_eq!(key, REQUESTS[i]);
         assert_channel(actual.up(), &refs[i][0], 2e-11);
         assert_channel(actual.down(), &refs[i][1], 2e-11);
+        assert_eq!(actual.norb(), 3);
+        assert_eq!(actual.nsta(), actual.norb());
+        assert_eq!(actual.nsta(), actual.up().nsta());
+        assert_eq!(actual.nsta(), actual.down().nsta());
         seen.push(key);
         Ok(())
     })
@@ -458,16 +612,26 @@ fn test_paired_solvers_reject_bad_inputs_and_down_overflow() {
 }
 
 #[test]
-fn test_orbital_only_unequal_bands_and_empty_batches() {
-    let mut up = Model::<false, 2>::tb_model(Array2::eye(2), Array2::zeros((1, 2)), None).unwrap();
+fn test_orbital_only_independent_bands_and_empty_batches() {
+    let mut up = Model::<false, 2>::tb_model(Array2::eye(2), Array2::zeros((2, 2)), None).unwrap();
     let mut down =
         Model::<false, 2>::tb_model(Array2::eye(2), Array2::zeros((2, 2)), None).unwrap();
-    up.set_onsite(&array![0.5], None);
+    up.set_onsite(&array![0.5, 1.5], None);
     down.set_onsite(&array![2.0, -1.0], None);
     let pair = CollinearModel::new(up, down).unwrap();
     assert!(pair.atoms().is_empty());
-    let expected = [array![0.5], array![-1.0, 2.0]];
+    assert_eq!(pair.nsta(), 2);
+    let expected = [array![0.5, 1.5], array![-1.0, 2.0]];
     let k = array![0.31, -0.11];
+    // Equal basis sizes still allow unequal numbers of states in one window.
+    let window = (-2.0, 1.75);
+    let bands = pair.solve_band_range_onek(&k, window, 0.0).unwrap();
+    assert_eq!(bands, (array![0.5, 1.5], array![-1.0]));
+    let states = pair.solve_range_onek(&k, window, 0.0).unwrap();
+    assert_eq!(states.0.0, bands.0);
+    assert_eq!(states.1.0, bands.1);
+    assert_eq!(states.0.1.dim(), (2, 2));
+    assert_eq!(states.1.1.dim(), (1, 2));
     for (up_bands, down_bands) in [
         pair.solve_band_onek(&k).unwrap(),
         pair.solve_band_range_onek(&k, (-3.0, 3.0), 0.0).unwrap(),

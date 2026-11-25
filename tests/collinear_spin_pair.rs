@@ -101,31 +101,22 @@ fn full_collinear_spin_group_projects_the_channel_average() {
 }
 
 #[test]
-fn full_collinear_projection_rejects_mismatched_orbital_projections() {
+fn collinear_pair_rejects_projection_mismatch_before_symmetrization() {
     use Rustb::{OrbProj, TbError};
 
     let up = two_site_model(1.0);
     let mut down = two_site_model(2.0);
     down.set_projection(&vec![OrbProj::s, OrbProj::px]);
-    // Independent bases are valid for a pair, but not for channel-swapping projection.
-    let input = CollinearModel::new(up, down).unwrap();
-    let group = detect_collinear_spin_group(
-        &crystal(),
-        CollinearMoments::Signed(&[1.0, -1.0]),
-        SpinTolerances::default(),
-    )
-    .unwrap();
-    let error = input
-        .symmetrize_pair_with_collinear_spin_group(
-            &group,
-            &CenterResolvedBasis::new(),
-            &HamiltonianSymmetrizationParameters::default(),
-        )
-        .unwrap_err();
+    up.validate().unwrap();
+    down.validate().unwrap();
+    // Individually valid channels must share their ordered orbital types
+    // before the pair can enter any solver or channel-swapping projection.
     assert!(matches!(
-        error,
-        TbError::TargetMagneticGroupIncompatible { reason }
-            if reason.contains("orbital projections")
+        CollinearModel::new(up, down),
+        Err(TbError::InvalidModelInvariant {
+            invariant: "collinear_orbital_projections",
+            ..
+        })
     ));
 }
 

@@ -7,11 +7,17 @@ use num_complex::Complex;
 
 /// Two uncoupled spin channels of one collinear tight-binding system.
 ///
-/// The supplied models have exactly equal lattice and atomic metadata. Each
-/// model retains its storage; orbital centres, hopping supports, and position
+/// The supplied models have exactly equal lattice, atomic metadata, orbital
+/// counts and ordered orbital projections. Each model retains its storage;
+/// orbital centres, hopping supports, and position
 /// matrices remain independent. The inherent solvers mirror [`Solve`] with
 /// results in `(up, down)` order. No spin-flip terms are represented; use a
 /// spinor [`Model`] if the channels are coupled.
+///
+/// Size and geometry queries mirror the spinless [`Model`] interface.
+/// [`Self::nsta`] equals [`Self::norb`] and is the shared single-channel count,
+/// never the sum of both channels. Both channels use the same ordered orbital
+/// types and atom ownership, but their orbital centres may differ.
 ///
 /// ```
 /// use Rustb::{CollinearModel, Model};
@@ -22,6 +28,8 @@ use num_complex::Complex;
 /// up.set_onsite(&array![-1.0], None);
 /// down.set_onsite(&array![1.0], None);
 /// let model = CollinearModel::new(up, down)?;
+/// assert_eq!(model.norb(), 1);
+/// assert_eq!(model.nsta(), model.norb());
 /// let (e_up, e_down) = model.solve_band_onek(&array![0.0])?;
 /// assert_eq!((e_up[0], e_down[0]), (-1.0, 1.0));
 /// # Ok::<(), Rustb::TbError>(())
@@ -37,9 +45,11 @@ impl<const DIM: usize, R: RMatrixData> CollinearModel<DIM, R> {
     ///
     /// Both models must validate and have exactly equal lattice entries and
     /// atom lists, in order, including species, fractional positions, orbital
-    /// IDs and optional magnetic moments. No tolerance, wrapping or reordering
-    /// is applied. The caller must use a common energy reference. Orbital
-    /// bases are not matched between the two channels.
+    /// IDs and optional magnetic moments. Orbital counts and the full ordered
+    /// orbital-projection lists must also agree, including unassigned orbitals.
+    /// Thus every atom has the same orbital types in the same order. Orbital
+    /// centres may differ. No tolerance, wrapping or reordering is applied;
+    /// the caller must use a common energy reference and corresponding gauges.
     pub fn new(up: Model<false, DIM, R>, down: Model<false, DIM, R>) -> Result<Self> {
         up.validate()?;
         down.validate()?;
@@ -47,6 +57,30 @@ impl<const DIM: usize, R: RMatrixData> CollinearModel<DIM, R> {
             return Err(TbError::InvalidModelInvariant {
                 invariant: "collinear_lattice",
                 message: "up and down must have exactly the same lattice".into(),
+            });
+        }
+        if up.norb() != down.norb() {
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "collinear_orbital_count",
+                message: format!(
+                    "up and down must have the same orbital count ({} and {})",
+                    up.norb(),
+                    down.norb()
+                ),
+            });
+        }
+        if let Some(i) = up
+            .orb_projection
+            .iter()
+            .zip(&down.orb_projection)
+            .position(|(up, down)| up != down)
+        {
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "collinear_orbital_projections",
+                message: format!(
+                    "up and down orbital {i} must have identical projection types in the same order ({:?} and {:?})",
+                    up.orb_projection[i], down.orb_projection[i]
+                ),
             });
         }
         if up.atoms.len() != down.atoms.len() {
@@ -72,6 +106,50 @@ impl<const DIM: usize, R: RMatrixData> CollinearModel<DIM, R> {
             }
         }
         Ok(Self { up, down })
+    }
+
+    /// Number of real-space dimensions, shared by both channels.
+    pub fn dim_r(&self) -> usize {
+        self.up.dim_r()
+    }
+
+    /// Whether both channels carry position matrices.
+    pub fn has_rmatrix(&self) -> bool {
+        self.up.has_rmatrix()
+    }
+
+    /// Number of atoms in the common ordered atom list.
+    pub fn natom(&self) -> usize {
+        self.up.natom()
+    }
+
+    /// Shared number of orbitals per channel, not the sum over channels.
+    /// The constructor guarantees the same count and ordered orbital types.
+    pub fn norb(&self) -> usize {
+        self.up.norb()
+    }
+
+    /// Shared number of states per channel: exactly [`Self::norb`], as for
+    /// `Model<false, DIM, R>`. There is no factor of two.
+    pub fn nsta(&self) -> usize {
+        self.norb()
+    }
+
+    /// Orbital count assigned to each atom in the common atom list.
+    pub fn atom_list(&self) -> Vec<usize> {
+        self.up.atom_list()
+    }
+
+    /// Common fractional atom positions, with shape `(natom, DIM)`.
+    pub fn atom_position(&self) -> Array2<f64> {
+        self.up.atom_position()
+    }
+
+    /// Reciprocal lattice vectors as rows, satisfying `B Aᵀ = 2π I`.
+    ///
+    /// Uses [`Model::rec_lat`] and preserves its lattice-inversion errors.
+    pub fn rec_lat(&self) -> Result<Array2<f64>> {
+        self.up.rec_lat()
     }
 
     /// Borrow the common lattice matrix (real-space lattice vectors as rows).
@@ -161,8 +239,8 @@ impl<const DIM: usize, R: RMatrixData> CollinearModel<DIM, R> {
     /// Return `((energies_up, vectors_up), (energies_down, vectors_down))`.
     ///
     /// Each channel uses its own [`super::Gauge::Atom`] embedding and the row-ket
-    /// convention of [`Solve::solve_onek`]: `vectors[band, basis]`. No phase,
-    /// basis or band matching is performed between channels or k-points.
+    /// convention of [`Solve::solve_onek`]: `vectors[band, basis]`. No phase
+    /// alignment or band tracking is performed between channels or k-points.
     pub fn solve_onek<S: Data<Elem = f64>>(
         &self,
         kvec: &ArrayBase<S, Ix1>,
