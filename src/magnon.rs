@@ -127,6 +127,7 @@ pub mod exchange;
 pub mod floquet;
 pub mod io;
 pub mod physics;
+mod tb2j;
 
 pub use self::exchange::{ExchangeParams, MagnonContour};
 pub use self::floquet::{MagnonFloquet, MagnonSambe};

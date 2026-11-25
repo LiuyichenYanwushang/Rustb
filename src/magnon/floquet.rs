@@ -52,6 +52,400 @@
 //! Floquet replica with the model-space return, and the folded normalization),
 //! and the lattice multiplicities convert a single three-site `V` cluster into
 //! the coefficients below.
+//!
+//! # Aharonov-Casher effect and honeycomb benchmark
+//!
+//! ## Coupling a transverse spin exchange to light
+//!
+//! The Aharonov–Casher (AC) phase couples a magnetic moment to an electric field. It
+//! is distinct from the electronic Aharonov–Bohm (AB) phase: here the input is an
+//! existing spin Hamiltonian, not a charge hopping model or a Hubbard interaction.
+//! In SI units define the normalized electric field, the corresponding AC
+//! wavevector, and the phase of the directed link from site $i$ to site $j$ by
+//!
+//! $$
+//! \begin{aligned}
+//! \boldsymbol{\mathcal E}(t)&=\frac{g\_{\rm L}\mu\_B}{\hbar c^2}\mathbf E(t),\\\\
+//! \mathbf k\_{\rm AC}(t)&=\boldsymbol{\mathcal E}(t)\times\hat{\mathbf n},\\\\
+//! \mathbf d\_{ij\mathbf R}&=(\mathbf R+\boldsymbol{\tau}\_j-\boldsymbol{\tau}\_i)L,\\\\
+//! \phi\_{ij\mathbf R}(t)&=\mathbf k\_{\rm AC}(t)\cdot\mathbf d\_{ij\mathbf R}.
+//! \end{aligned}
+//! $$
+//!
+//! Here $g\_{\rm L}$ is the Landé factor (not the BdG metric), $L$ has the
+//! real-space lattice vectors as rows, and $\boldsymbol{\tau}\_i$ are fractional
+//! site positions. Pass $\boldsymbol{\mathcal E}$, **not** $\mathbf E$ or
+//! $\mathbf k\_{\rm AC}$, to [`MagnonSambe::new_aharonov_casher`]. Convert the SI
+//! result from inverse metres to inverse ångströms when the lattice is in ångströms.
+//!
+//! The spin operators below are defined with respect to the *common* axis
+//! $\hat{\mathbf n}$, even for antiparallel reference moments. An isotropic
+//! exchange on one link has the substitution
+//!
+//! $$
+//! \begin{aligned}
+//! S\_i^n S\_j^n &\longmapsto S\_i^n S\_j^n,\\\\
+//! \tfrac12(S\_i^- S\_j^+ + S\_i^+ S\_j^-)
+//! &\longmapsto \tfrac12\bigl(e^{-i\phi\_{ij\mathbf R}} S\_i^- S\_j^+
+//! \+ e^{+i\phi\_{ij\mathbf R}} S\_i^+ S\_j^-\bigr).
+//! \end{aligned}
+//! $$
+//!
+//! Longitudinal exchange and onsite terms are unchanged. The backend assumes a
+//! collinear reference and exchange tensors that conserve spin about the AC axis.
+//! A magnon on a moment along $+\hat{\mathbf n}$ carries spin projection $-\hbar$;
+//! on the opposite moment it carries $+\hbar$. In a bosonic BdG spin sector
+//! $\sigma=\pm1$ (in units of $\hbar$), active intersite matrix elements on the
+//! link carry $e^{i\sigma\phi\_{ij\mathbf R}}$. This does not in general amount to
+//! shifting the momentum of the entire dynamical matrix by the same vector in
+//! both spin sectors.
+//!
+//! ## Bosonic Floquet perturbation theory
+//!
+//! Let $H(t)$ denote the Hermitian BdG matrix, $G$ its metric, and $W$ the photon
+//! energy. With ordinary physical time $t$ the dynamical problem and its
+//! one-period propagator are
+//!
+//! $$
+//! \begin{aligned}
+//! G&=\operatorname{diag}(I,-I),\qquad W=\hbar\Omega,\\\\
+//! i\hbar\partial\_t\Psi&=GH(t)\Psi,\\\\
+//! U(T)&=\mathcal T\exp\left(-\frac{i}{\hbar}\int\_0^T GH(t)\\,\mathrm{d}t\right),
+//! \qquad T=\frac{2\pi}{\Omega}.
+//! \end{aligned}
+//! $$
+//!
+//! If a mode is stable and has positive metric norm, its eigenvalue of $U(T)$
+//! is $e^{-i\varepsilon T/\hbar}$. The quasienergy $\varepsilon$ is only defined
+//! modulo $W$; compare the branches continued from their zero-field energies, not
+//! just the sorted values in the folded Floquet zone. The `time` argument of
+//! [`MagnonSambe::bdg_at_time`] is physical time divided by $\hbar$, in inverse eV,
+//! so the angle used by that method is `omega0_ev * time`, not `omega0_ev` times
+//! seconds.
+//!
+//! For a small dimensionless drive parameter $\alpha$, use the convention
+//!
+//! $$
+//! \begin{aligned}
+//! H(t)&=H\_0+\alpha\sum\_{m\ne0}V\_m e^{-im\Omega t}
+//! \+\alpha^2 Q(t)+\cdots,\qquad V\_{-m}=V\_m^\dagger,\\\\
+//! GH\_0u\_b&=E\_bu\_b,\qquad u\_b^\dagger G u\_{b^{\prime}}=s\_b\delta\_{bb^{\prime}},\qquad s\_b=\pm1.
+//! \end{aligned}
+//! $$
+//!
+//! For an isolated positive-norm branch $a$ of a diagonalizable, stable dark
+//! problem (or a branch isolated within its conserved spin sector), the quadratic
+//! energy correction is
+//!
+//! $$
+//! \delta\varepsilon\_a^{(2)}=\alpha^2\left(
+//!  u\_a^\dagger\overline Q u\_a
+//!  +\sum\_{m\ne0,b}\frac{s\_b\lvert u\_b^\dagger V\_m u\_a\rvert^2}{E\_a-E\_b+mW}
+//! \right).
+//! $$
+//!
+//! $\overline Q$ is the period average of $Q(t)$. A Fourier component $V\_m$ couples
+//! the central replica to a state of energy $E\_b-mW$, and the left eigenvector of
+//! $GH\_0$ is $s\_b u\_b^\dagger G$. These two facts fix the denominator and the
+//! sign of the contribution from a **negative-norm** intermediate, respectively.
+//! In a degenerate same-spin subspace use the projected second-order matrix
+//! instead of this nondegenerate formula. This expansion is in the field amplitude,
+//! not in inverse frequency; an actual Floquet-replica degeneracy needs a resonant
+//! treatment.
+//!
+//! ## Circularly driven nearest-neighbour honeycomb
+//!
+//! Use equal spins $S$, two sites $A,B$, only nearest-neighbour isotropic exchange,
+//! and a unit AC axis $\hat{\mathbf z}$ normal to the plane. In the ordered-pair
+//! [`crate::magnon::Magnon`] convention the landscape exchange per directed bond
+//! is $J>0$ for FM and $J<0$ for AFM. The positive linear spin-wave matrix element
+//! $t\_{\rm sw}$ and the dark energy at either valley are
+//!
+//! $$
+//! t\_{\rm sw}=\frac{2\lvert J\rvert}{S},\qquad \varepsilon\_K=3t\_{\rm sw},\qquad
+//! \alpha=\frac{g\_{\rm L}\mu\_B E\_0 a}{\hbar c^2}.
+//! $$
+//!
+//! For bond length $a$, choose the three directed bonds from $A$ to $B$ at angles
+//! $\varphi\_j=2\pi j/3$, $j=0,1,2$. Use the circular AC wavevector
+//! $(\alpha/a)(\cos\theta,\eta\sin\theta,0)$ with $\theta=\Omega t$ and helicity
+//! $\eta=\pm1$. The Bloch weights for the upper BdG blocks, in atom gauge at the
+//! valley $K\_\tau=\tau(0,4\pi/(3\sqrt{3}a),0)$, are $e^{i\tau\varphi\_j}$.
+//! The spin-$-1$ structure factor at that valley is then
+//!
+//! $$
+//! \begin{aligned}
+//! f\_\tau(\theta)&=\sum\_{j=0}^2 e^{i\tau\varphi\_j}
+//!  e^{-i\alpha\cos(\theta-\eta\varphi\_j)},\\\\
+//! \overline f\_\tau&=\mathcal J\_0(\alpha)\sum\_{j=0}^2 e^{i\tau\varphi\_j}=0,\\\\
+//! f\_\tau(\theta)&=-\frac{3i\alpha}{2}e^{ih\theta}+O(\alpha^2),\qquad h=\eta\tau.
+//! \end{aligned}
+//! $$
+//!
+//! The linear term follows by expanding the exponential and using the sum of
+//! cube roots of unity on each of the two harmonics of the cosine. Thus there is
+//! one active first-order circular harmonic, and no time-average shift at the
+//! valley. Define $v=3t\_{\rm sw}\alpha/2$. Terms odd in $\alpha$ do not enter
+//! the continued quasienergy branches here: changing the amplitude sign translates
+//! the circular drive by half a period.
+//!
+//! ### Ferromagnet: one spin sector, two sublattices
+//!
+//! Both moments point along $+\hat{\mathbf z}$. The particle block is Hermitian,
+//! with diagonal $\varepsilon\_K$ and off-diagonal proportional to
+//! $-t\_{\rm sw}f\_\tau$. At order $\alpha^2$ the effective matrix in the dark
+//! $A,B$ doublet is diagonal. The first harmonic takes $A$ to a $B$ replica with
+//! detuning $hW$, and $B$ to an $A$ replica with detuning $-hW$. Both intermediate
+//! states have positive norm. Hence
+//!
+//! $$
+//! \begin{aligned}
+//! \varepsilon\_A&=\varepsilon\_K+\frac{h v^2}{W}+O(\alpha^4),\\\\
+//! \varepsilon\_B&=\varepsilon\_K-\frac{h v^2}{W}+O(\alpha^4),\\\\
+//! \Delta\_{\rm FM}^{A-B}&=\varepsilon\_A-\varepsilon\_B
+//!  =\frac{2h v^2}{W}+O(\alpha^4).
+//! \end{aligned}
+//! $$
+//!
+//! The Dirac gap *at the valley* is the absolute value of this signed difference.
+//! Reversing $h$ swaps the sublattice ordering, not the spin of the branches. The
+//! result is not an opposite-spin splitting.
+//!
+//! ### Néel antiferromagnet: two spin sectors
+//!
+//! Take $A$ along $+\hat{\mathbf z}$ and $B$ along $-\hat{\mathbf z}$. The two
+//! physical branches have spins $-1$ and $+1$, respectively. At the valley each
+//! particle is coupled only to the opposite sublattice's hole in its own spin
+//! sector. For the spin-$-1$ sector the dynamical matrix, up to a constant local
+//! frame gauge, is
+//!
+//! $$
+//! D\_{-}(\theta)=\begin{pmatrix}
+//! \varepsilon\_K & t\_{\rm sw} f\_\tau(\theta)\\\\
+//! -t\_{\rm sw} f\_\tau(\theta)^\ast & -\varepsilon\_K
+//! \end{pmatrix}.
+//! $$
+//!
+//! For spin $+1$ the particle is on $B$, so the reversed bonds give the
+//! structure factor
+//!
+//! $$
+//! f\_{-\tau}(\theta)=f\_\tau(\theta+\pi)^\ast.
+//! $$
+//!
+//! Its first-order harmonic rotates oppositely to that of the spin-$-1$ sector.
+//! The quantities $2\varepsilon\_K\pm hW$ are detunings to negative-norm replicas.
+//! The BdG metric therefore gives the minus sign in each shift:
+//!
+//! $$
+//! \begin{aligned}
+//! \varepsilon\_-&=\varepsilon\_K-\frac{v^2}{2\varepsilon\_K+hW}+O(\alpha^4),\\\\
+//! \varepsilon\_+&=\varepsilon\_K-\frac{v^2}{2\varepsilon\_K-hW}+O(\alpha^4),\\\\
+//! \Delta\_{\rm AFM}^{(+)-(-)}&=\varepsilon\_+-\varepsilon\_-
+//!  =-\frac{2hWv^2}{(2\varepsilon\_K)^2-W^2}+O(\alpha^4).
+//! \end{aligned}
+//! $$
+//!
+//! Both signed differences are odd under a valley or helicity reversal. The AFM
+//! coefficient has opposite signs on either side of the one-photon resonance
+//! $W=2\varepsilon\_K$; this does not describe the resonance itself, where the
+//! negative-norm replica can also cause a parametric instability. The expansion
+//! requires small $\alpha$ and $v$ small compared with the one-photon detunings,
+//! and excludes resonant higher replicas. These valley formulas do not assert
+//! stability or a full gap throughout the driven Brillouin zone.
+//!
+//! ## Numerical cross-check with Rustb
+//!
+//! Use $S=1$, $a=1$ Å, $\lvert J\rvert=5$ meV per directed bond,
+//! $\alpha=0.05$, $\eta=\tau=+1$. The normalized drive amplitude is a model
+//! benchmark input, not a field inferred for graphene or any magnetic material.
+//!
+//! | Order | Photon energy (meV) | Quadratic prediction (µeV) | Rustb propagator (µeV) |
+//! |---|---:|---:|---:|
+//! | FM, A minus B | 45 | +25.0000 | +24.9755 |
+//! | AFM, spin +1 minus −1 | 45 | −32.1429 | −32.2201 |
+//! | FM, A minus B | 120 | +9.3750 | +9.3680 |
+//! | AFM, spin +1 minus −1 | 120 | +12.5000 | +12.4929 |
+//!
+//! The table uses [`MagnonSambe::propagator_at`] with the AC constructor (and
+//! [`MagnonSambe::ac_spin_quasienergies_at`] for the AFM labels). The signed FM
+//! result labels the stroboscopic eigenvectors by their dominant sublattice at
+//! weak field. Quasienergies are unwrapped towards the dark energy 30 meV. The
+//! reference values extrapolate midpoint propagation from 512 and 4096 time
+//! steps and check the photon cutoff from 6 to 8. With either helicity or valley
+//! reversed, the signed differences reverse. On halving the field, the absolute
+//! quadratic-prediction error falls by approximately 16, as expected for a
+//! quartic remainder. Independently integrating the two-by-two equations directly
+//! in time with the raw link phases (DOP853, without a Fourier expansion) agreed
+//! with the extrapolated values within $5\times10^{-15}$ eV across 24 valley cases,
+//! to the precision of the archived CSV results.
+//!
+//! The runnable example below reproduces the two 45 meV entries, using the gap
+//! magnitude for FM and the signed spin splitting for AFM.
+//!
+//! ```rust
+//! use Rustb::floquet::{FloquetDrive, FloquetTruncation, LightMode};
+//! use Rustb::magnon::{Magnon, MagnonReference, MagnonSambe};
+//! use ndarray::{Array3, array};
+//! use num_complex::Complex64;
+//!
+//! let k = array![-1.0 / 3.0, 1.0 / 3.0, 0.0];  // K+ in reciprocal lattice units
+//! let w = 0.045;       // photon energy in eV
+//! let alpha = 0.05;    // bond phase; a = 1 Å
+//! let eps_k = 0.030;   // 3 t_sw, in eV
+//! let drive = FloquetDrive {
+//!     omega0_ev: w,
+//!     modes: vec![LightMode::new(1, array![
+//!         Complex64::new(0.0, -alpha), Complex64::new(alpha, 0.0),
+//!         Complex64::new(0.0, 0.0),
+//!     ])],
+//! };
+//! let unwrap = |e: f64| e + w * ((eps_k - e) / w).round();
+//! let y = 3.0_f64.sqrt() / 2.0;
+//! for sign in [1.0, -1.0] {
+//!     let mut exchange = Array3::zeros((5, 6, 6));
+//!     for c in 0..3 {
+//!         for r in [0, 1, 3] { exchange[[r, c, c + 3]] = sign * 0.005; }
+//!         for r in [0, 2, 4] { exchange[[r, c + 3, c]] = sign * 0.005; }
+//!     }
+//!     let magnon = Magnon::<3>::new(
+//!         array![[1.5, -y, 0.0], [1.5, y, 0.0], [0.0, 0.0, 10.0]],
+//!         array![[0.0, 0.0, 0.0], [1.0 / 3.0, 1.0 / 3.0, 0.0]],
+//!         array![1.0, 1.0], array![[0.0, 0.0, 1.0], [0.0, 0.0, sign]],
+//!         exchange, array![[0, 0, 0], [-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0]],
+//!         MagnonReference::collinear(),
+//!     )?;
+//!     let ac = MagnonSambe::new_aharonov_casher(
+//!         &magnon, &drive, [0.0, 0.0, 1.0], &FloquetTruncation::new(6),
+//!     )?.with_time_steps(512)?;
+//!     // Instantaneous A→B entry at theta=0: this also checks the AC phase sign.
+//!     let f = Complex64::from_polar(1.0, -alpha) - Complex64::from_polar(1.0, alpha / 2.0);
+//!     let column = if sign > 0.0 { 1 } else { 3 };
+//!     let instantaneous = ac.bdg_at_time(&k, 0.0)?;
+//!     assert!((instantaneous[[0, column]] + sign * 0.010 * f).norm() < 1e-12);
+//!     if sign < 0.0 {
+//!         // At theta=0 the reversed-bond sum is f, not its complex conjugate.
+//!         assert!((instantaneous[[1, 2]] - 0.010 * f).norm() < 1e-12);
+//!     }
+//!     let [minus, plus] = ac.ac_spin_quasienergies_at(&k)?;
+//!     if sign > 0.0 {
+//!         assert_eq!((minus.len(), plus.len()), (2, 0));
+//!         let gap = (unwrap(minus[1]) - unwrap(minus[0])).abs();
+//!         assert!((gap * 1e6 - 24.9755).abs() < 0.01);
+//!     } else {
+//!         assert_eq!((minus.len(), plus.len()), (1, 1));
+//!         let splitting = unwrap(plus[0]) - unwrap(minus[0]);
+//!         assert!((splitting * 1e6 + 32.2201).abs() < 0.01);
+//!     }
+//! }
+//! # Ok::<(), Rustb::TbError>(())
+//! ```
+//!
+//! ## First-order van Vleck Hamiltonian throughout the Brillouin zone
+//!
+//! The weak-field valley expansion above is not a high-frequency expansion.
+//! For the same circular AC drive, one may instead retain the complete field
+//! dependence of the bond harmonics and expand in inverse photon energy. At
+//! arbitrary momentum $\mathbf k$, the Jacobi–Anger expansion gives
+//!
+//! $$
+//! \begin{aligned}
+//! f(\mathbf k,t)&=\sum\_{m\in\mathbb Z}F\_m(\mathbf k)e^{im\Omega t},\\\\
+//! F\_m(\mathbf k)&=(-i)^m\mathcal J\_m(\alpha)
+//!  \sum\_{j=0}^{2}e^{i\mathbf k\cdot\boldsymbol\delta\_j-im\eta\varphi\_j}.
+//! \end{aligned}
+//! $$
+//!
+//! Here $\boldsymbol\delta\_j$ are the three directed nearest-neighbour bonds,
+//! at the angles $\varphi\_j$ specified above. With the **positive** exponent
+//! convention for the harmonics of $D(t)=GH(t)$, the first-order generator is
+//!
+//! $$
+//! D\_{\rm vv}=D\_0+\sum\_{m>0}\frac{\lbrack D\_m,D\_{-m}\rbrack}{mW},
+//! \qquad W=\hbar\Omega.
+//! $$
+//!
+//! In the basis $e^{in\Omega t}$, a virtual photon sector $n$ has detuning
+//! $-nW$ to leading order; pairing the two signs of $n$ fixes the order of
+//! the commutator. For bosons it acts on $D$, not directly on the Hermitian
+//! BdG matrix $H$: the resulting BdG matrix is $H\_{\rm vv}=G D\_{\rm vv}$.
+//!
+//! For this nearest-neighbour model the nonzero harmonics are off-diagonal
+//! within each two-mode block, so their commutator is diagonal. Write
+//!
+//! $$
+//! \begin{aligned}
+//! A&=3t\_{\rm sw},\qquad B(\mathbf k)=t\_{\rm sw}F\_0(\mathbf k),\\\\
+//! M(\mathbf k)&=\frac{t\_{\rm sw}^2}{W}\sum\_{m>0}
+//! \frac{\lvert F\_m(\mathbf k)\rvert^2-\lvert F\_{-m}(\mathbf k)\rvert^2}{m}.
+//! \end{aligned}
+//! $$
+//!
+//! $M$ changes sign under momentum or helicity reversal. The FM particle
+//! block and its two same-spin magnon energies are
+//!
+//! $$
+//! D\_{\rm FM}=\begin{pmatrix}
+//! A+M&-B\\\\
+//! \-B^\ast&A-M
+//! \end{pmatrix},
+//! \qquad \varepsilon\_{{\rm FM},\pm}=A\pm\sqrt{\lvert B\rvert^2+M^2}.
+//! $$
+//!
+//! The negative metric norm of the AFM partner gives the opposite sign of
+//! the commutator in the spin-$-1$ block. The spin-$+1$ block uses reversed
+//! bonds, so set $B\_-(\mathbf k)=B(\mathbf k)$ and
+//! $B\_+(\mathbf k)=B(-\mathbf k)$. For spin $s=\pm1$, the block and its
+//! positive-norm energy on the stable branch ($A+sM>\lvert B\rvert$) are
+//!
+//! $$
+//! D\_{{\rm AFM},s}=\begin{pmatrix}
+//! A+sM&B\_s\\\\
+//! \-B\_s^\ast&-A-sM
+//! \end{pmatrix},
+//! \qquad \varepsilon\_{{\rm AFM},s}=\sqrt{(A+sM)^2-\lvert B\rvert^2}.
+//! $$
+//!
+//! These expressions diagonalize the first-order matrices without expanding
+//! around their degeneracies. Higher powers of $M$ inside the square roots
+//! do not constitute higher-order van Vleck corrections. At $K/K^{\prime}$ one has
+//! $B=0$, so the FM gap is $2\lvert M\rvert$ and the signed AFM spin splitting
+//! is $2M$ on the stable branch connected to the dark model.
+//!
+//! ### Comparison with direct Fourier evaluation and time propagation
+//!
+//! For $t\_{\rm sw}=10$ meV, $\alpha=0.05$, and positive helicity, the analytic
+//! operator was compared on a 123 × 123 reciprocal-cell mesh with the numerical
+//! first-order operator obtained by sampling the raw link phases at 64 times,
+//! Fourier transforming, and constructing the commutators as matrices. Their
+//! maximum elementwise difference is $7.8\times10^{-18}$ eV. This checks the
+//! analytic formula **at the same expansion order**, not the accuracy of the
+//! expansion itself.
+//!
+//! Independent full-period propagation of the raw link phases with 2,048
+//! midpoint steps gives the following results at $K\_+$, with quasienergies
+//! matched to the dark branches. All gaps and splittings are in µeV; the
+//! AFM splitting is spin +1 minus spin −1.
+//!
+//! | Photon energy (meV) | First-order FM gap / AFM splitting | Propagated FM gap | Propagated AFM splitting |
+//! |---:|---:|---:|---:|
+//! | 45 | +24.98243 | +24.97548 | −32.22010 |
+//! | 120 | +9.36841 | +9.36804 | +12.49292 |
+//! | 240 | +4.68421 | +4.68416 | +4.99657 |
+//! | 480 | +2.34210 | +2.34209 | +2.37929 |
+//!
+//! The 45 and 120 meV propagation was cross-checked at representative points
+//! using [`MagnonSambe::propagator_at`]. At 120 meV the first-order operator
+//! reproduces the AFM momentum-odd pattern, but underestimates the valley
+//! splitting by about 25%, versus about 1.6% at 480 meV. The maximum absolute
+//! branch-energy errors on the 120 meV mesh are 0.712 µeV (FM) and 4.686 µeV
+//! (AFM). In the AFM the weak-field denominators are $2A\pm W$ at the valley,
+//! whereas first order in inverse frequency keeps only their large-$W$
+//! asymptotes. At 45 meV the approximation even gives the wrong AFM valley
+//! sign and misses 690 parametrically unstable mesh points near the dark
+//! pair resonance $2\varepsilon\_{\rm dark}(\mathbf k)\simeq W$. Agreement
+//! for the FM at a single valley therefore does not establish that the
+//! high-frequency approximation is valid across the zone or for AFM.
 
 use crate::error::{Result, TbError};
 use crate::floquet::bessel_j;
@@ -1361,8 +1755,8 @@ use ndarray_linalg::Eig;
 
 /// Floquet–Sambe model of a periodically driven magnon Hamiltonian.
 ///
-/// The drive dresses every exchange bond with the Peierls phase the electronic
-/// module uses,
+/// The generic [`Self::new`] path dresses the exchange bonds with the
+/// Peierls phase the electronic module uses,
 ///
 /// $$
 /// \mathbf J\_{ij}(\mathbf R,t)
@@ -1440,6 +1834,8 @@ impl<const DIM: usize> MagnonSambe<DIM> {
     /// conserve spin about `n`; onsite and longitudinal terms are unchanged.
     /// In dimensions below three the lattice is embedded in the first `DIM`
     /// Cartesian coordinates. No charge hopping or Hubbard U is involved.
+    ///
+    /// See the [AC theory and runnable FM/AFM honeycomb benchmark](crate::magnon::floquet#aharonov-casher-effect-and-honeycomb-benchmark).
     pub fn new_aharonov_casher(
         magnon: &MagnonModel<DIM>,
         electric_drive: &FloquetDrive,

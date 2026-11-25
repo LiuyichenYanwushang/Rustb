@@ -1378,6 +1378,37 @@ The extraction returns only isotropic exchange: `J_ij(R)` multiplies the
 would require spinor extraction; spin-off-diagonal blocks in a spinful input
 model are rejected.
 
+### Reading a TB2J `exchange.out` file
+
+`Magnon::<3>::from_tb2j_exchange_out(path)` reads the text file written by
+TB2J's `wann2J.py` and builds the same real-space exchange model as the in-crate
+extraction, without re-running the Green's-function calculation:
+
+```rust
+let magnon = Magnon::<3>::from_tb2j_exchange_out("TB2J_results/exchange.out")?;
+```
+
+Only the **collinear** layout is accepted. Magnetic sites come from the optional
+orbital-decomposition table, or otherwise from the `Exchange:` block. In both
+cases their order follows the `Atoms:` table;
+positions are converted from the file's Cartesian angstrom coordinates,
+`spin[i] = |w_magmom| / 2`, the axes are `+z`/`-z` according to the sign of
+`w_magmom`, and every `J_iso` (meV) becomes a diagonal `3 × 3` block in eV on
+the unique integer `R` list with `R = 0` first. The reference structure is the
+collinear one (`Q = 0`). Newer TB2J files also print a "Combined J tensor" per
+pair; it is accepted only when it equals the diagonal `J_iso I` block.
+
+Vector moments, any represented nonzero DMI or anisotropy, a single-ion
+anisotropy table, or a missing reciprocal entry are rejected with a structured
+error (`tb2j_noncollinear_unsupported`, `tb2j_single_ion_anisotropy_unsupported`,
+or `tb2j_reciprocal_entry`) rather than silently dropping terms. Malformed or
+nonfinite numbers, duplicate atom labels or summaries, and incomplete tensor
+blocks are parse errors. Only redundant scalar/diagonal comparisons allow
+printed rounding tolerance; every exchange entry must have its reverse. The
+file's redundant pair vector and distance columns are checked against the cell
+and atom positions, so a misparsed `R` or site order fails instead of
+producing a shifted model.
+
 ### Floquet superexchange
 
 Start with an undriven `Magnon<DIM>` (for example, one read from exchange files
