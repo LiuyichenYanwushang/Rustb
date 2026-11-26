@@ -136,6 +136,19 @@ model hierarchies with duplicated band, geometry, or response methods.
   `FixedInitialFilling`. The target electron count is computed once from the
   bare model instead of being guessed independently.
 
+### Magnon exchange extraction
+
+- Electronic-to-magnon conversion belongs to the source:
+  `Model<true, DIM, R>::to_magnon(&self, &ExchangeParams) -> Result<Magnon<DIM>>`
+  and `CollinearModel<DIM, R>::to_magnon(&self, &ExchangeParams) -> Result<Magnon<DIM>>`.
+  Both borrow the input; `Magnon::from_model` and `Magnon::from_collinear` are
+  removed without compatibility aliases. For separate channels, construct
+  `CollinearModel::new(up, down)?`, then call `pair.to_magnon(&params)?`.
+- Inputs must share one energy reference with the common Fermi level at zero;
+  do not independently shift the two channels. Although the pair constructor
+  allows independent supports, magnon extraction requires identical ordered
+  `hamR` arrays and rejects differences. The exchange algorithms are unchanged.
+
 ### Unified response APIs
 
 - Every Brillouin-zone response takes one shared `Parameters<DIM>` structure

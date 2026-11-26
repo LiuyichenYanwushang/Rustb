@@ -64,8 +64,8 @@
 //! <summary>Exchange and magnons</summary>
 //!
 //! - [`Magnon<DIM>`](Magnon), a separate spin model:
-//!   - **Extract and store exchange:** [`from_model`](Magnon::from_model),
-//!     [`from_collinear`](Magnon::from_collinear), [`from_hr`](Magnon::from_hr),
+//!   - **Extract and store exchange:** [`Model::to_magnon`],
+//!     [`CollinearModel::to_magnon`], [`from_hr`](Magnon::from_hr),
 //!     [`write_hr`](Magnon::write_hr).
 //!   - **Spin waves:** [`gen_jq`](Magnon::gen_jq), [`gen_bdg`](Magnon::gen_bdg),
 //!     [`magnon_band_onek`](magnon::MagnonSolve::magnon_band_onek), [`magnon_dos`](Magnon::magnon_dos).

@@ -1332,8 +1332,8 @@ assert_eq!(with_crystal.natom(), 1);
 assert!(with_crystal.has_atoms());
 ```
 
-`ExchangeParams` extraction (`from_model`, `from_collinear`) and the TB2J
-reader fill `atoms` and `atom_of_site` automatically from their atom tables, so
+`to_magnon(&ExchangeParams)` extraction and the TB2J reader fill `atoms` and
+`atom_of_site` automatically from their atom tables, so
 symmetry and atom-resolved analysis can relate a magnetic site back to its
 crystal site; those consumers are separate work, the spin-wave solver only uses
 positions, spins and reference axes. A TB2J label that is not a known element
@@ -1386,11 +1386,13 @@ of a complex frequency.
 
 ### TB2J-style exchange extraction from a `Model`
 
-`Magnon::from_model` takes one spinful collinear `Model<true, DIM, R>` and
-splits its spin-major blocks; `Magnon::from_collinear` takes two spinless
-models, one per channel. Both run the LKAG / TB2J extraction (magnetic force
-theorem, local rigid spin rotation, complex-energy Green's functions) and
-return a `Magnon` in the same conventions as the hr files.
+`Model<true, DIM, R>::to_magnon(&self, &ExchangeParams)` splits a spinful
+collinear model's spin-major blocks;
+`CollinearModel<DIM, R>::to_magnon(&self, &ExchangeParams)` uses the pair's two
+spinless channels. Both are inherent methods that borrow the source unchanged,
+run the LKAG / TB2J extraction (magnetic force theorem, local rigid spin
+rotation, complex-energy Green's functions), and return `Result<Magnon<DIM>>`
+in the same conventions as the hr files.
 
 Shift the input model to `E_F = 0` before extraction. For unshifted Wannier90
 files, pass the original Fermi energy as `Model::from_hr`'s third argument
@@ -1398,6 +1400,7 @@ files, pass the original Fermi energy as `Model::from_hr`'s third argument
 spin channels, or `0.0` for files already shifted to `E_F = 0`.
 
 ```rust
+use Rustb::CollinearModel;
 use Rustb::magnon::ExchangeParams;
 
 // 5x5 k-mesh (forced odd), 65 nodes with the default CFR contour.
@@ -1405,11 +1408,21 @@ let kmesh = array![5usize, 5];
 let params = ExchangeParams::new(&kmesh).with_nz(65);
 
 // One spinful model: [all up orbitals, all down orbitals].
-let magnon = Magnon::<2>::from_model(&model_spinful, &params)?;
+let magnon = model_spinful.to_magnon(&params)?;
 
-// Or two spinless models.
-let magnon = Magnon::<2>::from_collinear(&model_up, &model_dn, &params)?;
+// Or own two spinless models in a validated pair.
+let pair = CollinearModel::new(model_up, model_dn)?;
+let magnon = pair.to_magnon(&params)?;
 ```
+
+The pair constructor requires exactly equal lattices, ordered `Atom` metadata
+(including orbital IDs and optional moments), orbital counts and ordered
+`orb_projection`. Although a pair allows independent translation supports,
+`to_magnon` additionally requires identical ordered `hamR`; it neither aligns
+nor zero-fills differing supports. Independent Wannier centres are accepted;
+the existing mismatch warning is retained and the up channel supplies the
+geometry. Corresponding Wannier gauges remain the caller's responsibility.
+The result preserves the common atoms and site-to-atom mapping.
 
 Magnetic sites come from the `Atom` metadata: an atom is magnetic when it
 carries a magnetic moment, and its orbitals are the ones it owns
