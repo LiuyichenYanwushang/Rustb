@@ -58,6 +58,7 @@ fn assert_channel(actual: &Channel, expected: &Channel, tol: f64) {
     assert_eq!(actual.lat, expected.lat);
     assert_atoms(&actual.atoms, &expected.atoms);
     assert_eq!(actual.orb, expected.orb);
+    assert_eq!(actual.orb_projection, expected.orb_projection);
     assert_eq!(actual.hamR, expected.hamR);
     assert_eq!(actual.rmatrix.0, expected.rmatrix.0);
     assert_eq!(actual.ham.dim(), expected.ham.dim());
@@ -65,6 +66,249 @@ fn assert_channel(actual: &Channel, expected: &Channel, tol: f64) {
         let got = actual.ham[idx];
         assert!((got - want).norm() <= tol, "ham{idx:?}: {got} != {want}");
     }
+}
+
+#[test]
+fn test_to_spinful_preserves_complex_blocks_centres_and_common_metadata() {
+    let [mut up, mut down] = channels();
+    up.set_hop(C::new(-0.23, 0.17), 1, 2, &array![1, -1], None);
+    down.orb = array![[0.12, -0.07], [-0.04, 0.16], [0.39, 0.22]];
+    for (spin, model) in [&mut up, &mut down].into_iter().enumerate() {
+        model.orb_projection = vec![OrbProj::px, OrbProj::py, OrbProj::pz];
+        let cart = model.orb.dot(&model.lat);
+        // Full Hermitian position data, including every nonlocal matrix entry.
+        for ((row, axis, i, j), value) in model.rmatrix.indexed_iter_mut() {
+            let rx = model.hamR[[row, 0]] as f64;
+            let ry = model.hamR[[row, 1]] as f64;
+            *value = if rx == 0.0 && ry == 0.0 && i == j {
+                C::new(cart[[i, axis]], 0.0)
+            } else {
+                C::new(
+                    0.01 * ((1 + 11 * spin + 3 * axis + i + j) as f64 + rx * rx + ry * ry),
+                    0.07 * (i as f64 - j as f64 + 2.0 * rx - ry),
+                )
+            };
+        }
+    }
+    // Neither channel keeps R=0 first, and each has support absent from the other.
+    for (model, order) in [(&mut up, [2, 0, 4, 1, 3]), (&mut down, [3, 1, 4, 0, 2])] {
+        model.hamR = model.hamR.select(Axis(0), &order);
+        model.ham = model.ham.select(Axis(0), &order);
+        model.rmatrix.0 = model.rmatrix.0.select(Axis(0), &order);
+    }
+    let snapshots = [up.clone(), down.clone()];
+    let pair = CollinearModel::new(up, down).unwrap();
+    let spinful: Model<true, 2, HasRMatrix> = pair.to_spinful().unwrap();
+    assert_eq!(spinful.norb(), pair.norb());
+    assert_eq!(spinful.nsta(), 2 * pair.nsta());
+    assert_eq!(spinful.lat, pair.up().lat);
+    assert_eq!(spinful.natom(), 2);
+    assert_atoms(&spinful.atoms, pair.atoms());
+    assert_eq!(
+        spinful.orb_projection,
+        vec![OrbProj::px, OrbProj::py, OrbProj::pz]
+    );
+    assert_eq!(spinful.ham.dim(), (7, 6, 6));
+    assert_eq!(spinful.rmatrix.dim(), (7, 2, 6, 6));
+    assert_eq!(
+        spinful.hamR,
+        array![[0, 0], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0]]
+    );
+    for (spin, source) in [pair.up(), pair.down()].into_iter().enumerate() {
+        for i in 0..3 {
+            assert_eq!(spinful.orb.row(spin * 3 + i), source.orb.row(i));
+        }
+        for (row, vector) in spinful.hamR.outer_iter().enumerate() {
+            // A direct scan is independent of the conversion's support lookup.
+            let matching: Vec<_> = source
+                .hamR
+                .outer_iter()
+                .enumerate()
+                .filter_map(|(index, r)| (r == vector).then_some(index))
+                .collect();
+            for i in 0..3 {
+                for j in 0..3 {
+                    let want_h: C = matching.iter().map(|&r| source.ham[[r, i, j]]).sum();
+                    assert_eq!(spinful.ham[[row, spin * 3 + i, spin * 3 + j]], want_h);
+                    for axis in 0..2 {
+                        let want_r: C = matching
+                            .iter()
+                            .map(|&r| source.rmatrix[[r, axis, i, j]])
+                            .sum();
+                        assert_eq!(
+                            spinful.rmatrix[[row, axis, spin * 3 + i, spin * 3 + j]],
+                            want_r
+                        );
+                        assert_eq!(spinful.rmatrix[[row, axis, i, 3 + j]], C::new(0.0, 0.0));
+                        assert_eq!(spinful.rmatrix[[row, axis, 3 + i, j]], C::new(0.0, 0.0));
+                    }
+                    assert_eq!(spinful.ham[[row, i, 3 + j]], C::new(0.0, 0.0));
+                    assert_eq!(spinful.ham[[row, 3 + i, j]], C::new(0.0, 0.0));
+                }
+            }
+        }
+    }
+    for k in [array![0.0, 0.0], array![0.23, -0.17], array![-0.31, 0.29]] {
+        for gauge in [Gauge::Atom, Gauge::Lattice] {
+            let h = spinful.gen_ham(&k, gauge);
+            for (spin, source) in [pair.up(), pair.down()].into_iter().enumerate() {
+                let expected = source.gen_ham(&k, gauge);
+                for ((i, j), &want) in expected.indexed_iter() {
+                    assert!((h[[spin * 3 + i, spin * 3 + j]] - want).norm() < 1e-12);
+                }
+            }
+        }
+        let mut expected = pair.up().solve_band_onek(&k).unwrap().to_vec();
+        expected.extend(pair.down().solve_band_onek(&k).unwrap());
+        expected.sort_by(f64::total_cmp);
+        let actual = spinful.solve_band_onek(&k).unwrap();
+        assert_eq!(actual.len(), expected.len());
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(a, b)| (a - b).abs() < 1e-11)
+        );
+    }
+    assert_channel(pair.up(), &snapshots[0], 0.0);
+    assert_channel(pair.down(), &snapshots[1], 0.0);
+}
+
+#[test]
+fn test_to_spinful_without_atoms_or_position_storage() {
+    let mut up = Model::<false, 1>::tb_model(array![[1.7]], array![[-0.1], [0.2]], None).unwrap();
+    let mut down =
+        Model::<false, 1>::tb_model(array![[1.7]], array![[0.35], [-0.25]], None).unwrap();
+    up.set_hop(C::new(-0.3, 0.1), 0, 1, &array![1], None);
+    down.set_hop(C::new(0.4, 0.2), 1, 0, &array![2], None);
+    // A valid model need not store the origin at all.
+    for model in [&mut up, &mut down] {
+        model.hamR = model.hamR.select(Axis(0), &[2, 1]);
+        model.ham = model.ham.select(Axis(0), &[2, 1]);
+    }
+    let pair = CollinearModel::new(up, down).unwrap();
+    let snapshot = format!("{pair:?}");
+    // NoRMatrix::as_array4 panics, so this also detects absent-storage access.
+    let spinful: Model<true, 1> = pair.to_spinful().unwrap();
+    assert!(!spinful.has_rmatrix());
+    assert_eq!(std::mem::size_of_val(&spinful.rmatrix), 0);
+    assert!(spinful.atoms.is_empty());
+    assert_eq!(spinful.norb(), 2);
+    assert_eq!(spinful.nsta(), 4);
+    assert_eq!(spinful.orb_projection, pair.up().orb_projection);
+    assert_eq!(spinful.orb, array![[-0.1], [0.2], [0.35], [-0.25]]);
+    assert_eq!(spinful.hamR, array![[0], [-2], [-1], [1], [2]]);
+    assert_eq!(spinful.ham[[1, 2, 3]], C::new(0.4, -0.2));
+    assert_eq!(spinful.ham[[2, 1, 0]], C::new(-0.3, -0.1));
+    assert_eq!(spinful.ham[[3, 0, 1]], C::new(-0.3, 0.1));
+    assert_eq!(spinful.ham[[4, 3, 2]], C::new(0.4, 0.2));
+    assert_eq!(spinful.ham.iter().filter(|z| z.norm() > 0.0).count(), 4);
+    for gauge in [Gauge::Atom, Gauge::Lattice] {
+        let k = array![0.27];
+        let h = spinful.gen_ham(&k, gauge);
+        for (spin, source) in [pair.up(), pair.down()].into_iter().enumerate() {
+            for ((i, j), &want) in source.gen_ham(&k, gauge).indexed_iter() {
+                assert!((h[[spin * 2 + i, spin * 2 + j]] - want).norm() < 1e-12);
+            }
+        }
+    }
+    assert_eq!(format!("{pair:?}"), snapshot);
+}
+
+#[test]
+fn test_to_spinful_empty_support_and_coalescing_overflow() {
+    let mut empty = Model::<false, 1>::tb_model(array![[1.0]], array![[0.2]], None).unwrap();
+    empty.hamR = empty.hamR.select(Axis(0), &[]);
+    empty.ham = empty.ham.select(Axis(0), &[]);
+    let pair = CollinearModel::new(empty.clone(), empty).unwrap();
+    let spinful = pair.to_spinful().unwrap();
+    assert_eq!(spinful.hamR, array![[0]]);
+    assert_eq!(spinful.ham.dim(), (1, 2, 2));
+    assert!(spinful.ham.iter().all(|&z| z == C::new(0.0, 0.0)));
+    for source in [pair.up(), pair.down()] {
+        assert_eq!(source.hamR.nrows(), 0);
+        assert_eq!(
+            source.gen_ham(&array![0.31], Gauge::Atom)[[0, 0]],
+            C::new(0.0, 0.0)
+        );
+    }
+    let mut overflow = pair.up().clone();
+    overflow.hamR = array![[0], [0]];
+    overflow.ham = ndarray::Array3::from_elem((2, 1, 1), C::new(f64::MAX, 0.0));
+    // Each source entry is finite; only coalescing the duplicate origin overflows.
+    let pair = CollinearModel::new(overflow, pair.down().clone()).unwrap();
+    assert!(matches!(
+        pair.to_spinful(),
+        Err(TbError::InvalidModelInvariant {
+            invariant: "finite_hamiltonian",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn test_to_spinful_sums_duplicate_hamiltonian_and_position_rows() {
+    let mut originals = channels();
+    for (spin, model) in originals.iter_mut().enumerate() {
+        for ((row, axis, i, j), value) in model.rmatrix.indexed_iter_mut() {
+            *value = C::new(
+                (1 + spin + row + axis + i + j) as f64,
+                0.1 * (i as f64 - j as f64),
+            );
+        }
+    }
+    let mut duplicated = originals.clone();
+    for model in &mut duplicated {
+        let nr = model.hamR.nrows();
+        let order: Vec<_> = (0..nr).rev().chain(0..nr).collect();
+        model.hamR = model.hamR.select(Axis(0), &order);
+        model.ham = model.ham.select(Axis(0), &order);
+        model.rmatrix.0 = model.rmatrix.0.select(Axis(0), &order);
+        // Distinct contributions to every R, including the origin, not mere copies.
+        for row in nr..2 * nr {
+            model
+                .ham
+                .index_axis_mut(Axis(0), row)
+                .mapv_inplace(|z| 2.0 * z);
+            model
+                .rmatrix
+                .index_axis_mut(Axis(0), row)
+                .mapv_inplace(|z| 3.0 * z);
+        }
+    }
+    let [up, down] = duplicated;
+    let pair = CollinearModel::new(up, down).unwrap();
+    let snapshot = pair.clone();
+    let spinful = pair.to_spinful().unwrap();
+    assert_eq!(
+        spinful.hamR,
+        array![[0, 0], [-1, 0], [0, -1], [0, 1], [1, 0]]
+    );
+    for (spin, source) in originals.iter().enumerate() {
+        for (row, vector) in source.hamR.outer_iter().enumerate() {
+            let target = spinful.hamR.outer_iter().position(|r| r == vector).unwrap();
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!(
+                        (spinful.ham[[target, spin * 3 + i, spin * 3 + j]]
+                            - 3.0 * source.ham[[row, i, j]])
+                        .norm()
+                            < 1e-12
+                    );
+                    for axis in 0..2 {
+                        assert!(
+                            (spinful.rmatrix[[target, axis, spin * 3 + i, spin * 3 + j]]
+                                - 4.0 * source.rmatrix[[row, axis, i, j]])
+                            .norm()
+                                < 1e-12
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert_channel(pair.up(), snapshot.up(), 0.0);
+    assert_channel(pair.down(), snapshot.down(), 0.0);
 }
 
 #[test]

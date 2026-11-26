@@ -604,9 +604,9 @@ impl<R: RMatrixData> Model<false, 3, R> {
     /// from the resolved localized action as the column with the largest matrix
     /// coefficient in the target orbital's row, restricted to the inverse-mapped
     /// parent atom. If the action has no usable coefficient, the code falls back
-    /// to an OrbProj label match and then to the nearest transformed centre. For a genuine spin-flip pair use [`Self::symmetrize_pair`],
-    /// which couples the two channels instead of applying an anti-unitary
-    /// spatial part to one model alone.
+    /// to an OrbProj label match and then to the nearest transformed centre.
+    /// For coupled spin channels use [`CollinearModel::symmetrize`], whose
+    /// explicit channel actions are independent of antiunitarity.
     ///
     /// A target operation that cannot map the atom structure returns
     /// [`crate::TbError::TargetMagneticGroupIncompatible`]. If a position matrix
@@ -748,29 +748,6 @@ fn validate_joint_projection<R: RMatrixData>(
         },
     )?;
     Ok(())
-}
-
-fn validate_pair_group(
-    group: &MagneticCrystalSymmetry,
-    operation_tolerance: f64,
-) -> Result<MagneticCrystalSymmetry> {
-    let operations = to_cry_operations(&group.operations);
-    let validated = cryspglib::ValidatedMagneticOperationSet::try_from_symmetry_ops(
-        &operations,
-        operation_tolerance,
-    )
-    .map_err(|error| crate::TbError::TargetMagneticGroupIncompatible {
-        reason: format!("the supplied pair operations are not a magnetic group: {error}"),
-    })?;
-    let normalized = validated
-        .operations()
-        .iter()
-        .map(from_cry_operation)
-        .collect::<Vec<_>>();
-    let mut result = group.clone();
-    result.operations = normalized.clone();
-    result.field_preserving_operations = normalized;
-    Ok(result)
 }
 
 fn pair_centre_average<R: RMatrixData>(
@@ -1242,21 +1219,6 @@ fn validate_pair_models<R: RMatrixData>(
     Ok(())
 }
 
-fn pair_operations_from_magnetic(group: &MagneticCrystalSymmetry) -> Vec<PairOperation> {
-    group
-        .operations
-        .iter()
-        .map(|operation| PairOperation {
-            spatial: *operation,
-            channel: if operation.time_reversal {
-                CollinearAction::Swap
-            } else {
-                CollinearAction::Preserve
-            },
-        })
-        .collect()
-}
-
 fn pair_operations_from_spin_group(group: &CollinearSpinGroup) -> Vec<PairOperation> {
     group
         .operations()
@@ -1385,79 +1347,6 @@ impl<R: RMatrixData> Model<false, 3, R> {
         validate_joint_projection(&symmetrized, target_group, basis, parameters)?;
         Ok(symmetrized)
     }
-
-    /// Project two spinless models that represent the two spin channels of a
-    /// magnetic group.
-    ///
-    /// For a unitary target operation g the contribution to each model is its
-    /// own localized Reynolds image. For an anti-unitary (spin-flip) operation
-    /// the contribution to model a is the image of model b and the contribution
-    /// to model b is the image of model a:
-    ///
-    /// ```text
-    /// H_a' = (1/N) [ sum_unitary P_g H_a + sum_anti P_g H_b ]
-    /// H_b' = (1/N) [ sum_unitary P_g H_b + sum_anti P_g H_a ]
-    /// ```
-    ///
-    /// This is the pair corepresentation induced by the magnetic group; it is
-    /// intentionally not the difference combination that would symmetrize the
-    /// two channels against each other for unitary operations. Centres are
-    /// projected jointly by the same unitary/anti-unitary split, so up and down
-    /// centres become mutual spin-flip images. The function iterates the joint
-    /// centre projection until the centre update is below 1e-9 Angstrom (or a
-    /// fixed safety limit is reached), then projects both Hamiltonians and any
-    /// position matrices. When position matrices are present, their onsite
-    /// diagonals determine the final orbital centres. Pair covariance is checked
-    /// on the final models.
-    ///
-    /// Both models must have the same basis size, atom count, atom ordering,
-    /// lattice, and orbital projections. Channel swaps require a common
-    /// Wannier gauge and corresponding centre differences below half a cell
-    /// in each fractional component. Returns two new models in input order
-    /// without modifying either input. Use [`crate::CrystalSymmetryOperation::time_reversal`]
-    /// in the target group to identify anti-unitary pair operations.
-    ///
-    /// This legacy entry maps `time_reversal = true` to a simultaneous channel
-    /// swap and orbital conjugation. For cryspglib-certified collinear spin
-    /// groups, where a unitary Swap is distinct from an antiunitary operation,
-    /// use [`CollinearModel::symmetrize_pair_with_collinear_spin_group`] or
-    /// [`Self::symmetrize_pair_with_unitary_collinear_spin_group`].
-    pub fn symmetrize_pair(
-        a: &Self,
-        b: &Self,
-        target_group: &MagneticCrystalSymmetry,
-        basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
-        parameters: &HamiltonianSymmetrizationParameters,
-    ) -> Result<(Self, Self)> {
-        validate_tolerances(parameters.tolerances)?;
-        validate_pair_models(a, b)?;
-        let target_group = validate_pair_group(target_group, parameters.tolerances.operation)?;
-        let operations = pair_operations_from_magnetic(&target_group);
-        symmetrize_pair_with_operations(a, b, &operations, basis, parameters)
-    }
-
-    /// Project two spinless channel models under the unitary collinear spin
-    /// subgroup only.
-    ///
-    /// This is the G-only counterpart of
-    /// [CollinearModel::symmetrize_pair_with_collinear_spin_group]. The complete
-    /// [cryspglib::spin_group::CollinearSpinGroup] is accepted, but only its
-    /// unitary operations are projected; the A0 antiunitary partners are
-    /// filtered out. Use it when orbital time-reversal breaking is known or
-    /// when only the unitary subgroup should be imposed. Returns two new models
-    /// in input order, leaving the inputs unchanged.
-    pub fn symmetrize_pair_with_unitary_collinear_spin_group(
-        a: &Self,
-        b: &Self,
-        group: &CollinearSpinGroup,
-        basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
-        parameters: &HamiltonianSymmetrizationParameters,
-    ) -> Result<(Self, Self)> {
-        validate_tolerances(parameters.tolerances)?;
-        validate_pair_models(a, b)?;
-        let operations = pair_operations_from_unitary_spin_group(group);
-        symmetrize_pair_with_operations(a, b, &operations, basis, parameters)
-    }
 }
 
 impl<R: RMatrixData> CollinearModel<3, R> {
@@ -1469,22 +1358,49 @@ impl<R: RMatrixData> CollinearModel<3, R> {
     /// independently of antiunitarity: a unitary Swap exchanges Hamiltonians
     /// without conjugating them.
     ///
-    /// In addition to the constructor's exact common lattice and Atom metadata,
-    /// the channels must have equal basis sizes and orbital projections. Swaps
-    /// require corresponding Wannier gauges and centre differences below half
-    /// a cell in each fractional component; see [`Model::symmetrize_pair`].
-    /// Centres, Hamiltonians and any position matrices are projected jointly.
-    /// Localized orbital actions and final pair covariance are checked.
+    /// The constructor enforces exact common lattice and Atom metadata, equal
+    /// basis sizes and ordered orbital projections. Swaps additionally require
+    /// corresponding Wannier gauges and centre differences below half a cell
+    /// in each fractional component. Centres, Hamiltonians and any position
+    /// matrices are projected jointly. The onsite position diagonals determine
+    /// the final centres when position matrices are present. Localized orbital
+    /// actions and final pair covariance are checked.
     /// Returns a new validated pair in up/down order without modifying `self`.
-    pub fn symmetrize_pair_with_collinear_spin_group(
+    /// To impose only the unitary subgroup, use [`Self::symmetrize_unitary`].
+    pub fn symmetrize(
         &self,
         group: &CollinearSpinGroup,
         basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
         parameters: &HamiltonianSymmetrizationParameters,
     ) -> Result<Self> {
-        validate_tolerances(parameters.tolerances)?;
-        validate_pair_models(self.up(), self.down())?;
         let operations = pair_operations_from_spin_group(group);
+        let (up, down) = symmetrize_pair_with_operations(
+            self.up(),
+            self.down(),
+            &operations,
+            basis,
+            parameters,
+        )?;
+        Self::new(up, down)
+    }
+
+    /// Project both channels under only the unitary collinear spin subgroup.
+    ///
+    /// Accepts the same complete, validated [CollinearSpinGroup] as
+    /// [`Self::symmetrize`], but excludes every antiunitary operation. Channel
+    /// actions remain independent: a unitary Swap exchanges the channels
+    /// without conjugating their orbital matrices. Use this when orbital
+    /// time-reversal breaking should not be projected away.
+    ///
+    /// The gauge, centre and covariance requirements are the same as for
+    /// [`Self::symmetrize`]. Returns a new validated pair without changing `self`.
+    pub fn symmetrize_unitary(
+        &self,
+        group: &CollinearSpinGroup,
+        basis: &(impl BasisSymmetryRepresentation<false, R> + Sync),
+        parameters: &HamiltonianSymmetrizationParameters,
+    ) -> Result<Self> {
+        let operations = pair_operations_from_unitary_spin_group(group);
         let (up, down) = symmetrize_pair_with_operations(
             self.up(),
             self.down(),
@@ -1504,117 +1420,6 @@ mod tests {
     use crate::wannier90::Wannier90;
     use ndarray::array;
     use std::sync::atomic::{AtomicU64, Ordering};
-
-    #[test]
-    #[ignore = "loads the external MgFe6Ge6 Wannier90 dataset"]
-    fn debug_real_pair_actions() {
-        let base = "/mnt/e/vasp计算结果/altermagnetic/odd_parity_wave/material/MgFe6Ge6/data_new";
-        let up = <Model<false, 3> as Wannier90>::from_hr(
-            &format!("{base}/up/"),
-            "wannier90",
-            7.62075874,
-        )
-        .unwrap();
-        let dn = <Model<false, 3> as Wannier90>::from_hr(
-            &format!("{base}/dn/"),
-            "wannier90",
-            7.62075874,
-        )
-        .unwrap();
-        let mut moments = vec![[0.0, 0.0, 0.0]; up.natom()];
-        for (index, atom) in up.atoms.iter().enumerate() {
-            if format!("{:?}", atom.atom_type()).contains("Fe") {
-                moments[index] = if atom.position_ref()[2] < 0.5 {
-                    [0.0, 0.0, 1.0]
-                } else {
-                    [0.0, 0.0, -1.0]
-                };
-            }
-        }
-        let group = up
-            .magnetic_crystal_symmetry(&moments, &SymmetryParameters::default())
-            .unwrap();
-        let mut a = up.clone();
-        let mut b = dn.clone();
-        let source_up = a.clone();
-        let source_down = b.clone();
-        let operations = pair_operations_from_magnetic(&group);
-        pair_centre_average(
-            &mut a,
-            PairSide::Up,
-            &source_up.orb,
-            &source_down.orb,
-            &operations,
-            &CenterResolvedBasis::new(),
-        )
-        .unwrap();
-        pair_centre_average(
-            &mut b,
-            PairSide::Down,
-            &source_down.orb,
-            &source_up.orb,
-            &operations,
-            &CenterResolvedBasis::new(),
-        )
-        .unwrap();
-        let basis = CenterResolvedBasis::new();
-        let parameters = HamiltonianSymmetrizationParameters::default();
-        let position_tolerance = parameters
-            .tolerances
-            .position
-            .unwrap_or(parameters.structural_parameters.symprec);
-        let support_a = validate_hamiltonian(&a, parameters.tolerances.hermiticity).unwrap();
-        let support_b = validate_hamiltonian(&b, parameters.tolerances.hermiticity).unwrap();
-        for (index, operation) in group.operations.iter().enumerate() {
-            let action_a = basis
-                .resolve(BasisActionContext {
-                    model: &a,
-                    operation,
-                    position_tolerance,
-                    representation_tolerance: 1e-6,
-                })
-                .unwrap();
-            let action_a = validate_action(action_a, a.nsta(), 1e-6).unwrap();
-            let action_b = basis
-                .resolve(BasisActionContext {
-                    model: &b,
-                    operation,
-                    position_tolerance,
-                    representation_tolerance: 1e-6,
-                })
-                .unwrap();
-            let action_b = validate_action(action_b, b.nsta(), 1e-6).unwrap();
-            if operation.time_reversal {
-                let domain = transformed_support_domain(&support_b, operation, &action_b).unwrap();
-                let mut max = 0.0f64;
-                for vector in domain {
-                    let predicted =
-                        transformed_hamiltonian_at(&support_b, operation, &action_b, vector, false)
-                            .unwrap();
-                    let actual = support_a
-                        .matrices
-                        .get(&vector)
-                        .cloned()
-                        .unwrap_or_else(|| Array2::zeros((a.nsta(), a.nsta())));
-                    for (left, right) in actual.iter().zip(predicted.iter()) {
-                        max = max.max((left - right).norm());
-                    }
-                }
-                println!("op {index} anti pair residual {max:e}");
-            } else {
-                let residual =
-                    hamiltonian_residual(&support_a, operation, &action_a, parameters.tolerances)
-                        .unwrap();
-                let residual_b =
-                    hamiltonian_residual(&support_b, operation, &action_b, parameters.tolerances)
-                        .unwrap();
-                println!(
-                    "op {index} unitary residuals {:.3e} {:.3e}",
-                    residual.max_absolute, residual_b.max_absolute
-                );
-            }
-        }
-    }
 
     #[test]
     #[ignore = "loads the external MgFe6Ge6 Wannier90 dataset"]
@@ -1750,6 +1555,22 @@ mod tests {
         }
     }
 
+    fn single_site_spin_group<R: RMatrixData>(model: &Model<false, 3, R>) -> CollinearSpinGroup {
+        assert_eq!(model.natom(), 1);
+        let crystal = cryspglib::Crystal::new(
+            std::array::from_fn(|i| std::array::from_fn(|j| model.lat[[i, j]])),
+            vec![[0.0; 3]],
+            vec![14],
+        )
+        .unwrap();
+        cryspglib::spin_group::detect_collinear_spin_group(
+            &crystal,
+            cryspglib::spin_group::CollinearMoments::Signed(&[1.0]),
+            cryspglib::spin_group::SpinTolerances::default(),
+        )
+        .unwrap()
+    }
+
     fn displaced_p_model() -> Model<false, 3> {
         let lattice = Array2::eye(3);
         let centres = array![
@@ -1849,8 +1670,24 @@ mod tests {
         let joint = model
             .symmetrize_model_and_centres(&group, &ScalarSiteBasis, &parameters)
             .unwrap();
-        let (up, down) =
-            Model::symmetrize_pair(&model, &model, &group, &ScalarSiteBasis, &parameters).unwrap();
+        // Kernel fixture: all operations preserve the channel, independently
+        // of their antiunitary flag; no magnetic-to-channel convention is used.
+        let operations = group
+            .operations
+            .iter()
+            .map(|&spatial| PairOperation {
+                spatial,
+                channel: CollinearAction::Preserve,
+            })
+            .collect::<Vec<_>>();
+        let (up, down) = symmetrize_pair_with_operations(
+            &model,
+            &model,
+            &operations,
+            &ScalarSiteBasis,
+            &parameters,
+        )
+        .unwrap();
         let k = array![0.25, 0.0, 0.0];
         for projected in [only_centres, joint, up, down] {
             assert_eq!(projected.orb, model.orb);
@@ -1873,14 +1710,20 @@ mod tests {
     fn channel_swap_rejects_different_cell_representatives() {
         let up = displaced_s_model_with_positions(1.0);
         let down = displaced_s_model_with_positions(0.0);
-        let group = up
-            .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())
-            .unwrap();
-        assert!(group.operations.iter().any(|g| g.time_reversal));
-        let error = Model::symmetrize_pair(
+        // Explicit unitary swap: conjugation is not needed to reject a
+        // channel pair in incompatible cell representatives.
+        let operations = [PairOperation {
+            spatial: CrystalSymmetryOperation {
+                rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                translation: [0.0; 3],
+                time_reversal: false,
+            },
+            channel: CollinearAction::Swap,
+        }];
+        let error = symmetrize_pair_with_operations(
             &up,
             &down,
-            &group,
+            &operations,
             &ScalarSiteBasis,
             &HamiltonianSymmetrizationParameters::default(),
         )
@@ -1912,6 +1755,89 @@ mod tests {
         assert_eq!(model.ham, original.ham);
         assert_eq!(model.hamR, original.hamR);
         assert_eq!(model.rmatrix.0, original.rmatrix.0);
+    }
+
+    #[test]
+    fn pair_channel_action_is_independent_of_antiunitarity() {
+        let mut up = displaced_p_model();
+        let mut down = up.clone();
+        up.orb.fill(0.0);
+        down.orb.fill(0.0);
+        let hopping_up = Complex64::new(1.0, 2.0);
+        let hopping_down = Complex64::new(3.0, 4.0);
+        up.set_hop(hopping_up, 0, 1, &array![0, 0, 0], None);
+        down.set_hop(hopping_down, 0, 1, &array![0, 0, 0], None);
+        let parameters = HamiltonianSymmetrizationParameters::default();
+        for (antiunitary, channel, expected_up, expected_down) in [
+            (false, CollinearAction::Preserve, hopping_up, hopping_down),
+            (
+                false,
+                CollinearAction::Swap,
+                Complex64::new(2.0, 3.0),
+                Complex64::new(2.0, 3.0),
+            ),
+            (
+                true,
+                CollinearAction::Preserve,
+                Complex64::new(1.0, 0.0),
+                Complex64::new(3.0, 0.0),
+            ),
+            (
+                true,
+                CollinearAction::Swap,
+                Complex64::new(2.0, -1.0),
+                Complex64::new(2.0, 1.0),
+            ),
+        ] {
+            let operations = [
+                PairOperation {
+                    spatial: CrystalSymmetryOperation {
+                        rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                        translation: [0.0; 3],
+                        time_reversal: false,
+                    },
+                    channel: CollinearAction::Preserve,
+                },
+                PairOperation {
+                    spatial: CrystalSymmetryOperation {
+                        rotation: [[-1, 0, 0], [0, -1, 0], [0, 0, -1]],
+                        translation: [0.0; 3],
+                        time_reversal: antiunitary,
+                    },
+                    channel,
+                },
+            ];
+            let (projected_up, projected_down) = symmetrize_pair_with_operations(
+                &up,
+                &down,
+                &operations,
+                &CenterResolvedBasis::new(),
+                &parameters,
+            )
+            .unwrap();
+            assert!((projected_up.ham[[0, 0, 1]] - expected_up).norm() < 1e-12);
+            assert!((projected_down.ham[[0, 0, 1]] - expected_down).norm() < 1e-12);
+            let (again_up, again_down) = symmetrize_pair_with_operations(
+                &projected_up,
+                &projected_down,
+                &operations,
+                &CenterResolvedBasis::new(),
+                &parameters,
+            )
+            .unwrap();
+            for (projected, repeated) in
+                [(&projected_up, &again_up), (&projected_down, &again_down)]
+            {
+                assert_eq!(projected.hamR, repeated.hamR);
+                assert!(
+                    (&projected.ham - &repeated.ham)
+                        .iter()
+                        .all(|difference| difference.norm() < 1e-12)
+                );
+            }
+        }
+        assert_eq!(up.ham[[0, 0, 1]], hopping_up);
+        assert_eq!(down.ham[[0, 0, 1]], hopping_down);
     }
 
     #[test]
@@ -2214,44 +2140,41 @@ mod tests {
             "symmetrize_model_and_centres must resolve actions on more than one worker in one call"
         );
 
-        let pair_serial = serial
-            .install(|| {
-                Model::<false, 3>::symmetrize_pair(&model, &down, &group, &basis, &parameters)
-            })
-            .unwrap();
-        let mut pair_proven = false;
-        for _ in 0..3 {
-            basis.reset();
-            let pair_parallel = parallel
-                .install(|| {
-                    assert_eq!(rayon::current_num_threads(), 4);
-                    Model::<false, 3>::symmetrize_pair(&model, &down, &group, &basis, &parameters)
-                })
-                .unwrap();
-            pair_proven |= basis.worker_count() >= 2;
-            assert_eq!(
-                real_bits(&pair_serial.0.orb),
-                real_bits(&pair_parallel.0.orb)
-            );
-            assert_eq!(
-                real_bits(&pair_serial.1.orb),
-                real_bits(&pair_parallel.1.orb)
-            );
-            assert_eq!(pair_serial.0.hamR, pair_parallel.0.hamR);
-            assert_eq!(pair_serial.1.hamR, pair_parallel.1.hamR);
-            assert_eq!(
-                complex_bits(&pair_serial.0.ham),
-                complex_bits(&pair_parallel.0.ham)
-            );
-            assert_eq!(
-                complex_bits(&pair_serial.1.ham),
-                complex_bits(&pair_parallel.1.ham)
+        let pair = CollinearModel::new(model.clone(), down).unwrap();
+        let spin_group = single_site_spin_group(&model);
+        for unitary_only in [false, true] {
+            let project = || {
+                if unitary_only {
+                    pair.symmetrize_unitary(&spin_group, &basis, &parameters)
+                } else {
+                    pair.symmetrize(&spin_group, &basis, &parameters)
+                }
+            };
+            let pair_serial = serial.install(&project).unwrap();
+            let mut pair_proven = false;
+            for _ in 0..3 {
+                basis.reset();
+                let pair_parallel = parallel
+                    .install(|| {
+                        assert_eq!(rayon::current_num_threads(), 4);
+                        project()
+                    })
+                    .unwrap();
+                pair_proven |= basis.worker_count() >= 2;
+                for (left, right) in [
+                    (pair_serial.up(), pair_parallel.up()),
+                    (pair_serial.down(), pair_parallel.down()),
+                ] {
+                    assert_eq!(real_bits(&left.orb), real_bits(&right.orb));
+                    assert_eq!(left.hamR, right.hamR);
+                    assert_eq!(complex_bits(&left.ham), complex_bits(&right.ham));
+                }
+            }
+            assert!(
+                pair_proven,
+                "paired projection must resolve actions on more than one worker in one call"
             );
         }
-        assert!(
-            pair_proven,
-            "symmetrize_pair must resolve actions on more than one worker in one call"
-        );
 
         // Position-matrix projection tail: HasRMatrix model with symmetric centres.
         let positioned = displaced_s_model_with_positions(0.0);
@@ -2304,7 +2227,7 @@ mod tests {
         );
     }
 
-    fn real_pair_models() -> (Model<false, 3>, Model<false, 3>, MagneticCrystalSymmetry) {
+    fn real_pair_kernel_fixture() -> (Model<false, 3>, Model<false, 3>, Vec<PairOperation>) {
         let base = "/mnt/e/vasp计算结果/altermagnetic/odd_parity_wave/material/MgFe6Ge6/data_new";
         let up = <Model<false, 3> as Wannier90>::from_hr(
             &format!("{base}/up/"),
@@ -2318,31 +2241,44 @@ mod tests {
             7.62075874,
         )
         .unwrap();
-        let moments = vec![[0.0, 0.0, 1.0]; up.natom()];
         let structure = up.crystal_symmetry(&SymmetryParameters::default()).unwrap();
-        let mut group = up
-            .magnetic_crystal_symmetry(&moments, &SymmetryParameters::default())
-            .unwrap();
-        for operation in &mut group.operations {
-            if let Some(source) = structure.operations.iter().find(|candidate| {
-                candidate.rotation == operation.rotation
-                    && candidate.translation == operation.translation
-            }) {
-                operation.time_reversal = source.rotation[2][2] == -1;
-            }
-        }
-        group.field_preserving_operations = group.operations.clone();
-        (up, dn, group)
+        // Historical synthetic kernel fixture, not a detected spin group: z
+        // reversal is explicitly assigned BOTH Swap and antiunitarity here.
+        // Production must instead consume certified, independent group actions.
+        let operations = structure
+            .operations
+            .into_iter()
+            .map(|spatial| {
+                assert_eq!(spatial.rotation[2][2].abs(), 1);
+                let (channel, time_reversal) = if spatial.rotation[2][2] == -1 {
+                    (CollinearAction::Swap, true)
+                } else {
+                    (CollinearAction::Preserve, false)
+                };
+                PairOperation {
+                    spatial: CrystalSymmetryOperation {
+                        time_reversal,
+                        ..spatial
+                    },
+                    channel,
+                }
+            })
+            .collect();
+        (up, dn, operations)
     }
 
     fn partition_centres(
         up: &Model<false, 3>,
         dn: &Model<false, 3>,
-        group: &MagneticCrystalSymmetry,
+        operations: &[PairOperation],
     ) -> f64 {
         let mut max = 0.0f64;
-        for operation in &group.operations {
-            let source = if operation.time_reversal { dn } else { up };
+        for paired in operations {
+            let source = match paired.channel {
+                CollinearAction::Preserve => up,
+                CollinearAction::Swap => dn,
+            };
+            let operation = &paired.spatial;
             for source_orbital in 0..source.norb() {
                 let centre = [
                     source.orb[[source_orbital, 0]],
@@ -2378,19 +2314,21 @@ mod tests {
     fn spectrum_pair_error(
         up: &Model<false, 3>,
         dn: &Model<false, 3>,
-        group: &MagneticCrystalSymmetry,
+        operations: &[PairOperation],
         kpoints: &Array2<f64>,
     ) -> f64 {
         let (e_up, _) = up.solve_all_parallel(kpoints).unwrap();
         let (e_dn, _) = dn.solve_all_parallel(kpoints).unwrap();
         let mut max = 0.0f64;
-        for operation in &group.operations {
-            if !operation.time_reversal {
+        for paired in operations {
+            if paired.channel != CollinearAction::Swap {
                 continue;
             }
+            let operation = &paired.spatial;
+            let sign = if operation.time_reversal { -1.0 } else { 1.0 };
             for ik in 0..kpoints.nrows() {
                 let image = Array1::from_shape_fn(3, |row| {
-                    -(0..3)
+                    sign * (0..3)
                         .map(|column| {
                             operation.rotation[column][row] as f64 * kpoints[[ik, column]]
                         })
@@ -2423,18 +2361,18 @@ mod tests {
 
     #[test]
     #[ignore = "loads the external MgFe6Ge6 Wannier90 dataset"]
-    fn mgfe6ge6_pair_acceptance() {
-        let (before_up, before_dn, group) = real_pair_models();
+    fn mgfe6ge6_pair_kernel_acceptance() {
+        let (before_up, before_dn, operations) = real_pair_kernel_fixture();
         let params = HamiltonianSymmetrizationParameters::default();
-        let (up, dn) = Model::<false, 3>::symmetrize_pair(
+        let (up, dn) = symmetrize_pair_with_operations(
             &before_up,
             &before_dn,
-            &group,
+            &operations,
             &CenterResolvedBasis::without_hamiltonian_inference(),
             &params,
         )
         .unwrap();
-        let centre_error = partition_centres(&up, &dn, &group);
+        let centre_error = partition_centres(&up, &dn, &operations);
         let kpoints = array![
             [0.0, 0.0, 0.0],
             [1.0 / 3.0, 1.0 / 3.0, 0.0],
@@ -2443,7 +2381,7 @@ mod tests {
             [0.0, 0.25, 0.0],
             [0.0, 0.0, 0.25],
         ];
-        let spectrum_error = spectrum_pair_error(&up, &dn, &group, &kpoints);
+        let spectrum_error = spectrum_pair_error(&up, &dn, &operations, &kpoints);
         let (before_up_e, _) = before_up.solve_all_parallel(&kpoints).unwrap();
         let (before_dn_e, _) = before_dn.solve_all_parallel(&kpoints).unwrap();
         let (after_up_e, _) = up.solve_all_parallel(&kpoints).unwrap();
@@ -2463,10 +2401,10 @@ mod tests {
         for band in 0..gamma_up.ncols() {
             gamma = gamma.max((gamma_up[[0, band]] - gamma_dn[[0, band]]).abs());
         }
-        let (up_again, dn_again) = Model::<false, 3>::symmetrize_pair(
+        let (up_again, dn_again) = symmetrize_pair_with_operations(
             &up,
             &dn,
-            &group,
+            &operations,
             &CenterResolvedBasis::without_hamiltonian_inference(),
             &params,
         )
@@ -2509,22 +2447,27 @@ mod tests {
         let up = displaced_p_model();
         let down = up.clone();
         let original_orb = up.orb.clone();
-        let group = up
-            .magnetic_crystal_symmetry_from_atoms(&SymmetryParameters::default())
-            .unwrap();
-        let (projected_up, projected_down) = Model::<false, 3>::symmetrize_pair(
-            &up,
-            &down,
-            &group,
-            &CenterResolvedBasis::new(),
-            &HamiltonianSymmetrizationParameters::default(),
-        )
-        .unwrap();
-        assert_eq!(up.orb, original_orb);
-        assert_eq!(down.orb, original_orb);
-        for projected in [&projected_up, &projected_down] {
-            assert!(projected.ham.iter().all(|hop| hop.norm() < 1e-12));
-            assert!(projected.orb.iter().all(|value| value.abs() < 1e-8));
+        let group = single_site_spin_group(&up);
+        let pair = CollinearModel::new(up, down).unwrap();
+        let basis = CenterResolvedBasis::new();
+        let parameters = HamiltonianSymmetrizationParameters::default();
+        let projected = pair.symmetrize(&group, &basis, &parameters).unwrap();
+        let again = projected.symmetrize(&group, &basis, &parameters).unwrap();
+        assert_eq!(pair.up().orb, original_orb);
+        assert_eq!(pair.down().orb, original_orb);
+        for (channel, repeated) in [
+            (projected.up(), again.up()),
+            (projected.down(), again.down()),
+        ] {
+            assert!(channel.ham.iter().all(|hop| hop.norm() < 1e-12));
+            assert!(channel.orb.iter().all(|value| value.abs() < 1e-8));
+            assert_eq!(channel.hamR, repeated.hamR);
+            assert_eq!(channel.ham, repeated.ham);
+            assert!(
+                (&channel.orb - &repeated.orb)
+                    .iter()
+                    .all(|d| d.abs() < 1e-12)
+            );
         }
     }
 

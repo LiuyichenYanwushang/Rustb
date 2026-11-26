@@ -61,19 +61,19 @@
   emits a one-time process-global warning instead; atom-centred symmetry and
   irrep representations continue to enforce their own strict centring check.
 - `Model::symmetrize_centres` and `Model::symmetrize_model_and_centres` now
-  borrow `&self` and return `Result<Self>`. `Model::symmetrize_pair` and
-  `Model::symmetrize_pair_with_unitary_collinear_spin_group` now take shared
-  references (`&up, &dn`) and return `Result<(Self, Self)>` in input order.
-  Keep the returned models; the inputs stay unchanged on success or error.
-  These projections no longer return reports or warn about centre displacement.
-  Validation and the separate `Model::check_hamiltonian_symmetry` API are unchanged.
-- Move the full-group `Model::symmetrize_pair_with_collinear_spin_group` entry
-  to `CollinearModel<3, R>`. Construct `CollinearModel::new(up, down)?`, then
-  call `pair.symmetrize_pair_with_collinear_spin_group(&group, &basis, &params)`.
-  It borrows the pair and returns `Result<CollinearModel<3, R>>`; the input is
-  unchanged. The old associated method is removed without a deprecated alias.
-  The legacy `Model::symmetrize_pair` and unitary-group helper are unchanged
-  by this move.
+  borrow `&self` and return `Result<Self>`. Keep the returned models; inputs
+  stay unchanged on success or error. These projections no longer return reports
+  or warn about centre displacement. Use `Model::check_hamiltonian_symmetry`
+  for separate diagnostics.
+- Replace the paired symmetry APIs with `CollinearModel<3, R>::symmetrize`
+  (full `CollinearSpinGroup`) and `symmetrize_unitary` (only unitary operations).
+  Construct `CollinearModel::new(up, down)?`, then call either method with
+  `(&group, &basis, &params)`; both borrow `&self` and return `Result<Self>`.
+  Remove `Model::symmetrize_pair`,
+  `Model::symmetrize_pair_with_unitary_collinear_spin_group` and the long
+  `symmetrize_pair_with_collinear_spin_group` name on both model types, without
+  aliases. The legacy magnetic-group helper's channel/antiunitarity convention
+  was misleading; its removal does not mean no-SOC forbids magnetic subgroups.
 - `Model::shift_to_atom` and its alias `Model::move_to_atom` now borrow `&self`
   and return `Result<Self>` rather than editing in place. Keep the returned
   model (e.g. `let aligned = model.shift_to_atom()?;`). Only the coordinates
@@ -85,18 +85,20 @@
 
 - Add `CenterResolvedBasis`, a `BasisSymmetryRepresentation` that maps
   displaced Wannier centres through parent-atom images and can optionally
-  refine atom-local frames from the onsite Hamiltonian. Add `Model::symmetrize_centres`,
-  `Model::symmetrize_model_and_centres`, and the associated
-  `Model::symmetrize_pair` for two spinless models. The pair projection
-  enforces the spin-flip relation for anti-unitary target operations.
-- Add `CollinearModel::symmetrize_pair_with_collinear_spin_group` and
-  `Model::symmetrize_pair_with_unitary_collinear_spin_group` for
+  refine atom-local frames from the onsite Hamiltonian. Add
+  `Model::symmetrize_centres` and `Model::symmetrize_model_and_centres`.
+- Add `CollinearModel::symmetrize` and `CollinearModel::symmetrize_unitary` for
   cryspglib-certified collinear spin groups. Both accept the complete
   `CollinearSpinGroup`; the first projects its unitary and g A0 antiunitary
   halves, while the second filters to `kind.is_unitary()` internally. Channel
   permutation (`Preserve`/`Swap`) is independent of antiunitarity, so a
-  unitary Swap no longer conjugates the orbital Hamiltonian. The legacy
-  `symmetrize_pair` keeps its original time-reversal interpretation.
+  unitary Swap exchanges channels without conjugating the orbital Hamiltonian.
+- Add the one-way `CollinearModel::to_spinful(&self) -> Result<Model<true, DIM, R>>`
+  storage conversion. Preserve independent up/down centres in spin-major order,
+  common atoms/`OrbitalId`s/projections once, and full `H`/position matrices as
+  spin-diagonal blocks. Union supports with `R = 0` first then lexicographic
+  order, zero-fill missing blocks and sum duplicate translations. The input is
+  unchanged; no SOC/spin-flips or reverse conversion API are introduced.
 - Full Hamiltonian and pair symmetrization, including both collinear-spin
   variants, project `HasRMatrix` position matrices as affine vector operators,
   with Cartesian rotation, operation translation, explicit cell shifts, and

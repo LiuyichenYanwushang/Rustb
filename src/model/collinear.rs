@@ -2,8 +2,10 @@ use super::{Model, NoRMatrix, RMatrixData};
 use crate::error::{Result, TbError};
 use crate::floquet::{FloquetDrive, FloquetEffectiveOptions, drive_has_ac_components};
 use crate::solve_ham::Solve;
-use ndarray::{Array1, Array2, Array3, ArrayBase, Data, Ix1, Ix2};
+use ndarray::{Array1, Array2, Array3, Array4, ArrayBase, Axis, Data, Ix1, Ix2, s};
 use num_complex::Complex;
+use std::collections::BTreeMap;
+use std::ops::AddAssign;
 
 /// Two uncoupled spin channels of one collinear tight-binding system.
 ///
@@ -175,6 +177,108 @@ impl<const DIM: usize, R: RMatrixData> CollinearModel<DIM, R> {
     /// Recover the owned models in `up, down` order.
     pub fn into_channels(self) -> (Model<false, DIM, R>, Model<false, DIM, R>) {
         (self.up, self.down)
+    }
+
+    /// Embed the two channels in a spin-major spinful model without changing them.
+    ///
+    /// Up states precede down states, with each channel retaining its own centres.
+    /// Hamiltonian and position matrices are block diagonal in spin; missing
+    /// translation blocks are zero-filled on the union of both supports plus
+    /// `R = 0` (a zero block is added if neither channel stores it). Duplicate
+    /// translations within a channel are summed. The output support is deterministic:
+    /// `R = 0` first, followed by the remaining vectors in lexicographic order.
+    /// Common atoms, orbital IDs and projections are kept once, not doubled.
+    /// This is only a storage conversion; no symmetry projection or SOC is added.
+    /// It does not align independent Wannier gauges or infer cross-channel overlaps;
+    /// interpreting transverse spin operators requires a corresponding common
+    /// orbital gauge.
+    ///
+    /// ```rust
+    /// use ndarray::array;
+    /// use Rustb::{CollinearModel, Model};
+    /// let up = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None)?;
+    /// let down = Model::<false, 1>::tb_model(array![[1.0]], array![[0.25]], None)?;
+    /// let pair = CollinearModel::new(up, down)?;
+    /// let spinful = pair.to_spinful()?;
+    /// assert_eq!(spinful.norb(), pair.norb());
+    /// assert_eq!(spinful.nsta(), 2 * pair.nsta());
+    /// assert_eq!(spinful.orb, array![[0.0], [0.25]]);
+    /// # Ok::<(), Rustb::TbError>(())
+    /// ```
+    pub fn to_spinful(&self) -> Result<Model<true, DIM, R>> {
+        let norb = self.norb();
+        let nsta = norb
+            .checked_mul(2)
+            .ok_or_else(|| TbError::InvalidModelInvariant {
+                invariant: "spinful_conversion_size",
+                message: "doubling the channel basis size overflows usize".into(),
+            })?;
+        let origin = [0isize; DIM];
+        let mut translations = BTreeMap::from([(origin, 0usize)]);
+        for source in [&self.up, &self.down] {
+            for row in source.hamR.rows() {
+                translations
+                    .entry(std::array::from_fn(|axis| row[axis]))
+                    .or_insert(0);
+            }
+        }
+        let mut next = 1;
+        for (vector, index) in &mut translations {
+            if vector != &origin {
+                *index = next;
+                next += 1;
+            }
+        }
+        let nr = translations.len();
+        // Reject shape/address arithmetic overflow before ndarray allocates.
+        let components = if R::HAS_RMATRIX { DIM } else { 1 };
+        let bytes = nr
+            .checked_mul(nsta)
+            .and_then(|n| n.checked_mul(nsta))
+            .and_then(|n| n.checked_mul(components))
+            .and_then(|n| n.checked_mul(std::mem::size_of::<Complex<f64>>()));
+        if bytes.is_none_or(|bytes| bytes > isize::MAX as usize) {
+            return Err(TbError::InvalidModelInvariant {
+                invariant: "spinful_conversion_size",
+                message: "the combined model exceeds the addressable array size".into(),
+            });
+        }
+        let mut ham_r = Array2::zeros((nr, DIM));
+        for (vector, &index) in &translations {
+            for axis in 0..DIM {
+                ham_r[[index, axis]] = vector[axis];
+            }
+        }
+        let mut ham = Array3::zeros((nr, nsta, nsta));
+        let mut position = if R::HAS_RMATRIX {
+            Some(Array4::zeros((nr, DIM, nsta, nsta)))
+        } else {
+            None
+        };
+        for (source, offset) in [(&self.up, 0), (&self.down, norb)] {
+            for (row_index, row) in source.hamR.rows().into_iter().enumerate() {
+                let vector = std::array::from_fn(|axis| row[axis]);
+                let target = translations[&vector];
+                ham.slice_mut(s![target, offset..offset + norb, offset..offset + norb])
+                    .add_assign(&source.ham.slice(s![row_index, .., ..]));
+                if let Some(position) = position.as_mut() {
+                    position
+                        .slice_mut(s![target, .., offset..offset + norb, offset..offset + norb])
+                        .add_assign(&source.rmatrix.as_array4().slice(s![row_index, .., .., ..]));
+                }
+            }
+        }
+        let model = Model::<true, DIM, R> {
+            lat: self.up.lat.clone(),
+            orb: ndarray::concatenate(Axis(0), &[self.up.orb.view(), self.down.orb.view()])?,
+            orb_projection: self.up.orb_projection.clone(),
+            atoms: self.up.atoms.clone(),
+            ham,
+            hamR: ham_r,
+            rmatrix: position.map_or_else(|| self.up.rmatrix.clone(), R::from_array),
+        };
+        model.validate()?;
+        Ok(model)
     }
 
     /// Return the two independently sorted energy arrays in `up, down` order.

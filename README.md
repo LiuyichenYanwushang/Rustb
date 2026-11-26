@@ -214,6 +214,17 @@ mutating APIs. Import `Rustb::Kpath`, as for `Model`, for
 `pair.k_path(&path, nk)?` using the common lattice and the same validated sampler
 (distances omit `2π`).
 
+`pair.to_spinful()?` borrows the pair and returns `Model<true, DIM, R>` with
+spin-major `[up; down]` centres and a block-diagonal Hamiltonian (and full
+position matrices for `HasRMatrix`). Its support is `S_up ∪ S_down ∪ {0}`:
+`R = 0` first, then lexicographic order, adding a zero origin block if absent
+from both channels. Missing channel blocks are zero-filled and duplicate
+translations are summed. Common atoms, `OrbitalId`s and projections appear
+once. This storage embedding does not align independent Wannier gauges or
+infer cross-channel spatial overlaps; canonical transverse spin operators
+assume a corresponding common orbital gauge. No SOC or spin-flip terms are
+introduced, and the pair is unchanged. No reverse conversion API is provided.
+
 All eight `Solve` counterparts are inherent methods with the same arguments:
 `solve_band_onek`, `solve_band_range_onek`, `solve_band_all`, and
 `solve_band_all_parallel` return `Result<(E_up, E_down)>`; `solve_onek`,
@@ -1013,25 +1024,29 @@ For spinless 3D models, `symmetrize_centres` and
 `symmetrize_model_and_centres` borrow `&self` and return `Result<Self>`.
 The former projects only orbital centres, leaving `H` and `r` unchanged;
 the latter projects the centres and Hamiltonian (and `r` when present).
-For a complete collinear spin group, construct a pair and borrow it for the
-projection, which returns `Result<CollinearModel<3, R>>`:
+For collinear spin channels, construct a pair and use `symmetrize` for the full
+certified `CollinearSpinGroup`, or `symmetrize_unitary` for only its unitary
+operations. Both take the same group, basis and parameter references, borrow
+`&self`, and return `Result<CollinearModel<3, R>>`:
 
 ```rust
 // Given spinless 3D `up`, `down` and a certified `CollinearSpinGroup` named `group`.
 let pair = CollinearModel::new(up, down)?;
-let symmetric = pair.symmetrize_pair_with_collinear_spin_group(
-    &group,
-    &CenterResolvedBasis::new(),
-    &HamiltonianSymmetrizationParameters::default(),
-)?; // `pair` remains unchanged.
+let basis = CenterResolvedBasis::new();
+let params = HamiltonianSymmetrizationParameters::default();
+let symmetric = pair.symmetrize(&group, &basis, &params)?;
+let unitary_only = pair.symmetrize_unitary(&group, &basis, &params)?;
+// `pair` remains unchanged by either projection.
 let (up_bands, down_bands) = symmetric.solve_band_onek(&array![0.0, 0.0, 0.0])?;
 ```
 
-This full-group method replaces the old associated `Model` method without a
-deprecated alias. The legacy `Model::symmetrize_pair` and
-`Model::symmetrize_pair_with_unitary_collinear_spin_group` are unchanged: they
-take `&up, &down` and return `Result<(Self, Self)>` in input order. All leave
-the inputs unchanged on success or error. The projections return no reports;
+Channel action (`Preserve`/`Swap`) is independent of antiunitarity: a unitary
+Swap exchanges channels without conjugating the orbital Hamiltonian. These
+short methods replace the former `Model` pair helpers and the long
+`CollinearModel` method without aliases. Magnetic subgroups are not forbidden
+by the no-SOC limit; the legacy magnetic-group helper was removed for its
+misleading channel/antiunitarity convention. Both projections leave the input
+unchanged on success or error and return no reports;
 use `check_hamiltonian_symmetry` for separate Hamiltonian diagnostics. See the
 [symmetry usage guide](<SKILLS.md#optional-cryspglib-symmetry>) for the additional
 pair-basis requirements and position-matrix consistency checks.

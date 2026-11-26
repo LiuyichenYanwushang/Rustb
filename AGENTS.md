@@ -360,6 +360,14 @@ pub struct Model<
   Preserve single-channel shapes and each channel's Atom-gauge row-ket
   convention, independently sorted at each k-point, without alignment, tracking,
   or mixing. Parallel methods parallelize k-points, not the two channels.
+  `to_spinful(&self) -> Result<Model<true, DIM, R>>` is a one-way storage
+  conversion, leaving the pair unchanged. It preserves each spin's centres in
+  `[up; down]` state order and common atoms, `OrbitalId`s and projections once;
+  `norb` is unchanged and `nsta` doubles. Union the independent supports with
+  `R = 0` first and all other vectors lexicographically ordered, zero-fill
+  missing channel blocks and sum duplicate translations. Embed `H` and every
+  full `HasRMatrix` position block diagonally in spin; `NoRMatrix` stays
+  storage-free. Do not invent SOC/spin-flips or add a reverse conversion API.
 - **`Gauge`**: `Atom` (orbital positions in phase) or `Lattice` (only R vectors).
 - **`RMatrixData`**: Trait — `HasRMatrix` (Deref to Array4) or `NoRMatrix` (ZST, literally no field).
 - **`SpinDirection`**: `X/Y/Z` Pauli matrices; `Option<SpinDirection>::None`
@@ -1044,13 +1052,17 @@ indexed/transposed views. Use `RUSTFLAGS="-C target-cpu=native"` for AVX2/AVX512
   and derive the final centres from its onsite diagonal. Postcheck covariance
   and return a new model. `symmetrize_centres` and
   `symmetrize_model_and_centres` borrow their input and return `Result<Self>`.
-  The legacy `Model::symmetrize_pair` and
-  `Model::symmetrize_pair_with_unitary_collinear_spin_group` still borrow
-  `&up, &down` and return `Result<(Self, Self)>` in input order. The full-group
-  entry is now on `CollinearModel<3, R>`: construct `CollinearModel::new(up, down)?`,
-  then call `pair.symmetrize_pair_with_collinear_spin_group(group, basis, params)`.
-  It borrows the pair and returns `Result<CollinearModel<3, R>>`; the old
-  associated `Model` entry is removed without a deprecated alias. The constructor
+  For `CollinearModel<3, R>`, construct `CollinearModel::new(up, down)?`, then
+  call `pair.symmetrize(&group, &basis, &params)` for the full certified
+  `CollinearSpinGroup`, or `pair.symmetrize_unitary(&group, &basis, &params)`
+  for only its unitary operations. Both take the same argument types, borrow
+  `&self` and return `Result<Self>`. Channel action (`Preserve`/`Swap`) is
+  independent of antiunitarity; a unitary Swap must not conjugate the orbital
+  Hamiltonian. `Model::symmetrize_pair`,
+  `Model::symmetrize_pair_with_unitary_collinear_spin_group` and the long
+  `CollinearModel::symmetrize_pair_with_collinear_spin_group` are removed
+  without aliases. The legacy magnetic-group pair convention was misleading;
+  no-SOC does not mathematically forbid magnetic subgroups. The constructor
   already enforces exact common metadata, equal basis sizes and ordered orbital
   projections; swaps additionally require corresponding Wannier gauges and
   centre differences below half a cell in each fractional component.

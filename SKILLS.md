@@ -132,6 +132,33 @@ counts can differ, including zero; each selected eigenvector array has shape
 sequentially and parallelize k-points within each channel. See
 [eigenvector conventions](<SKILLS.md#eigenvalue-ordering-and-eigenvector-axes>).
 
+### Embed a collinear pair in a spinful model
+
+`CollinearModel::to_spinful(&self) -> Result<Model<true, DIM, R>>` is a
+one-way, borrowing storage conversion:
+
+```rust
+let spinful = pair.to_spinful()?;
+assert_eq!(spinful.norb(), pair.norb());
+assert_eq!(spinful.nsta(), 2 * pair.nsta());
+// `pair` is unchanged and can still be solved channel by channel.
+```
+
+The result orders states as `[all up; all down]`, preserving each channel's
+centres independently. Its support is `S_up ∪ S_down ∪ {0}`, with `R = 0`
+first and all remaining vectors in lexicographic order; if absent from both
+channels, the origin is added as a zero block. Missing channel blocks are
+zero-filled; duplicate translations within a channel are summed.
+`H` and, for `HasRMatrix`, every full position-matrix block (including nonlocal
+and off-diagonal orbital entries) are embedded block diagonally in spin.
+`NoRMatrix` remains storage-free. Common atoms, `OrbitalId`s and projections
+are kept once, so the physical orbital count is unchanged. No SOC, spin-flip
+terms, energy alignment or symmetry projection is introduced. This embedding
+does not align independent Wannier gauges or infer cross-channel spatial
+overlaps. Interpreting the canonical transverse spin operators assumes a
+corresponding common orbital gauge, not merely matching orbital labels;
+unequal spin centres remain supported. No reverse conversion API is provided.
+
 ### Hoppings and onsite terms
 
 ```rust
@@ -1901,7 +1928,7 @@ Newly generated support receives the projected position block rather than an
 unconditional zero.
 
 For `HasRMatrix`, `symmetrize_hamiltonian`, `symmetrize_model_and_centres`,
-and all three pair entry points require a stored onsite (`R = 0`) position
+and both collinear pair entry points require a stored onsite (`R = 0`) position
 block in each input. They set the final centres from the real onsite diagonal
 of the projected `r`, keeping its cell representative without wrapping. Pair
 projection assumes the two Wannier bases already use a common gauge; covariance
@@ -1997,42 +2024,27 @@ the proposed centres must match the unchanged onsite `r` diagonal in the
 same cell representative within that tolerance; a missing onsite block or a
 mismatch is an error. `NoRMatrix` skips the diagonal check.
 
-For two spin channels related by a magnetic group, start with spinless 3D
-models `up` and `dn` with matching lattices, atom ordering, basis sizes, orbital
-projections, and position-matrix storage types. The legacy
-`Model::symmetrize_pair` takes shared references and returns
-`Result<(Self, Self)>` in input order. Use the returned models instead of the
-unchanged inputs:
+For collinear spin channels, start with spinless 3D models `up` and `dn` and
+construct `CollinearModel::new(up, dn)?`. The constructor enforces exact common
+lattice and ordered `Atom` metadata, equal basis sizes and ordered orbital
+projections; the channels also share the position-matrix storage type. Channel
+swaps additionally require corresponding Wannier gauges and centre differences
+below half a cell in each fractional component.
 
-~~~rust
-let (up_sym, dn_sym) = Model::symmetrize_pair(
-    &up,
-    &dn,
-    &target,
-    &CenterResolvedBasis::new(),
-    &HamiltonianSymmetrizationParameters::default(),
-)?;
-~~~
+`detect_collinear_spin_group` returns the complete certified `CollinearSpinGroup`:
+its unitary half and the `g A0` antiunitary partners are both present. On
+`CollinearModel<3, R>`, call `symmetrize(&group, &basis, &params)` to project
+the full group, or `symmetrize_unitary(&group, &basis, &params)` to use only
+its unitary operations. Both take the same argument types, borrow `&self` and
+return `Result<Self>`, leaving the input unchanged on success or error. Use the
+returned pair for subsequent calculations.
 
-Unitary target operations project each channel independently; anti-unitary
-(spin-flip) operations couple the channels, and both centres and Hamiltonians
-are projected jointly. The target operations' `time_reversal` flags must
-describe the actual magnetic group; a wrong flag assignment is a user error,
-not silently repaired.
-
-For a collinear spin group, prefer the cryspglib-certified entries instead of
-hand-building the old magnetic-group flags. `detect_collinear_spin_group`
-returns the complete `CollinearSpinGroup`: its unitary half and the `g A0`
-antiunitary partners are both present. Construct `CollinearModel<3, R>` and
-call `pair.symmetrize_pair_with_collinear_spin_group(&group, &basis, &params)`:
-it borrows the pair and returns `Result<CollinearModel<3, R>>`, leaving the
-input unchanged on success or error. The old associated `Model` full-group
-method was removed, with no deprecated alias. The constructor already enforces
-exact common lattice and `Atom` metadata, equal basis sizes and ordered orbital
-projections. Channel swaps additionally require corresponding Wannier gauges
-and centre differences below half a cell in each fractional component.
-The legacy `Model::symmetrize_pair` and unitary-group helper remain unchanged:
-the latter accepts the complete group and filters its unitary half internally.
+The former `Model::symmetrize_pair`,
+`Model::symmetrize_pair_with_unitary_collinear_spin_group`, and long
+`CollinearModel::symmetrize_pair_with_collinear_spin_group` names are removed
+without aliases. The legacy magnetic-group helper conflated channel exchange
+with antiunitarity, a misleading convention; its removal does not assert that
+magnetic subgroups are mathematically forbidden in the no-SOC limit.
 
 ~~~rust
 use Rustb::{CollinearMoments, SpinTolerances, detect_collinear_spin_group};
@@ -2044,11 +2056,9 @@ let group = detect_collinear_spin_group(
 )?;
 
 let pair = CollinearModel::new(up, dn)?;
-let symmetric = pair.symmetrize_pair_with_collinear_spin_group(
-    &group,
-    &CenterResolvedBasis::new(),
-    &HamiltonianSymmetrizationParameters::default(),
-)?;
+let basis = CenterResolvedBasis::new();
+let params = HamiltonianSymmetrizationParameters::default();
+let symmetric = pair.symmetrize(&group, &basis, &params)?;
 
 let kpoints = array![[0.0, 0.0, 0.0], [0.25, 0.0, 0.0]];
 let (up_bands, dn_bands) = symmetric.solve_band_all_parallel(&kpoints)?;
@@ -2056,14 +2066,9 @@ let ((up_energies, up_kets), (dn_energies, dn_kets)) =
     symmetric.solve_onek(&array![0.0, 0.0, 0.0])?;
 
 // The original pair is still available; impose only the unitary half on it.
-let (up_unitary, dn_unitary) =
-    Model::symmetrize_pair_with_unitary_collinear_spin_group(
-        pair.up(),
-        pair.down(),
-        &group,
-        &CenterResolvedBasis::new(),
-        &HamiltonianSymmetrizationParameters::default(),
-    )?;
+let unitary_only = pair.symmetrize_unitary(&group, &basis, &params)?;
+let up_unitary = unitary_only.up();
+let dn_unitary = unitary_only.down();
 ~~~
 
 `Preserve`/`Swap` selects the source spin channel independently of the

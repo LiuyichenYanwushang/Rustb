@@ -57,6 +57,10 @@
 //!       or [`floquet_effective_model`](Model::floquet_effective_model),
 //!       [`floquet_effective_mode_resolved_model`](Model::floquet_effective_mode_resolved_model),
 //!       [`floquet_effective_q_model`](Model::floquet_effective_q_model) (same-size models).
+//! - [`CollinearModel<DIM, R>`](CollinearModel): uncoupled up/down channels;
+//!   [`to_spinful`](CollinearModel::to_spinful) borrows the pair and returns a
+//!   spin-major, block-diagonal `Model<true, DIM, R>`, retaining independent centres
+//!   and full position blocks when present. No SOC or spin-flips are added.
 //!
 //! </details>
 //!
@@ -91,11 +95,11 @@
 - **Projections from shared references** (spinless models; inputs unchanged):
   - Centres, returning `Result<Self>`: [`symmetrize_centres`](Model::symmetrize_centres),
     [`symmetrize_model_and_centres`](Model::symmetrize_model_and_centres).
-  - Two channels, returning `Result<(Self, Self)>` in input order:
-    [`symmetrize_pair`](Model::symmetrize_pair),
-    [`symmetrize_pair_with_unitary_collinear_spin_group`](Model::symmetrize_pair_with_unitary_collinear_spin_group).
   - A collinear pair, returning `Result<CollinearModel<3, R>>`:
-    [`symmetrize_pair_with_collinear_spin_group`](CollinearModel::symmetrize_pair_with_collinear_spin_group).
+    [`symmetrize`](CollinearModel::symmetrize) projects the full `CollinearSpinGroup`;
+    [`symmetrize_unitary`](CollinearModel::symmetrize_unitary) accepts the same
+    group, basis and parameter references but uses only unitary operations.
+    Channel preservation/exchange is independent of antiunitarity.
 - **Band representations:** [`calculate_irrep`](Model::calculate_irrep),
   [`calculate_irrep_for_group`](Model::calculate_irrep_for_group).
 

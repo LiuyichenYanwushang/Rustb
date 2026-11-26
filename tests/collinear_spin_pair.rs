@@ -67,7 +67,7 @@ fn full_collinear_spin_group_projects_the_channel_average() {
     )
     .unwrap();
     let projected = input
-        .symmetrize_pair_with_collinear_spin_group(
+        .symmetrize(
             &group,
             &CenterResolvedBasis::new(),
             &HamiltonianSymmetrizationParameters::default(),
@@ -131,18 +131,100 @@ fn unitary_collinear_subgroup_is_accepted_separately() {
         SpinTolerances::default(),
     )
     .unwrap();
-    let (up, down) = Model::<false, 3>::symmetrize_pair_with_unitary_collinear_spin_group(
-        &input_up,
-        &input_down,
-        &group,
-        &CenterResolvedBasis::new(),
-        &HamiltonianSymmetrizationParameters::default(),
+    let input = CollinearModel::new(input_up, input_down).unwrap();
+    let projected = input
+        .symmetrize_unitary(
+            &group,
+            &CenterResolvedBasis::new(),
+            &HamiltonianSymmetrizationParameters::default(),
+        )
+        .unwrap();
+    assert!((onsite(projected.up(), 0) - Complex64::new(2.0, 0.0)).norm() < 1e-10);
+    assert!((onsite(projected.down(), 0) - Complex64::new(2.0, 0.0)).norm() < 1e-10);
+    assert_eq!(input.up().ham, two_site_model(1.0).ham);
+    assert_eq!(input.down().ham, two_site_model(3.0).ham);
+}
+
+#[test]
+fn full_projection_imposes_antiunitary_partners_but_unitary_projection_does_not() {
+    // Three generic sites remove inversion as well as every other nonidentity
+    // spatial symmetry, isolating the spin-only antiunitary conjugation.
+    let lattice = array![[1.0, 0.0, 0.0], [0.17, 1.37, 0.0], [0.23, 0.31, 1.91]];
+    let positions = vec![[0.0; 3], [0.173, 0.281, 0.397], [0.313, 0.109, 0.227]];
+    let crystal = Crystal::new(
+        std::array::from_fn(|cart| std::array::from_fn(|vector| lattice[[vector, cart]])),
+        positions.clone(),
+        vec![26; 3],
     )
     .unwrap();
-    assert!((onsite(&up, 0) - Complex64::new(2.0, 0.0)).norm() < 1e-10);
-    assert!((onsite(&down, 0) - Complex64::new(2.0, 0.0)).norm() < 1e-10);
-    assert_eq!(input_up.ham, two_site_model(1.0).ham);
-    assert_eq!(input_down.ham, two_site_model(3.0).ham);
+    let group = detect_collinear_spin_group(
+        &crystal,
+        CollinearMoments::Signed(&[1.0; 3]),
+        SpinTolerances::default(),
+    )
+    .unwrap();
+    assert_eq!(group.operations().len(), 2);
+    assert_eq!(
+        group
+            .operations()
+            .iter()
+            .filter(|op| op.kind.is_unitary())
+            .count(),
+        1
+    );
+    let make_channel = |hopping| {
+        let mut model = Model::<false, 3>::tb_model(
+            lattice.clone(),
+            ndarray::arr2(&positions),
+            Some(
+                positions
+                    .iter()
+                    .enumerate()
+                    .map(|(orbital, position)| {
+                        Atom::with_orbitals(
+                            ndarray::arr1(position),
+                            AtomType::Fe,
+                            [OrbitalId::new(orbital)],
+                        )
+                    })
+                    .collect(),
+            ),
+        )
+        .unwrap();
+        model.set_hop(hopping, 0, 1, &array![0, 0, 0], None);
+        model
+    };
+    let original_up = make_channel(Complex64::new(0.5, 0.25));
+    let original_down = make_channel(Complex64::new(-0.7, 0.4));
+    let input = CollinearModel::new(original_up.clone(), original_down.clone()).unwrap();
+    let basis = CenterResolvedBasis::new();
+    let params = HamiltonianSymmetrizationParameters::default();
+    let unitary = input.symmetrize_unitary(&group, &basis, &params).unwrap();
+    let full = input.symmetrize(&group, &basis, &params).unwrap();
+    for (input, original, unitary, full) in [
+        (input.up(), &original_up, unitary.up(), full.up()),
+        (input.down(), &original_down, unitary.down(), full.down()),
+    ] {
+        assert_eq!(unitary.hamR, original.hamR);
+        assert_eq!(unitary.ham.dim(), original.ham.dim());
+        // Projection may reassociate floating-point arithmetic even for identity.
+        assert!(
+            unitary
+                .ham
+                .iter()
+                .zip(&original.ham)
+                .all(|(actual, expected)| {
+                    (actual - expected).norm() <= 1e-12 * expected.norm().max(1.0)
+                })
+        );
+        assert!(unitary.ham[[0, 0, 1]].im.abs() > 0.1);
+        assert!(
+            (full.ham[[0, 0, 1]] - Complex64::new(original.ham[[0, 0, 1]].re, 0.0)).norm() < 1e-10
+        );
+        assert_eq!(input.ham, original.ham);
+        assert_eq!(input.hamR, original.hamR);
+        assert_eq!(input.orb, original.orb);
+    }
 }
 
 #[test]
@@ -177,8 +259,7 @@ fn pair_projection_reports_the_same_first_final_covariance_error() {
         model.rmatrix[[0, 0, 1, 0]] = Complex64::new(dipole, 0.0);
         model
     };
-    let up = make_channel(0.125);
-    let down = make_channel(0.25);
+    let input = CollinearModel::new(make_channel(0.125), make_channel(0.25)).unwrap();
 
     // The initial action has opposite x parities when x is reversed. Its
     // average removes the onsite H mixing but preserves the x dipole. On the
@@ -211,9 +292,7 @@ fn pair_projection_reports_the_same_first_final_covariance_error() {
             .build()
             .unwrap()
             .install(|| {
-                Model::symmetrize_pair_with_unitary_collinear_spin_group(
-                    &up,
-                    &down,
+                input.symmetrize_unitary(
                     &group,
                     &basis,
                     &HamiltonianSymmetrizationParameters::default(),
@@ -290,7 +369,7 @@ fn mgfe6ge6_collinear_spin_pair_acceptance() {
     .unwrap();
     CollinearModel::new(up, down)
         .unwrap()
-        .symmetrize_pair_with_collinear_spin_group(
+        .symmetrize(
             &group,
             &CenterResolvedBasis::new(),
             &HamiltonianSymmetrizationParameters::default(),
@@ -365,7 +444,7 @@ fn pair_projection_updates_position_matrices() {
             .unwrap()
             .install(|| {
                 input
-                    .symmetrize_pair_with_collinear_spin_group(
+                    .symmetrize(
                         &group,
                         &CenterResolvedBasis::new(),
                         &HamiltonianSymmetrizationParameters::default(),
@@ -373,11 +452,13 @@ fn pair_projection_updates_position_matrices() {
                     .unwrap()
             })
     };
-    let (up, down) = project(1).into_channels();
-    let (up_parallel, down_parallel) = project(4).into_channels();
+    let serial = project(1);
+    let parallel = project(4);
     let bits = |z: Complex64| (z.re.to_bits(), z.im.to_bits());
-    for (channel, serial, parallel) in [("up", &up, &up_parallel), ("down", &down, &down_parallel)]
-    {
+    for (channel, serial, parallel) in [
+        ("up", serial.up(), parallel.up()),
+        ("down", serial.down(), parallel.down()),
+    ] {
         assert_eq!(serial.hamR, parallel.hamR, "{channel} hamR");
         assert_eq!(
             serial.ham.mapv(bits),
@@ -395,7 +476,7 @@ fn pair_projection_updates_position_matrices() {
             "{channel} orb"
         );
     }
-    for (projected, site) in [(&up, 0), (&down, 4)] {
+    for (projected, site) in [(serial.up(), 0), (serial.down(), 4)] {
         assert!(projected.rmatrix[[0, 1, 0, 4]].norm() < 1e-10);
         for shell in [1, 2] {
             let index = find_R(&projected.hamR, &array![0, shell, 0]).unwrap();
