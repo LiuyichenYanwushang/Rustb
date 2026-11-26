@@ -2549,7 +2549,10 @@ impl<const DIM: usize> MagnonModel<DIM> {
             ham,
             self.hamR.clone(),
             self.reference.clone(),
-        )
+        )?
+        // The effective model keeps the same sites and reference structure,
+        // so it must keep the crystal identity too.
+        .with_atoms(self.atoms.clone(), self.atom_of_site.clone())
     }
 }
 
@@ -2862,6 +2865,19 @@ mod sambe_tests {
         }
     }
 
+    #[test]
+    fn effective_model_keeps_atom_metadata() {
+        use crate::atom_struct::{Atom, AtomType};
+
+        let magnon = chain_magnon()
+            .with_atoms(vec![Atom::new(array![0.0], AtomType::Fe)], vec![0])
+            .unwrap();
+        let drive = linear_drive(50.0, 0.05);
+        let effective = magnon.floquet_effective_model(&drive, None).unwrap();
+        assert_eq!(effective.atom_of_site, vec![0]);
+        assert_eq!(effective.natom(), 1);
+        assert_eq!(effective.atoms[0].atom_type(), AtomType::Fe);
+    }
     #[test]
     fn high_frequency_limit_matches_the_effective_model() {
         let magnon = chain_magnon();

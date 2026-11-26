@@ -18,6 +18,15 @@
   shape check.
 - `cut_dot` rejects an explicit `dir` for a 2D model instead of silently
   ignoring it; 3D models keep the documented `[0, 1]` default.
+- `Magnon` optionally stores the crystal it belongs to: `atoms` plus the
+  injective `atom_of_site` mapping, validated against the site positions modulo
+  a lattice vector. `with_atoms` attaches them; `from_model`, `from_collinear`
+  and the TB2J reader fill them automatically, and the magnon metadata format
+  version 2 round-trips them while version 1 files still read without atoms.
+  Code that builds `Magnon` with a struct literal must add the two fields; the
+  constructors and `with_atoms` avoid that. The TB2J reader keeps an unknown
+  species label metadata-free instead of rejecting the exchange file, and
+  version 1 metadata that carries atoms is reported.
 - Automatic localized-basis providers (`ScalarSiteBasis`,
   `AtomicOrbitalBasis`, `CenterResolvedBasis`) describe one cell sector per
   paired orbital slot and reject a slot whose up and down centres differ by a

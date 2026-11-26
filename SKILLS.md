@@ -1317,8 +1317,32 @@ The `_hr` file is a `nsta nR` header followed by `Rx Ry Rz a b J` lines
 (1-based indices, real `J`, eV, every entry exactly once). The metadata sidecar
 stores the lattice, site positions, spins, reference axes, the `q`/`n`/`uz`
 reference structure, and the `eV` / `hbar` / `unit-vector` conventions.
-`Magnon::from_hr(dir, prefix, lat, orb, spin, axis, reference)` reads the
-matrix alone when the geometry is already known.
+Format version 2 additionally stores the optional atom table and the
+site-to-atom mapping; version 1 files still read with no atom metadata.
+
+A magnon model can keep the crystal it belongs to:
+
+```rust
+use Rustb::atom_struct::{Atom, AtomType};
+
+let with_crystal = magnon
+    .clone()
+    .with_atoms(vec![Atom::new(array![0.0], AtomType::Fe)], vec![0])?;
+assert_eq!(with_crystal.natom(), 1);
+assert!(with_crystal.has_atoms());
+```
+
+`ExchangeParams` extraction (`from_model`, `from_collinear`) and the TB2J
+reader fill `atoms` and `atom_of_site` automatically from their atom tables, so
+symmetry and atom-resolved analysis can relate a magnetic site back to its
+crystal site; those consumers are separate work, the spin-wave solver only uses
+positions, spins and reference axes. A TB2J label that is not a known element
+keeps the exchange model readable but leaves the atom metadata empty.
+`with_atoms` validates that the mapping is injective, in range, and that every
+site centre equals its atom position modulo a lattice vector.
+
+`Magnon::from_hr(dir, prefix, lat, orb, spin, axis, reference)` reads the matrix
+alone when the geometry is already known.
 
 `validate()` enforces the invariants the solver and writer rely on: shapes,
 finite data, positive spins, unit reference axes, unique translations with

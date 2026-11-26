@@ -218,6 +218,11 @@ model hierarchies with duplicated band, geometry, or response methods.
 - Floquet support now covers Peierls-Sambe models, quasienergy folding, and a
   validated van Vleck effective-model path that also returns an ordinary
   `Model`.
+- Magnon models optionally carry the crystal: `Magnon::atoms` plus an
+  injective `atom_of_site` mapping, filled by the exchange extraction and the
+  TB2J reader, round-tripped by metadata format version 2. It is recorded so
+  that symmetry, supercell and atom-resolved analysis can use it; the
+  spin-wave solver itself reads only positions, spins and reference axes.
 - Optional allocator features, stricter validation/error variants, response
   integration diagnostics, and benchmark baselines were updated alongside the
   public API consolidation.

@@ -11,8 +11,10 @@
 //!   translation must be `R = 0` (a [`Magnon::validate`] invariant).
 //! * `<prefix>_magnon_meta.toml` — the geometry, spin data and reference
 //!   structure needed to rebuild a [`Magnon`]: lattice, site positions, spin
-//!   quantum numbers, reference axes, propagation vector, and the unit /
-//!   exchange conventions used by the matrix file.
+//!   quantum numbers, reference axes, propagation vector, the unit / exchange
+//!   conventions used by the matrix file, and, from format version 2, the
+//!   optional atom table with its site-to-atom mapping. Version 1 metadata is
+//!   still read and simply carries no atoms.
 //!
 //! Splitting the matrix from its metadata follows the Wannier90 convention
 //! (`_hr.dat` plus `.win`/`_centres.xyz`): the matrix file stays a plain
@@ -66,6 +68,7 @@
 //! ```
 
 use super::{Magnon, MagnonReference, SPIN_COMPONENTS};
+use crate::atom_struct::Atom;
 use crate::error::{Result, TbError};
 use ndarray::{Array1, Array2, Array3};
 use serde::{Deserialize, Serialize};
@@ -74,7 +77,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Version of the Rustb magnon hr format written by [`Magnon::write_hr`].
-pub const MAGNON_FORMAT_VERSION: u32 = 1;
+///
+/// Version 2 adds the optional atom table and site-to-atom mapping. Version 1
+/// files are still read; they simply carry no atom metadata.
+pub const MAGNON_FORMAT_VERSION: u32 = 2;
+
+/// Oldest metadata version accepted by [`Magnon::read`].
+const MAGNON_MIN_FORMAT_VERSION: u32 = 1;
 
 /// Files produced by [`Magnon::write_hr`].
 #[derive(Clone, Debug)]
@@ -102,6 +111,12 @@ struct MagnonMeta {
     q: Vec<f64>,
     rotation_axis: Vec<f64>,
     quantization_axis: Vec<f64>,
+    /// Crystal atoms, present from format version 2 when the model has them.
+    #[serde(default)]
+    atoms: Vec<Atom>,
+    /// Atom index of each magnetic site, present from format version 2.
+    #[serde(default)]
+    atom_of_site: Vec<usize>,
 }
 
 impl<const DIM: usize> Magnon<DIM> {
@@ -139,11 +154,11 @@ impl<const DIM: usize> Magnon<DIM> {
             message: e.to_string(),
         })?;
         let file = meta_path.display().to_string();
-        if meta.format_version != MAGNON_FORMAT_VERSION {
+        if !(MAGNON_MIN_FORMAT_VERSION..=MAGNON_FORMAT_VERSION).contains(&meta.format_version) {
             return Err(TbError::FileParse {
                 file,
                 message: format!(
-                    "unsupported format_version {}, expected {MAGNON_FORMAT_VERSION}",
+                    "unsupported format_version {}, expected {MAGNON_MIN_FORMAT_VERSION}..={MAGNON_FORMAT_VERSION}",
                     meta.format_version
                 ),
             });
@@ -220,7 +235,25 @@ impl<const DIM: usize> Magnon<DIM> {
             rotation_axis: Array1::from(meta.rotation_axis.clone()),
             quantization_axis: Array1::from(meta.quantization_axis.clone()),
         };
-        Self::from_hr(dir, prefix, lat, orb, spin, axis, reference)
+        let magnon = Self::from_hr(dir, prefix, lat, orb, spin, axis, reference)?;
+        if meta.atoms.is_empty() && meta.atom_of_site.is_empty() {
+            return Ok(magnon);
+        }
+        if meta.format_version < 2 {
+            return Err(TbError::FileParse {
+                file: file.clone(),
+                message: format!(
+                    "format_version {} metadata must not carry atoms; they were introduced in version 2",
+                    meta.format_version
+                ),
+            });
+        }
+        magnon
+            .with_atoms(meta.atoms, meta.atom_of_site)
+            .map_err(|error| TbError::FileParse {
+                file,
+                message: error.to_string(),
+            })
     }
 
     /// Read `<prefix>_magnon_hr.dat` with caller-supplied geometry.
@@ -292,6 +325,8 @@ impl<const DIM: usize> Magnon<DIM> {
             q: self.reference.q.to_vec(),
             rotation_axis: self.reference.rotation_axis.to_vec(),
             quantization_axis: self.reference.quantization_axis.to_vec(),
+            atoms: self.atoms.clone(),
+            atom_of_site: self.atom_of_site.clone(),
         };
         let text = toml::to_string(&meta).map_err(|e| TbError::FileCreation {
             path: path.display().to_string(),
@@ -635,8 +670,20 @@ mod tests {
 
     #[test]
     fn test_hr_round_trip() {
+        use crate::atom_struct::AtomType;
+
         let dir = temp_dir("round-trip");
-        let magnon = chain(0.01);
+        // Atom metadata is optional but must survive the round trip.
+        use crate::atom_struct::OrbitalId;
+
+        let mut site_atom = Atom::with_orbitals(array![0.0], AtomType::Fe, [OrbitalId::new(0)]);
+        site_atom.set_magnetic_moment([0.0, 0.0, 2.0]).unwrap();
+        let magnon = chain(0.01)
+            .with_atoms(
+                vec![site_atom, Atom::new(array![0.25], AtomType::O)],
+                vec![0],
+            )
+            .unwrap();
         let files = magnon.write_hr(&dir, "chain").unwrap();
         assert!(files.hr.exists());
         assert!(files.meta.exists());
@@ -648,6 +695,19 @@ mod tests {
         assert_eq!(restored.axis, magnon.axis);
         assert_eq!(restored.lat, magnon.lat);
         assert_eq!(restored.orb, magnon.orb);
+        assert!(restored.has_atoms());
+        assert_eq!(
+            (restored.natom(), restored.atom_of_site.clone()),
+            (2, vec![0])
+        );
+        assert_eq!(restored.atoms[0].atom_type(), AtomType::Fe);
+        assert_eq!(restored.atoms[0].position().to_vec(), vec![0.0]);
+        assert_eq!(restored.atoms[0].magnetic_moment(), Some([0.0, 0.0, 2.0]));
+        // Typed orbital handles survive too, so model atoms round-trip.
+        assert_eq!(restored.atoms[0].orbitals(), &[OrbitalId::new(0)]);
+        // A non-site atom survives round the trip without becoming a site.
+        assert_eq!(restored.atoms[1].atom_type(), AtomType::O);
+        assert_eq!(restored.atoms[1].position().to_vec(), vec![0.25]);
         assert_eq!(restored.reference.q, magnon.reference.q);
         assert_eq!(
             restored.reference.quantization_axis,
@@ -656,6 +716,57 @@ mod tests {
         assert_eq!(
             restored.reference.rotation_axis,
             magnon.reference.rotation_axis
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reads_version_1_metadata_without_atoms() {
+        use crate::atom_struct::AtomType;
+
+        let dir = temp_dir("v1-meta");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(hr_path(&dir, "v1"), single_cell_body()).unwrap();
+        let meta = "format_version = 1\n\
+             dim = 1\n\
+             nspin = 1\n\
+             energy_unit = \"eV\"\n\
+             spin_unit = \"hbar\"\n\
+             exchange_convention = \"unit-vector\"\n\
+             lat = [[1.0]]\n\
+             orb = [[0.0]]\n\
+             spin = [1.5]\n\
+             axis = [[0.0, 0.0, 1.0]]\n\
+             q = [0.0]\n\
+             rotation_axis = [1.0, 0.0, 0.0]\n\
+             quantization_axis = [0.0, 0.0, 1.0]\n";
+        std::fs::write(meta_path(&dir, "v1"), meta).unwrap();
+        let magnon = Magnon::<1>::read(&dir, "v1").unwrap();
+        assert!(!magnon.has_atoms());
+        assert_eq!((magnon.natom(), magnon.atom_of_site.len()), (0, 0));
+        assert!((magnon.spin[0] - 1.5).abs() < 1e-12);
+
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Version 1 is defined without atoms; a v1 file that carries them must
+        // be reported rather than silently accepted. Write a real v2 pair and
+        // downgrade only its version tag.
+        let dir = temp_dir("v1-atoms");
+        let with_crystal = chain(0.01)
+            .with_atoms(vec![Atom::new(array![0.0], AtomType::Fe)], vec![0])
+            .unwrap();
+        with_crystal.write_hr(&dir, "downgraded").unwrap();
+        let path = meta_path(&dir, "downgraded");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let downgraded = text.replace(
+            &format!("format_version = {MAGNON_FORMAT_VERSION}"),
+            "format_version = 1",
+        );
+        std::fs::write(&path, downgraded).unwrap();
+        let error = Magnon::<1>::read(&dir, "downgraded").unwrap_err();
+        assert!(
+            matches!(&error, TbError::FileParse { message, .. } if message.contains("must not carry atoms")),
+            "{error}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -765,11 +876,9 @@ mod tests {
         chain(0.01).write_hr(&dir, "model").unwrap();
         let path = meta_path(&dir, "model");
         let text = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(
-            &path,
-            text.replace("format_version = 1", "format_version = 2"),
-        )
-        .unwrap();
+        let current = format!("format_version = {MAGNON_FORMAT_VERSION}");
+        let unsupported = format!("format_version = {}", MAGNON_FORMAT_VERSION + 1);
+        std::fs::write(&path, text.replace(&current, &unsupported)).unwrap();
         let error = Magnon::<1>::read(&dir, "model").unwrap_err();
         assert!(message_of(&error).contains("format_version"));
         std::fs::remove_dir_all(&dir).ok();
@@ -934,6 +1043,8 @@ mod tests {
             ham: Array3::<f64>::zeros((1, 3, 3)),
             hamR: array![[0isize], [1]],
             reference: MagnonReference::collinear(),
+            atoms: Vec::new(),
+            atom_of_site: Vec::new(),
         };
         assert!(matches!(
             magnon.write_hr(&dir, "model"),

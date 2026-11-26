@@ -178,6 +178,10 @@ pub struct ExchangeParams {
     /// with the on-site magnetization is rejected.
     pub axis: Option<Array2<f64>>,
     /// Optional explicit magnetic sites, as atom indices.
+    ///
+    /// The listed order defines the site order (and therefore `atom_of_site`).
+    /// Duplicated indices are rejected before any exchange work, and the
+    /// positions come from the owning atoms.
     pub magnetic_atoms: Option<Vec<usize>>,
 }
 
@@ -259,6 +263,8 @@ impl<const DIM: usize> Magnon<DIM> {
     /// blocks of every hopping matrix. A model with non-negligible off-diagonal
     /// spin blocks describes a non-collinear state and is rejected; use the
     /// spinor construction for that case.
+    ///
+    /// The returned model keeps the crystal atoms and the site-to-atom mapping.
     pub fn from_model<R: RMatrixData>(
         model: &Model<true, DIM, R>,
         params: &ExchangeParams,
@@ -307,6 +313,8 @@ impl<const DIM: usize> Magnon<DIM> {
     /// Wannier calculations can have slightly different centres; these are
     /// accepted with a warning (the up channel supplies the geometry). A
     /// permuted orbital order cannot be detected and would change the result.
+    /// The returned model keeps the up channel atoms and the site-to-atom
+    /// mapping.
     pub fn from_collinear<R1: RMatrixData, R2: RMatrixData>(
         up: &Model<false, DIM, R1>,
         down: &Model<false, DIM, R2>,
@@ -403,7 +411,7 @@ impl<const DIM: usize> Magnon<DIM> {
             });
         }
         let n_orb = up.shape()[1];
-        let (sites, site_positions) = resolve_sites(atoms, orb, n_orb, params)?;
+        let (sites, site_positions, atom_of_site) = resolve_sites(atoms, orb, n_orb, params)?;
         let n_site = sites.len();
 
         let mesh = forced_odd_mesh(&params.kmesh)?;
@@ -502,7 +510,11 @@ impl<const DIM: usize> Magnon<DIM> {
             ham,
             r_box,
             MagnonReference::collinear(),
-        )
+        )?
+        // `resolve_sites` consumed the atom table while selecting the magnetic
+        // sites; keep the same atoms and mapping so symmetry, supercells and
+        // atom-resolved output can relate a site back to the crystal.
+        .with_atoms(atoms.to_vec(), atom_of_site)
     }
 }
 
@@ -903,7 +915,7 @@ fn resolve_sites(
     orbital_positions: &Array2<f64>,
     n_orb: usize,
     params: &ExchangeParams,
-) -> Result<(Vec<Vec<usize>>, Array2<f64>)> {
+) -> Result<(Vec<Vec<usize>>, Array2<f64>, Vec<usize>)> {
     if let Some(indices) = &params.magnetic_atoms {
         if atoms.is_empty() {
             return Err(TbError::InvalidMagnonInvariant {
@@ -912,11 +924,19 @@ fn resolve_sites(
             });
         }
         let mut sites = Vec::with_capacity(indices.len());
+        let mut seen_atoms = vec![false; atoms.len()];
         for &index in indices {
             let atom = atoms.get(index).ok_or(TbError::InvalidMagnonInvariant {
                 invariant: "magnetic_atom_index",
                 message: format!("atom index {index} is out of range"),
             })?;
+            if seen_atoms[index] {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "magnetic_atom_duplicate",
+                    message: format!("atom {index} is listed as a magnetic site twice"),
+                });
+            }
+            seen_atoms[index] = true;
             if atom.orbitals().is_empty() {
                 return Err(TbError::InvalidMagnonInvariant {
                     invariant: "magnetic_atom_orbitals",
@@ -926,7 +946,7 @@ fn resolve_sites(
             sites.push(atom.orbitals().iter().map(|id| id.index()).collect());
         }
         let positions = site_positions_from_atoms(atoms, indices, orbital_positions, sites.len());
-        return Ok((sites, positions));
+        return Ok((sites, positions, indices.clone()));
     }
     if !atoms.is_empty() {
         let any_moment = atoms.iter().any(|atom| atom.has_magnetic_moment());
@@ -949,7 +969,7 @@ fn resolve_sites(
             selected.push(index);
         }
         let positions = site_positions_from_atoms(atoms, &selected, orbital_positions, sites.len());
-        return Ok((sites, positions));
+        return Ok((sites, positions, selected));
     }
     if n_orb == 0 {
         return Err(TbError::InvalidMagnonInvariant {
@@ -964,7 +984,9 @@ fn resolve_sites(
             .row_mut(row)
             .assign(&orbital_positions.row(site[0]));
     }
-    Ok((sites, positions))
+    // Without atom metadata the sites are bare orbital positions; there is no
+    // atom identity to record.
+    Ok((sites, positions, Vec::new()))
 }
 
 /// Fractional positions of the magnetic sites, taken from the atoms when the
@@ -1336,6 +1358,21 @@ mod tests {
         assert!(difference < 1e-14, "max deviation {difference:e}");
         assert_eq!(from_model.spin, from_pair.spin);
         assert_eq!(from_model.axis, from_pair.axis);
+        // Extracting exchange keeps the crystal: both entries must carry the
+        // atoms they were selected from and the site-to-atom mapping.
+        for magnon in [&from_model, &from_pair] {
+            assert!(magnon.has_atoms());
+            assert_eq!(magnon.natom(), 2);
+            assert_eq!(magnon.atom_of_site, vec![0, 1]);
+            assert_eq!(magnon.atoms[0].atom_type(), AtomType::Fe);
+            assert_eq!(magnon.atoms[1].position().to_vec(), vec![0.5]);
+            assert_eq!(magnon.atoms[0].magnetic_moment(), Some([0.0, 0.0, 3.0]));
+            assert_eq!(magnon.atoms[1].magnetic_moment(), Some([0.0, 0.0, -3.0]));
+            assert_eq!(
+                magnon.atom_at_site(1).unwrap().position().to_vec(),
+                vec![0.5]
+            );
+        }
     }
 
     #[test]
@@ -1407,6 +1444,12 @@ mod tests {
         assert!((magnon.orb[[0, 0]] - 0.0).abs() < 1e-12);
         assert!((magnon.orb[[1, 0]] - 0.5).abs() < 1e-12);
         assert_eq!(magnon.spin.len(), 2);
+        // All three atoms are stored, but only the two magnetic ones are sites.
+        assert_eq!(magnon.natom(), 3);
+        assert_eq!(magnon.atom_of_site, vec![0, 2]);
+        assert_eq!(magnon.atoms[1].atom_type(), AtomType::Ge);
+        assert_eq!(magnon.atoms[1].magnetic_moment(), None);
+        assert_eq!(magnon.atoms[0].atom_type(), AtomType::Fe);
     }
 
     #[test]
@@ -1451,10 +1494,47 @@ mod tests {
         let magnon = Magnon::<1>::from_model(&model, &params).unwrap();
         assert_eq!(magnon.nspin(), 2);
         assert_eq!(magnon.orb.dim(), (2, 1));
+        // A multi-orbital site maps to its owning atom, not to its first orbital.
+        assert_eq!(magnon.natom(), 2);
+        assert_eq!(magnon.atom_of_site, vec![0, 1]);
+        assert_eq!(magnon.atoms[1].orbitals().len(), 2);
         let tensor = magnon.jtensor(0, 1, 0).unwrap();
         assert!(tensor[0][0].is_finite());
     }
 
+    #[test]
+    fn test_magnetic_atom_override_sets_the_mapping() {
+        let atoms = vec![
+            Atom::with_orbitals(array![0.0], AtomType::Fe, [OrbitalId::new(0)]),
+            Atom::with_orbitals(array![0.5], AtomType::Fe, [OrbitalId::new(1)]),
+        ];
+        let mut model =
+            Model::<true, 1>::tb_model(array![[1.0]], array![[0.0], [0.5]], Some(atoms)).unwrap();
+        model.atoms[0].set_magnetic_moment([0.0, 0.0, 2.0]).unwrap();
+        model.atoms[1]
+            .set_magnetic_moment([0.0, 0.0, -2.0])
+            .unwrap();
+        model.set_hop(0.2, 0, 1, &array![0isize], None);
+        model.set_onsite_one(1.0, 0, SpinDirection::Z);
+        model.set_onsite_one(-1.0, 1, SpinDirection::Z);
+
+        let params = ExchangeParams::new(&array![3usize]).with_magnetic_atoms(vec![1]);
+        let magnon = Magnon::<1>::from_model(&model, &params).unwrap();
+        // The override selects one site, but both atoms stay in the crystal.
+        assert_eq!(magnon.nspin(), 1);
+        assert_eq!(magnon.natom(), 2);
+        assert_eq!(magnon.atom_of_site, vec![1]);
+        assert!((magnon.orb[[0, 0]] - 0.5).abs() < 1e-12);
+
+        let duplicated = ExchangeParams::new(&array![3usize]).with_magnetic_atoms(vec![0, 0]);
+        assert!(matches!(
+            Magnon::<1>::from_model(&model, &duplicated),
+            Err(TbError::InvalidMagnonInvariant {
+                invariant: "magnetic_atom_duplicate",
+                ..
+            })
+        ));
+    }
     #[test]
     fn test_cfr_contour_matches_tb2j() {
         // TB2J `mycfr.CFR(nz=100)` at 200 K: the first node is the largest pole

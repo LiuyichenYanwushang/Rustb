@@ -8,6 +8,7 @@
 //! inputs are rejected rather than silently dropping tensor terms.
 
 use super::{Magnon, MagnonReference};
+use crate::atom_struct::{Atom, AtomType};
 use crate::error::{Result, TbError};
 use ndarray::{Array1, Array2, Array3};
 use std::collections::{HashMap, HashSet};
@@ -35,6 +36,13 @@ impl Magnon<3> {
     /// exchange file does not store TB2J's magnon propagation vector, so this
     /// reader assumes `Q = 0`; replace [`Magnon::reference`] after reading when
     /// the magnon run used a finite `Q`.
+    ///
+    /// The `Atoms:` table is kept as [`Magnon::atoms`] (species from the leading
+    /// symbol of names such as `Fe1`, fractional positions, and the collinear
+    /// moment) together with the site-to-atom mapping, so symmetry and
+    /// atom-resolved analysis keep the crystal identity. Labels whose leading
+    /// alphabetic run is not a known element (ghost or pseudo atoms) keep the
+    /// exchange model readable but drop the atom metadata.
     ///
     /// # Errors
     /// Returns [`TbError::FileParse`] when the file cannot be read or a section,
@@ -723,7 +731,13 @@ fn build_model(
             ham_r[[row, column]] = value;
         }
     }
-    Magnon::new(
+    // Keep the crystal: TB2J's atom table gives the species, positions and
+    // moments that the magnetic sites were selected from. `AtomType` is a
+    // closed element enum, so a pseudo/ghost label would make the whole file
+    // unreadable; the matrix data is the contract and atom metadata stays
+    // optional, so an unknown species drops the metadata instead of failing.
+    let site_atoms = parse_tb2j_atoms(atoms, &inverse);
+    let magnon = Magnon::new(
         lat,
         orb,
         spin,
@@ -731,9 +745,46 @@ fn build_model(
         ham,
         ham_r,
         MagnonReference::collinear(),
-    )
+    )?;
+    if site_atoms.is_empty() {
+        // Unknown species: keep the matrix data and drop the optional
+        // metadata rather than failing a previously readable file.
+        Ok(magnon)
+    } else {
+        magnon
+            .with_atoms(site_atoms, magnetic)
+            .map_err(|error| fail(path, error.to_string()))
+    }
 }
 
+/// Build the crystal atom table from TB2J's `Atoms:` rows.
+///
+/// Returns an empty vector when any label has no known element symbol, so the
+/// exchange model stays readable without atom metadata. TB2J labels atoms by
+/// element plus a counter (`Fe1`), so the element is the leading alphabetic
+/// run. A nonzero `w_magmom` becomes the collinear moment along `+z`; a zero
+/// moment stays `None` because the table does not distinguish a measured zero
+/// from an unknown moment.
+fn parse_tb2j_atoms(atoms: &[AtomRow], inverse: &Array2<f64>) -> Vec<Atom> {
+    let mut parsed = Vec::with_capacity(atoms.len());
+    for row in atoms {
+        let symbol: String = row
+            .name
+            .chars()
+            .take_while(|character| character.is_ascii_alphabetic())
+            .collect();
+        let Ok(species) = symbol.parse::<AtomType>() else {
+            return Vec::new();
+        };
+        let fractional = Array1::from(row.position.to_vec()).dot(inverse);
+        let mut atom = Atom::new(fractional, species);
+        if row.magmom != 0.0 && atom.set_magnetic_moment([0.0, 0.0, row.magmom]).is_err() {
+            return Vec::new();
+        }
+        parsed.push(atom);
+    }
+    parsed
+}
 /// Inverse of a 3 x 3 matrix, or `None` when it is singular or non-finite.
 fn invert3(matrix: &Array2<f64>) -> Option<Array2<f64>> {
     let a = matrix;
@@ -905,6 +956,31 @@ mod tests {
     }
 
     #[test]
+    fn unknown_species_keeps_the_exchange_metadata_free() {
+        // A ghost or pseudo label cannot name an AtomType; the matrix data is
+        // still the contract, so the model is returned without atom metadata.
+        let exchange = dimer_exchange().replace("Fe1", "Xx1").replace("Fe2", "Xx2");
+        let atoms = dimer_atoms().replace("Fe1", "Xx1").replace("Fe2", "Xx2");
+        let body = fixture(&atoms, &exchange);
+        let magnon = parse_exchange_out(&body, Path::new("pseudo.out")).unwrap();
+        assert_eq!(magnon.nspin(), 2);
+        assert!(!magnon.has_atoms());
+        assert_eq!(magnon.atom_of_site.len(), 0);
+    }
+
+    #[test]
+    fn zero_moment_atoms_stay_in_the_crystal_without_a_moment() {
+        let atoms = format!("{}Ge3 0.5 0.5 0.5 6.0 0.0\n", dimer_atoms());
+        let body = fixture(&atoms, &dimer_exchange());
+        let magnon = parse_exchange_out(&body, Path::new("zero-moment.out")).unwrap();
+        // Non-magnetic atoms are kept in the crystal but are not sites, and a
+        // zero moment stays unknown rather than becoming a measured zero.
+        assert_eq!(magnon.natom(), 3);
+        assert_eq!(magnon.atom_of_site, vec![0, 1]);
+        assert_eq!(magnon.atoms[2].atom_type(), AtomType::Ge);
+        assert_eq!(magnon.atoms[2].magnetic_moment(), None);
+    }
+    #[test]
     fn reads_skew_cell_chain_with_nonunit_spin() {
         let exchange = "Fe1 Fe1 (1, 0, 0) 10 (2, 1, 0) 2.236\nJ_iso: 10\n\
                         Fe1 Fe1 (-1, 0, 0) 10 (-2, -1, 0) 2.236\nJ_iso: 10\n";
@@ -915,6 +991,8 @@ mod tests {
         let model = parse_exchange_out(&body, Path::new("chain.out")).unwrap();
         assert_eq!(model.spin.to_vec(), vec![2.0]);
         assert_eq!(model.orb.row(0).to_vec(), vec![0.25, 0.25, 0.0]);
+        // The atom table goes through the same row-vector cell inverse.
+        assert_eq!(model.atoms[0].position().to_vec(), vec![0.25, 0.25, 0.0]);
         assert_eq!(model.hamR.row(0).to_vec(), vec![0, 0, 0]);
         for q in [0.125, 0.25, 0.37] {
             let actual = model.magnon_band_onek(&array![q, 0.0, 0.0]).unwrap();
@@ -971,6 +1049,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(magnon.nspin(), 2);
         assert_eq!(magnon.nR(), 1);
+        // The atom table is kept, with the leading symbol from names like Fe1.
+        assert!(magnon.has_atoms());
+        assert_eq!(
+            (magnon.natom(), magnon.atom_of_site.clone()),
+            (2, vec![0, 1])
+        );
+        assert_eq!(
+            magnon.atoms[0].atom_type(),
+            crate::atom_struct::AtomType::Fe
+        );
+        assert_eq!(magnon.atoms[0].position().to_vec(), vec![0.0, 0.0, 0.0]);
+        assert_eq!(magnon.atoms[1].position().to_vec(), vec![0.5, 0.0, 0.0]);
+        assert_eq!(magnon.atoms[0].magnetic_moment(), Some([0.0, 0.0, 2.0]));
+        assert_eq!(magnon.atoms[1].magnetic_moment(), Some([0.0, 0.0, -2.0]));
         assert_eq!(magnon.hamR.row(0).to_vec(), vec![0, 0, 0]);
         assert_eq!(magnon.spin.to_vec(), vec![1.0, 1.0]);
         assert_eq!(magnon.axis.row(0).to_vec(), vec![0.0, 0.0, 1.0]);

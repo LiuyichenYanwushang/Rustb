@@ -82,6 +82,14 @@
 //! and the `(R = 0, i = i)` block additionally carries the single-ion
 //! anisotropy.
 //!
+//! [`Magnon::atoms`] and [`Magnon::atom_of_site`] optionally record the crystal
+//! the sites belong to. They are filled by the exchange extraction
+//! ([`Magnon::from_model`], [`Magnon::from_collinear`]) and the TB2J reader, and
+//! are empty for metadata-free inputs ([`Magnon::new`] and
+//! [`Magnon::from_hr`]). Atom metadata is what symmetry analysis, supercells and
+//! atom-resolved output need; the spin-wave solver itself only uses positions,
+//! spins and reference axes.
+//!
 //! # Examples
 //!
 //! ```rust
@@ -132,6 +140,7 @@ mod tb2j;
 pub use self::exchange::{ExchangeParams, MagnonContour};
 pub use self::floquet::{MagnonFloquet, MagnonSambe};
 
+use crate::atom_struct::Atom;
 use crate::error::{Result, TbError};
 use crate::kpath::Kpath;
 use ndarray::{Array1, Array2, Array3, ArrayBase, Data, Ix1, Ix2};
@@ -140,6 +149,10 @@ use std::collections::HashMap;
 
 /// Number of Cartesian spin components stored per magnetic site.
 pub const SPIN_COMPONENTS: usize = 3;
+
+/// Largest fractional-coordinate deviation allowed between a magnetic site and
+/// its atom, modulo a lattice vector.
+const MAGNETIC_SITE_POSITION_TOLERANCE: f64 = 1e-6;
 
 /// Reference magnetic structure of a [`Magnon`] model.
 ///
@@ -281,10 +294,29 @@ pub struct Magnon<const DIM: usize = 3> {
     /// Reference magnetic structure (TB2J's $\mathbf Q$, $\mathbf n$ and
     /// $\mathbf u\_z$).
     pub reference: MagnonReference<DIM>,
+    /// Atomic sites of the crystal, empty when the model was built without
+    /// atom metadata.
+    ///
+    /// The exchange tensors only need site positions, but symmetry analysis,
+    /// supercells, atom-resolved spectra and couplings to an electronic model
+    /// need to know which atom each magnetic site belongs to. Atom metadata is
+    /// optional so that standalone hr files and purely magnetic inputs keep
+    /// working.
+    pub atoms: Vec<Atom>,
+    /// Atom index of each magnetic site, row `i` gives the atom of site `i`.
+    ///
+    /// Empty exactly when [`Magnon::atoms`] is empty; otherwise the mapping is
+    /// injective and every `atoms[atom_of_site[i]]` is centred on `orb[i]`
+    /// modulo a lattice vector.
+    pub atom_of_site: Vec<usize>,
 }
 
 impl<const DIM: usize> Magnon<DIM> {
     /// Assemble a magnon model and validate it.
+    ///
+    /// The result carries no atom metadata; chain [`Magnon::with_atoms`] when
+    /// the crystal is known. Exchange extraction and the TB2J reader already do
+    /// that.
     pub fn new(
         lat: Array2<f64>,
         orb: Array2<f64>,
@@ -302,9 +334,67 @@ impl<const DIM: usize> Magnon<DIM> {
             ham,
             hamR,
             reference,
+            atoms: Vec::new(),
+            atom_of_site: Vec::new(),
         };
         magnon.validate()?;
         Ok(magnon)
+    }
+
+    /// Attach the crystal's atoms and the site-to-atom mapping.
+    ///
+    /// `atom_of_site[i]` is the atom of magnetic site `i`. The mapping must be
+    /// injective, in range, and every site centre must coincide with its atom
+    /// position modulo a lattice vector. Passing empty vectors removes atom
+    /// metadata again, which keeps metadata-free hr inputs valid.
+    ///
+    /// This is the validated way to add atoms: [`Magnon::new`] stays metadata-free so
+    /// that hr round trips and hand-built test fixtures keep their old shape.
+    pub fn with_atoms(mut self, atoms: Vec<Atom>, atom_of_site: Vec<usize>) -> Result<Self> {
+        self.atoms = atoms;
+        self.atom_of_site = atom_of_site;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Number of stored crystal atoms; 0 when the model carries no atom metadata.
+    ///
+    /// This counts every atom, including non-magnetic ones, so it can exceed
+    /// [`Magnon::nspin`].
+    #[inline(always)]
+    pub fn natom(&self) -> usize {
+        self.atoms.len()
+    }
+
+    /// Whether this model carries atom metadata and a site mapping.
+    #[inline(always)]
+    pub fn has_atoms(&self) -> bool {
+        !self.atoms.is_empty()
+    }
+
+    /// Atom of one magnetic site.
+    ///
+    /// Returns a structured error when the model has no atom metadata or the
+    /// site index is out of range.
+    pub fn atom_at_site(&self, site: usize) -> Result<&Atom> {
+        if self.atoms.is_empty() {
+            return Err(TbError::InvalidMagnonInvariant {
+                invariant: "missing_atoms",
+                message: "this magnon model carries no atom metadata".into(),
+            });
+        }
+        let atom_index = self.atom_of_site.get(site).copied().ok_or_else(|| {
+            TbError::InvalidMagnonInvariant {
+                invariant: "site_index",
+                message: format!("site index {site} must be below nspin = {}", self.nspin()),
+            }
+        })?;
+        self.atoms
+            .get(atom_index)
+            .ok_or_else(|| TbError::InvalidMagnonInvariant {
+                invariant: "atom_index",
+                message: format!("atom index {atom_index} is out of range"),
+            })
     }
 
     /// Number of magnetic sites `n` (TB2J calls this `nspin`).
@@ -380,7 +470,8 @@ impl<const DIM: usize> Magnon<DIM> {
         Ok(out)
     }
 
-    /// Validate shapes, finiteness, the `R -> -R` pairing and Hermiticity.
+    /// Validate shapes, finiteness, the atom table and site mapping, the
+    /// `R -> -R` pairing and Hermiticity.
     ///
     /// The checks mirror what the spin-wave solver and the hr writer need: a
     /// square lattice with a finite inverse, one positive spin per site, unit
@@ -431,6 +522,90 @@ impl<const DIM: usize> Magnon<DIM> {
                 ),
             });
         }
+        if self.atom_of_site.is_empty() {
+            if !self.atoms.is_empty() {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "atom_site_mapping",
+                    message: "atom metadata is present but no site-to-atom mapping was given"
+                        .into(),
+                });
+            }
+        } else {
+            if self.atoms.is_empty() {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "atom_site_mapping",
+                    message: "a site-to-atom mapping requires atom metadata".into(),
+                });
+            }
+            if self.atom_of_site.len() != n {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "atom_site_mapping_length",
+                    message: format!(
+                        "expected {n} site-to-atom entries, found {}",
+                        self.atom_of_site.len()
+                    ),
+                });
+            }
+            let mut seen = vec![false; self.atoms.len()];
+            for (site, &atom_index) in self.atom_of_site.iter().enumerate() {
+                let atom = self.atoms.get(atom_index).ok_or_else(|| {
+                    TbError::InvalidMagnonInvariant {
+                        invariant: "atom_index",
+                        message: format!(
+                            "site {site} maps to atom {atom_index}, but only {} atoms are stored",
+                            self.atoms.len()
+                        ),
+                    }
+                })?;
+                if seen[atom_index] {
+                    return Err(TbError::InvalidMagnonInvariant {
+                        invariant: "atom_site_mapping_injective",
+                        message: format!("atom {atom_index} is the parent of more than one site"),
+                    });
+                }
+                seen[atom_index] = true;
+                if atom.position_ref().len() != DIM {
+                    return Err(TbError::InvalidMagnonInvariant {
+                        invariant: "atom_position",
+                        message: format!(
+                            "atom {atom_index} needs {DIM} coordinates, found {}",
+                            atom.position_ref().len()
+                        ),
+                    });
+                }
+                for axis in 0..DIM {
+                    let delta =
+                        (self.orb[[site, axis]] - atom.position_ref()[[axis]]).rem_euclid(1.0);
+                    let distance = delta.min(1.0 - delta);
+                    if !distance.is_finite() || distance > MAGNETIC_SITE_POSITION_TOLERANCE {
+                        return Err(TbError::InvalidMagnonInvariant {
+                            invariant: "site_atom_position",
+                            message: format!(
+                                "site {site} at fractional {:?} is {distance:e} from atom {atom_index} modulo a lattice vector",
+                                self.orb.row(site).to_vec()
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Every stored atom is part of the crystal, including ones that are not
+        // magnetic sites; validate their shape and finiteness here.
+        for (atom_index, atom) in self.atoms.iter().enumerate() {
+            if atom.position_ref().len() != DIM
+                || !atom.position_ref().iter().all(|v| v.is_finite())
+            {
+                return Err(TbError::InvalidMagnonInvariant {
+                    invariant: "atom_position",
+                    message: format!(
+                        "atom {atom_index} needs {DIM} finite coordinates, found {:?}",
+                        atom.position_ref().to_vec()
+                    ),
+                });
+            }
+        }
+
         if self.hamR.ncols() != DIM {
             return Err(TbError::InvalidMagnonInvariant {
                 invariant: "translation_shape",
@@ -627,6 +802,87 @@ mod tests {
             MagnonReference::collinear(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn atom_metadata_is_optional_and_validated() {
+        use crate::atom_struct::AtomType;
+
+        let base = chain_magnon(0.01);
+        assert!(!base.has_atoms());
+        assert_eq!((base.natom(), base.atom_of_site.len()), (0, 0));
+        assert!(base.atom_at_site(0).is_err());
+
+        let attached = base
+            .clone()
+            .with_atoms(vec![Atom::new(array![0.0], AtomType::Fe)], vec![0])
+            .unwrap();
+        assert!(attached.has_atoms());
+        assert_eq!(attached.natom(), 1);
+        assert_eq!(attached.atom_at_site(0).unwrap().atom_type(), AtomType::Fe);
+
+        // One lattice vector away is the same periodic site.
+        base.clone()
+            .with_atoms(vec![Atom::new(array![1.0], AtomType::Fe)], vec![0])
+            .unwrap();
+        // A different position is a different site and must be rejected.
+        assert!(
+            base.clone()
+                .with_atoms(vec![Atom::new(array![0.5], AtomType::Fe)], vec![0])
+                .is_err()
+        );
+        // Mapping without atoms, a wrong length, an out-of-range atom and a
+        // duplicated parent all violate the mapping invariant.
+        assert!(base.clone().with_atoms(Vec::new(), vec![0]).is_err());
+        assert!(
+            base.clone()
+                .with_atoms(vec![Atom::new(array![0.0], AtomType::Fe)], vec![0, 0])
+                .is_err()
+        );
+        assert!(
+            base.clone()
+                .with_atoms(vec![Atom::new(array![0.0], AtomType::Fe)], vec![1])
+                .is_err()
+        );
+
+        let two_site = Magnon::<1>::new(
+            array![[1.0]],
+            array![[0.0], [0.5]],
+            array![1.5, 1.5],
+            array![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            Array3::<f64>::zeros((1, 6, 6)),
+            array![[0isize]],
+            MagnonReference::collinear(),
+        )
+        .unwrap();
+        let atoms = vec![
+            Atom::new(array![0.0], AtomType::Fe),
+            Atom::new(array![0.5], AtomType::Fe),
+        ];
+        two_site
+            .clone()
+            .with_atoms(atoms.clone(), vec![0, 1])
+            .unwrap();
+        assert!(two_site.clone().with_atoms(atoms, vec![0, 0]).is_err());
+        // In-range but permuted indices are caught by the position check.
+        let flipped = vec![
+            Atom::new(array![0.0], AtomType::Fe),
+            Atom::new(array![0.5], AtomType::Fe),
+        ];
+        assert!(two_site.clone().with_atoms(flipped, vec![1, 0]).is_err());
+
+        // Every stored atom is checked, including ones that are not sites.
+        assert!(
+            base.clone()
+                .with_atoms(
+                    vec![
+                        Atom::new(array![0.0], AtomType::Fe),
+                        Atom::new(array![f64::NAN], AtomType::Fe),
+                    ],
+                    vec![0],
+                )
+                .is_err()
+        );
     }
 
     fn invariant_of(error: &TbError) -> Option<&'static str> {
