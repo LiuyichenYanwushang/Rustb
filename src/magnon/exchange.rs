@@ -1,14 +1,12 @@
 //! TB2J-style exchange extraction from a tight-binding [`Model`].
 //!
-//! Two entry points build a [`Magnon`] from a collinear band structure:
+//! [`Magnon::from_model`] borrows either a spinful collinear [`Model`] or a
+//! [`CollinearModel`] through [`ToMagnon`]. A spinful model supplies its
+//! spin-major up/down blocks; a collinear pair supplies its two channels.
 //!
-//! * [`Model::to_magnon`] borrows a spinful collinear model and splits its
-//!   spin-major blocks into the up and down channels;
-//! * [`CollinearModel::to_magnon`] borrows one collinear pair.
-//!
-//! Both require the input Hamiltonians to be referenced to the Fermi level:
-//! subtract the original Fermi energy from both spin channels before extraction.
-//! Both run the same extraction, which follows the magnetic force theorem with
+//! Input Hamiltonians must be referenced to the common Fermi level:
+//! subtract the same original Fermi energy from both spin channels first.
+//! Both inputs run the same extraction, which follows the magnetic force theorem with
 //! a local rigid spin rotation (LKAG / TB2J):
 //!
 //! $$
@@ -72,7 +70,7 @@
 //!
 //! ```rust
 //! use ndarray::array;
-//! use Rustb::magnon::ExchangeParams;
+//! use Rustb::magnon::{ExchangeParams, Magnon};
 //! use Rustb::{Atom, AtomType, Model, OrbitalId, SpinDirection};
 //!
 //! # fn main() -> Rustb::Result<()> {
@@ -89,7 +87,7 @@
 //! model.set_onsite_one(0.5, 1, SpinDirection::Z);
 //!
 //! let params = ExchangeParams::new(&array![3usize]).with_nz(33);
-//! let magnon = model.to_magnon(&params)?;
+//! let magnon = Magnon::from_model(&model, &params)?;
 //! assert_eq!(magnon.nspin(), 2);
 //! // S = 3 mu_B / 2 = 1.5 hbar, moments along +z.
 //! assert!((magnon.spin[0] - 1.5).abs() < 1e-12);
@@ -254,7 +252,53 @@ impl ExchangeParams {
     }
 }
 
+/// Electronic input accepted by [`Magnon::from_model`].
+///
+/// Implemented for spinful `Model<true, DIM, R>` and `CollinearModel<DIM, R>`.
+/// Concrete models retain inherent `to_magnon` methods forwarding to this trait;
+/// [`Magnon::from_model`] uses the same implementation. Neither call style needs
+/// a trait import. Use this trait for generic bounds or an explicit UFCS call.
+/// All routes borrow the source without modifying it.
+///
+/// ```rust
+/// use ndarray::array;
+/// use Rustb::{ExchangeParams, Model, SpinDirection, ToMagnon};
+/// let mut model = Model::<true, 1>::tb_model(array![[1.0]], array![[0.0]], None)?;
+/// model.set_onsite_one(-1.0, 0, SpinDirection::Z);
+/// let params = ExchangeParams::new(&array![3usize]).with_nz(17);
+/// let magnon = ToMagnon::to_magnon(&model, &params)?;
+/// assert_eq!(magnon.nspin(), 1);
+/// # Ok::<(), Rustb::TbError>(())
+/// ```
+pub trait ToMagnon<const DIM: usize> {
+    /// Extract isotropic exchange using the common zero Fermi-energy reference.
+    ///
+    /// Implementations must validate their source before indexing it and return
+    /// a validated magnon model without modifying the input.
+    fn to_magnon(&self, params: &ExchangeParams) -> Result<Magnon<DIM>>;
+}
+
 impl<const DIM: usize, R: RMatrixData> Model<true, DIM, R> {
+    /// Extract isotropic exchange without modifying this spinful collinear model.
+    ///
+    /// For the input requirements, see [`Magnon::from_model`]. This convenience
+    /// method forwards to the single [`ToMagnon`] implementation.
+    pub fn to_magnon(&self, params: &ExchangeParams) -> Result<Magnon<DIM>> {
+        <Self as ToMagnon<DIM>>::to_magnon(self, params)
+    }
+}
+
+impl<const DIM: usize, R: RMatrixData> CollinearModel<DIM, R> {
+    /// Extract isotropic exchange without modifying this collinear model.
+    ///
+    /// For the input requirements, see [`Magnon::from_model`]. This convenience
+    /// method forwards to the single [`ToMagnon`] implementation.
+    pub fn to_magnon(&self, params: &ExchangeParams) -> Result<Magnon<DIM>> {
+        <Self as ToMagnon<DIM>>::to_magnon(self, params)
+    }
+}
+
+impl<const DIM: usize, R: RMatrixData> ToMagnon<DIM> for Model<true, DIM, R> {
     /// Extract exchange parameters without changing this spinful collinear model.
     ///
     /// Shift the electronic Hamiltonian so its Fermi level is at zero first.
@@ -265,7 +309,7 @@ impl<const DIM: usize, R: RMatrixData> Model<true, DIM, R> {
     /// spinor construction for that case.
     ///
     /// The returned model keeps the crystal atoms and the site-to-atom mapping.
-    pub fn to_magnon(&self, params: &ExchangeParams) -> Result<Magnon<DIM>> {
+    fn to_magnon(&self, params: &ExchangeParams) -> Result<Magnon<DIM>> {
         self.validate()?;
         let model = self;
         let norb = model.norb();
@@ -305,7 +349,7 @@ impl<const DIM: usize, R: RMatrixData> Model<true, DIM, R> {
     }
 }
 
-impl<const DIM: usize, R: RMatrixData> CollinearModel<DIM, R> {
+impl<const DIM: usize, R: RMatrixData> ToMagnon<DIM> for CollinearModel<DIM, R> {
     /// Extract exchange parameters without changing this collinear model.
     ///
     /// Shift both channels by the same original Fermi energy before constructing
@@ -317,23 +361,7 @@ impl<const DIM: usize, R: RMatrixData> CollinearModel<DIM, R> {
     /// supplies the geometry). Corresponding Wannier gauges remain the caller
     /// responsibility: a permuted orbital order cannot be detected.
     /// The input is unchanged; the result keeps the common atoms and site mapping.
-    ///
-    /// ```rust
-    /// use ndarray::array;
-    /// use Rustb::{CollinearModel, Model};
-    /// use Rustb::magnon::ExchangeParams;
-    ///
-    /// let mut up = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None)?;
-    /// let mut down = up.clone();
-    /// up.set_onsite(&array![-1.0], None);
-    /// down.set_onsite(&array![1.0], None);
-    /// let pair = CollinearModel::new(up, down)?;
-    /// let params = ExchangeParams::new(&array![3usize]).with_nz(17);
-    /// let magnon = pair.to_magnon(&params)?;
-    /// assert_eq!(magnon.nspin(), pair.norb());
-    /// # Ok::<(), Rustb::TbError>(())
-    /// ```
-    pub fn to_magnon(&self, params: &ExchangeParams) -> Result<Magnon<DIM>> {
+    fn to_magnon(&self, params: &ExchangeParams) -> Result<Magnon<DIM>> {
         let up = self.up();
         let down = self.down();
         if up.hamR != down.hamR {
@@ -379,6 +407,48 @@ impl<const DIM: usize, R: RMatrixData> CollinearModel<DIM, R> {
 }
 
 impl<const DIM: usize> Magnon<DIM> {
+    /// Extract isotropic LKAG / TB2J exchange from an electronic model.
+    ///
+    /// Accepts either `Model<true, DIM, R>` or `CollinearModel<DIM, R>` by
+    /// shared reference; neither input is modified or consumed. Both channels
+    /// must use the same energy reference with the common Fermi level at zero.
+    /// A spinful source must be collinear: non-negligible spin-flip blocks are
+    /// rejected. A collinear pair already has common lattice and atom metadata,
+    /// but extraction additionally requires identical ordered `hamR` arrays.
+    /// Differing supports are rejected, not aligned or zero-filled. Independent
+    /// Wannier centres are accepted with the existing mismatch warning; the up
+    /// channel supplies the geometry. Corresponding Wannier gauges remain the
+    /// caller responsibility. The result preserves atoms and site-to-atom mapping.
+    ///
+    /// ```rust
+    /// use ndarray::array;
+    /// use Rustb::{CollinearModel, Model};
+    /// use Rustb::magnon::{ExchangeParams, Magnon};
+    ///
+    /// let mut up = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None)?;
+    /// let mut down = up.clone();
+    /// up.set_onsite(&array![-1.0], None);
+    /// down.set_onsite(&array![1.0], None);
+    /// let pair = CollinearModel::new(up, down)?;
+    /// let params = ExchangeParams::new(&array![3usize]).with_nz(17);
+    /// let magnon = Magnon::from_model(&pair, &params)?;
+    /// assert_eq!(magnon.nspin(), pair.norb());
+    /// # Ok::<(), Rustb::TbError>(())
+    /// ```
+    ///
+    /// A single spinless channel cannot supply an exchange splitting:
+    ///
+    /// ```compile_fail
+    /// use ndarray::array;
+    /// use Rustb::{ExchangeParams, Magnon, Model};
+    /// let channel = Model::<false, 1>::tb_model(array![[1.0]], array![[0.0]], None).unwrap();
+    /// let params = ExchangeParams::new(&array![3usize]);
+    /// let magnon = Magnon::<1>::from_model(&channel, &params);
+    /// ```
+    pub fn from_model<M: ToMagnon<DIM>>(model: &M, params: &ExchangeParams) -> Result<Self> {
+        ToMagnon::to_magnon(model, params)
+    }
+
     fn build_from_channels(
         lat: &Array2<f64>,
         orb: &Array2<f64>,
@@ -1328,7 +1398,7 @@ mod tests {
         let params = ExchangeParams::new(&array![5usize])
             .with_nz(257)
             .with_semicircle_contour();
-        let magnon = model.to_magnon(&params).unwrap();
+        let magnon = Magnon::from_model(&model, &params).unwrap();
         assert!((exchange_value(&magnon, 0, 0, 1) + 1.574591087982834e-2).abs() < 1e-12);
         assert!((exchange_value(&magnon, 1, 0, 1) + 4.803340889916693e-4).abs() < 1e-12);
         assert!((exchange_value(&magnon, -1, 0, 1) + 1.574591087982834e-2).abs() < 1e-12);
@@ -1344,15 +1414,24 @@ mod tests {
         let delta = [1.0, -1.0];
         let moments = [[0.0, 0.0, 3.0], [0.0, 0.0, -3.0]];
         let params = ExchangeParams::new(&array![5usize]).with_nz(65);
-        let from_model = spinful_model(0.3, delta, moments)
-            .to_magnon(&params)
-            .unwrap();
+        let spinful = spinful_model(0.3, delta, moments);
+        let from_model = Magnon::from_model(&spinful, &params).unwrap();
+        assert_eq!(from_model.ham, spinful.to_magnon(&params).unwrap().ham);
+        assert_eq!(
+            from_model.ham,
+            ToMagnon::to_magnon(&spinful, &params).unwrap().ham
+        );
         let (up, mut down) = collinear_models(0.3, delta, moments);
         // The pair permits independent Wannier centres; extraction still uses
         // the common atoms and the up-channel geometry without changing either.
         down.orb += 0.01;
         let pair = CollinearModel::new(up, down).unwrap();
-        let from_pair = pair.to_magnon(&params).unwrap();
+        let from_pair = Magnon::from_model(&pair, &params).unwrap();
+        assert_eq!(from_pair.ham, pair.to_magnon(&params).unwrap().ham);
+        assert_eq!(
+            from_pair.ham,
+            ToMagnon::to_magnon(&pair, &params).unwrap().ham
+        );
         assert_eq!(pair.down().orb, array![[0.01], [0.51]]);
         assert_eq!(from_model.hamR, from_pair.hamR);
         let difference = (&from_model.ham - &from_pair.ham)
@@ -1394,8 +1473,8 @@ mod tests {
         spinful.set_onsite_one(-1.0, 0, SpinDirection::Z);
         let params = ExchangeParams::new(&array![3usize]).with_nz(17);
         for magnon in [
-            pair.to_magnon(&params).unwrap(),
-            spinful.to_magnon(&params).unwrap(),
+            Magnon::from_model(&pair, &params).unwrap(),
+            Magnon::from_model(&spinful, &params).unwrap(),
         ] {
             // No Atom table can mask using the wrong spin block for geometry.
             assert_eq!(magnon.orb, array![[0.1]]);
@@ -1403,6 +1482,34 @@ mod tests {
         }
         assert_eq!(pair.down().orb, array![[0.2]]);
         assert_eq!(spinful.orb, array![[0.1], [0.2]]);
+    }
+
+    #[test]
+    fn test_from_model_supports_2d_position_matrix_sources() {
+        use crate::model::HasRMatrix;
+
+        let lat = array![[1.0, 0.0], [0.0, 1.0]];
+        let centres = array![[0.1, 0.2]];
+        let mut spinful =
+            Model::<true, 2, HasRMatrix>::tb_model(lat.clone(), centres.clone(), None).unwrap();
+        spinful.set_onsite_one(-1.0, 0, SpinDirection::Z);
+        let mut up =
+            Model::<false, 2, HasRMatrix>::tb_model(lat.clone(), centres.clone(), None).unwrap();
+        let mut down = up.clone();
+        up.set_onsite(&array![-1.0], None);
+        down.set_onsite(&array![1.0], None);
+        let pair = CollinearModel::new(up, down).unwrap();
+        let params = ExchangeParams::new(&array![3usize, 3]).with_nz(17);
+        for magnon in [
+            Magnon::from_model(&spinful, &params).unwrap(),
+            spinful.to_magnon(&params).unwrap(),
+            Magnon::from_model(&pair, &params).unwrap(),
+            pair.to_magnon(&params).unwrap(),
+        ] {
+            assert_eq!(magnon.lat, lat);
+            assert_eq!(magnon.orb, centres);
+            assert_eq!(magnon.nspin(), 1);
+        }
     }
 
     #[test]
@@ -1420,7 +1527,7 @@ mod tests {
             // identical ordered support, before any mesh or contour work.
             let pair = CollinearModel::new(up.clone(), down).unwrap();
             assert!(matches!(
-                pair.to_magnon(&params),
+                Magnon::from_model(&pair, &params),
                 Err(TbError::InvalidMagnonInvariant {
                     invariant: "matching_translations",
                     ..
@@ -1438,7 +1545,7 @@ mod tests {
         let params = ExchangeParams::new(&array![5usize])
             .with_nz(65)
             .with_semicircle_contour();
-        let magnon = model.to_magnon(&params).unwrap();
+        let magnon = Magnon::from_model(&model, &params).unwrap();
         // The ferromagnetic Goldstone mode is zero at the Gamma point.
         let omega = magnon.magnon_band_onek(&array![0.0]).unwrap();
         for value in omega.iter() {
@@ -1459,7 +1566,7 @@ mod tests {
         // Fe1-Fe2 at R = 0 -> -2.5774 meV, Fe1-Fe1 at R = +1 -> +0.0197 meV.
         let model = spinful_model(0.1, [2.0, 2.0], [[0.0, 0.0, 2.0], [0.0, 0.0, 2.0]]);
         let params = ExchangeParams::new(&array![5usize]);
-        let magnon = model.to_magnon(&params).unwrap();
+        let magnon = Magnon::from_model(&model, &params).unwrap();
         let cross = exchange_value(&magnon, 0, 0, 1);
         let self_term = exchange_value(&magnon, 1, 0, 0);
         assert!(
@@ -1493,7 +1600,7 @@ mod tests {
         model.set_onsite_one(1.0, 0, SpinDirection::Z);
         model.set_onsite_one(-1.0, 2, SpinDirection::Z);
         let params = ExchangeParams::new(&array![3usize]);
-        let magnon = model.to_magnon(&params).unwrap();
+        let magnon = Magnon::from_model(&model, &params).unwrap();
         assert_eq!(magnon.nspin(), 2);
         assert!((magnon.orb[[0, 0]] - 0.0).abs() < 1e-12);
         assert!((magnon.orb[[1, 0]] - 0.5).abs() < 1e-12);
@@ -1545,7 +1652,7 @@ mod tests {
             model.set_onsite_one(1.0, orbital, SpinDirection::Z);
         }
         let params = ExchangeParams::new(&array![3usize]);
-        let magnon = model.to_magnon(&params).unwrap();
+        let magnon = Magnon::from_model(&model, &params).unwrap();
         assert_eq!(magnon.nspin(), 2);
         assert_eq!(magnon.orb.dim(), (2, 1));
         // A multi-orbital site maps to its owning atom, not to its first orbital.
@@ -1573,7 +1680,7 @@ mod tests {
         model.set_onsite_one(-1.0, 1, SpinDirection::Z);
 
         let params = ExchangeParams::new(&array![3usize]).with_magnetic_atoms(vec![1]);
-        let magnon = model.to_magnon(&params).unwrap();
+        let magnon = Magnon::from_model(&model, &params).unwrap();
         // The override selects one site, but both atoms stay in the crystal.
         assert_eq!(magnon.nspin(), 1);
         assert_eq!(magnon.natom(), 2);
@@ -1582,7 +1689,7 @@ mod tests {
 
         let duplicated = ExchangeParams::new(&array![3usize]).with_magnetic_atoms(vec![0, 0]);
         assert!(matches!(
-            model.to_magnon(&duplicated),
+            Magnon::from_model(&model, &duplicated),
             Err(TbError::InvalidMagnonInvariant {
                 invariant: "magnetic_atom_duplicate",
                 ..
@@ -1634,7 +1741,7 @@ mod tests {
         model.atoms[0].clear_magnetic_moment();
         model.atoms[1].clear_magnetic_moment();
         let params = ExchangeParams::new(&array![5usize]);
-        let magnon = model.to_magnon(&params).unwrap();
+        let magnon = Magnon::from_model(&model, &params).unwrap();
         // The up level sits above E_F, so each site carries m = -1 mu_B.
         for site in 0..2 {
             assert!((magnon.spin[site] - 0.5).abs() < 1e-12, "{:?}", magnon.spin);
@@ -1647,7 +1754,7 @@ mod tests {
         // now both channels lie above zero and neither site has a moment.
         model.add_onsite(&array![4.0, 4.0], None);
         assert!(matches!(
-            model.to_magnon(&params),
+            Magnon::from_model(&model, &params),
             Err(TbError::InvalidMagnonInvariant {
                 invariant: "non_zero_magnetization",
                 ..
@@ -1664,13 +1771,13 @@ mod tests {
             .clone()
             .with_spin(array![0.5, 0.5])
             .with_axis(array![[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]);
-        let magnon = model.to_magnon(&flipped).unwrap();
+        let magnon = Magnon::from_model(&model, &flipped).unwrap();
         assert!((exchange_value(&magnon, 0, 0, 1) + 2.5774e-3).abs() < 2e-5);
         // Flipping only one site contradicts the Hamiltonian and must fail.
         let mixed = base
             .with_spin(array![0.5, 0.5])
             .with_axis(array![[0.0, 0.0, -1.0], [0.0, 0.0, 1.0]]);
-        let error = model.to_magnon(&mixed).unwrap_err();
+        let error = Magnon::from_model(&model, &mixed).unwrap_err();
         match error {
             TbError::InvalidMagnonInvariant { invariant, .. } => {
                 assert_eq!(invariant, "moment_direction_consistent")
@@ -1680,12 +1787,12 @@ mod tests {
     }
 
     #[test]
-    fn test_to_magnon_validates_spinful_model_before_slicing() {
+    fn test_from_model_validates_spinful_model_before_slicing() {
         let mut model = spinful_model(0.3, [1.0, -1.0], [[0.0, 0.0, 3.0], [0.0, 0.0, -3.0]]);
         model.ham = Array3::zeros((1, 1, 1));
         let params = ExchangeParams::new(&array![3usize]).with_nz(17);
         assert!(matches!(
-            model.to_magnon(&params),
+            Magnon::from_model(&model, &params),
             Err(TbError::InvalidModelInvariant {
                 invariant: "hamiltonian_shape",
                 ..
@@ -1698,16 +1805,16 @@ mod tests {
         let model = spinful_model(0.3, [1.0, -1.0], [[0.0, 0.0, 3.0], [0.0, 0.0, -3.0]]);
         // Even meshes are rounded up to odd, a wrong dimension is rejected.
         let params = ExchangeParams::new(&array![4usize]).with_nz(65);
-        let magnon = model.to_magnon(&params).unwrap();
+        let magnon = Magnon::from_model(&model, &params).unwrap();
         assert_eq!(magnon.hamR.nrows(), 5);
         let params = ExchangeParams::new(&array![4usize, 4]).with_nz(65);
-        let error = model.to_magnon(&params).unwrap_err();
+        let error = Magnon::from_model(&model, &params).unwrap_err();
         assert!(matches!(error, TbError::DimensionMismatch { .. }));
         // A non-collinear model is rejected.
         let mut spinor = spinful_model(0.3, [1.0, -1.0], [[0.0, 0.0, 3.0], [0.0, 0.0, -3.0]]);
         spinor.set_hop(0.05, 0, 0, &array![0isize], SpinDirection::X);
         let params = ExchangeParams::new(&array![3usize]).with_nz(65);
-        let error = spinor.to_magnon(&params).unwrap_err();
+        let error = Magnon::from_model(&spinor, &params).unwrap_err();
         match error {
             TbError::InvalidMagnonInvariant { invariant, .. } => {
                 assert_eq!(invariant, "collinear_model")

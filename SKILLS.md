@@ -1332,8 +1332,8 @@ assert_eq!(with_crystal.natom(), 1);
 assert!(with_crystal.has_atoms());
 ```
 
-`to_magnon(&ExchangeParams)` extraction and the TB2J reader fill `atoms` and
-`atom_of_site` automatically from their atom tables, so
+`Magnon::from_model(&source, &params)` extraction and the TB2J reader fill
+`atoms` and `atom_of_site` automatically from their atom tables, so
 symmetry and atom-resolved analysis can relate a magnetic site back to its
 crystal site; those consumers are separate work, the spin-wave solver only uses
 positions, spins and reference axes. A TB2J label that is not a known element
@@ -1384,45 +1384,66 @@ gap. A reference whose BdG matrix is indefinite beyond tolerance returns
 `InvalidMagnonInvariant { invariant: "positive_semidefinite_bdg", .. }` instead
 of a complex frequency.
 
-### TB2J-style exchange extraction from a `Model`
+### TB2J-style exchange extraction from electronic models
 
-`Model<true, DIM, R>::to_magnon(&self, &ExchangeParams)` splits a spinful
-collinear model's spin-major blocks;
-`CollinearModel<DIM, R>::to_magnon(&self, &ExchangeParams)` uses the pair's two
-spinless channels. Both are inherent methods that borrow the source unchanged,
-run the LKAG / TB2J extraction (magnetic force theorem, local rigid spin
-rotation, complex-energy Green's functions), and return `Result<Magnon<DIM>>`
-in the same conventions as the hr files.
+`Magnon::from_model(&source, &params)` is the unified shared-reference
+constructor for electronic exchange extraction. It accepts a
+`Model<true, DIM, R>` (splitting its collinear spin-major blocks) or a
+`CollinearModel<DIM, R>` (using the pair's two spinless channels). The retained
+inherent methods `model.to_magnon(&params)` and `pair.to_magnon(&params)` are
+equivalent entry points. Both constructor calls and concrete method calls need
+no trait import; they borrow the source unchanged and return
+`Result<Magnon<DIM>>` in the same conventions as the hr files.
+
+Public `ToMagnon<const DIM: usize>` owns the sole numerical `to_magnon`
+implementation per source. The inherent methods are thin UFCS wrappers calling
+`<Self as ToMagnon<DIM>>::to_magnon(self, params)`; `Magnon::from_model` binds
+`ToMagnon<DIM>` and delegates to the same trait method, without repeating the
+LKAG / TB2J algorithm (magnetic force theorem, local rigid spin rotation,
+complex-energy Green's functions). Use `Rustb::ToMagnon` or
+`Rustb::magnon::ToMagnon` for generic bounds and UFCS.
+
+Migration: `Magnon::from_collinear` is removed without an alias; construct a
+`CollinearModel` and pass it to `Magnon::from_model` instead.
 
 Shift the input model to `E_F = 0` before extraction. For unshifted Wannier90
 files, pass the original Fermi energy as `Model::from_hr`'s third argument
 (`zero_energy`, the energy subtracted on import). Use the same shift for both
 spin channels, or `0.0` for files already shifted to `E_F = 0`.
 
+These schematic calls assume prepared 2D sources: `model_spinful` is a
+collinear `Model<true, 2, R>`, and `model_up` / `model_dn` are compatible
+`Model<false, 2, R>` channels.
+
 ```rust
 use Rustb::CollinearModel;
-use Rustb::magnon::ExchangeParams;
+use Rustb::magnon::{ExchangeParams, Magnon};
 
 // 5x5 k-mesh (forced odd), 65 nodes with the default CFR contour.
 let kmesh = array![5usize, 5];
 let params = ExchangeParams::new(&kmesh).with_nz(65);
 
 // One spinful model: [all up orbitals, all down orbitals].
-let magnon = model_spinful.to_magnon(&params)?;
+let magnon = Magnon::from_model(&model_spinful, &params)?;
+// Equivalent retained method, without importing ToMagnon:
+// let magnon = model_spinful.to_magnon(&params)?;
 
 // Or own two spinless models in a validated pair.
 let pair = CollinearModel::new(model_up, model_dn)?;
-let magnon = pair.to_magnon(&params)?;
+let magnon = Magnon::from_model(&pair, &params)?;
+// Equivalent retained method, without importing ToMagnon:
+// let magnon = pair.to_magnon(&params)?;
 ```
 
 The pair constructor requires exactly equal lattices, ordered `Atom` metadata
 (including orbital IDs and optional moments), orbital counts and ordered
 `orb_projection`. Although a pair allows independent translation supports,
-`to_magnon` additionally requires identical ordered `hamR`; it neither aligns
-nor zero-fills differing supports. Independent Wannier centres are accepted;
-the existing mismatch warning is retained and the up channel supplies the
-geometry. Corresponding Wannier gauges remain the caller's responsibility.
-The result preserves the common atoms and site-to-atom mapping.
+exchange extraction through either entry style additionally requires identical
+ordered `hamR`; it neither aligns nor zero-fills differing supports. Independent
+Wannier centres are accepted; the existing mismatch warning is retained and the
+up channel supplies the geometry. Corresponding Wannier gauges remain the
+caller's responsibility. The result preserves the common atoms and the
+`atom_of_site` mapping.
 
 Magnetic sites come from the `Atom` metadata: an atom is magnetic when it
 carries a magnetic moment, and its orbitals are the ones it owns

@@ -18,21 +18,27 @@
   shape check.
 - `cut_dot` rejects an explicit `dir` for a 2D model instead of silently
   ignoring it; 3D models keep the documented `[0, 1]` default.
-- Replace `Magnon::from_model` / `Magnon::from_collinear` with the borrowing
-  `model.to_magnon(&params)?` / `pair.to_magnon(&params)?`, both returning
-  `Result<Magnon<DIM>>`; no compatibility aliases remain. The source is a
-  `Model<true, DIM, R>` or `CollinearModel<DIM, R>` respectively; construct the
-  latter with `CollinearModel::new(up, down)?`. Channels must share one energy
-  reference with the common Fermi level at zero, not be shifted independently.
-  The pair constructor permits independent supports, but magnon extraction
-  still requires identical ordered `hamR` arrays and rejects differences.
-  Exchange algorithms are unchanged.
+- Prefer the borrowing destination-owned constructor
+  `Magnon::from_model(&source, &params) -> Result<Magnon<DIM>>` for both
+  `Model<true, DIM, R>` and `CollinearModel<DIM, R>`; construct the latter with
+  `CollinearModel::new(up, down)?`. Public `ToMagnon<const DIM: usize>` exposes
+  `to_magnon(&self, &ExchangeParams) -> Result<Magnon<DIM>>` and owns the sole
+  numerical implementation per source. `Magnon::from_model` binds
+  `ToMagnon<DIM>` and forwards to it; the existing inherent `to_magnon` methods
+  remain as thin forwarding wrappers. Neither constructor calls nor concrete
+  method syntax require a trait import; the trait supports generic code/UFCS.
+  `Magnon::from_collinear` is removed without a compatibility alias.
+  The source remains borrowed. Channels must share one energy reference with
+  the common Fermi level at zero, not be shifted independently. The pair
+  constructor permits independent supports, but magnon extraction still
+  requires identical ordered `hamR` arrays and rejects differences. Exchange
+  algorithms, up-channel geometry, common atoms, `atom_of_site` mapping and
+  the differing-centre warning are unchanged.
 - `Magnon` optionally stores the crystal it belongs to: `atoms` plus the
   injective `atom_of_site` mapping, validated against the site positions modulo
-  a lattice vector. `with_atoms` attaches them; `Model::to_magnon`,
-  `CollinearModel::to_magnon` and the TB2J reader fill them automatically. The
-  magnon metadata format version 2 round-trips them while version 1 files still
-  read without atoms.
+  a lattice vector. `with_atoms` attaches them; `Magnon::from_model` and the
+  TB2J reader fill them automatically. The magnon metadata format version 2
+  round-trips them while version 1 files still read without atoms.
   Code that builds `Magnon` with a struct literal must add the two fields; the
   constructors and `with_atoms` avoid that. The TB2J reader keeps an unknown
   species label metadata-free instead of rejecting the exchange file, and

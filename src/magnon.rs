@@ -84,8 +84,7 @@
 //!
 //! [`Magnon::atoms`] and [`Magnon::atom_of_site`] optionally record the crystal
 //! the sites belong to. They are filled by the exchange extraction
-//! ([`Model::to_magnon`](crate::model::Model::to_magnon),
-//! [`CollinearModel::to_magnon`](crate::model::CollinearModel::to_magnon)) and the
+//! ([`Magnon::from_model`]) and the
 //! TB2J reader, and are empty for metadata-free inputs ([`Magnon::new`] and
 //! [`Magnon::from_hr`]). Atom metadata is what symmetry analysis, supercells and
 //! atom-resolved output need; the spin-wave solver itself only uses positions,
@@ -138,7 +137,7 @@ pub mod io;
 pub mod physics;
 mod tb2j;
 
-pub use self::exchange::{ExchangeParams, MagnonContour};
+pub use self::exchange::{ExchangeParams, MagnonContour, ToMagnon};
 pub use self::floquet::{MagnonFloquet, MagnonSambe};
 
 use crate::atom_struct::Atom;

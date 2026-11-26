@@ -17,7 +17,7 @@
 //! replace the `mgfe6ge6_static` magnon HR/metadata pair and check the unmodified
 //! isotropic reference at selected fractional q-points.
 
-use Rustb::magnon::{ExchangeParams, MagnonSolve};
+use Rustb::magnon::{ExchangeParams, Magnon, MagnonSolve};
 use Rustb::ndarray_lapack::eigh_x;
 use Rustb::wannier90::Wannier90;
 use Rustb::{AtomType, CollinearModel, Model, TbError};
@@ -114,7 +114,7 @@ fn main() -> Rustb::Result<()> {
     );
     let pair = CollinearModel::new(up, down)?;
     let started = std::time::Instant::now();
-    let magnon = pair.to_magnon(&params)?;
+    let magnon = Magnon::from_model(&pair, &params)?;
     println!(
         "extraction finished in {:.1} s: nspin={} nR={}",
         started.elapsed().as_secs_f64(),

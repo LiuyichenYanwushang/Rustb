@@ -85,9 +85,9 @@ magnon.dos(kmesh, wmin, wmax, nw, sigma)?;
 
 // M2-M4: inputs share one energy reference, with the common E_F shifted to 0.
 let params = ExchangeParams::new(&kmesh);
-let magnon = spinful_model.to_magnon(&params)?; // Model<true, DIM, R>
+let magnon = Magnon::from_model(&spinful_model, &params)?; // Model<true, DIM, R>
 let pair = CollinearModel::new(up, down)?;
-let magnon = pair.to_magnon(&params)?;         // CollinearModel<DIM, R>
+let magnon = Magnon::from_model(&pair, &params)?;         // CollinearModel<DIM, R>
 
 // M0 已完成
 magnon.write_hr(dir, prefix)?;            // <prefix>_magnon_hr.dat + <prefix>_magnon_meta.toml
@@ -95,13 +95,22 @@ Magnon::<DIM>::read(dir, prefix)?;
 Magnon::<DIM>::from_hr(dir, prefix, lat, orb, spin, axis, reference)?;
 ```
 
-当前转换统一为源对象的 `to_magnon(&self, &ExchangeParams) -> Result<Magnon<DIM>>`：
-支持 `Model<true, DIM, R>` 和 `CollinearModel<DIM, R>`，均借用输入。
-`Magnon::from_model` / `Magnon::from_collinear` 已移除，不保留兼容别名。
+当前转换优先使用目标类型的构造器
+`Magnon::from_model(&source, &params) -> Result<Magnon<DIM>>`：
+支持 `Model<true, DIM, R>` 和 `CollinearModel<DIM, R>`，均通过共享引用借用输入。
+公开 trait `ToMagnon<const DIM: usize>` 提供
+`to_magnon(&self, &ExchangeParams) -> Result<Magnon<DIM>>`，每种源类型的数值实现
+仅在该 trait 中保留一份。`Magnon::from_model` 以 `ToMagnon<DIM>` 为约束并直接转发；
+两个源类型原有的 inherent `to_magnon` 方法也保留为薄封装，通过
+`<Self as ToMagnon<DIM>>::to_magnon(self, params)` 转发，不复制数值逻辑。
+调用构造器或具体源类型的 `source.to_magnon(&params)` 均无需导入 trait；
+公开的 `ToMagnon` 供泛型约束与 UFCS 使用。
+迁移时移除 `Magnon::from_collinear`，不保留兼容别名。
 `CollinearModel::new(up, down)?` 校验共同晶格、按序原子元数据、轨道数与按序投影；
-构造器允许两个通道的实空间支持独立，但 `to_magnon` 仍要求完全相同且顺序一致的
-`hamR`，不一致会被拒绝。两个通道必须使用共同能量参考并共同对齐到 `E_F = 0`，
-不可各自独立平移能量。此次迁移不改变交换提取算法。
+该配对构造器允许两个通道的实空间支持独立，但 `Magnon::from_model` 仍要求完全相同
+且顺序一致的 `hamR`，不一致会被拒绝。两个通道必须使用共同能量参考并共同对齐到
+`E_F = 0`，不可各自独立平移能量。提取结果沿用 up 通道几何、共同原子元数据与
+`atom_of_site` 映射；此次迁移不改变交换提取算法或通道中心不同的既有警告。
 
 ## 5. TB2J 算法映射
 
@@ -171,7 +180,7 @@ quantization_axis = [0.0, 0.0, 1.0]
 | **M0 完成** | 结构体 + `validate` + `jtensor`/`rec_lat` + 参考结构 + hr/meta 读写 | 33 单元测试 + 2 doctest；fmt/clippy 干净；all-targets 编译 |
 | **M1 完成（共线）** | `gen_jq` / `gen_bdg` / Colpa（本征分解版）/ `MagnonSolve` / `Kpath` / DOS | 一维 FM 解析色散（`4j(1-cos)/S`）、两子格 AFM（`4|j|/S·|sin(pi q)|`）、SIA 能隙（`2K/S`）、120° 环的 3 个精确 Goldstone 零模、DMI 下 BdG Hermitian、串并行一致、DOS 归一 |
 | **M1b 完成** | 非共线参考结构的冻结磁振子（精确 Hessian）交叉验证 | 结论：TB2J `Hq` 没有缺项。3 格点 120° 环在 1D 双分链上本就是**鞍点**（真实基态是 Néel），精确 Hessian 在同一 q 处给出同样的负本征值；改用三角格子单 Q（Q=(1/3,1/3)）后 BdG 处处半正定，磁 Γ 点在化学区折叠到 q=0 与 q=Q 两处为零，q=(0.25,0) 的 ω 与 TB2J 逐位一致（0.08432740427116 eV） |
-| **M2 完成** | TB2J 共线提取：`Model<true, DIM, R>::to_magnon`（自旋分块）与 `CollinearModel<DIM, R>::to_magnon`（up/dn 模型对）+ `ExchangeParams`（semicircle 等高线 + Simpson） | 两格点反铁磁链的 J(0)、J(±1) 与独立 numpy 实现逐位一致（1e-12）；两个入口互相一致（1e-14）；提取出的 `Magnon` 在磁 Γ 点零模、区界有隙；非共线输入被拒绝 |
+| **M2 完成** | TB2J 共线提取：`Magnon::from_model` 统一接收 `Model<true, DIM, R>`（自旋分块）或 `CollinearModel<DIM, R>`（up/dn 模型对）+ `ExchangeParams`（semicircle 等高线 + Simpson） | 两格点反铁磁链的 J(0)、J(±1) 与独立 numpy 实现逐位一致（1e-12）；两个入口互相一致（1e-14）；提取出的 `Magnon` 在磁 Γ 点零模、区界有隙；非共线输入被拒绝 |
 | **延期** | 非共线 spinor 提取（DMI/J_ani，原目标 M4 剩余项）：已完成 `A^{uv}` 机械部分与自旋主序索引修正（`state = spin*n_orb + orbital`，`P_i` 已验证）、归一化关系（`A00-ΣAaa = 4 Tr[P G↑ P G↓]`）与 TB2J 参考基准（`scripts/tb2j_ncl_reference`：`J_iso=0.9450`、`DMI=(0,1.8671,0) meV`）。**未完成**：`A^{uv} → 3×3 张量` 的组装约定——共线极限给出 x/y 与 z 通道不一致（ratio −4/3 vs +1.38），说明 TB2J 的 `Jiso`/`Jani` 并非简单的 `(Jiso/3)δ + Jani`，需要一次专门的推导而不是限定时间的试错 | 96 个 magnon 单测不受影响 |
 | **F3c 完成** | 解析系数 ↔ 张量求解器一致性：`DrivenExchange::honeycomb_magnon` 用 `J_land = −(S²/2)J_paper`、`SIA_zz = −KS²`、`dmi_land = χS³/2`（次近邻列表是 `{b1,−b2,b3}`，手征项需 `(+,−,+)` 变号） 构造 `Magnon`，其 `magnon_band_onek` 复现式 (6)（四个 k 点到 1e-9 eV；排序谱在 K/K′ 相同且有分裂，全局 χ 符号在排序谱中不可观测，符号由解析 `D_k` 测试钉住） | 95 个 magnon 单测 |
 | **F3b 完成** | 双层磁振子谱（SM §III.D）：`BilayerSpinWave` 逐式转写 `A1(k)/A2(k)/C(k)` 与两个自旋扇区的 4×4 BdG（`sector_bands` 保留自旋标签） | 铁磁层在 Γ 有精确零模且平带被抬起；`χ=0` 时两谷严格简并；`χ≠0` 时 `ω_↑(K)=ω_↓(K′)`（扇区在两谷互换，奇宇称），同谷内分裂 >1e-6。92 个 magnon 单测 |
@@ -179,7 +188,7 @@ quantization_axis = [0.0, 0.0, 1.0]
 | **F2b 完成** | 论文式 (6) 的角依赖验收：`Δω(k)` 绕 Γ 采样得三条零交叉（cos3θ，f-wave）、`k→−k` 严格反号 | 88 个 magnon 单测。遗留：χ/K → `Magnon` 张量的标定（J_land = −(S²/2)J_paper、dmi_land = χS⁴ 已测出，单离子项与 DMI 的正反号写入仍需修正）、论文双层模型（SM §Bilayer） |
 | **F2 完成** | 磁振子 Floquet 接口（与电子体系同名同参）：`MagnonFloquet::floquet_model`（Sambe，光子阶梯到 2N）、`MagnonSambe::{quasienergies_at, quasienergy_bands, bdg_at_time, propagator_at}`、`Magnon::floquet_effective_model`（order 0）、`fold_quasienergy` 复用 | 准能带用**单周期传播子**（`i dΨ/dt = g H(t) Ψ`，正范数筛选）而非 Hermitian/Sambe 对角化：零驱动精确复现未驱动能带（0 与 ±Ω,±2Ω 不劈裂）；Ω≫带宽时收敛到 order-0 有效模型（5e-3 内）；折叠范围、光子阶梯间隔 Ω、order≥1 拒绝均有测试。80 个 magnon 单测 |
 | **F1 完成** | 驱动交换（论文 Odd-Parity Magnons）：`DrivenHubbardParams` + `DrivenExchange::honeycomb`（Floquet–Sambe Löwdin 展开的二阶 + 四阶 F/B/G 求和）、蜂窝 `A_k/B_k/D_k` 与 `ω_{↑,↓}` | 静态极限复现 `J1=4t²/U−16t⁴/U³`、`J2=4t⁴/U³`、`χ=0`；`J1/J2` 螺旋度偶、`χ` 奇；K/K′ 分裂反号、整体奇宇称。待办：χ→`Magnon` 张量映射（`D_z=Sχ` 的归一化待定）、Sambe 接口（`MagnonFloquet`/`MagnonSambe`/`floquet_effective_model`） |
-| **M4 完成（部分）** | 磁矩解析：两个 `to_magnon` 入口未给磁矩时由两通道占据数推 `m_i = Tr(ρ↑−ρ↓)`（TB2J `spinat`），`S_i = |m_i|/2`、轴 `±z`；显式给的轴做一致性检查（全局翻转允许，逐位点矛盾报 `moment_direction_consistent`） | 真实数据：不传磁矩时得到 ±2.7854 μB，与显式传入时 J 完全一致（24.78249 meV）；混合轴测试被拒绝；两格点模型导出的轴与 J 一致 |
+| **M4 完成（部分）** | 磁矩解析：`Magnon::from_model` 的两种输入未给磁矩时由两通道占据数推 `m_i = Tr(ρ↑−ρ↓)`（TB2J `spinat`），`S_i = |m_i|/2`、轴 `±z`；显式给的轴做一致性检查（全局翻转允许，逐位点矛盾报 `moment_direction_consistent`） | 真实数据：不传磁矩时得到 ±2.7854 μB，与显式传入时 J 完全一致（24.78249 meV）；混合轴测试被拒绝；两格点模型导出的轴与 J 一致 |
 | **M3 完成** | CFR 极点积分（`MagnonContour::Cfr`，默认 600 K）+ 半圆可选；`wannier90` 空 projections 时按 Wannier 中心就近分配轨道 | 两格点 gapped 模型：CFR = −2.5774 meV 与 TB2J 逐位一致、精确积分 −2.5771；**真实 MgFe6Ge6（55 WF，1121 R，9×9×5）所有壳层与 TB2J 前 4–5 位一致**（2.631 Å 24 键 +24.78249 对 +24.7825；4.256/4.327/4.556/5.004/5.064/5.261/6.235 全部吻合，5.261 Å 的离散 −0.0087~+0.6901 也一致） |
 | M4 | 非共线 spinor 提取（4×4 A） | 共线极限一致；DMI 符号表 |
 | M5 | 单 Q 旋转（参考结构进入 `gen_jq`）、能带图、示例 | 螺旋结构 Goldstone；文档 |

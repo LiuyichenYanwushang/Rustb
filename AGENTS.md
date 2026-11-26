@@ -138,16 +138,23 @@ model hierarchies with duplicated band, geometry, or response methods.
 
 ### Magnon exchange extraction
 
-- Electronic-to-magnon conversion belongs to the source:
-  `Model<true, DIM, R>::to_magnon(&self, &ExchangeParams) -> Result<Magnon<DIM>>`
-  and `CollinearModel<DIM, R>::to_magnon(&self, &ExchangeParams) -> Result<Magnon<DIM>>`.
-  Both borrow the input; `Magnon::from_model` and `Magnon::from_collinear` are
-  removed without compatibility aliases. For separate channels, construct
-  `CollinearModel::new(up, down)?`, then call `pair.to_magnon(&params)?`.
+- Prefer `Magnon::from_model(&source, &params) -> Result<Magnon<DIM>>` for
+  `Model<true, DIM, R>` or `CollinearModel<DIM, R>`, borrowing either source.
+  Public `ToMagnon<const DIM: usize>` exposes
+  `to_magnon(&self, &ExchangeParams) -> Result<Magnon<DIM>>` and owns the sole
+  numerical implementation per source. The constructor binds `ToMagnon<DIM>`;
+  it and the retained inherent `to_magnon` methods forward to that trait method.
+  Neither constructor calls nor concrete method syntax need a trait import;
+  `ToMagnon` remains public for generic bounds and UFCS. For separate channels,
+  construct `CollinearModel::new(up, down)?`, then call
+  `Magnon::from_model(&pair, &params)?`. Migration removes
+  `Magnon::from_collinear` without a compatibility alias.
 - Inputs must share one energy reference with the common Fermi level at zero;
   do not independently shift the two channels. Although the pair constructor
   allows independent supports, magnon extraction requires identical ordered
-  `hamR` arrays and rejects differences. The exchange algorithms are unchanged.
+  `hamR` arrays and rejects differences. Extraction retains up-channel geometry,
+  common atoms and the `atom_of_site` mapping. The exchange algorithms and
+  differing-centre warning are unchanged.
 
 ### Unified response APIs
 

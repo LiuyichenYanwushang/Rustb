@@ -452,6 +452,46 @@ let hf_model = hubbard.solve_hartree_fock(&params)?;
 let total_spin = hf_model.spin_moment(&[101], 0.0, params.occupation)?;
 ```
 
+### `magnon` — electronic exchange extraction
+
+`Magnon::from_model(&source, &params)` borrows either `Model<true, DIM, R>`
+or `CollinearModel<DIM, R>` and returns `Result<Magnon<DIM>>`. The inherent
+`model.to_magnon(&params)` and `pair.to_magnon(&params)` methods remain
+available; neither concrete method calls nor constructor calls need a trait
+import. Public `ToMagnon<const DIM: usize>` owns the sole numerical
+`to_magnon` implementation per source. The inherent methods are thin UFCS
+forwarders; the constructor binds `ToMagnon<DIM>` and delegates to the same
+trait method, without duplicating algorithms. Generic bounds and UFCS can use
+`Rustb::ToMagnon` or `Rustb::magnon::ToMagnon`.
+
+These schematic calls assume prepared 2D sources: `model_spinful` is a
+collinear `Model<true, 2, R>`, and `model_up` / `model_down` are compatible
+`Model<false, 2, R>` channels.
+
+```rust
+use Rustb::{CollinearModel, ExchangeParams, Magnon};
+
+let params = ExchangeParams::new(&array![5usize, 5]).with_nz(65);
+let magnon = Magnon::from_model(&model_spinful, &params)?;
+// Equivalent retained method (no ToMagnon import):
+// let magnon = model_spinful.to_magnon(&params)?;
+
+let pair = CollinearModel::new(model_up, model_down)?;
+let magnon = Magnon::from_model(&pair, &params)?;
+// Equivalent retained method (no ToMagnon import):
+// let magnon = pair.to_magnon(&params)?;
+```
+
+Use one common energy reference with `E_F = 0`; never shift the two channels
+independently. The pair requires exactly equal lattices, orbital counts, ordered
+`orb_projection` and ordered `Atom` metadata (including IDs and optional
+moments). Extraction additionally requires identical ordered `hamR`, although
+the pair itself permits independent supports. Differing Wannier centres retain
+the existing warning; extraction uses up-channel geometry and preserves common
+atoms and `atom_of_site`. Migration: `Magnon::from_collinear` is removed without
+an alias; pass a `CollinearModel` to `Magnon::from_model` instead. See the
+[usage guide](<SKILLS.md#tb2j-style-exchange-extraction-from-electronic-models>).
+
 ### `magnon` — Floquet superexchange on an existing spin model
 
 `Magnon::floquet_superexchange(&drive, u_ev, harmonic_max)` returns a new

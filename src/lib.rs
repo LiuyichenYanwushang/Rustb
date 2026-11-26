@@ -64,8 +64,8 @@
 //! <summary>Exchange and magnons</summary>
 //!
 //! - [`Magnon<DIM>`](Magnon), a separate spin model:
-//!   - **Extract and store exchange:** [`Model::to_magnon`],
-//!     [`CollinearModel::to_magnon`], [`from_hr`](Magnon::from_hr),
+//!   - **Extract and store exchange:** [`Magnon::from_model`],
+//!     [`from_hr`](Magnon::from_hr),
 //!     [`write_hr`](Magnon::write_hr).
 //!   - **Spin waves:** [`gen_jq`](Magnon::gen_jq), [`gen_bdg`](Magnon::gen_bdg),
 //!     [`magnon_band_onek`](magnon::MagnonSolve::magnon_band_onek), [`magnon_dos`](Magnon::magnon_dos).
@@ -279,7 +279,7 @@ pub use crate::kplane::*;
 pub use crate::kpoints::*;
 pub use crate::magnetic_field::*;
 pub use crate::magnon::{
-    ExchangeParams, Magnon, MagnonContour, MagnonFloquet, MagnonReference, MagnonSambe,
+    ExchangeParams, Magnon, MagnonContour, MagnonFloquet, MagnonReference, MagnonSambe, ToMagnon,
 };
 pub use crate::math::*;
 pub use crate::model::*;
